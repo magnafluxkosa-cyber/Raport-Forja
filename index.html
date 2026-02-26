@@ -81,6 +81,7 @@
   }
   .authBtn:disabled{opacity:.55;cursor:not-allowed}
   .authErr{margin-top:10px;color:#ffb4b4;font-weight:700;font-size:13px;min-height:18px}
+  .authStamp{margin-top:10px;color:rgba(233,238,252,.65);font-weight:600;font-size:12px;min-height:16px}
   .rolePill{
     display:inline-flex;align-items:center;gap:8px;
     font-weight:800;font-size:12px;
@@ -5603,6 +5604,8 @@ function goMenu(){
         <h2 class="authTitle">Autentificare</h2>
         <p class="authHint">Intră cu contul Supabase. <b>Editor</b> poate modifica; <b>Viewer</b> are doar vizualizare (export permis). (Login cerut de fiecare dată când deschizi site-ul.)</p>
       </div>
+      <div class="authStamp" id="authStamp">build: FIX4 • JS: loading…</div>
+
       <div id="roleBadge" style="display:none" class="rolePill"><span class="roleDot" id="roleDot"></span><span id="roleText"></span></div>
     </div>
 
@@ -5616,7 +5619,7 @@ function goMenu(){
         <input class="authInput" id="authPass" type="password" autocomplete="current-password" placeholder="••••••••" />
       </div>
       <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:4px;">
-        <button type="button" class="authBtn" id="authLoginBtn">Intră</button>
+        <button class="authBtn" id="authLoginBtn">Intră</button>
         <button class="authBtn" id="authLogoutBtn" style="display:none;background:rgba(255,255,255,.06)">Logout</button>
       </div>
     </div>
@@ -5638,7 +5641,7 @@ function goMenu(){
   const btnIn   = document.getElementById('authLoginBtn');
   const btnOut  = document.getElementById('authLogoutBtn');
   const errEl   = document.getElementById('authErr');
-
+  const stampEl = document.getElementById('authStamp');
   const badge = document.getElementById('roleBadge');
   const roleText = document.getElementById('roleText');
   const roleDot  = document.getElementById('roleDot');
@@ -5646,12 +5649,22 @@ function goMenu(){
   function showErr(msg){ errEl.textContent = msg || ''; }
   function setBusy(b){ btnIn.disabled = b; if(b) showErr(''); }
 
+  // DEBUG: afișăm erori JS direct în ecran
+  window.addEventListener('error', (e)=>{ try{ showErr('JS error: ' + (e.message||e.error)); }catch(_){} });
+  window.addEventListener('unhandledrejection', (e)=>{
+    try{
+      const r = e.reason;
+      showErr('Promise error: ' + (r && r.message ? r.message : String(r)));
+    }catch(_){}
+  });
+  if(stampEl) stampEl.textContent = 'build: FIX4 • JS: loaded';
+
   const supa = (window.supabase && window.supabase.createClient)
     ? window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY, { auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true } })
     : null;
 
   if(!supa){
-    showErr('Nu pot încărca supabase-js (CDN blocat). Dezactivează AdBlock / permite jsdelivr sau folosește alt browser.');
+    showErr('Nu pot încărca supabase-js (CDN blocat). Încearcă refresh.');
     return;
   }
 
@@ -5673,78 +5686,68 @@ function goMenu(){
     window.__APP_ROLE__ = role;
   }
 
+  
   async function refreshSession(){
     try{
       const { data, error } = await supa.auth.getSession();
       if(error) throw error;
-      const user = data && data.session && data.session.user ? data.session.user : null;
+      const session = data && data.session ? data.session : null;
 
-      if(user){
-        const role = await loadRole(user);
+      if(session && session.user){
+        const role = await loadRole(session.user);
         applyRole(role);
+        window.__AUTH_OK__ = true;
+
         gate.style.display='none';
         btnOut.style.display='inline-block';
-        window.__AUTH_OK__ = true;
         return;
       }
-    } catch(e){
-      console.warn('Session check failed:', e);
+    }catch(e){
+      console.warn('refreshSession failed:', e);
+      // dacă nu putem citi sesiunea, rămânem pe gate
     }
 
     window.__AUTH_OK__ = false;
     gate.style.display='flex';
     badge.style.display='none';
     btnOut.style.display='none';
-}
-
-  function withTimeout(promise, ms){
-  return new Promise((resolve, reject)=>{
-    const t = setTimeout(()=>reject(new Error('Conectarea durează prea mult. Verifică internetul/CORS în Supabase.')), ms);
-    promise.then((v)=>{ clearTimeout(t); resolve(v); }).catch((e)=>{ clearTimeout(t); reject(e); });
-  });
-}
-
-// Arată erorile JS direct în UI (nu doar în consolă)
-window.addEventListener('error', (ev)=>{
-  try{ showErr('Eroare JS: ' + (ev && ev.message ? ev.message : 'necunoscută')); } catch(_){}
-});
-window.addEventListener('unhandledrejection', (ev)=>{
-  try{
-    const r = ev && ev.reason ? ev.reason : null;
-    showErr('Eroare: ' + (r && r.message ? r.message : String(r || 'necunoscută')));
-  } catch(_){}
-});
-
-btnIn.addEventListener('click', async ()=>{
-  setBusy(true);
-  showErr('Se conectează...');
-  try {
-    const email = (emailEl.value||'').trim();
-    const password = passEl.value || '';
-    if(!email || !password){ showErr('Completează email + parola.'); setBusy(false); return; }
-
-    const { data, error } = await withTimeout(
-      supa.auth.signInWithPassword({ email, password }),
-      12000
-    );
-    if(error) throw error;
-
-    const role = await loadRole(data.user);
-    applyRole(role);
-    gate.style.display = 'none';
-    btnOut.style.display='inline-block';
-    window.__AUTH_OK__ = true;
-    showErr('');
-  } catch(e){
-    console.error(e);
-    showErr(e && e.message ? e.message : 'Login eșuat.');
-  } finally {
-    setBusy(false);
   }
-});
-btnOut.addEventListener('click', async ()=>{
+
+    gate.style.display='flex';
+    badge.style.display='none';
+    btnOut.style.display='none';
+  }
+
+  btnIn.addEventListener('click', async ()=>{
+    setBusy(true);
+    showErr('Se conectează…'); if(stampEl) stampEl.textContent = 'build: FIX4 • autentificare…';
+
+    try {
+      const email = (emailEl.value||'').trim();
+      const password = passEl.value || '';
+      if(!email || !password){ showErr('Completează email + parola.'); setBusy(false); return; }
+      const { data, error } = await supa.auth.signInWithPassword({ email, password });
+      if(error) throw error;
+      const role = await loadRole(data.user);
+      applyRole(role);
+      gate.style.display = 'none';
+      window.__AUTH_OK__ = true;
+      if(stampEl) stampEl.textContent = 'build: FIX4 • logat';
+
+    } catch(e){
+      console.error(e);
+      if(stampEl) stampEl.textContent = 'build: FIX4 • eroare';
+
+      showErr(e && e.message ? e.message : 'Login eșuat.');
+    } finally {
+      setBusy(false);
+    }
+  });
+
+  btnOut.addEventListener('click', async ()=>{
     await supa.auth.signOut();
-    location.reload();
+    if(stampEl) stampEl.textContent = 'build: FIX4 • delogat';
+    refreshSession();
   });
 
   refreshSession();
