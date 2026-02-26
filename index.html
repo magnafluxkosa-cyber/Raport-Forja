@@ -5601,8 +5601,8 @@ function goMenu(){
   <div class="authCard">
     <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">
       <div>
-        <h2 class="authTitle">Autentificare</h2><div style="opacity:.55;font-size:12px;margin-top:4px;">build: PERSIST-SESSION</div>
-        <p class="authHint">Intră cu contul Supabase. <b>Editor</b> poate modifica; <b>Viewer</b> are doar vizualizare (export permis). (Login cerut de fiecare dată când deschizi site-ul.)</p>
+        <h2 class="authTitle">Autentificare</h2><div style="opacity:.55;font-size:12px;margin-top:4px;">build: AUTO-CLOUD v2</div>
+        <p class="authHint">Intră cu contul Supabase. Sesiunea rămâne activă automat. <b>Editor</b> poate modifica; <b>Viewer</b> are doar vizualizare (sync din cloud).</p>
       </div>
       <div id="roleBadge" style="display:none" class="rolePill"><span class="roleDot" id="roleDot"></span><span id="roleText"></span></div>
     </div>
@@ -5672,6 +5672,12 @@ function goMenu(){
     roleText.textContent = role.toUpperCase() + (role==='viewer' ? ' (read-only)' : '');
     roleDot.classList.toggle('viewer', role==='viewer');
     window.__APP_ROLE__ = role;
+
+    try{
+      if (window.__RF_SET_CLOUD_STATUS){
+        window.__RF_SET_CLOUD_STATUS(role==='viewer' ? 'Cloud: read-only (sync ON)' : 'Cloud: activ');
+      }
+    }catch(e){}
   }
 
   // =========================
@@ -5688,6 +5694,13 @@ function goMenu(){
   function setCloudStatus(txt){
     if (cloudEl) cloudEl.textContent = txt;
   }
+  // expune pentru alte zone (ex: applyRole)
+  window.__RF_SET_CLOUD_STATUS = setCloudStatus;
+
+  function errMsg(e){
+    const msg = (e && (e.message || e.error_description || e.details)) ? (e.message || e.error_description || e.details) : String(e || '');
+    return (msg || '').toString().slice(0, 160);
+  }
 
   let cloudStarted = false;
   let suspendPush = false;      // când scriem din cloud -> local, nu vrem să re-urcăm înapoi
@@ -5699,7 +5712,7 @@ function goMenu(){
 
   function safeJsonParse(raw){
     if (raw == null) return null;
-    try { return JSON.parse(raw); } catch(e){ return { __raw: String(raw) }; }
+    try { return JSON.parse(raw); } catch(e){ return String(raw); }
   }
 
   function scheduleReload(){
@@ -5726,7 +5739,10 @@ function goMenu(){
           if (row.data == null){
             try{ localStorage.removeItem(row.doc_key); }catch(e){}
           } else {
-            try{ localStorage.setItem(row.doc_key, JSON.stringify(row.data)); }catch(e){}
+            try{
+              if (typeof row.data === "string") localStorage.setItem(row.doc_key, row.data);
+              else localStorage.setItem(row.doc_key, JSON.stringify(row.data));
+            }catch(e){}
           }
         }
         suspendPush = false;
@@ -5741,7 +5757,7 @@ function goMenu(){
       return data || [];
     } catch(e){
       console.warn('Cloud pull error:', e);
-      setCloudStatus('Cloud: eroare la citire');
+      setCloudStatus('Cloud: eroare la citire — ' + errMsg(e));
       return [];
     } finally {
       suspendPush = false;
@@ -5783,7 +5799,7 @@ function goMenu(){
       setCloudStatus('Cloud: sincronizat');
     } catch(e){
       console.error('Cloud push error:', e);
-      setCloudStatus('Cloud: eroare la salvare');
+      setCloudStatus('Cloud: eroare la salvare — ' + errMsg(e));
     }
   }
 
@@ -5805,6 +5821,18 @@ function goMenu(){
   window.__RF_CLOUD_ON_LOCAL_CHANGE = function(key){
     try{ queuePush(key); } catch(e){}
   };
+
+  // prinde modificările localStorage făcute în iframe-uri (storage event)
+  // (mai robust decât monkey-patching setItem, și acoperă și localStorage[key]=...)
+  window.addEventListener('storage', (ev)=>{
+    try{
+      if (!ev || ev.storageArea !== localStorage) return;
+      const k = ev.key;
+      if (!k) return;
+      queuePush(k);
+    }catch(e){}
+  });
+
 
   function instrumentWindow(win){
     if (!win || win.__RF_INSTRUMENTED__) return;
@@ -5904,6 +5932,12 @@ function goMenu(){
 
     // 3) polling pt update-uri (viewer vede schimbările editorilor)
     pollTimer = setInterval(pollCloud, 12000);
+    // flush rapid când user închide tab-ul
+    document.addEventListener('visibilitychange', ()=>{
+      try{ if (document.visibilityState === 'hidden') flushPush(); }catch(e){}
+    });
+    window.addEventListener('pagehide', ()=>{ try{ flushPush(); }catch(e){} });
+
   }
 
 
