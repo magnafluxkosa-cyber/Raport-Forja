@@ -158,6 +158,7 @@
 <button class="btn" id="btnBackupAll" onclick="exportAllData()">Backup total</button>
 <button class="btn" id="btnRestoreAll" onclick="triggerImportAll()">Restore total</button>
 <button class="btn" id="btnResetAll" onclick="resetAllData()">Reset total</button>
+<div class="hint" id="cloudStatus">Cloud: —</div>
 <div class="hint">Datele rămân salvate prin Auto‑Save (localStorage) în același browser/PC.</div>
 </div>
 <input accept="application/json,.json" id="importAllInput" style="display:none" type="file"/>
@@ -5483,7 +5484,7 @@ function goMenu(){
 
     function reloadAllPages(){
       const key = (location.hash || '#dashboard').replace('#','');
-      ['pageDashboard','pageNumeralkod','pageIntrari','pageDebitate'].forEach(reloadIframe);
+      ['pageDashboard','pageHelper','pageNumeralkod','pageIntrari','pageDebitate'].forEach(reloadIframe);
       // reselect după un tick (iframes se reîncarcă)
       setTimeout(()=>setActive(key), 120);
     }
@@ -5673,6 +5674,239 @@ function goMenu(){
     window.__APP_ROLE__ = role;
   }
 
+  // =========================
+  // AUTO-SYNC în cloud (Supabase) — fără butoane
+  // =========================
+  window.__SUPA__ = supa;
+
+  const CLOUD_TABLE = 'rf_documents';
+  const TRACKED_KEYS = (window.APP_KEYS && typeof APP_KEYS === 'object')
+    ? [APP_KEYS.helpers, APP_KEYS.numeralkod, APP_KEYS.intrari, APP_KEYS.debitate]
+    : ['RF_HELPERS_v1','NUMERALKOD_autosave_v1','INTRARI_OTEL_autosave_v3','DEBITATE_autosave_v1'];
+
+  const cloudEl = document.getElementById('cloudStatus');
+  function setCloudStatus(txt){
+    if (cloudEl) cloudEl.textContent = txt;
+  }
+
+  let cloudStarted = false;
+  let suspendPush = false;      // când scriem din cloud -> local, nu vrem să re-urcăm înapoi
+  let pending = new Set();
+  let pushTimer = null;
+  let pollTimer = null;
+  let cacheUpdatedAt = Object.create(null);
+  let reloadTimer = null;
+
+  function safeJsonParse(raw){
+    if (raw == null) return null;
+    try { return JSON.parse(raw); } catch(e){ return { __raw: String(raw) }; }
+  }
+
+  function scheduleReload(){
+    if (typeof window.reloadAllPages !== 'function') return;
+    if (reloadTimer) clearTimeout(reloadTimer);
+    reloadTimer = setTimeout(()=>{ try{ window.reloadAllPages(); }catch(e){} }, 250);
+  }
+
+  async function pullFromCloud(keys){
+    const list = Array.isArray(keys) && keys.length ? keys : TRACKED_KEYS;
+    try{
+      const { data, error } = await supa
+        .from(CLOUD_TABLE)
+        .select('doc_key,data,updated_at')
+        .in('doc_key', list);
+
+      if (error) throw error;
+
+      if (Array.isArray(data) && data.length){
+        suspendPush = true;
+        for (const row of data){
+          cacheUpdatedAt[row.doc_key] = row.updated_at || null;
+
+          if (row.data == null){
+            try{ localStorage.removeItem(row.doc_key); }catch(e){}
+          } else {
+            try{ localStorage.setItem(row.doc_key, JSON.stringify(row.data)); }catch(e){}
+          }
+        }
+        suspendPush = false;
+
+        setCloudStatus('Cloud: sincronizat');
+        scheduleReload();
+      } else {
+        // nimic în cloud încă
+        setCloudStatus('Cloud: gol (încă)');
+      }
+
+      return data || [];
+    } catch(e){
+      console.warn('Cloud pull error:', e);
+      setCloudStatus('Cloud: eroare la citire');
+      return [];
+    } finally {
+      suspendPush = false;
+    }
+  }
+
+  async function upsertToCloud(doc_key){
+    const role = window.__APP_ROLE__ || 'viewer';
+    if (role === 'viewer') return { ok:false, skipped:true };
+
+    const raw = (()=>{ try{ return localStorage.getItem(doc_key); } catch(e){ return null; } })();
+    const payload = safeJsonParse(raw);
+
+    const row = { doc_key, data: payload };
+
+    const { data, error } = await supa
+      .from(CLOUD_TABLE)
+      .upsert(row, { onConflict: 'doc_key' })
+      .select('doc_key,updated_at');
+
+    if (error) throw error;
+
+    const r0 = Array.isArray(data) ? data[0] : data;
+    if (r0 && r0.updated_at) cacheUpdatedAt[doc_key] = r0.updated_at;
+    return { ok:true };
+  }
+
+  async function flushPush(){
+    pushTimer = null;
+    const keys = Array.from(pending);
+    pending.clear();
+    if (!keys.length) return;
+
+    try{
+      setCloudStatus('Cloud: salvez…');
+      for (const k of keys){
+        await upsertToCloud(k);
+      }
+      setCloudStatus('Cloud: sincronizat');
+    } catch(e){
+      console.error('Cloud push error:', e);
+      setCloudStatus('Cloud: eroare la salvare');
+    }
+  }
+
+  function queuePush(doc_key){
+    if (suspendPush) return;
+    const role = window.__APP_ROLE__ || 'viewer';
+    if (role === 'viewer') return;
+
+    if (!TRACKED_KEYS.includes(doc_key)) return;
+
+    pending.add(doc_key);
+    setCloudStatus('Cloud: schimbări…');
+
+    if (pushTimer) clearTimeout(pushTimer);
+    pushTimer = setTimeout(flushPush, 1200);
+  }
+
+  // expunem handler pt iframes
+  window.__RF_CLOUD_ON_LOCAL_CHANGE = function(key){
+    try{ queuePush(key); } catch(e){}
+  };
+
+  function instrumentWindow(win){
+    if (!win || win.__RF_INSTRUMENTED__) return;
+    try{
+      const proto = win.Storage && win.Storage.prototype;
+      if (!proto) return;
+
+      const origSet = proto.setItem;
+      const origRem = proto.removeItem;
+
+      proto.setItem = function(k, v){
+        origSet.call(this, k, v);
+        try{ if (win.parent && win.parent.__RF_CLOUD_ON_LOCAL_CHANGE) win.parent.__RF_CLOUD_ON_LOCAL_CHANGE(k); } catch(e){}
+      };
+
+      proto.removeItem = function(k){
+        origRem.call(this, k);
+        try{ if (win.parent && win.parent.__RF_CLOUD_ON_LOCAL_CHANGE) win.parent.__RF_CLOUD_ON_LOCAL_CHANGE(k); } catch(e){}
+      };
+
+      win.__RF_INSTRUMENTED__ = true;
+    } catch(e){
+      console.warn('Instrument failed:', e);
+    }
+  }
+
+  function instrumentIframes(){
+    const ids = ['pageDashboard','pageHelper','pageNumeralkod','pageIntrari','pageDebitate'];
+    ids.forEach(id=>{
+      const fr = document.getElementById(id);
+      if (!fr) return;
+      fr.addEventListener('load', ()=>{
+        try{ instrumentWindow(fr.contentWindow); }catch(e){}
+      });
+      try{ instrumentWindow(fr.contentWindow); }catch(e){}
+    });
+    instrumentWindow(window);
+  }
+
+  async function seedCloudIfEmpty(existingRows){
+    const role = window.__APP_ROLE__ || 'viewer';
+    if (role === 'viewer') return;
+
+    const present = new Set((existingRows||[]).map(r=>r.doc_key));
+    const missing = TRACKED_KEYS.filter(k=>!present.has(k));
+
+    if (!missing.length) return;
+
+    // urcăm automat ce există local (dacă există)
+    for (const k of missing){
+      try{
+        const raw = localStorage.getItem(k);
+        if (raw != null) await upsertToCloud(k);
+      } catch(e){}
+    }
+  }
+
+  async function pollCloud(){
+    try{
+      const { data, error } = await supa
+        .from(CLOUD_TABLE)
+        .select('doc_key,updated_at')
+        .in('doc_key', TRACKED_KEYS);
+
+      if (error) throw error;
+
+      const changed = [];
+      (data||[]).forEach(r=>{
+        const prev = cacheUpdatedAt[r.doc_key] || null;
+        const now  = r.updated_at || null;
+        if (now && now !== prev){
+          changed.push(r.doc_key);
+        }
+      });
+
+      if (changed.length){
+        await pullFromCloud(changed);
+      }
+    } catch(e){
+      console.warn('Cloud poll error:', e);
+      // nu spamăm UI cu eroare la fiecare poll
+    }
+  }
+
+  async function startAutoCloud(){
+    if (cloudStarted) return;
+    cloudStarted = true;
+
+    setCloudStatus('Cloud: verific…');
+    instrumentIframes();
+
+    // 1) pull inițial
+    const rows = await pullFromCloud(TRACKED_KEYS);
+
+    // 2) dacă e gol și ești editor/admin -> seed automat din local
+    await seedCloudIfEmpty(rows);
+
+    // 3) polling pt update-uri (viewer vede schimbările editorilor)
+    pollTimer = setInterval(pollCloud, 12000);
+  }
+
+
   async function refreshSession(){
     try{
       const { data, error } = await supa.auth.getSession();
@@ -5685,6 +5919,7 @@ function goMenu(){
         gate.style.display='none';
         btnOut.style.display='inline-block';
         window.__AUTH_OK__ = true;
+        startAutoCloud();
         return;
       }
     }catch(e){
@@ -5708,6 +5943,7 @@ function goMenu(){
       applyRole(role);
       gate.style.display = 'none';
       window.__AUTH_OK__ = true;
+      startAutoCloud();
     } catch(e){
       console.error(e);
       showErr(e && e.message ? e.message : 'Login eșuat.');
