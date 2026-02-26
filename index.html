@@ -25,12 +25,6 @@
     .brand{ color:var(--navtext); font: 800 13px/1 system-ui, -apple-system, Segoe UI, Roboto, Arial; letter-spacing:.2px; }
     .right{ margin-left:auto; display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
     .hint{ color:var(--navmuted); font: 600 12px/1.2 system-ui, -apple-system, Segoe UI, Roboto, Arial; }
-  #cloudStatus{ display:inline-flex; align-items:center; gap:6px; margin-right:10px; padding:3px 10px; border-radius:999px; border:1px solid rgba(255,255,255,.12); background:rgba(0,0,0,.12); }
-  #cloudStatus.ok{ color:#7ee787; border-color:rgba(126,231,135,.35); }
-  #cloudStatus.err{ color:#ff7b72; border-color:rgba(255,123,114,.35); }
-  #cloudStatus.pending{ color:#f2cc60; border-color:rgba(242,204,96,.35); }
-  #cloudStatus.ro{ color:#8b949e; border-color:rgba(139,148,158,.35); }
-
     .btn{
       border:1px solid var(--navborder);
       background: rgba(255,255,255,.06);
@@ -164,7 +158,7 @@
 <button class="btn" id="btnBackupAll" onclick="exportAllData()">Backup total</button>
 <button class="btn" id="btnRestoreAll" onclick="triggerImportAll()">Restore total</button>
 <button class="btn" id="btnResetAll" onclick="resetAllData()">Reset total</button>
-<div id="cloudStatus" class="hint ro">Cloud: OFF</div>
+<div class="hint" id="cloudStatus">Cloud: —</div>
 <div class="hint">Datele rămân salvate prin Auto‑Save (localStorage) în același browser/PC.</div>
 </div>
 <input accept="application/json,.json" id="importAllInput" style="display:none" type="file"/>
@@ -5490,7 +5484,7 @@ function goMenu(){
 
     function reloadAllPages(){
       const key = (location.hash || '#dashboard').replace('#','');
-      ['pageDashboard','pageNumeralkod','pageIntrari','pageDebitate'].forEach(reloadIframe);
+      ['pageDashboard','pageHelper','pageNumeralkod','pageIntrari','pageDebitate'].forEach(reloadIframe);
       // reselect după un tick (iframes se reîncarcă)
       setTimeout(()=>setActive(key), 120);
     }
@@ -5607,8 +5601,8 @@ function goMenu(){
   <div class="authCard">
     <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">
       <div>
-        <h2 class="authTitle">Autentificare</h2>
-        <p class="authHint">Intră cu contul Supabase. <b>Editor</b> poate modifica; <b>Viewer</b> are doar vizualizare (export permis). (Login cerut de fiecare dată când deschizi site-ul.)</p>
+        <h2 class="authTitle">Autentificare</h2><div style="opacity:.55;font-size:12px;margin-top:4px;">build: AUTO-CLOUD v2</div>
+        <p class="authHint">Intră cu contul Supabase. Sesiunea rămâne activă automat. <b>Editor</b> poate modifica; <b>Viewer</b> are doar vizualizare (sync din cloud).</p>
       </div>
       <div id="roleBadge" style="display:none" class="rolePill"><span class="roleDot" id="roleDot"></span><span id="roleText"></span></div>
     </div>
@@ -5645,7 +5639,6 @@ function goMenu(){
   const btnIn   = document.getElementById('authLoginBtn');
   const btnOut  = document.getElementById('authLogoutBtn');
   const errEl   = document.getElementById('authErr');
-  const cloudEl = document.getElementById('cloudStatus');
 
   const badge = document.getElementById('roleBadge');
   const roleText = document.getElementById('roleText');
@@ -5665,23 +5658,9 @@ function goMenu(){
 
   async function loadRole(user){
     try {
-      // încearcă să citești rolul
       const { data, error } = await supa.from('profiles').select('role').eq('id', user.id).maybeSingle();
-      if(error && error.code !== 'PGRST116') throw error;
-
-      if(data && data.role) return data.role;
-
-      // dacă nu există profil, îl creează ca viewer (userul își poate insera propriul profil)
-      const { error: insErr } = await supa.from('profiles').insert({ id: user.id, role: 'viewer' });
-      if(insErr){
-        // dacă e duplicate / conflict, ignorăm
-        if(!(insErr.code === '23505' || String(insErr.message||'').toLowerCase().includes('duplicate'))){
-          throw insErr;
-        }
-      }
-
-      const { data: data2 } = await supa.from('profiles').select('role').eq('id', user.id).maybeSingle();
-      return (data2 && data2.role) ? data2.role : 'viewer';
+      if(error) throw error;
+      return (data && data.role) ? data.role : 'viewer';
     } catch(e){
       console.warn('Role lookup failed:', e);
       return 'viewer';
@@ -5693,252 +5672,298 @@ function goMenu(){
     roleText.textContent = role.toUpperCase() + (role==='viewer' ? ' (read-only)' : '');
     roleDot.classList.toggle('viewer', role==='viewer');
     window.__APP_ROLE__ = role;
-  }
 
-  // ==========================
-  // AUTO-CLOUD (fără butoane)
-  // salvează automat localStorage -> Supabase (rf_documents)
-  // și trage automat actualizări din cloud
-  // ==========================
-  const DOC_KEYS = [
-    'RF_HELPERS_v1',
-    'NUMERALKOD_autosave_v1',
-    'INTRARI_OTEL_autosave_v3',
-    'DEBITATE_autosave_v1'
-  ];
-
-  const CLOUD_META_KEY = '_RF_CLOUD_META_v1';
-  const SCAN_MS = 800;
-  const SAVE_DEBOUNCE_MS = 1200;
-  const PULL_MS = 12000;
-
-  let cloudUser = null;
-  let cloudRole = 'viewer';
-  let cloudCanWrite = false;
-
-  let scanTimer = null;
-  let pullTimer = null;
-  let saveTimer = null;
-
-  const lastLocal = Object.create(null);
-  const dirty = new Set();
-
-  function setCloudStatus(text, cls){
-    if(!cloudEl) return;
-    cloudEl.textContent = text;
-    cloudEl.classList.remove('ok','err','pending','ro');
-    if(cls) cloudEl.classList.add(cls);
-  }
-
-  function readMeta(){
     try{
-      const raw = localStorage.getItem(CLOUD_META_KEY);
-      return raw ? JSON.parse(raw) : {};
-    }catch(e){
-      return {};
-    }
-  }
-
-  function writeMeta(meta){
-    try{ localStorage.setItem(CLOUD_META_KEY, JSON.stringify(meta||{})); }catch(e){}
-  }
-
-  function snapshotLocal(){
-    for(const k of DOC_KEYS){
-      lastLocal[k] = localStorage.getItem(k) ?? null;
-    }
-  }
-
-  function scanLocalChanges(){
-    if(!cloudUser) return;
-    let changed = false;
-    for(const k of DOC_KEYS){
-      const v = localStorage.getItem(k) ?? null;
-      if(v !== lastLocal[k]){
-        lastLocal[k] = v;
-        dirty.add(k);
-        changed = true;
+      if (window.__RF_SET_CLOUD_STATUS){
+        window.__RF_SET_CLOUD_STATUS(role==='viewer' ? 'Cloud: read-only (sync ON)' : 'Cloud: activ');
       }
-    }
-    if(changed){
-      if(!cloudCanWrite){
-        setCloudStatus('Cloud: read-only (sync ON)', 'ro');
-        return;
-      }
-      setCloudStatus('Cloud: schimbări…', 'pending');
-      scheduleSave();
-    }
+    }catch(e){}
   }
 
-  function scheduleSave(){
-    if(!cloudCanWrite) return;
-    if(saveTimer) clearTimeout(saveTimer);
-    saveTimer = setTimeout(()=>cloudSaveDirty().catch(console.error), SAVE_DEBOUNCE_MS);
+  // =========================
+  // AUTO-SYNC în cloud (Supabase) — fără butoane
+  // =========================
+  window.__SUPA__ = supa;
+
+  const CLOUD_TABLE = 'rf_documents';
+  const TRACKED_KEYS = (window.APP_KEYS && typeof APP_KEYS === 'object')
+    ? [APP_KEYS.helpers, APP_KEYS.numeralkod, APP_KEYS.intrari, APP_KEYS.debitate]
+    : ['RF_HELPERS_v1','NUMERALKOD_autosave_v1','INTRARI_OTEL_autosave_v3','DEBITATE_autosave_v1'];
+
+  const cloudEl = document.getElementById('cloudStatus');
+  function setCloudStatus(txt){
+    if (cloudEl) cloudEl.textContent = txt;
+  }
+  // expune pentru alte zone (ex: applyRole)
+  window.__RF_SET_CLOUD_STATUS = setCloudStatus;
+
+  function errMsg(e){
+    const msg = (e && (e.message || e.error_description || e.details)) ? (e.message || e.error_description || e.details) : String(e || '');
+    return (msg || '').toString().slice(0, 160);
   }
 
-  async function cloudSaveDirty(){
-    if(!cloudUser || !cloudCanWrite) return;
-    if(dirty.size === 0) return;
+  let cloudStarted = false;
+  let suspendPush = false;      // când scriem din cloud -> local, nu vrem să re-urcăm înapoi
+  let pending = new Set();
+  let pushTimer = null;
+  let pollTimer = null;
+  let cacheUpdatedAt = Object.create(null);
+  let reloadTimer = null;
 
-    setCloudStatus('Cloud: salvez…', 'pending');
-
-    const rows = [];
-    for(const k of dirty){
-      const raw = localStorage.getItem(k);
-      // păstrăm exact string-ul din localStorage ca să nu stricăm formatul
-      rows.push({ doc_key: k, data: { raw: raw ?? null } });
-    }
-
-    const { data, error } = await supa
-      .from('rf_documents')
-      .upsert(rows, { onConflict: 'doc_key' })
-      .select('doc_key, updated_at');
-
-    if(error){
-      setCloudStatus('Cloud: eroare — ' + error.message, 'err');
-      return;
-    }
-
-    // update meta cu updated_at de la server
-    const meta = readMeta();
-    (data || []).forEach(r => { meta[r.doc_key] = { updated_at: r.updated_at }; });
-    writeMeta(meta);
-
-    dirty.clear();
-    setCloudStatus('Cloud: sincronizat', 'ok');
+  function safeJsonParse(raw){
+    if (raw == null) return null;
+    try { return JSON.parse(raw); } catch(e){ return String(raw); }
   }
 
-  async function cloudPull(isInitial=false){
-    if(!cloudUser) return;
+  function scheduleReload(){
+    if (typeof window.reloadAllPages !== 'function') return;
+    if (reloadTimer) clearTimeout(reloadTimer);
+    reloadTimer = setTimeout(()=>{ try{ window.reloadAllPages(); }catch(e){} }, 250);
+  }
 
-    const { data, error } = await supa
-      .from('rf_documents')
-      .select('doc_key, data, updated_at')
-      .in('doc_key', DOC_KEYS);
+  async function pullFromCloud(keys){
+    const list = Array.isArray(keys) && keys.length ? keys : TRACKED_KEYS;
+    try{
+      const { data, error } = await supa
+        .from(CLOUD_TABLE)
+        .select('doc_key,data,updated_at')
+        .in('doc_key', list);
 
-    if(error){
-      // dacă tabela nu există / RLS / etc, vezi mesajul clar
-      setCloudStatus('Cloud: eroare — ' + error.message, 'err');
-      return;
-    }
+      if (error) throw error;
 
-    const meta = readMeta();
-    let applied = false;
+      if (Array.isArray(data) && data.length){
+        suspendPush = true;
+        for (const row of data){
+          cacheUpdatedAt[row.doc_key] = row.updated_at || null;
 
-    for(const row of (data || [])){
-      const k = row.doc_key;
-      const remoteTs = Date.parse(row.updated_at || '') || 0;
-      const localMetaTs = Date.parse((meta[k] && meta[k].updated_at) ? meta[k].updated_at : '') || 0;
-
-      // dacă userul editează acum (dirty), nu suprascriem
-      if(dirty.has(k)) continue;
-
-      // aplicăm dacă e inițial și local e gol, sau dacă remote e mai nou ca meta
-      const localVal = localStorage.getItem(k);
-      const remoteRaw = row.data && typeof row.data === 'object' ? row.data.raw : null;
-
-      const shouldApply =
-        (isInitial && (localVal == null || localVal === '') && remoteRaw != null) ||
-        (remoteTs > localMetaTs && remoteRaw != null);
-
-      if(shouldApply){
-        localStorage.setItem(k, remoteRaw);
-        lastLocal[k] = remoteRaw;
-        meta[k] = { updated_at: row.updated_at };
-        applied = true;
-      }
-    }
-
-    if(applied){
-      writeMeta(meta);
-      // Reîncarcă o singură dată dacă am aplicat date din cloud, ca paginile (iframe) să recitească localStorage
-      try{
-        const flag = 'RF_CLOUD_RELOADED_ONCE';
-        if(!sessionStorage.getItem(flag)){
-          sessionStorage.setItem(flag,'1');
-          setCloudStatus('Cloud: actualizat, reîncarc…', 'pending');
-          setTimeout(()=>location.reload(), 250);
-        } else {
-          setCloudStatus(cloudCanWrite ? 'Cloud: sincronizat' : 'Cloud: read-only (sync ON)', cloudCanWrite ? 'ok' : 'ro');
+          if (row.data == null){
+            try{ localStorage.removeItem(row.doc_key); }catch(e){}
+          } else {
+            try{
+              if (typeof row.data === "string") localStorage.setItem(row.doc_key, row.data);
+              else localStorage.setItem(row.doc_key, JSON.stringify(row.data));
+            }catch(e){}
+          }
         }
-      }catch(e){
-        setCloudStatus(cloudCanWrite ? 'Cloud: sincronizat' : 'Cloud: read-only (sync ON)', cloudCanWrite ? 'ok' : 'ro');
+        suspendPush = false;
+
+        setCloudStatus('Cloud: sincronizat');
+        scheduleReload();
+      } else {
+        // nimic în cloud încă
+        setCloudStatus('Cloud: gol (încă)');
       }
-    }else{
-      // nu schimbăm statusul dacă e o salvare în curs; doar la inițial
-      if(isInitial){
-        setCloudStatus(cloudCanWrite ? 'Cloud: ON' : 'Cloud: read-only (sync ON)', cloudCanWrite ? 'ok' : 'ro');
-      }
+
+      return data || [];
+    } catch(e){
+      console.warn('Cloud pull error:', e);
+      setCloudStatus('Cloud: eroare la citire — ' + errMsg(e));
+      return [];
+    } finally {
+      suspendPush = false;
     }
   }
 
-  function startAutoCloud(user, role){
-    cloudUser = user;
-    cloudRole = role || 'viewer';
-    cloudCanWrite = (cloudRole !== 'viewer');
+  async function upsertToCloud(doc_key){
+    const role = window.__APP_ROLE__ || 'viewer';
+    if (role === 'viewer') return { ok:false, skipped:true };
 
-    // status inițial
-    setCloudStatus(cloudCanWrite ? 'Cloud: ON' : 'Cloud: read-only (sync ON)', cloudCanWrite ? 'ok' : 'ro');
+    const raw = (()=>{ try{ return localStorage.getItem(doc_key); } catch(e){ return null; } })();
+    const payload = safeJsonParse(raw);
 
-    // pornește doar o dată timer-ele
-    if(scanTimer || pullTimer) return;
+    const row = { doc_key, data: payload };
 
-    snapshotLocal();
+    const { data, error } = await supa
+      .from(CLOUD_TABLE)
+      .upsert(row, { onConflict: 'doc_key' })
+      .select('doc_key,updated_at');
 
-    cloudPull(true).catch(console.error);
+    if (error) throw error;
 
-    scanTimer = setInterval(scanLocalChanges, SCAN_MS);
-    pullTimer = setInterval(()=>cloudPull(false).catch(console.error), PULL_MS);
+    const r0 = Array.isArray(data) ? data[0] : data;
+    if (r0 && r0.updated_at) cacheUpdatedAt[doc_key] = r0.updated_at;
+    return { ok:true };
   }
 
-  function stopAutoCloud(){
-    cloudUser = null;
-    cloudRole = 'viewer';
-    cloudCanWrite = false;
+  async function flushPush(){
+    pushTimer = null;
+    const keys = Array.from(pending);
+    pending.clear();
+    if (!keys.length) return;
 
-    if(scanTimer) clearInterval(scanTimer);
-    if(pullTimer) clearInterval(pullTimer);
-    if(saveTimer) clearTimeout(saveTimer);
-
-    scanTimer = null;
-    pullTimer = null;
-    saveTimer = null;
-    dirty.clear();
-
-    setCloudStatus('Cloud: OFF', 'ro');
+    try{
+      setCloudStatus('Cloud: salvez…');
+      for (const k of keys){
+        await upsertToCloud(k);
+      }
+      setCloudStatus('Cloud: sincronizat');
+    } catch(e){
+      console.error('Cloud push error:', e);
+      setCloudStatus('Cloud: eroare la salvare — ' + errMsg(e));
+    }
   }
+
+  function queuePush(doc_key){
+    if (suspendPush) return;
+    const role = window.__APP_ROLE__ || 'viewer';
+    if (role === 'viewer') return;
+
+    if (!TRACKED_KEYS.includes(doc_key)) return;
+
+    pending.add(doc_key);
+    setCloudStatus('Cloud: schimbări…');
+
+    if (pushTimer) clearTimeout(pushTimer);
+    pushTimer = setTimeout(flushPush, 1200);
+  }
+
+  // expunem handler pt iframes
+  window.__RF_CLOUD_ON_LOCAL_CHANGE = function(key){
+    try{ queuePush(key); } catch(e){}
+  };
+
+  // prinde modificările localStorage făcute în iframe-uri (storage event)
+  // (mai robust decât monkey-patching setItem, și acoperă și localStorage[key]=...)
+  window.addEventListener('storage', (ev)=>{
+    try{
+      if (!ev || ev.storageArea !== localStorage) return;
+      const k = ev.key;
+      if (!k) return;
+      queuePush(k);
+    }catch(e){}
+  });
+
+
+  function instrumentWindow(win){
+    if (!win || win.__RF_INSTRUMENTED__) return;
+    try{
+      const proto = win.Storage && win.Storage.prototype;
+      if (!proto) return;
+
+      const origSet = proto.setItem;
+      const origRem = proto.removeItem;
+
+      proto.setItem = function(k, v){
+        origSet.call(this, k, v);
+        try{ if (win.parent && win.parent.__RF_CLOUD_ON_LOCAL_CHANGE) win.parent.__RF_CLOUD_ON_LOCAL_CHANGE(k); } catch(e){}
+      };
+
+      proto.removeItem = function(k){
+        origRem.call(this, k);
+        try{ if (win.parent && win.parent.__RF_CLOUD_ON_LOCAL_CHANGE) win.parent.__RF_CLOUD_ON_LOCAL_CHANGE(k); } catch(e){}
+      };
+
+      win.__RF_INSTRUMENTED__ = true;
+    } catch(e){
+      console.warn('Instrument failed:', e);
+    }
+  }
+
+  function instrumentIframes(){
+    const ids = ['pageDashboard','pageHelper','pageNumeralkod','pageIntrari','pageDebitate'];
+    ids.forEach(id=>{
+      const fr = document.getElementById(id);
+      if (!fr) return;
+      fr.addEventListener('load', ()=>{
+        try{ instrumentWindow(fr.contentWindow); }catch(e){}
+      });
+      try{ instrumentWindow(fr.contentWindow); }catch(e){}
+    });
+    instrumentWindow(window);
+  }
+
+  async function seedCloudIfEmpty(existingRows){
+    const role = window.__APP_ROLE__ || 'viewer';
+    if (role === 'viewer') return;
+
+    const present = new Set((existingRows||[]).map(r=>r.doc_key));
+    const missing = TRACKED_KEYS.filter(k=>!present.has(k));
+
+    if (!missing.length) return;
+
+    // urcăm automat ce există local (dacă există)
+    for (const k of missing){
+      try{
+        const raw = localStorage.getItem(k);
+        if (raw != null) await upsertToCloud(k);
+      } catch(e){}
+    }
+  }
+
+  async function pollCloud(){
+    try{
+      const { data, error } = await supa
+        .from(CLOUD_TABLE)
+        .select('doc_key,updated_at')
+        .in('doc_key', TRACKED_KEYS);
+
+      if (error) throw error;
+
+      const changed = [];
+      (data||[]).forEach(r=>{
+        const prev = cacheUpdatedAt[r.doc_key] || null;
+        const now  = r.updated_at || null;
+        if (now && now !== prev){
+          changed.push(r.doc_key);
+        }
+      });
+
+      if (changed.length){
+        await pullFromCloud(changed);
+      }
+    } catch(e){
+      console.warn('Cloud poll error:', e);
+      // nu spamăm UI cu eroare la fiecare poll
+    }
+  }
+
+  async function startAutoCloud(){
+    if (cloudStarted) return;
+    cloudStarted = true;
+
+    setCloudStatus('Cloud: verific…');
+    instrumentIframes();
+
+    // 1) pull inițial
+    const rows = await pullFromCloud(TRACKED_KEYS);
+
+    // 2) dacă e gol și ești editor/admin -> seed automat din local
+    await seedCloudIfEmpty(rows);
+
+    // 3) polling pt update-uri (viewer vede schimbările editorilor)
+    pollTimer = setInterval(pollCloud, 12000);
+    // flush rapid când user închide tab-ul
+    document.addEventListener('visibilitychange', ()=>{
+      try{ if (document.visibilityState === 'hidden') flushPush(); }catch(e){}
+    });
+    window.addEventListener('pagehide', ()=>{ try{ flushPush(); }catch(e){} });
+
+  }
+
 
   async function refreshSession(){
     try{
       const { data, error } = await supa.auth.getSession();
       if(error) throw error;
-
-      const session = data ? data.session : null;
-      if(session && session.user){
-        const role = await loadRole(session.user);
+      const sess = data && data.session;
+      const user = sess && sess.user;
+      if(user){
+        const role = await loadRole(user);
         applyRole(role);
-
         gate.style.display='none';
-        badge.style.display='inline-flex';
         btnOut.style.display='inline-block';
         window.__AUTH_OK__ = true;
-
-        // pornește auto-cloud (citire pt viewer, scriere pt editor/admin)
-        startAutoCloud(session.user, role);
+        startAutoCloud();
         return;
       }
     }catch(e){
-      console.warn(e);
-      // dacă nu putem citi sesiunea, ținem gate-ul activ
+      console.warn('Session check failed:', e);
     }
-
     window.__AUTH_OK__ = false;
     gate.style.display='flex';
     badge.style.display='none';
     btnOut.style.display='none';
-    stopAutoCloud();
   }
-
 
   btnIn.addEventListener('click', async ()=>{
     setBusy(true);
@@ -5952,7 +5977,7 @@ function goMenu(){
       applyRole(role);
       gate.style.display = 'none';
       window.__AUTH_OK__ = true;
-      startAutoCloud(data.user, role);
+      startAutoCloud();
     } catch(e){
       console.error(e);
       showErr(e && e.message ? e.message : 'Login eșuat.');
@@ -5962,13 +5987,12 @@ function goMenu(){
   });
 
   btnOut.addEventListener('click', async ()=>{
-    stopAutoCloud();
     await supa.auth.signOut();
     location.reload();
   });
 
   refreshSession();
-  supa.auth.onAuthStateChange(()=>refreshSession());
+  supa.auth.onAuthStateChange(()=>{ refreshSession(); });
 })();
 </script>
 
