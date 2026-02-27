@@ -3584,7 +3584,6 @@ function goMenu(){
         rows: getTableData()
       };
       localStorage.setItem(AUTO_KEY, JSON.stringify(payload));
-      try{ window.parent &amp;&amp; window.parent.postMessage({type:&quot;RF_SAVE&quot;, key:AUTO_KEY, data: payload}, &quot;*&quot;); }catch(e){}
     }catch(e){}
   }
 
@@ -5434,15 +5433,6 @@ function goMenu(){
     // resave normalized
     if (rows.length) scheduleSave();
   })();
-
-  // LIVE: aplică update din cloud
-  window.addEventListener(&quot;message&quot;, (ev)=&gt;{
-    const m = ev.data;
-    if(!m || typeof m!==&quot;object&quot;) return;
-    if(m.type===&quot;RF_APPLY&quot; &amp;&amp; m.key===AUTO_KEY){
-      try{ autoLoad(); }catch(e){}
-    }
-  });
 &lt;/script&gt;
 
   &lt;datalist id=&quot;dlRepereDebitare&quot;&gt;&lt;/datalist&gt;
@@ -5659,7 +5649,7 @@ function goMenu(){
 <script>
 (function(){
   const SUPABASE_URL = 'https://rhjcnydkdhjzazygybcc.supabase.co';
-  const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJoamNueWRrZGhqemF6eWd5YmNjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE4ODEzMzYsImV4cCI6MjA4NzQ1NzMzNn0.ompOZWqnFGsnOQzPiAv2QBwuaNiKtnz5PciRwCWh0Hk'; // paste Anon Key (Legacy)
+  const SUPABASE_KEY = 'sb_publishable_c9bVU5wkXwzzXTJVeWWygg_tOA9WnPK';
 
   const gate = document.getElementById('authGate');
   const emailEl = document.getElementById('authEmail');
@@ -6225,69 +6215,7 @@ function goMenu(){
       window.addEventListener('resize', ()=>{ setTimeout(applyResponsiveToAllFrames, 80); }, {passive:true});
     }catch(e){}
   }
-  
-  // ===== LIVE (Realtime) for rf_documents =====
-  const CLIENT_ID_KEY = "RF_CLIENT_ID";
-  let clientId = localStorage.getItem(CLIENT_ID_KEY);
-  if(!clientId){
-    clientId = (crypto && crypto.randomUUID) ? crypto.randomUUID() : String(Date.now()) + "-" + Math.random().toString(16).slice(2);
-    localStorage.setItem(CLIENT_ID_KEY, clientId);
-  }
-
-  function broadcastApply(docKey){
-    const frames = ["pageIntrari","pageDebitate","pageHelper","pageNumeralkod"]
-      .map(id=>document.getElementById(id))
-      .filter(Boolean);
-    frames.forEach(fr=>{
-      try{ fr.contentWindow.postMessage({type:"RF_APPLY", key: docKey}, "*"); }catch(e){}
-    });
-  }
-
-  async function pushDocNow(docKey, obj){
-    if(!supa) return;
-    try{
-      if(obj && typeof obj === "object") obj.__clientId = clientId;
-      const { error } = await supa.from("rf_documents").upsert({ doc_key: docKey, data: obj });
-      if(error) throw error;
-    }catch(e){
-      console.warn("LIVE push error", e);
-      setCloud("Cloud: write err ("+docKey+")");
-    }
-  }
-
-  let rfChannel = null;
-  function startRealtime(){
-    if(!supa) return;
-    try{
-      if(rfChannel){ try{supa.removeChannel(rfChannel);}catch(e){} rfChannel=null; }
-      rfChannel = supa.channel("rf_docs_live");
-      rfChannel.on("postgres_changes", {event:"*", schema:"public", table:"rf_documents"}, (payload)=>{
-        const k = payload.new?.doc_key || payload.old?.doc_key;
-        if(!k) return;
-        // map legacy to canonical
-        const canon = (k in KEY_ALIAS) ? KEY_ALIAS[k] : k;
-        if(!DOC_KEYS.includes(canon)) return;
-
-        const dataObj = payload.new?.data;
-        if(!dataObj) return;
-        if(dataObj.__clientId && dataObj.__clientId === clientId) return; // ignore own
-
-        try{
-          localStorage.setItem(canon, JSON.stringify(dataObj));
-        }catch(e){}
-        broadcastApply(canon);
-        setCloud("Cloud: LIVE update ("+canon+")");
-      }).subscribe((status)=>{
-        if(status === "SUBSCRIBED"){
-          setCloud("Cloud: ON (LIVE)");
-        }
-      });
-    }catch(e){
-      console.warn("startRealtime", e);
-    }
-  }
-
-async function start(_supa, _role, _user){
+  async function start(_supa, _role, _user){
     supa = _supa;
     role = _role || 'viewer';
     user = _user || null;
@@ -6299,22 +6227,6 @@ async function start(_supa, _role, _user){
     // IMPORTANT: bootstrap înainte de auto-push
     await bootstrap();
     bootstrapped = true;
-
-    // LIVE: primește salvări instant din iframe-uri și urcă în cloud imediat
-    window.addEventListener("message", (ev)=>{
-      const m = ev.data;
-      if(!m || typeof m!=="object") return;
-      if(m.type==="RF_SAVE" && m.key && m.data){
-        const canon = (m.key in KEY_ALIAS) ? KEY_ALIAS[m.key] : m.key;
-        if(!DOC_KEYS.includes(canon)) return;
-        if(!canWrite()) return; // viewer nu scrie
-        pushDocNow(canon, m.data);
-      }
-    });
-
-    // LIVE: pornește realtime subscription (updates instant pe alte device-uri)
-    startRealtime();
-
 
     setInterval(scanLocal, POLL_LOCAL_MS);
     setInterval(pollCloud, POLL_CLOUD_MS);
@@ -6330,5 +6242,226 @@ async function start(_supa, _role, _user){
 })();;
 </script>
 <!-- build: V10 MOBILE RESPONSIVE -->
+
+<script>
+/* =========================
+   LIVE bridge v14
+   - keeps your design
+   - makes NUMERALKOD + INTRARI_OTEL + DEBITATE "near-live" via Supabase Realtime on rf_documents
+   - no full iframe reload; calls iframe autoLoad()/render/applyFilters when possible
+   ========================= */
+(function(){
+  const supa = window.__SUPA__;
+  if(!supa) return;
+
+  // Canonical localStorage keys used by your pages
+  const KEYMAP = {
+    NUMERALKOD: { canonical: "NUMERALKOD_autosave_v1", legacy: ["NUMERALKOD_autosave_v1"] },
+    INTRARI:    { canonical: "INTRARI_OTEL_autosave_v3", legacy: ["INTRARI_OTEL_autosave_v3","INTRARI_OTEL_autosave_v2","raport_forja_intrari_otel_v1"] },
+    DEBITATE:   { canonical: "DEBITATE_autosave_v1", legacy: ["DEBITATE_autosave_v1","DEBITATE_autosave_v2","DEBITATE_autosave_v3"] }
+  };
+
+  // Cloud doc keys: keep 1:1 with canonical keys
+  const DOC_KEYS = new Set([
+    KEYMAP.NUMERALKOD.canonical,
+    KEYMAP.INTRARI.canonical,
+    KEYMAP.DEBITATE.canonical
+  ]);
+
+  const iframes = {
+    num: document.getElementById("pageNumeralkod"),
+    in:  document.getElementById("pageIntrari"),
+    deb: document.getElementById("pageDebitate")
+  };
+
+  // --- small helpers
+  function safeJSONParse(s){
+    try{ return JSON.parse(s); }catch(_e){ return null; }
+  }
+  function setCloudBadge(msg){
+    // reuse existing setCloud() if present
+    try{
+      if(typeof window.setCloud === "function") window.setCloud(msg);
+      else {
+        const el = document.getElementById("cloudStatus");
+        if(el) el.textContent = msg;
+      }
+    }catch(_e){}
+  }
+
+  // --- Debounced upsert per key
+  const upTimers = new Map();
+  async function upsertDoc(doc_key, raw){
+    // store raw as {raw: "..."} to preserve exact string
+    const payload = { doc_key, data: { raw } };
+    const { error } = await supa.from("rf_documents").upsert(payload, { onConflict: "doc_key" });
+    if(error){
+      console.warn("rf_documents upsert error", doc_key, error);
+      setCloudBadge("Cloud: eroare sync ("+doc_key+"): " + error.message);
+      return;
+    }
+    setCloudBadge("Cloud: ON (LIVE)");
+  }
+  function scheduleUpsert(doc_key, raw){
+    if(!DOC_KEYS.has(doc_key)) return;
+    clearTimeout(upTimers.get(doc_key));
+    upTimers.set(doc_key, setTimeout(()=>upsertDoc(doc_key, raw), 250)); // fast, but not crazy
+  }
+
+  // --- iframe injection: hook localStorage changes + listen cloud apply
+  function injectBridge(iframe, kind){
+    if(!iframe) return;
+    const info = kind==="num" ? KEYMAP.NUMERALKOD : (kind==="in" ? KEYMAP.INTRARI : KEYMAP.DEBITATE);
+    const keys = new Set(info.legacy);
+
+    function tryInject(){
+      let win;
+      try{ win = iframe.contentWindow; }catch(_e){ return; }
+      if(!win) return;
+      if(win.__RF_BRIDGE_INSTALLED__) return;
+      win.__RF_BRIDGE_INSTALLED__ = true;
+
+      // Prevent feedback loop when applying cloud updates
+      win.__RF_APPLYING_CLOUD__ = false;
+
+      const StorageProto = win.Storage && win.Storage.prototype;
+      if(StorageProto && !StorageProto.__RF_PATCHED__){
+        const origSet = StorageProto.setItem;
+        const origRem = StorageProto.removeItem;
+        StorageProto.setItem = function(k,v){
+          origSet.call(this,k,v);
+          try{
+            if(!win.__RF_APPLYING_CLOUD__ && keys.has(k)){
+              win.parent.postMessage({__rf:1, t:"ls_set", k, v}, "*");
+            }
+          }catch(_e){}
+        };
+        StorageProto.removeItem = function(k){
+          origRem.call(this,k);
+          try{
+            if(!win.__RF_APPLYING_CLOUD__ && keys.has(k)){
+              win.parent.postMessage({__rf:1, t:"ls_rm", k}, "*");
+            }
+          }catch(_e){}
+        };
+        StorageProto.__RF_PATCHED__ = true;
+      }
+
+      // Receive cloud updates without full reload
+      win.addEventListener("message", (ev)=>{
+        const m = ev && ev.data;
+        if(!m || !m.__rf || m.t!=="cloud_apply") return;
+        const key = m.k;
+        const raw = m.v;
+        if(!keys.has(key)) return;
+
+        try{
+          const cur = win.localStorage.getItem(key);
+          if(cur === raw) return;
+          win.__RF_APPLYING_CLOUD__ = true;
+          win.localStorage.setItem(key, raw);
+        }catch(_e){}
+        finally{
+          win.__RF_APPLYING_CLOUD__ = false;
+        }
+
+        // Refresh UI with minimal disruption
+        try{
+          if(typeof win.autoLoad === "function") win.autoLoad();
+          if(typeof win.applyFilters === "function") win.applyFilters();
+          if(typeof win.render === "function") win.render();
+          if(typeof win.renderTable === "function") win.renderTable();
+          if(typeof win.notifyDataChanged === "function") win.notifyDataChanged();
+        }catch(_e){}
+      });
+
+      // Inform parent ready
+      try{ win.parent.postMessage({__rf:1, t:"bridge_ready", kind}, "*"); }catch(_e){}
+    }
+
+    // inject now and on load
+    iframe.addEventListener("load", tryInject);
+    // in case already loaded
+    setTimeout(tryInject, 300);
+    setTimeout(tryInject, 1500);
+  }
+
+  injectBridge(iframes.num, "num");
+  injectBridge(iframes.in,  "in");
+  injectBridge(iframes.deb, "deb");
+
+  // --- Parent listener: local changes from iframes -> cloud
+  window.addEventListener("message", (ev)=>{
+    const m = ev && ev.data;
+    if(!m || !m.__rf) return;
+    if(m.t === "ls_set"){
+      const key = m.k;
+      const raw = m.v;
+      // Normalize legacy keys -> canonical doc key
+      let canon = key;
+      if(KEYMAP.INTRARI.legacy.includes(key)) canon = KEYMAP.INTRARI.canonical;
+      if(KEYMAP.DEBITATE.legacy.includes(key)) canon = KEYMAP.DEBITATE.canonical;
+      if(KEYMAP.NUMERALKOD.legacy.includes(key)) canon = KEYMAP.NUMERALKOD.canonical;
+
+      scheduleUpsert(canon, raw);
+    }
+  });
+
+  // --- Realtime subscribe: rf_documents changes -> push to iframes
+  let chan = null;
+  function subscribeRealtime(){
+    if(chan){ try{supa.removeChannel(chan);}catch(_e){} }
+    chan = supa.channel("rf-live-docs-v14")
+      .on("postgres_changes", {event:"*", schema:"public", table:"rf_documents"}, (payload)=>{
+        const row = payload.new || payload.old;
+        if(!row || !DOC_KEYS.has(row.doc_key)) return;
+        const raw = row.data && row.data.raw;
+        if(typeof raw !== "string") return;
+
+        // apply to localStorage (shared) and notify iframes
+        try{
+          const cur = localStorage.getItem(row.doc_key);
+          if(cur !== raw) localStorage.setItem(row.doc_key, raw);
+        }catch(_e){}
+
+        // send to all relevant iframes
+        try{
+          Object.values(iframes).forEach(ifr=>{
+            if(!ifr || !ifr.contentWindow) return;
+            ifr.contentWindow.postMessage({__rf:1, t:"cloud_apply", k: row.doc_key, v: raw}, "*");
+          });
+        }catch(_e){}
+
+        setCloudBadge("Cloud: ON (LIVE)");
+      })
+      .subscribe((status)=>{
+        if(status === "SUBSCRIBED"){
+          setCloudBadge("Cloud: ON (LIVE)");
+        }
+      });
+  }
+
+  // subscribe whenever authenticated
+  supa.auth.onAuthStateChange(async (_ev, session)=>{
+    if(session && session.user){
+      subscribeRealtime();
+      setCloudBadge("Cloud: ON (LIVE)");
+    } else {
+      if(chan){ try{supa.removeChannel(chan);}catch(_e){} chan=null; }
+      setCloudBadge("Cloud: standby");
+    }
+  });
+
+  // If already logged in
+  supa.auth.getSession().then(({data})=>{
+    if(data && data.session && data.session.user){
+      subscribeRealtime();
+      setCloudBadge("Cloud: ON (LIVE)");
+    }
+  });
+
+})();
+</script>
+
 </body>
 </html>
