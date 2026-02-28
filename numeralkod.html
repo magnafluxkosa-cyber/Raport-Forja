@@ -1826,8 +1826,7 @@ const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
     try{
       const r = (typeof RF_ROLE !== 'undefined' ? RF_ROLE : '');
       const cr = (window.__rfCloud && window.__rfCloud.role) ? window.__rfCloud.role : '';
-      return (r === 'admin') || (cr === 'admin');
-    }catch(_e){ return false; }
+      return (r === 'admin') || (cr === 'admin');}catch(_e){ return false; }
   }
   function markDirty(){
     isDirty = true;
@@ -1836,14 +1835,40 @@ const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
   async function pushNow(){
     if(!rfCanWrite()) return;
     try{
+      // Construim payload EXACT ca autosave-ul (state -> tables + reserved)
+      let payload = null;
+      try{
+        if(typeof collectData === "function"){
+          payload = {
+            app: "NUMERALKOD",
+            version: 2,
+            savedAt: new Date().toISOString(),
+            tables: collectData(),
+            reserved: (state && state.rez ? state.rez : []).map(r => ({
+              marcaj: (typeof normalizeMarcaj === "function") ? normalizeMarcaj(r.marcaj) : (r.marcaj||""),
+              dim: (r.dim||"").toString(),
+              grade: (r.grade||"").toString(),
+              sarja: (r.sarja||"").toString(),
+              reper: (r.reper||"").toString()
+            }))
+          };
+        }
+      }catch(_e){ payload = null; }
+
       if(window.__rfCloud && typeof window.__rfCloud.push === 'function'){
-        await window.__rfCloud.push();
+        // IMPORTANT: push cere payload
+        await window.__rfCloud.push(payload || {}, { immediate:true });
+      } else if(typeof autoSaveNow === "function"){
+        // fallback (nu e await)
+        autoSaveNow();
       } else if(window.__rfCloud && typeof window.__rfCloud.save === 'function'){
         await window.__rfCloud.save();
       }
     }catch(e){
       console.warn('cloud push error', e);
       throw e;
+    }finally{
+      saveTimer = null;
     }
   }
   function schedulePush(){
@@ -1857,6 +1882,7 @@ const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
         isDirty = false;
         setBadge('Cloud: live (polling)');
       }catch(_e){
+        // păstrăm dirty=true ca să nu suprascriem cu pull; user poate reîncerca
         setBadge('Cloud: eroare la salvare');
       }
     }, 380);
@@ -1909,10 +1935,16 @@ const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
       setBadge("Cloud: pauză (editez)");
       return;
     }
+    
     if(isDirty || (Date.now() - lastLocalTs) < 2600){
       setBadge("Cloud: pauză (schimbări locale)");
+      // dacă suntem dirty de mult și nu mai avem timer, încercăm o salvare
+      if(isDirty && !saveTimer && (Date.now() - lastLocalTs) > 6000){
+        schedulePush();
+      }
       return;
     }
+
     if(saveTimer){
       setBadge("Cloud: pauză (salvare în curs)");
       return;
