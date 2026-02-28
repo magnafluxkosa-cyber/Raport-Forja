@@ -1,16 +1,11 @@
-HELPER v3 (Create User)
+NUMERALKOD v1 LIVE
 
-1) In helper.html setezi SUPABASE_ANON_KEY (Anon Key Legacy).
-2) Urcă helper.html în GitHub Pages (peste helper.html vechi).
+1) In numeralkod.html setezi SUPABASE_ANON_KEY (Anon Key Legacy).
+2) Urcă numeralkod.html în GitHub Pages (același folder cu index.html).
+3) Rulează SQL-1, SQL-2, SQL-3 în Supabase SQL Editor (în ordine).
+4) Deschizi: .../numeralkod.html?v=1
 
-3) În Supabase Edge Functions -> admin-control -> Code:
-   Înlocuiește tot cu conținutul din admin-control-index.ts (include create-user) și Deploy.
+Roluri:
+- admin: CRUD
+- editor/viewer: read-only
 
-4) În Edge Function Secrets trebuie să existe:
-   SUPABASE_URL = https://<project-ref>.supabase.co
-   SERVICE_ROLE_KEY = service_role key (Legacy)
-
-
-V4 ADDON:
-- Buton Generează fictiv + parolă
-- Buton Copiază credențiale
