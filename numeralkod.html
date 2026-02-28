@@ -1653,7 +1653,7 @@ window.applyCloudPayload = function(payload){
    - Înlocuiește "localStorage-only" cu cloud + realtime
    =============================== */
 (function(){
- const SUPABASE_URL = "https://rhjcnydkdhjzazygybcc.supabase.co";
+  const SUPABASE_URL = "https://rhjcnydkdhjzazygybcc.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJoamNueWRrZGhqemF6eWd5YmNjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE4ODEzMzYsImV4cCI6MjA4NzQ1NzMzNn0.ompOZWqnFGsnOQzPiAv2QBwuaNiKtnz5PciRwCWh0Hk"; // <-- Anon Key (Legacy)
 ;
   const DOC_TABLE = "rf_documents";
@@ -1708,31 +1708,45 @@ const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
   }
 
   let pushTimer = null;
-  async function push(payload){
-    if(!supa) return;
-    if(applyingRemote) return;
-    if(role !== "admin" && role !== "editor") return; // viewer nu scrie
-    // debounce
+  async function push(payload, opts){
+    if(!supa) return Promise.reject(new Error("No supabase client"));
+    if(applyingRemote) return Promise.resolve(false);
+    if(role !== "admin" && role !== "editor") return Promise.resolve(false); // viewer nu scrie
+
+    const immediate = !!(opts && opts.immediate);
     clearTimeout(pushTimer);
-    pushTimer = setTimeout(async ()=>{
-      try{
-        const ts = Date.now();
-        // protecție anti spam
-        if(ts - lastPushedAt < 350) return;
-        lastPushedAt = ts;
-        const up = {
-          doc_key: DOC_KEY,
-          data: payload,
-          updated_at: nowIso()
-        };
-        const { error } = await supa.from(DOC_TABLE).upsert(up, { onConflict: "doc_key" });
-        if(error) throw error;
-        setBadge(true, "Cloud: ON");
-      }catch(e){
-        console.error(e);
-        setBadge(false, "Cloud: eroare");
+
+    return new Promise((resolve, reject)=>{
+      const run = async ()=>{
+        try{
+          const ts = Date.now();
+          // anti-spam
+          if(ts - lastPushedAt < 250){ resolve(false); return; }
+          lastPushedAt = ts;
+
+          const up = {
+            doc_key: "numeralkod",
+            payload: payload || {},
+            updated_at: new Date().toISOString()
+          };
+
+          const { error } = await supa
+            .from("rf_documents")
+            .upsert(up, { onConflict: "doc_key" });
+
+          if(error) throw error;
+          resolve(true);
+        }catch(e){
+          reject(e);
+        }
+      };
+
+      if(immediate){
+        run();
+      }else{
+        pushTimer = setTimeout(run, 500);
       }
-    }, 500);
+    });
   }
 
   function subscribe(){
@@ -1809,7 +1823,11 @@ const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
   let saveTimer = null;
 
   function rfCanWrite(){
-    try{ return (typeof RF_ROLE !== 'undefined' ? RF_ROLE : '') === 'admin'; }catch(_e){ return false; }
+    try{
+      const r = (typeof RF_ROLE !== 'undefined' ? RF_ROLE : '');
+      const cr = (window.__rfCloud && window.__rfCloud.role) ? window.__rfCloud.role : '';
+      return (r === 'admin') || (cr === 'admin');
+    }catch(_e){ return false; }
   }
   function markDirty(){
     isDirty = true;
@@ -1829,8 +1847,8 @@ const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
     }
   }
   function schedulePush(){
-    if(!rfCanWrite()) return;
     markDirty();
+    if(!rfCanWrite()) return;
     if(saveTimer) clearTimeout(saveTimer);
     saveTimer = setTimeout(async ()=>{
       try{
