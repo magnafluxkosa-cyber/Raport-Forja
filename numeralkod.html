@@ -198,24 +198,10 @@ td.yellow{ background:var(--yellow); font-weight:800; }
   .badgeCloud.ok{border-color:rgba(34,197,94,.35);color:#bbf7d0;background:rgba(34,197,94,.10)}
 </style>
 
-  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2">
-function setCloudStatus(t){
-  try{
-    const el = document.getElementById('cloudPill') || document.querySelector('[id*=cloud]');
-    if(el) el.textContent = t;
-  }catch(_e){}
-}
-</script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 
 <script>
 function goDashboard(){ window.location.href = 'index.html'; }
-
-function setCloudStatus(t){
-  try{
-    const el = document.getElementById('cloudPill') || document.querySelector('[id*=cloud]');
-    if(el) el.textContent = t;
-  }catch(_e){}
-}
 </script>
 </head>
 <body>
@@ -399,7 +385,6 @@ function setCloudStatus(t){
       (e.filename ? "\nFișier: " + e.filename : "") +
       (e.lineno ? "\nLinie: " + e.lineno : "");
   });
-  setTimeout(()=>{ if(!rfRealtimeConnected) rfStartPollingFallback(); }, 2500);
 })();
 
 const LETTERS = ["N","U","M","E","R","A","L","K","O","D"];
@@ -677,7 +662,6 @@ function applyReservedLocksDom(){
       }
     });
   });
-  setTimeout(()=>{ if(!rfRealtimeConnected) rfStartPollingFallback(); }, 2500);
 }
 
 function addReservedRow(){
@@ -1002,7 +986,6 @@ function loadScriptOnce(src){
     s.onerror = () => reject(new Error("Nu pot încărca script: " + src));
     document.head.appendChild(s);
   });
-  setTimeout(()=>{ if(!rfRealtimeConnected) rfStartPollingFallback(); }, 2500);
 }
 
 async function ensureXLSX(){
@@ -1152,7 +1135,6 @@ function exportXLSX(mode){
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(buildCombinedAoA()), "Sheet1");
     XLSX.writeFile(wb, `NUMERALKOD_ALL_${stamp}.xlsx`);
   });
-  setTimeout(()=>{ if(!rfRealtimeConnected) rfStartPollingFallback(); }, 2500);
 }
 
 let _importMode = "all";
@@ -1512,7 +1494,6 @@ function applyImport(mode, payload){
       e.target.value = "";
     }
   });
-  setTimeout(()=>{ if(!rfRealtimeConnected) rfStartPollingFallback(); }, 2500);
 })();
 
 
@@ -1588,13 +1569,6 @@ window.applyCloudPayload = function(payload){
   autoLoad();
   try{ refreshHelperDatalists(); }catch(e){}
 })();
-
-function setCloudStatus(t){
-  try{
-    const el = document.getElementById('cloudPill') || document.querySelector('[id*=cloud]');
-    if(el) el.textContent = t;
-  }catch(_e){}
-}
 </script>
 
 <script>
@@ -1741,108 +1715,55 @@ const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
   boot();
 })();
 
-/* ===== REALTIME: live sync across devices =====
-   This listens to changes in public.rf_documents where doc_key='numeralkod'
-   and auto-refreshes the page data without manual refresh.
+
+/* ===== LIVE fallback (NO WebSocket): polling pull() =====
+   Dacă WebSocket-ul Supabase Realtime e blocat, folosim polling HTTP.
+   Asta îți dă "aproape live" între laptopuri fără refresh manual.
 */
-let rfRealtimeChannel = null;
-let rfRealtimeConnected = false;
-let rfPollingTimer = null;
-let rfLastSeenCloudStamp = null;
-let rfLastRemoteUpdatedAt = null;
-let rfIgnoreNext = false;
-
-
-async function rfTrySilentCloudRefresh(){
-  try{
-    // Reuse existing cloud loaders if present
-    if(typeof loadFromCloud === "function"){ await loadFromCloud(true); return true; }
-    if(typeof restoreTotal === "function"){ await restoreTotal(true); return true; }
-    if(typeof refreshFromCloud === "function"){ await refreshFromCloud(true); return true; }
-    // last resort: if page exposes any render+read pattern, skip
-    return false;
-  }catch(e){
-    console.warn("rfTrySilentCloudRefresh", e);
-    return false;
-  }
-}
-
-function rfStartPollingFallback(){
-  if(rfPollingTimer) return;
-  if(typeof setCloudStatus === "function") setCloudStatus("LIVE fallback (polling) activ");
+(function(){
+  let t = null;
   let busy = false;
-  rfPollingTimer = setInterval(async ()=>{
+
+  function setBadge(text){
+    try{
+      if(typeof window.setCloudStatus === "function") window.setCloudStatus(text);
+      const el = document.getElementById("cloudBadge") || document.querySelector(".cloudBadge") || null;
+      if(el) el.textContent = text;
+    }catch(_e){}
+  }
+
+  async function tick(){
     if(busy) return;
+    if(!window.__rfCloud || typeof window.__rfCloud.pull !== "function") return;
     busy = true;
     try{
-      await rfTrySilentCloudRefresh();
-    } finally {
+      await window.__rfCloud.pull();
+      setBadge("Cloud: live (polling)");
+    }catch(e){
+      console.warn("poll pull error", e);
+      setBadge("Cloud: eroare");
+    }finally{
       busy = false;
     }
-  }, 1500);
-}
+  }
 
-function rfStopPollingFallback(){
-  if(rfPollingTimer){ clearInterval(rfPollingTimer); rfPollingTimer = null; }
-}
+  function start(){
+    if(t) return;
+    // prima sincronizare după 1s, apoi la 1.5s
+    setTimeout(tick, 1000);
+    t = setInterval(tick, 1500);
+  }
 
-async function rfSetupRealtime(){
-  if (typeof sb === 'undefined' || !sb) { console.warn('rfSetupRealtime: sb not ready'); return; }
-  try{
-    if(rfRealtimeChannel){
-      await sb.removeChannel(rfRealtimeChannel);
-      rfRealtimeChannel = null;
-    }
-  }catch(_e){}
+  function stop(){
+    if(t){ clearInterval(t); t = null; }
+  }
 
-  rfRealtimeChannel = sb.channel("rf_documents_numeralkod_live")
-    .on("postgres_changes", {
-      event: "*",
-      schema: "public",
-      table: "rf_documents",
-      filter: "doc_key=eq.numeralkod"
-    }, async (payload) => {
-      try{
-        // Avoid reacting to our own write immediately (optional soft guard)
-        if(rfIgnoreNext){ rfIgnoreNext = false; return; }
+  // pornește după ce pagina e încărcată
+  window.addEventListener("load", start);
 
-        const newRow = payload.new || payload.record || null;
-        const updatedAt = (newRow && (newRow.updated_at || newRow.created_at)) ? (newRow.updated_at || newRow.created_at) : null;
-
-        // If we can read remote timestamp, skip duplicates
-        if(updatedAt && rfLastRemoteUpdatedAt && updatedAt <= rfLastRemoteUpdatedAt) return;
-        if(updatedAt) rfLastRemoteUpdatedAt = updatedAt;
-
-        // Prefer calling existing "load from cloud" function if present
-        if(typeof loadFromCloud === "function"){
-          await loadFromCloud(true); // silent
-        }else if(typeof restoreTotal === "function"){
-          // some builds used restoreTotal() as cloud load
-          await restoreTotal(true);
-        }else if(typeof refreshFromCloud === "function"){
-          await refreshFromCloud(true);
-        }else{
-          // Fallback: reload page state (last resort)
-          // location.reload();
-        }
-        if(typeof setCloudStatus === "function"){
-          setCloudStatus("LIVE update primit");
-        }
-      }catch(e){
-        console.warn("Realtime handler error", e);
-      }
-    });
-
-  await rfRealtimeChannel.subscribe((status)=>{
-    // status could be SUBSCRIBED, TIMED_OUT, CHANNEL_ERROR, CLOSED
-    if(typeof setCloudStatus === "function"){
-      if(status === "SUBSCRIBED") setCloudStatus("LIVE: conectat");
-      else if(status === "CHANNEL_ERROR") { rfRealtimeConnected = false; setCloudStatus("LIVE: eroare"); rfStartPollingFallback(); }
-      else if(status === "TIMED_OUT") { rfRealtimeConnected = false; setCloudStatus("LIVE: timeout"); rfStartPollingFallback(); }
-    }
-  });
-  setTimeout(()=>{ if(!rfRealtimeConnected) rfStartPollingFallback(); }, 2500);
-}
+  // oprește când ieși din pagină
+  window.addEventListener("beforeunload", stop);
+})();
 
 
 /* v2.3 fix: ensure realtime starts only after Supabase client (sb) exists */
@@ -1856,13 +1777,6 @@ async function rfEnsureRealtimeStart(){
   }catch(e){ console.warn('rfEnsureRealtimeStart', e); }
 }
 window.addEventListener('load', ()=> setTimeout(rfEnsureRealtimeStart, 700));
-
-function setCloudStatus(t){
-  try{
-    const el = document.getElementById('cloudPill') || document.querySelector('[id*=cloud]');
-    if(el) el.textContent = t;
-  }catch(_e){}
-}
 </script>
 
 
