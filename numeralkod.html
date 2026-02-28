@@ -198,10 +198,24 @@ td.yellow{ background:var(--yellow); font-weight:800; }
   .badgeCloud.ok{border-color:rgba(34,197,94,.35);color:#bbf7d0;background:rgba(34,197,94,.10)}
 </style>
 
-  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2">
+function setCloudStatus(t){
+  try{
+    const el = document.getElementById('cloudPill') || document.querySelector('[id*=cloud]');
+    if(el) el.textContent = t;
+  }catch(_e){}
+}
+</script>
 
 <script>
 function goDashboard(){ window.location.href = 'index.html'; }
+
+function setCloudStatus(t){
+  try{
+    const el = document.getElementById('cloudPill') || document.querySelector('[id*=cloud]');
+    if(el) el.textContent = t;
+  }catch(_e){}
+}
 </script>
 </head>
 <body>
@@ -385,6 +399,7 @@ function goDashboard(){ window.location.href = 'index.html'; }
       (e.filename ? "\nFișier: " + e.filename : "") +
       (e.lineno ? "\nLinie: " + e.lineno : "");
   });
+  setTimeout(()=>{ if(!rfRealtimeConnected) rfStartPollingFallback(); }, 2500);
 })();
 
 const LETTERS = ["N","U","M","E","R","A","L","K","O","D"];
@@ -662,6 +677,7 @@ function applyReservedLocksDom(){
       }
     });
   });
+  setTimeout(()=>{ if(!rfRealtimeConnected) rfStartPollingFallback(); }, 2500);
 }
 
 function addReservedRow(){
@@ -986,6 +1002,7 @@ function loadScriptOnce(src){
     s.onerror = () => reject(new Error("Nu pot încărca script: " + src));
     document.head.appendChild(s);
   });
+  setTimeout(()=>{ if(!rfRealtimeConnected) rfStartPollingFallback(); }, 2500);
 }
 
 async function ensureXLSX(){
@@ -1135,6 +1152,7 @@ function exportXLSX(mode){
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(buildCombinedAoA()), "Sheet1");
     XLSX.writeFile(wb, `NUMERALKOD_ALL_${stamp}.xlsx`);
   });
+  setTimeout(()=>{ if(!rfRealtimeConnected) rfStartPollingFallback(); }, 2500);
 }
 
 let _importMode = "all";
@@ -1494,6 +1512,7 @@ function applyImport(mode, payload){
       e.target.value = "";
     }
   });
+  setTimeout(()=>{ if(!rfRealtimeConnected) rfStartPollingFallback(); }, 2500);
 })();
 
 
@@ -1569,6 +1588,13 @@ window.applyCloudPayload = function(payload){
   autoLoad();
   try{ refreshHelperDatalists(); }catch(e){}
 })();
+
+function setCloudStatus(t){
+  try{
+    const el = document.getElementById('cloudPill') || document.querySelector('[id*=cloud]');
+    if(el) el.textContent = t;
+  }catch(_e){}
+}
 </script>
 
 <script>
@@ -1577,7 +1603,7 @@ window.applyCloudPayload = function(payload){
    - Înlocuiește "localStorage-only" cu cloud + realtime
    =============================== */
 (function(){
-  const SUPABASE_URL = "https://rhjcnydkdhjzazygybcc.supabase.co";
+ const SUPABASE_URL = "https://rhjcnydkdhjzazygybcc.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJoamNueWRrZGhqemF6eWd5YmNjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE4ODEzMzYsImV4cCI6MjA4NzQ1NzMzNn0.ompOZWqnFGsnOQzPiAv2QBwuaNiKtnz5PciRwCWh0Hk"; // <-- Anon Key (Legacy)
 ;
   const DOC_TABLE = "rf_documents";
@@ -1720,8 +1746,45 @@ const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
    and auto-refreshes the page data without manual refresh.
 */
 let rfRealtimeChannel = null;
+let rfRealtimeConnected = false;
+let rfPollingTimer = null;
+let rfLastSeenCloudStamp = null;
 let rfLastRemoteUpdatedAt = null;
 let rfIgnoreNext = false;
+
+
+async function rfTrySilentCloudRefresh(){
+  try{
+    // Reuse existing cloud loaders if present
+    if(typeof loadFromCloud === "function"){ await loadFromCloud(true); return true; }
+    if(typeof restoreTotal === "function"){ await restoreTotal(true); return true; }
+    if(typeof refreshFromCloud === "function"){ await refreshFromCloud(true); return true; }
+    // last resort: if page exposes any render+read pattern, skip
+    return false;
+  }catch(e){
+    console.warn("rfTrySilentCloudRefresh", e);
+    return false;
+  }
+}
+
+function rfStartPollingFallback(){
+  if(rfPollingTimer) return;
+  if(typeof setCloudStatus === "function") setCloudStatus("LIVE fallback (polling) activ");
+  let busy = false;
+  rfPollingTimer = setInterval(async ()=>{
+    if(busy) return;
+    busy = true;
+    try{
+      await rfTrySilentCloudRefresh();
+    } finally {
+      busy = false;
+    }
+  }, 1500);
+}
+
+function rfStopPollingFallback(){
+  if(rfPollingTimer){ clearInterval(rfPollingTimer); rfPollingTimer = null; }
+}
 
 async function rfSetupRealtime(){
   if (typeof sb === 'undefined' || !sb) { console.warn('rfSetupRealtime: sb not ready'); return; }
@@ -1774,10 +1837,11 @@ async function rfSetupRealtime(){
     // status could be SUBSCRIBED, TIMED_OUT, CHANNEL_ERROR, CLOSED
     if(typeof setCloudStatus === "function"){
       if(status === "SUBSCRIBED") setCloudStatus("LIVE: conectat");
-      else if(status === "CHANNEL_ERROR") setCloudStatus("LIVE: eroare");
-      else if(status === "TIMED_OUT") setCloudStatus("LIVE: timeout");
+      else if(status === "CHANNEL_ERROR") { rfRealtimeConnected = false; setCloudStatus("LIVE: eroare"); rfStartPollingFallback(); }
+      else if(status === "TIMED_OUT") { rfRealtimeConnected = false; setCloudStatus("LIVE: timeout"); rfStartPollingFallback(); }
     }
   });
+  setTimeout(()=>{ if(!rfRealtimeConnected) rfStartPollingFallback(); }, 2500);
 }
 
 
@@ -1792,6 +1856,13 @@ async function rfEnsureRealtimeStart(){
   }catch(e){ console.warn('rfEnsureRealtimeStart', e); }
 }
 window.addEventListener('load', ()=> setTimeout(rfEnsureRealtimeStart, 700));
+
+function setCloudStatus(t){
+  try{
+    const el = document.getElementById('cloudPill') || document.querySelector('[id*=cloud]');
+    if(el) el.textContent = t;
+  }catch(_e){}
+}
 </script>
 
 
