@@ -1714,7 +1714,73 @@ const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
   // pornește imediat
   boot();
 })();
+
+/* ===== REALTIME: live sync across devices =====
+   This listens to changes in public.rf_documents where doc_key='numeralkod'
+   and auto-refreshes the page data without manual refresh.
+*/
+let rfRealtimeChannel = null;
+let rfLastRemoteUpdatedAt = null;
+let rfIgnoreNext = false;
+
+async function rfSetupRealtime(){
+  try{
+    if(rfRealtimeChannel){
+      await sb.removeChannel(rfRealtimeChannel);
+      rfRealtimeChannel = null;
+    }
+  }catch(_e){}
+
+  rfRealtimeChannel = sb.channel("rf_documents_numeralkod_live")
+    .on("postgres_changes", {
+      event: "*",
+      schema: "public",
+      table: "rf_documents",
+      filter: "doc_key=eq.numeralkod"
+    }, async (payload) => {
+      try{
+        // Avoid reacting to our own write immediately (optional soft guard)
+        if(rfIgnoreNext){ rfIgnoreNext = false; return; }
+
+        const newRow = payload.new || payload.record || null;
+        const updatedAt = (newRow && (newRow.updated_at || newRow.created_at)) ? (newRow.updated_at || newRow.created_at) : null;
+
+        // If we can read remote timestamp, skip duplicates
+        if(updatedAt && rfLastRemoteUpdatedAt && updatedAt <= rfLastRemoteUpdatedAt) return;
+        if(updatedAt) rfLastRemoteUpdatedAt = updatedAt;
+
+        // Prefer calling existing "load from cloud" function if present
+        if(typeof loadFromCloud === "function"){
+          await loadFromCloud(true); // silent
+        }else if(typeof restoreTotal === "function"){
+          // some builds used restoreTotal() as cloud load
+          await restoreTotal(true);
+        }else if(typeof refreshFromCloud === "function"){
+          await refreshFromCloud(true);
+        }else{
+          // Fallback: reload page state (last resort)
+          // location.reload();
+        }
+        if(typeof setCloudStatus === "function"){
+          setCloudStatus("LIVE update primit");
+        }
+      }catch(e){
+        console.warn("Realtime handler error", e);
+      }
+    });
+
+  await rfRealtimeChannel.subscribe((status)=>{
+    // status could be SUBSCRIBED, TIMED_OUT, CHANNEL_ERROR, CLOSED
+    if(typeof setCloudStatus === "function"){
+      if(status === "SUBSCRIBED") setCloudStatus("LIVE: conectat");
+      else if(status === "CHANNEL_ERROR") setCloudStatus("LIVE: eroare");
+      else if(status === "TIMED_OUT") setCloudStatus("LIVE: timeout");
+    }
+  });
+}
+
 </script>
 
+<script>(async()=>{try{await rfSetupRealtime();}catch(e){console.warn(e);}})();</script>
 </body>
 </html>
