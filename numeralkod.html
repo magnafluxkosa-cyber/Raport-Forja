@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>NUMERALKOD <span id="rfRolePill" style="margin-left:10px;font-weight:800;color:#3b82f6"></span> – Zale + Alte repere</title>
+  <title>NUMERALKOD – Zale + Alte repere</title>
   <style>
     :root{
       --grid:#000000;
@@ -1708,45 +1708,31 @@ const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
   }
 
   let pushTimer = null;
-  async function push(payload, opts){
-    if(!supa) return Promise.reject(new Error("No supabase client"));
-    if(applyingRemote) return Promise.resolve(false);
-    if(role !== "admin" && role !== "editor") return Promise.resolve(false); // viewer nu scrie
-
-    const immediate = !!(opts && opts.immediate);
+  async function push(payload){
+    if(!supa) return;
+    if(applyingRemote) return;
+    if(role !== "admin" && role !== "editor") return; // viewer nu scrie
+    // debounce
     clearTimeout(pushTimer);
-
-    return new Promise((resolve, reject)=>{
-      const run = async ()=>{
-        try{
-          const ts = Date.now();
-          // anti-spam
-          if(ts - lastPushedAt < 250){ resolve(false); return; }
-          lastPushedAt = ts;
-
-          const up = {
-            doc_key: "numeralkod",
-            payload: payload || {},
-            updated_at: new Date().toISOString()
-          };
-
-          const { error } = await supa
-            .from("rf_documents")
-            .upsert(up, { onConflict: "doc_key" });
-
-          if(error) throw error;
-          resolve(true);
-        }catch(e){
-          reject(e);
-        }
-      };
-
-      if(immediate){
-        run();
-      }else{
-        pushTimer = setTimeout(run, 500);
+    pushTimer = setTimeout(async ()=>{
+      try{
+        const ts = Date.now();
+        // protecție anti spam
+        if(ts - lastPushedAt < 350) return;
+        lastPushedAt = ts;
+        const up = {
+          doc_key: DOC_KEY,
+          data: payload,
+          updated_at: nowIso()
+        };
+        const { error } = await supa.from(DOC_TABLE).upsert(up, { onConflict: "doc_key" });
+        if(error) throw error;
+        setBadge(true, "Cloud: ON");
+      }catch(e){
+        console.error(e);
+        setBadge(false, "Cloud: eroare");
       }
-    });
+    }, 500);
   }
 
   function subscribe(){
@@ -1817,78 +1803,6 @@ const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
   let isEditing = false;
   let lastEditTs = 0;
 
-  // --- live-safe: nu suprascriem schimbări locale; auto-push la cloud după editări ---
-  let isDirty = false;
-  let lastLocalTs = 0;
-  let saveTimer = null;
-
-  function rfCanWrite(){
-    try{
-      const r = (typeof RF_ROLE !== 'undefined' ? RF_ROLE : '');
-      const cr = (window.__rfCloud && window.__rfCloud.role) ? window.__rfCloud.role : '';
-      return (r === 'admin') || (cr === 'admin');}catch(_e){ return false; }
-  }
-  function markDirty(){
-    isDirty = true;
-    lastLocalTs = Date.now();
-  }
-  async function pushNow(){
-    if(!rfCanWrite()) return;
-    try{
-      // Construim payload EXACT ca autosave-ul (state -> tables + reserved)
-      let payload = null;
-      try{
-        if(typeof collectData === "function"){
-          payload = {
-            app: "NUMERALKOD",
-            version: 2,
-            savedAt: new Date().toISOString(),
-            tables: collectData(),
-            reserved: (state && state.rez ? state.rez : []).map(r => ({
-              marcaj: (typeof normalizeMarcaj === "function") ? normalizeMarcaj(r.marcaj) : (r.marcaj||""),
-              dim: (r.dim||"").toString(),
-              grade: (r.grade||"").toString(),
-              sarja: (r.sarja||"").toString(),
-              reper: (r.reper||"").toString()
-            }))
-          };
-        }
-      }catch(_e){ payload = null; }
-
-      if(window.__rfCloud && typeof window.__rfCloud.push === 'function'){
-        // IMPORTANT: push cere payload
-        await window.__rfCloud.push(payload || {}, { immediate:true });
-      } else if(typeof autoSaveNow === "function"){
-        // fallback (nu e await)
-        autoSaveNow();
-      } else if(window.__rfCloud && typeof window.__rfCloud.save === 'function'){
-        await window.__rfCloud.save();
-      }
-    }catch(e){
-      console.warn('cloud push error', e);
-      throw e;
-    }finally{
-      saveTimer = null;
-    }
-  }
-  function schedulePush(){
-    markDirty();
-    if(!rfCanWrite()) return;
-    if(saveTimer) clearTimeout(saveTimer);
-    saveTimer = setTimeout(async ()=>{
-      try{
-        setBadge('Cloud: salvez…');
-        await pushNow();
-        isDirty = false;
-        setBadge('Cloud: live (polling)');
-      }catch(_e){
-        // păstrăm dirty=true ca să nu suprascriem cu pull; user poate reîncerca
-        setBadge('Cloud: eroare la salvare');
-      }
-    }, 380);
-  }
-
-
   function markEditing(){
     isEditing = true;
     lastEditTs = Date.now();
@@ -1930,23 +1844,9 @@ const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
     if(busy) return;
     if(!window.__rfCloud || typeof window.__rfCloud.pull !== "function") return;
 
-    // dacă utilizatorul editează sau avem schimbări locale, nu facem pull ca să nu suprascriem
+    // dacă utilizatorul editează, nu facem pull ca să nu pierdem focus/scroll
     if(isEditing || (Date.now() - lastEditTs) < 2200){
       setBadge("Cloud: pauză (editez)");
-      return;
-    }
-    
-    if(isDirty || (Date.now() - lastLocalTs) < 2600){
-      setBadge("Cloud: pauză (schimbări locale)");
-      // dacă suntem dirty de mult și nu mai avem timer, încercăm o salvare
-      if(isDirty && !saveTimer && (Date.now() - lastLocalTs) > 6000){
-        schedulePush();
-      }
-      return;
-    }
-
-    if(saveTimer){
-      setBadge("Cloud: pauză (salvare în curs)");
       return;
     }
 
@@ -1972,27 +1872,6 @@ const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
   function stop(){
     if(t){ clearInterval(t); t = null; }
   }
-
-
-  // Când editezi orice celulă/input în tabele, programăm salvare în cloud
-  document.addEventListener('input', (e)=> {
-    const t = e.target;
-    if(!t) return;
-    // doar dacă inputul e în interiorul unei zone numeralkod (tabele)
-    if(t.closest && t.closest('table')) schedulePush();
-  }, true);
-
-  // Când apeși butoane de adăugare/ștergere/import (acțiuni care modifică), programăm salvare
-  document.addEventListener('click', (e)=> {
-    const b = e.target && (e.target.closest ? e.target.closest('button') : null);
-    if(!b) return;
-    const txt = (b.textContent || '').toLowerCase();
-    const id = (b.id || '').toLowerCase();
-    if(txt.includes('adaugă') || txt.includes('adauga') || txt.includes('șterge') || txt.includes('sterge') || txt.includes('import') || id.includes('add') || id.includes('import') || id.includes('sterge') || id.includes('reset')){
-      schedulePush();
-    }
-  }, true);
-
 
   // pornește după ce pagina e încărcată
   window.addEventListener("load", start);
@@ -2070,124 +1949,5 @@ const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
 })();
 </script>
 
-<script>
-/* ===== Access control (admin/editor/viewer) + AutoScroll (v2.8) ===== */
-let RF_ROLE = "viewer";
-let RF_USER_EMAIL = "";
-const RF_CAN_EXPORT = true;              // viewer poate exporta
-const RF_CAN_EDIT_NUMERALKOD = (role)=> role === "admin"; // numeralkod: doar admin editează
-
-async function rfGetRole(){
-  try{
-    const client = (typeof sb !== "undefined" && sb) ? sb : (window.sb || window.supabaseClient || null);
-    if(!client) return { role:"viewer", email:"" };
-
-    const { data: s } = await client.auth.getSession();
-    const sess = s?.session;
-    if(!sess) return { role:"viewer", email:"" };
-
-    const email = sess.user?.email || "";
-    const { data } = await client.from("profiles").select("role").eq("id", sess.user.id).maybeSingle();
-    const role = data?.role || "viewer";
-    return { role, email };
-  }catch(e){
-    console.warn("rfGetRole", e);
-    return { role:"viewer", email:"" };
-  }
-}
-
-function rfSetRoleUI(){
-  const el = document.getElementById("rfRolePill");
-  if(el){
-    el.textContent = RF_USER_EMAIL ? `(${RF_USER_EMAIL} • ${RF_ROLE})` : `(${RF_ROLE})`;
-  }
-
-  const editable = RF_CAN_EDIT_NUMERALKOD(RF_ROLE);
-
-  // Disable write actions if not admin (but keep Export enabled)
-  const idsWrite = [
-    "btnAddSerieZale", "btnAddSerieAlte", "btnAddSerie",
-    "btnImportZale","btnImportAlte","btnImportRezervat",
-    "btnResetAll","btnClearAutosave","btnImportExcel","btnImport",
-    "btnStergeAutosave","btnReset",
-    "btnSave","btnDelete","btnNew"
-  ];
-  idsWrite.forEach(id=>{
-    const b = document.getElementById(id);
-    if(b){
-      if(!editable){
-        b.disabled = true;
-        b.title = "Doar admin poate modifica NUMERALKOD.";
-        b.style.opacity = "0.6";
-        b.style.cursor = "not-allowed";
-      }else{
-        b.disabled = false;
-        b.title = "";
-        b.style.opacity = "";
-        b.style.cursor = "";
-      }
-    }
-  });
-
-  // Export allowed for all
-  const idsExport = ["btnExportExcel","btnExport","btnExportZale","btnExportAlte","btnExportRezervat"];
-  idsExport.forEach(id=>{
-    const b = document.getElementById(id);
-    if(b){
-      b.disabled = false;
-      b.title = "";
-      b.style.opacity = "";
-      b.style.cursor = "";
-    }
-  });
-}
-
-/* AutoScroll to bottom for each scrollable table container (on load + after import) */
-const rfScrolledOnce = new WeakSet();
-
-function rfAutoScrollBottom(){
-  try{
-    const candidates = Array.from(document.querySelectorAll("*")).filter(el=>{
-      const st = getComputedStyle(el);
-      const oy = st.overflowY;
-      if(!(oy === "auto" || oy === "scroll")) return false;
-      if(el.scrollHeight <= el.clientHeight + 2) return false;
-      return !!el.querySelector("table");
-    });
-
-    candidates.forEach(el=>{
-      if(rfScrolledOnce.has(el)) return;
-      el.scrollTop = el.scrollHeight;
-      rfScrolledOnce.add(el);
-    });
-  }catch(e){
-    console.warn("rfAutoScrollBottom", e);
-  }
-}
-
-window.addEventListener("load", ()=>{
-  setTimeout(rfAutoScrollBottom, 300);
-  setTimeout(rfAutoScrollBottom, 1200);
-});
-
-function rfWrapIfExists(fnName){
-  const fn = window[fnName];
-  if(typeof fn !== "function") return;
-  window[fnName] = async function(...args){
-    const out = await fn.apply(this, args);
-    setTimeout(rfAutoScrollBottom, 200);
-    setTimeout(rfAutoScrollBottom, 900);
-    return out;
-  }
-}
-["importExcel","handleImportExcel","doImportExcel","importJSON","handleImport"].forEach(rfWrapIfExists);
-
-(async ()=>{
-  const r = await rfGetRole();
-  RF_ROLE = r.role; RF_USER_EMAIL = r.email;
-  rfSetRoleUI();
-})();
-
-</script>
 </body>
 </html>
