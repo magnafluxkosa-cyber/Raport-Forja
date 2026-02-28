@@ -1653,7 +1653,7 @@ window.applyCloudPayload = function(payload){
    - Înlocuiește "localStorage-only" cu cloud + realtime
    =============================== */
 (function(){
-  const SUPABASE_URL = "https://rhjcnydkdhjzazygybcc.supabase.co";
+ const SUPABASE_URL = "https://rhjcnydkdhjzazygybcc.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJoamNueWRrZGhqemF6eWd5YmNjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE4ODEzMzYsImV4cCI6MjA4NzQ1NzMzNn0.ompOZWqnFGsnOQzPiAv2QBwuaNiKtnz5PciRwCWh0Hk"; // <-- Anon Key (Legacy)
 ;
   const DOC_TABLE = "rf_documents";
@@ -1803,6 +1803,48 @@ const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
   let isEditing = false;
   let lastEditTs = 0;
 
+  // --- live-safe: nu suprascriem schimbări locale; auto-push la cloud după editări ---
+  let isDirty = false;
+  let lastLocalTs = 0;
+  let saveTimer = null;
+
+  function rfCanWrite(){
+    try{ return (typeof RF_ROLE !== 'undefined' ? RF_ROLE : '') === 'admin'; }catch(_e){ return false; }
+  }
+  function markDirty(){
+    isDirty = true;
+    lastLocalTs = Date.now();
+  }
+  async function pushNow(){
+    if(!rfCanWrite()) return;
+    try{
+      if(window.__rfCloud && typeof window.__rfCloud.push === 'function'){
+        await window.__rfCloud.push();
+      } else if(window.__rfCloud && typeof window.__rfCloud.save === 'function'){
+        await window.__rfCloud.save();
+      }
+    }catch(e){
+      console.warn('cloud push error', e);
+      throw e;
+    }
+  }
+  function schedulePush(){
+    if(!rfCanWrite()) return;
+    markDirty();
+    if(saveTimer) clearTimeout(saveTimer);
+    saveTimer = setTimeout(async ()=>{
+      try{
+        setBadge('Cloud: salvez…');
+        await pushNow();
+        isDirty = false;
+        setBadge('Cloud: live (polling)');
+      }catch(_e){
+        setBadge('Cloud: eroare la salvare');
+      }
+    }, 380);
+  }
+
+
   function markEditing(){
     isEditing = true;
     lastEditTs = Date.now();
@@ -1844,9 +1886,17 @@ const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
     if(busy) return;
     if(!window.__rfCloud || typeof window.__rfCloud.pull !== "function") return;
 
-    // dacă utilizatorul editează, nu facem pull ca să nu pierdem focus/scroll
+    // dacă utilizatorul editează sau avem schimbări locale, nu facem pull ca să nu suprascriem
     if(isEditing || (Date.now() - lastEditTs) < 2200){
       setBadge("Cloud: pauză (editez)");
+      return;
+    }
+    if(isDirty || (Date.now() - lastLocalTs) < 2600){
+      setBadge("Cloud: pauză (schimbări locale)");
+      return;
+    }
+    if(saveTimer){
+      setBadge("Cloud: pauză (salvare în curs)");
       return;
     }
 
@@ -1872,6 +1922,27 @@ const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
   function stop(){
     if(t){ clearInterval(t); t = null; }
   }
+
+
+  // Când editezi orice celulă/input în tabele, programăm salvare în cloud
+  document.addEventListener('input', (e)=> {
+    const t = e.target;
+    if(!t) return;
+    // doar dacă inputul e în interiorul unei zone numeralkod (tabele)
+    if(t.closest && t.closest('table')) schedulePush();
+  }, true);
+
+  // Când apeși butoane de adăugare/ștergere/import (acțiuni care modifică), programăm salvare
+  document.addEventListener('click', (e)=> {
+    const b = e.target && (e.target.closest ? e.target.closest('button') : null);
+    if(!b) return;
+    const txt = (b.textContent || '').toLowerCase();
+    const id = (b.id || '').toLowerCase();
+    if(txt.includes('adaugă') || txt.includes('adauga') || txt.includes('șterge') || txt.includes('sterge') || txt.includes('import') || id.includes('add') || id.includes('import') || id.includes('sterge') || id.includes('reset')){
+      schedulePush();
+    }
+  }, true);
+
 
   // pornește după ce pagina e încărcată
   window.addEventListener("load", start);
