@@ -9,3 +9,8 @@ HELPER v3 (Create User)
 4) În Edge Function Secrets trebuie să existe:
    SUPABASE_URL = https://<project-ref>.supabase.co
    SERVICE_ROLE_KEY = service_role key (Legacy)
+
+
+V4 ADDON:
+- Buton Generează fictiv + parolă
+- Buton Copiază credențiale
