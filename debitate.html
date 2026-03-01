@@ -1731,14 +1731,31 @@ window.debitateCloud = (function(){
 
   // ── rf_documents helpers (suportă coloanele 'content' și 'data') ──────────
   async function docGet(client, key){
-    let q = await client.from("rf_documents")
-      .select("doc_key, content, updated_at").eq("doc_key", key).maybeSingle();
-    if (!q.error)
-      return q.data ? { payload: q.data.content, updated_at: q.data.updated_at } : null;
-    q = await client.from("rf_documents")
-      .select("doc_key, data, updated_at").eq("doc_key", key).maybeSingle();
-    if (q.error) throw q.error;
-    return q.data ? { payload: q.data.data, updated_at: q.data.updated_at } : null;
+    // Try fetching all possible payload columns at once
+    try {
+      const q = await client.from("rf_documents")
+        .select("doc_key, content, data, updated_at").eq("doc_key", key).maybeSingle();
+      if (q.error) throw q.error;
+      if (!q.data) return null;
+      // prefer 'content', fallback to 'data'
+      const payload = q.data.content ?? q.data.data ?? null;
+      return { payload, updated_at: q.data.updated_at };
+    } catch(e) {
+      // Column might not exist - try each separately
+      try {
+        const q2 = await client.from("rf_documents")
+          .select("doc_key, content, updated_at").eq("doc_key", key).maybeSingle();
+        if (!q2.error && q2.data)
+          return { payload: q2.data.content, updated_at: q2.data.updated_at };
+      } catch(_e2) {}
+      try {
+        const q3 = await client.from("rf_documents")
+          .select("doc_key, data, updated_at").eq("doc_key", key).maybeSingle();
+        if (!q3.error && q3.data)
+          return { payload: q3.data.data, updated_at: q3.data.updated_at };
+      } catch(_e3) {}
+      throw e;
+    }
   }
 
   async function docUpsert(client, key, payload){
@@ -1768,39 +1785,41 @@ window.debitateCloud = (function(){
   }
 
   // ── APPLY CLOUD DATA ────────────────────────────────────────────────────────
-  // Înlocuiește datele locale cu cele din cloud dacă:
-  //   (a) local e gol, SAU
-  //   (b) cloud are mai multe rânduri decât local (sursa de adevăr e cloud-ul)
-  // Nu suprascrie dacă userul editează activ.
+  // Cloud este sursa de adevar. Inlocuieste local intotdeauna la boot/realtime.
+  // La poll: inlocuieste doar daca nu se editeaza activ.
   function applyCloudPayload(payload, source){
     if (!payload || !Array.isArray(payload.rows)) return false;
-    if (isEditing()) return false; // nu întrerupe editarea
-    const cloudCount = payload.rows.length;
-    const localCount = Array.isArray(rows) ? rows.length : 0;
-    // Înlocuiește dacă: local gol, sau cloud are mai multe date, sau e trigger explicit
-    if (localCount === 0 || cloudCount > localCount || source === "realtime" || source === "poll"){
-      rows = payload.rows;
-      try { autoScrollBottom = false; } catch(_e) {}
-      render();
-      setPill(`cloud: sync ✓ (${cloudCount} rânduri)`, true);
-      return true;
-    }
-    return false;
+    if (source !== "boot" && source !== "realtime" && isEditing()) return false;
+    rows = payload.rows;
+    try { autoScrollBottom = false; } catch(_e) {}
+    render();
+    setPill("cloud: sync OK (" + payload.rows.length + " randuri)", true);
+    return true;
   }
 
-  // ── PULL UNIVERSAL (toți clienții, la pornire și polling) ──────────────────
-  async function pullFromCloud(source = "poll"){
+  // ── PULL UNIVERSAL ──────────────────────────────────────────────────────────
+  // source="boot"     → la pornire; ignora inPull/inPush/isEditing (prioritate maxima)
+  // source="poll"     → periodic; respecta flag-urile
+  // source="realtime" → WebSocket push; ignora inPull, respecta isEditing
+  async function pullFromCloud(source){
+    if (!source) source = "poll";
     const c = getClient();
-    if (!c || inPull || inPush) return false;
-    if (isEditing() && source !== "boot") return false;
+    if (!c) return false;
+    if (source === "poll" && (inPull || inPush || isEditing())) return false;
+    if (source === "realtime" && isEditing()) return false;
+    // "boot" nu e blocat de nimic
     try {
       inPull = true;
-      if (source === "boot") setPill("cloud: se încarcă…", true);
+      if (source === "boot") setPill("cloud: se incarca...", true);
       const r = await docGet(c, DOC_KEY);
-      return applyCloudPayload(r?.payload, source);
+      if (!r || !r.payload){
+        if (source === "boot") setPill("cloud: gol (nicio data in cloud)", false);
+        return false;
+      }
+      return applyCloudPayload(r.payload, source);
     } catch(e){
       console.warn("debitate pull [" + source + "]:", e);
-      setPill("cloud: eroare pull", false);
+      if (source === "boot") setPill("cloud: eroare la incarcare", false);
       return false;
     } finally {
       inPull = false;
@@ -1918,8 +1937,10 @@ window.debitateCloud = (function(){
   }
 
   // ── BOOT ───────────────────────────────────────────────────────────────────
+  // Apelat de bootAclDebitate() dupa ce ACL e cunoscut.
+  // Fallback: apelat si dupa 2s daca ACL nu raspunde.
   async function boot(){
-    if (booted) return; // nu porni de două ori
+    if (booted) return;
     booted = true;
 
     hookEditingSignals();
@@ -1927,30 +1948,30 @@ window.debitateCloud = (function(){
 
     const c = getClient();
     if (!c){
-      setPill("cloud: fără Supabase", false);
+      setPill("cloud: fara Supabase", false);
       return;
     }
 
-    // 1. Pull imediat la pornire — TOȚI clienții, indiferent de rol
-    //    Așteptăm puțin ca pagina să fie randată înainte de a suprascrie
-    setTimeout(async () => {
-      try {
-        await pullFromCloud("boot");
-      } catch(_e) {}
+    // Pull imediat - TOTI clientii, fara exceptie, fara setTimeout suplimentar
+    // bootAclDebitate() deja asteapta ACL-ul inainte de a apela boot()
+    try {
+      await pullFromCloud("boot");
+    } catch(_e) {
+      console.warn("boot pull failed:", _e);
+    }
 
-      // 2. Pornește realtime + polling pentru toți
-      subscribeRealtime();
-      startPolling();
+    // Porneste realtime + polling pentru toti
+    subscribeRealtime();
+    startPolling();
 
-      // 3. Badge status
-      if (aclCanEdit() && aclCanSync()){
-        setPill("cloud: editor (sync activ)", true);
-      } else if (aclCanEdit()){
-        setPill("cloud: editor (sync manual)", true);
-      } else {
-        setPill("cloud: auto-receive activ", true);
-      }
-    }, 800);
+    // Status badge
+    if (aclCanEdit() && aclCanSync()){
+      setPill("cloud: editor sync activ", true);
+    } else if (aclCanEdit()){
+      setPill("cloud: editor (sync manual cu butonul)", true);
+    } else {
+      setPill("cloud: auto-receive activ", true);
+    }
   }
 
   return { boot, syncNow, pullApply: () => pullFromCloud("poll"), scheduleSync };
@@ -1958,10 +1979,12 @@ window.debitateCloud = (function(){
 
 // bootAclDebitate() apelează debitateCloud.boot() după ce cunoaște rolul.
 // Fallback: dacă ACL nu răspunde, pornim sync oricum după 1.5s.
+// Fallback: only fires if bootAclDebitate() never called boot()
+// (e.g. ACL/network failure). 3s > ACL timeout of 500ms.
 window.addEventListener("load", () => {
   setTimeout(() => {
     try { debitateCloud.boot(); } catch(e) { console.warn("debitateCloud boot fallback:", e); }
-  }, 1500);
+  }, 3000);
 });
 </script>
 
