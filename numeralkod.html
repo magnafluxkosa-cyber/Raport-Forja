@@ -1763,9 +1763,7 @@ const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
     if(role !== "admin" && role !== "editor") return; // viewer nu scrie
     // debounce
     clearTimeout(pushTimer);
-    pushTimer = setTimeoutrfStartRoleWatch();
-
-(async ()=>{
+    pushTimer = setTimeout(async ()=>{
       try{
         const ts = Date.now();
         // protecție anti spam
@@ -2002,26 +2000,6 @@ const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
 </script>
 
 <script>
-
-let rfRoleWatchTimer = null;
-function rfStartRoleWatch(){
-  if(rfRoleWatchTimer) return;
-  rfRoleWatchTimer = setInterval(async ()=>{
-    try{
-      const r = await rfGetRole();
-      if(r.role && r.role !== RF_ROLE){
-        RF_ROLE = r.role; RF_USER_EMAIL = r.email || RF_USER_EMAIL;
-        rfSetRoleUI();
-      }
-      // stop after role known
-      if(RF_ROLE && RF_ROLE !== "viewer" && RF_ROLE !== ""){
-        clearInterval(rfRoleWatchTimer); rfRoleWatchTimer=null;
-      }
-    }catch(_e){}
-  }, 800);
-}
-
-
 /* ===== Access control (admin/editor/viewer) + AutoScroll (v2.8) ===== */
 let RF_ROLE = "viewer";
 let RF_USER_EMAIL = "";
@@ -2030,14 +2008,6 @@ const RF_CAN_EDIT_NUMERALKOD = (role)=> role === "admin"; // numeralkod: doar ad
 
 async function rfGetRole(){
   try{
-    // Preferă rolul deja detectat de modulul tău cloud (cel mai sigur în fișierul acesta)
-    if(window.__rfCloud){
-      const role = (window.__rfCloud.role || "viewer").toString().toLowerCase();
-      const email = (window.__rfCloud.user && window.__rfCloud.user.email) ? window.__rfCloud.user.email : "";
-      return { role, email };
-    }
-
-    // fallback: dacă există un client global
     const client = (typeof sb !== "undefined" && sb) ? sb : (window.sb || window.supabaseClient || null);
     if(!client) return { role:"viewer", email:"" };
 
@@ -2047,7 +2017,7 @@ async function rfGetRole(){
 
     const email = sess.user?.email || "";
     const { data } = await client.from("profiles").select("role").eq("id", sess.user.id).maybeSingle();
-    const role = (data?.role || "viewer").toString().toLowerCase();
+    const role = data?.role || "viewer";
     return { role, email };
   }catch(e){
     console.warn("rfGetRole", e);
@@ -2056,49 +2026,6 @@ async function rfGetRole(){
 }
 
 function rfSetRoleUI(){
-
-const RF_ADMIN_EMAILS = ['forja.editor@gmail.com'];
-
-function rfIsAdminOnlyButton(btn){
-  const t = (btn.textContent || "").replace(/\s+/g," ").trim().toLowerCase();
-  // admin-only: import, adauga serie, sterge serie, sterge auto-save, reset
-  if(t.includes("import")) return true;
-  if(t.includes("adaugă seria")) return true;
-  if(t.includes("adauga seria")) return true;
-  if(t.includes("șterge seria") || t.includes("sterge seria")) return true;
-  if(t.includes("șterge auto") || t.includes("sterge auto")) return true;
-  if(t.startsWith("reset")) return true;
-  // optional: cod rezervat is also edit -> keep admin-only
-  if(t.includes("adaugă cod rezervat") || t.includes("adauga cod rezervat")) return true;
-  // sync cloud also modifies cloud
-  if(t.includes("sync cloud")) return true;
-  return false;
-}
-
-// apply visibility based on role
-try{ rfApplyVisibilityByRole(); }catch(_e){}
-
-function rfApplyVisibilityByRole(force=false){
-  // Determine admin by role OR (fallback) email allowlist
-  const role = (window.__rfCloud && (window.__rfCloud.role || (typeof window.__rfCloud.role === "function" ? window.__rfCloud.role() : ""))) 
-                ? window.__rfCloud.role : (typeof RF_ROLE !== "undefined" ? RF_ROLE : "");
-  const userEmail = (window.__rfCloud && window.__rfCloud.user && window.__rfCloud.user.email) ? window.__rfCloud.user.email : (typeof RF_USER_EMAIL !== "undefined" ? RF_USER_EMAIL : "");
-  const isAdmin = (role === "admin") || (userEmail && RF_ADMIN_EMAILS.includes(userEmail.toLowerCase()));
-  const roleKnown = !!role || !!userEmail;
-
-  // If we don't know yet, do nothing unless force=true
-  if(!roleKnown && !force) return;
-
-  document.querySelectorAll("button").forEach(btn=>{
-    if(rfIsAdminOnlyButton(btn)){
-      btn.style.display = isAdmin ? "" : "none";
-    }
-  });
-  document.querySelectorAll('input[type="file"]').forEach(inp=>{
-    inp.style.display = isAdmin ? "" : "none";
-  });
-}
-
   const el = document.getElementById("rfRolePill");
   if(el){
     el.textContent = RF_USER_EMAIL ? `(${RF_USER_EMAIL} • ${RF_ROLE})` : `(${RF_ROLE})`;
@@ -2227,26 +2154,137 @@ async function cloudSyncNow(){
 }
 
 </script>
+
 <script>
-// v5: apply visibility after __rfCloud.role is available
+/* ===== Clean role-based UI (from public.profiles) =====
+   - No email fallback
+   - Reads role after session is ready
+   - Shows clear badge/message if role cannot be read
+*/
 (function(){
-  let tries = 0;
-  const t = setInterval(()=>{
-    tries++;
-    const role = window.__rfCloud && window.__rfCloud.role;
-    if(role){
-      try{
-        if(typeof RF_ROLE !== "undefined") RF_ROLE = role; // keep consistent
-        rfApplyVisibilityByRole(true);
-      }catch(e){}
-      clearInterval(t);
-    }else if(tries > 60){
-      // after ~30s, apply once (role/email may still be unknown)
-      try{ rfApplyVisibilityByRole(true); }catch(e){}
-      clearInterval(t);
+  const ADMIN_ONLY_TEXT_MATCHERS = [
+    "import",
+    "adaugă seria", "adauga seria",
+    "șterge seria", "sterge seria",
+    "șterge auto-save", "sterge auto-save",
+    "reset",
+    "adaugă cod rezervat", "adauga cod rezervat",
+    "sync cloud"
+  ];
+
+  function isAdminOnlyButton(btn){
+    const t = (btn.textContent || "").replace(/\s+/g, " ").trim().toLowerCase();
+    return ADMIN_ONLY_TEXT_MATCHERS.some(x => t.includes(x));
+  }
+
+  function applyAdminButtonsVisibility(role){
+    const isAdmin = role === "admin";
+    document.querySelectorAll("button").forEach(btn=>{
+      if(isAdminOnlyButton(btn)){
+        btn.style.display = isAdmin ? "" : "none";
+      }
+    });
+    // file inputs are used only for import
+    document.querySelectorAll('input[type="file"]').forEach(inp=>{
+      inp.style.display = isAdmin ? "" : "none";
+    });
+  }
+
+  function setRoleInfo(msg, kind){
+    // lightweight role pill/status on top bar (reuses cloud badge area if needed)
+    let el = document.getElementById("roleInfoBadge");
+    if(!el){
+      const toolbar = document.querySelector(".toolbar");
+      el = document.createElement("span");
+      el.id = "roleInfoBadge";
+      el.style.cssText = "display:inline-flex;align-items:center;margin-left:8px;padding:6px 10px;border-radius:999px;border:1px solid #cbd5e1;background:#fff;font-weight:700;font-size:12px;color:#334155;";
+      if(toolbar) toolbar.appendChild(el);
     }
-  }, 500);
+    el.textContent = msg;
+    if(kind === "error"){
+      el.style.borderColor = "#fca5a5";
+      el.style.color = "#991b1b";
+      el.style.background = "#fef2f2";
+    }else if(kind === "ok"){
+      el.style.borderColor = "#86efac";
+      el.style.color = "#166534";
+      el.style.background = "#f0fdf4";
+    }else{
+      el.style.borderColor = "#cbd5e1";
+      el.style.color = "#334155";
+      el.style.background = "#fff";
+    }
+  }
+
+  async function waitForCloudClient(maxMs=15000){
+    const start = Date.now();
+    while(Date.now() - start < maxMs){
+      const c = window.__rfCloud && window.__rfCloud.client;
+      if(c) return c;
+      await new Promise(r=>setTimeout(r, 300));
+    }
+    return null;
+  }
+
+  async function readRoleFromProfiles(){
+    const client = await waitForCloudClient();
+    if(!client){
+      return { ok:false, reason:"client" };
+    }
+
+    const { data: sessData, error: sessErr } = await client.auth.getSession();
+    if(sessErr){
+      return { ok:false, reason:"session", error:sessErr };
+    }
+    const session = sessData?.session;
+    if(!session?.user?.id){
+      return { ok:false, reason:"no_session" };
+    }
+
+    const { data, error } = await client
+      .from("profiles")
+      .select("role")
+      .eq("id", session.user.id)
+      .maybeSingle();
+
+    if(error){
+      return { ok:false, reason:"profiles", error };
+    }
+
+    const role = (data?.role || "").toLowerCase();
+    if(!role){
+      return { ok:false, reason:"missing_role" };
+    }
+
+    return { ok:true, role, email: session.user.email || "" };
+  }
+
+  async function initRoleUi(){
+    // default safe state until role loads: hide admin-only buttons
+    applyAdminButtonsVisibility("viewer");
+    setRoleInfo("Rol: se încarcă…", "info");
+
+    const r = await readRoleFromProfiles();
+
+    if(!r.ok){
+      applyAdminButtonsVisibility("viewer");
+      let msg = "Rol indisponibil (verifică profiles/RLS)";
+      if(r.reason === "no_session") msg = "Neautentificat";
+      if(r.reason === "client") msg = "Cloud client indisponibil";
+      setRoleInfo(msg, "error");
+      console.warn("Role load failed:", r);
+      return;
+    }
+
+    applyAdminButtonsVisibility(r.role);
+    setRoleInfo(`Rol: ${r.role}${r.email ? " • " + r.email : ""}`, "ok");
+  }
+
+  window.addEventListener("load", ()=>{
+    setTimeout(initRoleUi, 600);
+  });
 })();
 </script>
+
 </body>
 </html>
