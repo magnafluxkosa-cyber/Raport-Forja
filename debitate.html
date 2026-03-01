@@ -322,6 +322,10 @@
   <style>
     .roleBadge{display:inline-flex;align-items:center;gap:6px;padding:2px 8px;border-radius:999px;border:1px solid rgba(0,0,0,.2);background:rgba(255,255,255,.75);font-size:12px;font-weight:700}
     .roleBadge.err{background:#fff1f2;border-color:#fecdd3;color:#9f1239}
+      .roleDot{width:10px;height:10px;border-radius:999px;background:#22c55e;box-shadow:0 0 0 3px rgba(34,197,94,.15)}
+    .roleDot.viewer{background:#94a3b8;box-shadow:0 0 0 3px rgba(148,163,184,.2)}
+    .cloudBadge{display:inline-flex;align-items:center;padding:2px 8px;border-radius:999px;background:#ecfeff;color:#0f766e;border:1px solid #99f6e4;font-weight:900;font-size:12px}
+    .cloudBadge.off{background:#fff1f2;color:#b91c1c;border-color:#fecdd3}
   </style>
 
 
@@ -343,7 +347,10 @@ function goDashboard(){ window.location.href='index.html'; }
         <span class="pill" id="pillPage">pagina 1/1</span>
         <button class="btn" id="btnNextPage" title="Pagina următoare">▶</button>
 
-        <span class="roleBadge" id="roleBadge">rol: ...</span>
+        <span id="roleBadge" class="roleBadge" style="display:none;">
+          <span id="roleDot" class="roleDot"></span>
+          <span id="roleText"></span>
+        </span>
       </div>
     </div>
     <div class="right">
@@ -351,8 +358,7 @@ function goDashboard(){ window.location.href='index.html'; }
       <button class="btn" onclick="importXLSX()" data-acl="import">⤒ Import Excel</button>
       <button class="btn" onclick="exportJSON()" data-acl="export">⤓ Export JSON</button>
       <button class="btn" onclick="resetAll()" data-acl="reset" title="Șterge toate datele salvate local">Reset</button>
-      <button class="btn" id="btnDebCloudSync" onclick="debitateCloud.syncNow()" data-acl="sync" title="Sync Cloud">🔁 Sync Cloud</button>
-      <span class="pill" id="pillCloud">cloud: local</span>
+      <span id="cloudBadge" class="cloudBadge" style="display:none;">Cloud: ...</span>
     </div>
   </div>
 
@@ -1617,114 +1623,358 @@ function goDashboard(){ window.location.href='index.html'; }
     // resave normalized
     if (rows.length) scheduleSave();
   })();
-</script>
+  // ===== Cloud Sync helpers (compat INTRARI_OTEL) =====
+  window.APP_KEYS = window.APP_KEYS || {};
+  window.APP_KEYS.debitate = STORAGE_KEY;
+
+  // canonical payload for cloud
+  window.getAllDataForExport = function(){
+    return { app:"DEBITATE", version:1, savedAt: new Date().toISOString(), rows: Array.isArray(rows) ? rows : [] };
+  };
+
+  // apply payload into UI + local autosave
+  window.loadFromPayload = function(payload){
+    // edit-safe: if user is editing an input, don't re-render now
+    const ae = document.activeElement;
+    if(ae && (ae.tagName==='INPUT' || ae.tagName==='TEXTAREA' || ae.tagName==='SELECT')) return false;
+
+    try{
+      if(payload && Array.isArray(payload.rows)){
+        rows = payload.rows;
+
+        // normalize like init
+        rows.forEach(r => {
+          r.luna = monthLower(r.luna);
+          r.diametru = normalizeDiam(r.diametru);
+          r.data = parseDateAny(r.data);
+          const _y = parseNumberRO(r.an);
+          if (Number.isFinite(_y)) r.an = Math.trunc(_y);
+          recalcRow(r);
+        });
+        rows.sort((a,b)=> (a.data||"").localeCompare(b.data||""));
+
+        autoScrollBottom = true;
+        if(typeof render === "function") render();
+        else if(typeof renderBody === "function") renderBody();
+
+        // persist local snapshot
+        try{ scheduleSave(); }catch(_e){}
+        return true;
+      }
+    }catch(e){
+      console.warn("loadFromPayload failed", e);
+    }
+    return false;
+  };
+
+  // bridge: any scheduleSave implies data changed (so cloud sync can push)
+  window.notifyDataChanged = window.notifyDataChanged || function(){};
+  (function(){
+    const _orig = scheduleSave;
+    if(typeof _orig === "function"){
+      scheduleSave = function(){
+        const r = _orig.apply(this, arguments);
+        try{ window.notifyDataChanged(); }catch(_e){}
+        return r;
+      }
+    }
+  })();</script>
 
   <datalist id="dlRepereDebitare"></datalist>
   <datalist id="dlUtilajeDebitare"></datalist>
 
 <script>
-/* ===== Supabase config (completează cu cheile tale) ===== */
-const SUPABASE_URL = "https://rhjcnydkdhjzazygybcc.supabase.co";
-const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJoamNueWRrZGhqemF6eWd5YmNjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE4ODEzMzYsImV4cCI6MjA4NzQ1NzMzNn0.ompOZWqnFGsnOQzPiAv2QBwuaNiKtnz5PciRwCWh0Hk";
-/* ===== HARD STOP: fără Supabase nu pornește (fără modul local) ===== */
-  function rfFatal(msg){
+
+
+/* ===============================
+   RF AUTH + ROLE (profiles)
+   - admin / editor / viewer
+   - viewer: read-only (dar export OK)
+   - editor: edit in celule
+   - admin: edit + vede butoanele de admin
+   =============================== */
+(function(){
+  const SUPABASE_URL = "https://rhjcnydkdhjzazygybcc.supabase.co";
+  const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJoamNueWRrZGhqemF6eWd5YmNjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE4ODEzMzYsImV4cCI6MjA4NzQ1NzMzNn0.ompOZWqnFGsnOQzPiAv2QBwuaNiKtnz5PciRwCWh0Hk"; // Anon Key (Legacy)
+
+  const roleBadge = document.getElementById('roleBadge');
+  let roleText  = document.getElementById('roleText');
+  let roleDot   = document.getElementById('roleDot');
+  const cloudBadge = document.getElementById('cloudBadge');
+
+  // ensure badge structure exists (backward compatible)
+  if(roleBadge && (!roleText || !roleDot)){
+    roleBadge.innerHTML = '<span id="roleDot" class="roleDot"></span><span id="roleText"></span>';
+    roleText = document.getElementById('roleText');
+    roleDot  = document.getElementById('roleDot');
+  }
+
+  // init supabase
+  const supa = (window.supabase && window.supabase.createClient)
+    ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, { auth:{ persistSession:true, autoRefreshToken:true, detectSessionInUrl:false } })
+    : null;
+
+  if(!supa){
+    if(cloudBadge){ cloudBadge.style.display='inline-flex'; cloudBadge.classList.add('off'); cloudBadge.textContent='Cloud: client indisponibil'; }
+    return;
+  }
+  window.__SUPA__ = supa;
+
+  async function loadRole(){
+    const { data: { user } } = await supa.auth.getUser();
+    if(!user) return { role:'viewer', user:null, email:'' };
     try{
-      const o = document.createElement('div');
-      o.style.cssText = 'position:fixed;inset:0;z-index:999999;background:#0b1220;display:flex;align-items:center;justify-content:center;padding:20px;';
-      o.innerHTML = `<div style="max-width:720px;width:100%;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.12);border-radius:18px;padding:18px 18px;color:#fff;font-family:Calibri,Arial,sans-serif">
-        <h2 style="margin:0 0 8px 0">DEBITATE nu pornește fără Supabase</h2>
-        <p style="margin:0 0 10px 0;opacity:.85">${msg}</p>
-        <p style="margin:0;opacity:.8">Fix: completează <b>SUPABASE_URL</b> și <b>SUPABASE_ANON_KEY</b> în fișierul <b>debitate.html</b>, apoi fă commit pe GitHub și reîncarcă pagina (Ctrl+F5).</p>
-      </div>`;
-      document.body.appendChild(o);
+      const { data, error } = await supa.from('profiles').select('role').eq('id', user.id).maybeSingle();
+      if(error) throw error;
+      const role = (data && data.role) ? String(data.role) : 'viewer';
+      return { role, user, email: user.email || '' };
+    }catch(e){
+      console.warn('role lookup failed', e);
+      return { role:'viewer', user, email: user.email || '' };
+    }
+  }
+
+  function applyRole(role, email){
+    window.__APP_ROLE__ = role;
+    const canEdit = (role === 'admin' || role === 'editor');
+    window.__CAN_EDIT__ = canEdit;
+
+    if(roleBadge){
+      roleBadge.style.display='inline-flex';
+      if(roleText) roleText.textContent = role.toUpperCase() + (role==='viewer' ? ' (read-only)' : '') + (email ? ' • ' + email : '');
+      else roleBadge.textContent = 'ROL: ' + role.toUpperCase() + (email ? ' • ' + email : '');
+    }
+    if(roleDot) roleDot.classList.toggle('viewer', role==='viewer');
+
+    // viewer: lock editing in table inputs + modal inputs
+    document.querySelectorAll('#tbl input, #tbl select, #tbl textarea, [data-edit]').forEach(el=>{
+      try{ el.disabled = !canEdit; }catch(_e){}
+    });
+  }
+
+  loadRole().then(({
+    role, email
+  })=>applyRole(role, email));
+})();
+</script>
+
+<script>
+/* ===============================
+   RF CLOUD SYNC (rf_documents)
+   - doc_key = 'debitate'
+   - auto push on changes (debounce)
+   - auto pull polling (edit-safe)
+   =============================== */
+(function(){
+  const supa = window.__SUPA__;
+  const cloudBadge = document.getElementById('cloudBadge');
+  if(!supa){
+    if(cloudBadge){ cloudBadge.style.display='inline-flex'; cloudBadge.classList.add('off'); cloudBadge.textContent='Cloud: client indisponibil'; }
+    return;
+  }
+  const DOC_TABLE = 'rf_documents';
+  const DOC_KEY = 'debitate';
+  let lastPulledAt = null;
+  let lastPushedAt = null;
+  let pollTimer = null;
+  let pushTimer = null;
+  let inFlight = false;
+
+  function setCloud(ok, msg){
+    if(!cloudBadge) return;
+    cloudBadge.style.display='inline-flex';
+    cloudBadge.classList.toggle('off', !ok);
+    cloudBadge.textContent = msg || (ok ? 'Cloud: ON' : 'Cloud: eroare');
+  }
+  function nowIso(){ return new Date().toISOString(); }
+
+  function getPayload(){
+    try{
+      if(window.getAllDataForExport) return window.getAllDataForExport();
     }catch(_e){}
-    throw new Error(msg);
+    try{
+      // fallback: localStorage snapshot
+      const k = (window.APP_KEYS && window.APP_KEYS.debitate) ? window.APP_KEYS.debitate : 'DEBITATE_autosave_v1';
+      const raw = localStorage.getItem(k);
+      return raw ? JSON.parse(raw) : { rows:[] };
+    }catch(_e){ return { rows:[] }; }
   }
 
-  function rfHasPlaceholders(v){
-    return !v || String(v).includes('HERE') || String(v).includes('SUPABASE_') || String(v).trim()==='';
+  function applyPayload(payload){
+    // edit-safe: if user is editing an input, don't re-render now
+    const ae = document.activeElement;
+    if(ae && (ae.tagName==='INPUT' || ae.tagName==='TEXTAREA' || ae.tagName==='SELECT')){
+      return false;
+    }
+    try{
+      if(window.loadFromPayload){
+        return !!window.loadFromPayload(payload);
+      }
+    }catch(e){}
+
+    // fallback: localStorage snapshot + load/render
+    try{
+      const k = (window.APP_KEYS && window.APP_KEYS.debitate) ? window.APP_KEYS.debitate : 'DEBITATE_autosave_v1';
+      localStorage.setItem(k, JSON.stringify(payload || {}));
+      if(window.load) window.load();
+      if(window.render) window.render();
+      return true;
+    }catch(_e){}
+    return false;
   }
-  if(rfHasPlaceholders(SUPABASE_URL) || rfHasPlaceholders(SUPABASE_ANON_KEY)) rfFatal('Cheile Supabase lipsesc sau sunt placeholder.');
 
-let __aclSupa = null;
-try{
-  if(window.supabase){
-    __aclSupa = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+  async function pull(){
+    if(inFlight) return;
+    inFlight = true;
+    try{
+      const { data, error } = await supa.from(DOC_TABLE).select('doc_key,data,updated_at').eq('doc_key', DOC_KEY).maybeSingle();
+      if(error) throw error;
+      if(!data || !data.data){ setCloud(true,'Cloud: gol'); return; }
+      const ts = data.updated_at || null;
+
+      // ignore if we already have this update (or it's older)
+      if(lastPulledAt && ts && new Date(ts) <= new Date(lastPulledAt)) { setCloud(true,'Cloud: ON'); return; }
+      // if we pushed newer, don't overwrite
+      if(lastPushedAt && ts && new Date(ts) <= new Date(lastPushedAt)) { setCloud(true,'Cloud: ON'); return; }
+
+      const applied = applyPayload(data.data);
+      if(applied){
+        lastPulledAt = ts || nowIso();
+      }
+      setCloud(true,'Cloud: ON');
+    }catch(e){
+      console.error(e);
+      setCloud(false,'Cloud: eroare');
+    }finally{
+      inFlight = false;
+    }
   }
-}catch(e){ console.warn("Supabase init ACL", e); }
 
-  try{ window.__rfCloud = window.__rfCloud || {}; window.__rfCloud.client = __aclSupa; }catch(_e){}
+  function schedulePush(){
+    if(!window.__CAN_EDIT__) return;
+    if(pushTimer) clearTimeout(pushTimer);
+    pushTimer = setTimeout(async ()=>{
+      try{
+        const payload = getPayload();
+        const up = { doc_key: DOC_KEY, data: payload, updated_at: nowIso() };
+        const { error } = await supa.from(DOC_TABLE).upsert(up, { onConflict:'doc_key' });
+        if(error) throw error;
+        lastPushedAt = up.updated_at;
+        setCloud(true,'Cloud: ON');
+      }catch(e){
+        console.error(e);
+        setCloud(false,'Cloud: eroare');
+      }
+    }, 500);
+  }
 
+  // Hook into existing data-change signal
+  window.notifyDataChanged = (function(orig){
+    return function(){
+      try{ if(typeof orig === 'function') orig(); }catch(_e){}
+      schedulePush();
+    };
+  })(window.notifyDataChanged);
 
-let __ACL = null;
-let __ME = { role:"viewer", email:"" };
+  // also listen to generic input events (cell editing)
+  document.addEventListener('input', (e)=>{
+    schedulePush();
+  }, true);
 
-function setRoleBadge(txt, err=false){
-  const el = document.getElementById("roleBadge");
-  if(!el) return;
-  el.textContent = txt;
-  el.classList.toggle("err", !!err);
-}
+  /* ===== Auto-scroll bottom once after render/pull/import ===== */
+  const _scrolledOnce = new WeakSet();
+  function autoScrollBottomOnce(){
+    try{
+      const wrap = document.getElementById('tablewrap');
+      if(wrap && wrap.scrollHeight > wrap.clientHeight + 2 && !_scrolledOnce.has(wrap)){
+        wrap.scrollTop = wrap.scrollHeight;
+        _scrolledOnce.add(wrap);
+      }
+    }catch(_e){}
+  }
+  const _origRender = window.render;
+  if(typeof _origRender === 'function'){
+    window.render = function(){
+      const r = _origRender.apply(this, arguments);
+      setTimeout(autoScrollBottomOnce, 50);
+      setTimeout(autoScrollBottomOnce, 250);
+      return r;
+    }
+  } else {
+    window.addEventListener('load', ()=>{ setTimeout(autoScrollBottomOnce, 200); });
+  }
 
-async function aclGetMyRole(){
-  if(!__aclSupa) return { role:"viewer", email:"" };
-  const { data:s } = await __aclSupa.auth.getSession();
+  // initial
+  setCloud(true,'Cloud: conectare...');
+  pull();
+  pollTimer = setInterval(pull, 2500);
+})();
+</script>
+
+<script>
+/* ===== ACL (rf_acl) integration ===== */
+async function rfGetMyRole(supa){
+  const { data: s } = await supa.auth.getSession();
   const sess = s?.session;
   if(!sess) return { role:"viewer", email:"" };
   const email = sess.user?.email || "";
-  const { data, error } = await __aclSupa.from("profiles").select("role").eq("id", sess.user.id).maybeSingle();
-  if(error) throw error;
-  return { role:(data?.role || "viewer"), email };
+  const { data } = await supa.from("profiles").select("role").eq("id", sess.user.id).maybeSingle();
+  return { role: (data?.role || "viewer"), email };
 }
-async function aclGetRow(pageKey, role){
-  if(!__aclSupa) return null;
-  const { data, error } = await __aclSupa.from("rf_acl").select("*").eq("page_key", pageKey).eq("role", role).maybeSingle();
+async function rfGetAcl(supa, pageKey, role){
+  const { data, error } = await supa.from("rf_acl").select("*").eq("page_key", pageKey).eq("role", role).maybeSingle();
   if(error) throw error;
-  return data;
+  return data || {
+    can_view:true, can_edit_data:false,
+    show_import_buttons:false, show_add_buttons:false, show_delete_buttons:false, show_reset_buttons:false,
+    can_export:true, can_filter:true, can_sync_cloud:false
+  };
 }
-function applyAclUi(acl){
-  __ACL = acl || __ACL || {};
+function rfApplyAclToUi(acl){
+  window.__RF_ACL_CURRENT__ = acl;
+
   const map = { import:"show_import_buttons", add:"show_add_buttons", delete:"show_delete_buttons", reset:"show_reset_buttons",
                 export:"can_export", filter:"can_filter", sync:"can_sync_cloud" };
   document.querySelectorAll("[data-acl]").forEach(el=>{
     const key = el.getAttribute("data-acl");
     const prop = map[key];
     if(!prop) return;
-    const ok = !!__ACL[prop];
-    el.style.display = ok ? "" : "none";
+    const allowed = !!acl[prop];
+    el.style.display = allowed ? "" : "none";
   });
 
-  // edit lock (admin+editor usually true on DEBITATE)
-  const canEdit = !!__ACL.can_edit_data;
-  // modal controls
+  // edit lock (modal + dynamic table inputs)
+  const canEdit = !!acl.can_edit_data;
   document.querySelectorAll("[data-edit]").forEach(el=>{
     try{ el.disabled = !canEdit; }catch(_e){}
   });
-  document.querySelectorAll("[data-edit-btn]").forEach(el=>{
-    el.style.display = canEdit ? "" : "none";
+  document.querySelectorAll("#tbl input.cellinput").forEach(el=>{
+    try{ el.disabled = !canEdit; }catch(_e){}
   });
-
-  // dynamic table contenteditable cells - handle on each render
-  try{
-    const body = document.getElementById("body");
-    if(body){
-      body.querySelectorAll("td.editableCell").forEach(td=>{
-        td.contentEditable = canEdit ? "true" : "false";
-      });
-      if(!canEdit){
-        body.querySelectorAll(".rowActions, .iconbtn").forEach(el=> el.style.display="none");
-      }
-    }
-  }catch(_e){}
+  // delete buttons in table
+  document.querySelectorAll("#tbl .iconbtn, #tbl .rowActions").forEach(el=>{
+    el.style.display = (canEdit && !!acl.show_delete_buttons) ? "" : "none";
+  });
+}
+async function rfBootAcl({ supa, pageKey, onRoleBadge }){
+  const me = await rfGetMyRole(supa);
+  const acl = await rfGetAcl(supa, pageKey, me.role);
+  if(!acl.can_view){
+    window.location.href = "index.html";
+    return null;
+  }
+  if(onRoleBadge) onRoleBadge(me.role, me.email);
+  rfApplyAclToUi(acl);
+  return { me, acl };
 }
 
-// Hook renderBody so ACL reapplies after each render (important for dynamic cells/buttons)
+// re-apply ACL after every dynamic renderBody
 (function(){
   const _origRenderBody = window.renderBody;
   if(typeof _origRenderBody === "function"){
     window.renderBody = function(){
       const r = _origRenderBody.apply(this, arguments);
-      try{ if(__ACL) applyAclUi(__ACL); }catch(_e){}
+      try{ if(window.__RF_ACL_CURRENT__) rfApplyAclToUi(window.__RF_ACL_CURRENT__); }catch(_e){}
       return r;
     }
   }
@@ -1732,239 +1982,34 @@ function applyAclUi(acl){
   const _open = window.openAddModal;
   if(typeof _open === "function"){
     window.openAddModal = function(){
-      if(__ACL && !__ACL.can_edit_data) return;
+      if(window.__RF_ACL_CURRENT__ && !window.__RF_ACL_CURRENT__.can_edit_data) return;
       return _open.apply(this, arguments);
     }
   }
   const _save = window.saveAddModal;
   if(typeof _save === "function"){
     window.saveAddModal = function(){
-      if(__ACL && !__ACL.can_edit_data) return;
+      if(window.__RF_ACL_CURRENT__ && !window.__RF_ACL_CURRENT__.can_edit_data) return;
       return _save.apply(this, arguments);
     }
   }
 })();
 
-async function bootAclDebitate(){
-  // secure-by-default visual state until ACL loads
-  applyAclUi({
-    can_view:true, can_edit_data:false,
-    show_import_buttons:false, show_add_buttons:false, show_delete_buttons:false, show_reset_buttons:false,
-    can_export:true, can_filter:true, can_sync_cloud:false
-  });
-
-  if(!__aclSupa){
-    setRoleBadge("rol: (Supabase necesar)", true);
-    return;
-  }
+window.addEventListener("load", async ()=>{
   try{
-    __ME = await aclGetMyRole();
-    const acl = await aclGetRow("debitate", __ME.role) || {
-      can_view:true, can_edit_data:false,
-      show_import_buttons:false, show_add_buttons:false, show_delete_buttons:false, show_reset_buttons:false,
-      can_export:true, can_filter:true, can_sync_cloud:false
-    };
-    if(!acl.can_view){
-      location.href = "index.html";
-      return;
-    }
-    setRoleBadge(`rol: ${__ME.role}${__ME.email ? " • "+__ME.email : ""}`);
-    applyAclUi(acl);
-    try{ if(window.debitateCloud){ window.debitateCloud.boot(); } }catch(_e){}
-  }catch(e){
-    console.warn("ACL debitate", e);
-    setRoleBadge("rol indisponibil (ACL/RLS)", true);
-  }
-}
-window.addEventListener("load", ()=> setTimeout(bootAclDebitate, 500));
-</script>
-<script>
-/* ===== DEBITATE Cloud Sync (logică ca INTRARI_OTEL, adaptată) =====
-   - auto push on changes (debounce)
-   - auto pull polling (edit-safe)
-   - schema fallback: rf_documents.content OR rf_documents.data
-   - ACL aware (can_edit_data + can_sync_cloud)
-*/
-window.debitateCloud = (function(){
-  const supa = (typeof __aclSupa !== "undefined" && __aclSupa) ? __aclSupa : null;
-  const pill = document.getElementById("pillCloud");
-  const DOC_TABLE = "rf_documents";
-  const DOC_KEY = "debitate";
-
-  let lastPulledAt = null;
-  let lastPushedAt = null;
-  let pollTimer = null;
-  let pushTimer = null;
-  let inFlight = false;
-
-  function setPill(txt, ok){
-    if(!pill) return;
-    pill.textContent = txt;
-    pill.style.color = ok ? "#065f46" : "";
-  }
-  function nowIso(){ return new Date().toISOString(); }
-
-  function aclCanEdit(){ return (window.__ME_ROLE==="admin"||window.__ME_ROLE==="editor") || !!(window.__ACL && window.__ACL.can_edit_data); }
-  function aclCanSync(){ return (window.__ME_ROLE==="admin"||window.__ME_ROLE==="editor") || !!(window.__ACL && window.__ACL.can_sync_cloud); }
-
-  async function docGet(key){
-    let q = await supa.from(DOC_TABLE).select("doc_key,content,updated_at").eq("doc_key", key).maybeSingle();
-    if(!q.error){
-      return q.data ? { payload:q.data.content, updated_at:q.data.updated_at } : null;
-    }
-    q = await supa.from(DOC_TABLE).select("doc_key,data,updated_at").eq("doc_key", key).maybeSingle();
-    if(q.error) throw q.error;
-    return q.data ? { payload:q.data.data, updated_at:q.data.updated_at } : null;
-  }
-
-  async function docUpsert(key, payload){
-    let q = await supa.from(DOC_TABLE).upsert({ doc_key:key, content:payload, updated_at: nowIso() }, { onConflict:"doc_key" });
-    if(!q.error) return true;
-    q = await supa.from(DOC_TABLE).upsert({ doc_key:key, data:payload, updated_at: nowIso() }, { onConflict:"doc_key" });
-    if(q.error) throw q.error;
-    return true;
-  }
-
-  function getPayload(){
-    return { app:"DEBITATE", version:1, rows: Array.isArray(rows) ? rows : [] };
-  }
-
-  function applyPayload(payload){
-    const ae = document.activeElement;
-    if(ae && (ae.tagName==='INPUT' || ae.tagName==='TEXTAREA' || ae.tagName==='SELECT')) return false;
-    try{
-      if(payload && Array.isArray(payload.rows)){
-        rows = payload.rows;
-        try{ autoScrollBottom = true; }catch(_e){}
-        if(typeof refreshFilterUI === "function") refreshFilterUI(true);
-        if(typeof refreshSummaryUI === "function") refreshSummaryUI(true);
-        if(typeof render === "function") render();
-        else if(typeof renderBody === "function") renderBody();
-        return true;
-      }
-    }catch(e){ console.warn("applyPayload", e); }
-    return false;
-  }
-
-  async function pull(){
-    if(!supa || inFlight) return;
-    inFlight = true;
-    try{
-      const rec = await docGet(DOC_KEY);
-      if(!rec || !rec.payload){
-        setPill("cloud: gol", true);
-        // auto-seed: dacă ai drept de sync, creează documentul o singură dată
-        if(aclCanEdit() && aclCanSync() && !window.__RF_DEB_SEEDED){
-          window.__RF_DEB_SEEDED = true;
-          try{ await docUpsert(DOC_KEY, getPayload()); lastPushedAt = nowIso(); setPill("cloud: ok", true); }
-          catch(e){ console.warn("seed failed", e);
-            const msg=String(e && (e.message||e)).toLowerCase();
-            if(msg.includes("permission")||msg.includes("row-level")||msg.includes("forbidden")||msg.includes("policy")) setPill("cloud: fără drept", false);
-            else setPill("cloud: eroare", false);
-          }
-        }
-        return;
-      }
-      const ts = rec.updated_at || null;
-      if(lastPulledAt && ts && new Date(ts) <= new Date(lastPulledAt)) { setPill("cloud: ok", true); return; }
-      if(lastPushedAt && ts && new Date(ts) <= new Date(lastPushedAt)) { setPill("cloud: ok", true); return; }
-
-      const applied = applyPayload(rec.payload);
-      if(applied) lastPulledAt = ts || nowIso();
-      setPill("cloud: ok", true);
-    }catch(e){
-      console.warn("debitate pull", e);
-      setPill("cloud: eroare", false);
-    }finally{
-      inFlight = false;
-    }
-  }
-
-  function schedulePush(){
+    const supa = window.__SUPA__;
     if(!supa) return;
-    if(!aclCanEdit() || !aclCanSync()) return;
-    if(pushTimer) clearTimeout(pushTimer);
-    pushTimer = setTimeout(async ()=>{
-      try{
-        setPill("cloud: salvez…", false);
-        await docUpsert(DOC_KEY, getPayload());
-        lastPushedAt = nowIso();
-        setPill("cloud: ok", true);
-      }catch(e){
-        console.warn("debitate push", e);
-        const msg = String(e && (e.message || e)).toLowerCase();
-        if(msg.includes("permission") || msg.includes("row-level") || msg.includes("forbidden") || msg.includes("policy")){
-          setPill("cloud: fără drept", false);
-        }else{
-          setPill("cloud: eroare", false);
-        }
+
+    await rfBootAcl({
+      supa,
+      pageKey:"debitate",
+      onRoleBadge:(role,email)=>{
+        // keep existing role badge; RF AUTH already populates it
       }
-    }, 500);
+    });
+  }catch(e){
+    console.warn("ACL boot", e);
   }
-
-  function hookScheduleSave(){
-    if(typeof window.scheduleSave === "function"){
-      const orig = window.scheduleSave;
-      window.scheduleSave = function(){
-        const r = orig.apply(this, arguments);
-        schedulePush();
-        return r;
-      };
-    }
-  }
-
-  function hookInputChanges(){
-    document.addEventListener("input", ()=> schedulePush(), true);
-  }
-
-  function boot(){
-    if(!supa){ setPill("cloud: client indisponibil", false); return; }
-    hookScheduleSave();
-    hookInputChanges();
-
-  // ===== Hook adăugare/ștergere rânduri pentru cloud autosave =====
-  try{
-    if(typeof window.addRow === "function" && !window.__RF_ADDROW_WRAPPED){
-      const _add = window.addRow;
-      window.addRow = function(){
-        const r = _add.apply(this, arguments);
-        try{ window.debitateCloud && window.debitateCloud.scheduleSync && window.debitateCloud.scheduleSync(); }catch(_e){}
-        return r;
-      };
-      window.__RF_ADDROW_WRAPPED = true;
-    }
-    if(typeof window.deleteRow === "function" && !window.__RF_DELROW_WRAPPED){
-      const _del = window.deleteRow;
-      window.deleteRow = function(){
-        const r = _del.apply(this, arguments);
-        try{ window.debitateCloud && window.debitateCloud.scheduleSync && window.debitateCloud.scheduleSync(); }catch(_e){}
-        return r;
-      };
-      window.__RF_DELROW_WRAPPED = true;
-    }
-  }catch(_e){}
-
-    setPill("cloud: conectare…", true);
-    setTimeout(()=>{
-      pull();
-      pollTimer = setInterval(pull, 2500);
-    }, 900);
-  }
-
-  function syncNow(){ schedulePush(); }
-  return { boot, pull, syncNow, scheduleSync: schedulePush };
-})();
-window.addEventListener("load", ()=> setTimeout(()=> { try{ window.debitateCloud.boot(); }catch(e){ console.warn(e);} }, 300));
-</script>
-
-<script>
-/* RF_BOOT_FALLBACK: pornește cloud chiar dacă ACL nu s-a încărcat */
-window.addEventListener('load', ()=>{
-  try{
-    if(window.debitateCloud && window.debitateCloud.boot){
-      window.debitateCloud.boot();
-    }
-  }catch(e){ console.warn('boot fallback', e); }
 });
 </script>
 
