@@ -332,7 +332,7 @@ function goDashboard(){ window.location.href='index.html'; }
 <body>
   <div class="topbar">
     <div class="left">
-      <button class="btn" onclick="goDashboard()">⬅ Dashboard</button>
+      <button class="btn" onclick="goMenu()">⬅ Dashboard</button>
       <button class="btn primary" onclick="openAddModal()" data-acl="add">➕ Adaugă</button>
       <div class="status">
         <span class="pill" id="pillRows">0 rânduri</span>
@@ -594,29 +594,7 @@ function goDashboard(){ window.location.href='index.html'; }
     }
   }
 
-  
-  // actualizare rapidă când HELPER (Date) se schimbă pe alt tab/device
-  (function watchHelpers(){
-    let last = "";
-    try{ last = localStorage.getItem(HELPERS_KEY) || ""; }catch(_e){}
-    function tick(){
-      try{
-        const cur = localStorage.getItem(HELPERS_KEY) || "";
-        if(cur !== last){
-          last = cur;
-          _helpers = null; _mapRepDebitare = null;
-          try{ buildHelperMaps(); }catch(e){}
-          try{ refreshHelperDatalists(); }catch(e){}
-        }
-      }catch(_e){}
-    }
-    setInterval(tick, 1200);
-    try{
-      const bc = new BroadcastChannel("rf_sync");
-      bc.onmessage = (ev)=>{ if(ev && ev.data && ev.data.type==="HELPERS_UPDATED"){ tick(); } };
-    }catch(_e){}
-  })();
-function buildHelperMaps(){
+  function buildHelperMaps(){
     const h = loadHelpers();
     _mapRepDebitare = new Map();
     const dlR = $("dlRepereDebitare");
@@ -1646,8 +1624,27 @@ function buildHelperMaps(){
 
 <script>
 /* ===== Supabase config (completează cu cheile tale) ===== */
-const SUPABASE_URL = "https://rhjcnydkdhjzazygybcc.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJoamNueWRrZGhqemF6eWd5YmNjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE4ODEzMzYsImV4cCI6MjA4NzQ1NzMzNn0.ompOZWqnFGsnOQzPiAv2QBwuaNiKtnz5PciRwCWh0Hk"; // <-- Anon Key (Legacy)
+/* ===== HARD STOP: fără Supabase nu pornește (fără modul local) ===== */
+  function rfFatal(msg){
+    try{
+      const o = document.createElement('div');
+      o.style.cssText = 'position:fixed;inset:0;z-index:999999;background:#0b1220;display:flex;align-items:center;justify-content:center;padding:20px;';
+      o.innerHTML = `<div style="max-width:720px;width:100%;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.12);border-radius:18px;padding:18px 18px;color:#fff;font-family:Calibri,Arial,sans-serif">
+        <h2 style="margin:0 0 8px 0">DEBITATE nu pornește fără Supabase</h2>
+        <p style="margin:0 0 10px 0;opacity:.85">${msg}</p>
+        <p style="margin:0;opacity:.8">Fix: completează <b>SUPABASE_URL</b> și <b>SUPABASE_ANON_KEY</b> în fișierul <b>debitate.html</b>, apoi fă commit pe GitHub și reîncarcă pagina (Ctrl+F5).</p>
+      </div>`;
+      document.body.appendChild(o);
+    }catch(_e){}
+    throw new Error(msg);
+  }
+
+  function rfHasPlaceholders(v){
+    return !v || String(v).includes('HERE') || String(v).includes('SUPABASE_') || String(v).trim()==='';
+  }
+  if(rfHasPlaceholders(SUPABASE_URL) || rfHasPlaceholders(SUPABASE_ANON_KEY)) rfFatal('Cheile Supabase lipsesc sau sunt placeholder.');
+
 let __aclSupa = null;
 try{
   if(window.supabase && SUPABASE_URL !== "SUPABASE_URL_HERE" && SUPABASE_ANON_KEY !== "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJoamNueWRrZGhqemF6eWd5YmNjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE4ODEzMzYsImV4cCI6MjA4NzQ1NzMzNn0.ompOZWqnFGsnOQzPiAv2QBwuaNiKtnz5PciRwCWh0Hk"){
@@ -1753,7 +1750,7 @@ async function bootAclDebitate(){
   });
 
   if(!__aclSupa){
-    setRoleBadge("rol: local (fără Supabase)", true);
+    setRoleBadge("rol: (Supabase necesar)", true);
     return;
   }
   try{
@@ -1778,160 +1775,114 @@ async function bootAclDebitate(){
 window.addEventListener("load", ()=> setTimeout(bootAclDebitate, 500));
 </script>
 <script>
-/* ===== DEBITATE Cloud Sync (stable, no WebSocket) =====
-   - Uses rf_documents doc_key='debitate' + 'debitate_stamp'
-   - Editors/admin (can_edit_data) PUSH local changes (debounced)
-   - Viewers auto-receive via stamp polling -> pull
-   - Pull pauses while user edits (prevents focus loss / overwrite)
+/* ===== DEBITATE Cloud Sync (logică ca INTRARI_OTEL, adaptată) =====
+   - auto push on changes (debounce)
+   - auto pull polling (edit-safe)
+   - schema fallback: rf_documents.content OR rf_documents.data
+   - ACL aware (can_edit_data + can_sync_cloud)
 */
 window.debitateCloud = (function(){
-  const DOC_KEY = "debitate";
-  const STAMP_KEY = "debitate_stamp";
+  const supa = (typeof __aclSupa !== "undefined" && __aclSupa) ? __aclSupa : null;
   const pill = document.getElementById("pillCloud");
-  let pullTimer = null, pushTimer = null;
-  let lastStamp = null;
-  let editingUntil = 0;
-  let inPull = false, inPush = false;
+  const DOC_TABLE = "rf_documents";
+  const DOC_KEY = "debitate";
+
+  let lastPulledAt = null;
+  let lastPushedAt = null;
+  let pollTimer = null;
+  let pushTimer = null;
+  let inFlight = false;
 
   function setPill(txt, ok){
     if(!pill) return;
     pill.textContent = txt;
     pill.style.color = ok ? "#065f46" : "";
   }
-
-  function getClient(){
-    return (typeof __aclSupa !== "undefined" && __aclSupa) ? __aclSupa : null;
-  }
+  function nowIso(){ return new Date().toISOString(); }
 
   function aclCanEdit(){ return !!(window.__ACL && window.__ACL.can_edit_data); }
   function aclCanSync(){ return !!(window.__ACL && window.__ACL.can_sync_cloud); }
 
-  async function docGet(client, key){
-    let q = await client.from("rf_documents").select("doc_key, content, updated_at").eq("doc_key", key).maybeSingle();
+  async function docGet(key){
+    let q = await supa.from(DOC_TABLE).select("doc_key,content,updated_at").eq("doc_key", key).maybeSingle();
     if(!q.error){
       return q.data ? { payload:q.data.content, updated_at:q.data.updated_at } : null;
     }
-    q = await client.from("rf_documents").select("doc_key, data, updated_at").eq("doc_key", key).maybeSingle();
+    q = await supa.from(DOC_TABLE).select("doc_key,data,updated_at").eq("doc_key", key).maybeSingle();
     if(q.error) throw q.error;
     return q.data ? { payload:q.data.data, updated_at:q.data.updated_at } : null;
   }
 
-  async function docUpsert(client, key, payload){
-    let q = await client.from("rf_documents").upsert({ doc_key:key, content:payload, updated_at:new Date().toISOString() }, { onConflict:"doc_key" });
+  async function docUpsert(key, payload){
+    let q = await supa.from(DOC_TABLE).upsert({ doc_key:key, content:payload, updated_at: nowIso() }, { onConflict:"doc_key" });
     if(!q.error) return true;
-    q = await client.from("rf_documents").upsert({ doc_key:key, data:payload, updated_at:new Date().toISOString() }, { onConflict:"doc_key" });
+    q = await supa.from(DOC_TABLE).upsert({ doc_key:key, data:payload, updated_at: nowIso() }, { onConflict:"doc_key" });
     if(q.error) throw q.error;
     return true;
   }
 
-  function currentPayload(){
-    return { app:"DEBITATE", version:1, savedAt:new Date().toISOString(), rows: (Array.isArray(rows)?rows:[]) };
+  function getPayload(){
+    return { app:"DEBITATE", version:1, rows: Array.isArray(rows) ? rows : [] };
   }
 
-  async function writeStamp(client){
-    const stamp = Date.now();
-    await docUpsert(client, STAMP_KEY, { stamp });
-    lastStamp = stamp;
-    return stamp;
-  }
-
-  async function readStamp(client){
-    const r = await docGet(client, STAMP_KEY);
-    return r?.payload?.stamp || null;
-  }
-
-  async function syncNow(manual=true){
+  function applyPayload(payload){
+    const ae = document.activeElement;
+    if(ae && (ae.tagName==='INPUT' || ae.tagName==='TEXTAREA' || ae.tagName==='SELECT')) return false;
     try{
-      const c = getClient();
-      if(!c){ setPill("cloud: off", false); return; }
-      if(!aclCanEdit() || !aclCanSync()){ if(manual) setPill("cloud: fără drept", false); return; }
-      if(inPush) return;
-      inPush = true;
-      setPill("cloud: salvez…", false);
-      await docUpsert(c, DOC_KEY, currentPayload());
-      await writeStamp(c);
-      setPill("cloud: sync ok", true);
-    }catch(e){
-      console.warn("debitate sync", e);
-      setPill("cloud: eroare", false);
-    } finally {
-      inPush = false;
-    }
-  }
-
-  async function pullApply(){
-    const c = getClient();
-    if(!c || inPull || inPush) return;
-    // don't pull while user is editing or shortly after
-    if(Date.now() < editingUntil) return;
-    if(aclCanEdit()) return; // editors/admin don't auto-pull (prevents overwrite)
-    try{
-      inPull = true;
-      const r = await docGet(c, DOC_KEY);
-      const payload = r?.payload;
       if(payload && Array.isArray(payload.rows)){
         rows = payload.rows;
         try{ autoScrollBottom = true; }catch(_e){}
-        render();
-        setPill("cloud: actualizat", true);
+        if(typeof refreshFilterUI === "function") refreshFilterUI(true);
+        if(typeof refreshSummaryUI === "function") refreshSummaryUI(true);
+        if(typeof render === "function") render();
+        else if(typeof renderBody === "function") renderBody();
+        return true;
       }
+    }catch(e){ console.warn("applyPayload", e); }
+    return false;
+  }
+
+  async function pull(){
+    if(!supa || inFlight) return;
+    inFlight = true;
+    try{
+      const rec = await docGet(DOC_KEY);
+      if(!rec || !rec.payload){ setPill("cloud: gol", true); return; }
+      const ts = rec.updated_at || null;
+      if(lastPulledAt && ts && new Date(ts) <= new Date(lastPulledAt)) { setPill("cloud: ok", true); return; }
+      if(lastPushedAt && ts && new Date(ts) <= new Date(lastPushedAt)) { setPill("cloud: ok", true); return; }
+
+      const applied = applyPayload(rec.payload);
+      if(applied) lastPulledAt = ts || nowIso();
+      setPill("cloud: ok", true);
     }catch(e){
       console.warn("debitate pull", e);
-    } finally {
-      inPull = false;
+      setPill("cloud: eroare", false);
+    }finally{
+      inFlight = false;
     }
   }
 
-  async function autoReceiveTick(){
-    const c = getClient();
-    if(!c) return;
-    if(Date.now() < editingUntil) return;
-    if(aclCanEdit()) return; // no auto-pull on editing roles
-    const stamp = await readStamp(c);
-    if(stamp && stamp !== lastStamp){
-      lastStamp = stamp;
-      await pullApply();
-    }
-  }
-
-  function startAutoReceive(){
-    if(pullTimer) return;
-    pullTimer = setInterval(()=>{ autoReceiveTick().catch(()=>{}); }, 1800);
-  }
-
-  function stopAutoReceive(){
-    if(pullTimer){ clearInterval(pullTimer); pullTimer = null; }
-  }
-
-  function scheduleSync(){
+  function schedulePush(){
+    if(!supa) return;
     if(!aclCanEdit() || !aclCanSync()) return;
     if(pushTimer) clearTimeout(pushTimer);
-    pushTimer = setTimeout(()=>{ syncNow(false); }, 700);
-  }
-
-  function markEditing(ms=3000){
-    editingUntil = Math.max(editingUntil, Date.now() + ms);
-  }
-
-  function hookEditingSignals(){
-    document.addEventListener("focusin", (e)=>{
-      const t=e.target;
-      if(t && (t.tagName==="INPUT" || t.tagName==="TEXTAREA" || t.isContentEditable)) markEditing(3500);
-    }, true);
-    document.addEventListener("input", (e)=>{
-      const t=e.target;
-      if(t && (t.tagName==="INPUT" || t.tagName==="TEXTAREA" || t.isContentEditable)) markEditing(3500);
-    }, true);
-    document.addEventListener("click", (e)=>{
-      const b=e.target && e.target.closest && e.target.closest("button");
-      if(!b) return;
-      markEditing(2500);
-      // admin-only actions usually mutate data
-      const txt=(b.textContent||"").toLowerCase();
-      if(txt.includes("add")||txt.includes("adaug")||txt.includes("save")||txt.includes("salv")||txt.includes("import")||txt.includes("reset")){
-        setTimeout(()=>scheduleSync(), 300);
+    pushTimer = setTimeout(async ()=>{
+      try{
+        setPill("cloud: salvez…", false);
+        await docUpsert(DOC_KEY, getPayload());
+        lastPushedAt = nowIso();
+        setPill("cloud: ok", true);
+      }catch(e){
+        console.warn("debitate push", e);
+        const msg = String(e && (e.message || e)).toLowerCase();
+        if(msg.includes("permission") || msg.includes("row-level") || msg.includes("forbidden") || msg.includes("policy")){
+          setPill("cloud: fără drept", false);
+        }else{
+          setPill("cloud: eroare", false);
+        }
       }
-    }, true);
+    }, 500);
   }
 
   function hookScheduleSave(){
@@ -1939,32 +1890,31 @@ window.debitateCloud = (function(){
       const orig = window.scheduleSave;
       window.scheduleSave = function(){
         const r = orig.apply(this, arguments);
-        markEditing(2500);
-        scheduleSync();
+        schedulePush();
         return r;
       };
     }
   }
 
-  async function boot(){
-    hookEditingSignals();
-    hookScheduleSave();
-    // delay cloud init so page feels faster
-    setTimeout(()=>{
-      try{
-        if(aclCanEdit()){
-          setPill(aclCanSync() ? "cloud: editor sync" : "cloud: local", !!aclCanSync());
-        }else{
-          setPill("cloud: auto-receive", true);
-          startAutoReceive();
-        }
-      }catch(_e){}
-    }, 1200);
+  function hookInputChanges(){
+    document.addEventListener("input", ()=> schedulePush(), true);
   }
 
-  return { boot, syncNow, pullApply, scheduleSync };
+  function boot(){
+    if(!supa){ setPill("cloud: client indisponibil", false); return; }
+    hookScheduleSave();
+    hookInputChanges();
+    setPill("cloud: conectare…", true);
+    setTimeout(()=>{
+      pull();
+      pollTimer = setInterval(pull, 2500);
+    }, 900);
+  }
+
+  function syncNow(){ schedulePush(); }
+  return { boot, pull, syncNow, scheduleSync: schedulePush };
 })();
-window.addEventListener("load", ()=> setTimeout(()=> { try{ debitateCloud.boot(); }catch(e){ console.warn(e);} }, 400));
+window.addEventListener("load", ()=> setTimeout(()=> { try{ window.debitateCloud.boot(); }catch(e){ console.warn(e);} }, 300));
 </script>
 </body>
 </html>
