@@ -1546,13 +1546,16 @@ const SUPABASE_URL  = "https://rhjcnydkdhjzazygybcc.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJoamNueWRrZGhqemF6eWd5YmNjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE4ODEzMzYsImV4cCI6MjA4NzQ1NzMzNn0.ompOZWqnFGsnOQzPiAv2QBwuaNiKtnz5PciRwCWh0Hk";
 
 // ── CREARE CLIENT ──────────────────────────────────────────────────────────
-window.__aclSupa = null;
+// FIX: în original `supa` era o variabilă locală și `__aclSupa` rămânea null.
+// Acum ambii pointeri sunt setați pe window imediat.
+window.__aclSupa = null; // va fi asignat mai jos
 const _supaClient = (window.supabase && window.supabase.createClient)
   ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
       auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: false }
     })
   : null;
 
+// ▶▶▶ LINIA CARE LIPSEA în versiunea originală ◀◀◀
 window.__aclSupa = _supaClient;
 window.__SUPA__  = _supaClient;  // alias pentru compatibilitate cu alte script-uri
 
@@ -1695,8 +1698,14 @@ window.addEventListener("load", () => setTimeout(bootAclDebitate, 500));
 </script>
 
 <!-- =====================================================================
-     CLOUD SYNC — același pattern ca INTRARI OTEL
-     Folosește window.__aclSupa (acum corect asignat) în loc de __aclSupa local.
+     CLOUD SYNC — toți clienții primesc date la pornire (pull universal)
+     Logică:
+       • La boot: TOȚI fac pull din cloud (indiferent de rol).
+         Dacă cloud are mai multe rânduri decât local → înlocuiește.
+         Dacă local e gol → înlocuiește oricum.
+       • Editors (can_edit_data + can_sync_cloud): push automat la fiecare salvare.
+       • Toți clienții: polling la 2s + realtime WebSocket pentru sync live.
+       • Protecție anti-overwrite în timpul editării (editingUntil).
      ===================================================================== -->
 <script>
 window.debitateCloud = (function(){
@@ -1707,6 +1716,7 @@ window.debitateCloud = (function(){
   let lastStamp = null;
   let editingUntil = 0;
   let inPull = false, inPush = false;
+  let booted = false;
 
   function setPill(txt, ok){
     if (!pill) return;
@@ -1714,23 +1724,17 @@ window.debitateCloud = (function(){
     pill.style.color = ok ? "#065f46" : "";
   }
 
-  // ▶ Acum getClient() returnează clientul real (window.__aclSupa)
-  function getClient(){
-    return window.__aclSupa || null;
-  }
-
+  function getClient(){ return window.__aclSupa || null; }
   function aclCanEdit(){ return !!(window.__ACL && window.__ACL.can_edit_data); }
   function aclCanSync(){ return !!(window.__ACL && window.__ACL.can_sync_cloud); }
+  function isEditing(){ return Date.now() < editingUntil; }
 
-  // ── Operații rf_documents (suportă ambele coloane: content / data) ────────
+  // ── rf_documents helpers (suportă coloanele 'content' și 'data') ──────────
   async function docGet(client, key){
-    // încearcă coloana 'content' mai întâi
     let q = await client.from("rf_documents")
       .select("doc_key, content, updated_at").eq("doc_key", key).maybeSingle();
-    if (!q.error){
+    if (!q.error)
       return q.data ? { payload: q.data.content, updated_at: q.data.updated_at } : null;
-    }
-    // fallback: coloana 'data'
     q = await client.from("rf_documents")
       .select("doc_key, data, updated_at").eq("doc_key", key).maybeSingle();
     if (q.error) throw q.error;
@@ -1741,7 +1745,6 @@ window.debitateCloud = (function(){
     let q = await client.from("rf_documents")
       .upsert({ doc_key: key, content: payload, updated_at: new Date().toISOString() }, { onConflict: "doc_key" });
     if (!q.error) return true;
-    // fallback: coloana 'data'
     q = await client.from("rf_documents")
       .upsert({ doc_key: key, data: payload, updated_at: new Date().toISOString() }, { onConflict: "doc_key" });
     if (q.error) throw q.error;
@@ -1749,12 +1752,8 @@ window.debitateCloud = (function(){
   }
 
   function currentPayload(){
-    return {
-      app: "DEBITATE",
-      version: 1,
-      savedAt: new Date().toISOString(),
-      rows: Array.isArray(rows) ? rows : []
-    };
+    return { app: "DEBITATE", version: 1, savedAt: new Date().toISOString(),
+             rows: Array.isArray(rows) ? rows : [] };
   }
 
   async function writeStamp(client){
@@ -1763,19 +1762,58 @@ window.debitateCloud = (function(){
     lastStamp = stamp;
     return stamp;
   }
-
   async function readStamp(client){
     const r = await docGet(client, STAMP_KEY);
     return r?.payload?.stamp || null;
   }
 
-  // ── SYNC MANUAL (butonul 🔁) ──────────────────────────────────────────────
+  // ── APPLY CLOUD DATA ────────────────────────────────────────────────────────
+  // Înlocuiește datele locale cu cele din cloud dacă:
+  //   (a) local e gol, SAU
+  //   (b) cloud are mai multe rânduri decât local (sursa de adevăr e cloud-ul)
+  // Nu suprascrie dacă userul editează activ.
+  function applyCloudPayload(payload, source){
+    if (!payload || !Array.isArray(payload.rows)) return false;
+    if (isEditing()) return false; // nu întrerupe editarea
+    const cloudCount = payload.rows.length;
+    const localCount = Array.isArray(rows) ? rows.length : 0;
+    // Înlocuiește dacă: local gol, sau cloud are mai multe date, sau e trigger explicit
+    if (localCount === 0 || cloudCount > localCount || source === "realtime" || source === "poll"){
+      rows = payload.rows;
+      try { autoScrollBottom = false; } catch(_e) {}
+      render();
+      setPill(`cloud: sync ✓ (${cloudCount} rânduri)`, true);
+      return true;
+    }
+    return false;
+  }
+
+  // ── PULL UNIVERSAL (toți clienții, la pornire și polling) ──────────────────
+  async function pullFromCloud(source = "poll"){
+    const c = getClient();
+    if (!c || inPull || inPush) return false;
+    if (isEditing() && source !== "boot") return false;
+    try {
+      inPull = true;
+      if (source === "boot") setPill("cloud: se încarcă…", true);
+      const r = await docGet(c, DOC_KEY);
+      return applyCloudPayload(r?.payload, source);
+    } catch(e){
+      console.warn("debitate pull [" + source + "]:", e);
+      setPill("cloud: eroare pull", false);
+      return false;
+    } finally {
+      inPull = false;
+    }
+  }
+
+  // ── PUSH (editor + sync) ───────────────────────────────────────────────────
   async function syncNow(manual = true){
     try {
       const c = getClient();
       if (!c){ setPill("cloud: off", false); return; }
       if (!aclCanEdit() || !aclCanSync()){
-        if (manual) setPill("cloud: fără drept", false);
+        if (manual) setPill("cloud: fără drept de sync", false);
         return;
       }
       if (inPush) return;
@@ -1783,106 +1821,56 @@ window.debitateCloud = (function(){
       setPill("cloud: salvez…", false);
       await docUpsert(c, DOC_KEY, currentPayload());
       await writeStamp(c);
-      setPill("cloud: sync ok ✓", true);
+      setPill(`cloud: salvat ✓ (${rows.length} rânduri)`, true);
     } catch(e){
       console.warn("debitate syncNow:", e);
-      setPill("cloud: eroare", false);
+      setPill("cloud: eroare push", false);
     } finally {
       inPush = false;
     }
   }
 
-  // ── PULL (viewer) ─────────────────────────────────────────────────────────
-  async function pullApply(){
+  // ── POLLING (toți clienții, la fiecare 2s) ─────────────────────────────────
+  // Verifică stamp-ul; dacă s-a schimbat → trage datele noi.
+  // Editorii NU suprascriu datele lor cu cloud-ul în timp ce au date locale mai noi
+  // (protecție: cloudCount > localCount).
+  async function pollTick(){
     const c = getClient();
-    if (!c || inPull || inPush) return;
-    if (Date.now() < editingUntil) return;
-    if (aclCanEdit()) return; // editorii nu suprascriu local cu cloud
+    if (!c || inPull || inPush || isEditing()) return;
     try {
-      inPull = true;
-      const r = await docGet(c, DOC_KEY);
-      const payload = r?.payload;
-      if (payload && Array.isArray(payload.rows)){
-        rows = payload.rows;
-        try { autoScrollBottom = true; } catch(_e) {}
-        render();
-        setPill("cloud: actualizat ✓", true);
+      const stamp = await readStamp(c);
+      if (stamp && stamp !== lastStamp){
+        lastStamp = stamp;
+        await pullFromCloud("poll");
       }
-    } catch(e){
-      console.warn("debitate pull:", e);
-    } finally {
-      inPull = false;
-    }
+    } catch(_e) {}
   }
 
-  // Pull o singură dată dacă localStorage e gol (editor pe calculator nou)
-  async function pullOnceIfLocalEmpty(){
-    const c = getClient();
-    if (!c || inPull || inPush) return;
-    if (Date.now() < editingUntil) return;
-    try {
-      const localCount = Array.isArray(rows) ? rows.length : 0;
-      if (localCount > 0) return;
-      inPull = true;
-      const r = await docGet(c, DOC_KEY);
-      const payload = r?.payload;
-      if (payload && Array.isArray(payload.rows) && payload.rows.length){
-        rows = payload.rows;
-        try { autoScrollBottom = true; } catch(_e) {}
-        render();
-        setPill("cloud: încărcat ✓", true);
-      }
-    } catch(e){
-      console.warn("debitate initial pull:", e);
-    } finally {
-      inPull = false;
-    }
-  }
-
-  // ── POLLING stamp (viewer auto-receive) ───────────────────────────────────
-  async function autoReceiveTick(){
-    const c = getClient();
-    if (!c) return;
-    if (Date.now() < editingUntil) return;
-    if (aclCanEdit()) return;
-    const stamp = await readStamp(c);
-    if (stamp && stamp !== lastStamp){
-      lastStamp = stamp;
-      await pullApply();
-    }
-  }
-
-  function startAutoReceive(){
+  function startPolling(){
     if (pullTimer) return;
-    pullTimer = setInterval(() => { autoReceiveTick().catch(() => {}); }, 1800);
+    pullTimer = setInterval(() => { pollTick().catch(() => {}); }, 2000);
   }
 
-  // ── REALTIME (viewer) ─────────────────────────────────────────────────────
+  // ── REALTIME WebSocket ────────────────────────────────────────────────────
   function subscribeRealtime(){
     const c = getClient();
     if (!c) return;
     try {
-      c.channel("rf_debitate_realtime")
+      c.channel("rf_debitate_rt_v2")
         .on("postgres_changes", {
           event: "*", schema: "public", table: "rf_documents",
           filter: "doc_key=eq." + DOC_KEY
         }, (ev) => {
-          if (aclCanEdit()) return;
-          if (Date.now() < editingUntil) return;
+          if (isEditing()) return;
           const row = ev?.new;
           const pl  = row?.content ?? row?.data;
-          if (pl && Array.isArray(pl.rows)){
-            rows = pl.rows;
-            try { autoScrollBottom = true; } catch(_e) {}
-            render();
-            setPill("cloud: live ✓", true);
-          }
+          if (pl) applyCloudPayload(pl, "realtime");
         })
         .subscribe();
     } catch(_e) {}
   }
 
-  // ── PUSH DEBOUNCED (editor) ───────────────────────────────────────────────
+  // ── PUSH DEBOUNCED la fiecare scheduleSave() ───────────────────────────────
   function scheduleSync(){
     if (!aclCanEdit() || !aclCanSync()) return;
     if (pushTimer) clearTimeout(pushTimer);
@@ -1929,8 +1917,11 @@ window.debitateCloud = (function(){
     }
   }
 
-  // ── BOOT ──────────────────────────────────────────────────────────────────
+  // ── BOOT ───────────────────────────────────────────────────────────────────
   async function boot(){
+    if (booted) return; // nu porni de două ori
+    booted = true;
+
     hookEditingSignals();
     hookScheduleSave();
 
@@ -1940,29 +1931,37 @@ window.debitateCloud = (function(){
       return;
     }
 
-    setTimeout(() => {
+    // 1. Pull imediat la pornire — TOȚI clienții, indiferent de rol
+    //    Așteptăm puțin ca pagina să fie randată înainte de a suprascrie
+    setTimeout(async () => {
       try {
-        if (aclCanEdit()){
-          setPill(aclCanSync() ? "cloud: editor sync" : "cloud: local", !!aclCanSync());
-          pullOnceIfLocalEmpty(); // sincronizare inițială dacă localStorage e gol
-        } else {
-          subscribeRealtime();   // actualizare push imediată
-          setPill("cloud: auto-receive", true);
-          startAutoReceive();    // polling backup
-        }
+        await pullFromCloud("boot");
       } catch(_e) {}
-    }, 1200);
+
+      // 2. Pornește realtime + polling pentru toți
+      subscribeRealtime();
+      startPolling();
+
+      // 3. Badge status
+      if (aclCanEdit() && aclCanSync()){
+        setPill("cloud: editor (sync activ)", true);
+      } else if (aclCanEdit()){
+        setPill("cloud: editor (sync manual)", true);
+      } else {
+        setPill("cloud: auto-receive activ", true);
+      }
+    }, 800);
   }
 
-  return { boot, syncNow, pullApply, scheduleSync };
+  return { boot, syncNow, pullApply: () => pullFromCloud("poll"), scheduleSync };
 })();
 
-// Boot-ul cloud e apelat de bootAclDebitate() după ce se cunoaște rolul.
-// Dacă ACL nu e disponibil, pornim oricum după load (fallback).
+// bootAclDebitate() apelează debitateCloud.boot() după ce cunoaște rolul.
+// Fallback: dacă ACL nu răspunde, pornim sync oricum după 1.5s.
 window.addEventListener("load", () => {
   setTimeout(() => {
     try { debitateCloud.boot(); } catch(e) { console.warn("debitateCloud boot fallback:", e); }
-  }, 400);
+  }, 1500);
 });
 </script>
 
