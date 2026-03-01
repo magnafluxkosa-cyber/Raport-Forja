@@ -1534,462 +1534,372 @@ function goDashboard(){ window.location.href='index.html'; }
   <datalist id="dlRepereDebitare"></datalist>
   <datalist id="dlUtilajeDebitare"></datalist>
 
-<!-- ==============================================================
-     SUPABASE + ACL + CLOUD SYNC — DEBITATE
-     Fix-uri față de versiunile anterioare:
-       1. __aclSupa asignat imediat după creare (nu mai rămâne null)
-       2. can_sync_cloud: dacă lipsește din DB → admin/editor au sync implicit
-       3. pullFromCloud("boot") nu e blocat de niciun flag
-       4. Boot fără setTimeout interior — pull imediat, sincron
-       5. Toți clienții primesc date la pornire (pull universal)
-     ============================================================== -->
+<!-- ================================================================
+     SUPABASE CLIENT
+     Same init pattern as index.html / intrari-otel.html
+     ================================================================ -->
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script>
-/* ── CONFIG ── */
-const SUPABASE_URL      = "https://rhjcnydkdhjzazygybcc.supabase.co";
-const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJoamNueWRrZGhqemF6eWd5YmNjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE4ODEzMzYsImV4cCI6MjA4NzQ1NzMzNn0.ompOZWqnFGsnOQzPiAv2QBwuaNiKtnz5PciRwCWh0Hk";
-
-/* ── CLIENT (asignat imediat pe window) ── */
-window.__aclSupa = null;
-window.__SUPA__  = null;
-if (window.supabase && window.supabase.createClient) {
-  const _c = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-    auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: false }
+(function(){
+  const URL = "https://rhjcnydkdhjzazygybcc.supabase.co";
+  const KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJoamNueWRrZGhqemF6eWd5YmNjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE4ODEzMzYsImV4cCI6MjA4NzQ1NzMzNn0.ompOZWqnFGsnOQzPiAv2QBwuaNiKtnz5PciRwCWh0Hk";
+  if(!window.supabase || !window.supabase.createClient){ return; }
+  const supa = window.supabase.createClient(URL, KEY, {
+    auth:{ persistSession:true, autoRefreshToken:true, detectSessionInUrl:false }
   });
-  window.__aclSupa = _c;
-  window.__SUPA__  = _c;
-}
+  window.__aclSupa = supa;
+  window.__SUPA__  = supa;
+})();
+</script>
 
-/* ── STATE ── */
+<!-- ================================================================
+     ACL BOOT — same pattern as helper-data.html
+     Key fix: can_sync_cloud fallback = true for admin/editor
+     (matches how helper-data.html resolves permissions)
+     ================================================================ -->
+<script>
 let __ACL = null;
-let __ME  = { role: "viewer", email: "" };
+let __ME  = { role:"viewer", email:"" };
 
-/* ── ROLE BADGE ── */
 function setRoleBadge(txt, err){
   const el = document.getElementById("roleBadge");
-  if (!el) return;
+  if(!el) return;
   el.textContent = txt;
-  el.classList.toggle("err", !!err);
+  if(err) el.style.color = "#ef4444";
 }
 
-/* ── ACL HELPERS ── */
-async function aclGetMyRole(){
-  const supa = window.__aclSupa;
-  if (!supa) return { role: "viewer", email: "" };
-  try {
-    const { data: s } = await supa.auth.getSession();
+async function aclGetMyRole(supa){
+  try{
+    const { data:s } = await supa.auth.getSession();
     const sess = s && s.session;
-    if (!sess) return { role: "viewer", email: "" };
+    if(!sess) return { role:"viewer", email:"" };
     const email = (sess.user && sess.user.email) || "";
-    const { data } = await supa.from("profiles").select("role")
-      .eq("id", sess.user.id).maybeSingle();
-    return { role: (data && data.role) || "viewer", email };
-  } catch(e) {
+    const { data } = await supa.from("profiles").select("role").eq("id", sess.user.id).maybeSingle();
+    return { role:(data && data.role) || "viewer", email };
+  }catch(e){
     console.warn("aclGetMyRole:", e);
-    return { role: "viewer", email: "" };
+    return { role:"viewer", email:"" };
   }
 }
 
-async function aclGetRow(pageKey, role){
-  const supa = window.__aclSupa;
-  if (!supa) return null;
-  try {
-    const { data } = await supa.from("rf_acl").select("*")
-      .eq("page_key", pageKey).eq("role", role).maybeSingle();
-    return data || null;
-  } catch(e) {
-    console.warn("aclGetRow:", e);
-    return null;
-  }
-}
-
-/* ── PERMISIUNI EFECTIVE ──────────────────────────────────────────────────────
-   Dacă rf_acl nu are rând pentru rol, admins și editorii primesc drepturi depline.
-   can_sync_cloud: dacă coloana lipsește sau e null → true pentru admin/editor.
-   ─────────────────────────────────────────────────────────────────────────── */
-function resolveAcl(dbRow, role){
-  const isPrivileged = (role === "admin" || role === "editor");
-
-  if (!dbRow) {
-    // Nicio regulă în DB → privilegiații au tot, viewerii doar citesc
-    return {
-      can_view:              true,
-      can_edit_data:         isPrivileged,
-      show_add_buttons:      isPrivileged,
-      show_import_buttons:   isPrivileged,
-      show_delete_buttons:   isPrivileged,
-      show_reset_buttons:    role === "admin",
-      can_export:            true,
-      can_filter:            true,
-      can_sync_cloud:        isPrivileged   // <-- implicit true pentru admin/editor
-    };
-  }
-
-  return {
-    can_view:              dbRow.can_view              !== false,
-    can_edit_data:         !!dbRow.can_edit_data,
-    show_add_buttons:      !!dbRow.show_add_buttons,
-    show_import_buttons:   !!dbRow.show_import_buttons,
-    show_delete_buttons:   !!dbRow.show_delete_buttons,
-    show_reset_buttons:    !!dbRow.show_reset_buttons,
-    can_export:            dbRow.can_export            !== false,
-    can_filter:            dbRow.can_filter            !== false,
-    // can_sync_cloud: dacă e null/undefined în DB → fallback la isPrivileged
-    can_sync_cloud:        (dbRow.can_sync_cloud != null)
-                             ? !!dbRow.can_sync_cloud
-                             : isPrivileged
-  };
-}
-
-/* ── APLICĂ ACL PE UI ── */
 function applyAclUi(acl){
-  __ACL = acl || __ACL || {};
+  __ACL = acl;
   const map = {
-    import:  "show_import_buttons",
-    add:     "show_add_buttons",
-    delete:  "show_delete_buttons",
-    reset:   "show_reset_buttons",
-    export:  "can_export",
-    filter:  "can_filter",
-    sync:    "can_sync_cloud"
+    import:"show_import_buttons", add:"show_add_buttons",
+    delete:"show_delete_buttons", reset:"show_reset_buttons",
+    export:"can_export", filter:"can_filter", sync:"can_sync_cloud"
   };
   document.querySelectorAll("[data-acl]").forEach(el => {
     const prop = map[el.getAttribute("data-acl")];
-    if (prop) el.style.display = !!__ACL[prop] ? "" : "none";
+    if(prop) el.style.display = !!acl[prop] ? "" : "none";
   });
-  const canEdit = !!__ACL.can_edit_data;
   document.querySelectorAll("[data-edit]").forEach(el => {
-    try { el.disabled = !canEdit; } catch(_e) {}
+    try{ el.disabled = !acl.can_edit_data; }catch(_e){}
   });
   document.querySelectorAll("[data-edit-btn]").forEach(el => {
-    el.style.display = canEdit ? "" : "none";
+    el.style.display = acl.can_edit_data ? "" : "none";
   });
 }
 
-/* ── HOOKS PE FUNCTII PRINCIPALE ── */
+// Hook render so ACL re-applies after each render
 (function(){
   const _rb = window.renderBody;
-  if (typeof _rb === "function"){
+  if(typeof _rb === "function"){
     window.renderBody = function(){
       const r = _rb.apply(this, arguments);
-      try { if (__ACL) applyAclUi(__ACL); } catch(_e) {}
+      try{ if(__ACL) applyAclUi(__ACL); }catch(_e){}
       return r;
     };
   }
   const _open = window.openAddModal;
-  if (typeof _open === "function"){
+  if(typeof _open === "function"){
     window.openAddModal = function(){
-      if (__ACL && !__ACL.can_edit_data) return;
+      if(__ACL && !__ACL.can_edit_data) return;
       return _open.apply(this, arguments);
     };
   }
   const _save = window.saveAddModal;
-  if (typeof _save === "function"){
+  if(typeof _save === "function"){
     window.saveAddModal = function(){
-      if (__ACL && !__ACL.can_edit_data) return;
+      if(__ACL && !__ACL.can_edit_data) return;
       return _save.apply(this, arguments);
     };
   }
 })();
 
-/* ── BOOT ACL ── */
 async function bootAclDebitate(){
-  // Stare inițială securizată (până se încarcă ACL-ul real)
+  const supa = window.__aclSupa;
+
+  // Locked state until ACL loads
   applyAclUi({
-    can_view: true, can_edit_data: false,
-    show_import_buttons: false, show_add_buttons: false,
-    show_delete_buttons: false, show_reset_buttons: false,
-    can_export: true, can_filter: true, can_sync_cloud: false
+    can_view:true, can_edit_data:false,
+    show_import_buttons:false, show_add_buttons:false,
+    show_delete_buttons:false, show_reset_buttons:false,
+    can_export:true, can_filter:true, can_sync_cloud:false
   });
 
-  if (!window.__aclSupa){
-    setRoleBadge("rol: local (fara Supabase)", true);
-    // Porneste cloud sync oricum (va esua silentios fara client)
-    try { window.debitateCloud && window.debitateCloud.boot(); } catch(_e) {}
+  if(!supa){
+    setRoleBadge("rol: local (fara Supabase)");
+    try{ window.debitateCloud && window.debitateCloud.boot(); }catch(_e){}
     return;
   }
 
-  try {
-    __ME = await aclGetMyRole();
-    const dbRow = await aclGetRow("debitate", __ME.role);
-    const acl   = resolveAcl(dbRow, __ME.role);
+  try{
+    __ME = await aclGetMyRole(supa);
+    const isPrivileged = (__ME.role === "admin" || __ME.role === "editor");
 
-    if (!acl.can_view){ location.href = "index.html"; return; }
+    // Load rf_acl row (same as helper-data.html)
+    let row = null;
+    const q = await supa.from("rf_acl").select("*")
+      .eq("page_key","debitate").eq("role", __ME.role).maybeSingle();
+    if(!q.error) row = q.data;
+
+    // Resolve ACL — same logic as helper-data.html:
+    //   acl ? use db values : fallback based on role
+    // CRITICAL: can_sync_cloud null/missing → true for admin/editor
+    const acl = {
+      can_view:              row ? row.can_view              !== false  : true,
+      can_edit_data:         row ? !!row.can_edit_data                  : isPrivileged,
+      show_add_buttons:      row ? !!row.show_add_buttons               : isPrivileged,
+      show_import_buttons:   row ? !!row.show_import_buttons            : isPrivileged,
+      show_delete_buttons:   row ? !!row.show_delete_buttons            : isPrivileged,
+      show_reset_buttons:    row ? !!row.show_reset_buttons             : (__ME.role === "admin"),
+      can_export:            row ? row.can_export            !== false  : true,
+      can_filter:            row ? row.can_filter            !== false  : true,
+      // KEY FIX: null/undefined → isPrivileged (same as helper-data.html)
+      can_sync_cloud:        row ? (row.can_sync_cloud != null ? !!row.can_sync_cloud : isPrivileged)
+                                 : isPrivileged
+    };
+
+    console.log("[DEBITATE ACL]", { role:__ME.role, email:__ME.email, aclRow:row, resolved:acl });
+
+    if(!acl.can_view){ location.href = "index.html"; return; }
 
     setRoleBadge("rol: " + __ME.role + (__ME.email ? " | " + __ME.email : ""));
     applyAclUi(acl);
 
-    // Log pentru debug (vizibil în console pe orice laptop)
-    console.log("[DEBITATE ACL]", { role: __ME.role, acl, dbRow });
-
-  } catch(e){
+  }catch(e){
     console.warn("bootAclDebitate error:", e);
-    setRoleBadge("ACL error - fallback viewer", true);
-    // Fallback permisiv: permite citire, nu permite scriere
-    applyAclUi({
-      can_view: true, can_edit_data: false,
-      show_import_buttons: false, show_add_buttons: false,
-      show_delete_buttons: false, show_reset_buttons: false,
-      can_export: true, can_filter: true, can_sync_cloud: false
-    });
+    setRoleBadge("ACL error - viewer fallback");
   }
 
-  // Porneste cloud sync DUPA ce ACL e aplicat
-  try { window.debitateCloud && window.debitateCloud.boot(); } catch(_e) {}
+  // Boot cloud sync AFTER ACL is known
+  try{ window.debitateCloud && window.debitateCloud.boot(); }catch(_e){}
 }
 
 window.addEventListener("load", () => setTimeout(bootAclDebitate, 300));
 </script>
 
-<!-- ── CLOUD SYNC ───────────────────────────────────────────────────────────
-     Pull universal: TOTI clientii (inclusiv admin/editor pe alt laptop)
-     primesc datele din cloud la pornire, indiferent de rol sau localStorage.
-     Push: doar editorii cu can_sync_cloud (sau admin implicit).
-     ──────────────────────────────────────────────────────────────────────── -->
+<!-- ================================================================
+     CLOUD SYNC — same pattern as intrari-otel.html
+     Uses 'data' column (not 'content') — matches existing DB rows
+     Pull on boot for ALL users; push only for can_edit+can_sync
+     ================================================================ -->
 <script>
 window.debitateCloud = (function(){
-  const DOC_KEY = "debitate";
-  const pill    = document.getElementById("pillCloud");
-  let pushTimer = null, pollTimer = null;
-  let lastStamp = null;
-  let editingUntil = 0;
-  let inPush = false;
-  let booted = false;
+  const DOC_KEY   = "debitate";
+  const DOC_TABLE = "rf_documents";
+  const pill = document.getElementById("pillCloud");
 
-  /* helpers */
+  let lastPulledAt = null;
+  let lastPushedAt = null;
+  let pollTimer    = null;
+  let pushTimer    = null;
+  let inFlight     = false;
+  let booted       = false;
+
   function setPill(txt, ok){
-    if (!pill) return;
+    if(!pill) return;
     pill.textContent = txt;
     pill.style.color = ok ? "#065f46" : "#b91c1c";
   }
+
   function getClient(){ return window.__aclSupa || null; }
   function canEdit(){   return !!(window.__ACL && window.__ACL.can_edit_data); }
   function canSync(){   return !!(window.__ACL && window.__ACL.can_sync_cloud); }
-  function editing(){   return Date.now() < editingUntil; }
-  function markEdit(ms){ editingUntil = Math.max(editingUntil, Date.now() + (ms||3000)); }
+  function nowIso(){    return new Date().toISOString(); }
 
-  /* ── rf_documents: citire robustă (încearcă content + data) ── */
-  async function dbGet(key){
-    const c = getClient();
-    if (!c) return null;
-    try {
-      // Selectează ambele coloane posibile dintr-o singură cerere
-      const { data, error } = await c.from("rf_documents")
-        .select("content, data, updated_at")
-        .eq("doc_key", key)
-        .maybeSingle();
-      if (error) throw error;
-      if (!data) return null;
-      // preferă 'content', fallback 'data'
-      const payload = (data.content !== undefined && data.content !== null)
-                       ? data.content
-                       : data.data;
-      return { payload, ts: data.updated_at };
-    } catch(e){
-      console.warn("dbGet error:", e);
-      return null;
-    }
+  function isActivelyEditing(){
+    const ae = document.activeElement;
+    return !!(ae && (ae.tagName === "INPUT" || ae.tagName === "TEXTAREA"
+              || ae.tagName === "SELECT" || ae.isContentEditable));
   }
 
-  /* ── rf_documents: scriere ── */
-  async function dbSet(key, payload){
-    const c = getClient();
-    if (!c) return false;
-    const row = { doc_key: key, updated_at: new Date().toISOString() };
-    // Încearcă cu 'content' (coloana preferată)
-    try {
-      const { error } = await c.from("rf_documents")
-        .upsert({ ...row, content: payload }, { onConflict: "doc_key" });
-      if (!error) return true;
-    } catch(_e) {}
-    // Fallback: 'data'
-    try {
-      const { error } = await c.from("rf_documents")
-        .upsert({ ...row, data: payload }, { onConflict: "doc_key" });
-      if (!error) return true;
-    } catch(_e) {}
-    return false;
-  }
-
-  /* ── APLICĂ DATE DIN CLOUD ─────────────────────────────────────────────────
-     "boot"     → mereu (prioritate maximă, nu blochează nimic)
-     "realtime" → mereu dacă nu se editează activ
-     "poll"     → doar dacă nu se editează activ
-     ───────────────────────────────────────────────────────────────────────── */
-  function applyData(payload, source){
-    if (!payload || !Array.isArray(payload.rows)) return false;
-    if (source !== "boot" && editing()) return false;
-    rows = payload.rows;
-    try { render(); } catch(_e) {}
-    setPill("cloud OK: " + payload.rows.length + " randuri", true);
-    console.log("[DEBITATE CLOUD] applyData source=" + source + " rows=" + payload.rows.length);
-    return true;
-  }
-
-  /* ── PULL (toți clienții) ── */
+  // ── Pull from cloud ───────────────────────────────────────────────────────
+  // source="boot": always apply, ignore timestamps
+  // source="poll": respect lastPushedAt (don't overwrite fresh local push)
   async function pull(source){
-    const c = getClient();
-    if (!c){ setPill("cloud: fara Supabase", false); return false; }
-    try {
-      if (source === "boot") setPill("cloud: se incarca...", true);
-      const r = await dbGet(DOC_KEY);
-      if (!r || r.payload === null || r.payload === undefined){
-        if (source === "boot") setPill("cloud: gol (nicio data)", false);
-        console.warn("[DEBITATE CLOUD] pull " + source + ": dbGet returned", r);
-        return false;
+    const supa = getClient();
+    if(!supa){ setPill("cloud: fara Supabase", false); return; }
+    if(inFlight && source !== "boot") return;
+
+    // Don't overwrite while user is actively typing (except on boot)
+    if(source !== "boot" && isActivelyEditing()) return;
+
+    inFlight = true;
+    try{
+      setPill(source === "boot" ? "cloud: se incarca..." : "cloud: sync...", true);
+
+      const { data, error } = await supa
+        .from(DOC_TABLE)
+        .select("doc_key, data, content, updated_at")
+        .eq("doc_key", DOC_KEY)
+        .maybeSingle();
+
+      if(error) throw error;
+      if(!data){ setPill("cloud: gol (nicio data salvata)", false); return; }
+
+      const ts = data.updated_at || null;
+
+      // On poll: skip if we already have this version or pushed something newer
+      if(source === "poll"){
+        if(lastPulledAt && ts && new Date(ts) <= new Date(lastPulledAt)) return;
+        if(lastPushedAt && ts && new Date(ts) <= new Date(lastPushedAt)) return;
       }
-      lastStamp = r.ts;
-      return applyData(r.payload, source);
-    } catch(e){
+
+      // prefer 'data' column (matches intrari-otel.html), fallback 'content'
+      const payload = (data.data !== undefined && data.data !== null)
+                       ? data.data
+                       : data.content;
+
+      if(!payload || !Array.isArray(payload.rows)){
+        setPill("cloud: format invalid (" + JSON.stringify(Object.keys(data)) + ")", false);
+        console.warn("[DEBITATE CLOUD] unexpected payload:", data);
+        return;
+      }
+
+      rows = payload.rows;
+      try{ render(); }catch(_e){}
+      lastPulledAt = ts || nowIso();
+      setPill("cloud: OK (" + rows.length + " randuri)", true);
+      console.log("[DEBITATE CLOUD] pull " + source + " OK, rows=" + rows.length + ", ts=" + ts);
+
+    }catch(e){
       console.warn("[DEBITATE CLOUD] pull error:", e);
-      setPill("cloud: eroare pull", false);
-      return false;
+      setPill("cloud: eroare pull - " + (e.message || e), false);
+    }finally{
+      inFlight = false;
     }
   }
 
-  /* ── PUSH (editor/admin) ── */
+  // ── Push to cloud ─────────────────────────────────────────────────────────
   async function push(){
-    if (inPush) return;
-    const c = getClient();
-    if (!c) return;
-    inPush = true;
+    const supa = getClient();
+    if(!supa) return;
     setPill("cloud: salvez...", true);
-    try {
-      const payload = { app:"DEBITATE", v:2, savedAt: new Date().toISOString(),
-                        rows: Array.isArray(rows) ? rows : [] };
-      const ok = await dbSet(DOC_KEY, payload);
-      if (ok){
-        lastStamp = new Date().toISOString();
-        setPill("cloud: salvat OK (" + (Array.isArray(rows) ? rows.length : 0) + " randuri)", true);
-      } else {
-        setPill("cloud: eroare la salvare", false);
-      }
-    } catch(e){
+    try{
+      const payload = {
+        app: "DEBITATE", version: 2,
+        savedAt: nowIso(),
+        rows: Array.isArray(rows) ? rows : []
+      };
+      const ts = nowIso();
+      // Use 'data' column — same as intrari-otel.html
+      const { error } = await supa.from(DOC_TABLE)
+        .upsert({ doc_key: DOC_KEY, data: payload, updated_at: ts }, { onConflict:"doc_key" });
+      if(error) throw error;
+      lastPushedAt = ts;
+      setPill("cloud: salvat OK (" + payload.rows.length + " randuri)", true);
+      console.log("[DEBITATE CLOUD] push OK, rows=" + payload.rows.length);
+    }catch(e){
       console.warn("[DEBITATE CLOUD] push error:", e);
-      setPill("cloud: eroare push", false);
-    } finally {
-      inPush = false;
+      setPill("cloud: eroare push - " + (e.message || e), false);
     }
   }
 
-  /* ── SYNC MANUAL (butonul Sync Cloud) ── */
+  // ── Public: syncNow (Sync Cloud button) ──────────────────────────────────
   async function syncNow(){
-    if (!canEdit() || !canSync()){
-      // Debug: arata de ce e blocat
-      console.warn("[DEBITATE CLOUD] syncNow blocked: canEdit=" + canEdit() + " canSync=" + canSync() + " __ACL=", window.__ACL);
-      setPill("cloud: fara drept sync (vezi consola)", false);
+    console.log("[DEBITATE CLOUD] syncNow called: canEdit=" + canEdit() + " canSync=" + canSync() + " __ACL=", window.__ACL);
+    if(!canEdit() || !canSync()){
+      setPill("cloud: fara drept sync (canEdit=" + canEdit() + " canSync=" + canSync() + ")", false);
       return;
     }
     await push();
   }
 
-  /* ── POLLING (2s, toți clienții) ── */
-  async function pollTick(){
-    if (editing() || inPush) return;
-    try {
-      const r = await dbGet(DOC_KEY);
-      if (!r) return;
-      // Aplică dacă timestamp-ul s-a schimbat față de ultima dată
-      if (r.ts && r.ts !== lastStamp){
-        lastStamp = r.ts;
-        applyData(r.payload, "poll");
-      }
-    } catch(_e) {}
-  }
-
-  function startPolling(){
-    if (pollTimer) return;
-    pollTimer = setInterval(() => pollTick().catch(() => {}), 2000);
-  }
-
-  /* ── REALTIME WebSocket ── */
-  function subscribeRealtime(){
-    const c = getClient();
-    if (!c) return;
-    try {
-      c.channel("rf_deb_rt_v3")
-        .on("postgres_changes", {
-          event: "*", schema: "public",
-          table: "rf_documents", filter: "doc_key=eq." + DOC_KEY
-        }, ev => {
-          if (editing()) return;
-          const row = ev && ev.new;
-          if (!row) return;
-          const pl = (row.content !== undefined && row.content !== null) ? row.content : row.data;
-          if (pl) applyData(pl, "realtime");
-        })
-        .subscribe();
-    } catch(_e) {}
-  }
-
-  /* ── SCHEDULE PUSH (la fiecare scheduleSave) ── */
+  // ── scheduleSync: auto-push after scheduleSave ────────────────────────────
   function scheduleSync(){
-    if (!canEdit() || !canSync()) return;
-    if (pushTimer) clearTimeout(pushTimer);
+    if(!canEdit() || !canSync()) return;
+    if(pushTimer) clearTimeout(pushTimer);
     pushTimer = setTimeout(() => push(), 800);
   }
 
-  /* ── HOOKS ── */
-  function hookInputs(){
-    document.addEventListener("focusin", e => {
-      const t = e.target;
-      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable))
-        markEdit(3500);
-    }, true);
-    document.addEventListener("input", e => {
-      const t = e.target;
-      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable))
-        markEdit(3500);
-    }, true);
+  // ── Polling: every 2.5s (same as intrari-otel.html) ──────────────────────
+  function startPolling(){
+    if(pollTimer) return;
+    pollTimer = setInterval(() => pull("poll").catch(() => {}), 2500);
   }
 
-  function hookSave(){
+  // ── Realtime WebSocket ────────────────────────────────────────────────────
+  function subscribeRealtime(){
+    const supa = getClient();
+    if(!supa) return;
+    try{
+      supa.channel("rf_deb_rt_v4")
+        .on("postgres_changes", {
+          event:"*", schema:"public",
+          table:DOC_TABLE, filter:"doc_key=eq." + DOC_KEY
+        }, ev => {
+          if(isActivelyEditing()) return;
+          const row = ev && ev.new;
+          if(!row) return;
+          const pl = (row.data !== undefined && row.data !== null) ? row.data : row.content;
+          if(pl && Array.isArray(pl.rows)){
+            rows = pl.rows;
+            try{ render(); }catch(_e){}
+            lastPulledAt = row.updated_at || nowIso();
+            setPill("cloud: live (" + pl.rows.length + " randuri)", true);
+          }
+        })
+        .subscribe();
+    }catch(_e){}
+  }
+
+  // ── Hook scheduleSave so every save also pushes ───────────────────────────
+  function hookScheduleSave(){
     const orig = window.scheduleSave;
-    if (typeof orig !== "function") return;
+    if(typeof orig !== "function") return;
     window.scheduleSave = function(){
       const r = orig.apply(this, arguments);
-      markEdit(2500);
       scheduleSync();
       return r;
     };
   }
 
-  /* ── BOOT ── */
+  // ── Boot ─────────────────────────────────────────────────────────────────
   async function boot(){
-    if (booted) return;
+    if(booted) return;
     booted = true;
-    hookInputs();
-    hookSave();
 
-    const c = getClient();
-    if (!c){ setPill("cloud: fara Supabase", false); return; }
+    hookScheduleSave();
 
-    console.log("[DEBITATE CLOUD] boot start, role=" + (__ME && __ME.role) + " canEdit=" + canEdit() + " canSync=" + canSync());
+    const supa = getClient();
+    if(!supa){ setPill("cloud: fara Supabase", false); return; }
 
-    // PULL IMEDIAT — toți, indiferent de rol, fără niciun setTimeout
+    console.log("[DEBITATE CLOUD] boot: role=" + (__ME && __ME.role) + " canEdit=" + canEdit() + " canSync=" + canSync());
+
+    // Pull immediately for ALL users — no role check
     await pull("boot");
 
-    // Porneste live sync pentru toți
+    // Start live sync
     subscribeRealtime();
     startPolling();
 
-    // Status final
-    if (canEdit() && canSync()){
+    if(canEdit() && canSync()){
       setPill("cloud: editor sync activ", true);
-    } else if (canEdit()){
+    } else if(canEdit()){
       setPill("cloud: editor (apasa Sync pt push)", true);
     } else {
       setPill("cloud: auto-receive activ", true);
     }
   }
 
-  return { boot, syncNow, scheduleSync, pull: () => pull("poll") };
+  return { boot, syncNow, scheduleSync };
 })();
 
-// Fallback: dacă bootAclDebitate nu a reușit să apeleze boot() în 4s, o facem noi
+// Fallback if bootAclDebitate fails to call boot()
 window.addEventListener("load", () => {
-  setTimeout(() => {
-    try { window.debitateCloud.boot(); } catch(_e) {}
-  }, 4000);
+  setTimeout(() => { try{ window.debitateCloud.boot(); }catch(_e){} }, 4000);
 });
 </script>
 
