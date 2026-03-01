@@ -497,6 +497,36 @@ function showMsg(msg){
 }
 
 
+
+/* ===== rf_documents schema helper (content vs data) ===== */
+async function rfDocGet(client, doc_key){
+  // try with content first, then data
+  let res = await client.from("rf_documents").select("doc_key, content, updated_at").eq("doc_key", doc_key).maybeSingle();
+  if(!res.error) return res.data ? { doc_key: res.data.doc_key, payload: res.data.content, updated_at: res.data.updated_at } : null;
+
+  // fallback: data column
+  res = await client.from("rf_documents").select("doc_key, data, updated_at").eq("doc_key", doc_key).maybeSingle();
+  if(res.error) throw res.error;
+  return res.data ? { doc_key: res.data.doc_key, payload: res.data.data, updated_at: res.data.updated_at } : null;
+}
+
+async function rfDocUpsert(client, doc_key, payload){
+  // try write to content, if fails try data
+  let res = await client.from("rf_documents").upsert(
+    { doc_key, content: payload, updated_at: new Date().toISOString() },
+    { onConflict: "doc_key" }
+  );
+  if(!res.error) return true;
+
+  res = await client.from("rf_documents").upsert(
+    { doc_key, data: payload, updated_at: new Date().toISOString() },
+    { onConflict: "doc_key" }
+  );
+  if(res.error) throw res.error;
+  return true;
+}
+
+
 /* ===== CLOUD SYNC: stabil (fără șters serii/rânduri) =====
    - Admin: face PUSH (sync) manual sau auto la editări (rapid), DAR NU face PULL (ca să nu se suprascrie singur).
    - Viewer/Editor (fără drept de scriere): face AUTO-RECEIVE prin polling pe un "stamp" și apoi PULL.
@@ -530,21 +560,13 @@ function cloudPayloadNow(){
 }
 
 async function rfReadStamp(client){
-  const { data, error } = await client
-    .from("rf_documents")
-    .select("content, updated_at")
-    .eq("doc_key","numeralkod_stamp")
-    .maybeSingle();
-  if(error) throw error;
-  return data?.content?.stamp || null;
+  const row = await rfDocGet(client, "numeralkod_stamp");
+  return row?.payload?.stamp || null;
 }
 
 async function rfWriteStamp(client){
   const stamp = Date.now();
-  const { error } = await client
-    .from("rf_documents")
-    .upsert({ doc_key:"numeralkod_stamp", content:{ stamp }, updated_at:new Date().toISOString() }, { onConflict:"doc_key" });
-  if(error) throw error;
+  await rfDocUpsert(client, "numeralkod_stamp", { stamp });
   RF_LAST_STAMP = stamp;
   return stamp;
 }
@@ -1782,7 +1804,7 @@ window.applyCloudPayload = function(payload){
    - Înlocuiește "localStorage-only" cu cloud + realtime
    =============================== */
 (function(){
- const SUPABASE_URL = "https://rhjcnydkdhjzazygybcc.supabase.co";
+  const SUPABASE_URL = "https://rhjcnydkdhjzazygybcc.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJoamNueWRrZGhqemF6eWd5YmNjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE4ODEzMzYsImV4cCI6MjA4NzQ1NzMzNn0.ompOZWqnFGsnOQzPiAv2QBwuaNiKtnz5PciRwCWh0Hk"; // <-- Anon Key (Legacy)
 ;
   const DOC_TABLE = "rf_documents";
@@ -1838,22 +1860,9 @@ const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
 
   let pushTimer = null;
   async function push(payload){
-    if(!supa) return;
-    if(applyingRemote) return;
-    if(role !== "admin" && role !== "editor") return; // viewer nu scrie
-    // debounce
-    clearTimeout(pushTimer);
-    pushTimer = setTimeout(async ()=>{
-      try{
-        const ts = Date.now();
-        // protecție anti spam
-        if(ts - lastPushedAt < 350) return;
-        lastPushedAt = ts;
-        const up = {
-          doc_key: DOC_KEY,
-          data: payload,
-          updated_at: nowIso()
-        };
+      await rfDocUpsert(supa, DOC_KEY, payload);
+      return true;
+    };
         const { error } = await supa.from(DOC_TABLE).upsert(up, { onConflict: "doc_key" });
         if(error) throw error;
         setBadge(true, "Cloud: ON");
