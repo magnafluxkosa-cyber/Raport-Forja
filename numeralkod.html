@@ -289,8 +289,11 @@ function goDashboard(){ window.location.href = 'index.html'; }
     <button class="btnMini btnDark" onclick="exportXLSX(\'all\')">⤓ Export Excel</button>
     <button class="btnMini btnDark" onclick="importXLSX(\'all\')">⤒ Import Excel</button>
 
-    <button id="btnCloudSave" class="btnMini btnDark" onclick="cloudSaveNow()" title="Salvează manual în cloud">☁️ Salvează în Cloud</button>
-    <button id="btnCloudPull" class="btnMini" onclick="cloudPullNow()" title="Încarcă manual din cloud">🔄 Încarcă din Cloud</button>
+    <button id="btnCloudSync" class="btnMini btnDark" onclick="cloudSyncNow()" title="Salvează în cloud și notifică celelalte conturi">🔁 Sync Cloud</button>
+    <label style="display:inline-flex;align-items:center;gap:6px;margin-left:8px;font-weight:700">
+      <input id="chkAutoReceive" type="checkbox" checked style="width:16px;height:16px"/>
+      Auto-Receive
+    </label>
     <span id="cloudBadge" class="badgeCloud">Cloud: …</span>
 
     <input id="fileImportXLSX" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" style="display:none" />
@@ -1000,42 +1003,134 @@ async function cloudSaveNow(){
   }
 }
 
-async function cloudPullNow(){
+
+
+
+/* ====== CLOUD SYNC (one button) + Auto-Receive (no refresh) ====== */
+let RF_AUTO_RECEIVE_TIMER = null;
+let RF_LAST_SYNC_STAMP = null;
+
+function rfSetBadge(txt, ok=false){
+  const badge = document.getElementById("cloudBadge");
+  if(!badge) return;
+  badge.textContent = txt;
+  badge.classList.toggle("ok", !!ok);
+}
+
+function cloudPayloadNow(){
+  return {
+    app:"NUMERALKOD",
+    version:3,
+    savedAt: new Date().toISOString(),
+    tables: collectData(),
+    reserved: (state.rez || []).map(r => ({
+      marcaj: normalizeMarcaj(r.marcaj),
+      dim: (r.dim||"").toString(),
+      grade: (r.grade||"").toString(),
+      sarja: (r.sarja||"").toString(),
+      reper: (r.reper||"").toString()
+    }))
+  };
+}
+
+// stamp record stored in rf_documents with doc_key='numeralkod_stamp'
+async function rfWriteStamp(client){
+  const stamp = Date.now();
+  const { error } = await client
+    .from("rf_documents")
+    .upsert({ doc_key: "numeralkod_stamp", content: { stamp }, updated_at: new Date().toISOString() }, { onConflict: "doc_key" });
+  if(error) throw error;
+  RF_LAST_SYNC_STAMP = stamp;
+  return stamp;
+}
+
+async function rfReadStamp(client){
+  const { data, error } = await client
+    .from("rf_documents")
+    .select("content, updated_at")
+    .eq("doc_key","numeralkod_stamp")
+    .maybeSingle();
+  if(error) throw error;
+  return data?.content?.stamp || null;
+}
+
+async function cloudSyncNow(){
   try{
-    if(!window.__rfCloud || typeof window.__rfCloud.pull !== "function"){
+    if(!window.__rfCloud || typeof window.__rfCloud.push !== "function"){
       showMsg("Cloud: nu este inițializat (supabase).");
       return;
     }
-    const badge = document.getElementById("cloudBadge");
-    if(badge){ badge.classList.remove("ok"); badge.textContent = "Cloud: încarc…"; }
+    const role = window.__rfCloud.role || "viewer";
+    if(role !== "admin" && role !== "editor"){
+      showMsg("Nu ai drept de scriere (viewer).");
+      return;
+    }
+    rfSetBadge("Cloud: salvez…", false);
 
-    // Pull from cloud and apply
-    const doc = await window.__rfCloud.pull();
-    if(doc && doc.tables){
-      // apply data using existing import/apply functions if present
-      if(typeof applyData === "function"){
-        applyData(doc.tables);
-      }else if(typeof importData === "function"){
-        importData(doc.tables);
-      }else if(typeof setDataFromCloud === "function"){
-        setDataFromCloud(doc.tables);
-      }else{
-        // fallback: try to set global state if exists
-        if(window.state){
-          window.state = doc.tables;
-        }
-      }
+    const payload = cloudPayloadNow();
+    await window.__rfCloud.push(payload);
+
+    const client = window.__rfCloud.client || (typeof sb !== "undefined" ? sb : null);
+    if(client){
+      await rfWriteStamp(client);
     }
 
-    if(badge){ badge.classList.add("ok"); badge.textContent = "Cloud: încărcat"; }
-    showMsg("Încărcat din cloud.");
+    rfSetBadge("Cloud: sync OK", true);
+    showMsg("Sync cloud: salvat + notificat.");
   }catch(e){
     console.error(e);
-    const badge = document.getElementById("cloudBadge");
-    if(badge){ badge.classList.remove("ok"); badge.textContent = "Cloud: eroare"; }
-    showMsg("Eroare la încărcare din cloud: " + (e?.message || e));
+    rfSetBadge("Cloud: eroare", false);
+    showMsg("Eroare sync cloud: " + (e?.message || e));
   }
 }
+
+async function cloudPullApply(){
+  if(!window.__rfCloud || typeof window.__rfCloud.pull !== "function") return;
+  rfSetBadge("Cloud: încarc…", false);
+  const doc = await window.__rfCloud.pull();
+  if(doc && doc.tables){
+    if(typeof applyData === "function") applyData(doc.tables);
+    else if(typeof importData === "function") importData(doc.tables);
+    else if(typeof setDataFromCloud === "function") setDataFromCloud(doc.tables);
+  }
+  rfSetBadge("Cloud: încărcat", true);
+}
+
+async function rfAutoReceiveTick(){
+  const chk = document.getElementById("chkAutoReceive");
+  if(!chk || !chk.checked) return;
+
+  const client = window.__rfCloud?.client || (typeof sb !== "undefined" ? sb : null);
+  if(!client) return;
+
+  const stamp = await rfReadStamp(client);
+  if(stamp && stamp !== RF_LAST_SYNC_STAMP){
+    RF_LAST_SYNC_STAMP = stamp;
+    await cloudPullApply();
+  }
+}
+
+function rfStartAutoReceive(){
+  if(RF_AUTO_RECEIVE_TIMER) return;
+  RF_AUTO_RECEIVE_TIMER = setInterval(()=>{ rfAutoReceiveTick().catch(()=>{}); }, 2000);
+}
+
+function rfStopAutoReceive(){
+  if(RF_AUTO_RECEIVE_TIMER){ clearInterval(RF_AUTO_RECEIVE_TIMER); RF_AUTO_RECEIVE_TIMER = null; }
+}
+
+window.addEventListener("load", ()=>{
+  try{
+    const chk = document.getElementById("chkAutoReceive");
+    if(chk){
+      chk.addEventListener("change", ()=>{
+        if(chk.checked) rfStartAutoReceive();
+        else rfStopAutoReceive();
+      });
+    }
+    rfStartAutoReceive();
+  }catch(e){}
+});
 
 
 let _saveTimer = null;
@@ -1738,7 +1833,7 @@ window.applyCloudPayload = function(payload){
    - Înlocuiește "localStorage-only" cu cloud + realtime
    =============================== */
 (function(){
- const SUPABASE_URL = "https://rhjcnydkdhjzazygybcc.supabase.co";
+  const SUPABASE_URL = "https://rhjcnydkdhjzazygybcc.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJoamNueWRrZGhqemF6eWd5YmNjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE4ODEzMzYsImV4cCI6MjA4NzQ1NzMzNn0.ompOZWqnFGsnOQzPiAv2QBwuaNiKtnz5PciRwCWh0Hk"; // <-- Anon Key (Legacy)
 ;
   const DOC_TABLE = "rf_documents";
