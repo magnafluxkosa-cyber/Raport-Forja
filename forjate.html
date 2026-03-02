@@ -589,26 +589,53 @@ function helperMaps(){
 
   if(__HELPER_MAPS_CACHE && __HELPER_MAPS_STAMP === stamp) return __HELPER_MAPS_CACHE;
 
+  // normalize helper rows by header keys (robust to diacritice/newlines/case)
+  function nkRow(r){
+    const nk = {};
+    for(const k in (r||{})){
+      nk[normHdr(k)] = r[k];
+    }
+    return { raw:r, nk };
+  }
+
   const repD = new Map();
   (h.repere_debitare||[]).forEach(r=>{
-    const k = upper(r.REPER_DEBITARE);
-    if(k) repD.set(k, r);
+    const w = nkRow(r);
+    const k = upper(w.nk.reperdebitare || w.nk.reper || '');
+    if(k) repD.set(k, w);
   });
 
   const repF = new Map();
   (h.repere_forjate||[]).forEach(r=>{
-    const k = upper(r.REPER_FORJAT || r.REPER || r.REPER_FORJATE || r.REPER_DEBITARE);
-    if(!k) return;
-    repF.set(k, r);
+    const w = nkRow(r);
+    const k = upper(w.nk.reperforjat || w.nk.reper || w.nk.reperforjate || w.nk.reperdebitare || '');
+    if(k) repF.set(k, w);
   });
 
   const tact = new Map();
   (h.tacturi||[]).forEach(r=>{
-    const k1 = upper(r.CIOCAN || r.UTILAJ || r.LINIE || '');
-    const k2 = upper(r.REPER || r.REPER_FORJAT || r.REPER_DEBITARE || '');
-    const key = (k1 && k2) ? (k1+'|'+k2) : (k2 ? ('*|'+k2) : '');
+    const w = nkRow(r);
+    // Accept both formats:
+    //  - Cheie = Reper|Utilaj   (din Excel-ul tău)
+    //  - CIOCAN/UTILAJ + REPER  (alte variante)
+    let util = '';
+    let rep = '';
+    if(w.nk.cheie && String(w.nk.cheie).includes('|')){
+      const parts = String(w.nk.cheie).split('|');
+      if(parts.length>=2){
+        rep = upper(parts[0]);
+        util = upper(parts[1]);
+      }
+    }
+    if(!rep) rep = upper(w.nk.reper || w.nk.reperforjat || w.nk.reperdebitare || '');
+    if(!util) util = upper(w.nk.ciocan || w.nk.utilaj || w.nk.linie || '');
+
+    const key = (util && rep) ? (util+'|'+rep) : (rep ? ('*|'+rep) : '');
     if(!key) return;
-    const v = toNum(r.TACT || r.TACT_SEC || r.TACT_S || r.SEC || r.TACT_SECONDS);
+
+    const v = toNum(
+      w.nk.tactsec || w.nk.tact || w.nk.tactseconds || w.nk.sec || w.nk.tactsecunde || w.nk.tactsecunda
+    );
     if(v>0) tact.set(key, v);
   });
 
@@ -622,29 +649,54 @@ function ensureHelperFields(row){
   const rk = upper(row.reper);
   const ck = upper(row.ciocan);
 
-  if(rk){
-    const d = repD.get(rk);
-    if(d){
-      if(!toStr(row.diametru).trim()) {
-        const v = (d.DIAMETRU_OTEL ?? '');
-        row.diametru = (v!=='' && v!==null && v!==undefined) ? ('ø ' + String(v).trim().replace(/^ø\s*/i,'')) : '';
-      }
-      if(!toStr(row.calitate).trim()) row.calitate = d.CALITATE_OTEL ?? '';
-      if(!toNum(row.kg_buc_debitat)) row.kg_buc_debitat = toNum(d.KG_BUC_DEBITAT);
-    }
+  if(!rk) return;
 
-    const f = repF.get(rk);
-    if(f){
-      if(!toNum(row.kg_buc_forjat)) row.kg_buc_forjat = toNum(f.KG_BUC_FORJAT || f.KG_BUC || f.KG_BUC_FORJ);
-    }
+  // Prefer repere_forjate for forged reper; use REPER_DEBITARE_ORIGINE to find kg/buc debitat
+  const f = repF.get(rk) || null;
+  let debitKey = rk;
+  if(f){
+    const orig = f.nk.reperdebitareorigine || f.nk.reperdebitare || f.nk.origine || f.nk.reperorigine || '';
+    if(orig) debitKey = upper(orig);
+  }
 
-    // tact by ciocan|reper OR *|reper
-    if(!toNum(row.tact_sec)){
-      const t = tact.get(ck+'|'+rk) || tact.get('*|'+rk) || 0;
-      if(t>0) row.tact_sec = t;
+  const d = repD.get(debitKey) || repD.get(rk) || null;
+
+  // Diametru/Calitate: prefer from repere_forjate, fallback repere_debitare
+  if(!toStr(row.diametru).trim()){
+    const v = (f && (f.nk.dimensiuneotel || f.nk.diametruotel)) || (d && (d.nk.diametruotel || d.nk.dimensiuneotel)) || '';
+    if(v!=='' && v!==null && v!==undefined){
+      row.diametru = 'ø ' + String(v).trim().replace(/^ø\s*/i,'');
     }
   }
+
+  if(!toStr(row.calitate).trim()){
+    const v = (f && (f.nk.calitateotel || f.nk.calitate)) || (d && (d.nk.calitateotel || d.nk.calitate)) || '';
+    if(v!=='' && v!==null && v!==undefined){
+      row.calitate = String(v);
+    }
+  }
+
+  // KG/buc debitat: from repere_debitare (by REPER_DEBITARE_ORIGINE if available)
+  if(!toNum(row.kg_buc_debitat)){
+    const v = d ? (d.nk.kgbucdebitat || d.nk.kgbucdebit || d.nk.kgbuc || d.nk.kgperbuc) : 0;
+    const n = toNum(v);
+    if(n>0) row.kg_buc_debitat = n;
+  }
+
+  // KG/buc forjat: from repere_forjate
+  if(!toNum(row.kg_buc_forjat) && f){
+    const v = f.nk.kgbucforjat || f.nk.kgbuc || f.nk.kgbucforj || f.nk.kgperbucforjat || 0;
+    const n = toNum(v);
+    if(n>0) row.kg_buc_forjat = n;
+  }
+
+  // Tact: by CIOCAN|REPER OR *|REPER
+  if(!toNum(row.tact_sec)){
+    const t = tact.get(ck+'|'+rk) || tact.get('*|'+rk) || 0;
+    if(t>0) row.tact_sec = t;
+  }
 }
+
 
 function recalcRow(row){
   ensureHelperFields(row);
