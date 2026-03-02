@@ -62,9 +62,17 @@
 
     .wrap{ padding:0 10px 10px; flex:1; min-height:0; }
     .sheet{ background:transparent; border-radius:6px; height:100%; }
+    
     .tableWrap{ height:480px; overflow-y:auto; overflow-x:auto; border:1px solid rgba(0,0,0,.35); background:#d7e8f8; overscroll-behavior:contain; scrollbar-gutter:stable both-edges; }
 
-    table{ border-collapse:collapse; width:max-content; min-width:100%; }
+    .headWrap{
+      position:sticky; top:0; z-index:20;
+      background:#d7e8f8;
+    }
+    .virtSpace{ position:relative; width:max-content; min-width:100%; }
+    #tblBody{ position:absolute; top:0; left:0; }
+    #tblHead, #tblBody{ border-collapse:collapse; width:max-content; min-width:100%; }
+
     thead th{
       position:sticky; top:0; z-index:5;
       background:linear-gradient(#d4dfef, var(--head));
@@ -76,6 +84,8 @@
       line-height:1.05;
       vertical-align:middle;
     }
+
+    #tblHead thead th{ position:static; top:auto; }
     thead th .flt{ float:right; margin-left:6px; width:0; height:0; border-left:4px solid transparent; border-right:4px solid transparent; border-top:6px solid rgba(0,0,0,.6); opacity:.7; }
 
     tbody td{ border:1px solid var(--grid); background:var(--cell); padding:0; }
@@ -181,12 +191,19 @@
 
   <div class="wrap">
     <div class="sheet">
-      <div class="tableWrap">
+      <div class="tableWrap" id="tableWrap">
         <div class="tableInner" id="tableInner">
-        <table id="tbl">
-          <thead><tr id="hdr"></tr></thead>
-          <tbody id="body"></tbody>
-        </table>
+          <div class="headWrap" id="headWrap">
+            <table id="tblHead">
+              <thead><tr id="hdr"></tr></thead>
+            </table>
+          </div>
+
+          <div class="virtSpace" id="virtSpace">
+            <table id="tblBody">
+              <tbody id="body"></tbody>
+            </table>
+          </div>
         </div>
       </div>
     </div>
@@ -721,80 +738,157 @@ function formatCellValue(row, col){
   return toStr(v);
 }
 
+function makeRowTr(row){
+  const tr = document.createElement('tr');
+  tr.dataset.id = row.id || '';
+  if(window.__CAN_EDIT__){
+    tr.addEventListener('dblclick', ()=> openModalEdit(row));
+  }
+  COLS.forEach(col=>{
+    const td = document.createElement('td');
+    td.style.minWidth = col.w + 'px';
+    td.style.maxWidth = col.w + 'px';
+
+    const div = document.createElement('div');
+    div.className = 'cellText' + (col.center?' center':'') + (col.right?' right':'');
+
+    const txt = formatCellValue(row, col);
+    div.textContent = txt;
+
+    if(col.redIfPositive){
+      const n = toNum(row[col.key]);
+      if(n>0) div.classList.add('red');
+    }
+
+    td.appendChild(div);
+    tr.appendChild(td);
+  });
+  return tr;
+}
+
 function render(){
   buildHeaderOnce();
 
   const view = getFilteredRows();
   const total = STATE.rows.length;
   const shown = view.length;
-
   rowsPill.innerHTML = '<strong>' + shown + '</strong> rânduri' + (shown!==total ? (' <span style="opacity:.7;">(din ' + total + ')</span>') : '');
 
-  body.innerHTML = '';
+  const wrap = document.getElementById('tableWrap');
+  const headWrap = document.getElementById('headWrap');
+  const virtSpace = document.getElementById('virtSpace');
+  const tblBody = document.getElementById('tblBody');
+  if(!wrap || !headWrap || !virtSpace || !tblBody) return;
 
-  // chunked render for speed (keeps UI responsive)
-  const CHUNK = 220;
-  let i = 0;
+  // store current view for virtualization
+  STATE._view = view;
 
-  const tableWrap = document.querySelector('.tableWrap');
-  const autoScrollToBottom = STATE._scrollToBottomNext === true;
-
-  function step(){
-    const frag = document.createDocumentFragment();
-
-    for(let k=0; k<CHUNK && i<shown; k++, i++){
-      const row = view[i];
-      recalcRow(row);
-
-      const tr = document.createElement('tr');
-      tr.dataset.id = row.id || '';
-      // dblclick -> edit modal (optional)
-      if(window.__CAN_EDIT__){
-        tr.addEventListener('dblclick', ()=> openModalEdit(row));
-      }
-
-      COLS.forEach(col=>{
-        const td = document.createElement('td');
-        td.style.minWidth = col.w + 'px';
-        td.style.maxWidth = col.w + 'px';
-
-        const div = document.createElement('div');
-        div.className = 'cellText' + (col.center?' center':'') + (col.right?' right':'');
-
-        const txt = formatCellValue(row, col);
-        div.textContent = txt;
-
-        if(col.redIfPositive){
-          const n = toNum(row[col.key]);
-          if(n>0) div.classList.add('red');
-        }
-
-        td.appendChild(div);
-        tr.appendChild(td);
-      });
-
-      frag.appendChild(tr);
-    }
-
-    body.appendChild(frag);
-
-    if(i < shown){
-      requestAnimationFrame(step);
-    } else {
-      // apply zoom fit after full render (header + body)
-      applyZoom();
-      applyFreeze();
-      setViewportRows(20);
-
-
-      if(autoScrollToBottom && tableWrap){
-        tableWrap.scrollTop = tableWrap.scrollHeight;
-        STATE._scrollToBottomNext = false;
-      }
-    }
+  // virtualization state
+  if(!STATE._virt){
+    STATE._virt = { rowH: 22, headH: 0, overscan: 8, lastStart: -1, lastEnd: -1, measuring: true };
+    wrap.addEventListener('scroll', ()=> scheduleVirtualUpdate());
+    window.addEventListener('resize', ()=> scheduleVirtualUpdate(true));
   }
 
-  requestAnimationFrame(step);
+  // total scrollable height (body only)
+  const v = STATE._virt;
+  v.headH = Math.ceil(headWrap.getBoundingClientRect().height) || 0;
+  const totalH = Math.max(0, shown * v.rowH);
+  virtSpace.style.height = totalH + 'px';
+
+  // ensure body table widths match
+  applyZoom();
+
+  // update visible rows now
+  updateVirtualRows(true);
+
+  // set viewport height to ~20 rows under header
+  setViewportRows(20);
+
+  // optional auto scroll to bottom on first open / after import
+  if(STATE._scrollToBottomNext){
+    wrap.scrollTop = wrap.scrollHeight;
+    STATE._scrollToBottomNext = false;
+    // force update after programmatic scroll
+    setTimeout(()=>{ try{ updateVirtualRows(true); }catch(e){} }, 0);
+  }
+
+  function scheduleVirtualUpdate(force){
+    if(STATE._virtRaf) return;
+    STATE._virtRaf = requestAnimationFrame(()=>{
+      STATE._virtRaf = null;
+      updateVirtualRows(force);
+    });
+  }
+
+  function updateVirtualRows(force){
+    const view = STATE._view || [];
+    const shown = view.length;
+    if(shown===0){
+      body.innerHTML = '';
+      virtSpace.style.height = '0px';
+      return;
+    }
+
+    // measure row height once (after first render) to stabilize scrolling
+    if(v.measuring){
+      // render a small sample to measure actual row height
+      body.innerHTML = '';
+      const sampleEnd = Math.min(10, shown);
+      const frag = document.createDocumentFragment();
+      for(let i=0;i<sampleEnd;i++){
+        const row = view[i];
+        recalcRow(row);
+        frag.appendChild(makeRowTr(row));
+      }
+      body.appendChild(frag);
+      tblBody.style.transform = 'translateY(0px)';
+      applyFreeze();
+
+      const firstRow = tblBody.querySelector('tbody tr');
+      if(firstRow){
+        const h = Math.ceil(firstRow.getBoundingClientRect().height);
+        if(h && Math.abs(h - v.rowH) > 1){
+          v.rowH = h;
+          virtSpace.style.height = (shown * v.rowH) + 'px';
+        }
+      }
+      v.measuring = false;
+      // continue to real slice
+    }
+
+    const headH = v.headH || Math.ceil(headWrap.getBoundingClientRect().height) || 0;
+    let y = wrap.scrollTop - headH;
+    if(y < 0) y = 0;
+
+    const visiblePx = wrap.clientHeight - headH;
+    const visibleRows = Math.max(1, Math.ceil(visiblePx / v.rowH));
+    const overscan = v.overscan;
+
+    let start = Math.floor(y / v.rowH) - overscan;
+    if(start < 0) start = 0;
+
+    let end = start + visibleRows + overscan*2;
+    if(end > shown) end = shown;
+
+    if(!force && start===v.lastStart && end===v.lastEnd) return;
+    v.lastStart = start; v.lastEnd = end;
+
+    // render slice
+    body.innerHTML = '';
+    const frag = document.createDocumentFragment();
+    for(let i=start;i<end;i++){
+      const row = view[i];
+      recalcRow(row);
+      frag.appendChild(makeRowTr(row));
+    }
+    body.appendChild(frag);
+
+    const offset = start * v.rowH;
+    tblBody.style.transform = 'translateY(' + offset + 'px)';
+
+    applyFreeze();
+  }
 }
 
 /* ===============================
@@ -1442,8 +1536,6 @@ const FREEZE_COUNT = (function(){
 
 function applyFreeze(){
   if(!FREEZE_COUNT) return;
-  const tbl = document.getElementById('tbl');
-  if(!tbl) return;
 
   // left offsets based on fixed column widths (COLS[].w)
   const lefts = [];
@@ -1453,31 +1545,33 @@ function applyFreeze(){
     acc += (COLS[i].w || 0);
   }
 
-  // apply to header + all body rows
-  const rows = tbl.querySelectorAll('tr');
-  rows.forEach(r=>{
-    const cells = r.children;
-    for(let i=0;i<FREEZE_COUNT && i<cells.length;i++){
-      const cell = cells[i];
-      cell.classList.add('sticky');
-      cell.style.left = lefts[i] + 'px';
-    }
-  });
+  function applyToTable(tbl){
+    if(!tbl) return;
+    // apply to header + all body rows in that table
+    const rows = tbl.querySelectorAll('tr');
+    rows.forEach(r=>{
+      const cells = r.children;
+      for(let i=0;i<FREEZE_COUNT && i<cells.length;i++){
+        const cell = cells[i];
+        cell.classList.add('sticky');
+        cell.style.left = lefts[i] + 'px';
+      }
+    });
+    tbl.querySelectorAll('tr > *:nth-child(' + FREEZE_COUNT + ')').forEach(c=>c.classList.add('stickyEdge'));
+  }
 
-  // visual separator after last frozen col
-  tbl.querySelectorAll('tr > *:nth-child(' + FREEZE_COUNT + ')').forEach(c=>c.classList.add('stickyEdge'));
+  applyToTable(document.getElementById('tblHead'));
+  applyToTable(document.getElementById('tblBody'));
 }
 
 function setViewportRows(n){
-  const wrap = document.querySelector('.tableWrap');
-  const tbl = document.getElementById('tbl');
-  if(!wrap || !tbl) return;
-  const thead = tbl.querySelector('thead');
-  const firstRow = tbl.querySelector('tbody tr');
-  if(!thead || !firstRow) return;
-
-  const headH = Math.ceil(thead.getBoundingClientRect().height);
-  const rowH = Math.ceil(firstRow.getBoundingClientRect().height);
+  const wrap = document.getElementById('tableWrap');
+  const headWrap = document.getElementById('headWrap');
+  const bodyTbl = document.getElementById('tblBody');
+  if(!wrap || !headWrap || !bodyTbl) return;
+  const firstRow = bodyTbl.querySelector('tbody tr');
+  const headH = Math.ceil(headWrap.getBoundingClientRect().height);
+  const rowH = firstRow ? Math.ceil(firstRow.getBoundingClientRect().height) : 22;
   const target = Math.max(220, headH + (rowH * n) + 2);
   wrap.style.height = target + 'px';
 }
