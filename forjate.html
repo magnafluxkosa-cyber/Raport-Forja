@@ -365,19 +365,45 @@ function ensureXLSX(){
 }
 
 function normHdr(s){
-  s = (s==null) ? '' : String(s);
+  s = (s == null) ? '' : String(s);
   s = s.replace(/\s+/g,' ').trim().toLowerCase();
-  const map = {'ă':'a','â':'a','î':'i','ș':'s','ş':'s','ț':'t','ţ':'t','Ă':'a','Â':'a','Î':'i','Ș':'s','Ş':'s','Ț':'t','Ţ':'t'};
-  s = s.split('').map(ch=>map[ch]||ch).join('');
-  s = s.replace(/[\[\]\(\)\.\,:%]/g,' ');
+  const repl = {'ă':'a','â':'a','î':'i','ș':'s','ş':'s','ț':'t','ţ':'t','Ă':'a','Â':'a','Î':'i','Ș':'s','Ş':'s','Ț':'t','Ţ':'t'};
+  s = s.split('').map(ch => repl[ch] || ch).join('');
+  s = s.replace(/[\[\]\(\)\.,:%]/g,' ');
   s = s.replace(/\s+/g,' ').trim();
   s = s.replace(/[^a-z0-9]+/g,'');
   return s;
 }
-
 function parseRoNum(v){
-  // Compat: keep old name but use the robust parser.
-  return toNum(v);
+  if(v==null) return 0;
+  if(typeof v === 'number') return isFinite(v) ? v : 0;
+  let s = String(v).trim();
+  if(!s) return 0;
+  s = s.replace(/\s+/g,'');
+  // percent
+  if(s.endsWith('%')) return parseRoNum(s.slice(0,-1)) / 100;
+
+  // keep digits and separators
+  s = s.replace(/[^\d,\.\-]/g,'');
+
+  if(!s) return 0;
+
+  const hasComma = s.includes(',');
+  const hasDot = s.includes('.');
+
+  if(hasComma && hasDot){
+    // Romanian: . thousands, , decimal
+    s = s.replace(/\./g,'').replace(',', '.');
+  } else if(hasComma && !hasDot){
+    // decimal comma
+    s = s.replace(',', '.');
+  } else if(hasDot && !hasComma){
+    // could be thousands if multiple dots
+    const parts = s.split('.');
+    if(parts.length > 2) s = parts.join('');
+  }
+  const n = Number(s);
+  return isFinite(n) ? n : 0;
 }
 
 function excelSerialToDMY(n){
@@ -571,48 +597,66 @@ function ensureHelperFields(row){
 
 function recalcRow(row){
   ensureHelperFields(row);
-
   const buc = toNum(row.buc_realizate);
   const rebut = toNum(row.rebut);
-  const tactSec = toNum(row.tact_sec);
 
+  // Respectă import 1:1 din Excel: dacă valorile KPI există în rând, NU le suprascrie.
+  // Doar completează când lipsesc.
+  const tactSec = toNum(row.tact_sec);
   const sch = toNum(row.schimbare_reper_min);
   const reg = toNum(row.reglaj_min);
   const opr = toNum(row.opriri_min);
   const inc = toNum(row.incalzire_sdv_min);
   const pauza = toNum(row.pauza_masa_min);
 
-  // Reguli ca în Excel (conform poza):
-  // 1) Timp disponibil (baseline) = 480 - Încălzire SDV - Pauză de masă
-  // 2) Timp funcționare (runtime) = baseline - (Schimbare reper + Reglaj + Opriri neplanificate)
-  // 3) Disponibilitate = runtime / baseline
-  const baseline = Math.max(0, 480 - inc - pauza);
-  const runtime = Math.max(0, baseline - (sch + reg + opr));
+  // dacă Excel nu a furnizat TIMP DISPONIBIL, îl calculăm ca în regulile din pagină
+  if(!toNum(row.timp_dispon_min)){
+    const baseline = Math.max(0, 480 - inc - pauza);
+    row.timp_dispon_min = baseline;
+  }
 
-  row.timp_dispon_min = baseline;
-  row.disponibilitate = (baseline>0) ? (runtime / baseline) : 0;
+  const runtime = (function(){
+    const baseline = toNum(row.timp_dispon_min);
+    return Math.max(0, baseline - (sch + reg + opr));
+  })();
 
-  row.planificat = (tactSec>0) ? Math.round((runtime * 60) / tactSec) : 0;
-  row.performanta = (runtime>0 && tactSec>0) ? ((buc * tactSec) / (runtime * 60)) : 0;
-  row.procent_calitate = (buc>0) ? ((buc - rebut) / buc) : 0;
-  row.oee = row.disponibilitate * row.performanta * row.procent_calitate;
+  if(!toNum(row.disponibilitate)){
+    const baseline = toNum(row.timp_dispon_min);
+    row.disponibilitate = (baseline>0) ? (runtime / baseline) : 0;
+  }
+
+  if(!toNum(row.planificat)){
+    row.planificat = (tactSec>0) ? Math.round((runtime * 60) / tactSec) : 0;
+  }
+
+  if(!toNum(row.performanta)){
+    row.performanta = (runtime>0 && tactSec>0) ? ((buc * tactSec) / (runtime * 60)) : 0;
+  }
+
+  if(!toNum(row.procent_calitate)){
+    row.procent_calitate = (buc>0) ? ((buc - rebut) / buc) : 0;
+  }
+
+  if(!toNum(row.oee)){
+    row.oee = toNum(row.disponibilitate) * toNum(row.performanta) * toNum(row.procent_calitate);
+  }
 
   // kg: dacă nu există deja (import), calculează din helper
   const kgDeb = toNum(row.kg_buc_debitat);
   const kgForj = toNum(row.kg_buc_forjat);
-
   if(!toNum(row.kg_semif_debit) && (buc>0 && kgDeb>0)) row.kg_semif_debit = buc * kgDeb;
   if(!toNum(row.kg_forj) && (buc>0 && kgForj>0)) row.kg_forj = buc * kgForj;
 
-  // combinare matrite
-  const sup = upper(row.matrita_sup);
-  const inf = upper(row.matrita_inf);
-  row.combinare_matrite = (sup && inf) ? (sup + '+' + inf) : '';
-
+  // combinare matrite: păstrează din Excel dacă există
+  if(!toStr(row.combinare_matrite).trim()){
+    const sup = upper(row.matrita_sup);
+    const inf = upper(row.matrita_inf);
+    row.combinare_matrite = (sup && inf) ? (sup + '+' + inf) : '';
+  }
   return row;
 }
-
 function recalcAll(){
+
   STATE.rows.forEach(recalcRow);
 }
 
@@ -620,7 +664,7 @@ function recalcAll(){
    TABLE DEF (like screenshot)
    =============================== */
 const COLS = [
-  { key:'an', label:'ANUL', w:60, type:'year', center:true },
+  { key:'an', label:'ANUL', w:60, type:'num', center:true },
   { key:'luna', label:'LUNA', w:92, type:'month' },
   { key:'data', label:'DATA', w:96 },
   { key:'schimb', label:'SCHIMBUL', w:64, type:'shift', center:true },
@@ -632,11 +676,9 @@ const COLS = [
   { key:'cod_cat_dk', label:'COD CAT\nDK', w:74, center:true },
   { key:'cod_cat_marc', label:'COD CAT\nMARC', w:80, center:true },
   { key:'matrita_sup', label:'MATRIȚA\nSUPERIOARĂ', w:78, center:true },
-  { key:'inaltime_sup', label:'Înălțime
-MF SUP', w:84, type:'num', center:true, fmt:'num1' },
+  { key:'inaltime_sup', label:'Înălțime\nMF SUP', w:84, type:'num', center:true },
   { key:'matrita_inf', label:'MATRIȚA\nINFERIOARĂ', w:78, center:true },
-  { key:'inaltime_inf', label:'Înălțime
-MF INF', w:84, type:'num', center:true, fmt:'num1' },
+  { key:'inaltime_inf', label:'Înălțime\nMF INF', w:84, type:'num', center:true },
   { key:'combinare_matrite', label:'Combinare\nmatrițe', w:92, calc:true, center:true },
   { key:'portmatrita', label:'Denumire\nPortmatriță', w:104, type:'port' },
   { key:'buc_realizate', label:'BUC\nRealizate', w:84, type:'num', center:true, showZero:true },
@@ -702,18 +744,6 @@ function formatCellValue(row, col){
   if(col.fmt==='sec') return v ? (roInt(v) + ' Sec.') : '';
   if(col.fmt==='min') return mins(v);
   if(col.fmt==='pct') return pct(v);
-
-  if(col.fmt==='num1'){
-    const n = toNum(v);
-    if(!n && !col.showZero) return '';
-    return (Math.abs(n - Math.round(n)) < 1e-9) ? roInt(n) : roNum(n, 1);
-  }
-
-  if(col.type==='year'){
-    const n = toNum(v);
-    if(!n && !col.showZero) return '';
-    return String(Math.round(n));
-  }
 
   if(col.type==='num'){
     const n = toNum(v);
@@ -1207,7 +1237,7 @@ async function importXlsx(){
         id: uuid(),
         created_at: nowIso(),
 
-        an: (function(){ const n = toNum(pick(map, ['anul','an'])); return n ? String(Math.round(n)) : ''; })(),
+        an: String(pick(map, ['anul','an'])).trim(),
         luna: String(pick(map, ['luna'])).trim().toLowerCase(),
         data: parseExcelDate(pick(map, ['data'])),
         schimb: String(pick(map, ['schimbul','schimb'])).trim() || '1',
@@ -1226,25 +1256,25 @@ async function importXlsx(){
         cod_cat_marc: String(pick(map, ['codcatmarc','codcatmarca'])).trim(),
 
         matrita_sup: String(pick(map, ['matritasuperioara','matritasup','matrita_sup'])).trim(),
-        inaltime_sup: toNum(pick(map, ['inaltimemfsup','inaltimesup'])),
+        inaltime_sup: parseRoNum(pick(map, ['inaltimemfsup','inaltimesup'])),
         matrita_inf: String(pick(map, ['matritainferioara','matritainf','matrita_inf'])).trim(),
-        inaltime_inf: toNum(pick(map, ['inaltimemfinf','inaltimeinf'])),
+        inaltime_inf: parseRoNum(pick(map, ['inaltimemfinf','inaltimeinf'])),
 
         portmatrita: String(pick(map, ['denumireportmatrita','portmatrita','denumireportmatrita'])).trim(),
 
-        buc_realizate: toNum(pick(map, ['bucrealizate','bucrealizate','buc','bucrealizat'])),
-        rebut: toNum(pick(map, ['rebut'])),
-        tact_sec: toNum(pick(map, ['tact','tactsec'])),
+        buc_realizate: parseRoNum(pick(map, ['bucrealizate','bucrealizate','buc','bucrealizat'])),
+        rebut: parseRoNum(pick(map, ['rebut'])),
+        tact_sec: parseRoNum(pick(map, ['tact','tactsec'])),
 
-        schimbare_reper_min: toNum(pick(map, ['schimbarerepermin','schimbarereper'])),
-        reglaj_min: toNum(pick(map, ['reglajmin','reglaj'])),
-        opriri_min: toNum(pick(map, ['opriri neplanifmin','opririneplanifmin','opririmin','opriri'])),
-        incalzire_sdv_min: toNum(pick(map, ['incalziresdvmin','incalzire','incalziresdv'])),
-        pauza_masa_min: toNum(pick(map, ['pauzademasamin','pauzamasamin','pauza'])),
+        schimbare_reper_min: parseRoNum(pick(map, ['schimbarerepermin','schimbarereper'])),
+        reglaj_min: parseRoNum(pick(map, ['reglajmin','reglaj'])),
+        opriri_min: parseRoNum(pick(map, ['opriri neplanifmin','opririneplanifmin','opririmin','opriri'])),
+        incalzire_sdv_min: parseRoNum(pick(map, ['incalziresdvmin','incalzire','incalziresdv'])),
+        pauza_masa_min: parseRoNum(pick(map, ['pauzademasamin','pauzamasamin','pauza'])),
 
         // preserve imported kg if present (exact ca Excel)
-        kg_semif_debit: toNum(pick(map, ['kgsemifdebitat','kgsemifdebit','kgsemifdef'])),
-        kg_forj: toNum(pick(map, ['kgforjate','kgforj','kgforjated'])),
+        kg_semif_debit: parseRoNum(pick(map, ['kgsemifdebitat','kgsemifdebit','kgsemifdef'])),
+        kg_forj: parseRoNum(pick(map, ['kgforjate','kgforj','kgforjated'])),
       };
 
       // helper-based (tact / kg/buc) as fallback only
