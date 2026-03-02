@@ -85,11 +85,7 @@
       vertical-align:middle;
     }
 
-    /* Header table lives inside a sticky wrapper.
-       Keep normal header cells static, but allow frozen (sticky-left) header cells
-       to remain sticky so the freeze applies to titles too. */
     #tblHead thead th{ position:static; top:auto; }
-    #tblHead thead th.sticky{ position:sticky; }
     thead th .flt{ float:right; margin-left:6px; width:0; height:0; border-left:4px solid transparent; border-right:4px solid transparent; border-top:6px solid rgba(0,0,0,.6); opacity:.7; }
 
     tbody td{ border:1px solid var(--grid); background:var(--cell); padding:0; }
@@ -151,7 +147,13 @@
     thead th.sticky{ background:linear-gradient(#d4dfef, var(--head)); }
     .stickyEdge{ box-shadow: 2px 0 0 #000; }
 
-  </style>
+  
+/* Row selection highlight */
+tr.selected td{ background:#fff7cc !important; box-shadow: inset 0 -2px 0 #2563eb; }
+tr.selected td .cellText{ font-weight:700; }
+tr.selected td.sticky{ background:#fff7cc !important; }
+
+</style>
 </head>
 <body>
 
@@ -162,7 +164,6 @@
     <button class="btn secondary" id="btnImportXlsx">⬆ Import Excel</button>
     <button class="btn secondary" id="btnExportJson">⬇ Export JSON</button>
     <button class="btn secondary" id="btnReset">Reset</button>
-    <button class="btn secondary" id="btnRestore" style="display:none;">↩ Restore</button>
 
     
     <div class="zoomBox" title="Zoom tabel (fără scroll stânga-dreapta)">
@@ -324,6 +325,7 @@ const STATE = {
   filter_luna: '',
   _headerBuilt: false,
   _scrollToBottomNext: true
+  ,selected_id: null
 };
 let HELPERS = null;
 
@@ -370,48 +372,34 @@ function ensureXLSX(){
 }
 
 function normHdr(s){
-  s = (s==null) ? '' : String(s);
+  s = (s == null) ? '' : String(s);
   s = s.replace(/\s+/g,' ').trim().toLowerCase();
-  const map = {'ă':'a','â':'a','î':'i','ș':'s','ş':'s','ț':'t','ţ':'t','Ă':'a','Â':'a','Î':'i','Ș':'s','Ş':'s','Ț':'t','Ţ':'t'};
-  s = s.split('').map(ch=>map[ch]||ch).join('');
-  s = s.replace(/[\[\]\(\)\.\,:%]/g,' ');
+  const repl = {'ă':'a','â':'a','î':'i','ș':'s','ş':'s','ț':'t','ţ':'t','Ă':'a','Â':'a','Î':'i','Ș':'s','Ş':'s','Ț':'t','Ţ':'t'};
+  s = s.split('').map(ch => repl[ch] || ch).join('');
+  s = s.replace(/[\[\]\(\)\.,:%]/g,' ');
   s = s.replace(/\s+/g,' ').trim();
   s = s.replace(/[^a-z0-9]+/g,'');
   return s;
 }
-
 function parseRoNum(v){
   if(v==null) return 0;
   if(typeof v === 'number') return isFinite(v) ? v : 0;
   let s = String(v).trim();
   if(!s) return 0;
   s = s.replace(/\s+/g,'');
-  // percent
   if(s.endsWith('%')) return parseRoNum(s.slice(0,-1)) / 100;
-
-  // keep digits and separators
   s = s.replace(/[^\d,\.\-]/g,'');
-
   if(!s) return 0;
-
   const hasComma = s.includes(',');
   const hasDot = s.includes('.');
-
-  if(hasComma && hasDot){
-    // Romanian: . thousands, , decimal
+  if(hasComma){
     s = s.replace(/\./g,'').replace(',', '.');
-  } else if(hasComma && !hasDot){
-    // decimal comma
-    s = s.replace(',', '.');
-  } else if(hasDot && !hasComma){
-    // could be thousands if multiple dots
-    const parts = s.split('.');
-    if(parts.length > 2) s = parts.join('');
+  } else if(hasDot){
+    if(/^\-?\d{1,3}(\.\d{3})+$/.test(s)) s = s.replace(/\./g,'');
   }
   const n = Number(s);
   return isFinite(n) ? n : 0;
 }
-
 function excelSerialToDMY(n){
   // Excel 1900 system
   const epoch = Date.UTC(1899, 11, 30);
@@ -466,39 +454,23 @@ function mins(v, red){
 function toNum(v){
   if(v===null || v===undefined) return 0;
   if(typeof v === 'number') return Number.isFinite(v) ? v : 0;
-
-  let s = String(v).trim();
+  let s = String(v).trim().replace(/\s+/g,'');
+  if(!s) return 0;
+  // keep digits, separators, minus; strip units like "Min." / "Sec." / "ø"
+  s = s.replace(/[^0-9,\.\-]/g,'');
   if(!s) return 0;
 
-  // remove spaces and units (Min., Sec., Ø, %, etc.), keep digits and separators
-  s = s.replace(/\s+/g,'').replace(/[^0-9,\.\-]/g,'');
-  if(!s) return 0;
-
-  const hasComma = s.includes(',');
-  const hasDot = s.includes('.');
-
-  // If both separators exist, decide decimal by the LAST separator:
-  //  - last comma => comma decimal (RO) => remove dots, replace comma with dot
-  //  - last dot   => dot decimal (EN) => remove commas
-  if(hasComma && hasDot){
-    if(s.lastIndexOf(',') > s.lastIndexOf('.')){
-      s = s.replace(/\./g,'').replace(',', '.');
-    }else{
-      s = s.replace(/,/g,''); // commas are thousands
-    }
-  }else if(hasComma){
-    // Comma only: could be decimal (101,4) OR thousands (1,200)
-    if(/^\-?\d{1,3}(,\d{3})+$/.test(s)){
-      s = s.replace(/,/g,''); // thousands
-    }else{
-      s = s.replace(',', '.'); // decimal
-    }
-  }else if(hasDot){
-    // Dot only: could be decimal (101.4) OR thousands (1.200)
+  // Romanian parsing:
+  // - if comma exists => decimal separator, dots are thousands
+  // - else if dots look like thousands grouping (1-3 digits then .### repeats) => remove dots
+  // - else dot is decimal
+  if(s.includes(',')){
+    s = s.replace(/\./g,'').replace(',', '.');
+  } else if(s.includes('.')){
     if(/^\-?\d{1,3}(\.\d{3})+$/.test(s)){
-      s = s.replace(/\./g,''); // thousands
+      s = s.replace(/\./g,'');
     }
-    // else dot is decimal -> keep
+    // else: dot remains decimal
   }
 
   const n = Number(s);
@@ -549,7 +521,6 @@ function loadLocal(){
     if(payload && Array.isArray(payload.rows)){
       STATE.rows = payload.rows;
       STATE.updated_at = payload.updated_at || null;
-  try{ if(Array.isArray(payload.rows) && payload.rows.length){ localStorage.setItem(LS_KEY_BACKUP, JSON.stringify(payload)); } }catch(_e){}
     }
   }catch(_e){}
 }
@@ -620,48 +591,52 @@ function ensureHelperFields(row){
 
 function recalcRow(row){
   ensureHelperFields(row);
-
   const buc = toNum(row.buc_realizate);
   const rebut = toNum(row.rebut);
-  const tactSec = toNum(row.tact_sec);
 
+  // Respectă import 1:1 din Excel: dacă valorile KPI există în rând, NU le suprascrie.
+  // Doar completează când lipsesc.
+  const tactSec = toNum(row.tact_sec);
   const sch = toNum(row.schimbare_reper_min);
   const reg = toNum(row.reglaj_min);
   const opr = toNum(row.opriri_min);
   const inc = toNum(row.incalzire_sdv_min);
   const pauza = toNum(row.pauza_masa_min);
 
-  // Reguli ca în Excel (conform poza):
-  // 1) Timp disponibil (baseline) = 480 - Încălzire SDV - Pauză de masă
-  // 2) Timp funcționare (runtime) = baseline - (Schimbare reper + Reglaj + Opriri neplanificate)
-  // 3) Disponibilitate = runtime / baseline
-  const baseline = Math.max(0, 480 - inc - pauza);
-  const runtime = Math.max(0, baseline - (sch + reg + opr));
+  if(!toNum(row.timp_dispon_min)) {
+    const baseline = Math.max(0, 480 - inc - pauza);
+    row.timp_dispon_min = baseline;
+  }
 
-  row.timp_dispon_min = baseline;
-  row.disponibilitate = (baseline>0) ? (runtime / baseline) : 0;
+  const runtime = (function(){
+    const baseline = toNum(row.timp_dispon_min);
+    return Math.max(0, baseline - (sch + reg + opr));
+  })();
 
-  row.planificat = (tactSec>0) ? Math.round((runtime * 60) / tactSec) : 0;
-  row.performanta = (runtime>0 && tactSec>0) ? ((buc * tactSec) / (runtime * 60)) : 0;
-  row.procent_calitate = (buc>0) ? ((buc - rebut) / buc) : 0;
-  row.oee = row.disponibilitate * row.performanta * row.procent_calitate;
+  if(!toNum(row.disponibilitate)) {
+    const baseline = toNum(row.timp_dispon_min);
+    row.disponibilitate = (baseline>0) ? (runtime / baseline) : 0;
+  }
 
-  // kg: dacă nu există deja (import), calculează din helper
+  if(!toNum(row.planificat)) row.planificat = (tactSec>0) ? Math.round((runtime * 60) / tactSec) : 0;
+  if(!toNum(row.performanta)) row.performanta = (runtime>0 && tactSec>0) ? ((buc * tactSec) / (runtime * 60)) : 0;
+  if(!toNum(row.procent_calitate)) row.procent_calitate = (buc>0) ? ((buc - rebut) / buc) : 0;
+  if(!toNum(row.oee)) row.oee = toNum(row.disponibilitate) * toNum(row.performanta) * toNum(row.procent_calitate);
+
   const kgDeb = toNum(row.kg_buc_debitat);
   const kgForj = toNum(row.kg_buc_forjat);
-
   if(!toNum(row.kg_semif_debit) && (buc>0 && kgDeb>0)) row.kg_semif_debit = buc * kgDeb;
   if(!toNum(row.kg_forj) && (buc>0 && kgForj>0)) row.kg_forj = buc * kgForj;
 
-  // combinare matrite
-  const sup = upper(row.matrita_sup);
-  const inf = upper(row.matrita_inf);
-  row.combinare_matrite = (sup && inf) ? (sup + '+' + inf) : '';
-
+  if(!toStr(row.combinare_matrite).trim()) {
+    const sup = upper(row.matrita_sup);
+    const inf = upper(row.matrita_inf);
+    row.combinare_matrite = (sup && inf) ? (sup + '+' + inf) : '';
+  }
   return row;
 }
-
 function recalcAll(){
+
   STATE.rows.forEach(recalcRow);
 }
 
@@ -669,7 +644,7 @@ function recalcAll(){
    TABLE DEF (like screenshot)
    =============================== */
 const COLS = [
-  { key:'an', label:'ANUL', w:60, type:'year', center:true },
+  { key:'an', label:'ANUL', w:60, type:'num', center:true },
   { key:'luna', label:'LUNA', w:92, type:'month' },
   { key:'data', label:'DATA', w:96 },
   { key:'schimb', label:'SCHIMBUL', w:64, type:'shift', center:true },
@@ -750,12 +725,6 @@ function formatCellValue(row, col){
   if(col.fmt==='min') return mins(v);
   if(col.fmt==='pct') return pct(v);
 
-  if(col.type==='year'){
-    const n = toNum(v);
-    if(!n && !col.showZero) return '';
-    return String(Math.round(n));
-  }
-
   if(col.type==='num'){
     const n = toNum(v);
     if(!n && !col.showZero) return '';
@@ -769,6 +738,13 @@ function formatCellValue(row, col){
 function makeRowTr(row){
   const tr = document.createElement('tr');
   tr.dataset.id = row.id || '';
+  // row selection
+  if(String(STATE.selected_id||'')===String(row.id||'')) tr.classList.add('selected');
+  tr.addEventListener('click', (ev)=>{
+    STATE.selected_id = row.id || null;
+    render();
+    ev.stopPropagation();
+  });
   if(window.__CAN_EDIT__){
     tr.addEventListener('dblclick', ()=> openModalEdit(row));
   }
@@ -1337,7 +1313,6 @@ function applyRole(role, email){
   document.getElementById('btnAdd').style.display = window.__CAN_EDIT__ ? 'inline-flex' : 'none';
   document.getElementById('btnImportXlsx').style.display = window.__CAN_EDIT__ ? 'inline-flex' : 'none';
   document.getElementById('btnReset').style.display = window.__CAN_EDIT__ ? 'inline-flex' : 'none';
-  try{ document.getElementById('btnRestore').style.display = (window.__CAN_EDIT__ && !!localStorage.getItem(LS_KEY_BACKUP)) ? 'inline-flex' : 'none'; }catch(_e){}
 }
 
 /* ===============================
@@ -1397,26 +1372,13 @@ async function pull(){
   try{
     const { data, error } = await supa.from(DOC_TABLE).select('data,updated_at').eq('doc_key', DOC_KEY).maybeSingle();
     if(error) throw error;
-    if(!data || !data.data){
-      // If cloud is empty but we have a local backup, offer restore
-      try{
-        const b = localStorage.getItem(LS_KEY_BACKUP);
-        if(b){ document.getElementById('btnRestore').style.display = window.__CAN_EDIT__ ? 'inline-flex' : 'none'; setCloud(true,'Cloud: gol (backup)'); return; }
-      }catch(_e){}
-      setCloud(true, 'Cloud: gol'); return;
-    }
+    if(!data || !data.data){ setCloud(true, 'Cloud: gol'); return; }
 
     const ts = data.updated_at || null;
     if(lastPulledAt && ts && new Date(ts) <= new Date(lastPulledAt)) { setCloud(true,'Cloud: ON'); return; }
     if(lastPushedAt && ts && new Date(ts) <= new Date(lastPushedAt)) { setCloud(true,'Cloud: ON'); return; }
 
     const applied = loadFromPayload(data.data);
-    try{
-      const hasBackup = !!localStorage.getItem(LS_KEY_BACKUP);
-      const hasRows = (data.data && Array.isArray(data.data.rows) && data.data.rows.length);
-      document.getElementById('btnRestore').style.display = (window.__CAN_EDIT__ && hasBackup && !hasRows) ? 'inline-flex' : 'none';
-    }catch(_e){}
-
     if(applied) lastPulledAt = ts || nowIso();
     setCloud(true, 'Cloud: ON');
   }catch(e){
@@ -1514,28 +1476,6 @@ modalBack.addEventListener('click', (e)=>{ if(e.target === modalBack) closeModal
 document.getElementById('btnExportJson').addEventListener('click', exportJson);
 document.getElementById('btnExportXlsx').addEventListener('click', exportXlsx);
 document.getElementById('btnImportXlsx').addEventListener('click', importXlsx);
-
-document.getElementById('btnRestore').addEventListener('click', ()=>{
-  if(!window.__CAN_EDIT__) return;
-  let raw=null; try{ raw = localStorage.getItem(LS_KEY_BACKUP); }catch(_e){}
-  if(!raw) return alert('Nu există backup local.');
-  if(!confirm('Restore: încarc backup-ul local și îl trimit în cloud (înlocuiește ce e în cloud). Continui?')) return;
-  try{
-    const payload = JSON.parse(raw);
-    if(!payload || !Array.isArray(payload.rows)) throw new Error('Backup invalid');
-    STATE.rows = payload.rows;
-    STATE.updated_at = payload.updated_at || nowIso();
-    recalcAll();
-    refreshFilterOptions();
-    STATE._scrollToBottomNext = true;
-    render();
-    markDirty();
-    document.getElementById('btnRestore').style.display = 'none';
-  }catch(e){
-    console.error(e);
-    alert('Backup invalid / corupt.');
-  }
-});
 
 document.getElementById('btnReset').addEventListener('click', ()=>{
   if(!window.__CAN_EDIT__) return;
