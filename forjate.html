@@ -120,6 +120,8 @@
     <button class="btn secondary" id="btnExportJson">⬇ Export JSON</button>
     <button class="btn secondary" id="btnReset">Reset</button>
 
+    <button class="btn secondary" id="btnReloadHelpers">⟳ Reload helpers</button>
+
     <button class="btn" id="btnAdd"><span class="plusCircle">+</span> Adaugă</button>
   </div>
 
@@ -1112,14 +1114,14 @@ async function startCloud(){
    HELPERS CLOUD PULL (doc_key=helpers)
    =============================== */
 let helpersLastTs = null;
-async function pullHelpers(){
+async async function pullHelpers(force){
   if(!supa) return;
   try{
     const { data, error } = await supa.from(DOC_TABLE).select('data,updated_at').eq('doc_key','helpers').maybeSingle();
     if(error) throw error;
     if(!data || !data.data) return;
     const ts = data.updated_at || null;
-    if(helpersLastTs && ts && new Date(ts) <= new Date(helpersLastTs)) return;
+    if(!force && helpersLastTs && ts && new Date(ts) <= new Date(helpersLastTs)) return;
     helpersLastTs = ts || nowIso();
     HELPERS = data.data;
     try{ localStorage.setItem(LS_KEY_HELPERS, JSON.stringify(HELPERS)); }catch(_e){}
@@ -1129,6 +1131,41 @@ async function pullHelpers(){
   }
 }
 
+
+
+// Helpers instant: storage + broadcast + realtime
+document.getElementById('btnReloadHelpers')?.addEventListener('click', ()=>{ pullHelpers(true); });
+
+window.addEventListener('storage', (e)=>{
+  if(e && e.key === LS_KEY_HELPERS){
+    try{
+      HELPERS = JSON.parse(localStorage.getItem(LS_KEY_HELPERS) || "null") || HELPERS;
+      rebuildDatalists();
+    }catch(_e){}
+  }
+});
+
+try{
+  const bc = new BroadcastChannel("rf_helpers");
+  bc.onmessage = (ev)=>{
+    if(ev && ev.data && ev.data.type === "helpers_updated"){
+      pullHelpers(true);
+    }
+  };
+}catch(_e){}
+
+try{
+  if(supa && supa.channel){
+    supa.channel("rf_helpers_doc")
+      .on("postgres_changes",
+          { event:"UPDATE", schema:"public", table:"rf_documents", filter:"doc_key=eq.helpers" },
+          ()=>pullHelpers(true))
+      .on("postgres_changes",
+          { event:"INSERT", schema:"public", table:"rf_documents", filter:"doc_key=eq.helpers" },
+          ()=>pullHelpers(true))
+      .subscribe();
+  }
+}catch(_e){}
 /* ===============================
    EVENTS
    =============================== */
@@ -1192,7 +1229,7 @@ window.addEventListener('message', (e)=>{
     }
     applyRole(role, email);
     startCloud();
-    pullHelpers();
+    pullHelpers(true);
     setInterval(pullHelpers, 5000);
   });
 })();
