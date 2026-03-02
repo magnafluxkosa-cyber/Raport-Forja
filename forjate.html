@@ -524,6 +524,17 @@ function toNum(v){
 }
 function toStr(v){ return (v===null||v===undefined) ? '' : String(v); }
 function upper(v){ return toStr(v).trim().toUpperCase(); }
+function normKey(v){
+  return toStr(v).trim().toUpperCase()
+    .replace(/\s+/g,' ')
+    .replace(/\s*,\s*/g,',')
+    .replace(/\s*\/\s*/g,'/');
+}
+function keyVariants(v){
+  const a = normKey(v);
+  const b = a.replace(/\s/g,'');
+  return (b && b!==a) ? [a,b] : [a];
+}
 
 function uuid(){
   try{ return crypto.randomUUID(); }catch(_e){ return 'id_' + Math.random().toString(16).slice(2) + '_' + Date.now(); }
@@ -601,65 +612,73 @@ function helperMaps(){
   const repD = new Map();
   (h.repere_debitare||[]).forEach(r=>{
     const w = nkRow(r);
-    const k = upper(w.nk.reperdebitare || w.nk.reper || '');
-    if(k) repD.set(k, w);
+    const k0 = normKey(w.nk.reperdebitare || w.nk.reper || '');
+    if(!k0) return;
+    repD.set(k0, w);
+    const k1 = k0.replace(/\s/g,'');
+    if(k1 && k1!==k0) repD.set(k1, w);
   });
 
   const repF = new Map();
   (h.repere_forjate||[]).forEach(r=>{
     const w = nkRow(r);
-    const k = upper(w.nk.reperforjat || w.nk.reper || w.nk.reperforjate || w.nk.reperdebitare || '');
-    if(k) repF.set(k, w);
+    const k0 = normKey(w.nk.reperforjat || w.nk.reper || w.nk.reperforjate || w.nk.reperdebitare || '');
+    if(!k0) return;
+    repF.set(k0, w);
+    const k1 = k0.replace(/\s/g,'');
+    if(k1 && k1!==k0) repF.set(k1, w);
   });
 
   const tact = new Map();
   (h.tacturi||[]).forEach(r=>{
     const w = nkRow(r);
-    // Accept both formats:
-    //  - Cheie = Reper|Utilaj   (din Excel-ul tău)
-    //  - CIOCAN/UTILAJ + REPER  (alte variante)
-    let util = '';
-    let rep = '';
-    if(w.nk.cheie && String(w.nk.cheie).includes('|')){
-      const parts = String(w.nk.cheie).split('|');
-      if(parts.length>=2){
-        rep = upper(parts[0]);
-        util = upper(parts[1]);
-      }
-    }
-    if(!rep) rep = upper(w.nk.reper || w.nk.reperforjat || w.nk.reperdebitare || '');
-    if(!util) util = upper(w.nk.ciocan || w.nk.utilaj || w.nk.linie || '');
-
-    const key = (util && rep) ? (util+'|'+rep) : (rep ? ('*|'+rep) : '');
-    if(!key) return;
 
     const v = toNum(
       w.nk.tactsec || w.nk.tact || w.nk.tactseconds || w.nk.sec || w.nk.tactsecunde || w.nk.tactsecunda
     );
-    if(v>0) tact.set(key, v);
-  });
+    if(!(v>0)) return;
 
-  __HELPER_MAPS_STAMP = stamp;
-  __HELPER_MAPS_CACHE = { repD, repF, tact };
-  return __HELPER_MAPS_CACHE;
-}
+    let util = '';
+    let rep = '';
 
-function ensureHelperFields(row){
+    // Accept Cheie variants:
+    //  - Reper|Utilaj (recommended)
+    //  - Utilaj|Reper (some exports)
+    const cheie = toStr(w.nk.cheie);
+    if(cheie && cheie.includes('|')){
+      const parts = cheie.split('|');
+      if(parts.length>=2){
+        const a = normKey(parts[0]);
+        const b = normKey(parts[1]);
+        // store both interpretations to be tolerant
+        if(a && b){
+          // assume b=util, a=reper
+          putTact(b, a, v);
+          // also assume a=util, b=reper
+          putTact(a, b, v);
+       function ensureHelperFields(row){
   const { repD, repF, tact } = helperMaps();
-  const rk = upper(row.reper);
-  const ck = upper(row.ciocan);
 
-  if(!rk) return;
+  const rk0 = normKey(row.reper);
+  const rk1 = rk0.replace(/\s/g,'');
+  const ck0 = normKey(row.ciocan);
+  const ck1 = ck0.replace(/\s/g,'');
+
+  if(!rk0) return;
+
+  const f = repF.get(rk0) || (rk1?repF.get(rk1):null) || null;
 
   // Prefer repere_forjate for forged reper; use REPER_DEBITARE_ORIGINE to find kg/buc debitat
-  const f = repF.get(rk) || null;
-  let debitKey = rk;
+  let debitKey0 = rk0;
   if(f){
     const orig = f.nk.reperdebitareorigine || f.nk.reperdebitare || f.nk.origine || f.nk.reperorigine || '';
-    if(orig) debitKey = upper(orig);
+    if(orig) debitKey0 = normKey(orig);
   }
+  const debitKey1 = debitKey0.replace(/\s/g,'');
 
-  const d = repD.get(debitKey) || repD.get(rk) || null;
+  const d =
+    repD.get(debitKey0) || (debitKey1?repD.get(debitKey1):null) ||
+    repD.get(rk0) || (rk1?repD.get(rk1):null) || null;
 
   // Diametru/Calitate: prefer from repere_forjate, fallback repere_debitare
   if(!toStr(row.diametru).trim()){
@@ -671,6 +690,35 @@ function ensureHelperFields(row){
 
   if(!toStr(row.calitate).trim()){
     const v = (f && (f.nk.calitateotel || f.nk.calitate)) || (d && (d.nk.calitateotel || d.nk.calitate)) || '';
+    if(v!=='' && v!==null && v!==undefined){
+      row.calitate = String(v);
+    }
+  }
+
+  // KG/buc debitat: from repere_debitare (by REPER_DEBITARE_ORIGINE if available)
+  if(!toNum(row.kg_buc_debitat)){
+    const v = d ? (d.nk.kgbucdebitat || d.nk.kgbucdebit || d.nk.kgbuc || d.nk.kgperbuc) : 0;
+    const n = toNum(v);
+    if(n>0) row.kg_buc_debitat = n;
+  }
+
+  // KG/buc forjat: from repere_forjate
+  if(!toNum(row.kg_buc_forjat) && f){
+    const v = f.nk.kgbucforjat || f.nk.kgbuc || f.nk.kgbucforj || f.nk.kgperbucforjat || 0;
+    const n = toNum(v);
+    if(n>0) row.kg_buc_forjat = n;
+  }
+
+  // Tact: by CIOCAN|REPER (preferred) or *|REPER fallback
+  if(!toNum(row.tact_sec)){
+    const t =
+      tact.get(ck0+'|'+rk0) || tact.get(ck1+'|'+rk0) || tact.get(ck0+'|'+rk1) || tact.get(ck1+'|'+rk1) ||
+      tact.get('*|'+rk0) || tact.get('*|'+rk1) || 0;
+    if(t>0) row.tact_sec = t;
+  }
+}
+
+d.nk.calitate)) || '';
     if(v!=='' && v!==null && v!==undefined){
       row.calitate = String(v);
     }
@@ -1055,45 +1103,51 @@ const f = {
   cat_dk: document.getElementById('f_cat_dk'),
   cat_marc: document.getElementById('f_cat_marc'),
   port: document.getElementById('f_port'),
-  sup: document.getElementById('f_sup'),
-  sup_h: document.getElementById('f_sup_h'),
-  inf: document.getElementById('f_inf'),
-  inf_h: document.getElementById('f_inf_h'),
-  buc: document.getElementById('f_buc'),
-  rebut: document.getElementById('f_rebut'),
-  tact: document.getElementById('f_tact'),
-  inc: document.getElementById('f_inc'),
-  sch: document.getElementById('f_sch'),
-  reg: document.getElementById('f_reg'),
-  opr: document.getElementById('f_opr'),
-  pauza: document.getElementById('f_pauza')
-};
+  function autofillFormFromHelpers(){
+  const rk0 = normKey(f.reper.value);
+  const rk1 = rk0.replace(/\s/g,'');
+  const ck0 = normKey(f.ciocan.value);
+  const ck1 = ck0.replace(/\s/g,'');
 
-function initMonthSelect(){
-  f.luna.innerHTML = '';
-  MONTHS.forEach(m=>{
-    const o = document.createElement('option');
-    o.value = m; o.textContent = m;
-    f.luna.appendChild(o);
-  });
-}
+  if(!rk0) return;
 
-let __FORM_AUTOFILL_BOUND = false;
+  const { repD, repF, tact } = helperMaps();
 
-function _pick(obj, keys){
-  if(!obj) return '';
-  for(const k of keys){
-    if(obj[k] !== undefined && obj[k] !== null && String(obj[k]).trim() !== '') return obj[k];
+  // find reper record (prefer repere_forjate, fallback repere_debitare)
+  const rf = repF.get(rk0) || (rk1?repF.get(rk1):null);
+  let rd = repD.get(rk0) || (rk1?repD.get(rk1):null);
+
+  // if repere_forjate points to a debitat origin, try that too
+  if(!rd && rf){
+    const origin = normKey(_pick(rf, ['REPER_DEBITARE_ORIGINE','REPER_DEBITARE','ORIGINE','REPER_ORIGINE']));
+    const o1 = origin.replace(/\s/g,'');
+    if(origin) rd = repD.get(origin) || (o1?repD.get(o1):null);
   }
-  return '';
+
+  const src = rf || rd;
+
+  // diametru + calitate
+  const diamVal = _pick(src, ['DIAMETRU_OTEL','DIAMETRU','DIAM','DIMENSIUNE_OTEL','DIMENSIUNE','OTEL_DIAMETRU']);
+  const calVal  = _pick(src, ['CALITATE_OTEL','CALITATE','CAL','OTEL_CALITATE']);
+
+  if(diamVal !== ''){
+    const v = String(diamVal).trim().replace(/^ø\s*/i,'').replace(/^Ø\s*/,'');
+    _setAuto(f.diam, 'ø ' + v);
+  }
+  if(calVal !== ''){
+    _setAuto(f.cal, String(calVal).trim());
+  }
+
+  // tact by ciocan|reper OR *|reper
+  const t =
+    tact.get(ck0+'|'+rk0) || tact.get(ck1+'|'+rk0) || tact.get(ck0+'|'+rk1) || tact.get(ck1+'|'+rk1) ||
+    tact.get('*|'+rk0) || tact.get('*|'+rk1) || 0;
+  if(t>0){
+    _setAuto(f.tact, String(t).replace(/\.0+$/,''));
+  }
 }
 
-function _setAuto(inputEl, value){
-  if(!inputEl) return;
-  const manual = inputEl.dataset.manual === '1';
-  if(manual && String(inputEl.value||'').trim() !== '') return;
-  inputEl.value = value;
-  inputEl.dataset.manual = '0';
+'0';
 }
 
 function autofillFormFromHelpers(){
@@ -1682,6 +1736,10 @@ async function pullHelpers(){
     HELPERS = data.data;
     try{ localStorage.setItem(LS_KEY_HELPERS, JSON.stringify(HELPERS)); }catch(_e){}
     rebuildDatalists();
+    __HELPER_MAPS_CACHE = null;
+    __HELPER_MAPS_STAMP = '';
+    try{ render(); }catch(_e){}
+
   }catch(e){
     // don't spam
   }
