@@ -333,6 +333,11 @@ const STATE = {
 };
 let HELPERS = null;
 
+// helper maps cache (performance)
+let __HELPER_MAPS_CACHE = null;
+let __HELPER_MAPS_STAMP = '';
+
+
 let __DIRTY = false;
 let __HAS_LOCAL_PENDING = false;
 let __LAST_LOCAL_CHANGE = 0;
@@ -576,6 +581,14 @@ function loadHelpersLocal(){
 
 function helperMaps(){
   const h = HELPERS || {};
+  const stamp = String(h.updated_at||'') + '|' + String(h.version||'') + '|' +
+    String((h.utilaje_forja||[]).length) + '|' +
+    String((h.repere_debitare||[]).length) + '|' +
+    String((h.repere_forjate||[]).length) + '|' +
+    String((h.tacturi||[]).length);
+
+  if(__HELPER_MAPS_CACHE && __HELPER_MAPS_STAMP === stamp) return __HELPER_MAPS_CACHE;
+
   const repD = new Map();
   (h.repere_debitare||[]).forEach(r=>{
     const k = upper(r.REPER_DEBITARE);
@@ -599,7 +612,9 @@ function helperMaps(){
     if(v>0) tact.set(key, v);
   });
 
-  return { repD, repF, tact };
+  __HELPER_MAPS_STAMP = stamp;
+  __HELPER_MAPS_CACHE = { repD, repF, tact };
+  return __HELPER_MAPS_CACHE;
 }
 
 function ensureHelperFields(row){
@@ -1011,6 +1026,94 @@ function initMonthSelect(){
   });
 }
 
+let __FORM_AUTOFILL_BOUND = false;
+
+function _pick(obj, keys){
+  if(!obj) return '';
+  for(const k of keys){
+    if(obj[k] !== undefined && obj[k] !== null && String(obj[k]).trim() !== '') return obj[k];
+  }
+  return '';
+}
+
+function _setAuto(inputEl, value){
+  if(!inputEl) return;
+  const manual = inputEl.dataset.manual === '1';
+  if(manual && String(inputEl.value||'').trim() !== '') return;
+  inputEl.value = value;
+  inputEl.dataset.manual = '0';
+}
+
+function autofillFormFromHelpers(){
+  const rk = upper(f.reper.value);
+  const ck = upper(f.ciocan.value);
+  if(!rk) return;
+
+  const { repD, repF, tact } = helperMaps();
+
+  // find reper record (prefer repere_forjate, fallback repere_debitare)
+  const rf = repF.get(rk);
+  let rd = repD.get(rk);
+
+  // if repere_forjate points to a debitat origin, try that too
+  if(!rd && rf){
+    const origin = upper(_pick(rf, ['REPER_DEBITARE_ORIGINE','REPER_DEBITARE','ORIGINE','REPER_ORIGINE']));
+    if(origin) rd = repD.get(origin);
+  }
+
+  const src = rf || rd;
+
+  // diametru + calitate
+  const diamVal = _pick(src, ['DIAMETRU_OTEL','DIAMETRU','DIAM','DIMENSIUNE_OTEL','DIMENSIUNE','OTEL_DIAMETRU']);
+  const calVal  = _pick(src, ['CALITATE_OTEL','CALITATE','CAL','OTEL_CALITATE']);
+
+  if(diamVal !== ''){
+    const v = String(diamVal).trim().replace(/^ø\s*/i,'').replace(/^Ø\s*/,'');
+    _setAuto(f.diam, 'ø ' + v);
+  }
+  if(calVal !== ''){
+    _setAuto(f.cal, String(calVal).trim());
+  }
+
+  // tact by ciocan|reper OR *|reper
+  const t = (tact.get(ck+'|'+rk) || tact.get('*|'+rk) || 0);
+  if(t>0){
+    _setAuto(f.tact, String(t).replace(/\.0+$/,''));
+  }
+}
+
+function bindFormAutofill(){
+  if(__FORM_AUTOFILL_BOUND) return;
+  __FORM_AUTOFILL_BOUND = true;
+
+  // mark manual overrides
+  [f.diam, f.cal, f.tact].forEach(el=>{
+    if(!el) return;
+    el.addEventListener('input', ()=>{ el.dataset.manual = '1'; });
+  });
+
+  // debounce autofill on reper/ciocan
+  let tmr = null;
+  const deb = ()=>{
+    clearTimeout(tmr);
+    tmr = setTimeout(autofillFormFromHelpers, 120);
+  };
+
+  ['input','change','blur'].forEach(evt=>{
+    f.reper.addEventListener(evt, deb);
+    f.ciocan.addEventListener(evt, deb);
+  });
+
+  // if helpers are reloaded, re-autofill if modal open
+  window.addEventListener('message', (e)=>{
+    if(!e || !e.data || e.data.type!=='HELPERS_UPDATED') return;
+    if(modalBack && modalBack.style.display==='flex'){
+      setTimeout(autofillFormFromHelpers, 50);
+    }
+  });
+}
+
+
 function openModal(){
   if(!window.__CAN_EDIT__) return;
   STATE.edit_id = null;
@@ -1028,9 +1131,12 @@ const d = new Date();
   // reset rest
   [f.ciocan,f.reper,f.diam,f.cal,f.marcaj,f.cat_dk,f.cat_marc,f.sup,f.sup_h,f.inf,f.inf_h,f.buc,f.rebut,f.tact,f.inc,f.sch,f.reg,f.opr,f.pauza].forEach(x=>x.value='');
   f.port.value = '';
+  // reset manual flags for autofill
+  [f.diam,f.cal,f.tact].forEach(el=>{ if(el){ el.dataset.manual='0'; } });
+
 
   modalBack.style.display = 'flex';
-  setTimeout(()=>{ f.ciocan.focus(); }, 50);
+  setTimeout(()=>{ f.ciocan.focus(); autofillFormFromHelpers(); }, 50);
 }
 
 
@@ -1722,6 +1828,7 @@ window.addEventListener('message', (e)=>{
    =============================== */
 (function init(){
   initMonthSelect();
+  bindFormAutofill();
 
   // load local
   loadLocal();
