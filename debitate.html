@@ -978,6 +978,23 @@ function setAutofillReadonly(isReadonly){
     }, 350);
   }
 
+
+  // ===== RF: protect local edits from being overwritten by cloud pull =====
+  window.__RF_LAST_LOCAL_CHANGE = window.__RF_LAST_LOCAL_CHANGE || 0;
+  window.__RF_LOCAL_PENDING = window.__RF_LOCAL_PENDING || false;
+  function rfMarkLocalChange(){
+    window.__RF_LAST_LOCAL_CHANGE = Date.now();
+    window.__RF_LOCAL_PENDING = true;
+  }
+  // wrap scheduleSave so every edit marks local as pending (prevents pull overwrite)
+  try{
+    const __origScheduleSave = scheduleSave;
+    scheduleSave = function(){
+      try{ rfMarkLocalChange(); }catch(_e){}
+      return __origScheduleSave.apply(this, arguments);
+    };
+  }catch(_e){}
+
   function load(){
     if (!CAN_STORE){
       pillSave.textContent = "autosave: OFF (storage blocat)";
@@ -2018,6 +2035,15 @@ function setAutofillReadonly(isReadonly){
       // if we pushed newer, don't overwrite
       if(lastPushedAt && ts && new Date(ts) <= new Date(lastPushedAt)) { setCloud(true,'Cloud: ON'); return; }
 
+
+      // RF guard: if we have local pending changes in last 5s, don't overwrite from cloud
+      try{
+        if(window.__RF_LOCAL_PENDING && window.__RF_LAST_LOCAL_CHANGE && (Date.now() - window.__RF_LAST_LOCAL_CHANGE) < 5000){
+          setCloud(true,'Cloud: local pending');
+          return;
+        }
+      }catch(_e){}
+
       const applied = applyPayload(data.data);
       if(applied){
         lastPulledAt = ts || nowIso();
@@ -2041,6 +2067,7 @@ function setAutofillReadonly(isReadonly){
         const { error } = await supa.from(DOC_TABLE).upsert(up, { onConflict:'doc_key' });
         if(error) throw error;
         lastPushedAt = up.updated_at;
+        try{ window.__RF_LOCAL_PENDING = false; }catch(_e){}
         setCloud(true,'Cloud: ON');
       }catch(e){
         console.error(e);
