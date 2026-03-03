@@ -181,21 +181,28 @@
     th:last-child{ padding:0 !important; }
     td:last-child{ padding:0 !important; }
     
-    thead tr.filters th{ display:none; /* removed */
-      
-      top: 26px; /* height of header row */
+    thead tr.filters th{
+      position: sticky;
+      top: 34px; /* sub header */
       z-index: 1;
-      background: #e8f3ff;
+      background: #d7ebff; /* banda albastra */
       padding: 2px 4px;
+      text-align: center;
+      display: table-cell;
     }
     .finput, .fselect{
       width: 100%;
       border: 1px solid rgba(0,0,0,.35);
-      border-radius: 4px;
-      padding: 2px 4px;
-      font-size: 10px;
-      background:#fff;
-      height: 22px;
+      border-radius: 6px;
+      padding: 2px 6px;
+      font-size: 11px;
+      background: transparent;
+      height: 24px;
+      outline: none;
+    }
+    .finput:focus, .fselect:focus{
+      border-color: var(--focus);
+      box-shadow: 0 0 0 2px rgba(37,99,235,.15);
     }
     .cellinput{
       width: 100%;
@@ -390,7 +397,7 @@ function goDashboard(){ window.location.href='index.html'; }
         <colgroup id="colgroup"></colgroup>
         <thead>
           <tr id="hdr"></tr>
-          
+          <tr id="hdrFilters" class="filters"></tr>
         </thead>
         <tbody id="body"></tbody>
       </table>
@@ -542,6 +549,9 @@ function goDashboard(){ window.location.href='index.html'; }
   const CAN_STORE = storageAvailable();
 
 
+  const COL_FILTERS = Object.create(null);
+  let _forceBottomOnce = false;
+
   const COLUMNS = [
     { key:"an", label:"Anul", type:"year", align:"center" },
     { key:"luna", label:"Luna", type:"text" },
@@ -589,7 +599,6 @@ function goDashboard(){ window.location.href='index.html'; }
   // ===== STATE =====
   let rows = [];
   let filters = null; // filters removed (add via modal only)
-  let colFilters = {}; // filtre pe coloane (ca INTRARI OTEL)
   let saveTimer = null;
 
   // ===== PAGING (performanță) =====
@@ -695,7 +704,13 @@ function goDashboard(){ window.location.href='index.html'; }
       if(!data || !data.data) return false;
 
       const ts = data.updated_at || null;
-      if(!force && _helpersLastTs && ts && new Date(ts) <= new Date(_helpersLastTs)) return false;
+      
+      // If user edited locally very recently, don't overwrite with cloud snapshot
+      if(__HAS_LOCAL_PENDING && (Date.now() - __LAST_LOCAL_CHANGE) < 5000){
+        setCloud(true,'Cloud: local pending');
+        return;
+      }
+if(!force && _helpersLastTs && ts && new Date(ts) <= new Date(_helpersLastTs)) return false;
 
       _helpersLastTs = ts || new Date().toISOString();
       try{ localStorage.setItem(HELPERS_KEY, JSON.stringify(data.data)); }catch(_e){}
@@ -1017,18 +1032,8 @@ function setAutofillReadonly(isReadonly){
     const cg = $("colgroup");
     hdr.innerHTML = "";
     if (cg) cg.innerHTML = "";
-
-    // filter row (identic ca INTRARI OTEL)
-    const thead = hdr.parentElement;
-    let ftr = $("ftr");
-    if(!ftr){
-      ftr = document.createElement("tr");
-      ftr.id = "ftr";
-      ftr.className = "filterRow";
-      thead.appendChild(ftr);
-    }
-    ftr.innerHTML = "";
-
+    const hdrF = $("hdrFilters");
+    if (hdrF) hdrF.innerHTML = "";
 
     _freezeLefts = [];
     let leftAcc = 0;
@@ -1055,6 +1060,26 @@ function setAutofillReadonly(isReadonly){
       }
 
       hdr.appendChild(th);
+
+      if (hdrF){
+        const thF = document.createElement("th");
+        if (i < FREEZE_COLS){
+          thF.classList.add("stickyL");
+          thF.style.left = _freezeLefts[i] + "px";
+        }
+        const inp = document.createElement("input");
+        inp.className = "finput";
+        inp.type = "text";
+        inp.placeholder = "filtru";
+        inp.value = (COL_FILTERS[col.key] || "");
+        inp.addEventListener("input", ()=>{
+          COL_FILTERS[col.key] = inp.value;
+          _forceBottomOnce = true;
+          renderBody();
+        });
+        thF.appendChild(inp);
+        hdrF.appendChild(thF);
+      }
     }
 
     // ACT (ștergere)
@@ -1067,28 +1092,8 @@ function setAutofillReadonly(isReadonly){
     thA.textContent = "🗑";
     thA.title = "Ștergere rând";
     hdr.appendChild(thA);
-  
-    /*__COL_FILTERS_WIRED__*/
-    // build filter inputs using fixed widths (nu modifică lățimile)
-    COLS.forEach((col)=>{
-      const th = document.createElement("th");
-      th.style.minWidth = col.w + "px";
-      th.style.maxWidth = col.w + "px";
-      const inp = document.createElement("input");
-      inp.className = "filterInp";
-      inp.type = "text";
-      inp.placeholder = "filtru…";
-      inp.value = (colFilters[col.key] ?? "");
-      inp.addEventListener("input", ()=>{
-        colFilters[col.key] = inp.value;
-        autoScrollBottom = true;  // cerință: după filtrare stai jos
-        renderBody();
-      });
-      th.appendChild(inp);
-      ftr.appendChild(th);
-    });
-
-}
+    if (hdrF){ const thFA = document.createElement("th"); thFA.textContent = ""; hdrF.appendChild(thFA); }
+  }
 
   function matchFilter(r, col, value){
     if (!value) return true;
@@ -1108,45 +1113,18 @@ function setAutofillReadonly(isReadonly){
     return cell.toLowerCase().includes(v);
   }
 
-  
-  function _matchFilter(cellVal, f){
-    const rawF = (f ?? '').toString().trim();
-    if(!rawF) return true;
-    const sCell = (cellVal ?? '').toString().trim();
-    const opm = rawF.match(/^\s*(>=|<=|<>|!=|=|>|<)\s*(.+)\s*$/);
-    if(opm){
-      const op = opm[1];
-      const rhs = opm[2];
-      const nCell = Number(String(cellVal ?? '').replace(',', '.'));
-      const nRhs = Number(String(rhs ?? '').replace(',', '.'));
-      if(Number.isFinite(nCell) && Number.isFinite(nRhs)){
-        if(op==='>') return nCell > nRhs;
-        if(op==='<') return nCell < nRhs;
-        if(op==='>=') return nCell >= nRhs;
-        if(op==='<=') return nCell <= nRhs;
-        if(op==='=' ) return nCell === nRhs;
-        if(op==='!=' || op==='<>') return nCell !== nRhs;
-      }
-    }
-    return sCell.toLowerCase().includes(rawF.toLowerCase());
-  }
-
-function getFilteredRows(){
+  function getFilteredRows(){
     const ySel = ($("fltYear")?.value || "").trim();
     const mSel = monthLower(($("fltMonth")?.value || "").trim());
-
-    const hasCf = Object.keys(colFilters||{}).some(k => (colFilters[k] ?? '').toString().trim() !== '');
-
     return rows.filter(r => {
       if (ySel && String(r.an ?? "").trim() !== ySel) return false;
       if (mSel && monthLower(r.luna) !== mSel) return false;
-
-      if(hasCf){
-        for(const c of COLS){
-          const f = colFilters[c.key];
-          if(!f || !String(f).trim()) continue;
-          if(!_matchFilter(r[c.key], f)) return false;
-        }
+      // filtre pe coloane (ca INTRARI)
+      for (const k in COL_FILTERS){
+        const q = (COL_FILTERS[k] || "").toString().trim().toLowerCase();
+        if (!q) continue;
+        const v = (r[k] ?? "").toString().toLowerCase();
+        if (!v.includes(q)) return false;
       }
       return true;
     });
@@ -1326,6 +1304,7 @@ function getFilteredRows(){
     // paging
     const totalPages = Math.max(1, Math.ceil(view.length / PAGE_SIZE));
     if (autoScrollBottom) currentPage = totalPages - 1; // regula: pornire jos
+    if (_forceBottomOnce){ currentPage = totalPages - 1; _forceBottomOnce = false; }
     if (currentPage < 0) currentPage = 0;
     if (currentPage > totalPages - 1) currentPage = totalPages - 1;
     const start = currentPage * PAGE_SIZE;
@@ -2023,6 +2002,13 @@ function getFilteredRows(){
   }
   const DOC_TABLE = 'rf_documents';
   const DOC_KEY = 'debitate';
+  // --- Safety guards (prevent accidental wipe on boot / failed write) ---
+  const LS_KEY_BACKUP = 'DEBITATE_backup_local_v1';
+  let __BOOTSTRAP_LOADING = true;     // true until first successful pull/apply
+  let __ALLOW_EMPTY_PUSH = false;    // NEVER push empty rows unless explicit restore
+  let __HAS_LOCAL_PENDING = false;   // set true on local edits
+  let __LAST_LOCAL_CHANGE = 0;       // ms timestamp
+
   let lastPulledAt = null;
   let lastPushedAt = null;
   let pollTimer = null;
@@ -2096,11 +2082,26 @@ function getFilteredRows(){
       setCloud(false,'Cloud: eroare');
     }finally{
       inFlight = false;
+      __BOOTSTRAP_LOADING = false;
     }
   }
 
   function schedulePush(){
     if(!window.__CAN_EDIT__) return;
+    // Don't push while we're still bootstrapping from cloud/local
+    if(__BOOTSTRAP_LOADING) return;
+
+    // Protect cloud from accidental wipe
+    try{
+      const p = getPayload();
+      const rows = (p && Array.isArray(p.rows)) ? p.rows : (p && p.data && Array.isArray(p.data.rows) ? p.data.rows : []);
+      if(!__ALLOW_EMPTY_PUSH && (!rows || rows.length===0)){
+        setCloud(true,'Cloud: skip empty');
+        return;
+      }
+      // local backup (for restore)
+      try{ localStorage.setItem(LS_KEY_BACKUP, JSON.stringify(p)); }catch(_e){}
+    }catch(_e){}
     if(pushTimer) clearTimeout(pushTimer);
     pushTimer = setTimeout(async ()=>{
       try{
@@ -2109,6 +2110,7 @@ function getFilteredRows(){
         const { error } = await supa.from(DOC_TABLE).upsert(up, { onConflict:'doc_key' });
         if(error) throw error;
         lastPushedAt = up.updated_at;
+        __HAS_LOCAL_PENDING = false;
         setCloud(true,'Cloud: ON');
       }catch(e){
         console.error(e);
@@ -2121,12 +2123,16 @@ function getFilteredRows(){
   window.notifyDataChanged = (function(orig){
     return function(){
       try{ if(typeof orig === 'function') orig(); }catch(_e){}
+      __HAS_LOCAL_PENDING = true;
+      __LAST_LOCAL_CHANGE = Date.now();
       schedulePush();
     };
   })(window.notifyDataChanged);
 
   // also listen to generic input events (cell editing)
   document.addEventListener('input', (e)=>{
+    __HAS_LOCAL_PENDING = true;
+    __LAST_LOCAL_CHANGE = Date.now();
     schedulePush();
   }, true);
 
