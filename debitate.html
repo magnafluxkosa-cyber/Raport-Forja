@@ -337,25 +337,6 @@
       background: #fff;
     }
 
-
-    /* Column filter row (ca INTRARI_OTEL) */
-    thead tr.filterRow th{
-      background:#b7d7f0;
-      padding:0 !important;
-    }
-    .hdrFilter{
-      width:100%;
-      border:0;
-      outline:none;
-      padding:6px 8px;
-      background:transparent;
-      font:inherit;
-      font-size:12px;
-      font-weight:700;
-      box-sizing:border-box;
-    }
-    .hdrFilter:focus{ outline:2px solid rgba(37,99,235,.55); outline-offset:-2px; background:rgba(255,255,255,.35); }
-
 </style>
 
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
@@ -409,7 +390,7 @@ function goDashboard(){ window.location.href='index.html'; }
         <colgroup id="colgroup"></colgroup>
         <thead>
           <tr id="hdr"></tr>
-          <tr id="hdrFilters" class="filterRow"></tr>
+          
         </thead>
         <tbody id="body"></tbody>
       </table>
@@ -581,53 +562,6 @@ function goDashboard(){ window.location.href='index.html'; }
     { key:"procentNorma", label:"Procent norma %", type:"pct", align:"center", readonly:true },
     { key:"oreLucrate", label:"Ore lucrate", type:"dec1", align:"center" }
   ];
-  function parseExpr(expr){
-    const s = String(expr||"").trim();
-    if(!s) return null;
-    const m = s.match(/^(>=|<=|=|>|<)\s*(.+)$/);
-    if(m) return { op:m[1], val:m[2].trim() };
-    return { op:"~", val:s };
-  }
-
-  function matchVal(cell, expr, isNum){
-    const p = parseExpr(expr);
-    if(!p) return true;
-    const raw = (cell===null || cell===undefined) ? "" : String(cell);
-    if(isNum){
-      const n = Number(String(raw).replace(",", "."));
-      const v = Number(String(p.val).replace(",", "."));
-      if(!Number.isFinite(v)) return true;
-      if(!Number.isFinite(n)) return false;
-      if(p.op===">") return n>v;
-      if(p.op===">=") return n>=v;
-      if(p.op==="<") return n<v;
-      if(p.op==="<=") return n<=v;
-      if(p.op==="=") return n===v;
-    }
-    return raw.toLowerCase().includes(String(p.val||"").toLowerCase());
-  }
-
-  function buildFiltersRow(){
-    const tr = $("hdrFilters");
-    if(!tr) return;
-    tr.innerHTML = "";
-    COLUMNS.forEach(col=>{
-      const th = document.createElement("th");
-      const inp = document.createElement("input");
-      inp.className = "hdrFilter";
-      inp.type = "text";
-      inp.placeholder = "filtru";
-      inp.value = colFilters[col.key] || "";
-      inp.addEventListener("input", ()=>{
-        colFilters[col.key] = inp.value || "";
-        currentPage = 0;
-        renderTable();
-      });
-      th.appendChild(inp);
-      tr.appendChild(th);
-    });
-  }
-
 
   const COL_WIDTHS = {
     an: 58,
@@ -655,7 +589,6 @@ function goDashboard(){ window.location.href='index.html'; }
   // ===== STATE =====
   let rows = [];
   let filters = null; // filters removed (add via modal only)
-  let colFilters = {}; // per-col filters (ca INTRARI_OTEL)
   let saveTimer = null;
 
   // ===== PAGING (performanță) =====
@@ -761,7 +694,13 @@ function goDashboard(){ window.location.href='index.html'; }
       if(!data || !data.data) return false;
 
       const ts = data.updated_at || null;
-      if(!force && _helpersLastTs && ts && new Date(ts) <= new Date(_helpersLastTs)) return false;
+      
+      // If user edited locally very recently, don't overwrite with cloud snapshot
+      if(__HAS_LOCAL_PENDING && (Date.now() - __LAST_LOCAL_CHANGE) < 5000){
+        setCloud(true,'Cloud: local pending');
+        return;
+      }
+if(!force && _helpersLastTs && ts && new Date(ts) <= new Date(_helpersLastTs)) return false;
 
       _helpersLastTs = ts || new Date().toISOString();
       try{ localStorage.setItem(HELPERS_KEY, JSON.stringify(data.data)); }catch(_e){}
@@ -1144,22 +1083,11 @@ function setAutofillReadonly(isReadonly){
   function getFilteredRows(){
     const ySel = ($("fltYear")?.value || "").trim();
     const mSel = monthLower(($("fltMonth")?.value || "").trim());
-
     return rows.filter(r => {
       if (ySel && String(r.an ?? "").trim() !== ySel) return false;
       if (mSel && monthLower(r.luna) !== mSel) return false;
-
-      // per-column filters (ca INTRARI_OTEL)
-      for(const col of COLUMNS){
-        const expr = colFilters[col.key];
-        if(!expr || !String(expr).trim()) continue;
-        const isNum = ["kgBuc","lungime","planificat","cantitate","schimbul","totalKg"].includes(col.key);
-        if(!matchVal(r[col.key], expr, isNum)) return false;
-      }
       return true;
     });
-  }
-
   }
 
 
@@ -1837,7 +1765,6 @@ function setAutofillReadonly(isReadonly){
   // ===== INIT =====
   function render(){
     buildHeader();
-  buildFiltersRow();
     refreshFilterUI(true);
     refreshSummaryUI(true);
     renderBody();
@@ -2034,6 +1961,13 @@ function setAutofillReadonly(isReadonly){
   }
   const DOC_TABLE = 'rf_documents';
   const DOC_KEY = 'debitate';
+  // --- Safety guards (prevent accidental wipe on boot / failed write) ---
+  const LS_KEY_BACKUP = 'DEBITATE_backup_local_v1';
+  let __BOOTSTRAP_LOADING = true;     // true until first successful pull/apply
+  let __ALLOW_EMPTY_PUSH = false;    // NEVER push empty rows unless explicit restore
+  let __HAS_LOCAL_PENDING = false;   // set true on local edits
+  let __LAST_LOCAL_CHANGE = 0;       // ms timestamp
+
   let lastPulledAt = null;
   let lastPushedAt = null;
   let pollTimer = null;
@@ -2107,11 +2041,26 @@ function setAutofillReadonly(isReadonly){
       setCloud(false,'Cloud: eroare');
     }finally{
       inFlight = false;
+      __BOOTSTRAP_LOADING = false;
     }
   }
 
   function schedulePush(){
     if(!window.__CAN_EDIT__) return;
+    // Don't push while we're still bootstrapping from cloud/local
+    if(__BOOTSTRAP_LOADING) return;
+
+    // Protect cloud from accidental wipe
+    try{
+      const p = getPayload();
+      const rows = (p && Array.isArray(p.rows)) ? p.rows : (p && p.data && Array.isArray(p.data.rows) ? p.data.rows : []);
+      if(!__ALLOW_EMPTY_PUSH && (!rows || rows.length===0)){
+        setCloud(true,'Cloud: skip empty');
+        return;
+      }
+      // local backup (for restore)
+      try{ localStorage.setItem(LS_KEY_BACKUP, JSON.stringify(p)); }catch(_e){}
+    }catch(_e){}
     if(pushTimer) clearTimeout(pushTimer);
     pushTimer = setTimeout(async ()=>{
       try{
@@ -2120,6 +2069,7 @@ function setAutofillReadonly(isReadonly){
         const { error } = await supa.from(DOC_TABLE).upsert(up, { onConflict:'doc_key' });
         if(error) throw error;
         lastPushedAt = up.updated_at;
+        __HAS_LOCAL_PENDING = false;
         setCloud(true,'Cloud: ON');
       }catch(e){
         console.error(e);
@@ -2132,12 +2082,16 @@ function setAutofillReadonly(isReadonly){
   window.notifyDataChanged = (function(orig){
     return function(){
       try{ if(typeof orig === 'function') orig(); }catch(_e){}
+      __HAS_LOCAL_PENDING = true;
+      __LAST_LOCAL_CHANGE = Date.now();
       schedulePush();
     };
   })(window.notifyDataChanged);
 
   // also listen to generic input events (cell editing)
   document.addEventListener('input', (e)=>{
+    __HAS_LOCAL_PENDING = true;
+    __LAST_LOCAL_CHANGE = Date.now();
     schedulePush();
   }, true);
 
