@@ -1378,8 +1378,8 @@ function goMenu(){ window.location.href = 'index.html'; }
     cells.forEach((v, i) => { if (tds[i]) tds[i].textContent = v || ""; });
 
     applyFilters();
-    notifyDataChanged();
     scheduleAutosave();
+    notifyDataChanged();
     scrollToRow(tr);
 
     // dacă am fost în editare (dublu-click), închidem după salvare
@@ -1521,6 +1521,10 @@ const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
   let pushTimer = null;
   let inFlight = false;
 
+  // protect local edits from being overwritten by an older cloud snapshot
+  let __HAS_LOCAL_PENDING = false;
+  let __LAST_LOCAL_CHANGE = 0;
+
   function setCloud(ok, msg){
     if(!cloudBadge) return;
     cloudBadge.style.display='inline-flex';
@@ -1574,6 +1578,13 @@ const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
 
   async function pull(){
     if(inFlight) return;
+
+    // if local pending very recent, avoid overwriting (fix for rows disappearing)
+    if(__HAS_LOCAL_PENDING && (Date.now() - __LAST_LOCAL_CHANGE) < 4000){
+      setCloud(true,'Cloud: ON');
+      return;
+    }
+
     inFlight = true;
     try{
       const { data, error } = await supa.from(DOC_TABLE).select('doc_key,data,updated_at').eq('doc_key', DOC_KEY).maybeSingle();
@@ -1608,10 +1619,15 @@ const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
         const { error } = await supa.from(DOC_TABLE).upsert(up, { onConflict:'doc_key' });
         if(error) throw error;
         lastPushedAt = up.updated_at;
+        __HAS_LOCAL_PENDING = false;
         setCloud(true,'Cloud: ON');
       }catch(e){
         console.error(e);
-        setCloud(false,'Cloud: eroare');
+        const msg = (String(e && e.message || '').toLowerCase().includes('row level security') || String(e).toLowerCase().includes('permission'))
+          ? 'Cloud: fără drept de scriere'
+          : 'Cloud: eroare';
+        setCloud(false, msg);
+        __HAS_LOCAL_PENDING = true;
       }
     }, 500);
   }
@@ -1620,13 +1636,16 @@ const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
   window.notifyDataChanged = (function(orig){
     return function(){
       try{ if(typeof orig === 'function') orig(); }catch(_e){}
+      __HAS_LOCAL_PENDING = true;
+      __LAST_LOCAL_CHANGE = Date.now();
       schedulePush();
     };
   })(window.notifyDataChanged);
 
   // also listen to generic input events
   document.addEventListener('input', (e)=>{
-    // ignore toolbar inputs etc, but generally fine
+    __HAS_LOCAL_PENDING = true;
+    __LAST_LOCAL_CHANGE = Date.now();
     schedulePush();
   }, true);
 
