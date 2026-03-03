@@ -117,7 +117,7 @@
     .hidden{ display:none !important; }
     .backdrop{ position:fixed; inset:0; background: rgba(0,0,0,.45); display:flex; align-items:center; justify-content:center; padding:16px; z-index:999; }
     .modal{ width:min(760px, 100%); background:#fff; border:1px solid #cbd5e1; border-radius:10px; overflow:hidden; box-shadow: 0 20px 70px rgba(0,0,0,.35); }
-    .modalHead{ display:flex; align-items:center; justify-content:space-between; padding:10px 12px; background:#f1f5f9; border-bottom:1px solid #e2e8f0; font-weight:900; }
+    .modalHead{ position:sticky; top:0; z-index:5; display:flex; align-items:center; justify-content:space-between; padding:10px 12px; background:#f1f5f9; border-bottom:2px solid rgba(0,0,0,.15); font-weight:900; }
     .modalBody{ padding:12px; display:grid; gap:10px; }
     .grid{ display:grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap:10px 12px; }
     .field label{ display:block; font-size:12px; font-weight:900; color:#0f172a; margin-bottom:4px; }
@@ -226,6 +226,7 @@
 
   <datalist id="diamList"></datalist>
   <datalist id="gradeList"></datalist>
+  <datalist id="codeList"></datalist>
 
   <div id="backdrop" class="backdrop hidden" role="dialog" aria-modal="true">
     <div class="modal">
@@ -248,7 +249,7 @@
           <div class="field"><label>Dimensiune oțel</label><input id="fDim" list="diamList" placeholder="ex: Ø30 / 30mm" data-edit></div>
 
           <div class="field"><label>Calitate oțel</label><input id="fCal" list="gradeList" placeholder="alege din listă sau scrie" data-edit></div>
-          <div class="field"><label>Cod intern otel (3 litere)</label><input id="fCod" placeholder="ex: NNN" maxlength="3" data-edit></div>
+          <div class="field"><label>Cod intern otel (3 litere)</label><input id="fCod" placeholder="ex: NNN" maxlength="3" data-edit list="codeList"></div>
 
           <div class="field"><label>Sarja material (furnizor)</label><input id="fSar" placeholder="ex: 123456" data-edit></div>
           <div class="field"><label>Cantitate (kg)</label><input id="fKg" type="number" min="0" step="0.01" data-edit></div>
@@ -376,6 +377,175 @@
   function normalizeCod3(s){
     return (s??'').toString().toUpperCase().replace(/[^A-Z]/g,'').slice(0,3);
   }
+
+
+  // --- AUTO-FILL din NUMERALKOD pentru Cod intern (3 litere) ---
+  // Preia din localStorage NUMERALKOD_autosave_v1 și completează automat:
+  //   - Dimensiune oțel (fDim)
+  //   - Calitate oțel (fCal)
+  //   - Sarja material (fSar)
+  const NUMERALKOD_KEY = "NUMERALKOD_autosave_v1";
+  const CODE_ALLOWED = "NUMERALKOD"; // litere permise
+  const NK_LETTERS = ['N','U','M','E','R','A','L','K','O','D'];
+
+  function normalizeCodIntern(v){
+    return (v ?? "").toString().toUpperCase().replace(/[^A-Z]/g,"").slice(0,3);
+  }
+  function isValidCodIntern(cod){
+    if(!cod || cod.length !== 3) return false;
+    for(const ch of cod){
+      if(!CODE_ALLOWED.includes(ch)) return false;
+    }
+    return true;
+  }
+  function nkPrefixForSeries(series){
+    const m = (series || '').toString().trim().toUpperCase().match(/^([A-Z])(\d{1,2})$/);
+    if(!m) return '';
+    const first = m[1];
+    const idx = Number(m[2]);
+    if(!(idx >= 1 && idx <= 10)) return '';
+    if(!NK_LETTERS.includes(first)) return '';
+    return first + NK_LETTERS[idx-1];
+  }
+
+  function loadNumeralkodState(){
+    try{
+      const raw = localStorage.getItem(NUMERALKOD_KEY);
+      if(!raw) return {zale:[], alte:[], rez:[]};
+      const obj = JSON.parse(raw);
+
+      // format nou: {zale:[], alte:[], rez:[]}
+      if(obj && (Array.isArray(obj.zale) || Array.isArray(obj.alte) || Array.isArray(obj.rez))){
+        return {
+          zale: Array.isArray(obj.zale) ? obj.zale : [],
+          alte: Array.isArray(obj.alte) ? obj.alte : [],
+          rez:  Array.isArray(obj.rez)  ? obj.rez  : []
+        };
+      }
+
+      // format curent NUMERALKOD v2: {tables:[{group,series,rows}], reserved:[...]}
+      if(obj && Array.isArray(obj.tables)){
+        const tables = obj.tables;
+        const hasGroup = tables.some(t => t && typeof t === 'object' && ('group' in t) && ('series' in t));
+        if(hasGroup){
+          const zale = tables
+            .filter(t => (t && (t.group||'').toString().toLowerCase() === 'zale'))
+            .map(t => ({ series: (t.series||'').toString(), rows: Array.isArray(t.rows) ? t.rows : [] }));
+          const alte = tables
+            .filter(t => (t && (t.group||'').toString().toLowerCase() === 'alte'))
+            .map(t => ({ series: (t.series||'').toString(), rows: Array.isArray(t.rows) ? t.rows : [] }));
+          const rez = Array.isArray(obj.reserved) ? obj.reserved : [];
+          return { zale, alte, rez };
+        }
+
+        // format vechi fallback: {tables:[{name/title, rows:[seriesObj]}]}
+        const zaleT = tables.find(t => /zale/i.test(t.name || t.title || '')) || tables[0];
+        const alteT = tables.find(t => /alte/i.test(t.name || t.title || '')) || tables[1];
+        const rezT  = tables.find(t => /rez/i.test(t.name || t.title || ''))  || tables[2];
+        return {
+          zale: Array.isArray(zaleT && zaleT.rows) ? zaleT.rows : [],
+          alte: Array.isArray(alteT && alteT.rows) ? alteT.rows : [],
+          rez:  Array.isArray(rezT  && rezT.rows)  ? rezT.rows  : []
+        };
+      }
+
+      // alternative: reserved separat fără tables
+      if(obj && Array.isArray(obj.reserved)){
+        return {zale:[], alte:[], rez: obj.reserved};
+      }
+    }catch(e){}
+    return {zale:[], alte:[], rez:[]};
+  }
+
+  function buildMarcajIndex(){
+    const st = loadNumeralkodState();
+    const idx = new Map();
+
+    function put(code, payload){
+      const c = normalizeCodIntern(code);
+      if(!c) return;
+      if(!idx.has(c)) idx.set(c, payload);
+    }
+
+    function ingestGroup(groupArr, source){
+      (groupArr || []).forEach(function(serieObj){
+        const series = (serieObj && (serieObj.series || serieObj.SERIA || serieObj.seria)) ? (serieObj.series || serieObj.SERIA || serieObj.seria) : '';
+        const pref = nkPrefixForSeries(series);
+        if(!pref) return;
+
+        const rows = Array.isArray(serieObj.rows) ? serieObj.rows : [];
+        for(let r=0; r < NK_LETTERS.length; r++){
+          const code = pref + NK_LETTERS[r];
+          const row = rows[r] || {};
+          put(code, {dim:(row.dim||''), grade:(row.grade||''), sarja:(row.sarja||''), source});
+        }
+      });
+    }
+
+    ingestGroup(st.zale, 'NUMERALKOD zale');
+    ingestGroup(st.alte, 'NUMERALKOD alte repere');
+
+    // REZERVAT: poate completa/suprascrie câmpurile
+    (st.rez || []).forEach(function(r){
+      const code = normalizeCodIntern((r && (r.marcaj || r.code)) ? (r.marcaj || r.code) : '');
+      if(!code) return;
+      const existing = idx.get(code) || {dim:'', grade:'', sarja:'', source:''};
+      idx.set(code, {
+        dim: (r.dim || existing.dim || ''),
+        grade: (r.grade || existing.grade || ''),
+        sarja: (r.sarja || existing.sarja || ''),
+        source: 'NUMERALKOD rezervat'
+      });
+    });
+
+    return idx;
+  }
+
+  function refreshCodeList(){
+    const dl = document.getElementById('codeList');
+    if(!dl) return;
+    const codes = new Set();
+    try{
+      const map = buildMarcajIndex();
+      for(const k of map.keys()) codes.add(k);
+    }catch(e){}
+    dl.innerHTML = Array.from(codes).sort().map(c => `<option value="${c}"></option>`).join('');
+  }
+
+  function applyAutoFillFromCodIntern(){
+    const inp = document.getElementById('fCod');
+    if(!inp) return;
+
+    const code = normalizeCodIntern(inp.value);
+    inp.value = code;
+    if(!isValidCodIntern(code)) return;
+
+    const map = buildMarcajIndex();
+    const hit = map.get(code);
+    if(!hit) return;
+
+    const fDim = document.getElementById('fDim');
+    const fCal = document.getElementById('fCal');
+    const fSar = document.getElementById('fSar');
+
+    if(fDim) fDim.value = (hit.dim || '').toString();
+    if(fCal) fCal.value = (hit.grade || '').toString();
+    if(fSar) fSar.value = (hit.sarja || '').toString();
+  }
+
+  (function wireCodInternAutoFill(){
+    const inp = document.getElementById('fCod');
+    if(!inp) return;
+
+    inp.addEventListener('input', function(){
+      const code = normalizeCodIntern(inp.value);
+      inp.value = code;
+      if(code.length === 3) applyAutoFillFromCodIntern();
+    });
+    inp.addEventListener('change', applyAutoFillFromCodIntern);
+    inp.addEventListener('blur', applyAutoFillFromCodIntern);
+  })();
+
 
   /* ===============================
      HELPERS (local + cloud doc_key=helpers)
@@ -673,6 +843,8 @@
 
     onFurnChange();
     refreshHelperDatalists();
+    refreshCodeList();
+    refreshCodeList();
 
     backdrop.classList.remove('hidden');
     setTimeout(()=>{ try{ document.getElementById('fDim').focus(); }catch(_e){} }, 0);
