@@ -310,6 +310,7 @@ const DOC_TABLE = 'rf_documents';
 const DOC_KEY = 'forjate';
 
 const LS_KEY_DATA = 'FORJATE_autosave_v1';
+const LS_KEY_BACKUP = 'FORJATE_backup_v1';
 const LS_KEY_HELPERS = 'RF_HELPERS_v1';
 
 const MONTHS = [
@@ -337,10 +338,11 @@ let HELPERS = null;
 let __HELPER_MAPS_CACHE = null;
 let __HELPER_MAPS_STAMP = '';
 
-
 let __DIRTY = false;
 let __HAS_LOCAL_PENDING = false;
 let __LAST_LOCAL_CHANGE = 0;
+let __ALLOW_EMPTY_PUSH = false; // only true during explicit Reset
+let __BOOTSTRAP_LOADING = true;
 
 /* ===============================
    ELEMENTS
@@ -579,64 +581,65 @@ function loadHelpersLocal(){
   }catch(_e){ HELPERS = null; }
 }
 
+function normKey(v){ return upper(v).replace(/\s+/g,' ').trim(); }
+function normNoSpace(v){ return normKey(v).replace(/\s+/g,''); }
+function helperStamp(h){
+  return String(h.updated_at||'')+'|'+String(h.version||'')+'|'+
+    String((h.utilaje_forja||[]).length)+'|'+String((h.repere_debitare||[]).length)+'|'+
+    String((h.repere_forjate||[]).length)+'|'+String((h.tacturi||[]).length);
+}
 function helperMaps(){
   const h = HELPERS || {};
-  const stamp = String(h.updated_at||'') + '|' + String(h.version||'') + '|' +
-    String((h.utilaje_forja||[]).length) + '|' +
-    String((h.repere_debitare||[]).length) + '|' +
-    String((h.repere_forjate||[]).length) + '|' +
-    String((h.tacturi||[]).length);
-
+  const stamp = helperStamp(h);
   if(__HELPER_MAPS_CACHE && __HELPER_MAPS_STAMP === stamp) return __HELPER_MAPS_CACHE;
-
-  // normalize helper rows by header keys (robust to diacritice/newlines/case)
-  function nkRow(r){
-    const nk = {};
-    for(const k in (r||{})){
-      nk[normHdr(k)] = r[k];
-    }
-    return { raw:r, nk };
-  }
 
   const repD = new Map();
   (h.repere_debitare||[]).forEach(r=>{
-    const w = nkRow(r);
-    const k = upper(w.nk.reperdebitare || w.nk.reper || '');
-    if(k) repD.set(k, w);
+    const code = r.REPER_DEBITARE ?? r.REPER ?? r.REPER_DEBITAT ?? r.COD ?? '';
+    const k1 = normKey(code), k2 = normNoSpace(code);
+    if(k1) repD.set(k1, r);
+    if(k2) repD.set(k2, r);
   });
 
   const repF = new Map();
   (h.repere_forjate||[]).forEach(r=>{
-    const w = nkRow(r);
-    const k = upper(w.nk.reperforjat || w.nk.reper || w.nk.reperforjate || w.nk.reperdebitare || '');
-    if(k) repF.set(k, w);
+    const code = r.REPER_FORJAT ?? r.REPER_FORJATE ?? r.REPER_FORJ ?? r.REPER ?? '';
+    const k1 = normKey(code), k2 = normNoSpace(code);
+    if(k1) repF.set(k1, r);
+    if(k2) repF.set(k2, r);
   });
 
   const tact = new Map();
+  function addT(k,v){ if(k && v>0 && !tact.has(k)) tact.set(k,v); }
+
   (h.tacturi||[]).forEach(r=>{
-    const w = nkRow(r);
-    // Accept both formats:
-    //  - Cheie = Reper|Utilaj   (din Excel-ul tău)
-    //  - CIOCAN/UTILAJ + REPER  (alte variante)
-    let util = '';
-    let rep = '';
-    if(w.nk.cheie && String(w.nk.cheie).includes('|')){
-      const parts = String(w.nk.cheie).split('|');
-      if(parts.length>=2){
-        rep = upper(parts[0]);
-        util = upper(parts[1]);
+    const v = toNum(r.TACT_SEC ?? r.TACT ?? r.TACT_S ?? r.SEC ?? r.TACT_SECONDS);
+    if(!(v>0)) return;
+
+    const rawKey = (r.CHEIE ?? r.CHEIE_TACT ?? r.KEY ?? '');
+    if(rawKey && String(rawKey).includes('|')){
+      const parts = String(rawKey).split('|');
+      const a = normKey(parts[0]||''), b = normKey(parts[1]||'');
+      const a2 = normNoSpace(a), b2 = normNoSpace(b);
+      if(a && b){
+        addT(a+'|'+b, v); addT(b+'|'+a, v);
+        addT(a2+'|'+b2, v); addT(b2+'|'+a2, v);
       }
+      if(b){ addT('*|'+b, v); addT('*|'+b2, v); }
+      return;
     }
-    if(!rep) rep = upper(w.nk.reper || w.nk.reperforjat || w.nk.reperdebitare || '');
-    if(!util) util = upper(w.nk.ciocan || w.nk.utilaj || w.nk.linie || '');
 
-    const key = (util && rep) ? (util+'|'+rep) : (rep ? ('*|'+rep) : '');
-    if(!key) return;
+    const u = normKey(r.CIOCAN ?? r.UTILAJ ?? r.LINIE ?? r.ECHIPAMENT ?? '');
+    const rp = normKey(r.REPER ?? r.REPER_FORJAT ?? r.REPER_DEBITARE ?? r.REPER_DEBITAT ?? '');
+    const u2 = normNoSpace(u), rp2 = normNoSpace(rp);
 
-    const v = toNum(
-      w.nk.tactsec || w.nk.tact || w.nk.tactseconds || w.nk.sec || w.nk.tactsecunde || w.nk.tactsecunda
-    );
-    if(v>0) tact.set(key, v);
+    if(u && rp){
+      addT(u+'|'+rp, v); addT(rp+'|'+u, v);
+      addT(u2+'|'+rp2, v); addT(rp2+'|'+u2, v);
+    }
+    if(rp){
+      addT('*|'+rp, v); addT('*|'+rp2, v);
+    }
   });
 
   __HELPER_MAPS_STAMP = stamp;
@@ -644,59 +647,91 @@ function helperMaps(){
   return __HELPER_MAPS_CACHE;
 }
 
+function getRepereForjateOrigine(f){
+  if(!f) return '';
+  return (f.REPER_DEBITARE_ORIGINE ?? f.REPER_DEBITARE ?? f.REPER_DEBITAT ?? f.REPER_DEBITARE_SAU_ORIGINE ??
+          f.DEBITARE_ORIGINE ?? f.REPER_ORIGINE ?? f.ORIGINE ?? '');
+}
+
+function getKgBucDebitat(d){
+  if(!d) return 0;
+  return toNum(d.KG_BUC_DEBITAT ?? d.KG_BUC ?? d.KG_BUC_DEBIT ?? d.KG_BUC_DEBITARE ?? d.KG_BUC_DEBITAT_KG ?? d.KGBUC);
+}
+
+function getKgBucForjat(f){
+  if(!f) return 0;
+  return toNum(f.KG_BUC_FORJAT ?? f.KG_BUC_FORJ ?? f.KG_BUC ?? f.KG_BUC_FORJAT_KG);
+}
+
 function ensureHelperFields(row){
-  const { repD, repF, tact } = helperMaps();
-  const rk = upper(row.reper);
-  const ck = upper(row.ciocan);
+  const maps = helperMaps();
+  const rk1 = normKey(row.reper), rk2 = normNoSpace(row.reper);
+  const ck1 = normKey(row.ciocan), ck2 = normNoSpace(row.ciocan);
 
-  if(!rk) return;
+  if(!rk1 && !rk2) return;
 
-  // Prefer repere_forjate for forged reper; use REPER_DEBITARE_ORIGINE to find kg/buc debitat
-  const f = repF.get(rk) || null;
-  let debitKey = rk;
+  // 1) repere_forjate (preferat pentru mapping + kg/buc forjat)
+  const f = maps.repF.get(rk1) || maps.repF.get(rk2) || null;
+
+  // 2) repere_debitare direct pe reper (când codurile coincid)
+  const dDirect = maps.repD.get(rk1) || maps.repD.get(rk2) || null;
+
+  // 3) repere_debitare prin origine (când reper forjat -> reper debitat)
+  let dOrig = null;
   if(f){
-    const orig = f.nk.reperdebitareorigine || f.nk.reperdebitare || f.nk.origine || f.nk.reperorigine || '';
-    if(orig) debitKey = upper(orig);
+    const orig = getRepereForjateOrigine(f);
+    const ok1 = normKey(orig), ok2 = normNoSpace(orig);
+    dOrig = maps.repD.get(ok1) || maps.repD.get(ok2) || null;
   }
 
-  const d = repD.get(debitKey) || repD.get(rk) || null;
+  const d = dOrig || dDirect;
 
-  // Diametru/Calitate: prefer from repere_forjate, fallback repere_debitare
-  if(!toStr(row.diametru).trim()){
-    const v = (f && (f.nk.dimensiuneotel || f.nk.diametruotel)) || (d && (d.nk.diametruotel || d.nk.dimensiuneotel)) || '';
-    if(v!=='' && v!==null && v!==undefined){
-      row.diametru = 'ø ' + String(v).trim().replace(/^ø\s*/i,'');
+  // diametru + calitate
+  if(d){
+    if(!toStr(row.diametru).trim()){
+      const v = (d.DIAMETRU_OTEL ?? d.DIAMETRU ?? '');
+      row.diametru = (v!=='' && v!==null && v!==undefined) ? ('ø ' + String(v).trim().replace(/^ø\s*/i,'')) : '';
     }
-  }
-
-  if(!toStr(row.calitate).trim()){
-    const v = (f && (f.nk.calitateotel || f.nk.calitate)) || (d && (d.nk.calitateotel || d.nk.calitate)) || '';
-    if(v!=='' && v!==null && v!==undefined){
-      row.calitate = String(v);
+    if(!toStr(row.calitate).trim()) row.calitate = d.CALITATE_OTEL ?? d.CALITATE ?? '';
+  }else if(f){
+    // fallback: dacă repere_forjate conține diametru/calitate
+    if(!toStr(row.diametru).trim()){
+      const v = (f.DIAMETRU_OTEL ?? f.DIAMETRU ?? '');
+      row.diametru = (v!=='' && v!==null && v!==undefined) ? ('ø ' + String(v).trim().replace(/^ø\s*/i,'')) : '';
     }
+    if(!toStr(row.calitate).trim()) row.calitate = f.CALITATE_OTEL ?? f.CALITATE ?? '';
   }
 
-  // KG/buc debitat: from repere_debitare (by REPER_DEBITARE_ORIGINE if available)
+  // kg/buc debitat
   if(!toNum(row.kg_buc_debitat)){
-    const v = d ? (d.nk.kgbucdebitat || d.nk.kgbucdebit || d.nk.kgbuc || d.nk.kgperbuc) : 0;
-    const n = toNum(v);
-    if(n>0) row.kg_buc_debitat = n;
+    const kgd = getKgBucDebitat(d);
+    if(kgd>0) row.kg_buc_debitat = kgd;
   }
 
-  // KG/buc forjat: from repere_forjate
-  if(!toNum(row.kg_buc_forjat) && f){
-    const v = f.nk.kgbucforjat || f.nk.kgbuc || f.nk.kgbucforj || f.nk.kgperbucforjat || 0;
-    const n = toNum(v);
-    if(n>0) row.kg_buc_forjat = n;
+  // kg/buc forjat
+  if(!toNum(row.kg_buc_forjat)){
+    const kgf = getKgBucForjat(f);
+    if(kgf>0) row.kg_buc_forjat = kgf;
   }
 
-  // Tact: by CIOCAN|REPER OR *|REPER
+  // tact: utilaj|reper cu toleranță (spații / ordine / wildcard)
   if(!toNum(row.tact_sec)){
-    const t = tact.get(ck+'|'+rk) || tact.get('*|'+rk) || 0;
+    const cand = [];
+    if(ck1 && rk1){ cand.push(ck1+'|'+rk1, rk1+'|'+ck1); }
+    if(ck2 && rk1){ cand.push(ck2+'|'+rk1, rk1+'|'+ck2); }
+    if(ck1 && rk2){ cand.push(ck1+'|'+rk2, rk2+'|'+ck1); }
+    if(ck2 && rk2){ cand.push(ck2+'|'+rk2, rk2+'|'+ck2); }
+    if(rk1) cand.push('*|'+rk1);
+    if(rk2) cand.push('*|'+rk2);
+
+    let t = 0;
+    for(const k of cand){
+      t = maps.tact.get(k) || 0;
+      if(t>0) break;
+    }
     if(t>0) row.tact_sec = t;
   }
 }
-
 
 function recalcRow(row){
   ensureHelperFields(row);
@@ -1078,94 +1113,6 @@ function initMonthSelect(){
   });
 }
 
-let __FORM_AUTOFILL_BOUND = false;
-
-function _pick(obj, keys){
-  if(!obj) return '';
-  for(const k of keys){
-    if(obj[k] !== undefined && obj[k] !== null && String(obj[k]).trim() !== '') return obj[k];
-  }
-  return '';
-}
-
-function _setAuto(inputEl, value){
-  if(!inputEl) return;
-  const manual = inputEl.dataset.manual === '1';
-  if(manual && String(inputEl.value||'').trim() !== '') return;
-  inputEl.value = value;
-  inputEl.dataset.manual = '0';
-}
-
-function autofillFormFromHelpers(){
-  const rk = upper(f.reper.value);
-  const ck = upper(f.ciocan.value);
-  if(!rk) return;
-
-  const { repD, repF, tact } = helperMaps();
-
-  // find reper record (prefer repere_forjate, fallback repere_debitare)
-  const rf = repF.get(rk);
-  let rd = repD.get(rk);
-
-  // if repere_forjate points to a debitat origin, try that too
-  if(!rd && rf){
-    const origin = upper(_pick(rf, ['REPER_DEBITARE_ORIGINE','REPER_DEBITARE','ORIGINE','REPER_ORIGINE']));
-    if(origin) rd = repD.get(origin);
-  }
-
-  const src = rf || rd;
-
-  // diametru + calitate
-  const diamVal = _pick(src, ['DIAMETRU_OTEL','DIAMETRU','DIAM','DIMENSIUNE_OTEL','DIMENSIUNE','OTEL_DIAMETRU']);
-  const calVal  = _pick(src, ['CALITATE_OTEL','CALITATE','CAL','OTEL_CALITATE']);
-
-  if(diamVal !== ''){
-    const v = String(diamVal).trim().replace(/^ø\s*/i,'').replace(/^Ø\s*/,'');
-    _setAuto(f.diam, 'ø ' + v);
-  }
-  if(calVal !== ''){
-    _setAuto(f.cal, String(calVal).trim());
-  }
-
-  // tact by ciocan|reper OR *|reper
-  const t = (tact.get(ck+'|'+rk) || tact.get('*|'+rk) || 0);
-  if(t>0){
-    _setAuto(f.tact, String(t).replace(/\.0+$/,''));
-  }
-}
-
-function bindFormAutofill(){
-  if(__FORM_AUTOFILL_BOUND) return;
-  __FORM_AUTOFILL_BOUND = true;
-
-  // mark manual overrides
-  [f.diam, f.cal, f.tact].forEach(el=>{
-    if(!el) return;
-    el.addEventListener('input', ()=>{ el.dataset.manual = '1'; });
-  });
-
-  // debounce autofill on reper/ciocan
-  let tmr = null;
-  const deb = ()=>{
-    clearTimeout(tmr);
-    tmr = setTimeout(autofillFormFromHelpers, 120);
-  };
-
-  ['input','change','blur'].forEach(evt=>{
-    f.reper.addEventListener(evt, deb);
-    f.ciocan.addEventListener(evt, deb);
-  });
-
-  // if helpers are reloaded, re-autofill if modal open
-  window.addEventListener('message', (e)=>{
-    if(!e || !e.data || e.data.type!=='HELPERS_UPDATED') return;
-    if(modalBack && modalBack.style.display==='flex'){
-      setTimeout(autofillFormFromHelpers, 50);
-    }
-  });
-}
-
-
 function openModal(){
   if(!window.__CAN_EDIT__) return;
   STATE.edit_id = null;
@@ -1183,12 +1130,9 @@ const d = new Date();
   // reset rest
   [f.ciocan,f.reper,f.diam,f.cal,f.marcaj,f.cat_dk,f.cat_marc,f.sup,f.sup_h,f.inf,f.inf_h,f.buc,f.rebut,f.tact,f.inc,f.sch,f.reg,f.opr,f.pauza].forEach(x=>x.value='');
   f.port.value = '';
-  // reset manual flags for autofill
-  [f.diam,f.cal,f.tact].forEach(el=>{ if(el){ el.dataset.manual='0'; } });
-
 
   modalBack.style.display = 'flex';
-  setTimeout(()=>{ f.ciocan.focus(); autofillFormFromHelpers(); }, 50);
+  setTimeout(()=>{ f.ciocan.focus(); }, 50);
 }
 
 
@@ -1565,6 +1509,7 @@ function loadFromPayload(payload){
   recalcAll();
   refreshFilterOptions();
   render();
+  __BOOTSTRAP_LOADING = false;
 
   try{ localStorage.setItem(LS_KEY_DATA, JSON.stringify(payload)); }catch(_e){}
   return true;
@@ -1617,6 +1562,12 @@ async function pull(){
 
 function schedulePush(){
   if(!window.__CAN_EDIT__) return;
+  if(__BOOTSTRAP_LOADING) return;
+  if(!__ALLOW_EMPTY_PUSH && (!STATE.rows || STATE.rows.length===0)){
+    // protect cloud from accidental wipe
+    setAutosavePill('autosave: skip empty', 'warn');
+    return;
+  }
   if(pushTimer) clearTimeout(pushTimer);
   pushTimer = setTimeout(async ()=>{
     try{
@@ -1729,8 +1680,10 @@ document.getElementById('btnReset').addEventListener('click', ()=>{
   if(!window.__CAN_EDIT__) return;
   if(!confirm('Reset: șterg toate rândurile din această pagină (local + cloud la următorul sync). Continui?')) return;
   STATE.rows = [];
+  __ALLOW_EMPTY_PUSH = true;
   markDirty();
   render();
+  setTimeout(()=>{ __ALLOW_EMPTY_PUSH = false; }, 3000);
 });
 
 /* ===============================
@@ -1880,7 +1833,6 @@ window.addEventListener('message', (e)=>{
    =============================== */
 (function init(){
   initMonthSelect();
-  bindFormAutofill();
 
   // load local
   loadLocal();
@@ -1889,6 +1841,7 @@ window.addEventListener('message', (e)=>{
   recalcAll();
   refreshFilterOptions();
   render();
+  setTimeout(()=>{ __BOOTSTRAP_LOADING = false; }, 1200);
 
   // role + cloud
   getRole().then(({ ok, role, email })=>{
