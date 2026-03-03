@@ -316,6 +316,27 @@
   
     .chk{ grid-column: 1 / -1; display:flex; align-items:center; gap:10px; font-size:12px; padding:6px 8px; background: rgba(255,255,255,.55); border: 1px dashed rgba(0,0,0,.25); border-radius:10px;}
     .chk input{ width:16px; height:16px; }
+
+    /* ===== Row hover + select (UI/UX identic cu FORJATE) ===== */
+    tbody tr td{ background: inherit; }
+    tbody tr.rfHover td{ background: rgba(59, 130, 246, .12); }      /* albastru deschis */
+    tbody tr.rfSelected td{ background: rgba(59, 130, 246, .20); }   /* select */
+    tbody tr.rfHover td.stickyL{ background: rgba(59, 130, 246, .12); }
+    tbody tr.rfSelected td.stickyL{ background: rgba(59, 130, 246, .20); }
+    tbody tr.rfSelected td{ box-shadow: inset 0 0 0 1px rgba(37,99,235,.35); }
+
+    /* ===== Freeze coloane (sticky-left) ===== */
+    th.stickyL, td.stickyL{
+      position: sticky;
+      left: 0;
+      z-index: 4;
+      background: var(--hdr);
+    }
+    td.stickyL{
+      z-index: 3;
+      background: #fff;
+    }
+
 </style>
 
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
@@ -572,6 +593,10 @@ function goDashboard(){ window.location.href='index.html'; }
 
   // ===== PAGING (performanță) =====
   const PAGE_SIZE = 200;
+  const FREEZE_COLS = 5; // primele coloane înghețate (ca la FORJATE)
+  let _freezeLefts = [];
+  let selectedRowId = null;
+
   let currentPage = 0;
 
   const $ = (id) => document.getElementById(id);
@@ -982,14 +1007,30 @@ function setAutofillReadonly(isReadonly){
     hdr.innerHTML = "";
     if (cg) cg.innerHTML = "";
 
-    for (const col of COLUMNS){
+    _freezeLefts = [];
+    let leftAcc = 0;
+
+    for (let i=0; i<COLUMNS.length; i++){
+      const col = COLUMNS[i];
+      const w = (COL_WIDTHS[col.key] || 90);
+
       if (cg){
         const c = document.createElement("col");
-        c.style.width = (COL_WIDTHS[col.key] || 90) + "px";
+        c.style.width = w + "px";
         cg.appendChild(c);
       }
+
       const th = document.createElement("th");
       th.textContent = col.label;
+
+      // Freeze primele coloane (sticky)
+      if (i < FREEZE_COLS){
+        th.classList.add("stickyL");
+        th.style.left = leftAcc + "px";
+        _freezeLefts[i] = leftAcc;
+        leftAcc += w;
+      }
+
       hdr.appendChild(th);
     }
 
@@ -1212,19 +1253,43 @@ function setAutofillReadonly(isReadonly){
     const start = currentPage * PAGE_SIZE;
     const end = Math.min(view.length, start + PAGE_SIZE);
     const slice = view.slice(start, end);
+
     if (pillPage) pillPage.textContent = `pagina ${currentPage+1}/${totalPages} (afișează ${start+1}-${end})`;
     pillRows.textContent = `${view.length} rânduri (pagina: ${slice.length})`;
     const total = view.reduce((s, r) => s + (Number.isFinite(Number(r.totalKg)) ? Number(r.totalKg) : 0), 0);
     pillTotalKg.textContent = `${fmtIntDots(total)} kg total`;
 
+    // keep selection if row still exists
+    if (selectedRowId && !rows.some(x => x.id === selectedRowId)) selectedRowId = null;
+
     for (let idx=0; idx<slice.length; idx++){
       const r = slice[idx];
       const tr = document.createElement("tr");
+      tr.dataset.rowid = r.id || "";
 
-      for (const col of COLUMNS){
+      if (selectedRowId && r.id === selectedRowId) tr.classList.add("rfSelected");
+
+      // hover (discret)
+      tr.addEventListener("mouseenter", ()=> tr.classList.add("rfHover"));
+      tr.addEventListener("mouseleave", ()=> tr.classList.remove("rfHover"));
+
+      // click = select row (dar nu când editezi un input / apăși buton)
+      tr.addEventListener("click", (ev)=>{
+        if (ev && ev.target && ev.target.closest && ev.target.closest("input,select,textarea,button")) return;
+        selectRow(r.id);
+      });
+
+      for (let ci=0; ci<COLUMNS.length; ci++){
+        const col = COLUMNS[ci];
         const td = document.createElement("td");
         if (col.align === "num") td.classList.add("num");
         if (col.align === "center") td.classList.add("center");
+
+        // Freeze primele coloane (sticky-left)
+        if (ci < FREEZE_COLS){
+          td.classList.add("stickyL");
+          td.style.left = (_freezeLefts[ci] || 0) + "px";
+        }
 
         if (col.readonly){
           td.textContent = displayValue(r, col);
@@ -1237,12 +1302,15 @@ function setAutofillReadonly(isReadonly){
             inp.value = displayEditValue(r, col);
           }
 
+          inp.addEventListener("focus", ()=> selectRow(r.id));
+
           inp.addEventListener("blur", () => {
             const newVal = inp.value;
             applyCellEdit(r, col, newVal);
             recalcRow(r);
             scheduleSave();
-        setTimeout(() => renderBody(), 0);
+            // re-render pagina (recalc + total), păstrând selecția
+            setTimeout(() => renderBody(), 0);
           });
 
           inp.addEventListener("keydown", (e) => {
@@ -1271,6 +1339,7 @@ function setAutofillReadonly(isReadonly){
         if (!confirm("Ștergi rândul selectat?")) return;
         const realIdx = rows.findIndex(x => x.id === r.id);
         if (realIdx >= 0) rows.splice(realIdx, 1);
+        if (selectedRowId === r.id) selectedRowId = null;
         scheduleSave();
         setTimeout(() => renderBody(), 0);
       });
@@ -1288,6 +1357,17 @@ function setAutofillReadonly(isReadonly){
       if (tw){ tw.scrollTop = tw.scrollHeight; tw.scrollLeft = tw.scrollWidth; }
       autoScrollBottom = false;
     }
+  }
+
+  function selectRow(id){
+    if(!id) return;
+    if(selectedRowId === id) return;
+    // remove old
+    const old = document.querySelector('tbody#body tr.rfSelected');
+    if(old) old.classList.remove('rfSelected');
+    selectedRowId = id;
+    const now = document.querySelector(`tbody#body tr[data-rowid="${id}"]`);
+    if(now) now.classList.add('rfSelected');
   }
 
   function displayValue(r, col){
@@ -1684,6 +1764,7 @@ function setAutofillReadonly(isReadonly){
 
     // normalize months
     rows.forEach(r => {
+      if(!r.id) r.id = (crypto?.randomUUID ? crypto.randomUUID() : ("id_"+Math.random().toString(16).slice(2)));
       r.luna = monthLower(r.luna);
       r.diametru = normalizeDiam(r.diametru);
       r.data = parseDateAny(r.data);
