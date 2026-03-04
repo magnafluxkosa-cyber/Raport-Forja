@@ -1075,6 +1075,7 @@ function clearAutosave(){
   let lastPulledAt = null;
   let pushTimer = null;
   let inFlight = false;
+  let seededCloud = false; // prevenim push repetat când cloud e gol
 
   function setCloud(ok, msg){
     if(!cloudBadge) return;
@@ -1110,29 +1111,55 @@ function clearAutosave(){
   }
 
   async function pull(){
-    if(inFlight) return;
-    inFlight = true;
-    try{
-      const { data, error } = await supa.from(DOC_TABLE).select("doc_key,data,updated_at").eq("doc_key", DOC_KEY).maybeSingle();
-      if(error) throw error;
-      if(!data || !data.data){ setCloud(true,"Cloud: gol"); return; }
-      const ts = data.updated_at || null;
-      if(lastPulledAt && ts && ts <= lastPulledAt) return;
+      if(inFlight) return;
+      inFlight = true;
+      try{
+        const { data, error } = await supa.from(DOC_TABLE).select("doc_key,data,updated_at").eq("doc_key", DOC_KEY).maybeSingle();
+        if(error) throw error;
+        if(!data || !data.data){ setCloud(true,"Cloud: gol"); return; }
 
-      const applied = applyPayload(data.data);
-      if(applied){
-        lastPulledAt = ts;
-        setCloud(true,"Cloud: ON");
-      }else{
-        setCloud(true,"Cloud: (în editare)");
+        const ts = data.updated_at || null;
+        if(lastPulledAt && ts && ts <= lastPulledAt) return;
+
+        // IMPORTANT: nu suprascriem local cu cloud gol (altfel la refresh îți șterge datele)
+        const cloudRows = Array.isArray(data.data.rows) ? data.data.rows : [];
+        const localRows = window.getTableData ? (window.getTableData() || []) : [];
+      // dacă încă nu am încărcat local (loadLocal rulează mai jos), citim direct din localStorage ca să nu pierdem datele
+      let localCount = localRows.length;
+      if(localCount === 0){
+        try{
+          const raw = localStorage.getItem(window.APP_KEYS && window.APP_KEYS.magnaflux ? window.APP_KEYS.magnaflux : "MAGNAFLUX_autosave_v1");
+          if(raw){
+            const obj = JSON.parse(raw);
+            if(obj && Array.isArray(obj.rows)) localCount = obj.rows.length;
+          }
+        }catch(_e){}
       }
-    }catch(e){
-      console.warn("cloud pull", e);
-      setCloud(false,"Cloud: OFF");
-    }finally{
-      inFlight = false;
+      if(cloudRows.length === 0 && localCount > 0){
+          setCloud(true, "Cloud: gol (păstrez local)");
+          // dacă ai rol de editare, seed-uim cloud o singură dată cu datele locale
+          if(!seededCloud){
+            seededCloud = true;
+            try{ await push(true); }catch(_e){}
+          }
+          lastPulledAt = ts || lastPulledAt;
+          return;
+        }
+
+        const applied = applyPayload(data.data);
+        if(applied){
+          lastPulledAt = ts;
+          setCloud(true,"Cloud: ON");
+        }else{
+          setCloud(true,"Cloud: (în editare)");
+        }
+      }catch(e){
+        console.warn("cloud pull", e);
+        setCloud(false,"Cloud: OFF");
+      }finally{
+        inFlight = false;
+      }
     }
-  }
 
   async function push(force){
     // role gating: doar admin/editor
