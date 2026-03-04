@@ -1010,6 +1010,8 @@ function clearAutosave(){
   async function apply(){
     try{
       const me = await getMyRole();
+      window.__APP_ROLE__ = me.role || "viewer";
+      window.__CAN_EDIT__ = (me.role==="admin" || me.role==="editor");
       badge.textContent = `Rol: ${me.role}${me.email ? " • " + me.email : ""}`;
       badge.classList.toggle("on", me.role==="admin" || me.role==="editor");
     }catch(e){
@@ -1062,7 +1064,8 @@ function clearAutosave(){
   });
 })();
 
-/* --- RF Cloud Sync (rf_documents) --- */
+
+/* --- RF Cloud Sync (rf_documents) — EXACT ca la INTRARI/DEBITATE/FORJATE --- */
 (function(){
   const supa = window.__SUPA__;
   const cloudBadge = document.getElementById("cloudBadge");
@@ -1070,134 +1073,197 @@ function clearAutosave(){
     if(cloudBadge){ cloudBadge.classList.add("off"); cloudBadge.textContent="Cloud: client indisponibil"; }
     return;
   }
+
   const DOC_TABLE = "rf_documents";
   const DOC_KEY = "magnaflux";
+
   let lastPulledAt = null;
+  let lastPushedAt = null;
+  let pollTimer = null;
   let pushTimer = null;
   let inFlight = false;
-  let seededCloud = false; // prevenim push repetat când cloud e gol
+  let started = false;
+
+  function nowIso(){ return new Date().toISOString(); }
 
   function setCloud(ok, msg){
     if(!cloudBadge) return;
     cloudBadge.classList.toggle("off", !ok);
     cloudBadge.classList.toggle("on", ok);
-    cloudBadge.textContent = msg || (ok ? "Cloud: ON" : "Cloud: OFF");
-  }
-
-  function isUserTyping(){
-    // dacă modalul e deschis sau utilizatorul e în input, nu aplicăm payload
-    if(!backdrop.classList.contains("hidden")) return true;
-    const ae = document.activeElement;
-    if(ae && (ae.tagName==="INPUT" || ae.tagName==="TEXTAREA" || ae.tagName==="SELECT")) return true;
-    return false;
+    cloudBadge.textContent = msg || (ok ? "Cloud: ON" : "Cloud: eroare");
   }
 
   function getPayload(){
-    return { rows: window.getTableData() || [] };
-  }
-  function applyPayload(payload){
-    if(isUserTyping()) return false;
-    window.loadFromPayload(payload);
-    return true;
+    try{
+      if(window.getAllDataForExport) return window.getAllDataForExport();
+    }catch(_e){}
+    try{
+      if(window.getTableData) return { rows: window.getTableData() || [] };
+    }catch(_e){}
+    try{
+      const k = (window.APP_KEYS && window.APP_KEYS.magnaflux) ? window.APP_KEYS.magnaflux : "MAGNAFLUX_autosave_v1";
+      const raw = localStorage.getItem(k);
+      return raw ? JSON.parse(raw) : { rows:[] };
+    }catch(_e){ return { rows:[] }; }
   }
 
-  async function ensureRow(){
-    const { data, error } = await supa.from(DOC_TABLE).select("doc_key").eq("doc_key", DOC_KEY).maybeSingle();
-    if(error) throw error;
-    if(!data){
-      const { error:insErr } = await supa.from(DOC_TABLE).insert({ doc_key: DOC_KEY, data: getPayload(), updated_at: nowIso() });
-      if(insErr) throw insErr;
+  function applyPayload(payload){
+    // edit-safe: nu aplicăm dacă utilizatorul editează (modal sau input activ)
+    try{
+      const bd = document.getElementById("backdrop");
+      if(bd && !bd.classList.contains("hidden")) return false;
+    }catch(_e){}
+    const ae = document.activeElement;
+    if(ae && (ae.tagName==="INPUT" || ae.tagName==="TEXTAREA" || ae.tagName==="SELECT" || ae.tagName==="TD" || ae.isContentEditable)){
+      return false;
     }
+    try{
+      if(window.loadFromPayload){
+        window.loadFromPayload(payload);
+        return true;
+      }
+    }catch(_e){}
+    return false;
   }
 
   async function pull(){
-      if(inFlight) return;
-      inFlight = true;
-      try{
-        const { data, error } = await supa.from(DOC_TABLE).select("doc_key,data,updated_at").eq("doc_key", DOC_KEY).maybeSingle();
-        if(error) throw error;
-        if(!data || !data.data){ setCloud(true,"Cloud: gol"); return; }
-
-        const ts = data.updated_at || null;
-        if(lastPulledAt && ts && ts <= lastPulledAt) return;
-
-        // IMPORTANT: nu suprascriem local cu cloud gol (altfel la refresh îți șterge datele)
-        const cloudRows = Array.isArray(data.data.rows) ? data.data.rows : [];
-        const localRows = window.getTableData ? (window.getTableData() || []) : [];
-      // dacă încă nu am încărcat local (loadLocal rulează mai jos), citim direct din localStorage ca să nu pierdem datele
-      let localCount = localRows.length;
-      if(localCount === 0){
-        try{
-          const raw = localStorage.getItem(window.APP_KEYS && window.APP_KEYS.magnaflux ? window.APP_KEYS.magnaflux : "MAGNAFLUX_autosave_v1");
-          if(raw){
-            const obj = JSON.parse(raw);
-            if(obj && Array.isArray(obj.rows)) localCount = obj.rows.length;
-          }
-        }catch(_e){}
-      }
-      if(cloudRows.length === 0 && localCount > 0){
-          setCloud(true, "Cloud: gol (păstrez local)");
-          // dacă ai rol de editare, seed-uim cloud o singură dată cu datele locale
-          if(!seededCloud){
-            seededCloud = true;
-            try{ await push(true); }catch(_e){}
-          }
-          lastPulledAt = ts || lastPulledAt;
-          return;
-        }
-
-        const applied = applyPayload(data.data);
-        if(applied){
-          lastPulledAt = ts;
-          setCloud(true,"Cloud: ON");
-        }else{
-          setCloud(true,"Cloud: (în editare)");
-        }
-      }catch(e){
-        console.warn("cloud pull", e);
-        setCloud(false,"Cloud: OFF");
-      }finally{
-        inFlight = false;
-      }
-    }
-
-  async function push(force){
-    // role gating: doar admin/editor
-    let role = "viewer";
+    if(inFlight) return;
+    inFlight = true;
     try{
-      const me = window.__RF_LOAD_ROLE__ ? await window.__RF_LOAD_ROLE__() : {role:"viewer"};
-      role = me.role || "viewer";
-    }catch(_e){}
-    if(!(role === "admin" || role === "editor")) return;
-
-    try{
-      await ensureRow();
-      const payload = getPayload();
-      const up = { data: payload, updated_at: nowIso() };
-      const { error } = await supa.from(DOC_TABLE).update(up).eq("doc_key", DOC_KEY);
+      const { data, error } = await supa.from(DOC_TABLE).select("doc_key,data,updated_at").eq("doc_key", DOC_KEY).maybeSingle();
       if(error) throw error;
-      setCloud(true,"Cloud: ON");
+      if(!data || !data.data){ setCloud(true,"Cloud: gol"); return; }
+
+      const ts = data.updated_at || null;
+      if(lastPulledAt && ts && new Date(ts) <= new Date(lastPulledAt)) { setCloud(true,"Cloud: ON"); return; }
+      if(lastPushedAt && ts && new Date(ts) <= new Date(lastPushedAt)) { setCloud(true,"Cloud: ON"); return; }
+
+      const applied = applyPayload(data.data);
+      if(applied){
+        lastPulledAt = ts || nowIso();
+        setCloud(true,"Cloud: ON");
+      }else{
+        setCloud(true,"Cloud: (în editare)");
+      }
     }catch(e){
-      console.warn("cloud push", e);
-      setCloud(false,"Cloud: OFF");
+      console.warn("cloud pull", e);
+      setCloud(false, "Cloud: eroare");
+    }finally{
+      inFlight = false;
     }
   }
 
+  async function pushNow(){
+    if(!window.__CAN_EDIT__) return;
+
+    try{
+      const payload = getPayload();
+      // protecție wipe accidental: nu împingem gol fără reset explicit
+      const rows = (payload && Array.isArray(payload.rows)) ? payload.rows : [];
+      if(rows.length === 0){
+        // allow empty doar dacă user a apăsat Reset (setat de pagina)
+        if(!window.__ALLOW_EMPTY_CLOUD_PUSH__){
+          return;
+        }
+      }
+      const up = { doc_key: DOC_KEY, data: payload, updated_at: nowIso() };
+      const { error } = await supa.from(DOC_TABLE).upsert(up, { onConflict:"doc_key" });
+      if(error) throw error;
+      lastPushedAt = up.updated_at;
+      setCloud(true, "Cloud: ON");
+    }catch(e){
+      console.warn("cloud push", e);
+      const msg = (String(e && e.message || "").toLowerCase().includes("row level security") || String(e).toLowerCase().includes("permission"))
+        ? "Cloud: fără drept de scriere"
+        : "Cloud: eroare";
+      setCloud(false, msg);
+    }finally{
+      // reset flag
+      window.__ALLOW_EMPTY_CLOUD_PUSH__ = false;
+    }
+  }
+
+  function schedulePush(){
+    if(!window.__CAN_EDIT__) return;
+    if(pushTimer) clearTimeout(pushTimer);
+    pushTimer = setTimeout(pushNow, 550);
+  }
+
+  // expunem exact ca în restul paginilor
   window.cloudSyncNow = async function(){
     await pull();
-    await push(true);
+    await pushNow();
   };
 
   window.scheduleCloudPush = function(force){
-    if(pushTimer) clearTimeout(pushTimer);
-    pushTimer = setTimeout(()=>push(force), force ? 250 : 650);
+    if(force){
+      return pushNow();
+    }
+    schedulePush();
   };
 
-  // poll (pull) la interval
-  setInterval(()=>pull(), 3000);
-  pull();
-})();
+  // Hook identic: orice schimbare de date -> push
+  window.notifyDataChanged = (function(orig){
+    return function(){
+      try{ if(typeof orig === "function") orig(); }catch(_e){}
+      schedulePush();
+    };
+  })(window.notifyDataChanged);
 
+  // și ascultăm input-uri (nu strică)
+  document.addEventListener("input", ()=>{ schedulePush(); }, true);
+
+  // Helper data auto-pull (doc_key = helpers) ca la FORJATE
+  let helpersLastTs = null;
+  async function pullHelpers(){
+    try{
+      const { data, error } = await supa.from(DOC_TABLE).select("data,updated_at").eq("doc_key","helpers").maybeSingle();
+      if(error) throw error;
+      if(!data || !data.data) return;
+      const ts = data.updated_at || null;
+      if(helpersLastTs && ts && new Date(ts) <= new Date(helpersLastTs)) return;
+      helpersLastTs = ts || nowIso();
+      try{ localStorage.setItem("RF_HELPERS_v1", JSON.stringify(data.data)); }catch(_e){}
+      try{ if(window.refreshRepereList) window.refreshRepereList(); }catch(_e){}
+    }catch(_e){}
+  }
+
+  async function startCloud(){
+    if(started) return;
+    started = true;
+
+    // dacă nu ești logat, NU pornim pull (ca să nu-ți șteargă localul)
+    try{
+      const { data:{ session } } = await supa.auth.getSession();
+      if(!session){
+        setCloud(false, "Cloud: neautentificat");
+        started = false;
+        return;
+      }
+    }catch(_e){
+      setCloud(false, "Cloud: neautentificat");
+      started = false;
+      return;
+    }
+
+    setCloud(true, "Cloud: conectare…");
+    await pull();
+    await pullHelpers();
+
+    if(pollTimer) clearInterval(pollTimer);
+    pollTimer = setInterval(async ()=>{
+      await pull();
+      await pullHelpers();
+    }, 2500);
+
+    setCloud(true, "Cloud: ON");
+  }
+
+  window.__RF_CLOUD_START__ = startCloud;
+
+  // dacă se schimbă sesiunea, restart
+  supa.auth.onAuthStateChange(()=>{ started=false; startCloud(); });
+})();
 /* helper: alias */
 function scheduleCloudPush(force){ if(window.scheduleCloudPush) window.scheduleCloudPush(force); }
 
@@ -1209,6 +1275,7 @@ loadLocal();
 refreshRepereList();
 refreshOperatorList();
 render();
+try{ if(window.__RF_CLOUD_START__) window.__RF_CLOUD_START__(); }catch(_e){}
 </script>
 
 </body>
