@@ -1611,16 +1611,12 @@ const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
     return;
   }
   const DOC_TABLE = 'rf_documents';
-  let DOC_KEY = 'intrari_otel'; // dynamic per luna (FREE-friendly)
+  const DOC_KEY = 'intrari_otel';
   let lastPulledAt = null;
   let lastPushedAt = null;
+  let pollTimer = null;
   let pushTimer = null;
   let inFlight = false;
-
-  // realtime
-  let rtChannel = null;
-  let rtReady = false;
-  let pullDebounce = null;
 
   function setCloud(ok, msg){
     if(!cloudBadge) return;
@@ -1630,6 +1626,7 @@ const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
   }
   function nowIso(){ return new Date().toISOString(); }
 
+  // get current page data: we rely on existing getTableData() and getState() patterns
   function getPayload(){
     // existing code stores in localStorage via autoSaveNow(); we reuse the canonical state
     // fallback: try read from localStorage key used by this page
@@ -1649,8 +1646,20 @@ const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
     }catch(_e){ return { rows:[] }; }
   }
 
-  function saveLocal(payload){
+  function applyPayload(payload){
+    // edit-safe: if user is editing an input, don't re-render now
+    const ae = document.activeElement;
+    if(ae && (ae.tagName==='INPUT' || ae.tagName==='TEXTAREA' || ae.tagName==='SELECT' || ae.tagName==='TD' || ae.isContentEditable)){
+      return false;
+    }
     try{
+      if(window.loadFromPayload){
+        window.loadFromPayload(payload);
+        return true;
+      }
+    }catch(e){}
+    try{
+      // fall back to existing autoLoad format: localStorage then autoLoad()
       const k = (window.APP_KEYS && window.APP_KEYS.intrari) ? window.APP_KEYS.intrari : 'INTRARI_OTEL_autosave_v3';
       localStorage.setItem(k, JSON.stringify(payload || {}));
       if(window.autoLoad) window.autoLoad();
@@ -1660,125 +1669,23 @@ const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
     return false;
   }
 
-  // --------- doc_key per luna ----------
-  const RO_MONTHS = ['ianuarie','februarie','martie','aprilie','mai','iunie','iulie','august','septembrie','octombrie','noiembrie','decembrie'];
-
-  function monthToNumber(v){
-    const s = String(v||'').trim().toLowerCase();
-    if(!s) return null;
-    const n = parseInt(s, 10);
-    if(Number.isFinite(n) && n>=1 && n<=12) return n;
-    const norm = s
-      .replaceAll('ă','a').replaceAll('â','a').replaceAll('î','i')
-      .replaceAll('ș','s').replaceAll('ş','s')
-      .replaceAll('ț','t').replaceAll('ţ','t');
-    for(let i=0;i<RO_MONTHS.length;i++){ 
-      const m = RO_MONTHS[i];
-      if(norm === m) return i+1;
-      if(norm.startsWith(m.slice(0,3))) return i+1;
-    }
-    return null;
-  }
-
-  function getFilterYearMonth(){
-    const yEl = document.querySelector('#filterRow .filt[data-col="0"]');
-    const mEl = document.querySelector('#filterRow .filt[data-col="1"]');
-    const now = new Date();
-    let y = parseInt((yEl && yEl.value) ? yEl.value : '', 10);
-    if(!Number.isFinite(y) || y < 2000 || y > 2100) y = now.getFullYear();
-    let m = monthToNumber(mEl ? mEl.value : '');
-    if(!m) m = now.getMonth()+1;
-    return { y, m };
-  }
-
-  function computeDocKey(){
-    const {y,m} = getFilterYearMonth();
-    const mm = String(m).padStart(2,'0');
-    return `intrari_otel_${y}_${mm}`;
-  }
-
-  function setLocalKeyForDoc(docKey){
-    try{
-      window.APP_KEYS = window.APP_KEYS || {};
-      window.APP_KEYS.intrari = `INTRARI_OTEL_autosave_v3_${docKey.replace('intrari_otel_','')}`;
-    }catch(_e){}
-  }
-
-  function schedulePull(delayMs){
-    if(pullDebounce) clearTimeout(pullDebounce);
-    pullDebounce = setTimeout(()=>pullNow(false), delayMs||250);
-  }
-
-  function subscribeRealtime(){
-    if(!supa || !supa.channel) return;
-
-    const nextKey = computeDocKey();
-    if(DOC_KEY === nextKey && rtChannel) return;
-
-    DOC_KEY = nextKey;
-    setLocalKeyForDoc(DOC_KEY);
-
-    // load local immediately for this luna
-    if(window.autoLoad) window.autoLoad();
-    if(window.applyFilters) window.applyFilters();
-
-    // drop old channel
-    try{ if(rtChannel) supa.removeChannel(rtChannel); }catch(_e){}
-    rtChannel = null;
-    rtReady = false;
-
-    const chName = `rf_${DOC_KEY}`;
-    rtChannel = supa.channel(chName);
-
-    rtChannel
-      .on('postgres_changes',
-          { event:'*', schema:'public', table:DOC_TABLE, filter:`doc_key=eq.${DOC_KEY}` },
-          (_payload)=>{ schedulePull(200); })
-      .subscribe((status)=>{
-        if(status === 'SUBSCRIBED'){
-          rtReady = true;
-          setCloud(true,'Cloud: ON');
-          schedulePull(0);
-        }else if(status === 'CHANNEL_ERROR' || status === 'TIMED_OUT'){
-          rtReady = false;
-          setCloud(false,'Cloud: fallback');
-        }
-      });
-
-    schedulePull(0);
-  }
-
-  function hookMonthYearChanges(){
-    const yEl = document.querySelector('#filterRow .filt[data-col="0"]');
-    const mEl = document.querySelector('#filterRow .filt[data-col="1"]');
-    const onChange = ()=>{
-      const next = computeDocKey();
-      if(DOC_KEY !== next) subscribeRealtime();
-    };
-    if(yEl){ yEl.addEventListener('change', onChange); yEl.addEventListener('blur', onChange); }
-    if(mEl){ mEl.addEventListener('change', onChange); mEl.addEventListener('blur', onChange); }
-  }
-
-  async function pullNow(force){
+  async function pull(){
     if(inFlight) return;
     inFlight = true;
     try{
-      const ae = document.activeElement;
-      const editing = !!(ae && (ae.tagName==='INPUT' || ae.tagName==='TEXTAREA' || ae.isContentEditable));
-      if(editing && !force){ inFlight=false; return; }
-
-      const { data, error } = await supa
-        .from(DOC_TABLE)
-        .select('doc_key,data,updated_at')
-        .eq('doc_key', DOC_KEY)
-        .maybeSingle();
-
+      const { data, error } = await supa.from(DOC_TABLE).select('doc_key,data,updated_at').eq('doc_key', DOC_KEY).maybeSingle();
       if(error) throw error;
-
       if(!data || !data.data){ setCloud(true,'Cloud: gol'); return; }
+      const ts = data.updated_at || null;
+      // ignore if we already have this update (or it's older)
+      if(lastPulledAt && ts && new Date(ts) <= new Date(lastPulledAt)) { setCloud(true,'Cloud: ON'); return; }
+      // if we pushed newer, don't overwrite
+      if(lastPushedAt && ts && new Date(ts) <= new Date(lastPushedAt)) { setCloud(true,'Cloud: ON'); return; }
 
-      saveLocal(data.data);
-      lastPulledAt = data.updated_at || nowIso();
+      const applied = applyPayload(data.data);
+      if(applied){
+        lastPulledAt = ts || nowIso();
+      }
       setCloud(true,'Cloud: ON');
     }catch(e){
       console.error(e);
@@ -1789,6 +1696,7 @@ const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
   }
 
   function schedulePush(){
+    if(!window.__CAN_EDIT__) return;
     if(pushTimer) clearTimeout(pushTimer);
     pushTimer = setTimeout(async ()=>{
       try{
@@ -1802,22 +1710,54 @@ const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
         console.error(e);
         setCloud(false,'Cloud: eroare');
       }
-    }, 350);
+    }, 500);
   }
 
-  // auto-push on any input that changes data
+  // Hook into existing autosave: whenever page says data changed, push to cloud
+  window.notifyDataChanged = (function(orig){
+    return function(){
+      try{ if(typeof orig === 'function') orig(); }catch(_e){}
+      schedulePush();
+    };
+  })(window.notifyDataChanged);
+
+  // also listen to generic input events
   document.addEventListener('input', (e)=>{
+    // ignore toolbar inputs etc, but generally fine
     schedulePush();
   }, true);
 
-  // init
-  hookMonthYearChanges();
-  subscribeRealtime();
 
-  // fallback pull rar (very low egress) if realtime fails
-  setInterval(()=>{
-    if(!rtReady) schedulePull(0);
-  }, 60000);
+  /* ===== Auto-scroll la ultimul rând (regulă globală) ===== */
+  const _scrolledOnce = new WeakSet();
+  function autoScrollBottomOnce(){
+    try{
+      const wrap = document.getElementById('tableWrap');
+      if(wrap && wrap.scrollHeight > wrap.clientHeight + 2 && !_scrolledOnce.has(wrap)){
+        wrap.scrollTop = wrap.scrollHeight;
+        _scrolledOnce.add(wrap);
+      }
+    }catch(_e){}
+  }
+  // after render/pull/import
+  const _origRender = window.renderTable;
+  if(typeof _origRender === 'function'){
+    window.renderTable = function(){
+      const r = _origRender.apply(this, arguments);
+      setTimeout(autoScrollBottomOnce, 50);
+      setTimeout(autoScrollBottomOnce, 250);
+      return r;
+    }
+  } else {
+    // fallback: try after load
+    window.addEventListener('load', ()=>{ setTimeout(autoScrollBottomOnce, 200); });
+  }
+
+
+  // initial
+  setCloud(true,'Cloud: conectare...');
+  pull();
+  pollTimer = setInterval(pull, 2500);
 })();
 </script>
 

@@ -338,15 +338,15 @@ const SUPABASE_URL = "https://addlybnigrywqowpbhvd.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFkZGx5Ym5pZ3J5d3Fvd3BiaHZkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzI2NjY2NjQsImV4cCI6MjA4ODI0MjY2NH0.VjbSKs7G_5T7GhdrjT8dtj2HCF6Az9KYfkpkSE7JTo4";
 
 const DOC_TABLE = 'rf_documents';
-const DOC_KEY_BASE = 'forjate';
+const DOC_KEY = 'forjate';
 
+const LS_KEY_DATA = 'FORJATE_autosave_v1';
+const LS_KEY_BACKUP = 'FORJATE_backup_v1';
 const LS_KEY_HELPERS = 'RF_HELPERS_v1';
-// autosave/backup keys sunt dinamice pe lună (vezi lsKeyData()/lsKeyBackup())
 
 const MONTHS = [
   'ianuarie','februarie','martie','aprilie','mai','iunie','iulie','august','septembrie','octombrie','noiembrie','decembrie'
 ];
-\n// ===============================\n// DOC KEY (split pe lună) — pentru egress mic (Free)\n// ===============================\nfunction _stripDiacritics(s){\n  return (s||'').toString().normalize('NFD').replace(/[\u0300-\u036f]/g,'');\n}\nfunction _monthToMM(luna){\n  const t=_stripDiacritics((luna||'').toLowerCase().trim());\n  const idx = MONTHS.indexOf(t);\n  if(idx<0) return null;\n  return String(idx+1).padStart(2,'0');\n}\nfunction docKeyFromFilters(an,luna){\n  const y=(an||'').toString().trim();\n  const mm=_monthToMM(luna);\n  if(!y || !mm) return null;\n  return `${DOC_KEY_BASE}_${y}_${mm}`;\n}\nfunction currentDocKey(){\n  const dk = docKeyFromFilters(STATE.filter_an, STATE.filter_luna);\n  if(dk) return dk;\n  const d=new Date();\n  const y=d.getFullYear();\n  const mm=String(d.getMonth()+1).padStart(2,'0');\n  return `${DOC_KEY_BASE}_${y}_${mm}`;\n}\nfunction lsKeyData(){ return `FORJATE_autosave_${currentDocKey()}`; }\nfunction lsKeyBackup(){ return `FORJATE_backup_${currentDocKey()}`; }\n
 
 /* ===============================
    STATE
@@ -584,7 +584,7 @@ function scheduleAutosave(){
   autosaveTimer = setTimeout(()=>{
     try{
       STATE.updated_at = nowIso();
-      localStorage.setItem(lsKeyData(), JSON.stringify({ version: STATE.version, updated_at: STATE.updated_at, rows: STATE.rows }));
+      localStorage.setItem(LS_KEY_DATA, JSON.stringify({ version: STATE.version, updated_at: STATE.updated_at, rows: STATE.rows }));
       setAutosavePill('autosave: saved', 'ok');
       __DIRTY = false;
     }catch(e){
@@ -596,13 +596,13 @@ function scheduleAutosave(){
 
 function loadLocal(){
   try{
-    const raw = localStorage.getItem(lsKeyData());
+    const raw = localStorage.getItem(LS_KEY_DATA);
     if(!raw) return;
     const payload = JSON.parse(raw);
     if(payload && Array.isArray(payload.rows)){
       STATE.rows = payload.rows;
       STATE.updated_at = payload.updated_at || null;
-  try{ if(Array.isArray(payload.rows) && payload.rows.length){ localStorage.setItem(lsKeyBackup(), JSON.stringify(payload)); } }catch(_e){}
+  try{ if(Array.isArray(payload.rows) && payload.rows.length){ localStorage.setItem(LS_KEY_BACKUP, JSON.stringify(payload)); } }catch(_e){}
     }
   }catch(_e){}
 }
@@ -1595,7 +1595,7 @@ function applyRole(role, email){
   document.getElementById('btnAdd').style.display = window.__CAN_EDIT__ ? 'inline-flex' : 'none';
   document.getElementById('btnImportXlsx').style.display = window.__CAN_EDIT__ ? 'inline-flex' : 'none';
   document.getElementById('btnReset').style.display = window.__CAN_EDIT__ ? 'inline-flex' : 'none';
-  try{ document.getElementById('btnRestore').style.display = (window.__CAN_EDIT__ && !!localStorage.getItem(lsKeyBackup())) ? 'inline-flex' : 'none'; }catch(_e){}
+  try{ document.getElementById('btnRestore').style.display = (window.__CAN_EDIT__ && !!localStorage.getItem(LS_KEY_BACKUP)) ? 'inline-flex' : 'none'; }catch(_e){}
 }
 
 /* ===============================
@@ -1603,8 +1603,7 @@ function applyRole(role, email){
    =============================== */
 let lastPulledAt = null;
 let lastPushedAt = null;
-let rtChan = null;
-let rtDocKey = null;
+let pollTimer = null;
 let pushTimer = null;
 let inFlight = false;
 
@@ -1642,7 +1641,7 @@ function loadFromPayload(payload){
   render();
   __BOOTSTRAP_LOADING = false;
 
-  try{ localStorage.setItem(lsKeyData(), JSON.stringify(payload)); }catch(_e){}
+  try{ localStorage.setItem(LS_KEY_DATA, JSON.stringify(payload)); }catch(_e){}
   return true;
 }
 window.loadFromPayload = loadFromPayload;
@@ -1659,12 +1658,12 @@ async function pull(){
 
   inFlight = true;
   try{
-    const { data, error } = await supa.from(DOC_TABLE).select('data,updated_at').eq('doc_key', currentDocKey()).maybeSingle();
+    const { data, error } = await supa.from(DOC_TABLE).select('data,updated_at').eq('doc_key', DOC_KEY).maybeSingle();
     if(error) throw error;
     if(!data || !data.data){
       // If cloud is empty but we have a local backup, offer restore
       try{
-        const b = localStorage.getItem(lsKeyBackup());
+        const b = localStorage.getItem(LS_KEY_BACKUP);
         if(b){ document.getElementById('btnRestore').style.display = window.__CAN_EDIT__ ? 'inline-flex' : 'none'; setCloud(true,'Cloud: gol (backup)'); return; }
       }catch(_e){}
       setCloud(true, 'Cloud: gol'); return;
@@ -1676,7 +1675,7 @@ async function pull(){
 
     const applied = loadFromPayload(data.data);
     try{
-      const hasBackup = !!localStorage.getItem(lsKeyBackup());
+      const hasBackup = !!localStorage.getItem(LS_KEY_BACKUP);
       const hasRows = (data.data && Array.isArray(data.data.rows) && data.data.rows.length);
       document.getElementById('btnRestore').style.display = (window.__CAN_EDIT__ && hasBackup && !hasRows) ? 'inline-flex' : 'none';
     }catch(_e){}
@@ -1689,32 +1688,6 @@ async function pull(){
   }finally{
     inFlight = false;
   }
-}
-
-
-// ===============================
-// REALTIME subscribe pe doc_key curent (fara polling)
-// ===============================
-async function ensureRealtime(){
-  if(!supa) return;
-  const dk = currentDocKey();
-  if(rtChan && rtDocKey === dk) return;
-  try{ if(rtChan){ await supa.removeChannel(rtChan); } }catch(_e){}
-  rtDocKey = dk;
-  rtChan = supa.channel('rf_docs_' + dk)
-    .on('postgres_changes', { event:'*', schema:'public', table: DOC_TABLE, filter: `doc_key=eq.${dk}` }, ()=>{
-      if(document.body.classList.contains('modalOpen')) return;
-      pull();
-    })
-    .subscribe();
-}
-
-async function switchDocKeyAndReload(){
-  rtDocKey = null;
-  loadLocal();
-  await pull();
-  await ensureRealtime();
-  render();
 }
 
 function schedulePush(){
@@ -1731,7 +1704,7 @@ function schedulePush(){
       const payload = getAllDataForExport();
       payload.updated_at = nowIso();
 
-      const up = { doc_key: currentDocKey(), data: payload, updated_at: payload.updated_at };
+      const up = { doc_key: DOC_KEY, data: payload, updated_at: payload.updated_at };
       const { error } = await supa.from(DOC_TABLE).upsert(up, { onConflict:'doc_key' });
       if(error) throw error;
 
@@ -1769,8 +1742,8 @@ async function startCloud(){
   // initial pull
   await pull();
 
-  // realtime (fara polling) — update in ~5–10 sec
-  await ensureRealtime();
+  // polling
+  pollTimer = setInterval(pull, 2500);
   setCloud(true, 'Cloud: ON');
 }
 
@@ -1822,7 +1795,7 @@ document.getElementById('btnImportXlsx').addEventListener('click', importXlsx);
 
 document.getElementById('btnRestore').addEventListener('click', ()=>{
   if(!window.__CAN_EDIT__) return;
-  let raw=null; try{ raw = localStorage.getItem(lsKeyBackup()); }catch(_e){}
+  let raw=null; try{ raw = localStorage.getItem(LS_KEY_BACKUP); }catch(_e){}
   if(!raw) return alert('Nu există backup local.');
   if(!confirm('Restore: încarc backup-ul local și îl trimit în cloud (înlocuiește ce e în cloud). Continui?')) return;
   try{
@@ -1875,7 +1848,6 @@ btnApplyFilter.addEventListener('click', ()=>{
   STATE.filter_luna = (fltLuna.value || '').toLowerCase();
   STATE._scrollToBottomNext = true;
   render();
-  switchDocKeyAndReload();
 });
 
 btnResetFilter.addEventListener('click', ()=>{
@@ -1885,7 +1857,6 @@ btnResetFilter.addEventListener('click', ()=>{
   fltLuna.value = '';
   STATE._scrollToBottomNext = true;
   render();
-  switchDocKeyAndReload();
 });
 
 // Zoom fit
@@ -2020,7 +1991,7 @@ window.addEventListener('message', (e)=>{
     applyRole(role, email);
     startCloud();
     pullHelpers();
-    setInterval(pullHelpers, 60000);
+    setInterval(pullHelpers, 5000);
   });
 })();
 </script>
