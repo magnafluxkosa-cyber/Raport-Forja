@@ -638,6 +638,8 @@
     const PAGE_KEY = "probleme-raportate";
     const DOC_KEYS = ["probleme-raportate", "probleme_raportate", "Probleme Raportate"];
     const LOCAL_KEY = "rf-probleme-raportate-cache-v2";
+    const FORJATE_DOC_KEYS = ["forjate", "FORJATE", "Forjate", "raport-forjate", "pagina-forjate", "foaia-forjate", "forjate.html"];
+    const FORJATE_LOCAL_KEYS = ["rf-forjate-cache-v2", "rf-forjate-cache-v1", "rf-forjate-cache", "forjate-cache"];
     const CLOUD_REFRESH_MS = 45000;
     const SAVE_DEBOUNCE_MS = 12000;
 
@@ -652,6 +654,7 @@
       rows: [],
       filteredRows: [],
       helper: {},
+      forjateRows: [],
       selectedId: null,
       editingId: null,
       dirty: false,
@@ -988,6 +991,163 @@
       return candidate.map(normalizeRow).filter(r => Object.values(r).some(v => String(v || "").trim() !== ""));
     }
 
+    function normalizeForjateRow(raw) {
+      const pick = (...keys) => {
+        for (const key of keys) {
+          if (raw && raw[key] !== undefined && raw[key] !== null) return raw[key];
+        }
+        return "";
+      };
+
+      const cleanText = value => String(value ?? "").replace(/_x000D_\n/g, " ").replace(/\s+/g, " ").trim();
+      return {
+        data: normalizeDateValue(cleanText(pick("data", "DATA", "Data"))),
+        schimbul: cleanText(pick("schimbul", "SCHIMBUL", "Schimbul", "schimb")),
+        utilaj: cleanText(pick(
+          "utilaj",
+          "UTILAJ",
+          "Utilaj",
+          "linie_de_forjare",
+          "Linie de forjare",
+          "Linie de forjare (utilaj principal)",
+          "linieDeForjare",
+          "linie_forgare",
+          "linie",
+          "Linie"
+        )),
+        reper: cleanText(pick("reper", "REPER", "Reper", "reper_forjat", "reperForjat"))
+      };
+    }
+
+    function rowsFromForjatePayload(payload) {
+      if (!payload) return [];
+      const candidate = Array.isArray(payload) ? payload
+        : Array.isArray(payload.rows) ? payload.rows
+        : Array.isArray(payload.content?.rows) ? payload.content.rows
+        : Array.isArray(payload.data?.rows) ? payload.data.rows
+        : [];
+
+      return candidate
+        .map(normalizeForjateRow)
+        .filter(row => row.data && row.schimbul && row.utilaj && row.reper);
+    }
+
+    function updateFormDatePartsFromData() {
+      const dt = parseRoDate(dom.form.data.value);
+      if (!dt) return;
+      dom.form.an.value = String(dt.getFullYear());
+      dom.form.luna.value = monthNameFromDate(dt);
+    }
+
+    function ensureSelectHasValue(select, value) {
+      const clean = String(value ?? "").trim();
+      if (!clean) return;
+      const exists = Array.from(select.options || []).some(option => normalizeText(option.value) === normalizeText(clean));
+      if (exists) return;
+      const option = document.createElement("option");
+      option.value = clean;
+      option.textContent = clean;
+      select.appendChild(option);
+    }
+
+    function loadForjateRowsFromLocalStorage() {
+      const discoveredKeys = Object.keys(localStorage || {}).filter(key => normalizeText(key).includes("forjate"));
+      const keys = [...new Set([...FORJATE_LOCAL_KEYS, ...discoveredKeys])];
+      const rows = [];
+
+      for (const key of keys) {
+        try {
+          const raw = localStorage.getItem(key);
+          if (!raw) continue;
+          const parsed = JSON.parse(raw);
+          const extracted = rowsFromForjatePayload(parsed);
+          if (extracted.length) rows.push(...extracted);
+        } catch (error) {
+          console.warn("forjate local cache", key, error);
+        }
+      }
+
+      return rows;
+    }
+
+    async function ensureForjateRowsLoaded(forceCloud = false) {
+      if (state.forjateRows.length && !forceCloud) return state.forjateRows;
+
+      if (!forceCloud) {
+        const localRows = loadForjateRowsFromLocalStorage();
+        if (localRows.length) {
+          state.forjateRows = localRows;
+          return state.forjateRows;
+        }
+      }
+
+      if (!state.supabase || !state.user) return state.forjateRows;
+
+      try {
+        const { data, error } = await state.supabase
+          .from("rf_documents")
+          .select("*")
+          .in("doc_key", FORJATE_DOC_KEYS)
+          .order("updated_at", { ascending: false })
+          .limit(8);
+
+        if (error) throw error;
+
+        if (Array.isArray(data) && data.length) {
+          for (const doc of data) {
+            const payload = doc?.content || doc?.data || doc;
+            const extracted = rowsFromForjatePayload(payload);
+            if (extracted.length) {
+              state.forjateRows = extracted;
+              return state.forjateRows;
+            }
+          }
+        }
+      } catch (error) {
+        console.warn("forjate cloud lookup", error);
+      }
+
+      return state.forjateRows;
+    }
+
+    function getReperFromForjateRows(dateValue, schimbulValue, utilajValue) {
+      const dateKey = normalizeDateValue(dateValue);
+      const shiftKey = String(schimbulValue ?? "").trim();
+      const utilajKey = normalizeText(utilajValue);
+      if (!dateKey || !shiftKey || !utilajKey) return "";
+
+      const matches = state.forjateRows.filter(row =>
+        normalizeDateValue(row.data) === dateKey &&
+        String(row.schimbul ?? "").trim() === shiftKey &&
+        normalizeText(row.utilaj) === utilajKey &&
+        String(row.reper ?? "").trim()
+      );
+
+      if (!matches.length) return "";
+
+      for (let index = matches.length - 1; index >= 0; index -= 1) {
+        const reper = String(matches[index].reper ?? "").trim();
+        if (reper) return reper;
+      }
+      return "";
+    }
+
+    async function autoFillReperFromForjate(forceCloud = false) {
+      updateFormDatePartsFromData();
+
+      const dateValue = dom.form.data.value;
+      const schimbulValue = dom.form.schimbul.value;
+      const utilajValue = dom.form.utilaj.value;
+      if (!dateValue || !schimbulValue || !utilajValue) return;
+
+      await ensureForjateRowsLoaded(forceCloud);
+      const reper = getReperFromForjateRows(dateValue, schimbulValue, utilajValue);
+      if (!reper) return;
+
+      ensureSelectHasValue(dom.form.reper, reper);
+      dom.form.reper.value = reper;
+    }
+
     function currentPayload() {
       return {
         page_key: PAGE_KEY,
@@ -1160,7 +1320,10 @@
 
       dom.modal.classList.add("open");
       dom.modal.setAttribute("aria-hidden", "false");
-      setTimeout(() => dom.form.an.focus(), 30);
+      setTimeout(() => {
+        dom.form.an.focus();
+        if (!row) void autoFillReperFromForjate(false);
+      }, 30);
     }
 
     function rowById(id) {
@@ -1170,6 +1333,8 @@
     function handleRowSave(event) {
       event.preventDefault();
       if (!state.permissions.canAdd && !state.permissions.canEdit) return;
+
+      updateFormDatePartsFromData();
 
       const payload = normalizeRow({
         id: state.editingId || randomId(),
@@ -1197,7 +1362,9 @@
         return;
       }
 
-      if (state.editingId) {
+      const isEditing = !!state.editingId;
+
+      if (isEditing) {
         state.rows = state.rows.map(row => row.id === state.editingId ? payload : row);
         state.selectedId = payload.id;
       } else {
@@ -1208,8 +1375,19 @@
       state.source = "local";
       setModeStatus("Sursă: local modificat", "warning");
       markDirty();
-      closeModal();
       refreshUi(true);
+
+      if (isEditing) {
+        closeModal();
+        return;
+      }
+
+      state.editingId = null;
+      dom.modalTitle.textContent = "Adaugă problemă raportată";
+      setTimeout(() => {
+        dom.form.timp_minute.focus();
+        if (typeof dom.form.timp_minute.select === "function") dom.form.timp_minute.select();
+      }, 30);
     }
 
     async function resolveAuthAndRole() {
@@ -1614,6 +1792,7 @@
       dom.btnResetForm.addEventListener("click", () => {
         dom.editForm.reset();
         setDefaultFormValues();
+        void autoFillReperFromForjate(false);
       });
       dom.btnDelete.addEventListener("click", deleteSelected);
       dom.btnExport.addEventListener("click", exportExcel);
@@ -1633,6 +1812,14 @@
       });
       dom.btnSync.addEventListener("click", () => saveCloud(true));
       dom.editForm.addEventListener("submit", handleRowSave);
+
+      const triggerAutoReper = () => {
+        void autoFillReperFromForjate(false);
+      };
+      dom.form.data.addEventListener("change", triggerAutoReper);
+      dom.form.data.addEventListener("blur", triggerAutoReper);
+      dom.form.schimbul.addEventListener("change", triggerAutoReper);
+      dom.form.utilaj.addEventListener("change", triggerAutoReper);
 
       for (const input of Object.values(dom.filters)) {
         input.addEventListener("input", renderTable);
