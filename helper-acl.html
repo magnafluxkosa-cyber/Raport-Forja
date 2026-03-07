@@ -352,6 +352,27 @@
       font-size:12px;
     }
 
+    .subcard{
+      border:2px solid var(--line);
+      border-radius:12px;
+      background:#fff;
+      padding:12px;
+      margin-bottom:12px;
+    }
+
+    .subcard-title{
+      font-size:15px;
+      font-weight:700;
+      margin:0 0 4px;
+    }
+
+    .subcard-note{
+      margin:0 0 10px;
+      color:var(--muted);
+      font-size:13px;
+      line-height:1.4;
+    }
+
     #toast{
       position:fixed;
       right:14px;
@@ -437,13 +458,42 @@
           <div class="panel-head">
             <div>
               <h2>Roluri utilizatori</h2>
-              <p>Helper-acl atribuie roluri pe email. Conturile se creează în Supabase Auth, iar aici le stabilești accesul.</p>
+              <p>Helper-acl poate crea conturi noi prin admin-control și poate atribui roluri pe email, fără să schimbe flow-ul general de administrare.</p>
             </div>
             <div class="toolbar">
               <button id="btnReloadUsers" class="btn-soft" type="button">Reîncarcă utilizatori</button>
             </div>
           </div>
           <div class="panel-body">
+            <div class="subcard">
+              <div class="subcard-title">Creează cont nou</div>
+              <p class="subcard-note">Crearea efectivă a contului se face prin Edge Function <strong>admin-control</strong>, iar rolul este scris automat în <strong>rf_acl</strong> și <strong>profiles</strong>.</p>
+              <div class="form-grid">
+                <div class="field">
+                  <label for="createUserEmail">Email nou</label>
+                  <input id="createUserEmail" type="email" placeholder="ex: operator@firma.ro" />
+                </div>
+                <div class="field">
+                  <label for="createUserPassword">Parolă temporară</label>
+                  <input id="createUserPassword" type="text" placeholder="minim 6 caractere" />
+                </div>
+                <div class="field">
+                  <label for="createUserRole">Rol inițial</label>
+                  <select id="createUserRole"></select>
+                </div>
+                <div class="field">
+                  <label>Email confirmat</label>
+                  <div class="checkbox-wrap">
+                    <input id="createUserConfirm" type="checkbox" checked />
+                    <span>email_confirm</span>
+                  </div>
+                </div>
+              </div>
+              <div class="toolbar" style="margin-bottom:4px;">
+                <button id="btnCreateUser" class="btn" type="button">Creează cont</button>
+              </div>
+            </div>
+
             <div class="form-grid">
               <div class="field">
                 <label for="newUserEmail">Email utilizator</label>
@@ -661,6 +711,7 @@
     function setAdminMode(isAdmin) {
       const disabled = !isAdmin;
       [
+        'btnCreateUser', 'createUserEmail', 'createUserPassword', 'createUserRole', 'createUserConfirm',
         'btnAddUserRole', 'btnSeedDefaults', 'btnSavePagePerms', 'btnSaveFieldPerm',
         'newUserEmail', 'newUserRole', 'permRole', 'fieldRole', 'fieldPage', 'fieldKey', 'fieldCanEdit'
       ].forEach(id => {
@@ -863,6 +914,37 @@
           </td>
         </tr>
       `).join('');
+    }
+
+    async function createUserViaEdge() {
+      if (currentRole !== 'admin') throw new Error('Doar admin poate crea conturi noi.');
+
+      const email = $('createUserEmail').value.trim().toLowerCase();
+      const password = $('createUserPassword').value.trim();
+      const role = $('createUserRole').value;
+      const email_confirm = $('createUserConfirm').checked;
+
+      if (!email) throw new Error('Introdu emailul noului utilizator.');
+      if (!password) throw new Error('Introdu parola temporară.');
+      if (password.length < 6) throw new Error('Parola trebuie să aibă cel puțin 6 caractere.');
+      if (!ROLES.includes(role)) throw new Error('Rol invalid.');
+
+      const { data, error } = await sb.functions.invoke('admin-control', {
+        body: {
+          action: 'create-user',
+          email,
+          password,
+          role,
+          email_confirm
+        }
+      });
+
+      if (error) throw error;
+      if (!data || data.ok !== true) {
+        throw new Error(data?.error || 'Funcția admin-control nu a returnat confirmarea așteptată.');
+      }
+
+      return data;
     }
 
     async function saveUserRole(email, role) {
@@ -1130,6 +1212,22 @@
         }
       });
 
+      $('btnCreateUser').addEventListener('click', async () => {
+        try {
+          const result = await createUserViaEdge();
+          $('createUserEmail').value = '';
+          $('createUserPassword').value = '';
+          $('createUserRole').value = 'viewer';
+          $('createUserConfirm').checked = true;
+          $('newUserEmail').value = result.email || '';
+          $('newUserRole').value = result.role || 'viewer';
+          await loadUsers();
+          showToast(`Cont creat pentru ${result.email || 'utilizator'}.`);
+        } catch (err) {
+          showToast(err.message || 'Eroare la crearea contului.', true);
+        }
+      });
+
       $('btnAddUserRole').addEventListener('click', async () => {
         try {
           const email = $('newUserEmail').value.trim().toLowerCase();
@@ -1225,10 +1323,12 @@
 
     async function boot() {
       try {
+        fillRoleSelect('createUserRole');
         fillRoleSelect('newUserRole');
         fillRoleSelect('permRole');
         fillRoleSelect('fieldRole');
         $('permRole').value = 'viewer';
+        $('createUserRole').value = 'viewer';
         $('newUserRole').value = 'viewer';
         $('fieldRole').value = 'viewer';
 
