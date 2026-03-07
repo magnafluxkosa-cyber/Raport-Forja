@@ -626,7 +626,7 @@ function goDashboard(){ window.location.href='index.html'; }
             <input id="mSchimb" type="text" placeholder="1" data-edit>
           </label>
           <label>Operator
-            <input id="mOper" type="text" placeholder="ex: Nagy Robert" data-edit>
+            <input id="mOper" type="text" list="dlOperatoriDebitare" placeholder="ex: Nagy Robert" data-edit>
           </label>
           <label>Ore lucrate
             <input id="mOre" type="text" placeholder="8,0" data-edit>
@@ -729,22 +729,132 @@ function goDashboard(){ window.location.href='index.html'; }
   const btnNextPage = $("btnNextPage");
 
 
-  // ===== HELPERE (din Excel) =====
+  // ===== HELPERE (din helper-data / cloud) =====
   const HELPERS_KEY = "RF_HELPERS_v1";
+  const HELPERS_FALLBACK_KEYS = ["RF_HELPER_DATA_v1", "RF_HELPERS", "HELPER_DATA", "helper-data", "helper_data"];
+  const HELPERS_DOC_KEYS = ["helpers", "helper-data", "helper_data", "helperData"];
   let _helpers = null;
   let _mapRepDebitare = null;
 
-  function loadHelpers(){
-    if (_helpers) return _helpers;
-    try {
-      const raw = localStorage.getItem(HELPERS_KEY);
+  function helperReadStoragePayload(key){
+    try{
+      const raw = localStorage.getItem(key);
       if (!raw) return null;
-      _helpers = JSON.parse(raw);
-      return _helpers;
-    } catch(e) {
-      console.warn("Helpere corupte / lipsă:", e);
+      return JSON.parse(raw);
+    }catch(e){
+      console.warn("Helper storage corupt pentru cheia", key, e);
       return null;
     }
+  }
+
+  function loadHelpers(){
+    if (_helpers) return _helpers;
+    const keys = [HELPERS_KEY].concat(HELPERS_FALLBACK_KEYS);
+    for (const key of keys){
+      const payload = helperReadStoragePayload(key);
+      if (payload){
+        _helpers = payload;
+        return _helpers;
+      }
+    }
+    return null;
+  }
+
+  function helperPick(obj, keys){
+    if (!obj || typeof obj !== "object") return "";
+    for (const key of keys){
+      if (obj[key] != null && obj[key] !== "") return obj[key];
+    }
+    const map = new Map(Object.keys(obj).map(k => [String(k).trim().toLowerCase(), obj[k]]));
+    for (const key of keys){
+      const found = map.get(String(key).trim().toLowerCase());
+      if (found != null && found !== "") return found;
+    }
+    return "";
+  }
+
+  function helperToTextArray(src){
+    if (!Array.isArray(src)) return [];
+    const out = [];
+    src.forEach(item => {
+      if (item == null) return;
+      if (typeof item === "string" || typeof item === "number"){
+        const v = String(item).trim();
+        if (v) out.push(v);
+        return;
+      }
+      if (typeof item === "object"){
+        const v = helperPick(item, ["value","label","name","nume","operator","utilaj","echipament","text","denumire"]);
+        const s = (v ?? "").toString().trim();
+        if (s) out.push(s);
+      }
+    });
+    return Array.from(new Set(out));
+  }
+
+  function helperFindArrayDeep(root, tester, depth = 0){
+    if (!root || depth > 4) return null;
+    if (Array.isArray(root)) return tester(root) ? root : null;
+    if (typeof root !== "object") return null;
+    for (const value of Object.values(root)){
+      const found = helperFindArrayDeep(value, tester, depth + 1);
+      if (found) return found;
+    }
+    return null;
+  }
+
+  function extractRepereDebitareRows(h){
+    if (!h) return [];
+    const direct = [
+      h.repere_debitare,
+      h.repereDebitare,
+      h.debitare_repere,
+      h.repereDebitari,
+      h?.debitare?.repere,
+      h?.helperData?.repere_debitare,
+      h?.tables?.repere_debitare,
+      h?.lists?.repere_debitare
+    ];
+    for (const src of direct){
+      if (Array.isArray(src) && src.length) return src;
+    }
+    const found = helperFindArrayDeep(h, arr => arr.some(row => {
+      if (!row || typeof row !== "object") return false;
+      const reper = helperPick(row, ["REPER_DEBITARE","reper_debitare","REPER","reper","Denumire reper debitare","denumire_reper_debitare"]);
+      const diam = helperPick(row, ["DIAMETRU_OTEL","diametru_otel","Diametru oțel","diametru"]);
+      const cal = helperPick(row, ["CALITATE_OTEL","calitate_otel","CALITATE","calitate"]);
+      return !!((reper ?? "").toString().trim() && (diam ?? "").toString().trim() && (cal ?? "").toString().trim());
+    }));
+    return Array.isArray(found) ? found : [];
+  }
+
+  function extractHelperList(h, names){
+    if (!h) return [];
+    const direct = [];
+    names.forEach(name => {
+      direct.push(h[name]);
+      if (h.debitare && typeof h.debitare === "object") direct.push(h.debitare[name]);
+      if (h.helperData && typeof h.helperData === "object") direct.push(h.helperData[name]);
+      if (h.tables && typeof h.tables === "object") direct.push(h.tables[name]);
+      if (h.lists && typeof h.lists === "object") direct.push(h.lists[name]);
+    });
+    for (const src of direct){
+      const arr = helperToTextArray(src);
+      if (arr.length) return arr;
+    }
+    return [];
+  }
+
+  function fillDatalist(dl, values){
+    if (!dl) return;
+    dl.innerHTML = "";
+    (values || []).forEach(v => {
+      const s = (v ?? "").toString().trim();
+      if (!s) return;
+      const o = document.createElement("option");
+      o.value = s;
+      dl.appendChild(o);
+    });
   }
 
   function buildHelperMaps(){
@@ -752,42 +862,29 @@ function goDashboard(){ window.location.href='index.html'; }
     _mapRepDebitare = new Map();
     const dlR = $("dlRepereDebitare");
     const dlU = $("dlUtilajeDebitare");
+    const dlO = $("dlOperatoriDebitare");
     if (dlR) dlR.innerHTML = "";
     if (dlU) dlU.innerHTML = "";
+    if (dlO) dlO.innerHTML = "";
 
     if (!h) return;
 
-    // Repere debitare → autofill
-    (h.repere_debitare || []).forEach(row => {
-      const k = (row.REPER_DEBITARE ?? "").toString().trim();
-      if (!k) return;
-      _mapRepDebitare.set(k, {
-        reper: k,
-        diam: row.DIAMETRU_OTEL,
-        cal: (row.CALITATE_OTEL ?? "").toString().trim(),
-        kgBuc: row.KG_BUC_DEBITAT,
-        lung: row.LUNGIME_DEBITARE_MM
+    extractRepereDebitareRows(h).forEach(row => {
+      const k = helperPick(row, ["REPER_DEBITARE","reper_debitare","REPER","reper","Denumire reper debitare","denumire_reper_debitare"]);
+      const reper = (k ?? "").toString().trim();
+      if (!reper) return;
+      _mapRepDebitare.set(reper, {
+        reper,
+        diam: helperPick(row, ["DIAMETRU_OTEL","diametru_otel","Diametru oțel","diametru"]),
+        cal: (helperPick(row, ["CALITATE_OTEL","calitate_otel","CALITATE","calitate"]) ?? "").toString().trim(),
+        kgBuc: helperPick(row, ["KG_BUC_DEBITAT","kg_buc_debitat","Kg/buc","kg_buc"]),
+        lung: helperPick(row, ["LUNGIME_DEBITARE_MM","lungime_debitare_mm","Lungime debitat (mm)","lungime","lungime_mm"])
       });
     });
 
-    if (dlR){
-      Array.from(_mapRepDebitare.keys()).sort().forEach(k => {
-        const o = document.createElement("option");
-        o.value = k;
-        dlR.appendChild(o);
-      });
-    }
-
-    // Utilaje debitare (autocomplete)
-    if (dlU){
-      (h.utilaje_debitare || []).forEach(u => {
-        const v = (u ?? "").toString().trim();
-        if (!v) return;
-        const o = document.createElement("option");
-        o.value = v;
-        dlU.appendChild(o);
-      });
-    }
+    fillDatalist(dlR, Array.from(_mapRepDebitare.keys()).sort((a,b)=>a.localeCompare(b, 'ro')));
+    fillDatalist(dlU, extractHelperList(h, ["utilaje_debitare","utilajeDebitare","echipamente_debitare","echipamenteDebitare"]));
+    fillDatalist(dlO, extractHelperList(h, ["operatori_debitare","operatoriDebitare","operatori","operatori_linie_debitare"]));
   }
 
   // Reîncarcă helperele când sunt modificate în pagina HELPER
@@ -807,7 +904,14 @@ function goDashboard(){ window.location.href='index.html'; }
     const supa = window.__SUPA__;
     if(!supa) return false;
     try{
-      const doc = await rfReadDocumentCompat(supa, "helpers");
+      let doc = null;
+      for (const docKey of HELPERS_DOC_KEYS){
+        const probe = await rfReadDocumentCompat(supa, docKey);
+        if (probe && probe.payload){
+          doc = probe;
+          break;
+        }
+      }
       if(!doc || !doc.payload) return false;
 
       const ts = doc.updated_at || null;
@@ -815,6 +919,7 @@ function goDashboard(){ window.location.href='index.html'; }
 
       _helpersLastTs = ts || new Date().toISOString();
       try{ localStorage.setItem(HELPERS_KEY, JSON.stringify(doc.payload)); }catch(_e){}
+      HELPERS_FALLBACK_KEYS.forEach(k => { try{ localStorage.setItem(k, JSON.stringify(doc.payload)); }catch(_err){} });
       _helpers = null;
       _mapRepDebitare = null;
       try{ buildHelperMaps(); }catch(_e){}
@@ -833,7 +938,7 @@ function goDashboard(){ window.location.href='index.html'; }
 
   // Storage event (instant între tab-uri pe același device)
   window.addEventListener("storage", (e)=>{
-    if(e && e.key === HELPERS_KEY){
+    if(e && [HELPERS_KEY].concat(HELPERS_FALLBACK_KEYS).includes(e.key)){
       _helpers = null;
       _mapRepDebitare = null;
       try{ buildHelperMaps(); }catch(_e){}
@@ -854,14 +959,16 @@ function goDashboard(){ window.location.href='index.html'; }
   try{
     const supa = window.__SUPA__;
     if(supa && supa.channel){
-      supa.channel("rf_helpers_doc")
-        .on("postgres_changes",
-            { event:"UPDATE", schema:"public", table:"rf_documents", filter:"doc_key=eq.helpers" },
-            ()=>pullHelpersCloud(true))
-        .on("postgres_changes",
-            { event:"INSERT", schema:"public", table:"rf_documents", filter:"doc_key=eq.helpers" },
-            ()=>pullHelpersCloud(true))
-        .subscribe();
+      const ch = supa.channel("rf_helpers_doc");
+      HELPERS_DOC_KEYS.forEach(docKey => {
+        ch.on("postgres_changes",
+              { event:"UPDATE", schema:"public", table:"rf_documents", filter:`doc_key=eq.${docKey}` },
+              ()=>pullHelpersCloud(true))
+          .on("postgres_changes",
+              { event:"INSERT", schema:"public", table:"rf_documents", filter:`doc_key=eq.${docKey}` },
+              ()=>pullHelpersCloud(true));
+      });
+      ch.subscribe();
     }
   }catch(_e){}
 
@@ -1646,6 +1753,7 @@ function setAutofillReadonly(isReadonly){
   }
 
   function openEditModal(rowId){
+    try{ pullHelpersCloud(false); }catch(_e){}
     const r = rows.find(x => x.id === rowId);
     if (!r) return;
 
@@ -1757,6 +1865,7 @@ function setAutofillReadonly(isReadonly){
   }
 
   function openAddModal(){
+    try{ pullHelpersCloud(false); }catch(_e){}
     // defaults
     const d = new Date();
     const iso = toISODate(d);
@@ -2057,7 +2166,7 @@ function setAutofillReadonly(isReadonly){
 
     // inițializează helperele (repere/utilaje) pentru autocomplete + autofill
     buildHelperMaps();
-    const _mr = $("mReper"); if (_mr) _mr.addEventListener("input", applyReperAutofill);
+    const _mr = $("mReper"); if (_mr) { _mr.addEventListener("input", applyReperAutofill); _mr.addEventListener("change", applyReperAutofill); }
     const _ov = $("mOverride"); if (_ov) _ov.addEventListener("change", () => { setAutofillReadonly(!_ov.checked); if(!_ov.checked) applyReperAutofill(); });
 
     // normalize months
@@ -2136,6 +2245,7 @@ function setAutofillReadonly(isReadonly){
 
   <datalist id="dlRepereDebitare"></datalist>
   <datalist id="dlUtilajeDebitare"></datalist>
+  <datalist id="dlOperatoriDebitare"></datalist>
 
 <script>
 /* ===============================
