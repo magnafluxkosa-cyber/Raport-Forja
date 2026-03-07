@@ -486,7 +486,8 @@
         <span class="sync-badge warn" id="syncBadge">Inițializare...</span>
         <button class="btn" id="btnReload">Reîncarcă</button>
         <button class="btn ok" id="btnSync">Sync cloud</button>
-        <button class="btn" id="btnExport">Export CSV</button>
+        <button class="btn" id="btnImportExcel">Import Excel</button>
+        <button class="btn" id="btnExport">Export Excel</button>
         <button class="btn primary" id="btnAdd">Adaugă</button>
         <button class="btn danger" id="btnLogout">Logout</button>
       </div>
@@ -516,6 +517,7 @@
   </div>
 
   <button class="fab" id="btnAddFab" title="Adaugă">+</button>
+  <input type="file" id="fileImportExcel" class="hidden" accept=".xlsx,.xls,.csv" />
 
   <div class="modal-backdrop" id="modalBackdrop">
     <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
@@ -680,10 +682,12 @@
         btnBack: document.getElementById('btnBack'),
         btnReload: document.getElementById('btnReload'),
         btnSync: document.getElementById('btnSync'),
+        btnImportExcel: document.getElementById('btnImportExcel'),
         btnExport: document.getElementById('btnExport'),
         btnAdd: document.getElementById('btnAdd'),
         btnAddFab: document.getElementById('btnAddFab'),
         btnLogout: document.getElementById('btnLogout'),
+        fileImportExcel: document.getElementById('fileImportExcel'),
         modalBackdrop: document.getElementById('modalBackdrop'),
         btnCloseModal: document.getElementById('btnCloseModal'),
         btnCancelModal: document.getElementById('btnCancelModal'),
@@ -766,6 +770,7 @@
         lastCloudUpdatedAt: null,
         helperDoc: null,
         helperSuggestions: { operators: [], repere: [], reperMap: new Map() },
+        xlsxLoader: null,
         saveTimer: null,
         pollTimer: null,
         sourceLabel: 'local'
@@ -1466,6 +1471,258 @@
         el.btnAdd.disabled = !state.permissions.canAdd;
         el.btnAddFab.disabled = !state.permissions.canAdd;
         el.btnSync.disabled = !state.permissions.canEdit;
+        el.btnImportExcel.disabled = !state.permissions.canEdit && !state.permissions.canAdd;
+      }
+
+
+      async function ensureXlsxLib(){
+        if(window.XLSX) return window.XLSX;
+        if(state.xlsxLoader) return state.xlsxLoader;
+        state.xlsxLoader = new Promise((resolve, reject) => {
+          const script = document.createElement('script');
+          script.src = 'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js';
+          script.async = true;
+          script.onload = () => window.XLSX ? resolve(window.XLSX) : reject(new Error('Biblioteca XLSX nu a pornit corect.'));
+          script.onerror = () => reject(new Error('Nu am putut încărca biblioteca pentru Excel.'));
+          document.head.appendChild(script);
+        }).catch(err => {
+          state.xlsxLoader = null;
+          throw err;
+        });
+        return state.xlsxLoader;
+      }
+
+      function normalizeHeader(value){
+        return normalizeText(value).replace(/[^a-z0-9]/g, '');
+      }
+
+      function buildImportHeaderMap(){
+        const map = new Map();
+        columns.forEach(col => {
+          map.set(normalizeHeader(col.key), col.key);
+          map.set(normalizeHeader(col.label), col.key);
+        });
+
+        [
+          ['numeralkod', 'numeral_kod'],
+          ['numeralkodmaterial', 'numeral_kod'],
+          ['valmagnetica', 'val_magnetica'],
+          ['valelectrica', 'val_electrica'],
+          ['totalrebut', 'total_rebut'],
+          ['acceptate', 'acceptate'],
+          ['controlate', 'controlate'],
+          ['proc', 'procent'],
+          ['procent', 'procent'],
+          ['procent2', 'procent2'],
+          ['codcat', 'cod_cat']
+        ].forEach(([alias, key]) => map.set(alias, key));
+
+        return map;
+      }
+
+      function normalizeImportedDate(value){
+        if(value == null || value === '') return '';
+        if(value instanceof Date && !isNaN(value.getTime())) return value.toISOString().slice(0,10);
+
+        const text = String(value).trim();
+        if(!text) return '';
+        if(/^\d{4}-\d{2}-\d{2}/.test(text)) return text.slice(0,10);
+
+        if(/^\d{2}[.\/-]\d{2}[.\/-]\d{4}$/.test(text)){
+          const parts = text.split(/[.\/-]/);
+          return `${parts[2]}-${parts[1].padStart(2,'0')}-${parts[0].padStart(2,'0')}`;
+        }
+
+        if(/^\d{1,2}[.\/-]\d{1,2}[.\/-]\d{2}$/.test(text)){
+          const parts = text.split(/[.\/-]/);
+          const year = Number(parts[2]) >= 70 ? `19${parts[2]}` : `20${parts[2]}`;
+          return `${year}-${String(parts[1]).padStart(2,'0')}-${String(parts[0]).padStart(2,'0')}`;
+        }
+
+        const num = Number(String(text).replace(',', '.'));
+        if(Number.isFinite(num) && num > 20000 && window.XLSX && XLSX.SSF && typeof XLSX.SSF.parse_date_code === 'function'){
+          const parsed = XLSX.SSF.parse_date_code(num);
+          if(parsed && parsed.y && parsed.m && parsed.d){
+            return `${String(parsed.y).padStart(4,'0')}-${String(parsed.m).padStart(2,'0')}-${String(parsed.d).padStart(2,'0')}`;
+          }
+        }
+
+        const date = new Date(text);
+        if(!isNaN(date.getTime())) return date.toISOString().slice(0,10);
+        return '';
+      }
+
+      function parseImportedNumber(value){
+        if(value == null || value === '') return 0;
+        if(typeof value === 'number' && Number.isFinite(value)) return value;
+        const text = String(value).trim();
+        if(!text) return 0;
+        const cleaned = text
+          .replace(/\s+/g, '')
+          .replace(/%/g, '')
+          .replace(/\.(?=\d{3}(\D|$))/g, '')
+          .replace(/,/g, '.')
+          .replace(/[^0-9.-]/g, '');
+        const num = Number(cleaned);
+        return Number.isFinite(num) ? num : 0;
+      }
+
+      function buildExportRows(rows){
+        return rows.map(row => {
+          const out = {};
+          columns.forEach(col => {
+            out[col.label] = formatCell(row, col);
+          });
+          return out;
+        });
+      }
+
+      async function exportExcel(){
+        try{
+          const XLSX = await ensureXlsxLib();
+          const rows = filteredRows();
+          const exportRows = buildExportRows(rows);
+          const ws = XLSX.utils.json_to_sheet(exportRows, { header: columns.map(c => c.label) });
+
+          ws['!cols'] = columns.map(col => {
+            const match = String(col.width || '').match(/w-(\d+)/);
+            const px = match ? Number(match[1]) : 100;
+            return { wpx: px + 18 };
+          });
+
+          if(columns.length){
+            const endCol = XLSX.utils.encode_col(columns.length - 1);
+            const endRow = Math.max(exportRows.length, 1) + 1;
+            ws['!autofilter'] = { ref: `A1:${endCol}${endRow}` };
+          }
+
+          const wb = XLSX.utils.book_new();
+          XLSX.utils.book_append_sheet(wb, ws, 'MAGNAFLUX');
+
+          const infoRows = [
+            { Câmp: 'Pagină', Valoare: 'MAGNAFLUX' },
+            { Câmp: 'Exportat la', Valoare: new Date().toLocaleString('ro-RO') },
+            { Câmp: 'Rânduri exportate', Valoare: rows.length },
+            { Câmp: 'Sursă activă', Valoare: state.sourceLabel },
+            { Câmp: 'Filtre active', Valoare: columns.map(col => `${col.label}: ${state.filters[col.key] || ''}`).filter(x => !x.endsWith(': ')).join(' | ') || 'Niciun filtru' }
+          ];
+          const wsInfo = XLSX.utils.json_to_sheet(infoRows);
+          wsInfo['!cols'] = [{ wpx: 160 }, { wpx: 420 }];
+          XLSX.utils.book_append_sheet(wb, wsInfo, 'INFO');
+
+          XLSX.writeFile(wb, `magnaflux_${new Date().toISOString().slice(0,10)}.xlsx`);
+        }catch(err){
+          showToast('Exportul Excel nu a reușit.');
+        }
+      }
+
+      function requestImportExcel(){
+        if(!state.permissions.canEdit && !state.permissions.canAdd){
+          return showToast('Nu ai drept de import pe această pagină.');
+        }
+        el.fileImportExcel.value = '';
+        el.fileImportExcel.click();
+      }
+
+      function mapImportedRow(sourceRow, headerMap){
+        const raw = {};
+        Object.entries(sourceRow || {}).forEach(([header, value]) => {
+          const key = headerMap.get(normalizeHeader(header));
+          if(key) raw[key] = value;
+        });
+
+        const hasUsefulData = Object.values(raw).some(value => String(value == null ? '' : value).trim() !== '');
+        if(!hasUsefulData) return null;
+
+        const dataIso = normalizeImportedDate(raw.data);
+        const base = {
+          id: uuid(),
+          created_at: new Date().toISOString(),
+          data: dataIso || nowIsoDate(),
+          an: parseIntSafe(raw.an) || (dataIso ? Number(dataIso.slice(0,4)) : Number(new Date().getFullYear())),
+          luna: String(raw.luna || (dataIso ? monthNameFromIso(dataIso) : '')).trim(),
+          operator: String(raw.operator || '').trim(),
+          reper: String(raw.reper || '').trim(),
+          cod_cat: String(raw.cod_cat || '').trim(),
+          numeral_kod: String(raw.numeral_kod || '').trim(),
+          val_magnetica: String(raw.val_magnetica || '').trim(),
+          val_electrica: String(raw.val_electrica || '').trim(),
+          controlate: parseImportedNumber(raw.controlate),
+          rz: parseImportedNumber(raw.rz),
+          bav: parseImportedNumber(raw.bav),
+          planeit: parseImportedNumber(raw.planeit),
+          lov: parseImportedNumber(raw.lov),
+          lm: parseImportedNumber(raw.lm),
+          ibt: parseImportedNumber(raw.ibt),
+          sm: parseImportedNumber(raw.sm),
+          ftt: parseImportedNumber(raw.ftt),
+          fl: parseImportedNumber(raw.fl),
+          lmc: parseImportedNumber(raw.lmc),
+          des: parseImportedNumber(raw.des),
+          as: parseImportedNumber(raw.as),
+          fb: parseImportedNumber(raw.fb)
+        };
+
+        if(!base.luna && base.data) base.luna = monthNameFromIso(base.data);
+        if(!base.operator && !base.reper && !base.cod_cat && !base.numeral_kod && !base.controlate) return null;
+        return sanitizeRow(computeDerived(base));
+      }
+
+      async function importExcelFile(file){
+        if(!file) return;
+        try{
+          setSyncBadge('Import Excel...', 'warn');
+          const XLSX = await ensureXlsxLib();
+          const buffer = await file.arrayBuffer();
+          const workbook = XLSX.read(buffer, { type:'array', cellDates:true });
+          const preferredSheet = workbook.SheetNames.find(name => normalizeText(name).includes('magnaflux')) || workbook.SheetNames[0];
+          if(!preferredSheet){
+            setSyncBadge(state.dirty ? 'Ai modificări locale de sincronizat' : 'Pregătit', state.dirty ? 'warn' : 'ok');
+            return showToast('Fișierul nu conține foi de lucru.');
+          }
+
+          const sheet = workbook.Sheets[preferredSheet];
+          const jsonRows = XLSX.utils.sheet_to_json(sheet, { defval:'', raw:false, blankrows:false });
+          const headerMap = buildImportHeaderMap();
+          const importedRows = jsonRows.map(row => mapImportedRow(row, headerMap)).filter(Boolean);
+
+          if(!importedRows.length){
+            setSyncBadge(state.dirty ? 'Ai modificări locale de sincronizat' : 'Pregătit', state.dirty ? 'warn' : 'ok');
+            return showToast('Nu am găsit coloane compatibile pentru Magnaflux în fișierul ales.');
+          }
+
+          let mode = '1';
+          if(state.rows.length){
+            mode = (prompt('Import MAGNAFLUX:\n1 = înlocuiește toate rândurile existente\n2 = adaugă peste datele existente', '2') || '').trim();
+            if(!mode){
+              setSyncBadge(state.dirty ? 'Ai modificări locale de sincronizat' : 'Pregătit', state.dirty ? 'warn' : 'ok');
+              return showToast('Import anulat.');
+            }
+          }
+
+          if(mode === '1'){
+            state.rows = importedRows;
+          }else if(mode === '2'){
+            state.rows = [...importedRows, ...state.rows];
+          }else{
+            setSyncBadge(state.dirty ? 'Ai modificări locale de sincronizat' : 'Pregătit', state.dirty ? 'warn' : 'ok');
+            return showToast('Opțiune invalidă. Import anulat.');
+          }
+
+          state.selectedId = importedRows[0] ? importedRows[0].id : null;
+          state.dirty = true;
+          state.sourceLabel = 'local';
+          saveLocal();
+          renderAll();
+          scheduleCloudSave();
+          setSyncBadge('Import Excel finalizat', 'ok');
+          showToast(`Import finalizat: ${importedRows.length} rând(uri).`);
+        }catch(err){
+          setSyncBadge('Import Excel eșuat', 'err');
+          showToast('Nu am putut importa fișierul Excel.');
+        }finally{
+          el.fileImportExcel.value = '';
+        }
       }
 
       function exportCsv(){
@@ -1537,7 +1794,9 @@
           const ok = await saveDocToCloud();
           if(ok) showToast('Sincronizare completă.');
         });
-        el.btnExport.addEventListener('click', exportCsv);
+        el.btnImportExcel.addEventListener('click', requestImportExcel);
+        el.fileImportExcel.addEventListener('change', ev => importExcelFile(ev.target.files && ev.target.files[0]));
+        el.btnExport.addEventListener('click', exportExcel);
         el.btnAdd.addEventListener('click', () => state.permissions.canAdd ? openEditor(null) : showToast('Nu ai drept de adăugare.'));
         el.btnAddFab.addEventListener('click', () => state.permissions.canAdd ? openEditor(null) : showToast('Nu ai drept de adăugare.'));
         el.btnLogout.addEventListener('click', async () => {
