@@ -286,6 +286,84 @@ td.yellow{ background:var(--yellow); font-weight:800; }
 </style>
 
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="./rf-config.js"></script>
+
+<script>
+const RF_FALLBACK_SUPABASE_URL = "https://addlybnigrywqowpbhvd.supabase.co";
+const RF_FALLBACK_SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFkZGx5Ym5pZ3J5d3Fvd3BiaHZkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzI2NjY2NjQsImV4cCI6MjA4ODI0MjY2NH0.VjbSKs7G_5T7GhdrjT8dtj2HCF6Az9KYfkpkSE7JTo4";
+function rfResolveSupabaseConfig(){
+  const cfg = window.RF_CONFIG || window.rfConfig || {};
+  return {
+    url: cfg.SUPABASE_URL || cfg.supabaseUrl || window.SUPABASE_URL || RF_FALLBACK_SUPABASE_URL,
+    key: cfg.SUPABASE_ANON_KEY || cfg.supabaseAnonKey || window.SUPABASE_ANON_KEY || RF_FALLBACK_SUPABASE_ANON_KEY
+  };
+}
+async function rfLookupRoleCompat(client, session){
+  try{
+    if(!client || !session?.user) return { role:"viewer", email:"" };
+    const email = session.user.email || "";
+    let role = "";
+    try{
+      let res = await client.from("profiles").select("role").eq("user_id", session.user.id).maybeSingle();
+      if(!res?.error && res?.data?.role) role = res.data.role;
+      if(!role){
+        res = await client.from("profiles").select("role").eq("id", session.user.id).maybeSingle();
+        if(!res?.error && res?.data?.role) role = res.data.role;
+      }
+      if(!role && email){
+        res = await client.from("profiles").select("role").eq("email", email).maybeSingle();
+        if(!res?.error && res?.data?.role) role = res.data.role;
+      }
+    }catch(_e){}
+    if(!role && email){
+      try{
+        const resAcl = await client.from("rf_acl").select("role").eq("email", email).maybeSingle();
+        if(!resAcl?.error && resAcl?.data?.role) role = resAcl.data.role;
+      }catch(_e){}
+    }
+    if(!role && email.toLowerCase() === "forja.editor@gmail.com") role = "admin";
+    return { role: role || "viewer", email };
+  }catch(_e){
+    return { role:"viewer", email: session?.user?.email || "" };
+  }
+}
+async function rfGetPageAclCompat(client, pageKey, role){
+  const fallback = {
+    can_view:true,
+    can_edit_data: role === "admin",
+    show_import_buttons: role === "admin",
+    show_add_buttons: role === "admin",
+    show_delete_buttons: role === "admin",
+    show_reset_buttons: role === "admin",
+    can_export:true,
+    can_filter:true,
+    can_sync_cloud:true
+  };
+  if(!client) return fallback;
+  try{
+    const pp = await client.from("page_permissions").select("*").eq("page_key", pageKey).eq("role", role).maybeSingle();
+    if(!pp?.error && pp?.data){
+      const row = pp.data;
+      return {
+        can_view: row.can_view !== false,
+        can_edit_data: !!(row.can_add || row.can_edit || row.can_delete || role === "admin"),
+        show_import_buttons: !!(row.can_add || row.can_edit || role === "admin"),
+        show_add_buttons: !!(row.can_add || row.can_edit || role === "admin"),
+        show_delete_buttons: !!(row.can_delete || row.can_edit || role === "admin"),
+        show_reset_buttons: !!(row.can_delete || row.can_edit || role === "admin"),
+        can_export: true,
+        can_filter: true,
+        can_sync_cloud: row.can_view !== false
+      };
+    }
+  }catch(_e){}
+  try{
+    const acl = await client.from("rf_acl").select("*").eq("page_key", pageKey).eq("role", role).maybeSingle();
+    if(!acl?.error && acl?.data) return Object.assign({}, fallback, acl.data);
+  }catch(_e){}
+  return fallback;
+}
+</script>
 
 <script>
 function goDashboard(){ window.location.href = 'index.html'; }
@@ -1706,9 +1784,9 @@ window.applyCloudPayload = function(payload){
    - Înlocuiește "localStorage-only" cu cloud + realtime
    =============================== */
 (function(){
-  const SUPABASE_URL = "https://rhjcnydkdhjzazygybcc.supabase.co";
-const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJoamNueWRrZGhqemF6eWd5YmNjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE4ODEzMzYsImV4cCI6MjA4NzQ1NzMzNn0.ompOZWqnFGsnOQzPiAv2QBwuaNiKtnz5PciRwCWh0Hk"; // <-- Anon Key (Legacy)
-;
+  const RF_SB = rfResolveSupabaseConfig();
+  const SUPABASE_URL = RF_SB.url;
+  const SUPABASE_ANON_KEY = RF_SB.key;
   const DOC_TABLE = "rf_documents";
   const DOC_KEY = "numeralkod";   // un singur document global pentru NUMERALKOD
   const CHANNEL = "rf_docs_numeralkod";
@@ -1719,6 +1797,8 @@ const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
   const supa = (window.supabase && window.supabase.createClient)
     ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
     : null;
+  window.supabaseClient = supa;
+  window.sb = supa;
 
   let role = "viewer";
   let user = null;
@@ -1747,7 +1827,7 @@ const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
   }
 
   async function pull(){
-    const { data, error } = await supa.from(DOC_TABLE).select("doc_key,data,updated_at").eq("doc_key", DOC_KEY).maybeSingle();
+    const { data, error } = await supa.from(DOC_TABLE).select("doc_key,content,data,updated_at").eq("doc_key", DOC_KEY).maybeSingle();
     if(error) throw error;
     if(data && data.data){
       applyingRemote = true;
@@ -1775,6 +1855,7 @@ const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
         lastPushedAt = ts;
         const up = {
           doc_key: DOC_KEY,
+          content: payload,
           data: payload,
           updated_at: nowIso()
         };
@@ -2297,18 +2378,10 @@ async function rfGetMyRole(supa){
   const { data: s } = await supa.auth.getSession();
   const sess = s?.session;
   if(!sess) return { role:"viewer", email:"" };
-  const email = sess.user?.email || "";
-  const { data } = await supa.from("profiles").select("role").eq("id", sess.user.id).maybeSingle();
-  return { role: (data?.role || "viewer"), email };
+  return await rfLookupRoleCompat(supa, sess);
 }
 async function rfGetAcl(supa, pageKey, role){
-  const { data, error } = await supa.from("rf_acl").select("*").eq("page_key", pageKey).eq("role", role).maybeSingle();
-  if(error) throw error;
-  return data || {
-    can_view:true, can_edit_data:false,
-    show_import_buttons:false, show_add_buttons:false, show_delete_buttons:false, show_reset_buttons:false,
-    can_export:true, can_filter:true, can_sync_cloud:false
-  };
+  return await rfGetPageAclCompat(supa, pageKey, role);
 }
 function rfApplyAclToUi(acl){
   const map = { import:"show_import_buttons", add:"show_add_buttons", delete:"show_delete_buttons", reset:"show_reset_buttons",
