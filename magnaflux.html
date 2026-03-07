@@ -316,13 +316,18 @@
     .modal-backdrop.show{display:flex}
 
     .modal{
-      width:min(1180px,100%);
+      position:fixed;
+      left:50%;
+      top:50%;
+      transform:translate(-50%,-50%);
+      width:min(1180px,calc(100vw - 36px));
       max-height:min(92vh,920px);
       overflow:auto;
       border-radius:18px;
       border:1px solid var(--line);
       background:linear-gradient(180deg,#dbeaf8,#eef6fd);
       box-shadow:0 18px 40px rgba(7,22,33,.25);
+      touch-action:none;
     }
 
     .modal-header,
@@ -338,6 +343,21 @@
       gap:12px;
       flex-wrap:wrap;
     }
+
+    .modal-header{
+      cursor:grab;
+      user-select:none;
+    }
+
+    .modal-header button,
+    .modal-header input,
+    .modal-header select,
+    .modal-header textarea,
+    .modal-header a{
+      cursor:pointer;
+    }
+
+    .modal.dragging .modal-header{cursor:grabbing}
 
     .modal-header{top:0}
     .modal-footer{
@@ -487,6 +507,8 @@
       .table-wrap{height:calc(var(--row-h) * 22 + 4px);max-height:calc(var(--row-h) * 22 + 4px)}
       .fab{display:flex}
       #btnAdd{display:none}
+      .modal{position:relative;left:auto;top:auto;transform:none;width:min(1180px,100%);margin:auto;touch-action:auto}
+      .modal-header{cursor:default}
     }
 
     @media (max-width: 640px){
@@ -549,7 +571,7 @@
   <input type="file" id="fileImportExcel" class="hidden" accept=".xlsx,.xls,.csv" />
 
   <div class="modal-backdrop" id="modalBackdrop">
-    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+    <div class="modal" id="editorModal" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
       <div class="modal-header">
         <div class="modal-title">
           <h2 id="modalTitle">Adaugă înregistrare MAGNAFLUX</h2>
@@ -719,6 +741,7 @@
         btnLogout: document.getElementById('btnLogout'),
         fileImportExcel: document.getElementById('fileImportExcel'),
         modalBackdrop: document.getElementById('modalBackdrop'),
+        editorModal: document.getElementById('editorModal'),
         btnCloseModal: document.getElementById('btnCloseModal'),
         btnCancelModal: document.getElementById('btnCancelModal'),
         btnSaveRow: document.getElementById('btnSaveRow'),
@@ -800,6 +823,8 @@
         lastCloudUpdatedAt: null,
         helperDoc: null,
         helperSuggestions: { operators: [], repere: [], reperMap: new Map() },
+        modalDrag: null,
+        editorModalMoved: false,
         xlsxLoader: null,
         saveTimer: null,
         pollTimer: null,
@@ -1157,57 +1182,87 @@
         const repere = new Set();
         const reperMap = new Map();
 
+        const addOperator = (value) => {
+          const text = String(value == null ? '' : value).trim();
+          if(text) operators.add(text);
+        };
+
+        const addReper = (value, codCatValue = '', numeralValue = '') => {
+          const reperText = String(value == null ? '' : value).trim();
+          if(!reperText) return;
+          repere.add(reperText);
+          const normalized = normalizeText(reperText);
+          const old = reperMap.get(normalized) || {};
+          const codCatText = String(codCatValue == null ? '' : codCatValue).trim();
+          const numeralText = String(numeralValue == null ? '' : numeralValue).trim();
+          reperMap.set(normalized, {
+            reper: reperText,
+            cod_cat: old.cod_cat || codCatText,
+            numeral_kod: old.numeral_kod || numeralText
+          });
+        };
+
         const visit = (node, path = '') => {
           if(node == null) return;
+          const joinedPath = normalizeText(path);
+
           if(Array.isArray(node)){
-            const joinedPath = normalizeText(path);
             const allStrings = node.every(x => typeof x === 'string' || typeof x === 'number');
             if(allStrings){
-              if(joinedPath.includes('operator')) node.forEach(v => operators.add(String(v).trim()));
-              if(joinedPath.includes('reper')) node.forEach(v => repere.add(String(v).trim()));
+              if(joinedPath.includes('operator') || joinedPath.includes('magnafluxoperator') || joinedPath.includes('personal') || joinedPath.includes('user')){
+                node.forEach(addOperator);
+              }
+              if(joinedPath.includes('reper') || joinedPath.includes('magnaflux')){
+                node.forEach(addReper);
+              }
             }
+
             node.forEach(item => {
               if(item && typeof item === 'object'){
-                const reperVal = item.reper || item.reper_forjat || item.reper_magnaflux || item.name || item.label;
-                const codCatVal = item.cod_cat || item.codcat || item.cat || item.cod;
+                const reperVal = item.reper || item.reper_forjat || item.reper_magnaflux || item.reper_mf || item.name || item.label || item.denumire;
+                const codCatVal = item.cod_cat || item.codcat || item.cod_cat_magnaflux || item.cod || item.cat;
                 const numeralVal = item.numeral_kod || item.numeralkod || item.numeral || item.kod;
-                const operatorVal = item.operator || item.nume_operator || item.operator_magnaflux;
-                if(operatorVal) operators.add(String(operatorVal).trim());
-                if(reperVal){
-                  const reperText = String(reperVal).trim();
-                  repere.add(reperText);
-                  const normalized = normalizeText(reperText);
-                  const old = reperMap.get(normalized) || {};
-                  reperMap.set(normalized, {
-                    reper: reperText,
-                    cod_cat: old.cod_cat || (codCatVal ? String(codCatVal).trim() : ''),
-                    numeral_kod: old.numeral_kod || (numeralVal ? String(numeralVal).trim() : '')
-                  });
-                }
+                const operatorVal = item.operator || item.operator_magnaflux || item.nume_operator || item.operatori || item.nume;
+                if(Array.isArray(operatorVal)) operatorVal.forEach(addOperator);
+                else addOperator(operatorVal);
+                addReper(reperVal, codCatVal, numeralVal);
               }
               visit(item, path);
             });
             return;
           }
+
           if(typeof node === 'object'){
-            Object.entries(node).forEach(([key, value]) => visit(value, path ? `${path}.${key}` : key));
+            Object.entries(node).forEach(([key, value]) => {
+              const keyNorm = normalizeText(key);
+              if(Array.isArray(value) && value.every(x => typeof x === 'string' || typeof x === 'number')){
+                if(keyNorm.includes('operator') || keyNorm.includes('personal') || keyNorm.includes('user')){
+                  value.forEach(addOperator);
+                }
+                if(keyNorm.includes('reper') || keyNorm.includes('magnaflux')){
+                  value.forEach(item => addReper(item));
+                }
+              }
+
+              if(value && typeof value === 'object' && !Array.isArray(value)){
+                const reperVal = value.reper || value.reper_forjat || value.reper_magnaflux || value.reper_mf || value.name || value.label || value.denumire;
+                const codCatVal = value.cod_cat || value.codcat || value.cod_cat_magnaflux || value.cod || value.cat;
+                const numeralVal = value.numeral_kod || value.numeralkod || value.numeral || value.kod;
+                const operatorVal = value.operator || value.operator_magnaflux || value.nume_operator || value.nume;
+                addOperator(operatorVal);
+                addReper(reperVal, codCatVal, numeralVal);
+              }
+
+              visit(value, path ? `${path}.${key}` : key);
+            });
           }
         };
 
         visit(helper, 'helper-data');
 
         state.rows.forEach(row => {
-          if(row.operator) operators.add(row.operator);
-          if(row.reper) repere.add(row.reper);
-          const key = normalizeText(row.reper);
-          if(key){
-            const prev = reperMap.get(key) || {};
-            reperMap.set(key, {
-              reper: row.reper,
-              cod_cat: prev.cod_cat || row.cod_cat || '',
-              numeral_kod: prev.numeral_kod || row.numeral_kod || ''
-            });
-          }
+          if(row.operator) addOperator(row.operator);
+          addReper(row.reper, row.cod_cat, row.numeral_kod);
         });
 
         return {
@@ -1222,12 +1277,28 @@
         el.repereList.innerHTML = state.helperSuggestions.repere.map(v => `<option value="${escapeHtml(v)}"></option>`).join('');
       }
 
+      function extractNumeralKodFromCodCat(value){
+        const cleaned = String(value == null ? '' : value)
+          .toUpperCase()
+          .replace(/[^A-Z0-9]/g, '');
+        if(!cleaned) return '';
+        return cleaned.slice(-3);
+      }
+
+      function syncNumeralKodFromCodCat(force){
+        const derived = extractNumeralKodFromCodCat(el.fCodCat.value);
+        if(!derived) return;
+        if(force || !String(el.fNumeralKod.value || '').trim()){
+          el.fNumeralKod.value = derived;
+        }
+      }
+
       function applyReperMapping(){
         const key = normalizeText(el.fReper.value);
         const found = state.helperSuggestions.reperMap.get(key);
-        if(!found) return;
-        if(!el.fCodCat.value && found.cod_cat) el.fCodCat.value = found.cod_cat;
-        if(!el.fNumeralKod.value && found.numeral_kod) el.fNumeralKod.value = found.numeral_kod;
+        if(found && !el.fCodCat.value && found.cod_cat) el.fCodCat.value = found.cod_cat;
+        if(found && !el.fNumeralKod.value && found.numeral_kod) el.fNumeralKod.value = found.numeral_kod;
+        syncNumeralKodFromCodCat(true);
       }
 
       function escapeHtml(value){
@@ -1377,17 +1448,22 @@
       }
 
       function openEditor(id){
+        refreshDatalists();
         const row = id ? clone(state.rows.find(r => r.id === id)) : defaultRow();
         state.editorId = row.id;
         fillForm(row);
         el.modalTitle.textContent = id ? 'Editează înregistrare MAGNAFLUX' : 'Adaugă înregistrare MAGNAFLUX';
         el.btnDeleteRow.classList.toggle('hidden', !(id && state.permissions.canDelete));
         el.btnSaveRow.disabled = !state.permissions.canEdit && !state.permissions.canAdd;
+        if(window.innerWidth > 900 && !id && !state.editorModalMoved){
+          resetModalPosition();
+        }
         el.modalBackdrop.classList.add('show');
       }
 
       function closeEditor(){
         state.editorId = null;
+        stopModalDrag();
         el.modalBackdrop.classList.remove('show');
       }
 
@@ -1399,6 +1475,7 @@
         el.fReper.value = row.reper || '';
         el.fCodCat.value = row.cod_cat || '';
         el.fNumeralKod.value = row.numeral_kod || '';
+        syncNumeralKodFromCodCat(true);
         el.fValMagnetica.value = row.val_magnetica || '';
         el.fValElectrica.value = row.val_electrica || '';
         el.fControlate.value = row.controlate || 0;
@@ -1435,7 +1512,7 @@
           operator: el.fOperator.value.trim(),
           reper: el.fReper.value.trim(),
           cod_cat: el.fCodCat.value.trim(),
-          numeral_kod: el.fNumeralKod.value.trim(),
+          numeral_kod: (el.fNumeralKod.value.trim() || extractNumeralKodFromCodCat(el.fCodCat.value)),
           val_magnetica: el.fValMagnetica.value.trim(),
           val_electrica: el.fValElectrica.value.trim(),
           controlate: parseIntSafe(el.fControlate.value),
@@ -1469,6 +1546,7 @@
         }
         syncDateParts();
         applyReperMapping();
+        syncNumeralKodFromCodCat(true);
         const row = sanitizeRow(formSnapshot());
         if(!row.data){
           return showToast('Completează data.');
@@ -1486,13 +1564,17 @@
         }else{
           state.rows.push(row);
         }
+
+        state.editorId = row.id;
         state.selectedId = row.id;
         state.dirty = true;
         state.sourceLabel = 'local';
         saveLocal();
         renderAll();
-        closeEditor();
-        showToast('Înregistrarea a fost salvată.');
+        fillForm(row);
+        el.modalTitle.textContent = 'Editează înregistrare MAGNAFLUX';
+        el.btnDeleteRow.classList.toggle('hidden', !state.permissions.canDelete);
+        showToast('Înregistrarea a fost salvată. Fereastra rămâne deschisă.');
         scheduleCloudSave();
       }
 
@@ -1834,6 +1916,56 @@
         setSyncBadge('Actualizare nouă din cloud', 'ok');
       }
 
+      function resetModalPosition(){
+        if(!el.editorModal) return;
+        el.editorModal.style.left = '50%';
+        el.editorModal.style.top = '50%';
+        el.editorModal.style.transform = 'translate(-50%,-50%)';
+      }
+
+      function startModalDrag(event){
+        if(window.innerWidth <= 900) return;
+        if(!el.editorModal || !el.modalBackdrop.classList.contains('show')) return;
+        if(event.button !== 0) return;
+        if(event.target.closest('button, input, select, textarea, a, label')) return;
+
+        const rect = el.editorModal.getBoundingClientRect();
+        state.modalDrag = {
+          offsetX: event.clientX - rect.left,
+          offsetY: event.clientY - rect.top
+        };
+
+        el.editorModal.classList.add('dragging');
+        state.editorModalMoved = true;
+        el.editorModal.style.transform = 'none';
+        el.editorModal.style.left = `${rect.left}px`;
+        el.editorModal.style.top = `${rect.top}px`;
+
+        document.addEventListener('pointermove', onModalDragMove);
+        document.addEventListener('pointerup', stopModalDrag);
+      }
+
+      function onModalDragMove(event){
+        if(!state.modalDrag || !el.editorModal) return;
+        const rect = el.editorModal.getBoundingClientRect();
+        const margin = 8;
+        const maxLeft = Math.max(margin, window.innerWidth - rect.width - margin);
+        const maxTop = Math.max(margin, window.innerHeight - rect.height - margin);
+        let nextLeft = event.clientX - state.modalDrag.offsetX;
+        let nextTop = event.clientY - state.modalDrag.offsetY;
+        nextLeft = Math.min(Math.max(margin, nextLeft), maxLeft);
+        nextTop = Math.min(Math.max(margin, nextTop), maxTop);
+        el.editorModal.style.left = `${nextLeft}px`;
+        el.editorModal.style.top = `${nextTop}px`;
+      }
+
+      function stopModalDrag(){
+        if(el.editorModal) el.editorModal.classList.remove('dragging');
+        state.modalDrag = null;
+        document.removeEventListener('pointermove', onModalDragMove);
+        document.removeEventListener('pointerup', stopModalDrag);
+      }
+
       function bindEvents(){
         el.btnBack.addEventListener('click', () => window.location.href = 'index.html');
         el.btnReload.addEventListener('click', manualReload);
@@ -1853,14 +1985,18 @@
         });
 
         el.btnCloseModal.addEventListener('click', closeEditor);
+        document.querySelector('.modal-header').addEventListener('pointerdown', startModalDrag);
         el.btnCancelModal.addEventListener('click', closeEditor);
         el.btnSaveRow.addEventListener('click', saveRowFromForm);
         el.btnDeleteRow.addEventListener('click', deleteEditorRow);
         el.modalBackdrop.addEventListener('click', ev => { if(ev.target === el.modalBackdrop) closeEditor(); });
+        window.addEventListener('resize', () => { if(window.innerWidth <= 900) resetModalPosition(); });
 
         el.fData.addEventListener('input', () => { syncDateParts(); refreshFormComputed(); });
         el.fReper.addEventListener('change', () => { applyReperMapping(); refreshFormComputed(); });
-        el.fReper.addEventListener('blur', applyReperMapping);
+        el.fReper.addEventListener('blur', () => { applyReperMapping(); refreshFormComputed(); });
+        el.fCodCat.addEventListener('input', () => { syncNumeralKodFromCodCat(true); refreshFormComputed(); });
+        el.fCodCat.addEventListener('change', () => { syncNumeralKodFromCodCat(true); refreshFormComputed(); });
         Object.values(formInputs).forEach(input => {
           if(input !== el.fData && input !== el.fReper){
             input.addEventListener('input', refreshFormComputed);
