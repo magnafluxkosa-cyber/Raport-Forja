@@ -440,6 +440,7 @@
       let currentUser = null;
       let currentRole = 'viewer';
       let currentPermissions = null;
+      let currentDashAcl = null;
       let currentPanel = null;
 
       function safeIdFromEmail(email){
@@ -494,6 +495,29 @@
         }
       }
 
+      async function loadDashboardAcl(){
+        if (!sb) return null;
+
+        try {
+          const a = await sb.from('rf_documents').select('content,updated_at').eq('doc_key', 'dashboard_acl_v1').maybeSingle();
+          if (!a.error && a.data?.content && typeof a.data.content === 'object') {
+            currentDashAcl = a.data.content;
+            return currentDashAcl;
+          }
+        } catch(_){ }
+
+        try {
+          const b = await sb.from('rf_documents').select('data,updated_at').eq('doc_key', 'dashboard_acl_v1').maybeSingle();
+          if (!b.error && b.data?.data && typeof b.data.data === 'object') {
+            currentDashAcl = b.data.data;
+            return currentDashAcl;
+          }
+        } catch(_){ }
+
+        currentDashAcl = null;
+        return null;
+      }
+
       function isAllowed(pageKey){
         if (!currentUser) return false;
 
@@ -507,6 +531,34 @@
         }
 
         return true;
+      }
+
+      function isDashAllowedHref(href){
+        if (!currentUser) return false;
+
+        const normalized = String(href || '').split('#')[0].split('?')[0];
+        if (!normalized) return true;
+
+        if (normalized === 'helper.html' || normalized === 'helper-data.html' || normalized === 'helper-acl.html') {
+          return currentRole === 'admin';
+        }
+
+        const grants = currentDashAcl && currentDashAcl.grants ? currentDashAcl.grants : null;
+        const roleGrants = grants && grants[currentRole] ? grants[currentRole] : null;
+        if (roleGrants && Object.prototype.hasOwnProperty.call(roleGrants, normalized)) {
+          return roleGrants[normalized] !== false;
+        }
+
+        return true;
+      }
+
+      function elementAllowed(el, pageKey){
+        let on = isAllowed(pageKey);
+        const link = el?.matches?.('a[href]') ? el : el?.querySelector?.('a[href]');
+        if (link) {
+          on = on && isDashAllowedHref(link.getAttribute('href'));
+        }
+        return on;
       }
 
       function setVisible(el, on){
@@ -548,37 +600,30 @@
           chipRole.textContent = 'Rol: —';
         }
 
-        qsa('[data-page-key]').forEach(el => {
-          const pageKey = el.dataset.pageKey;
-          const on = isAllowed(pageKey);
-          const item = el.closest('.item');
+        qsa('.page-item[data-page-key]').forEach(item => {
+          const pageKey = item.dataset.pageKey;
+          const on = elementAllowed(item, pageKey);
+          setVisible(item, on);
+          setDisabled(item, !on);
+        });
 
-          if (item && item.classList.contains('page-item')) {
-            setVisible(item, on);
-          } else {
-            setVisible(el, on);
-          }
-
-          setDisabled(el, !on);
+        qsa('.subpanel [data-page-key]').forEach(a => {
+          const on = elementAllowed(a, a.dataset.pageKey);
+          setVisible(a, on);
+          setDisabled(a, !on);
         });
 
         if (helperDataLink) {
-          setVisible(helperDataLink, isAllowed('helper-data'));
-          setDisabled(helperDataLink, !isAllowed('helper-data'));
+          const helperDataAllowed = elementAllowed(helperDataLink, 'helper-data');
+          setVisible(helperDataLink, helperDataAllowed);
+          setDisabled(helperDataLink, !helperDataAllowed);
         }
 
-        Object.entries(GROUP_MAP).forEach(([panelId, pages]) => {
-          const anyVisible = pages.some(isAllowed);
+        Object.keys(GROUP_MAP).forEach((panelId) => {
           const item = qs(`.group-item[data-target="${panelId}"]`);
-          const panel = qs(`#${panelId}`);
+          const anyVisible = qsa(`#${panelId} [data-page-key]`).some(el => !el.classList.contains('hidden'));
           setVisible(item, anyVisible);
-          if (panel) {
-            qsa(`#${panelId} [data-page-key]`).forEach(a => {
-              const on = isAllowed(a.dataset.pageKey);
-              setVisible(a, on);
-              setDisabled(a, !on);
-            });
-          }
+          setDisabled(item, !anyVisible);
         });
 
         if (!currentUser) {
@@ -616,6 +661,7 @@
         const resolved = await resolveRole(currentUser);
         currentRole = resolved.role;
         currentPermissions = await loadPermissionMap(currentRole);
+        await loadDashboardAcl();
         applyLayout();
       }
 
@@ -709,6 +755,12 @@
           goToLogin();
           return;
         }
+
+        const controlled = link.closest('[data-page-key]');
+        if (controlled && !elementAllowed(controlled, controlled.dataset.pageKey)) {
+          e.preventDefault();
+          return;
+        }
       }, true);
 
       sb?.auth.onAuthStateChange(async (_event, session) => {
@@ -730,6 +782,7 @@
         const resolved = await resolveRole(currentUser);
         currentRole = resolved.role;
         currentPermissions = await loadPermissionMap(currentRole);
+        await loadDashboardAcl();
         applyLayout();
       });
 
