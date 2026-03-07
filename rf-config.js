@@ -19,4 +19,7 @@
       'magnaflux'
     ]
   });
+
+  window.RF_SUPABASE_URL = window.RF_CONFIG.SUPABASE_URL;
+  window.RF_SUPABASE_ANON_KEY = window.RF_CONFIG.SUPABASE_ANON_KEY;
 })(window);
