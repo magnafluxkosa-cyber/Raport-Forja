@@ -391,63 +391,17 @@ const DOC_KEY = 'forjate';
 const LS_KEY_DATA = 'FORJATE_autosave_v1';
 const LS_KEY_BACKUP = 'FORJATE_backup_v1';
 const LS_KEY_HELPERS = 'RF_HELPERS_v1';
-const LOCAL_DB_NAME = 'RF_LOCAL_CACHE_V1';
-const LOCAL_DB_STORE = 'docs';
-const LOCAL_DOC_DATA = 'forjate_data';
-const LOCAL_DOC_BACKUP = 'forjate_backup';
+
+const CLOUD_META_POLL_MS = (RF_CONFIG.SYNC && RF_CONFIG.SYNC.FORJATE_META_POLL_MS) || 20000;
+const HELPERS_META_POLL_MS = (RF_CONFIG.SYNC && RF_CONFIG.SYNC.FORJATE_HELPERS_POLL_MS) || 60000;
+const CLOUD_PUSH_DEBOUNCE_MS = (RF_CONFIG.SYNC && RF_CONFIG.SYNC.FORJATE_PUSH_DEBOUNCE_MS) || 2500;
+const CLOUD_LOCAL_GRACE_MS = 12000;
+const CLOUD_ERROR_BACKOFF_MS_MAX = 60000;
+const CLOUD_IDLE_MSG = 'Cloud: ON';
 
 const MONTHS = [
   'ianuarie','februarie','martie','aprilie','mai','iunie','iulie','august','septembrie','octombrie','noiembrie','decembrie'
 ];
-
-function monthNumberFromName(name){
-  const s = String(name || '').trim().toLowerCase();
-  if(!s) return 0;
-  const ix = MONTHS.indexOf(s);
-  return ix >= 0 ? (ix + 1) : 0;
-}
-
-function normalizeDateDMY(value, lunaName){
-  if(value == null || value === '') return '';
-  if(typeof value === 'number') return excelSerialToDMY(value);
-
-  const s0 = String(value).trim();
-  if(!s0) return '';
-  if(/^\d+$/.test(s0)) return excelSerialToDMY(Number(s0));
-
-  const s = s0.replace(/\//g,'.').replace(/-/g,'.');
-  const m = s.match(/^(\d{1,2})\.(\d{1,2})\.(\d{2,4})$/);
-  if(!m) return s0;
-
-  let d = Number(m[1]);
-  let mo = Number(m[2]);
-  let yy = Number(m[3]);
-  if(yy < 100) yy += 2000;
-
-  const expectedMonth = monthNumberFromName(lunaName);
-
-  if(expectedMonth){
-    if(mo !== expectedMonth && d === expectedMonth){
-      const t = d; d = mo; mo = t;
-    }else if(mo > 12 && d <= 12){
-      const t = d; d = mo; mo = t;
-    }
-  }else if(mo > 12 && d <= 12){
-    const t = d; d = mo; mo = t;
-  }
-
-  const dd = String(d).padStart(2,'0');
-  const mm = String(mo).padStart(2,'0');
-  return `${dd}.${mm}.${yy}`;
-}
-
-function normalizeAllRowDates(rows){
-  if(!Array.isArray(rows)) return;
-  rows.forEach(r=>{
-    if(!r || typeof r !== 'object') return;
-    r.data = normalizeDateDMY(r.data, r.luna);
-  });
-}
 
 /* ===============================
    STATE
@@ -497,118 +451,6 @@ const modalBack = document.getElementById('modalBack');
    UTIL
    =============================== */
 function nowIso(){ return new Date().toISOString(); }
-function isQuotaError(err){
-  if(!err) return false;
-  const name = String(err.name || '');
-  const code = Number(err.code || 0);
-  return name === 'QuotaExceededError' || name === 'NS_ERROR_DOM_QUOTA_REACHED' || code === 22 || code === 1014;
-}
-function compareIsoMaybe(a,b){
-  const ta = a ? Date.parse(a) : 0;
-  const tb = b ? Date.parse(b) : 0;
-  return (ta||0) - (tb||0);
-}
-function buildLocalMarker(kind, payload){
-  return JSON.stringify({
-    storage: 'idb',
-    kind,
-    updated_at: payload?.updated_at || null,
-    row_count: Array.isArray(payload?.rows) ? payload.rows.length : 0,
-    saved_at: nowIso()
-  });
-}
-function openLocalDb(){
-  return new Promise((resolve, reject)=>{
-    try{
-      if(!window.indexedDB) return reject(new Error('indexedDB unavailable'));
-      const req = indexedDB.open(LOCAL_DB_NAME, 1);
-      req.onupgradeneeded = ()=>{
-        const db = req.result;
-        if(!db.objectStoreNames.contains(LOCAL_DB_STORE)) db.createObjectStore(LOCAL_DB_STORE);
-      };
-      req.onsuccess = ()=> resolve(req.result);
-      req.onerror = ()=> reject(req.error || new Error('indexedDB open failed'));
-    }catch(e){ reject(e); }
-  });
-}
-async function idbSetDoc(key, value){
-  const db = await openLocalDb();
-  return new Promise((resolve, reject)=>{
-    try{
-      const tx = db.transaction(LOCAL_DB_STORE, 'readwrite');
-      tx.objectStore(LOCAL_DB_STORE).put(value, key);
-      tx.oncomplete = ()=>{ try{ db.close(); }catch(_e){} resolve(true); };
-      tx.onerror = ()=>{ try{ db.close(); }catch(_e){} reject(tx.error || new Error('indexedDB write failed')); };
-      tx.onabort = ()=>{ try{ db.close(); }catch(_e){} reject(tx.error || new Error('indexedDB write aborted')); };
-    }catch(e){ try{ db.close(); }catch(_e){} reject(e); }
-  });
-}
-async function idbGetDoc(key){
-  const db = await openLocalDb();
-  return new Promise((resolve, reject)=>{
-    try{
-      const tx = db.transaction(LOCAL_DB_STORE, 'readonly');
-      const req = tx.objectStore(LOCAL_DB_STORE).get(key);
-      req.onsuccess = ()=>{ const v = req.result; try{ db.close(); }catch(_e){} resolve(v || null); };
-      req.onerror = ()=>{ try{ db.close(); }catch(_e){} reject(req.error || new Error('indexedDB read failed')); };
-    }catch(e){ try{ db.close(); }catch(_e){} reject(e); }
-  });
-}
-function setLocalMarkers(payload){
-  try{ localStorage.setItem(LS_KEY_DATA, buildLocalMarker('data', payload)); }catch(_e){}
-  try{ localStorage.setItem(LS_KEY_BACKUP, buildLocalMarker('backup', payload)); }catch(_e){}
-}
-function getLegacyLocalPayload(key){
-  try{
-    const raw = localStorage.getItem(key);
-    if(!raw) return null;
-    const parsed = JSON.parse(raw);
-    if(parsed && Array.isArray(parsed.rows)) return parsed;
-  }catch(_e){}
-  return null;
-}
-async function persistLocalPayload(payload){
-  if(!payload || !Array.isArray(payload.rows)) return false;
-  try{
-    await idbSetDoc(LOCAL_DOC_DATA, payload);
-    await idbSetDoc(LOCAL_DOC_BACKUP, payload);
-    setLocalMarkers(payload);
-    return true;
-  }catch(e){
-    try{
-      localStorage.setItem(LS_KEY_DATA, JSON.stringify(payload));
-      localStorage.setItem(LS_KEY_BACKUP, JSON.stringify(payload));
-      return true;
-    }catch(e2){
-      throw (isQuotaError(e2) ? e2 : e);
-    }
-  }
-}
-async function readLocalPayload(){
-  try{
-    const payload = await idbGetDoc(LOCAL_DOC_DATA);
-    if(payload && Array.isArray(payload.rows)) return payload;
-  }catch(_e){}
-  return getLegacyLocalPayload(LS_KEY_DATA);
-}
-async function readLocalBackupPayload(){
-  try{
-    const payload = await idbGetDoc(LOCAL_DOC_BACKUP);
-    if(payload && Array.isArray(payload.rows)) return payload;
-  }catch(_e){}
-  return getLegacyLocalPayload(LS_KEY_BACKUP);
-}
-async function migrateLegacyLocalPayloads(){
-  const dataPayload = getLegacyLocalPayload(LS_KEY_DATA);
-  const backupPayload = getLegacyLocalPayload(LS_KEY_BACKUP);
-  const payload = dataPayload || backupPayload;
-  if(!payload || !Array.isArray(payload.rows)) return;
-  try{
-    await idbSetDoc(LOCAL_DOC_DATA, dataPayload || payload);
-    await idbSetDoc(LOCAL_DOC_BACKUP, backupPayload || payload);
-    setLocalMarkers(payload);
-  }catch(_e){}
-}
 
 
 /* ===============================
@@ -682,8 +524,30 @@ function excelSerialToDMY(n){
   return `${dd}.${mm}.${yyyy}`;
 }
 
-function parseExcelDate(v, lunaName){
-  return normalizeDateDMY(v, lunaName);
+function parseExcelDate(v){
+  if(v==null || v==='') return '';
+  if(typeof v === 'number') return excelSerialToDMY(v);
+  const s0 = String(v).trim();
+  if(!s0) return '';
+  if(/^\d+$/.test(s0)) return excelSerialToDMY(Number(s0));
+  // normalize separators
+  const s = s0.replace(/\//g,'.').replace(/-/g,'.');
+  const m = s.match(/^(\d{1,2})\.(\d{1,2})\.(\d{2,4})$/);
+  if(m){
+    let d = Number(m[1]);
+    let mo = Number(m[2]);
+    let yy = Number(m[3]);
+    if(yy < 100) yy += 2000;
+
+    // Dacă luna e > 12 și ziua <= 12, cel mai probabil e inversat (MM.DD.YYYY).
+    // Exemplu: 02.24.2026 -> 24.02.2026
+    if(mo > 12 && d <= 12){ const t=d; d=mo; mo=t; }
+
+    const dd = String(d).padStart(2,'0');
+    const mm = String(mo).padStart(2,'0');
+    return `${dd}.${mm}.${yy}`;
+  }
+  return s0;
 }
 
 function roInt(n){
@@ -772,47 +636,30 @@ function setAutosavePill(txt, cls){
 function scheduleAutosave(){
   if(autosaveTimer) clearTimeout(autosaveTimer);
   setAutosavePill('autosave: …', 'warn');
-  autosaveTimer = setTimeout(async ()=>{
+  autosaveTimer = setTimeout(()=>{
     try{
       STATE.updated_at = nowIso();
-      await persistLocalPayload({ version: STATE.version, updated_at: STATE.updated_at, rows: STATE.rows });
+      localStorage.setItem(LS_KEY_DATA, JSON.stringify({ version: STATE.version, updated_at: STATE.updated_at, rows: STATE.rows }));
       setAutosavePill('autosave: saved', 'ok');
       __DIRTY = false;
     }catch(e){
       console.warn(e);
-      setAutosavePill(isQuotaError(e) ? 'autosave: limită locală' : 'autosave: error', isQuotaError(e) ? 'warn' : 'bad');
+      setAutosavePill('autosave: error', 'bad');
     }
   }, 250);
 }
 
 function loadLocal(){
-  let legacyPayload = null;
   try{
-    legacyPayload = getLegacyLocalPayload(LS_KEY_DATA);
-    if(legacyPayload && Array.isArray(legacyPayload.rows)){
-      STATE.rows = legacyPayload.rows;
-      normalizeAllRowDates(STATE.rows);
-      STATE.updated_at = legacyPayload.updated_at || null;
+    const raw = localStorage.getItem(LS_KEY_DATA);
+    if(!raw) return;
+    const payload = JSON.parse(raw);
+    if(payload && Array.isArray(payload.rows)){
+      STATE.rows = payload.rows;
+      STATE.updated_at = payload.updated_at || null;
+  try{ if(Array.isArray(payload.rows) && payload.rows.length){ localStorage.setItem(LS_KEY_BACKUP, JSON.stringify(payload)); } }catch(_e){}
     }
   }catch(_e){}
-
-  (async ()=>{
-    try{
-      await migrateLegacyLocalPayloads();
-      const payload = await readLocalPayload();
-      if(payload && Array.isArray(payload.rows)){
-        const shouldApply = !Array.isArray(STATE.rows) || STATE.rows.length === 0 || compareIsoMaybe(payload.updated_at, STATE.updated_at) >= 0;
-        if(shouldApply){
-          STATE.rows = payload.rows;
-          normalizeAllRowDates(STATE.rows);
-          STATE.updated_at = payload.updated_at || null;
-          recalcAll();
-          refreshFilterOptions();
-          render();
-        }
-      }
-    }catch(_e){}
-  })();
 }
 
 function loadHelpersLocal(){
@@ -1164,7 +1011,7 @@ function formatCellValue(row, col){
   if(col.fmt==='pct') return pct(v);
 
   if(col.type==='date'){
-    return normalizeDateDMY(v, row.luna);
+    return parseExcelDate(v);
   }
 
   if(col.type==='year'){
@@ -1511,7 +1358,7 @@ function rowFromForm(){
 
     an: toStr(f.an.value).trim(),
     luna: toStr(f.luna.value).trim(),
-    data: normalizeDateDMY(toStr(f.data.value).trim(), toStr(f.luna.value).trim()),
+    data: toStr(f.data.value).trim(),
     schimb: toStr(f.schimb.value).trim(),
 
     ciocan: toStr(f.ciocan.value).trim(),
@@ -1678,40 +1525,29 @@ async function exportXlsx(){
   XLSX.writeFile(wb, 'forjate.xlsx');
 }
 
-function importRowFingerprint(row){
-  const keys = [
-    'an','luna','data','schimb','ciocan','reper','diametru','calitate','marcaj','cod_cat_dk','cod_cat_marc',
-    'matrita_sup','inaltime_sup','matrita_inf','inaltime_inf','portmatrita',
-    'buc_realizate','rebut','tact_sec','schimbare_reper_min','reglaj_min','opriri_min','incalzire_sdv_min','pauza_masa_min',
-    'kg_semif_debit','kg_forj'
-  ];
-  return keys.map(k=>{
-    const v = row ? row[k] : '';
-    if(typeof v === 'number') return Number.isFinite(v) ? String(v) : '0';
-    return String(v ?? '').trim().toLowerCase();
-  }).join('|');
+async 
+function buildImportFingerprint(row){
+  return [
+    row.an,row.luna,row.data,row.schimbul,row.ciocan,row.reper,row.dim_otel,row.calitate_otel,
+    row.marcaj_matr,row.cod_cat_dk,row.cod_cat_marc,row.matr_sup,row.h_sup,row.matr_inf,row.h_inf,
+    row.combinare,row.portmatrita,row.buc_realizate,row.rebut,row.planificat,row.kg_semif_debit,row.kg_forj,
+    row.tact_sec,row.schimbare_reper_min,row.reglaj_min,row.opriri_min,row.incalzire_sdv_min,row.pauza_masa_min
+  ].map(v => String(v ?? '').trim()).join('|');
 }
-function askImportMode(importCount){
-  const msg = [
-    'Import Excel: ' + importCount + ' rânduri.',
-    '',
-    '1 = Înlocuiește tot',
-    '2 = Adaugă peste',
-    '3 = Adaugă doar ce nu există',
-    '',
-    'Scrie 1, 2 sau 3.'
-  ].join('\n');
-  const raw = window.prompt(msg, '3');
-  if(raw === null) return null;
-  const v = String(raw).trim();
-  if(v === '1') return 'replace';
-  if(v === '2') return 'append';
-  if(v === '3') return 'append_unique';
-  alert('Opțiune invalidă. Folosește 1, 2 sau 3.');
+
+function askImportModeForjate(){
+  const raw = prompt(
+    'Import Excel FORJATE:\n1 = Înlocuiește tot\n2 = Adaugă peste\n3 = Adaugă doar ce nu există',
+    '3'
+  );
+  const mode = String(raw || '').trim();
+  if(!mode) return null;
+  if(['1','2','3'].includes(mode)) return mode;
+  alert('Alege 1, 2 sau 3.');
   return null;
 }
 
-async function importXlsx(){
+function importXlsx(){
   await ensureXLSX();
   if(!window.__CAN_ADD__ && !window.__CAN_EDIT__){ alert('Nu ai drept de modificare pe această pagină.'); return; }
 
@@ -1751,7 +1587,7 @@ async function importXlsx(){
 
         an: String(pick(map, ['anul','an'])).trim(),
         luna: String(pick(map, ['luna'])).trim().toLowerCase(),
-        data: normalizeDateDMY(pick(map, ['data']), String(pick(map, ['luna'])).trim().toLowerCase()),
+        data: parseExcelDate(pick(map, ['data'])),
         schimb: String(pick(map, ['schimbul','schimb'])).trim() || '1',
 
         ciocan: String(pick(map, ['ciocan','utilaj','linie','linieforjare'])).trim(),
@@ -1795,24 +1631,23 @@ async function importXlsx(){
       return row;
     });
 
-    const mode = askImportMode(imported.length);
-    if(!mode) return;
+    const importMode = askImportModeForjate();
+    if(!importMode) return;
 
-    if(mode === 'replace'){
+    if(importMode === '1'){
       STATE.rows = imported;
-    }else if(mode === 'append'){
+    }else if(importMode === '2'){
       STATE.rows.push(...imported);
-    }else if(mode === 'append_unique'){
-      const seen = new Set((STATE.rows || []).map(importRowFingerprint));
-      let added = 0;
-      for(const row of imported){
-        const fp = importRowFingerprint(row);
-        if(seen.has(fp)) continue;
+    }else{
+      const seen = new Set(STATE.rows.map(buildImportFingerprint));
+      const fresh = imported.filter(row => {
+        const fp = buildImportFingerprint(row);
+        if(seen.has(fp)) return false;
         seen.add(fp);
-        STATE.rows.push(row);
-        added++;
-      }
-      alert('Import finalizat: ' + added + ' rânduri noi adăugate, ' + (imported.length - added) + ' duplicate ignorate.');
+        return true;
+      });
+      STATE.rows.push(...fresh);
+      alert('Adăugate ' + fresh.length + ' rânduri noi. Duplicate ignorate: ' + (imported.length - fresh.length) + '.');
     }
 
     markDirty();
@@ -1862,6 +1697,12 @@ async function detectDocColumns(){
   return __RF_DOC_COLS;
 }
 
+async function readDocumentMeta(docKey){
+  const { data, error } = await supa.from(DOC_TABLE).select('updated_at').eq('doc_key', docKey).maybeSingle();
+  if(error) throw error;
+  return data?.updated_at || null;
+}
+
 async function readDocument(docKey){
   const cols = await detectDocColumns();
   const selectCols = [...cols, 'updated_at'].join(',');
@@ -1871,6 +1712,10 @@ async function readDocument(docKey){
     payload: data ? (data.content ?? data.data ?? null) : null,
     updated_at: data?.updated_at || null
   };
+}
+
+function safeJsonBytes(obj){
+  try{ return new Blob([JSON.stringify(obj)]).size; }catch(_e){ return 0; }
 }
 
 async function writeDocument(docKey, payload){
@@ -1968,22 +1813,14 @@ function applyRole(role, email, access){
 /* ===============================
    CLOUD SYNC
    =============================== */
-const CLOUD_PULL_MS_VISIBLE = 12000;
-const CLOUD_PULL_MS_HIDDEN  = 45000;
-const HELPERS_PULL_MS_VISIBLE = 180000;
-const HELPERS_PULL_MS_HIDDEN  = 600000;
-const CLOUD_PUSH_DEBOUNCE_MS = 1500;
-const CLOUD_LOCAL_EDIT_GRACE_MS = 7000;
-const CLOUD_ERROR_BACKOFF_MS = 30000;
-
 let lastPulledAt = null;
 let lastPushedAt = null;
 let pollTimer = null;
-let helperPollTimer = null;
 let pushTimer = null;
+let helpersTimer = null;
 let inFlight = false;
-let helperInFlight = false;
-let cloudBackoffUntil = 0;
+let __pollDelayMs = CLOUD_META_POLL_MS;
+let __helpersDelayMs = HELPERS_META_POLL_MS;
 
 function setCloud(ok, msg){
   cloudBadge.style.display = 'inline-flex';
@@ -2008,7 +1845,6 @@ function loadFromPayload(payload){
   if(ae && (ae.tagName==='INPUT' || ae.tagName==='TEXTAREA' || ae.tagName==='SELECT')) return false;
 
   STATE.rows = payload.rows;
-  normalizeAllRowDates(STATE.rows);
   STATE.updated_at = payload.updated_at || null;
   if(STATE._firstPayloadApply){
     STATE._scrollToBottomNext = true;
@@ -2024,97 +1860,61 @@ function loadFromPayload(payload){
 }
 window.loadFromPayload = loadFromPayload;
 
-function pageIsVisible(){
-  return !document.hidden;
-}
-
-function clearPollTimers(){
-  if(pollTimer){ clearTimeout(pollTimer); pollTimer = null; }
-  if(helperPollTimer){ clearTimeout(helperPollTimer); helperPollTimer = null; }
-}
-
-function nextCloudPullDelay(){
-  return pageIsVisible() ? CLOUD_PULL_MS_VISIBLE : CLOUD_PULL_MS_HIDDEN;
-}
-function nextHelpersPullDelay(){
-  return pageIsVisible() ? HELPERS_PULL_MS_VISIBLE : HELPERS_PULL_MS_HIDDEN;
-}
-
-function scheduleCloudPoll(delay){
+function scheduleNextPull(ms){
   if(pollTimer) clearTimeout(pollTimer);
   pollTimer = setTimeout(async ()=>{
     await pull();
-    scheduleCloudPoll(nextCloudPullDelay());
-  }, Math.max(500, Number(delay)||nextCloudPullDelay()));
+    scheduleNextPull(__pollDelayMs);
+  }, Math.max(1500, ms || __pollDelayMs));
 }
 
-function scheduleHelpersPoll(delay){
-  if(helperPollTimer) clearTimeout(helperPollTimer);
-  helperPollTimer = setTimeout(async ()=>{
+function scheduleNextHelpersPull(ms){
+  if(helpersTimer) clearTimeout(helpersTimer);
+  helpersTimer = setTimeout(async ()=>{
     await pullHelpers();
-    scheduleHelpersPoll(nextHelpersPullDelay());
-  }, Math.max(1000, Number(delay)||nextHelpersPullDelay()));
+    scheduleNextHelpersPull(__helpersDelayMs);
+  }, Math.max(5000, ms || __helpersDelayMs));
 }
 
-async function readDocumentMeta(docKey){
-  const { data, error } = await supa.from(DOC_TABLE).select('updated_at').eq('doc_key', docKey).maybeSingle();
-  if(error) throw error;
-  return { updated_at: data?.updated_at || null };
-}
-
-async function pull(forceFull){
+async function pull(){
   if(!supa) return;
   if(inFlight) return;
-  if(cloudBackoffUntil && Date.now() < cloudBackoffUntil){
-    setCloud(false, 'Cloud: așteaptă…');
-    return;
-  }
+  if(document.hidden){ setCloud(true, 'Cloud: în așteptare'); return; }
 
-  if(__HAS_LOCAL_PENDING && (Date.now() - __LAST_LOCAL_CHANGE) < CLOUD_LOCAL_EDIT_GRACE_MS){
-    setCloud(true, 'Cloud: ON');
+  if(__HAS_LOCAL_PENDING && (Date.now() - __LAST_LOCAL_CHANGE) < CLOUD_LOCAL_GRACE_MS){
+    setCloud(true, CLOUD_IDLE_MSG);
     return;
   }
 
   inFlight = true;
   try{
-    let remoteTs = null;
-    if(!forceFull){
-      const meta = await readDocumentMeta(DOC_KEY);
-      remoteTs = meta.updated_at || null;
-
-      if(!remoteTs){
-        try{
-          const b = localStorage.getItem(LS_KEY_BACKUP);
-          if(b){
-            document.getElementById('btnRestore').style.display = (window.__CAN_EDIT__ || window.__CAN_DELETE__) ? 'inline-flex' : 'none';
-            setCloud(true,'Cloud: gol (backup)');
-            return;
-          }
-        }catch(_e){}
-        setCloud(true, 'Cloud: gol');
-        return;
-      }
-
-      if(lastPulledAt && new Date(remoteTs) <= new Date(lastPulledAt)) { setCloud(true,'Cloud: ON'); return; }
-      if(lastPushedAt && new Date(remoteTs) <= new Date(lastPushedAt)) { setCloud(true,'Cloud: ON'); return; }
-    }
-
-    const doc = await readDocument(DOC_KEY);
-    const payload = doc.payload;
-    if(!payload){
+    const remoteTs = await readDocumentMeta(DOC_KEY);
+    if(!remoteTs){
       try{
         const b = localStorage.getItem(LS_KEY_BACKUP);
         if(b){
           document.getElementById('btnRestore').style.display = (window.__CAN_EDIT__ || window.__CAN_DELETE__) ? 'inline-flex' : 'none';
           setCloud(true,'Cloud: gol (backup)');
+          __pollDelayMs = CLOUD_META_POLL_MS;
           return;
         }
       }catch(_e){}
       setCloud(true, 'Cloud: gol');
+      __pollDelayMs = CLOUD_META_POLL_MS;
       return;
     }
 
-    const ts = doc.updated_at || remoteTs || null;
+    if(lastPulledAt && new Date(remoteTs) <= new Date(lastPulledAt)) { setCloud(true, CLOUD_IDLE_MSG); __pollDelayMs = CLOUD_META_POLL_MS; return; }
+    if(lastPushedAt && new Date(remoteTs) <= new Date(lastPushedAt)) { setCloud(true, CLOUD_IDLE_MSG); __pollDelayMs = CLOUD_META_POLL_MS; return; }
+
+    const doc = await readDocument(DOC_KEY);
+    const payload = doc.payload;
+    if(!payload || !Array.isArray(payload.rows)){
+      setCloud(true, 'Cloud: gol');
+      __pollDelayMs = CLOUD_META_POLL_MS;
+      return;
+    }
+
     const applied = loadFromPayload(payload);
     try{
       const hasBackup = !!localStorage.getItem(LS_KEY_BACKUP);
@@ -2122,12 +1922,12 @@ async function pull(forceFull){
       document.getElementById('btnRestore').style.display = ((window.__CAN_EDIT__ || window.__CAN_DELETE__) && hasBackup && !hasRows) ? 'inline-flex' : 'none';
     }catch(_e){}
 
-    if(applied) lastPulledAt = ts || nowIso();
-    cloudBackoffUntil = 0;
-    setCloud(true, 'Cloud: ON');
+    if(applied) lastPulledAt = doc.updated_at || remoteTs || nowIso();
+    __pollDelayMs = CLOUD_META_POLL_MS;
+    setCloud(true, CLOUD_IDLE_MSG);
   }catch(e){
     console.error(e);
-    cloudBackoffUntil = Date.now() + CLOUD_ERROR_BACKOFF_MS;
+    __pollDelayMs = Math.min(CLOUD_ERROR_BACKOFF_MS_MAX, Math.max(CLOUD_META_POLL_MS, __pollDelayMs * 2));
     setCloud(false, 'Cloud: eroare');
   }finally{
     inFlight = false;
@@ -2146,18 +1946,21 @@ function schedulePush(){
     try{
       const payload = getAllDataForExport();
       payload.updated_at = nowIso();
+      const bytes = safeJsonBytes(payload);
+      if(bytes > 900000){
+        setCloud(true, 'Cloud: sincronizez document mare');
+      }
       await writeDocument(DOC_KEY, payload);
 
       lastPushedAt = payload.updated_at;
       __HAS_LOCAL_PENDING = false;
-      cloudBackoffUntil = 0;
-      setCloud(true, 'Cloud: ON');
+      __pollDelayMs = CLOUD_META_POLL_MS;
+      setCloud(true, CLOUD_IDLE_MSG);
     }catch(e){
       console.error(e);
       const msg = (String(e && e.message || '').toLowerCase().includes('row level security') || String(e).toLowerCase().includes('permission'))
         ? 'Cloud: fără drept de scriere'
         : 'Cloud: eroare';
-      cloudBackoffUntil = Date.now() + CLOUD_ERROR_BACKOFF_MS;
       setCloud(false, msg);
     }
   }, CLOUD_PUSH_DEBOUNCE_MS);
@@ -2178,67 +1981,43 @@ async function startCloud(){
   }
 
   if(!window.__CAN_VIEW__){
-    showLock('Acces restricționat', 'Contul tău nu are permisiunea să vizualizezi pagina FORJATE.');
+    showLock('Acces restricționat', 'Contul tău nu are permisiunea să vizualizeze pagina FORJATE.');
     return;
   }
 
-  clearPollTimers();
   cloudBadge.style.display = 'inline-flex';
   cloudBadge.classList.add('warn');
   cloudBadge.textContent = 'Cloud: conectez…';
 
-  await pull(true);
-  scheduleCloudPoll(nextCloudPullDelay());
-  setCloud(true, 'Cloud: ON');
+  await pull();
+  scheduleNextPull(CLOUD_META_POLL_MS);
+  setCloud(true, CLOUD_IDLE_MSG);
 }
 
 /* ===============================
    HELPERS CLOUD PULL (doc_key=helpers)
    =============================== */
 let helpersLastTs = null;
-async function pullHelpers(forceFull){
-  if(!supa || helperInFlight) return;
-  helperInFlight = true;
+async function pullHelpers(){
+  if(!supa) return;
+  if(document.hidden) return;
   try{
-    let remoteTs = null;
-    if(!forceFull){
-      const meta = await readDocumentMeta('helpers');
-      remoteTs = meta.updated_at || null;
-      if(!remoteTs) return;
-      if(helpersLastTs && new Date(remoteTs) <= new Date(helpersLastTs)) return;
-    }
+    const metaTs = await readDocumentMeta('helpers');
+    if(!metaTs) return;
+    if(helpersLastTs && new Date(metaTs) <= new Date(helpersLastTs)) return;
     const doc = await readDocument('helpers');
     if(!doc || !doc.payload) return;
-    const ts = doc.updated_at || remoteTs || null;
-    if(!forceFull && helpersLastTs && ts && new Date(ts) <= new Date(helpersLastTs)) return;
+    const ts = doc.updated_at || metaTs || null;
+    if(helpersLastTs && ts && new Date(ts) <= new Date(helpersLastTs)) return;
     helpersLastTs = ts || nowIso();
     HELPERS = doc.payload;
     try{ localStorage.setItem(LS_KEY_HELPERS, JSON.stringify(HELPERS)); }catch(_e){}
     rebuildDatalists();
+    __helpersDelayMs = HELPERS_META_POLL_MS;
   }catch(_e){
-    // silent
-  }finally{
-    helperInFlight = false;
+    __helpersDelayMs = Math.min(CLOUD_ERROR_BACKOFF_MS_MAX, Math.max(HELPERS_META_POLL_MS, __helpersDelayMs * 2));
   }
 }
-
-document.addEventListener('visibilitychange', ()=>{
-  if(document.hidden){
-    scheduleCloudPoll(nextCloudPullDelay());
-    scheduleHelpersPoll(nextHelpersPullDelay());
-    return;
-  }
-  pull();
-  pullHelpers();
-  scheduleCloudPoll(nextCloudPullDelay());
-  scheduleHelpersPoll(nextHelpersPullDelay());
-});
-window.addEventListener('focus', ()=>{
-  pull();
-  pullHelpers();
-  scheduleCloudPoll(nextCloudPullDelay());
-  scheduleHelpersPoll(nextHelpersPullDelay());
-});
 
 /* ===============================
    EVENTS
@@ -2265,14 +2044,15 @@ document.getElementById('btnExportJson').addEventListener('click', exportJson);
 document.getElementById('btnExportXlsx').addEventListener('click', exportXlsx);
 document.getElementById('btnImportXlsx').addEventListener('click', importXlsx);
 
-document.getElementById('btnRestore').addEventListener('click', async ()=>{
+document.getElementById('btnRestore').addEventListener('click', ()=>{
   if(!window.__CAN_EDIT__ && !window.__CAN_DELETE__) return;
-  const payload = await readLocalBackupPayload();
-  if(!payload || !Array.isArray(payload.rows)) return alert('Nu există backup local.');
+  let raw=null; try{ raw = localStorage.getItem(LS_KEY_BACKUP); }catch(_e){}
+  if(!raw) return alert('Nu există backup local.');
   if(!confirm('Restore: încarc backup-ul local și îl trimit în cloud (înlocuiește ce e în cloud). Continui?')) return;
   try{
+    const payload = JSON.parse(raw);
+    if(!payload || !Array.isArray(payload.rows)) throw new Error('Backup invalid');
     STATE.rows = payload.rows;
-    normalizeAllRowDates(STATE.rows);
     STATE.updated_at = payload.updated_at || nowIso();
     recalcAll();
     refreshFilterOptions();
@@ -2473,6 +2253,22 @@ window.addEventListener('message', (e)=>{
   }
 });
 
+document.addEventListener('visibilitychange', ()=>{
+  if(document.hidden) return;
+  __pollDelayMs = CLOUD_META_POLL_MS;
+  __helpersDelayMs = HELPERS_META_POLL_MS;
+  try{ pull(); }catch(_e){}
+  try{ pullHelpers(); }catch(_e){}
+  scheduleNextPull(1200);
+  scheduleNextHelpersPull(2500);
+});
+
+window.addEventListener('beforeunload', ()=>{
+  if(pollTimer) clearTimeout(pollTimer);
+  if(pushTimer) clearTimeout(pushTimer);
+  if(helpersTimer) clearTimeout(helpersTimer);
+});
+
 /* ===============================
    INIT
    =============================== */
@@ -2497,8 +2293,8 @@ window.addEventListener('message', (e)=>{
     const access = await getPageAccess(role);
     applyRole(role, email, access);
     startCloud();
-    pullHelpers(true);
-    scheduleHelpersPoll(nextHelpersPullDelay());
+    pullHelpers();
+    scheduleNextHelpersPull(HELPERS_META_POLL_MS);
   });
 })();
 </script>

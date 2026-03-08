@@ -1,7 +1,8 @@
 (function(){
   'use strict';
 
-  const ADMIN_EMAIL = 'forja.editor@gmail.com';
+  const SHARED_CONFIG = window.RF_CONFIG || window.__RF_CONFIG__ || window.ERP_FORJA_CONFIG || {};
+  const ADMIN_EMAIL = String(SHARED_CONFIG.ADMIN_EMAIL || 'forja.editor@gmail.com').trim().toLowerCase();
   const STORAGE = {
     userId: 'rf_user_id',
     userEmail: 'rf_user_email',
@@ -37,7 +38,7 @@
   }
 
   function readConfig(){
-    const globalCfg = window.ERP_FORJA_CONFIG || window.__ERP_FORJA_CONFIG__ || {};
+    const globalCfg = window.RF_CONFIG || window.__RF_CONFIG__ || window.ERP_FORJA_CONFIG || window.__ERP_FORJA_CONFIG__ || {};
     const storedCfg = readStoredConfig() || {};
 
     const url = String(
@@ -85,6 +86,12 @@
 
     if(!cfg.anonKey){
       throw new Error('Lipsește SUPABASE_ANON_KEY din supabase-config.js.');
+    }
+
+    const factory = typeof window.createRfSupabaseClient === 'function' ? window.createRfSupabaseClient : null;
+    if(factory){
+      supabaseClient = factory();
+      return supabaseClient;
     }
 
     supabaseClient = window.supabase.createClient(cfg.url, cfg.anonKey, {

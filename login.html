@@ -249,10 +249,9 @@
       const statusBox = document.getElementById('statusBox');
       const metaInfo = document.getElementById('metaInfo');
 
-      const rawCfg = window.RF_CONFIG || {};
-      const cfg = {
-        supabaseUrl: rawCfg.SUPABASE_URL || rawCfg.supabaseUrl || window.RF_SUPABASE_URL || 'https://addlybnigrywqowpbhvd.supabase.co',
-        supabaseAnonKey: rawCfg.SUPABASE_ANON_KEY || rawCfg.supabaseAnonKey || window.RF_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmEiLCJyZWYiOiJhZGRseWJuaWdyeXdxb3dwYmh2ZCIsInJvbGUiOiJhbm9uIiwiaWF0IjoxNzcyNjY2NjY0LCJleHAiOjIwODgyNDI2NjR9.VjbSKs7G_5T7GhdrjT8dtj2HCF6Az9KYfkpkSE7JTo4'
+      const cfg = window.RF_CONFIG || {
+        supabaseUrl: 'https://addlybnigrywqowpbhvd.supabase.co',
+        supabaseAnonKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFkZGx5Ym5pZ3J5d3Fvd3BiaHZkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzI2NjY2NjQsImV4cCI6MjA4ODI0MjY2NH0.VjbSKs7G_5T7GhdrjT8dtj2HCF6Az9KYfkpkSE7JTo4'
       };
 
       let supabase = null;
@@ -300,84 +299,6 @@
 
       function safeSetLocal(key, value){
         try { localStorage.setItem(key, value); } catch(_) {}
-      }
-
-      function safeRemove(storage, key){
-        try { storage.removeItem(key); } catch(_) {}
-      }
-
-      function projectRefFromUrl(url){
-        try {
-          const host = new URL(url).hostname || '';
-          return host.split('.')[0] || '';
-        } catch(_) {
-          return '';
-        }
-      }
-
-      function authStorageKey(){
-        const ref = projectRefFromUrl(cfg.supabaseUrl);
-        return ref ? ('sb-' + ref + '-auth-token') : '';
-      }
-
-      function clearStaleSession(){
-        const authKey = authStorageKey();
-        if(authKey){
-          safeRemove(localStorage, authKey);
-          safeRemove(sessionStorage, authKey);
-        }
-        ['rf_uid','rf_email','rf_role','rf_login_ts'].forEach(k => safeRemove(localStorage, k));
-      }
-
-      function persistRawSessionFallback(sessionLike){
-        const key = authStorageKey();
-        if(!key || !sessionLike || !sessionLike.access_token || !sessionLike.refresh_token) return;
-        try {
-          localStorage.setItem(key, JSON.stringify(sessionLike));
-        } catch(_) {}
-      }
-
-      async function directPasswordLogin(email, password, timeoutMs){
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), timeoutMs || 20000);
-        try {
-          const res = await fetch(cfg.supabaseUrl.replace(/\/$/, '') + '/auth/v1/token?grant_type=password', {
-            method: 'POST',
-            headers: {
-              'apikey': cfg.supabaseAnonKey,
-              'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({ email, password }),
-            signal: controller.signal
-          });
-
-          const raw = await res.text();
-          let json = null;
-          try { json = raw ? JSON.parse(raw) : null; } catch(_) {}
-
-          if(!res.ok){
-            const msg = String(
-              json?.msg ||
-              json?.error_description ||
-              json?.error ||
-              raw ||
-              ('HTTP ' + res.status)
-            ).trim();
-            const err = new Error(msg || 'Autentificarea a eșuat.');
-            err.httpStatus = res.status;
-            err.rawBody = raw;
-            throw err;
-          }
-
-          return json || {};
-        } catch(err) {
-          if(err && err.name === 'AbortError'){
-            throw new Error('Endpointul Auth nu a răspuns la timp.');
-          }
-          throw err;
-        } finally {
-          clearTimeout(timer);
-        }
       }
 
       async function resolveRole(user){
@@ -443,9 +364,8 @@
         if(!msg) return 'Autentificarea a eșuat.';
         if(msg.includes('Invalid login credentials')) return 'ID sau parolă greșită.';
         if(msg.includes('Email not confirmed')) return 'Emailul nu este confirmat.';
-        if(msg.includes('Failed to fetch')) return 'Nu se poate contacta Supabase Auth.';
-        if(msg.includes('Auth nu a răspuns la timp')) return 'Supabase Auth nu a răspuns la timp.';
-        if(msg.includes('depășit timpul')) return 'Operația a expirat.';
+        if(msg.includes('Failed to fetch')) return 'Nu se poate contacta serverul Supabase.';
+        if(msg.includes('depășit timpul')) return 'Serverul nu a răspuns la timp. Verifică conexiunea și încearcă din nou.';
         return msg;
       }
 
@@ -462,7 +382,7 @@
           auth: {
             persistSession: true,
             autoRefreshToken: true,
-            detectSessionInUrl: false
+            detectSessionInUrl: true
           }
         });
       }
@@ -486,43 +406,28 @@
 
         try {
           setLoading(true, 'Autentificare în curs...');
-          setMeta('Se inițiază conexiunea către Supabase Auth...');
+          setMeta('Se verifică sesiunea și rolul utilizatorului...');
 
-          clearStaleSession();
           supabase = supabase || initClient();
 
-          const authJson = await directPasswordLogin(email, password, 20000);
-          if(!authJson || !authJson.access_token || !authJson.refresh_token){
-            throw new Error('Auth a răspuns fără token valid.');
-          }
-
-          persistRawSessionFallback(authJson);
-          setMeta('Auth a răspuns. Se salvează sesiunea...');
-
-          const sessionResult = await withTimeout(
-            supabase.auth.setSession({
-              access_token: authJson.access_token,
-              refresh_token: authJson.refresh_token
-            }),
-            12000,
-            'Salvarea sesiunii'
+          const authResult = await withTimeout(
+            supabase.auth.signInWithPassword({ email, password }),
+            15000,
+            'Autentificarea'
           );
 
-          if(sessionResult && sessionResult.error){
-            throw sessionResult.error;
+          if(authResult.error){
+            throw authResult.error;
           }
 
-          const user = sessionResult?.data?.user || authJson.user || null;
-          let resolved = { role: (normalizeEmail(user?.email) === 'forja.editor@gmail.com' ? 'admin' : 'viewer'), email: normalizeEmail(user?.email || email) };
-
-          try {
-            setMeta('Autentificat. Se citește rolul utilizatorului...');
-            resolved = await withTimeout(resolveRole(user), 8000, 'Citirea rolului');
-          } catch(_roleErr) {
-            // nu blocăm login-ul dacă role lookup e lent
+          const user = authResult.data?.user;
+          if(!user){
+            throw new Error('Autentificare nereușită: utilizatorul nu a fost returnat de server.');
           }
 
-          safeSetLocal('rf_uid', user?.id || '');
+          const resolved = await withTimeout(resolveRole(user), 12000, 'Citirea rolului');
+
+          safeSetLocal('rf_uid', user.id || '');
           safeSetLocal('rf_email', resolved.email || email);
           safeSetLocal('rf_role', resolved.role || 'viewer');
           safeSetLocal('rf_login_ts', String(Date.now()));
@@ -534,12 +439,7 @@
         } catch (error) {
           console.error('Login error:', error);
           setStatus(getFriendlyError(error), 'error');
-
-          const extra = [];
-          if(error && error.httpStatus) extra.push('HTTP ' + error.httpStatus);
-          if(error && error.rawBody) extra.push(String(error.rawBody).slice(0, 140));
-          if(!extra.length) extra.push('Verifică în DevTools > Network cererea /auth/v1/token.');
-          setMeta(extra.join(' • '));
+          setMeta('Dacă eroarea persistă, verifică rf-config.js, conexiunea la Supabase și consola browserului.');
         } finally {
           setLoading(false);
         }
