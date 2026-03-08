@@ -653,7 +653,16 @@ function excelSerialToDMY(n){
   return `${dd}.${mm}.${yyyy}`;
 }
 
-function parseExcelDate(v){
+function monthNameToNumber(name){
+  const s = String(name||'').trim().toLowerCase();
+  const map = {
+    'ianuarie':1, 'februarie':2, 'martie':3, 'aprilie':4, 'mai':5, 'iunie':6,
+    'iulie':7, 'august':8, 'septembrie':9, 'octombrie':10, 'noiembrie':11, 'decembrie':12
+  };
+  return map[s] || 0;
+}
+
+function parseExcelDate(v, monthHint){
   if(v==null || v==='') return '';
   if(typeof v === 'number') return excelSerialToDMY(v);
   const s0 = String(v).trim();
@@ -668,15 +677,30 @@ function parseExcelDate(v){
     let yy = Number(m[3]);
     if(yy < 100) yy += 2000;
 
-    // Dacă luna e > 12 și ziua <= 12, cel mai probabil e inversat (MM.DD.YYYY).
-    // Exemplu: 02.24.2026 -> 24.02.2026
-    if(mo > 12 && d <= 12){ const t=d; d=mo; mo=t; }
+    const hintedMonth = monthNameToNumber(monthHint);
+
+    // Excel / browser poate da uneori MM.DD.YYYY.
+    // Corectăm atât cazurile evidente (>12), cât și cele ambigue folosind luna din rând.
+    // Exemplu cu hint "februarie": 02.10.2026 -> 10.02.2026
+    if(mo > 12 && d <= 12){
+      const t = d; d = mo; mo = t;
+    } else if(hintedMonth){
+      if(d === hintedMonth && mo !== hintedMonth){
+        const t = d; d = mo; mo = t;
+      }
+    }
 
     const dd = String(d).padStart(2,'0');
     const mm = String(mo).padStart(2,'0');
     return `${dd}.${mm}.${yy}`;
   }
   return s0;
+}
+
+function normalizeRowDate(row){
+  if(!row) return row;
+  row.data = parseExcelDate(row.data, row.luna);
+  return row;
 }
 
 function roInt(n){
@@ -784,6 +808,7 @@ function loadLocal(){
     legacyPayload = getLegacyLocalPayload(LS_KEY_DATA);
     if(legacyPayload && Array.isArray(legacyPayload.rows)){
       STATE.rows = legacyPayload.rows;
+      STATE.rows.forEach(normalizeRowDate);
       STATE.updated_at = legacyPayload.updated_at || null;
     }
   }catch(_e){}
@@ -796,6 +821,7 @@ function loadLocal(){
         const shouldApply = !Array.isArray(STATE.rows) || STATE.rows.length === 0 || compareIsoMaybe(payload.updated_at, STATE.updated_at) >= 0;
         if(shouldApply){
           STATE.rows = payload.rows;
+          STATE.rows.forEach(normalizeRowDate);
           STATE.updated_at = payload.updated_at || null;
           recalcAll();
           refreshFilterOptions();
@@ -1037,7 +1063,7 @@ function recalcRow(row){
 }
 
 function recalcAll(){
-  STATE.rows.forEach(recalcRow);
+  STATE.rows.forEach(r=>{ normalizeRowDate(r); recalcRow(r); });
 }
 
 /* ===============================
@@ -1155,7 +1181,7 @@ function formatCellValue(row, col){
   if(col.fmt==='pct') return pct(v);
 
   if(col.type==='date'){
-    return parseExcelDate(v);
+    return parseExcelDate(v, row && row.luna);
   }
 
   if(col.type==='year'){
@@ -1456,7 +1482,7 @@ function openModalEdit(row){
 
   f.an.value = toStr(row.an);
   f.luna.value = toStr(row.luna);
-  f.data.value = toStr(row.data);
+  f.data.value = parseExcelDate(row.data, row.luna);
   f.schimb.value = toStr(row.schimb);
 
   f.ciocan.value = toStr(row.ciocan);
@@ -1502,7 +1528,7 @@ function rowFromForm(){
 
     an: toStr(f.an.value).trim(),
     luna: toStr(f.luna.value).trim(),
-    data: toStr(f.data.value).trim(),
+    data: parseExcelDate(toStr(f.data.value).trim(), toStr(f.luna.value).trim()),
     schimb: toStr(f.schimb.value).trim(),
 
     ciocan: toStr(f.ciocan.value).trim(),
@@ -1629,7 +1655,7 @@ async function exportXlsx(){
     return {
       ANUL: x.an,
       LUNA: x.luna,
-      DATA: x.data,
+      DATA: parseExcelDate(x.data, x.luna),
       SCHIMBUL: x.schimb,
       CIOCAN: x.ciocan,
       REPER: x.reper,
@@ -1709,7 +1735,7 @@ async function importXlsx(){
 
         an: String(pick(map, ['anul','an'])).trim(),
         luna: String(pick(map, ['luna'])).trim().toLowerCase(),
-        data: parseExcelDate(pick(map, ['data'])),
+        data: parseExcelDate(pick(map, ['data']), String(pick(map, ['luna'])).trim().toLowerCase()),
         schimb: String(pick(map, ['schimbul','schimb'])).trim() || '1',
 
         ciocan: String(pick(map, ['ciocan','utilaj','linie','linieforjare'])).trim(),
@@ -1950,6 +1976,7 @@ function loadFromPayload(payload){
   if(ae && (ae.tagName==='INPUT' || ae.tagName==='TEXTAREA' || ae.tagName==='SELECT')) return false;
 
   STATE.rows = payload.rows;
+  STATE.rows.forEach(normalizeRowDate);
   STATE.updated_at = payload.updated_at || null;
   if(STATE._firstPayloadApply){
     STATE._scrollToBottomNext = true;
@@ -2156,6 +2183,7 @@ document.getElementById('btnRestore').addEventListener('click', async ()=>{
   if(!confirm('Restore: încarc backup-ul local și îl trimit în cloud (înlocuiește ce e în cloud). Continui?')) return;
   try{
     STATE.rows = payload.rows;
+    STATE.rows.forEach(normalizeRowDate);
     STATE.updated_at = payload.updated_at || nowIso();
     recalcAll();
     refreshFilterOptions();
