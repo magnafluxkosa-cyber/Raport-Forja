@@ -230,6 +230,27 @@
       .zoomLabel{ min-width:60px; }
     }
 
+    .hasProblemTip{ cursor:help; }
+    .problemHoverTip{
+      position:fixed;
+      left:0;
+      top:0;
+      z-index:400;
+      display:none;
+      width:min(320px, calc(100vw - 24px));
+      background:#fff;
+      color:#0f172a;
+      border:1px solid rgba(0,0,0,.35);
+      border-radius:8px;
+      box-shadow:0 12px 30px rgba(0,0,0,.22);
+      padding:8px 10px;
+      font-size:11px;
+      line-height:1.25;
+      white-space:pre-line;
+      pointer-events:none;
+    }
+    .problemHoverTip.show{ display:block; }
+
 </style>
 </head>
 <body>
@@ -292,6 +313,8 @@
       </div>
     </div>
   </div>
+
+  <div class="problemHoverTip" id="problemHoverTip"></div>
 
   <!-- datalists -->
   <datalist id="dlCiocane"></datalist>
@@ -449,6 +472,132 @@ function normalizeAllRowDates(rows){
   });
 }
 
+function resolveRowsPayload(payload){
+  if(!payload) return [];
+  if(Array.isArray(payload)) return payload;
+  if(Array.isArray(payload.rows)) return payload.rows;
+  if(Array.isArray(payload.data)) return payload.data;
+  if(Array.isArray(payload.items)) return payload.items;
+  if(Array.isArray(payload.records)) return payload.records;
+  if(Array.isArray(payload.entries)) return payload.entries;
+  if(Array.isArray(payload.table)) return payload.table;
+  return [];
+}
+
+function cleanText(v){
+  return String(v == null ? '' : v).replace(/\s+/g,' ').trim();
+}
+
+function normalizeProblemRow(row){
+  if(!row || typeof row !== 'object') return null;
+
+  const luna = pickH(row, ['luna','LUNA','month','Month','B']);
+  const data = normalizeDateDMY(
+    pickH(row, ['data','DATA','date','Date','C','BM']),
+    luna
+  );
+  const utilaj = cleanText(
+    pickH(row, [
+      'utilaj','UTILAJ','echipament','Echipament','ciocan','CIOCAN','linie','Linie',
+      'linie de forjare','Linie de forjare','BO','E'
+    ])
+  );
+  if(!data || !utilaj) return null;
+
+  const schimb = cleanText(pickH(row, ['schimb','SCHIMB','schimbul','SCHIMBUL','shift','Shift','D']));
+  const label = cleanText(
+    pickH(row, [
+      'denumire operatie','Denumire operațiune','Denumire operatiune','operatie','operație','operatiune',
+      'Operatie','Operatiune','problema','Problema','tip problema','Tip problema','categorie','Categorie','H'
+    ])
+  ) || 'Problemă';
+  const minutes = Math.max(0, Math.round(toNum(
+    pickH(row, [
+      'timp minute pierdute','Timp Minute Pierdute','timp minute','Timp minute','minute','Minute',
+      'minute pierdute','Minute pierdute','timp pierdut','Timp pierdut','I'
+    ])
+  )));
+  const observatii = cleanText(
+    pickH(row, ['observatii','Observații','Observatii','observatii probleme','J','descriere','Descriere','obs'])
+  );
+
+  return {
+    data,
+    utilaj,
+    utilajKey: normKey(utilaj),
+    schimb,
+    label,
+    minutes,
+    observatii
+  };
+}
+
+function rebuildProblemsIndex(rows){
+  const byDayUtilaj = new Map();
+  (rows || []).forEach(item=>{
+    const p = normalizeProblemRow(item);
+    if(!p) return;
+    const key = `${p.data}|${p.utilajKey}`;
+    if(!byDayUtilaj.has(key)) byDayUtilaj.set(key, []);
+    byDayUtilaj.get(key).push(p);
+  });
+  byDayUtilaj.forEach(list=>{
+    list.sort((a,b)=>{
+      const sa = Number(a.schimb || 0);
+      const sb = Number(b.schimb || 0);
+      if(sa !== sb) return sa - sb;
+      return (b.minutes || 0) - (a.minutes || 0);
+    });
+  });
+  PROBLEMS_STATE.byDayUtilaj = byDayUtilaj;
+}
+
+function loadProblemsFromPayload(payload, updatedAt){
+  const rows = resolveRowsPayload(payload);
+  PROBLEMS_STATE.rows = rows;
+  PROBLEMS_STATE.updated_at = updatedAt || null;
+  rebuildProblemsIndex(rows);
+}
+
+function buildProblemsTooltip(row){
+  const data = normalizeDateDMY(row?.data, row?.luna);
+  const utilaj = cleanText(row?.ciocan);
+  if(!data || !utilaj) return '';
+
+  const list = PROBLEMS_STATE.byDayUtilaj.get(`${data}|${normKey(utilaj)}`) || [];
+  const lines = [];
+  lines.push(`${utilaj} • ${data}`);
+
+  if(!list.length){
+    lines.push('Fără probleme raportate pentru utilajul acesta în ziua respectivă.');
+    __TMP__
+  }
+
+  const total = list.reduce((sum, item)=> sum + (item.minutes || 0), 0);
+  lines.push(`Minute pierdute total: ${roInt(total) || '0'}`);
+  lines.push('');
+
+  const grouped = new Map();
+  list.forEach(item=>{
+    const key = item.schimb ? `Schimb ${item.schimb}` : 'Fără schimb';
+    if(!grouped.has(key)) grouped.set(key, []);
+    grouped.get(key).push(item);
+  });
+
+  const entries = Array.from(grouped.entries());
+  entries.forEach(([groupLabel, items], idx)=>{
+    if(entries.length > 1 || groupLabel !== 'Fără schimb') lines.push(groupLabel + ':');
+    items.forEach(item=>{
+      let line = `- ${item.label || 'Problemă'} (${roInt(item.minutes) || '0'} min)`;
+      if(item.observatii) line += ` — ${item.observatii}`;
+      lines.push(line);
+    });
+    if(idx < entries.length - 1) lines.push('');
+  });
+
+  __TMP__
+}
+
 /* ===============================
    STATE
    =============================== */
@@ -467,6 +616,12 @@ const STATE = {
   _forceBottomOnce: false
 };
 let HELPERS = null;
+const PROBLEMS_STATE = {
+  doc_key: 'probleme-raportate',
+  updated_at: null,
+  rows: [],
+  byDayUtilaj: new Map()
+};
 
 // helper maps cache (performance)
 let __HELPER_MAPS_CACHE = null;
@@ -492,6 +647,7 @@ const roleDot = document.getElementById('roleDot');
 const lock = document.getElementById('lock');
 
 const modalBack = document.getElementById('modalBack');
+const problemHoverTip = document.getElementById('problemHoverTip');
 
 /* ===============================
    UTIL
@@ -1235,6 +1391,16 @@ function makeRowTr(row){
       if(n>0) div.classList.add('red');
     }
 
+    if(col.key === 'ciocan' || col.key === 'data'){
+      const tip = buildProblemsTooltip(row);
+      if(tip){
+        div.classList.add('hasProblemTip');
+        div.addEventListener('mouseenter', (evt)=> showProblemHoverTip(evt, tip));
+        div.addEventListener('mousemove', positionProblemHoverTip);
+        div.addEventListener('mouseleave', hideProblemHoverTip);
+      }
+    }
+
     td.appendChild(div);
     tr.appendChild(td);
   });
@@ -1365,6 +1531,39 @@ function render(){
     applyFreeze();
   }
 }
+
+function hideProblemHoverTip(){
+  if(!problemHoverTip) return;
+  problemHoverTip.classList.remove('show');
+  problemHoverTip.textContent = '';
+}
+
+function positionProblemHoverTip(evt){
+  if(!problemHoverTip || !problemHoverTip.classList.contains('show')) return;
+  const margin = 12;
+  const vw = window.innerWidth || document.documentElement.clientWidth || 0;
+  const vh = window.innerHeight || document.documentElement.clientHeight || 0;
+  const rect = problemHoverTip.getBoundingClientRect();
+
+  let left = (evt?.clientX || 0) + 14;
+  let top = (evt?.clientY || 0) + 14;
+
+  if(left + rect.width > vw - margin) left = Math.max(margin, vw - rect.width - margin);
+  if(top + rect.height > vh - margin) top = Math.max(margin, (evt?.clientY || 0) - rect.height - 14);
+
+  problemHoverTip.style.left = left + 'px';
+  problemHoverTip.style.top = top + 'px';
+}
+
+function showProblemHoverTip(evt, text){
+  if(!problemHoverTip || !text) return;
+  problemHoverTip.textContent = text;
+  problemHoverTip.classList.add('show');
+  positionProblemHoverTip(evt);
+}
+
+document.addEventListener('scroll', hideProblemHoverTip, true);
+window.addEventListener('resize', hideProblemHoverTip);
 
 /* ===============================
    HELPERS (datalists)
@@ -1972,6 +2171,8 @@ const CLOUD_PULL_MS_VISIBLE = 12000;
 const CLOUD_PULL_MS_HIDDEN  = 45000;
 const HELPERS_PULL_MS_VISIBLE = 180000;
 const HELPERS_PULL_MS_HIDDEN  = 600000;
+const PROBLEMS_PULL_MS_VISIBLE = 60000;
+const PROBLEMS_PULL_MS_HIDDEN  = 180000;
 const CLOUD_PUSH_DEBOUNCE_MS = 1500;
 const CLOUD_LOCAL_EDIT_GRACE_MS = 7000;
 const CLOUD_ERROR_BACKOFF_MS = 30000;
@@ -1980,9 +2181,12 @@ let lastPulledAt = null;
 let lastPushedAt = null;
 let pollTimer = null;
 let helperPollTimer = null;
+let problemsPollTimer = null;
 let pushTimer = null;
 let inFlight = false;
 let helperInFlight = false;
+let problemsInFlight = false;
+let problemsLastTs = null;
 let cloudBackoffUntil = 0;
 
 function setCloud(ok, msg){
@@ -2031,6 +2235,7 @@ function pageIsVisible(){
 function clearPollTimers(){
   if(pollTimer){ clearTimeout(pollTimer); pollTimer = null; }
   if(helperPollTimer){ clearTimeout(helperPollTimer); helperPollTimer = null; }
+  if(problemsPollTimer){ clearTimeout(problemsPollTimer); problemsPollTimer = null; }
 }
 
 function nextCloudPullDelay(){
@@ -2038,6 +2243,9 @@ function nextCloudPullDelay(){
 }
 function nextHelpersPullDelay(){
   return pageIsVisible() ? HELPERS_PULL_MS_VISIBLE : HELPERS_PULL_MS_HIDDEN;
+}
+function nextProblemsPullDelay(){
+  return pageIsVisible() ? PROBLEMS_PULL_MS_VISIBLE : PROBLEMS_PULL_MS_HIDDEN;
 }
 
 function scheduleCloudPoll(delay){
@@ -2054,6 +2262,14 @@ function scheduleHelpersPoll(delay){
     await pullHelpers();
     scheduleHelpersPoll(nextHelpersPullDelay());
   }, Math.max(1000, Number(delay)||nextHelpersPullDelay()));
+}
+
+function scheduleProblemsPoll(delay){
+  if(problemsPollTimer) clearTimeout(problemsPollTimer);
+  problemsPollTimer = setTimeout(async ()=>{
+    await pullProblems();
+    scheduleProblemsPoll(nextProblemsPullDelay());
+  }, Math.max(2000, Number(delay)||nextProblemsPullDelay()));
 }
 
 async function readDocumentMeta(docKey){
@@ -2222,22 +2438,67 @@ async function pullHelpers(forceFull){
   }
 }
 
+async function pullProblems(forceFull){
+  if(!supa || problemsInFlight) return;
+  problemsInFlight = true;
+  try{
+    let docKey = PROBLEMS_STATE.doc_key || 'probleme-raportate';
+    if(!forceFull){
+      try{
+        const meta = await readDocumentMeta(docKey);
+        const remoteTs = meta.updated_at || null;
+        if(!remoteTs) return;
+        if(problemsLastTs && new Date(remoteTs) <= new Date(problemsLastTs)) return;
+      }catch(_e){}
+    }
+
+    let doc = null;
+    const candidates = ['probleme-raportate','probleme raportate','probleme_raportate'];
+    const uniqueCandidates = [docKey, ...candidates.filter(k=>k!==docKey)];
+    for(const key of uniqueCandidates){
+      try{
+        const test = await readDocument(key);
+        if(test && test.payload){
+          doc = test;
+          docKey = key;
+          break;
+        }
+      }catch(_e){}
+    }
+
+    if(!doc || !doc.payload) return;
+    PROBLEMS_STATE.doc_key = docKey;
+    problemsLastTs = doc.updated_at || nowIso();
+    loadProblemsFromPayload(doc.payload, doc.updated_at);
+    render();
+  }catch(_e){
+    // silent
+  }finally{
+    problemsInFlight = false;
+  }
+}
+
 document.addEventListener('visibilitychange', ()=>{
   if(document.hidden){
     scheduleCloudPoll(nextCloudPullDelay());
     scheduleHelpersPoll(nextHelpersPullDelay());
+    scheduleProblemsPoll(nextProblemsPullDelay());
     return;
   }
   pull();
   pullHelpers();
+  pullProblems();
   scheduleCloudPoll(nextCloudPullDelay());
   scheduleHelpersPoll(nextHelpersPullDelay());
+  scheduleProblemsPoll(nextProblemsPullDelay());
 });
 window.addEventListener('focus', ()=>{
   pull();
   pullHelpers();
+  pullProblems();
   scheduleCloudPoll(nextCloudPullDelay());
   scheduleHelpersPoll(nextHelpersPullDelay());
+  scheduleProblemsPoll(nextProblemsPullDelay());
 });
 
 /* ===============================
@@ -2498,7 +2759,9 @@ window.addEventListener('message', (e)=>{
     applyRole(role, email, access);
     startCloud();
     pullHelpers(true);
+    pullProblems(true);
     scheduleHelpersPoll(nextHelpersPullDelay());
+    scheduleProblemsPoll(nextProblemsPullDelay());
   });
 })();
 </script>
