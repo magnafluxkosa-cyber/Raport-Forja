@@ -1651,12 +1651,6 @@ async function detectDocColumns(){
   return __RF_DOC_COLS;
 }
 
-async function readDocumentMeta(docKey){
-  const { data, error } = await supa.from(DOC_TABLE).select('updated_at').eq('doc_key', docKey).maybeSingle();
-  if(error) throw error;
-  return { updated_at: data?.updated_at || null };
-}
-
 async function readDocument(docKey){
   const cols = await detectDocColumns();
   const selectCols = [...cols, 'updated_at'].join(',');
@@ -1767,12 +1761,7 @@ let lastPulledAt = null;
 let lastPushedAt = null;
 let pollTimer = null;
 let pushTimer = null;
-let helpersTimer = null;
 let inFlight = false;
-const CLOUD_PULL_MS = 8000;
-const CLOUD_PULL_HIDDEN_MS = 20000;
-const HELPERS_PULL_MS = 30000;
-const HELPERS_PULL_HIDDEN_MS = 60000;
 
 function setCloud(ok, msg){
   cloudBadge.style.display = 'inline-flex';
@@ -1812,29 +1801,19 @@ function loadFromPayload(payload){
 }
 window.loadFromPayload = loadFromPayload;
 
-async function pull(forceFull = false){
+async function pull(){
   if(!supa) return;
   if(inFlight) return;
 
-  if(__HAS_LOCAL_PENDING && (Date.now() - __LAST_LOCAL_CHANGE) < 5000){
+  if(__HAS_LOCAL_PENDING && (Date.now() - __LAST_LOCAL_CHANGE) < 4000){
     setCloud(true, 'Cloud: ON');
     return;
   }
 
   inFlight = true;
   try{
-    let ts = null;
-    if(!forceFull){
-      const meta = await readDocumentMeta(DOC_KEY);
-      ts = meta.updated_at || null;
-      if(lastPulledAt && ts && new Date(ts) <= new Date(lastPulledAt)) { setCloud(true,'Cloud: ON'); return; }
-      if(lastPushedAt && ts && new Date(ts) <= new Date(lastPushedAt)) { setCloud(true,'Cloud: ON'); return; }
-    }
-
     const doc = await readDocument(DOC_KEY);
     const payload = doc.payload;
-    ts = doc.updated_at || ts || null;
-
     if(!payload){
       try{
         const b = localStorage.getItem(LS_KEY_BACKUP);
@@ -1847,6 +1826,10 @@ async function pull(forceFull = false){
       setCloud(true, 'Cloud: gol');
       return;
     }
+
+    const ts = doc.updated_at || null;
+    if(lastPulledAt && ts && new Date(ts) <= new Date(lastPulledAt)) { setCloud(true,'Cloud: ON'); return; }
+    if(lastPushedAt && ts && new Date(ts) <= new Date(lastPushedAt)) { setCloud(true,'Cloud: ON'); return; }
 
     const applied = loadFromPayload(payload);
     try{
@@ -1894,17 +1877,6 @@ function schedulePush(){
 
 window.notifyDataChanged = schedulePush;
 
-function restartCloudTimers(){
-  if(pollTimer) clearInterval(pollTimer);
-  if(helpersTimer) clearInterval(helpersTimer);
-
-  const pollMs = document.hidden ? CLOUD_PULL_HIDDEN_MS : CLOUD_PULL_MS;
-  const helpersMs = document.hidden ? HELPERS_PULL_HIDDEN_MS : HELPERS_PULL_MS;
-
-  pollTimer = setInterval(()=>{ pull(false); }, pollMs);
-  helpersTimer = setInterval(()=>{ pullHelpers(false); }, helpersMs);
-}
-
 async function startCloud(){
   if(!supa){
     showLock('Config Supabase lipsă', 'Pagina FORJATE nu poate porni fără conexiunea comună Supabase. Verifică rf-config.js sau cheia implicită.');
@@ -1918,7 +1890,7 @@ async function startCloud(){
   }
 
   if(!window.__CAN_VIEW__){
-    showLock('Acces restricționat', 'Contul tău nu are permisiunea să vizualizezi pagina FORJATE.');
+    showLock('Acces restricționat', 'Contul tău nu are permisiunea să vizualizeze pagina FORJATE.');
     return;
   }
 
@@ -1926,30 +1898,22 @@ async function startCloud(){
   cloudBadge.classList.add('warn');
   cloudBadge.textContent = 'Cloud: conectez…';
 
-  restartCloudTimers();
-  setCloud(true, 'Cloud: ON');
+  await pull();
 
-  pull(true);
-  pullHelpers(true);
+  pollTimer = setInterval(pull, 2500);
+  setCloud(true, 'Cloud: ON');
 }
 
 /* ===============================
    HELPERS CLOUD PULL (doc_key=helpers)
    =============================== */
 let helpersLastTs = null;
-async function pullHelpers(forceFull = false){
+async function pullHelpers(){
   if(!supa) return;
   try{
-    let ts = null;
-    if(!forceFull){
-      const meta = await readDocumentMeta('helpers');
-      ts = meta.updated_at || null;
-      if(helpersLastTs && ts && new Date(ts) <= new Date(helpersLastTs)) return;
-    }
-
     const doc = await readDocument('helpers');
     if(!doc || !doc.payload) return;
-    ts = doc.updated_at || ts || null;
+    const ts = doc.updated_at || null;
     if(helpersLastTs && ts && new Date(ts) <= new Date(helpersLastTs)) return;
     helpersLastTs = ts || nowIso();
     HELPERS = doc.payload;
@@ -2218,17 +2182,10 @@ window.addEventListener('message', (e)=>{
     const access = await getPageAccess(role);
     applyRole(role, email, access);
     startCloud();
+    pullHelpers();
+    setInterval(pullHelpers, 5000);
   });
 })();
-
-document.addEventListener('visibilitychange', ()=>{
-  if(!supa) return;
-  restartCloudTimers();
-  if(!document.hidden){
-    pull(false);
-    pullHelpers(false);
-  }
-});
 </script>
 </body>
 </html>
