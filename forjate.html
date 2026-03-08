@@ -400,6 +400,55 @@ const MONTHS = [
   'ianuarie','februarie','martie','aprilie','mai','iunie','iulie','august','septembrie','octombrie','noiembrie','decembrie'
 ];
 
+function monthNumberFromName(name){
+  const s = String(name || '').trim().toLowerCase();
+  if(!s) return 0;
+  const ix = MONTHS.indexOf(s);
+  return ix >= 0 ? (ix + 1) : 0;
+}
+
+function normalizeDateDMY(value, lunaName){
+  if(value == null || value === '') return '';
+  if(typeof value === 'number') return excelSerialToDMY(value);
+
+  const s0 = String(value).trim();
+  if(!s0) return '';
+  if(/^\d+$/.test(s0)) return excelSerialToDMY(Number(s0));
+
+  const s = s0.replace(/\//g,'.').replace(/-/g,'.');
+  const m = s.match(/^(\d{1,2})\.(\d{1,2})\.(\d{2,4})$/);
+  if(!m) return s0;
+
+  let d = Number(m[1]);
+  let mo = Number(m[2]);
+  let yy = Number(m[3]);
+  if(yy < 100) yy += 2000;
+
+  const expectedMonth = monthNumberFromName(lunaName);
+
+  if(expectedMonth){
+    if(mo !== expectedMonth && d === expectedMonth){
+      const t = d; d = mo; mo = t;
+    }else if(mo > 12 && d <= 12){
+      const t = d; d = mo; mo = t;
+    }
+  }else if(mo > 12 && d <= 12){
+    const t = d; d = mo; mo = t;
+  }
+
+  const dd = String(d).padStart(2,'0');
+  const mm = String(mo).padStart(2,'0');
+  return `${dd}.${mm}.${yy}`;
+}
+
+function normalizeAllRowDates(rows){
+  if(!Array.isArray(rows)) return;
+  rows.forEach(r=>{
+    if(!r || typeof r !== 'object') return;
+    r.data = normalizeDateDMY(r.data, r.luna);
+  });
+}
+
 /* ===============================
    STATE
    =============================== */
@@ -633,30 +682,8 @@ function excelSerialToDMY(n){
   return `${dd}.${mm}.${yyyy}`;
 }
 
-function parseExcelDate(v){
-  if(v==null || v==='') return '';
-  if(typeof v === 'number') return excelSerialToDMY(v);
-  const s0 = String(v).trim();
-  if(!s0) return '';
-  if(/^\d+$/.test(s0)) return excelSerialToDMY(Number(s0));
-  // normalize separators
-  const s = s0.replace(/\//g,'.').replace(/-/g,'.');
-  const m = s.match(/^(\d{1,2})\.(\d{1,2})\.(\d{2,4})$/);
-  if(m){
-    let d = Number(m[1]);
-    let mo = Number(m[2]);
-    let yy = Number(m[3]);
-    if(yy < 100) yy += 2000;
-
-    // Dacă luna e > 12 și ziua <= 12, cel mai probabil e inversat (MM.DD.YYYY).
-    // Exemplu: 02.24.2026 -> 24.02.2026
-    if(mo > 12 && d <= 12){ const t=d; d=mo; mo=t; }
-
-    const dd = String(d).padStart(2,'0');
-    const mm = String(mo).padStart(2,'0');
-    return `${dd}.${mm}.${yy}`;
-  }
-  return s0;
+function parseExcelDate(v, lunaName){
+  return normalizeDateDMY(v, lunaName);
 }
 
 function roInt(n){
@@ -764,6 +791,7 @@ function loadLocal(){
     legacyPayload = getLegacyLocalPayload(LS_KEY_DATA);
     if(legacyPayload && Array.isArray(legacyPayload.rows)){
       STATE.rows = legacyPayload.rows;
+      normalizeAllRowDates(STATE.rows);
       STATE.updated_at = legacyPayload.updated_at || null;
     }
   }catch(_e){}
@@ -776,6 +804,7 @@ function loadLocal(){
         const shouldApply = !Array.isArray(STATE.rows) || STATE.rows.length === 0 || compareIsoMaybe(payload.updated_at, STATE.updated_at) >= 0;
         if(shouldApply){
           STATE.rows = payload.rows;
+          normalizeAllRowDates(STATE.rows);
           STATE.updated_at = payload.updated_at || null;
           recalcAll();
           refreshFilterOptions();
@@ -1135,7 +1164,7 @@ function formatCellValue(row, col){
   if(col.fmt==='pct') return pct(v);
 
   if(col.type==='date'){
-    return parseExcelDate(v);
+    return normalizeDateDMY(v, row.luna);
   }
 
   if(col.type==='year'){
@@ -1482,7 +1511,7 @@ function rowFromForm(){
 
     an: toStr(f.an.value).trim(),
     luna: toStr(f.luna.value).trim(),
-    data: toStr(f.data.value).trim(),
+    data: normalizeDateDMY(toStr(f.data.value).trim(), toStr(f.luna.value).trim()),
     schimb: toStr(f.schimb.value).trim(),
 
     ciocan: toStr(f.ciocan.value).trim(),
@@ -1722,7 +1751,7 @@ async function importXlsx(){
 
         an: String(pick(map, ['anul','an'])).trim(),
         luna: String(pick(map, ['luna'])).trim().toLowerCase(),
-        data: parseExcelDate(pick(map, ['data'])),
+        data: normalizeDateDMY(pick(map, ['data']), String(pick(map, ['luna'])).trim().toLowerCase()),
         schimb: String(pick(map, ['schimbul','schimb'])).trim() || '1',
 
         ciocan: String(pick(map, ['ciocan','utilaj','linie','linieforjare'])).trim(),
@@ -1979,6 +2008,7 @@ function loadFromPayload(payload){
   if(ae && (ae.tagName==='INPUT' || ae.tagName==='TEXTAREA' || ae.tagName==='SELECT')) return false;
 
   STATE.rows = payload.rows;
+  normalizeAllRowDates(STATE.rows);
   STATE.updated_at = payload.updated_at || null;
   if(STATE._firstPayloadApply){
     STATE._scrollToBottomNext = true;
@@ -2242,6 +2272,7 @@ document.getElementById('btnRestore').addEventListener('click', async ()=>{
   if(!confirm('Restore: încarc backup-ul local și îl trimit în cloud (înlocuiește ce e în cloud). Continui?')) return;
   try{
     STATE.rows = payload.rows;
+    normalizeAllRowDates(STATE.rows);
     STATE.updated_at = payload.updated_at || nowIso();
     recalcAll();
     refreshFilterOptions();
