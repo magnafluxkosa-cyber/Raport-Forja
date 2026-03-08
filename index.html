@@ -189,7 +189,6 @@
     .miniLink.disabled{
       opacity:.5;
       cursor:not-allowed;
-      pointer-events:none;
       transform:none !important;
     }
 
@@ -309,11 +308,11 @@
     <div class="menuShell">
       <div class="menu">
         <div class="left" id="leftMenu">
-          <div class="item group-item" data-target="subRapoarte" id="itemRapoarte">
+          <div class="item group-item" data-target="subRapoarte" data-page-key="group-rapoarte" id="itemRapoarte">
             <div class="menuBtn">RAPOARTE</div>
           </div>
 
-          <div class="item group-item" data-target="subZale" id="itemZale">
+          <div class="item group-item" data-target="subZale" data-page-key="group-zale" id="itemZale">
             <div class="menuBtn">URMĂRIRE ZALE</div>
           </div>
 
@@ -329,7 +328,7 @@
             <a class="directLink" href="kpi.html">KPI</a>
           </div>
 
-          <div class="item group-item" data-target="subInventar" id="itemInventar">
+          <div class="item group-item" data-target="subInventar" data-page-key="group-inventar" id="itemInventar">
             <div class="menuBtn">INVENTAR</div>
           </div>
 
@@ -444,6 +443,9 @@
       let currentDashAcl = null;
       let currentPanel = null;
 
+      const ADMIN_ONLY_KEYS = new Set(['helper','helper-data','helper-acl']);
+      const ADMIN_ONLY_HREFS = new Set(['helper.html','helper-data.html','helper-acl.html']);
+
       function safeIdFromEmail(email){
         if (!email) return '—';
         const raw = String(email).trim();
@@ -519,11 +521,14 @@
         return null;
       }
 
+      function normalizeHref(href){
+        return String(href || '').split('#')[0].split('?')[0];
+      }
+
       function isAllowed(pageKey){
         if (!currentUser) return false;
 
-        const adminOnly = new Set(['helper','helper-data','helper-acl']);
-        if (adminOnly.has(pageKey)) {
+        if (ADMIN_ONLY_KEYS.has(pageKey)) {
           return currentRole === 'admin';
         }
 
@@ -537,10 +542,10 @@
       function isDashAllowedHref(href){
         if (!currentUser) return false;
 
-        const normalized = String(href || '').split('#')[0].split('?')[0];
+        const normalized = normalizeHref(href);
         if (!normalized) return true;
 
-        if (normalized === 'helper.html' || normalized === 'helper-data.html' || normalized === 'helper-acl.html') {
+        if (ADMIN_ONLY_HREFS.has(normalized)) {
           return currentRole === 'admin';
         }
 
@@ -562,6 +567,17 @@
         return on;
       }
 
+      function getDeniedMessage(pageKey, href){
+        const normalizedHref = normalizeHref(href);
+        if (ADMIN_ONLY_KEYS.has(pageKey) || ADMIN_ONLY_HREFS.has(normalizedHref)) {
+          return 'În această foaie are acces doar adminul.';
+        }
+        if (String(pageKey || '').startsWith('group-')) {
+          return 'În această secțiune nu ai acces. Cere acces de la admin.';
+        }
+        return 'Nu ai acces în această foaie. Cere acces de la admin.';
+      }
+
       function setVisible(el, on){
         if (!el) return;
         el.classList.toggle('hidden', !on);
@@ -570,6 +586,37 @@
       function setDisabled(el, on){
         if (!el) return;
         el.classList.toggle('disabled', !!on);
+        if (el instanceof HTMLElement) {
+          el.setAttribute('aria-disabled', on ? 'true' : 'false');
+        }
+      }
+
+      function setDeniedHint(el, message){
+        if (!el) return;
+        const targets = [el].concat(Array.from(el.querySelectorAll('a, .menuBtn, .directLink, .subbtn, .miniLink')));
+        const uniqueTargets = [];
+        const seen = new Set();
+        targets.forEach(node => {
+          if (!node || !(node instanceof HTMLElement)) return;
+          if (seen.has(node)) return;
+          seen.add(node);
+          uniqueTargets.push(node);
+        });
+
+        uniqueTargets.forEach(node => {
+          if (message) {
+            node.setAttribute('title', message);
+            node.dataset.deniedMessage = message;
+          } else {
+            node.removeAttribute('title');
+            delete node.dataset.deniedMessage;
+          }
+        });
+      }
+
+      function applyAccessState(el, allowed, message){
+        setDisabled(el, !allowed);
+        setDeniedHint(el, allowed ? '' : message);
       }
 
       function showPanel(panelId){
@@ -581,7 +628,7 @@
       }
 
       function firstVisiblePanel(){
-        const groupItems = qsa('.group-item').filter(el => !el.classList.contains('hidden'));
+        const groupItems = qsa('.group-item').filter(el => !el.classList.contains('hidden') && !el.classList.contains('disabled'));
         return groupItems.length ? groupItems[0].dataset.target : null;
       }
 
@@ -603,28 +650,29 @@
 
         qsa('.page-item[data-page-key]').forEach(item => {
           const pageKey = item.dataset.pageKey;
-          const on = elementAllowed(item, pageKey);
-          setVisible(item, on);
-          setDisabled(item, !on);
+          const link = item.matches('a[href]') ? item : item.querySelector('a[href]');
+          const on = currentUser ? elementAllowed(item, pageKey) : true;
+          setVisible(item, true);
+          applyAccessState(item, on, getDeniedMessage(pageKey, link ? link.getAttribute('href') : ''));
         });
 
         qsa('.subpanel [data-page-key]').forEach(a => {
-          const on = elementAllowed(a, a.dataset.pageKey);
-          setVisible(a, on);
-          setDisabled(a, !on);
+          const on = currentUser ? elementAllowed(a, a.dataset.pageKey) : true;
+          setVisible(a, true);
+          applyAccessState(a, on, getDeniedMessage(a.dataset.pageKey, a.getAttribute('href')));
         });
 
         if (helperDataLink) {
-          const helperDataAllowed = elementAllowed(helperDataLink, 'helper-data');
-          setVisible(helperDataLink, helperDataAllowed);
-          setDisabled(helperDataLink, !helperDataAllowed);
+          const helperDataAllowed = currentUser ? elementAllowed(helperDataLink, 'helper-data') : true;
+          setVisible(helperDataLink, true);
+          applyAccessState(helperDataLink, helperDataAllowed, getDeniedMessage('helper-data', helperDataLink.getAttribute('href')));
         }
 
-        Object.keys(GROUP_MAP).forEach((panelId) => {
-          const item = qs(`.group-item[data-target="${panelId}"]`);
-          const anyVisible = qsa(`#${panelId} [data-page-key]`).some(el => !el.classList.contains('hidden'));
-          setVisible(item, anyVisible);
-          setDisabled(item, !anyVisible);
+        qsa('.group-item[data-target]').forEach(item => {
+          const groupKey = item.dataset.pageKey || '';
+          const on = currentUser ? elementAllowed(item, groupKey) : true;
+          setVisible(item, true);
+          applyAccessState(item, on, getDeniedMessage(groupKey, ''));
         });
 
         if (!currentUser) {
@@ -632,7 +680,8 @@
           return;
         }
 
-        const activeStillVisible = currentPanel && !qs(`.group-item[data-target="${currentPanel}"].hidden`);
+        const activeItem = currentPanel ? qs(`.group-item[data-target="${currentPanel}"]`) : null;
+        const activeStillVisible = !!(activeItem && !activeItem.classList.contains('hidden') && !activeItem.classList.contains('disabled'));
         showPanel(activeStillVisible ? currentPanel : firstVisiblePanel());
       }
 
@@ -730,12 +779,13 @@
 
         item.addEventListener('mouseenter', () => {
           if (!currentUser || item.classList.contains('hidden')) return;
+          if (item.classList.contains('disabled')) { showPanel(null); return; }
           showPanel(target);
         });
 
         trigger.addEventListener('click', () => {
           if (!currentUser) { goToLogin(); return; }
-          if (item.classList.contains('hidden')) return;
+          if (item.classList.contains('hidden') || item.classList.contains('disabled')) return;
           showPanel(currentPanel === target ? null : target);
         });
 

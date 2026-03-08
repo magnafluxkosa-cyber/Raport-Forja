@@ -16,8 +16,30 @@
       'intrari-otel',
       'debitate',
       'forjate',
+      'program-utilaje',
       'magnaflux',
-      'kpi'
+      'probleme-raportate',
+      'rebut',
+      'kpi',
+      'inventar-otel',
+      'inventar-debitat',
+      'inventar-forjat',
+      'zale-9k-6628-29',
+      'zale-229-6909-10',
+      'zale-503-0761-62',
+      'zale-106-1625-26',
+      'zale-378-8241-42',
+      'zale-248-2307-08',
+      'zale-417-3595-96',
+      'zale-418-2091-92',
+      'ambalare-9k-6628-29',
+      'ambalare-229-6909-10',
+      'ambalare-503-0761-62',
+      'ambalare-106-1625-26',
+      'ambalare-378-8241-42',
+      'ambalare-248-2307-08',
+      'ambalare-417-3595-96',
+      'ambalare-418-2091-92'
     ]
   });
 
