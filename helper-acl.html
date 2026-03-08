@@ -1047,12 +1047,22 @@
         showMainMessage('Se salvează permisiunile pentru rolul ' + role + '...', 'success');
 
         try {
+          await ensurePagesExist(rows.map(row => ({
+            page_key: row.page_key,
+            page_name: (currentPages.find(page => page.page_key === row.page_key) || {}).page_name || prettyPageName(row.page_key)
+          })));
+
           let saveRes = await supabase.from('page_permissions').upsert(rows, { onConflict:'role,page_key' });
           if (saveRes.error) throw saveRes.error;
           showMainMessage('Permisiunile au fost salvate.', 'success');
           return;
         } catch (firstError) {
           try {
+            await ensurePagesExist(rows.map(row => ({
+              page_key: row.page_key,
+              page_name: (currentPages.find(page => page.page_key === row.page_key) || {}).page_name || prettyPageName(row.page_key)
+            })));
+
             const existingRes = await supabase.from('page_permissions')
               .select('role,page_key')
               .eq('role', role);
@@ -1099,6 +1109,50 @@
         }
       }
 
+      async function ensurePagesExist(pagesToEnsure){
+        const normalized = [];
+        const seen = new Set();
+
+        (Array.isArray(pagesToEnsure) ? pagesToEnsure : []).forEach(page => {
+          const pageKey = String(page && page.page_key || '').trim();
+          if (!pageKey || seen.has(pageKey)) return;
+          seen.add(pageKey);
+          normalized.push({
+            page_key: pageKey,
+            page_name: String(page && page.page_name || prettyPageName(pageKey)).trim() || prettyPageName(pageKey)
+          });
+        });
+
+        if (!normalized.length) return;
+
+        try {
+          const upsertRes = await supabase.from('pages').upsert(normalized, { onConflict:'page_key' });
+          if (!upsertRes.error) return;
+          throw upsertRes.error;
+        } catch (upsertError) {
+          try {
+            const existingRes = await supabase.from('pages').select('page_key').in('page_key', normalized.map(page => page.page_key));
+            if (existingRes.error) throw existingRes.error;
+
+            const existingKeys = new Set((existingRes.data || []).map(row => String(row.page_key || '').trim()).filter(Boolean));
+
+            for (const page of normalized) {
+              if (existingKeys.has(page.page_key)) {
+                const updateRes = await supabase.from('pages').update({ page_name: page.page_name }).eq('page_key', page.page_key);
+                if (updateRes.error) throw updateRes.error;
+              } else {
+                const insertRes = await supabase.from('pages').insert(page);
+                if (insertRes.error) throw insertRes.error;
+              }
+            }
+            return;
+          } catch (fallbackError) {
+            console.error('ensurePagesExist failed', { upsertError, fallbackError, normalized });
+            throw fallbackError || upsertError;
+          }
+        }
+      }
+
       function applyPresetToTable(){
         const preset = dom.presetSelect.value;
         if (!preset) return;
@@ -1123,8 +1177,7 @@
           }));
 
           if (payload.length) {
-            const res = await supabase.from('pages').upsert(payload, { onConflict:'page_key' });
-            if (res.error) throw res.error;
+            await ensurePagesExist(payload);
           }
 
           currentPages = mergedPages;
@@ -1135,7 +1188,8 @@
           currentPages = await getMergedPages();
           updatePageBadges();
           await loadPermissionsForRole();
-          showMainMessage('Nu am putut scrie în tabela pages, dar am făcut refresh local al listei. Verifică RLS sau cheia unică page_key.', 'error');
+          const details = (error && (error.message || error.details || error.hint)) || 'Verifică RLS sau cheia unică page_key.';
+          showMainMessage('Nu am putut scrie în tabela pages: ' + details, 'error');
         }
       }
 
