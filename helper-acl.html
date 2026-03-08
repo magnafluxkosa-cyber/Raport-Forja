@@ -319,7 +319,8 @@
       </div>
       <div class="actions">
         <a class="btn secondary" href="index.html">Înapoi la Dashboard</a>
-                <button class="btn ghost" id="refreshBtn" type="button">Reîncarcă</button>
+        <a class="btn secondary" href="helper.html">Înapoi la helper</a>
+        <button class="btn ghost" id="refreshBtn" type="button">Reîncarcă</button>
         <button class="btn danger" id="logoutBtn" type="button">Logout</button>
       </div>
     </header>
@@ -481,6 +482,7 @@
         pages: Object.freeze([
           Object.freeze({ page_key: 'index', page_name: 'Dashboard / Index' }),
           Object.freeze({ page_key: 'login', page_name: 'Login' }),
+          Object.freeze({ page_key: 'helper', page_name: 'Helper' }),
           Object.freeze({ page_key: 'helper-data', page_name: 'Helper Data' }),
           Object.freeze({ page_key: 'helper-acl', page_name: 'Helper ACL' }),
           Object.freeze({ page_key: 'numeralkod', page_name: 'Numeral KOD' }),
@@ -587,6 +589,7 @@
         { page_key:'inventar-otel', page_name:'Inventar Oțel' },
         { page_key:'inventar-debitat', page_name:'Inventar Debitat' },
         { page_key:'inventar-forjat', page_name:'Inventar Forjat' },
+        { page_key:'helper', page_name:'Helper' },
         { page_key:'helper-data', page_name:'Helper Data' },
         { page_key:'helper-acl', page_name:'Helper ACL' }
       ];
@@ -1046,28 +1049,6 @@
         return key + '.html';
       }
 
-      async function ensurePagesExist(rows){
-        const sourceRows = Array.isArray(rows) && rows.length ? rows : currentPages;
-        const payload = (sourceRows || []).map(page => ({
-          page_key: String(page.page_key || '').trim(),
-          page_name: page.page_name || prettyPageName(page.page_key)
-        })).filter(page => page.page_key);
-
-        if (!payload.length) return;
-
-        const unique = [];
-        const seen = new Set();
-        payload.forEach(page => {
-          if (seen.has(page.page_key)) return;
-          seen.add(page.page_key);
-          unique.push(page);
-        });
-
-        const res = await supabase.from('pages').upsert(unique, { onConflict:'page_key' });
-        if (res.error) throw res.error;
-      }
-
-
       async function readDashboardAclMirror(){
         try {
           const a = await supabase.from('rf_documents').select('content').eq('doc_key', 'dashboard_acl_v1').maybeSingle();
@@ -1121,17 +1102,6 @@
           };
         });
 
-        currentPages.forEach(page => {
-          const pageKey = String(page.page_key || '').trim();
-          if (!pageKey) return;
-          if (!Object.prototype.hasOwnProperty.call(roleDetails, pageKey)) {
-            roleDetails[pageKey] = { can_view:false, can_add:false, can_edit:false, can_delete:false };
-            roleGrants[pageKey] = false;
-            const href = pageKeyToHref(pageKey);
-            if (href) roleGrants[href] = false;
-          }
-        });
-
         grants[safeRole] = roleGrants;
         detailed[safeRole] = roleDetails;
 
@@ -1141,6 +1111,28 @@
           grants,
           page_permissions:detailed
         });
+      }
+
+
+      async function ensurePagesExist(rows){
+        const mergedPages = await getMergedPages();
+        const map = new Map();
+        mergedPages.forEach(page => {
+          const key = String(page.page_key || '').trim();
+          if (!key) return;
+          map.set(key, { page_key:key, page_name:page.page_name || prettyPageName(key) });
+        });
+        (Array.isArray(rows) ? rows : []).forEach(row => {
+          const key = String(row.page_key || '').trim();
+          if (!key || map.has(key)) return;
+          map.set(key, { page_key:key, page_name:prettyPageName(key) });
+        });
+        const payload = Array.from(map.values());
+        if (!payload.length) return;
+        const res = await supabase.from('pages').upsert(payload, { onConflict:'page_key' });
+        if (res.error) throw res.error;
+        currentPages = payload.slice().sort((a, b) => String(a.page_key).localeCompare(String(b.page_key), 'ro'));
+        updatePageBadges();
       }
 
       async function savePermissions(){
@@ -1154,10 +1146,11 @@
         showMainMessage('Se salvează permisiunile pentru rolul ' + role + '...', 'success');
 
         try {
-          await ensurePagesExist(currentPages);
+          await ensurePagesExist(rows);
           let saveRes = await supabase.from('page_permissions').upsert(rows, { onConflict:'role,page_key' });
           if (saveRes.error) throw saveRes.error;
           await syncDashboardAclMirrorForRole(role, rows);
+          await loadPermissionsForRole();
           showMainMessage('Permisiunile au fost salvate.', 'success');
           return;
         } catch (firstError) {
@@ -1197,6 +1190,7 @@
             }
 
             await syncDashboardAclMirrorForRole(role, rows);
+            await loadPermissionsForRole();
             showMainMessage('Permisiunile au fost salvate.', 'success');
             return;
           } catch (fallbackError) {
@@ -1227,8 +1221,17 @@
         showMainMessage('Se sincronizează lista de pagini...', 'success');
         try {
           const mergedPages = await getMergedPages();
+          const payload = mergedPages.map(page => ({
+            page_key: page.page_key,
+            page_name: page.page_name || prettyPageName(page.page_key)
+          }));
+
+          if (payload.length) {
+            const res = await supabase.from('pages').upsert(payload, { onConflict:'page_key' });
+            if (res.error) throw res.error;
+          }
+
           currentPages = mergedPages;
-          await ensurePagesExist(mergedPages);
           updatePageBadges();
           await loadPermissionsForRole();
           showMainMessage('Paginile au fost introduse / actualizate și lista a fost reîncărcată.', 'success');

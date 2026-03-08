@@ -318,6 +318,7 @@
       <div class="titleBlock">
         <h1>ERP Forjă / Raport Forja</h1>
         <div class="statusRow">
+    <div id="aclDeniedBanner" class="chip bad hidden" style="margin-top:8px; max-width:100%; white-space:normal;"></div>
           <span class="chip warn" id="chipAuth">Neautentificat</span>
           <span class="chip" id="chipUser">ID: —</span>
           <span class="chip" id="chipRole">Rol: —</span>
@@ -435,6 +436,7 @@
       const defaultHint = qs('#defaultHint');
       const helperDataLink = qs('#helperDataLink');
       const aclTooltip = qs('#aclTooltip');
+      const aclDeniedBanner = qs('#aclDeniedBanner');
 
       const GROUP_MAP = {
         subRapoarte: ['numeralkod','intrari-otel','debitate','forjate','program-utilaje','magnaflux'],
@@ -526,6 +528,11 @@
       async function loadDashboardAcl(){
         if (!sb) return null;
 
+        if (window.RF_ACL && typeof window.RF_ACL.readDashboardAclMirror === 'function') {
+          currentDashAcl = await window.RF_ACL.readDashboardAclMirror(sb);
+          return currentDashAcl;
+        }
+
         try {
           const a = await sb.from('rf_documents').select('content,updated_at').eq('doc_key', 'dashboard_acl_v1').maybeSingle();
           if (!a.error && a.data?.content && typeof a.data.content === 'object') {
@@ -547,59 +554,72 @@
       }
 
       function normalizeHref(href){
+        if (window.RF_ACL && typeof window.RF_ACL.normalizeHref === 'function') {
+          return window.RF_ACL.normalizeHref(href);
+        }
         return String(href || '').split('#')[0].split('?')[0];
       }
 
-      function mirrorRoleGrants(){
-        const grants = currentDashAcl && currentDashAcl.grants ? currentDashAcl.grants : null;
-        return grants && grants[currentRole] ? grants[currentRole] : null;
+      function getMirrorRoleData(){
+        const doc = currentDashAcl && typeof currentDashAcl === 'object' ? currentDashAcl : null;
+        const grants = doc && doc.grants && typeof doc.grants === 'object' ? doc.grants : null;
+        const pagePermissions = doc && doc.page_permissions && typeof doc.page_permissions === 'object' ? doc.page_permissions : null;
+        return {
+          grants: grants && grants[currentRole] && typeof grants[currentRole] === 'object' ? grants[currentRole] : null,
+          pagePermissions: pagePermissions && pagePermissions[currentRole] && typeof pagePermissions[currentRole] === 'object' ? pagePermissions[currentRole] : null
+        };
       }
 
-      function isAllowed(pageKey){
-        if (!currentUser) return false;
-
-        if (ADMIN_ONLY_KEYS.has(pageKey)) {
-          return currentRole === 'admin';
-        }
-
-        const roleGrants = mirrorRoleGrants();
-        if (roleGrants && Object.prototype.hasOwnProperty.call(roleGrants, pageKey)) {
-          if (roleGrants[pageKey] === false) return false;
-          if (roleGrants[pageKey] === true) return true;
-        }
+      function getExplicitAclDecision(pageKey, href){
+        const decisions = [];
+        const normalizedHref = normalizeHref(href);
 
         if (currentPermissions instanceof Map && currentPermissions.has(pageKey)) {
-          return currentPermissions.get(pageKey) === true;
+          decisions.push(currentPermissions.get(pageKey) === true);
         }
 
-        return true;
-      }
-
-      function isDashAllowedHref(href){
-        if (!currentUser) return false;
-
-        const normalized = normalizeHref(href);
-        if (!normalized) return true;
-
-        if (ADMIN_ONLY_HREFS.has(normalized)) {
-          return currentRole === 'admin';
+        const mirror = getMirrorRoleData();
+        if (mirror.pagePermissions && Object.prototype.hasOwnProperty.call(mirror.pagePermissions, pageKey)) {
+          const value = mirror.pagePermissions[pageKey];
+          if (value && typeof value === 'object' && Object.prototype.hasOwnProperty.call(value, 'can_view')) {
+            decisions.push(value.can_view === true);
+          } else {
+            decisions.push(value === true);
+          }
         }
 
-        const roleGrants = mirrorRoleGrants();
-        if (roleGrants && Object.prototype.hasOwnProperty.call(roleGrants, normalized)) {
-          return roleGrants[normalized] !== false;
+        if (mirror.grants) {
+          if (Object.prototype.hasOwnProperty.call(mirror.grants, pageKey)) {
+            decisions.push(mirror.grants[pageKey] === true);
+          }
+          if (normalizedHref && Object.prototype.hasOwnProperty.call(mirror.grants, normalizedHref)) {
+            decisions.push(mirror.grants[normalizedHref] === true);
+          }
         }
 
-        return true;
+        if (decisions.includes(false)) return false;
+        if (decisions.includes(true)) return true;
+        return null;
       }
 
       function elementAllowed(el, pageKey){
-        let on = isAllowed(pageKey);
+        if (!currentUser) return false;
         const link = el?.matches?.('a[href]') ? el : el?.querySelector?.('a[href]');
-        if (link) {
-          on = on && isDashAllowedHref(link.getAttribute('href'));
+        const href = link ? link.getAttribute('href') : '';
+        const normalizedHref = normalizeHref(href);
+
+        if (ADMIN_ONLY_KEYS.has(pageKey) || ADMIN_ONLY_HREFS.has(normalizedHref)) {
+          return currentRole === 'admin';
         }
-        return on;
+
+        if (currentRole === 'admin') {
+          return true;
+        }
+
+        const explicit = getExplicitAclDecision(pageKey, href);
+        if (explicit === false) return false;
+        if (explicit === true) return true;
+        return true;
       }
 
       function getDeniedMessage(pageKey, href){
@@ -712,11 +732,20 @@
           chipAuth.className = 'chip ok';
           chipUser.textContent = `ID: ${getStoredDisplayId() || safeIdFromEmail(currentUser.email)}`;
           chipRole.textContent = `Rol: ${currentRole}`;
+          try {
+            const deniedMsg = sessionStorage.getItem('rf_acl_denied_message') || '';
+            if (aclDeniedBanner) {
+              if (deniedMsg) { aclDeniedBanner.textContent = deniedMsg; aclDeniedBanner.classList.remove('hidden'); }
+              else { aclDeniedBanner.classList.add('hidden'); aclDeniedBanner.textContent = ''; }
+            }
+            sessionStorage.removeItem('rf_acl_denied_message');
+          } catch (_) {}
         } else {
           chipAuth.textContent = 'Neautentificat';
           chipAuth.className = 'chip warn';
           chipUser.textContent = 'ID: —';
           chipRole.textContent = 'Rol: —';
+          if (aclDeniedBanner) { aclDeniedBanner.classList.add('hidden'); aclDeniedBanner.textContent = ''; }
         }
 
         qsa('.page-item[data-page-key]').forEach(item => {
