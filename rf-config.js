@@ -16,7 +16,8 @@
       'intrari-otel',
       'debitate',
       'forjate',
-      'magnaflux'
+      'magnaflux',
+      'lpi'
     ]
   });
 
