@@ -48,7 +48,7 @@
   var CONFIG = Object.freeze({
     APP_NAME: 'ERP Forja / Raport Forja',
     SUPABASE_URL: 'https://addlybnigrywqowpbhvd.supabase.co',
-    SUPABASE_ANON_KEY: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFkZGx5Ym5pZ3J5d3Fvd3BiaHZkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzI2NjY2NjQsImV4cCI6MjA4ODI0MjY2NH0.VjbSKs7G_5T7GhdrjT8dtj2HCF6Az9KYfkpkSE7JTo4',
+    SUPABASE_ANON_KEY: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYm5pZ3J5d3Fvd3BiaHZkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzI2NjY2NjQsImV4cCI6MjA4ODI0MjY2NH0.VjbSKs7G_5T7GhdrjT8dtj2HCF6Az9KYfkpkSE7JTo4',
     ADMIN_EMAIL: 'forja.editor@gmail.com',
     DEFAULT_PAGES: PAGE_LIST.map(function (page) { return page.page_key; }),
     pages: clonePages()
@@ -96,6 +96,65 @@
     if (file === 'login' || file === 'login.html') return 'login';
     if (!/\.html$/i.test(file)) return file.replace(/\.html$/i, '');
     return file.replace(/\.html$/i, '');
+  }
+
+  var INITIAL_PAGE_KEY = inferPageKey(window.location.pathname);
+
+  function ensureAclPendingStyle() {
+    if (document.getElementById('rf-acl-pending-style')) return;
+    var style = document.createElement('style');
+    style.id = 'rf-acl-pending-style';
+    style.textContent = [
+      'html.rf-acl-pending body{visibility:hidden !important;}',
+      'html.rf-acl-denied body{visibility:visible !important;}'
+    ].join('');
+    (document.head || document.documentElement).appendChild(style);
+  }
+
+  function setAclPendingState(enabled) {
+    try {
+      ensureAclPendingStyle();
+      if (!document.documentElement) return;
+      if (enabled) document.documentElement.classList.add('rf-acl-pending');
+      else document.documentElement.classList.remove('rf-acl-pending');
+    } catch (_) {}
+  }
+
+  function renderAccessDeniedPage(pageKey, message) {
+    function mount() {
+      try {
+        document.documentElement.classList.remove('rf-acl-pending');
+        document.documentElement.classList.add('rf-acl-denied');
+        if (!document.body) return false;
+        var pageName = PAGE_MAP[String(pageKey || '').trim()] || String(pageKey || '').trim() || 'această pagină';
+        var safeMessage = String(message || 'Nu ai acces în această pagină.');
+        document.body.innerHTML = '' +
+          '<div style="min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px;background:#c8def0;font-family:Arial,Helvetica,sans-serif;color:#0d2240;">' +
+            '<div style="width:min(640px,100%);background:#d7e6f4;border:2px solid #1b1b1b;border-radius:18px;padding:28px;box-shadow:0 1px 0 rgba(0,0,0,.06);text-align:center;">' +
+              '<div style="font-size:32px;font-weight:800;line-height:1.1;margin:0 0 12px;">Acces restricționat</div>' +
+              '<div style="font-size:18px;font-weight:700;margin:0 0 10px;">' + pageName + '</div>' +
+              '<div style="font-size:16px;line-height:1.5;margin:0 0 22px;">' + safeMessage + '</div>' +
+              '<div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap;">' +
+                '<a href="index.html" style="text-decoration:none;display:inline-flex;align-items:center;justify-content:center;min-height:46px;padding:0 18px;border:2px solid #1b1b1b;border-radius:12px;background:#3d73b9;color:#fff;font-weight:700;">Înapoi la Dashboard</a>' +
+                '<a href="login.html" style="text-decoration:none;display:inline-flex;align-items:center;justify-content:center;min-height:46px;padding:0 18px;border:2px solid #1b1b1b;border-radius:12px;background:#fff;color:#0d2240;font-weight:700;">Schimbă utilizatorul</a>' +
+              '</div>' +
+            '</div>' +
+          '</div>' ;
+        return true;
+      } catch (_) {
+        return false;
+      }
+    }
+    if (!mount()) {
+      document.addEventListener('DOMContentLoaded', function once() {
+        document.removeEventListener('DOMContentLoaded', once);
+        mount();
+      });
+    }
+  }
+
+  if (INITIAL_PAGE_KEY && INITIAL_PAGE_KEY !== 'index' && INITIAL_PAGE_KEY !== 'login') {
+    setAclPendingState(true);
   }
 
   async function resolveRole(client, user) {
@@ -265,18 +324,27 @@
   if (!window.__RF_AUTO_ACL_GUARD__) {
     window.__RF_AUTO_ACL_GUARD__ = true;
     Promise.resolve().then(async function () {
+      var pageKey = INITIAL_PAGE_KEY || inferPageKey(window.location.pathname);
       try {
-        if (!window.supabase || typeof window.supabase.createClient !== 'function') return;
-        var pageKey = inferPageKey(window.location.pathname);
-        if (!pageKey || pageKey === 'index' || pageKey === 'login') return;
+        if (!window.supabase || typeof window.supabase.createClient !== 'function') {
+          setAclPendingState(false);
+          return;
+        }
+        if (!pageKey || pageKey === 'index' || pageKey === 'login') {
+          setAclPendingState(false);
+          return;
+        }
         var client = createRfSupabaseClient();
         var result = await canViewPage(pageKey, { client: client });
-        if (result.allowed) return;
+        if (result.allowed) {
+          setAclPendingState(false);
+          return;
+        }
         try { sessionStorage.setItem('rf_acl_denied_message', result.message || 'Nu ai acces în această foaie.'); } catch (_) {}
-        var target = 'index.html?acl_denied=1&page=' + encodeURIComponent(pageKey) + '&t=' + Date.now();
-        try { window.location.replace(target); }
-        catch (_) { window.location.href = target; }
-      } catch (_) {}
+        renderAccessDeniedPage(pageKey, result.message || 'Nu ai acces în această pagină. Doar adminul are acces sau trebuie să primești permisiune.');
+      } catch (_) {
+        setAclPendingState(false);
+      }
     });
   }
 })(window);
