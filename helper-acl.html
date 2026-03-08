@@ -319,6 +319,7 @@
       </div>
       <div class="actions">
         <a class="btn secondary" href="index.html">Înapoi la Dashboard</a>
+        <a class="btn secondary" href="helper.html">Înapoi la helper</a>
         <button class="btn ghost" id="refreshBtn" type="button">Reîncarcă</button>
         <button class="btn danger" id="logoutBtn" type="button">Logout</button>
       </div>
@@ -1035,6 +1036,83 @@
         return result;
       }
 
+
+      function pageKeyToHref(pageKey){
+        const key = String(pageKey || '').trim();
+        if (!key) return '';
+        if (key === 'index') return 'index.html';
+        if (key === 'login') return 'login.html';
+        if (key === 'helper') return 'helper.html';
+        if (key === 'helper-data') return 'helper-data.html';
+        if (key === 'helper-acl') return 'helper-acl.html';
+        if (key.startsWith('group-')) return '';
+        return key + '.html';
+      }
+
+      async function readDashboardAclMirror(){
+        try {
+          const a = await supabase.from('rf_documents').select('content').eq('doc_key', 'dashboard_acl_v1').maybeSingle();
+          if (!a.error && a.data && a.data.content && typeof a.data.content === 'object') return a.data.content;
+        } catch(_){}
+        try {
+          const b = await supabase.from('rf_documents').select('data').eq('doc_key', 'dashboard_acl_v1').maybeSingle();
+          if (!b.error && b.data && b.data.data && typeof b.data.data === 'object') return b.data.data;
+        } catch(_){}
+        return { version:1, source:'helper-acl', grants:{}, page_permissions:{} };
+      }
+
+      async function writeDashboardAclMirror(doc){
+        const payload = Object.assign({ version:1, source:'helper-acl', updated_at:new Date().toISOString() }, doc || {});
+        try {
+          const res = await supabase.from('rf_documents').upsert({ doc_key:'dashboard_acl_v1', content:payload, data:payload }, { onConflict:'doc_key' });
+          if (!res.error) return;
+          throw res.error;
+        } catch(firstError) {
+          try {
+            const retry = await supabase.from('rf_documents').upsert({ doc_key:'dashboard_acl_v1', content:payload }, { onConflict:'doc_key' });
+            if (!retry.error) return;
+            throw retry.error;
+          } catch(secondError) {
+            throw (secondError || firstError);
+          }
+        }
+      }
+
+      async function syncDashboardAclMirrorForRole(role, rows){
+        const safeRole = normalizeRole(role);
+        const sourceRows = Array.isArray(rows) ? rows : [];
+        const doc = await readDashboardAclMirror();
+        const grants = Object.assign({}, doc && typeof doc.grants === 'object' && doc.grants ? doc.grants : {});
+        const detailed = Object.assign({}, doc && typeof doc.page_permissions === 'object' && doc.page_permissions ? doc.page_permissions : {});
+        const roleGrants = {};
+        const roleDetails = {};
+
+        sourceRows.forEach(row => {
+          const pageKey = String(row.page_key || '').trim();
+          if (!pageKey) return;
+          const canView = !!row.can_view;
+          roleGrants[pageKey] = canView;
+          const href = pageKeyToHref(pageKey);
+          if (href) roleGrants[href] = canView;
+          roleDetails[pageKey] = {
+            can_view: !!row.can_view,
+            can_add: !!row.can_add,
+            can_edit: !!row.can_edit,
+            can_delete: !!row.can_delete
+          };
+        });
+
+        grants[safeRole] = roleGrants;
+        detailed[safeRole] = roleDetails;
+
+        await writeDashboardAclMirror({
+          version:1,
+          source:'helper-acl',
+          grants,
+          page_permissions:detailed
+        });
+      }
+
       async function savePermissions(){
         const rows = collectPermissionsFromTable();
         if (!rows.length) {
@@ -1046,22 +1124,13 @@
         showMainMessage('Se salvează permisiunile pentru rolul ' + role + '...', 'success');
 
         try {
-          await ensurePagesExist(rows.map(row => ({
-            page_key: row.page_key,
-            page_name: (currentPages.find(page => page.page_key === row.page_key) || {}).page_name || prettyPageName(row.page_key)
-          })));
-
           let saveRes = await supabase.from('page_permissions').upsert(rows, { onConflict:'role,page_key' });
           if (saveRes.error) throw saveRes.error;
+          await syncDashboardAclMirrorForRole(role, rows);
           showMainMessage('Permisiunile au fost salvate.', 'success');
           return;
         } catch (firstError) {
           try {
-            await ensurePagesExist(rows.map(row => ({
-              page_key: row.page_key,
-              page_name: (currentPages.find(page => page.page_key === row.page_key) || {}).page_name || prettyPageName(row.page_key)
-            })));
-
             const existingRes = await supabase.from('page_permissions')
               .select('role,page_key')
               .eq('role', role);
@@ -1096,6 +1165,7 @@
               }
             }
 
+            await syncDashboardAclMirrorForRole(role, rows);
             showMainMessage('Permisiunile au fost salvate.', 'success');
             return;
           } catch (fallbackError) {
@@ -1104,50 +1174,6 @@
                             (firstError && (firstError.message || firstError.details || firstError.hint)) ||
                             'eroare necunoscută';
             showMainMessage('Nu am putut salva page_permissions: ' + details, 'error');
-          }
-        }
-      }
-
-      async function ensurePagesExist(pagesToEnsure){
-        const normalized = [];
-        const seen = new Set();
-
-        (Array.isArray(pagesToEnsure) ? pagesToEnsure : []).forEach(page => {
-          const pageKey = String(page && page.page_key || '').trim();
-          if (!pageKey || seen.has(pageKey)) return;
-          seen.add(pageKey);
-          normalized.push({
-            page_key: pageKey,
-            page_name: String(page && page.page_name || prettyPageName(pageKey)).trim() || prettyPageName(pageKey)
-          });
-        });
-
-        if (!normalized.length) return;
-
-        try {
-          const upsertRes = await supabase.from('pages').upsert(normalized, { onConflict:'page_key' });
-          if (!upsertRes.error) return;
-          throw upsertRes.error;
-        } catch (upsertError) {
-          try {
-            const existingRes = await supabase.from('pages').select('page_key').in('page_key', normalized.map(page => page.page_key));
-            if (existingRes.error) throw existingRes.error;
-
-            const existingKeys = new Set((existingRes.data || []).map(row => String(row.page_key || '').trim()).filter(Boolean));
-
-            for (const page of normalized) {
-              if (existingKeys.has(page.page_key)) {
-                const updateRes = await supabase.from('pages').update({ page_name: page.page_name }).eq('page_key', page.page_key);
-                if (updateRes.error) throw updateRes.error;
-              } else {
-                const insertRes = await supabase.from('pages').insert(page);
-                if (insertRes.error) throw insertRes.error;
-              }
-            }
-            return;
-          } catch (fallbackError) {
-            console.error('ensurePagesExist failed', { upsertError, fallbackError, normalized });
-            throw fallbackError || upsertError;
           }
         }
       }
@@ -1176,7 +1202,8 @@
           }));
 
           if (payload.length) {
-            await ensurePagesExist(payload);
+            const res = await supabase.from('pages').upsert(payload, { onConflict:'page_key' });
+            if (res.error) throw res.error;
           }
 
           currentPages = mergedPages;
@@ -1187,8 +1214,7 @@
           currentPages = await getMergedPages();
           updatePageBadges();
           await loadPermissionsForRole();
-          const details = (error && (error.message || error.details || error.hint)) || 'Verifică RLS sau cheia unică page_key.';
-          showMainMessage('Nu am putut scrie în tabela pages: ' + details, 'error');
+          showMainMessage('Nu am putut scrie în tabela pages, dar am făcut refresh local al listei. Verifică RLS sau cheia unică page_key.', 'error');
         }
       }
 
