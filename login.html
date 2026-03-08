@@ -262,6 +262,16 @@
           'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFkZGx5Ym5pZ3J5d3Fvd3BiaHZkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzI2NjY2NjQsImV4cCI6MjA4ODI0MjY2NH0.VjbSKs7G_5T7GhdrjT8dtj2HCF6Az9KYfkpkSE7JTo4'
       };
 
+      const projectRef = (() => {
+        try {
+          const host = new URL(cfg.supabaseUrl).hostname || '';
+          return host.split('.')[0] || 'rf';
+        } catch (_) {
+          return 'rf';
+        }
+      })();
+
+      const storageKey = 'sb-' + projectRef + '-auth-token';
       let supabase = null;
       let loadingTimer = null;
 
@@ -285,6 +295,78 @@
         }
       }
 
+      function normalizeEmail(value){
+        return String(value || '').trim().toLowerCase();
+      }
+
+      function safeGetStorage(type){
+        try { return type === 'session' ? window.sessionStorage : window.localStorage; }
+        catch (_) { return null; }
+      }
+
+      const safeStorage = {
+        getItem(key){
+          const s = safeGetStorage('local');
+          if(!s) return null;
+          try { return s.getItem(key); } catch (_) { return null; }
+        },
+        setItem(key, value){
+          const s = safeGetStorage('local');
+          if(!s) return;
+          try { s.setItem(key, value); } catch (_) {}
+        },
+        removeItem(key){
+          const s = safeGetStorage('local');
+          if(!s) return;
+          try { s.removeItem(key); } catch (_) {}
+        }
+      };
+
+      function clearTransientState(){
+        const local = safeGetStorage('local');
+        const session = safeGetStorage('session');
+        const buckets = [local, session].filter(Boolean);
+
+        for(const bucket of buckets){
+          try {
+            const keys = [];
+            for(let i = 0; i < bucket.length; i++){
+              const key = bucket.key(i);
+              if(!key) continue;
+              if(
+                key === storageKey ||
+                key === 'supabase.auth.token' ||
+                key.startsWith('rf_') ||
+                key.startsWith('sb-' + projectRef)
+              ){
+                keys.push(key);
+              }
+            }
+            for(const key of keys){
+              try { bucket.removeItem(key); } catch (_) {}
+            }
+          } catch (_) {}
+        }
+      }
+
+      function safeSetLocal(key, value){
+        safeStorage.setItem(key, value);
+      }
+
+      async function rfFetch(resource, options = {}){
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 12000);
+        try {
+          return await fetch(resource, {
+            ...options,
+            cache: 'no-store',
+            signal: controller.signal
+          });
+        } finally {
+          clearTimeout(timeout);
+        }
+      }
+
       function withTimeout(promise, ms, label){
         return Promise.race([
           promise,
@@ -299,14 +381,6 @@
             loadingTimer = null;
           }
         });
-      }
-
-      function normalizeEmail(value){
-        return String(value || '').trim().toLowerCase();
-      }
-
-      function safeSetLocal(key, value){
-        try { localStorage.setItem(key, value); } catch(_) {}
       }
 
       async function resolveRole(user){
@@ -373,6 +447,7 @@
         if(msg.includes('Invalid login credentials')) return 'ID sau parolă greșită.';
         if(msg.includes('Email not confirmed')) return 'Emailul nu este confirmat.';
         if(msg.includes('Failed to fetch')) return 'Nu se poate contacta serverul Supabase.';
+        if(msg.includes('aborted')) return 'Cererea către server a fost întreruptă sau a expirat.';
         if(msg.includes('depășit timpul')) return 'Serverul nu a răspuns la timp. Verifică conexiunea și încearcă din nou.';
         return msg;
       }
@@ -390,7 +465,12 @@
           auth: {
             persistSession: true,
             autoRefreshToken: true,
-            detectSessionInUrl: true
+            detectSessionInUrl: false,
+            storage: safeStorage,
+            storageKey: storageKey
+          },
+          global: {
+            fetch: rfFetch
           }
         });
       }
@@ -399,6 +479,10 @@
         const isPassword = passwordInput.type === 'password';
         passwordInput.type = isPassword ? 'text' : 'password';
         togglePasswordBtn.textContent = isPassword ? 'Ascunde' : 'Arată';
+      });
+
+      window.addEventListener('pageshow', function(){
+        setLoading(false);
       });
 
       form.addEventListener('submit', async function(event){
@@ -414,9 +498,14 @@
 
         try {
           setLoading(true, 'Autentificare în curs...');
-          setMeta('Se verifică sesiunea și rolul utilizatorului...');
+          setMeta('Se curăță sesiunea locală și se pornește autentificarea...');
 
-          supabase = supabase || initClient();
+          clearTransientState();
+          supabase = initClient();
+
+          try {
+            await withTimeout(supabase.auth.signOut({ scope: 'local' }), 4000, 'Resetarea sesiunii');
+          } catch (_) {}
 
           const authResult = await withTimeout(
             supabase.auth.signInWithPassword({ email, password }),
@@ -433,6 +522,7 @@
             throw new Error('Autentificare nereușită: utilizatorul nu a fost returnat de server.');
           }
 
+          setMeta('Autentificarea a reușit. Se citește rolul...');
           const resolved = await withTimeout(resolveRole(user), 12000, 'Citirea rolului');
 
           safeSetLocal('rf_uid', user.id || '');
@@ -447,13 +537,15 @@
         } catch (error) {
           console.error('Login error:', error);
           setStatus(getFriendlyError(error), 'error');
-          setMeta('Dacă eroarea persistă, verifică rf-config.js, conexiunea la Supabase și consola browserului.');
+          setMeta('Dacă persistă, șterge datele site-ului pentru acest domeniu și încearcă din nou.');
+          setLoading(false);
         } finally {
           setLoading(false);
         }
       });
 
       try {
+        clearTransientState();
         supabase = initClient();
         setMeta('Conexiune pregătită.');
       } catch (error) {
