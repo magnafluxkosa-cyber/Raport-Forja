@@ -391,6 +391,10 @@ const DOC_KEY = 'forjate';
 const LS_KEY_DATA = 'FORJATE_autosave_v1';
 const LS_KEY_BACKUP = 'FORJATE_backup_v1';
 const LS_KEY_HELPERS = 'RF_HELPERS_v1';
+const LOCAL_DB_NAME = 'RF_LOCAL_CACHE_V1';
+const LOCAL_DB_STORE = 'docs';
+const LOCAL_DOC_DATA = 'forjate_data';
+const LOCAL_DOC_BACKUP = 'forjate_backup';
 
 const CLOUD_META_POLL_MS = 8000;
 const HELPERS_META_POLL_MS = 30000;
@@ -451,6 +455,131 @@ const modalBack = document.getElementById('modalBack');
    UTIL
    =============================== */
 function nowIso(){ return new Date().toISOString(); }
+
+function isQuotaError(err){
+  if(!err) return false;
+  const name = String(err.name || '');
+  const code = Number(err.code || 0);
+  return name === 'QuotaExceededError' || name === 'NS_ERROR_DOM_QUOTA_REACHED' || code === 22 || code === 1014;
+}
+function compareIsoMaybe(a,b){
+  const ta = a ? Date.parse(a) : 0;
+  const tb = b ? Date.parse(b) : 0;
+  return (ta||0) - (tb||0);
+}
+function buildLocalMarker(kind, payload){
+  return JSON.stringify({
+    storage: 'idb',
+    kind,
+    updated_at: payload?.updated_at || null,
+    row_count: Array.isArray(payload?.rows) ? payload.rows.length : 0,
+    saved_at: nowIso()
+  });
+}
+function openLocalDb(){
+  return new Promise((resolve, reject)=>{
+    try{
+      if(!window.indexedDB) return reject(new Error('indexedDB unavailable'));
+      const req = indexedDB.open(LOCAL_DB_NAME, 1);
+      req.onupgradeneeded = ()=>{
+        const db = req.result;
+        if(!db.objectStoreNames.contains(LOCAL_DB_STORE)) db.createObjectStore(LOCAL_DB_STORE);
+      };
+      req.onsuccess = ()=> resolve(req.result);
+      req.onerror = ()=> reject(req.error || new Error('indexedDB open failed'));
+    }catch(e){ reject(e); }
+  });
+}
+async function idbSetDoc(key, value){
+  const db = await openLocalDb();
+  return new Promise((resolve, reject)=>{
+    try{
+      const tx = db.transaction(LOCAL_DB_STORE, 'readwrite');
+      tx.objectStore(LOCAL_DB_STORE).put(value, key);
+      tx.oncomplete = ()=>{ try{ db.close(); }catch(_e){} resolve(true); };
+      tx.onerror = ()=>{ try{ db.close(); }catch(_e){} reject(tx.error || new Error('indexedDB write failed')); };
+      tx.onabort = ()=>{ try{ db.close(); }catch(_e){} reject(tx.error || new Error('indexedDB write aborted')); };
+    }catch(e){ try{ db.close(); }catch(_e){} reject(e); }
+  });
+}
+async function idbGetDoc(key){
+  const db = await openLocalDb();
+  return new Promise((resolve, reject)=>{
+    try{
+      const tx = db.transaction(LOCAL_DB_STORE, 'readonly');
+      const req = tx.objectStore(LOCAL_DB_STORE).get(key);
+      req.onsuccess = ()=>{ const v = req.result; try{ db.close(); }catch(_e){} resolve(v || null); };
+      req.onerror = ()=>{ try{ db.close(); }catch(_e){} reject(req.error || new Error('indexedDB read failed')); };
+    }catch(e){ try{ db.close(); }catch(_e){} reject(e); }
+  });
+}
+function setLocalMarkers(payload){
+  try{ localStorage.setItem(LS_KEY_DATA, buildLocalMarker('data', payload)); }catch(_e){}
+  try{ localStorage.setItem(LS_KEY_BACKUP, buildLocalMarker('backup', payload)); }catch(_e){}
+}
+function getLegacyLocalPayload(key){
+  try{
+    const raw = localStorage.getItem(key);
+    if(!raw) return null;
+    const parsed = JSON.parse(raw);
+    if(parsed && Array.isArray(parsed.rows)) return parsed;
+  }catch(_e){}
+  return null;
+}
+function hasLocalBackup(){
+  try{
+    const raw = localStorage.getItem(LS_KEY_BACKUP);
+    if(!raw) return false;
+    const parsed = JSON.parse(raw);
+    if(parsed && parsed.storage === 'idb') return true;
+    if(parsed && Array.isArray(parsed.rows)) return parsed.rows.length > 0;
+    return !!raw;
+  }catch(_e){
+    try{ return !!localStorage.getItem(LS_KEY_BACKUP); }catch(_e2){ return false; }
+  }
+}
+async function persistLocalPayload(payload){
+  if(!payload || !Array.isArray(payload.rows)) return false;
+  try{
+    await idbSetDoc(LOCAL_DOC_DATA, payload);
+    await idbSetDoc(LOCAL_DOC_BACKUP, payload);
+    setLocalMarkers(payload);
+    return true;
+  }catch(e){
+    try{
+      localStorage.setItem(LS_KEY_DATA, JSON.stringify(payload));
+      localStorage.setItem(LS_KEY_BACKUP, JSON.stringify(payload));
+      return true;
+    }catch(e2){
+      throw (isQuotaError(e2) ? e2 : e);
+    }
+  }
+}
+async function readLocalPayload(){
+  try{
+    const payload = await idbGetDoc(LOCAL_DOC_DATA);
+    if(payload && Array.isArray(payload.rows)) return payload;
+  }catch(_e){}
+  return getLegacyLocalPayload(LS_KEY_DATA);
+}
+async function readLocalBackupPayload(){
+  try{
+    const payload = await idbGetDoc(LOCAL_DOC_BACKUP);
+    if(payload && Array.isArray(payload.rows)) return payload;
+  }catch(_e){}
+  return getLegacyLocalPayload(LS_KEY_BACKUP);
+}
+async function migrateLegacyLocalPayloads(){
+  const dataPayload = getLegacyLocalPayload(LS_KEY_DATA);
+  const backupPayload = getLegacyLocalPayload(LS_KEY_BACKUP);
+  const payload = dataPayload || backupPayload;
+  if(!payload || !Array.isArray(payload.rows)) return;
+  try{
+    await idbSetDoc(LOCAL_DOC_DATA, dataPayload || payload);
+    await idbSetDoc(LOCAL_DOC_BACKUP, backupPayload || payload);
+    setLocalMarkers(payload);
+  }catch(_e){}
+}
 
 
 /* ===============================
@@ -636,30 +765,45 @@ function setAutosavePill(txt, cls){
 function scheduleAutosave(){
   if(autosaveTimer) clearTimeout(autosaveTimer);
   setAutosavePill('autosave: …', 'warn');
-  autosaveTimer = setTimeout(()=>{
+  autosaveTimer = setTimeout(async ()=>{
     try{
       STATE.updated_at = nowIso();
-      localStorage.setItem(LS_KEY_DATA, JSON.stringify({ version: STATE.version, updated_at: STATE.updated_at, rows: STATE.rows }));
+      await persistLocalPayload({ version: STATE.version, updated_at: STATE.updated_at, rows: STATE.rows });
       setAutosavePill('autosave: saved', 'ok');
       __DIRTY = false;
     }catch(e){
       console.warn(e);
-      setAutosavePill('autosave: error', 'bad');
+      setAutosavePill(isQuotaError(e) ? 'autosave: limită locală' : 'autosave: error', isQuotaError(e) ? 'warn' : 'bad');
     }
   }, 250);
 }
 
 function loadLocal(){
+  let legacyPayload = null;
   try{
-    const raw = localStorage.getItem(LS_KEY_DATA);
-    if(!raw) return;
-    const payload = JSON.parse(raw);
-    if(payload && Array.isArray(payload.rows)){
-      STATE.rows = payload.rows;
-      STATE.updated_at = payload.updated_at || null;
-  try{ if(Array.isArray(payload.rows) && payload.rows.length){ localStorage.setItem(LS_KEY_BACKUP, JSON.stringify(payload)); } }catch(_e){}
+    legacyPayload = getLegacyLocalPayload(LS_KEY_DATA);
+    if(legacyPayload && Array.isArray(legacyPayload.rows)){
+      STATE.rows = legacyPayload.rows;
+      STATE.updated_at = legacyPayload.updated_at || null;
     }
   }catch(_e){}
+
+  (async ()=>{
+    try{
+      await migrateLegacyLocalPayloads();
+      const payload = await readLocalPayload();
+      if(payload && Array.isArray(payload.rows)){
+        const shouldApply = !Array.isArray(STATE.rows) || STATE.rows.length === 0 || compareIsoMaybe(payload.updated_at, STATE.updated_at) >= 0;
+        if(shouldApply){
+          STATE.rows = payload.rows;
+          STATE.updated_at = payload.updated_at || null;
+          recalcAll();
+          refreshFilterOptions();
+          render();
+        }
+      }
+    }catch(_e){}
+  })();
 }
 
 function loadHelpersLocal(){
@@ -1766,7 +1910,7 @@ function applyRole(role, email, access){
   document.getElementById('btnImportXlsx').style.display = (window.__CAN_ADD__ || window.__CAN_EDIT__) ? 'inline-flex' : 'none';
   document.getElementById('btnReset').style.display = window.__CAN_DELETE__ ? 'inline-flex' : 'none';
   try{
-    const hasBackup = !!localStorage.getItem(LS_KEY_BACKUP);
+    const hasBackup = hasLocalBackup();
     document.getElementById('btnRestore').style.display = ((window.__CAN_EDIT__ || window.__CAN_DELETE__) && hasBackup) ? 'inline-flex' : 'none';
   }catch(_e){}
 }
@@ -1816,7 +1960,7 @@ function loadFromPayload(payload){
   render();
   __BOOTSTRAP_LOADING = false;
 
-  try{ localStorage.setItem(LS_KEY_DATA, JSON.stringify(payload)); }catch(_e){}
+  try{ persistLocalPayload(payload); }catch(_e){}
   return true;
 }
 window.loadFromPayload = loadFromPayload;
@@ -1852,8 +1996,8 @@ async function pull(){
     const remoteTs = await readDocumentMeta(DOC_KEY);
     if(!remoteTs){
       try{
-        const b = localStorage.getItem(LS_KEY_BACKUP);
-        if(b){
+        const hasBackup = hasLocalBackup();
+        if(hasBackup){
           document.getElementById('btnRestore').style.display = (window.__CAN_EDIT__ || window.__CAN_DELETE__) ? 'inline-flex' : 'none';
           setCloud(true,'Cloud: gol (backup)');
           __pollDelayMs = CLOUD_META_POLL_MS;
@@ -1878,7 +2022,7 @@ async function pull(){
 
     const applied = loadFromPayload(payload);
     try{
-      const hasBackup = !!localStorage.getItem(LS_KEY_BACKUP);
+      const hasBackup = hasLocalBackup();
       const hasRows = Array.isArray(payload.rows) && payload.rows.length;
       document.getElementById('btnRestore').style.display = ((window.__CAN_EDIT__ || window.__CAN_DELETE__) && hasBackup && !hasRows) ? 'inline-flex' : 'none';
     }catch(_e){}
@@ -2005,14 +2149,12 @@ document.getElementById('btnExportJson').addEventListener('click', exportJson);
 document.getElementById('btnExportXlsx').addEventListener('click', exportXlsx);
 document.getElementById('btnImportXlsx').addEventListener('click', importXlsx);
 
-document.getElementById('btnRestore').addEventListener('click', ()=>{
+document.getElementById('btnRestore').addEventListener('click', async ()=>{
   if(!window.__CAN_EDIT__ && !window.__CAN_DELETE__) return;
-  let raw=null; try{ raw = localStorage.getItem(LS_KEY_BACKUP); }catch(_e){}
-  if(!raw) return alert('Nu există backup local.');
+  const payload = await readLocalBackupPayload();
+  if(!payload || !Array.isArray(payload.rows)) return alert('Nu există backup local.');
   if(!confirm('Restore: încarc backup-ul local și îl trimit în cloud (înlocuiește ce e în cloud). Continui?')) return;
   try{
-    const payload = JSON.parse(raw);
-    if(!payload || !Array.isArray(payload.rows)) throw new Error('Backup invalid');
     STATE.rows = payload.rows;
     STATE.updated_at = payload.updated_at || nowIso();
     recalcAll();
