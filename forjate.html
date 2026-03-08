@@ -391,17 +391,6 @@ const DOC_KEY = 'forjate';
 const LS_KEY_DATA = 'FORJATE_autosave_v1';
 const LS_KEY_BACKUP = 'FORJATE_backup_v1';
 const LS_KEY_HELPERS = 'RF_HELPERS_v1';
-const LOCAL_DB_NAME = 'RF_LOCAL_CACHE_V1';
-const LOCAL_DB_STORE = 'docs';
-const LOCAL_DOC_DATA = 'forjate_data';
-const LOCAL_DOC_BACKUP = 'forjate_backup';
-
-const CLOUD_META_POLL_MS = 8000;
-const HELPERS_META_POLL_MS = 30000;
-const CLOUD_PUSH_DEBOUNCE_MS = 1800;
-const CLOUD_LOCAL_GRACE_MS = 12000;
-const CLOUD_ERROR_BACKOFF_MS_MAX = 60000;
-const CLOUD_IDLE_MSG = 'Cloud: ON';
 
 const MONTHS = [
   'ianuarie','februarie','martie','aprilie','mai','iunie','iulie','august','septembrie','octombrie','noiembrie','decembrie'
@@ -455,131 +444,6 @@ const modalBack = document.getElementById('modalBack');
    UTIL
    =============================== */
 function nowIso(){ return new Date().toISOString(); }
-
-function isQuotaError(err){
-  if(!err) return false;
-  const name = String(err.name || '');
-  const code = Number(err.code || 0);
-  return name === 'QuotaExceededError' || name === 'NS_ERROR_DOM_QUOTA_REACHED' || code === 22 || code === 1014;
-}
-function compareIsoMaybe(a,b){
-  const ta = a ? Date.parse(a) : 0;
-  const tb = b ? Date.parse(b) : 0;
-  return (ta||0) - (tb||0);
-}
-function buildLocalMarker(kind, payload){
-  return JSON.stringify({
-    storage: 'idb',
-    kind,
-    updated_at: payload?.updated_at || null,
-    row_count: Array.isArray(payload?.rows) ? payload.rows.length : 0,
-    saved_at: nowIso()
-  });
-}
-function openLocalDb(){
-  return new Promise((resolve, reject)=>{
-    try{
-      if(!window.indexedDB) return reject(new Error('indexedDB unavailable'));
-      const req = indexedDB.open(LOCAL_DB_NAME, 1);
-      req.onupgradeneeded = ()=>{
-        const db = req.result;
-        if(!db.objectStoreNames.contains(LOCAL_DB_STORE)) db.createObjectStore(LOCAL_DB_STORE);
-      };
-      req.onsuccess = ()=> resolve(req.result);
-      req.onerror = ()=> reject(req.error || new Error('indexedDB open failed'));
-    }catch(e){ reject(e); }
-  });
-}
-async function idbSetDoc(key, value){
-  const db = await openLocalDb();
-  return new Promise((resolve, reject)=>{
-    try{
-      const tx = db.transaction(LOCAL_DB_STORE, 'readwrite');
-      tx.objectStore(LOCAL_DB_STORE).put(value, key);
-      tx.oncomplete = ()=>{ try{ db.close(); }catch(_e){} resolve(true); };
-      tx.onerror = ()=>{ try{ db.close(); }catch(_e){} reject(tx.error || new Error('indexedDB write failed')); };
-      tx.onabort = ()=>{ try{ db.close(); }catch(_e){} reject(tx.error || new Error('indexedDB write aborted')); };
-    }catch(e){ try{ db.close(); }catch(_e){} reject(e); }
-  });
-}
-async function idbGetDoc(key){
-  const db = await openLocalDb();
-  return new Promise((resolve, reject)=>{
-    try{
-      const tx = db.transaction(LOCAL_DB_STORE, 'readonly');
-      const req = tx.objectStore(LOCAL_DB_STORE).get(key);
-      req.onsuccess = ()=>{ const v = req.result; try{ db.close(); }catch(_e){} resolve(v || null); };
-      req.onerror = ()=>{ try{ db.close(); }catch(_e){} reject(req.error || new Error('indexedDB read failed')); };
-    }catch(e){ try{ db.close(); }catch(_e){} reject(e); }
-  });
-}
-function setLocalMarkers(payload){
-  try{ localStorage.setItem(LS_KEY_DATA, buildLocalMarker('data', payload)); }catch(_e){}
-  try{ localStorage.setItem(LS_KEY_BACKUP, buildLocalMarker('backup', payload)); }catch(_e){}
-}
-function getLegacyLocalPayload(key){
-  try{
-    const raw = localStorage.getItem(key);
-    if(!raw) return null;
-    const parsed = JSON.parse(raw);
-    if(parsed && Array.isArray(parsed.rows)) return parsed;
-  }catch(_e){}
-  return null;
-}
-function hasLocalBackup(){
-  try{
-    const raw = localStorage.getItem(LS_KEY_BACKUP);
-    if(!raw) return false;
-    const parsed = JSON.parse(raw);
-    if(parsed && parsed.storage === 'idb') return true;
-    if(parsed && Array.isArray(parsed.rows)) return parsed.rows.length > 0;
-    return !!raw;
-  }catch(_e){
-    try{ return !!localStorage.getItem(LS_KEY_BACKUP); }catch(_e2){ return false; }
-  }
-}
-async function persistLocalPayload(payload){
-  if(!payload || !Array.isArray(payload.rows)) return false;
-  try{
-    await idbSetDoc(LOCAL_DOC_DATA, payload);
-    await idbSetDoc(LOCAL_DOC_BACKUP, payload);
-    setLocalMarkers(payload);
-    return true;
-  }catch(e){
-    try{
-      localStorage.setItem(LS_KEY_DATA, JSON.stringify(payload));
-      localStorage.setItem(LS_KEY_BACKUP, JSON.stringify(payload));
-      return true;
-    }catch(e2){
-      throw (isQuotaError(e2) ? e2 : e);
-    }
-  }
-}
-async function readLocalPayload(){
-  try{
-    const payload = await idbGetDoc(LOCAL_DOC_DATA);
-    if(payload && Array.isArray(payload.rows)) return payload;
-  }catch(_e){}
-  return getLegacyLocalPayload(LS_KEY_DATA);
-}
-async function readLocalBackupPayload(){
-  try{
-    const payload = await idbGetDoc(LOCAL_DOC_BACKUP);
-    if(payload && Array.isArray(payload.rows)) return payload;
-  }catch(_e){}
-  return getLegacyLocalPayload(LS_KEY_BACKUP);
-}
-async function migrateLegacyLocalPayloads(){
-  const dataPayload = getLegacyLocalPayload(LS_KEY_DATA);
-  const backupPayload = getLegacyLocalPayload(LS_KEY_BACKUP);
-  const payload = dataPayload || backupPayload;
-  if(!payload || !Array.isArray(payload.rows)) return;
-  try{
-    await idbSetDoc(LOCAL_DOC_DATA, dataPayload || payload);
-    await idbSetDoc(LOCAL_DOC_BACKUP, backupPayload || payload);
-    setLocalMarkers(payload);
-  }catch(_e){}
-}
 
 
 /* ===============================
@@ -653,16 +517,7 @@ function excelSerialToDMY(n){
   return `${dd}.${mm}.${yyyy}`;
 }
 
-function monthNameToNumber(name){
-  const s = String(name||'').trim().toLowerCase();
-  const map = {
-    'ianuarie':1, 'februarie':2, 'martie':3, 'aprilie':4, 'mai':5, 'iunie':6,
-    'iulie':7, 'august':8, 'septembrie':9, 'octombrie':10, 'noiembrie':11, 'decembrie':12
-  };
-  return map[s] || 0;
-}
-
-function parseExcelDate(v, monthHint){
+function parseExcelDate(v){
   if(v==null || v==='') return '';
   if(typeof v === 'number') return excelSerialToDMY(v);
   const s0 = String(v).trim();
@@ -677,30 +532,15 @@ function parseExcelDate(v, monthHint){
     let yy = Number(m[3]);
     if(yy < 100) yy += 2000;
 
-    const hintedMonth = monthNameToNumber(monthHint);
-
-    // Excel / browser poate da uneori MM.DD.YYYY.
-    // Corectăm atât cazurile evidente (>12), cât și cele ambigue folosind luna din rând.
-    // Exemplu cu hint "februarie": 02.10.2026 -> 10.02.2026
-    if(mo > 12 && d <= 12){
-      const t = d; d = mo; mo = t;
-    } else if(hintedMonth){
-      if(d === hintedMonth && mo !== hintedMonth){
-        const t = d; d = mo; mo = t;
-      }
-    }
+    // Dacă luna e > 12 și ziua <= 12, cel mai probabil e inversat (MM.DD.YYYY).
+    // Exemplu: 02.24.2026 -> 24.02.2026
+    if(mo > 12 && d <= 12){ const t=d; d=mo; mo=t; }
 
     const dd = String(d).padStart(2,'0');
     const mm = String(mo).padStart(2,'0');
     return `${dd}.${mm}.${yy}`;
   }
   return s0;
-}
-
-function normalizeRowDate(row){
-  if(!row) return row;
-  row.data = parseExcelDate(row.data, row.luna);
-  return row;
 }
 
 function roInt(n){
@@ -789,47 +629,30 @@ function setAutosavePill(txt, cls){
 function scheduleAutosave(){
   if(autosaveTimer) clearTimeout(autosaveTimer);
   setAutosavePill('autosave: …', 'warn');
-  autosaveTimer = setTimeout(async ()=>{
+  autosaveTimer = setTimeout(()=>{
     try{
       STATE.updated_at = nowIso();
-      await persistLocalPayload({ version: STATE.version, updated_at: STATE.updated_at, rows: STATE.rows });
+      localStorage.setItem(LS_KEY_DATA, JSON.stringify({ version: STATE.version, updated_at: STATE.updated_at, rows: STATE.rows }));
       setAutosavePill('autosave: saved', 'ok');
       __DIRTY = false;
     }catch(e){
       console.warn(e);
-      setAutosavePill(isQuotaError(e) ? 'autosave: limită locală' : 'autosave: error', isQuotaError(e) ? 'warn' : 'bad');
+      setAutosavePill('autosave: error', 'bad');
     }
   }, 250);
 }
 
 function loadLocal(){
-  let legacyPayload = null;
   try{
-    legacyPayload = getLegacyLocalPayload(LS_KEY_DATA);
-    if(legacyPayload && Array.isArray(legacyPayload.rows)){
-      STATE.rows = legacyPayload.rows;
-      STATE.rows.forEach(normalizeRowDate);
-      STATE.updated_at = legacyPayload.updated_at || null;
+    const raw = localStorage.getItem(LS_KEY_DATA);
+    if(!raw) return;
+    const payload = JSON.parse(raw);
+    if(payload && Array.isArray(payload.rows)){
+      STATE.rows = payload.rows;
+      STATE.updated_at = payload.updated_at || null;
+  try{ if(Array.isArray(payload.rows) && payload.rows.length){ localStorage.setItem(LS_KEY_BACKUP, JSON.stringify(payload)); } }catch(_e){}
     }
   }catch(_e){}
-
-  (async ()=>{
-    try{
-      await migrateLegacyLocalPayloads();
-      const payload = await readLocalPayload();
-      if(payload && Array.isArray(payload.rows)){
-        const shouldApply = !Array.isArray(STATE.rows) || STATE.rows.length === 0 || compareIsoMaybe(payload.updated_at, STATE.updated_at) >= 0;
-        if(shouldApply){
-          STATE.rows = payload.rows;
-          STATE.rows.forEach(normalizeRowDate);
-          STATE.updated_at = payload.updated_at || null;
-          recalcAll();
-          refreshFilterOptions();
-          render();
-        }
-      }
-    }catch(_e){}
-  })();
 }
 
 function loadHelpersLocal(){
@@ -1063,7 +886,7 @@ function recalcRow(row){
 }
 
 function recalcAll(){
-  STATE.rows.forEach(r=>{ normalizeRowDate(r); recalcRow(r); });
+  STATE.rows.forEach(recalcRow);
 }
 
 /* ===============================
@@ -1181,7 +1004,7 @@ function formatCellValue(row, col){
   if(col.fmt==='pct') return pct(v);
 
   if(col.type==='date'){
-    return parseExcelDate(v, row && row.luna);
+    return parseExcelDate(v);
   }
 
   if(col.type==='year'){
@@ -1482,7 +1305,7 @@ function openModalEdit(row){
 
   f.an.value = toStr(row.an);
   f.luna.value = toStr(row.luna);
-  f.data.value = parseExcelDate(row.data, row.luna);
+  f.data.value = toStr(row.data);
   f.schimb.value = toStr(row.schimb);
 
   f.ciocan.value = toStr(row.ciocan);
@@ -1528,7 +1351,7 @@ function rowFromForm(){
 
     an: toStr(f.an.value).trim(),
     luna: toStr(f.luna.value).trim(),
-    data: parseExcelDate(toStr(f.data.value).trim(), toStr(f.luna.value).trim()),
+    data: toStr(f.data.value).trim(),
     schimb: toStr(f.schimb.value).trim(),
 
     ciocan: toStr(f.ciocan.value).trim(),
@@ -1655,7 +1478,7 @@ async function exportXlsx(){
     return {
       ANUL: x.an,
       LUNA: x.luna,
-      DATA: parseExcelDate(x.data, x.luna),
+      DATA: x.data,
       SCHIMBUL: x.schimb,
       CIOCAN: x.ciocan,
       REPER: x.reper,
@@ -1735,7 +1558,7 @@ async function importXlsx(){
 
         an: String(pick(map, ['anul','an'])).trim(),
         luna: String(pick(map, ['luna'])).trim().toLowerCase(),
-        data: parseExcelDate(pick(map, ['data']), String(pick(map, ['luna'])).trim().toLowerCase()),
+        data: parseExcelDate(pick(map, ['data'])),
         schimb: String(pick(map, ['schimbul','schimb'])).trim() || '1',
 
         ciocan: String(pick(map, ['ciocan','utilaj','linie','linieforjare'])).trim(),
@@ -1831,7 +1654,7 @@ async function detectDocColumns(){
 async function readDocumentMeta(docKey){
   const { data, error } = await supa.from(DOC_TABLE).select('updated_at').eq('doc_key', docKey).maybeSingle();
   if(error) throw error;
-  return data?.updated_at || null;
+  return { updated_at: data?.updated_at || null };
 }
 
 async function readDocument(docKey){
@@ -1843,10 +1666,6 @@ async function readDocument(docKey){
     payload: data ? (data.content ?? data.data ?? null) : null,
     updated_at: data?.updated_at || null
   };
-}
-
-function safeJsonBytes(obj){
-  try{ return new Blob([JSON.stringify(obj)]).size; }catch(_e){ return 0; }
 }
 
 async function writeDocument(docKey, payload){
@@ -1936,7 +1755,7 @@ function applyRole(role, email, access){
   document.getElementById('btnImportXlsx').style.display = (window.__CAN_ADD__ || window.__CAN_EDIT__) ? 'inline-flex' : 'none';
   document.getElementById('btnReset').style.display = window.__CAN_DELETE__ ? 'inline-flex' : 'none';
   try{
-    const hasBackup = hasLocalBackup();
+    const hasBackup = !!localStorage.getItem(LS_KEY_BACKUP);
     document.getElementById('btnRestore').style.display = ((window.__CAN_EDIT__ || window.__CAN_DELETE__) && hasBackup) ? 'inline-flex' : 'none';
   }catch(_e){}
 }
@@ -1950,8 +1769,10 @@ let pollTimer = null;
 let pushTimer = null;
 let helpersTimer = null;
 let inFlight = false;
-let __pollDelayMs = CLOUD_META_POLL_MS;
-let __helpersDelayMs = HELPERS_META_POLL_MS;
+const CLOUD_PULL_MS = 8000;
+const CLOUD_PULL_HIDDEN_MS = 20000;
+const HELPERS_PULL_MS = 30000;
+const HELPERS_PULL_HIDDEN_MS = 60000;
 
 function setCloud(ok, msg){
   cloudBadge.style.display = 'inline-flex';
@@ -1976,7 +1797,6 @@ function loadFromPayload(payload){
   if(ae && (ae.tagName==='INPUT' || ae.tagName==='TEXTAREA' || ae.tagName==='SELECT')) return false;
 
   STATE.rows = payload.rows;
-  STATE.rows.forEach(normalizeRowDate);
   STATE.updated_at = payload.updated_at || null;
   if(STATE._firstPayloadApply){
     STATE._scrollToBottomNext = true;
@@ -1987,79 +1807,58 @@ function loadFromPayload(payload){
   render();
   __BOOTSTRAP_LOADING = false;
 
-  try{ persistLocalPayload(payload); }catch(_e){}
+  try{ localStorage.setItem(LS_KEY_DATA, JSON.stringify(payload)); }catch(_e){}
   return true;
 }
 window.loadFromPayload = loadFromPayload;
 
-function scheduleNextPull(ms){
-  if(pollTimer) clearTimeout(pollTimer);
-  pollTimer = setTimeout(async ()=>{
-    await pull();
-    scheduleNextPull(__pollDelayMs);
-  }, Math.max(1500, ms || __pollDelayMs));
-}
-
-function scheduleNextHelpersPull(ms){
-  if(helpersTimer) clearTimeout(helpersTimer);
-  helpersTimer = setTimeout(async ()=>{
-    await pullHelpers();
-    scheduleNextHelpersPull(__helpersDelayMs);
-  }, Math.max(5000, ms || __helpersDelayMs));
-}
-
-async function pull(){
+async function pull(forceFull = false){
   if(!supa) return;
   if(inFlight) return;
-  if(document.hidden){ setCloud(true, 'Cloud: în așteptare'); return; }
 
-  if(__HAS_LOCAL_PENDING && (Date.now() - __LAST_LOCAL_CHANGE) < CLOUD_LOCAL_GRACE_MS){
-    setCloud(true, CLOUD_IDLE_MSG);
+  if(__HAS_LOCAL_PENDING && (Date.now() - __LAST_LOCAL_CHANGE) < 5000){
+    setCloud(true, 'Cloud: ON');
     return;
   }
 
   inFlight = true;
   try{
-    const remoteTs = await readDocumentMeta(DOC_KEY);
-    if(!remoteTs){
+    let ts = null;
+    if(!forceFull){
+      const meta = await readDocumentMeta(DOC_KEY);
+      ts = meta.updated_at || null;
+      if(lastPulledAt && ts && new Date(ts) <= new Date(lastPulledAt)) { setCloud(true,'Cloud: ON'); return; }
+      if(lastPushedAt && ts && new Date(ts) <= new Date(lastPushedAt)) { setCloud(true,'Cloud: ON'); return; }
+    }
+
+    const doc = await readDocument(DOC_KEY);
+    const payload = doc.payload;
+    ts = doc.updated_at || ts || null;
+
+    if(!payload){
       try{
-        const hasBackup = hasLocalBackup();
-        if(hasBackup){
+        const b = localStorage.getItem(LS_KEY_BACKUP);
+        if(b){
           document.getElementById('btnRestore').style.display = (window.__CAN_EDIT__ || window.__CAN_DELETE__) ? 'inline-flex' : 'none';
           setCloud(true,'Cloud: gol (backup)');
-          __pollDelayMs = CLOUD_META_POLL_MS;
           return;
         }
       }catch(_e){}
       setCloud(true, 'Cloud: gol');
-      __pollDelayMs = CLOUD_META_POLL_MS;
-      return;
-    }
-
-    if(lastPulledAt && new Date(remoteTs) <= new Date(lastPulledAt)) { setCloud(true, CLOUD_IDLE_MSG); __pollDelayMs = CLOUD_META_POLL_MS; return; }
-    if(lastPushedAt && new Date(remoteTs) <= new Date(lastPushedAt)) { setCloud(true, CLOUD_IDLE_MSG); __pollDelayMs = CLOUD_META_POLL_MS; return; }
-
-    const doc = await readDocument(DOC_KEY);
-    const payload = doc.payload;
-    if(!payload || !Array.isArray(payload.rows)){
-      setCloud(true, 'Cloud: gol');
-      __pollDelayMs = CLOUD_META_POLL_MS;
       return;
     }
 
     const applied = loadFromPayload(payload);
     try{
-      const hasBackup = hasLocalBackup();
+      const hasBackup = !!localStorage.getItem(LS_KEY_BACKUP);
       const hasRows = Array.isArray(payload.rows) && payload.rows.length;
       document.getElementById('btnRestore').style.display = ((window.__CAN_EDIT__ || window.__CAN_DELETE__) && hasBackup && !hasRows) ? 'inline-flex' : 'none';
     }catch(_e){}
 
-    if(applied) lastPulledAt = doc.updated_at || remoteTs || nowIso();
-    __pollDelayMs = CLOUD_META_POLL_MS;
-    setCloud(true, CLOUD_IDLE_MSG);
+    if(applied) lastPulledAt = ts || nowIso();
+    setCloud(true, 'Cloud: ON');
   }catch(e){
     console.error(e);
-    __pollDelayMs = Math.min(CLOUD_ERROR_BACKOFF_MS_MAX, Math.max(CLOUD_META_POLL_MS, __pollDelayMs * 2));
     setCloud(false, 'Cloud: eroare');
   }finally{
     inFlight = false;
@@ -2078,16 +1877,11 @@ function schedulePush(){
     try{
       const payload = getAllDataForExport();
       payload.updated_at = nowIso();
-      const bytes = safeJsonBytes(payload);
-      if(bytes > 900000){
-        setCloud(true, 'Cloud: sincronizez document mare');
-      }
       await writeDocument(DOC_KEY, payload);
 
       lastPushedAt = payload.updated_at;
       __HAS_LOCAL_PENDING = false;
-      __pollDelayMs = CLOUD_META_POLL_MS;
-      setCloud(true, CLOUD_IDLE_MSG);
+      setCloud(true, 'Cloud: ON');
     }catch(e){
       console.error(e);
       const msg = (String(e && e.message || '').toLowerCase().includes('row level security') || String(e).toLowerCase().includes('permission'))
@@ -2095,10 +1889,21 @@ function schedulePush(){
         : 'Cloud: eroare';
       setCloud(false, msg);
     }
-  }, CLOUD_PUSH_DEBOUNCE_MS);
+  }, 550);
 }
 
 window.notifyDataChanged = schedulePush;
+
+function restartCloudTimers(){
+  if(pollTimer) clearInterval(pollTimer);
+  if(helpersTimer) clearInterval(helpersTimer);
+
+  const pollMs = document.hidden ? CLOUD_PULL_HIDDEN_MS : CLOUD_PULL_MS;
+  const helpersMs = document.hidden ? HELPERS_PULL_HIDDEN_MS : HELPERS_PULL_MS;
+
+  pollTimer = setInterval(()=>{ pull(false); }, pollMs);
+  helpersTimer = setInterval(()=>{ pullHelpers(false); }, helpersMs);
+}
 
 async function startCloud(){
   if(!supa){
@@ -2113,7 +1918,7 @@ async function startCloud(){
   }
 
   if(!window.__CAN_VIEW__){
-    showLock('Acces restricționat', 'Contul tău nu are permisiunea să vizualizeze pagina FORJATE.');
+    showLock('Acces restricționat', 'Contul tău nu are permisiunea să vizualizezi pagina FORJATE.');
     return;
   }
 
@@ -2121,33 +1926,37 @@ async function startCloud(){
   cloudBadge.classList.add('warn');
   cloudBadge.textContent = 'Cloud: conectez…';
 
-  await pull();
-  scheduleNextPull(CLOUD_META_POLL_MS);
-  setCloud(true, CLOUD_IDLE_MSG);
+  restartCloudTimers();
+  setCloud(true, 'Cloud: ON');
+
+  pull(true);
+  pullHelpers(true);
 }
 
 /* ===============================
    HELPERS CLOUD PULL (doc_key=helpers)
    =============================== */
 let helpersLastTs = null;
-async function pullHelpers(){
+async function pullHelpers(forceFull = false){
   if(!supa) return;
-  if(document.hidden) return;
   try{
-    const metaTs = await readDocumentMeta('helpers');
-    if(!metaTs) return;
-    if(helpersLastTs && new Date(metaTs) <= new Date(helpersLastTs)) return;
+    let ts = null;
+    if(!forceFull){
+      const meta = await readDocumentMeta('helpers');
+      ts = meta.updated_at || null;
+      if(helpersLastTs && ts && new Date(ts) <= new Date(helpersLastTs)) return;
+    }
+
     const doc = await readDocument('helpers');
     if(!doc || !doc.payload) return;
-    const ts = doc.updated_at || metaTs || null;
+    ts = doc.updated_at || ts || null;
     if(helpersLastTs && ts && new Date(ts) <= new Date(helpersLastTs)) return;
     helpersLastTs = ts || nowIso();
     HELPERS = doc.payload;
     try{ localStorage.setItem(LS_KEY_HELPERS, JSON.stringify(HELPERS)); }catch(_e){}
     rebuildDatalists();
-    __helpersDelayMs = HELPERS_META_POLL_MS;
   }catch(_e){
-    __helpersDelayMs = Math.min(CLOUD_ERROR_BACKOFF_MS_MAX, Math.max(HELPERS_META_POLL_MS, __helpersDelayMs * 2));
+    // silent
   }
 }
 
@@ -2176,14 +1985,15 @@ document.getElementById('btnExportJson').addEventListener('click', exportJson);
 document.getElementById('btnExportXlsx').addEventListener('click', exportXlsx);
 document.getElementById('btnImportXlsx').addEventListener('click', importXlsx);
 
-document.getElementById('btnRestore').addEventListener('click', async ()=>{
+document.getElementById('btnRestore').addEventListener('click', ()=>{
   if(!window.__CAN_EDIT__ && !window.__CAN_DELETE__) return;
-  const payload = await readLocalBackupPayload();
-  if(!payload || !Array.isArray(payload.rows)) return alert('Nu există backup local.');
+  let raw=null; try{ raw = localStorage.getItem(LS_KEY_BACKUP); }catch(_e){}
+  if(!raw) return alert('Nu există backup local.');
   if(!confirm('Restore: încarc backup-ul local și îl trimit în cloud (înlocuiește ce e în cloud). Continui?')) return;
   try{
+    const payload = JSON.parse(raw);
+    if(!payload || !Array.isArray(payload.rows)) throw new Error('Backup invalid');
     STATE.rows = payload.rows;
-    STATE.rows.forEach(normalizeRowDate);
     STATE.updated_at = payload.updated_at || nowIso();
     recalcAll();
     refreshFilterOptions();
@@ -2384,22 +2194,6 @@ window.addEventListener('message', (e)=>{
   }
 });
 
-document.addEventListener('visibilitychange', ()=>{
-  if(document.hidden) return;
-  __pollDelayMs = CLOUD_META_POLL_MS;
-  __helpersDelayMs = HELPERS_META_POLL_MS;
-  try{ pull(); }catch(_e){}
-  try{ pullHelpers(); }catch(_e){}
-  scheduleNextPull(1200);
-  scheduleNextHelpersPull(2500);
-});
-
-window.addEventListener('beforeunload', ()=>{
-  if(pollTimer) clearTimeout(pollTimer);
-  if(pushTimer) clearTimeout(pushTimer);
-  if(helpersTimer) clearTimeout(helpersTimer);
-});
-
 /* ===============================
    INIT
    =============================== */
@@ -2424,10 +2218,17 @@ window.addEventListener('beforeunload', ()=>{
     const access = await getPageAccess(role);
     applyRole(role, email, access);
     startCloud();
-    pullHelpers();
-    scheduleNextHelpersPull(HELPERS_META_POLL_MS);
   });
 })();
+
+document.addEventListener('visibilitychange', ()=>{
+  if(!supa) return;
+  restartCloudTimers();
+  if(!document.hidden){
+    pull(false);
+    pullHelpers(false);
+  }
+});
 </script>
 </body>
 </html>
