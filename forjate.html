@@ -392,6 +392,13 @@ const LS_KEY_DATA = 'FORJATE_autosave_v1';
 const LS_KEY_BACKUP = 'FORJATE_backup_v1';
 const LS_KEY_HELPERS = 'RF_HELPERS_v1';
 
+const CLOUD_META_POLL_MS = 8000;
+const HELPERS_META_POLL_MS = 30000;
+const CLOUD_PUSH_DEBOUNCE_MS = 1800;
+const CLOUD_LOCAL_GRACE_MS = 12000;
+const CLOUD_ERROR_BACKOFF_MS_MAX = 60000;
+const CLOUD_IDLE_MSG = 'Cloud: ON';
+
 const MONTHS = [
   'ianuarie','februarie','martie','aprilie','mai','iunie','iulie','august','septembrie','octombrie','noiembrie','decembrie'
 ];
@@ -1651,6 +1658,12 @@ async function detectDocColumns(){
   return __RF_DOC_COLS;
 }
 
+async function readDocumentMeta(docKey){
+  const { data, error } = await supa.from(DOC_TABLE).select('updated_at').eq('doc_key', docKey).maybeSingle();
+  if(error) throw error;
+  return data?.updated_at || null;
+}
+
 async function readDocument(docKey){
   const cols = await detectDocColumns();
   const selectCols = [...cols, 'updated_at'].join(',');
@@ -1660,6 +1673,10 @@ async function readDocument(docKey){
     payload: data ? (data.content ?? data.data ?? null) : null,
     updated_at: data?.updated_at || null
   };
+}
+
+function safeJsonBytes(obj){
+  try{ return new Blob([JSON.stringify(obj)]).size; }catch(_e){ return 0; }
 }
 
 async function writeDocument(docKey, payload){
@@ -1761,7 +1778,10 @@ let lastPulledAt = null;
 let lastPushedAt = null;
 let pollTimer = null;
 let pushTimer = null;
+let helpersTimer = null;
 let inFlight = false;
+let __pollDelayMs = CLOUD_META_POLL_MS;
+let __helpersDelayMs = HELPERS_META_POLL_MS;
 
 function setCloud(ok, msg){
   cloudBadge.style.display = 'inline-flex';
@@ -1801,35 +1821,60 @@ function loadFromPayload(payload){
 }
 window.loadFromPayload = loadFromPayload;
 
+function scheduleNextPull(ms){
+  if(pollTimer) clearTimeout(pollTimer);
+  pollTimer = setTimeout(async ()=>{
+    await pull();
+    scheduleNextPull(__pollDelayMs);
+  }, Math.max(1500, ms || __pollDelayMs));
+}
+
+function scheduleNextHelpersPull(ms){
+  if(helpersTimer) clearTimeout(helpersTimer);
+  helpersTimer = setTimeout(async ()=>{
+    await pullHelpers();
+    scheduleNextHelpersPull(__helpersDelayMs);
+  }, Math.max(5000, ms || __helpersDelayMs));
+}
+
 async function pull(){
   if(!supa) return;
   if(inFlight) return;
+  if(document.hidden){ setCloud(true, 'Cloud: în așteptare'); return; }
 
-  if(__HAS_LOCAL_PENDING && (Date.now() - __LAST_LOCAL_CHANGE) < 4000){
-    setCloud(true, 'Cloud: ON');
+  if(__HAS_LOCAL_PENDING && (Date.now() - __LAST_LOCAL_CHANGE) < CLOUD_LOCAL_GRACE_MS){
+    setCloud(true, CLOUD_IDLE_MSG);
     return;
   }
 
   inFlight = true;
   try{
-    const doc = await readDocument(DOC_KEY);
-    const payload = doc.payload;
-    if(!payload){
+    const remoteTs = await readDocumentMeta(DOC_KEY);
+    if(!remoteTs){
       try{
         const b = localStorage.getItem(LS_KEY_BACKUP);
         if(b){
           document.getElementById('btnRestore').style.display = (window.__CAN_EDIT__ || window.__CAN_DELETE__) ? 'inline-flex' : 'none';
           setCloud(true,'Cloud: gol (backup)');
+          __pollDelayMs = CLOUD_META_POLL_MS;
           return;
         }
       }catch(_e){}
       setCloud(true, 'Cloud: gol');
+      __pollDelayMs = CLOUD_META_POLL_MS;
       return;
     }
 
-    const ts = doc.updated_at || null;
-    if(lastPulledAt && ts && new Date(ts) <= new Date(lastPulledAt)) { setCloud(true,'Cloud: ON'); return; }
-    if(lastPushedAt && ts && new Date(ts) <= new Date(lastPushedAt)) { setCloud(true,'Cloud: ON'); return; }
+    if(lastPulledAt && new Date(remoteTs) <= new Date(lastPulledAt)) { setCloud(true, CLOUD_IDLE_MSG); __pollDelayMs = CLOUD_META_POLL_MS; return; }
+    if(lastPushedAt && new Date(remoteTs) <= new Date(lastPushedAt)) { setCloud(true, CLOUD_IDLE_MSG); __pollDelayMs = CLOUD_META_POLL_MS; return; }
+
+    const doc = await readDocument(DOC_KEY);
+    const payload = doc.payload;
+    if(!payload || !Array.isArray(payload.rows)){
+      setCloud(true, 'Cloud: gol');
+      __pollDelayMs = CLOUD_META_POLL_MS;
+      return;
+    }
 
     const applied = loadFromPayload(payload);
     try{
@@ -1838,10 +1883,12 @@ async function pull(){
       document.getElementById('btnRestore').style.display = ((window.__CAN_EDIT__ || window.__CAN_DELETE__) && hasBackup && !hasRows) ? 'inline-flex' : 'none';
     }catch(_e){}
 
-    if(applied) lastPulledAt = ts || nowIso();
-    setCloud(true, 'Cloud: ON');
+    if(applied) lastPulledAt = doc.updated_at || remoteTs || nowIso();
+    __pollDelayMs = CLOUD_META_POLL_MS;
+    setCloud(true, CLOUD_IDLE_MSG);
   }catch(e){
     console.error(e);
+    __pollDelayMs = Math.min(CLOUD_ERROR_BACKOFF_MS_MAX, Math.max(CLOUD_META_POLL_MS, __pollDelayMs * 2));
     setCloud(false, 'Cloud: eroare');
   }finally{
     inFlight = false;
@@ -1860,11 +1907,16 @@ function schedulePush(){
     try{
       const payload = getAllDataForExport();
       payload.updated_at = nowIso();
+      const bytes = safeJsonBytes(payload);
+      if(bytes > 900000){
+        setCloud(true, 'Cloud: sincronizez document mare');
+      }
       await writeDocument(DOC_KEY, payload);
 
       lastPushedAt = payload.updated_at;
       __HAS_LOCAL_PENDING = false;
-      setCloud(true, 'Cloud: ON');
+      __pollDelayMs = CLOUD_META_POLL_MS;
+      setCloud(true, CLOUD_IDLE_MSG);
     }catch(e){
       console.error(e);
       const msg = (String(e && e.message || '').toLowerCase().includes('row level security') || String(e).toLowerCase().includes('permission'))
@@ -1872,7 +1924,7 @@ function schedulePush(){
         : 'Cloud: eroare';
       setCloud(false, msg);
     }
-  }, 550);
+  }, CLOUD_PUSH_DEBOUNCE_MS);
 }
 
 window.notifyDataChanged = schedulePush;
@@ -1899,9 +1951,8 @@ async function startCloud(){
   cloudBadge.textContent = 'Cloud: conectez…';
 
   await pull();
-
-  pollTimer = setInterval(pull, 2500);
-  setCloud(true, 'Cloud: ON');
+  scheduleNextPull(CLOUD_META_POLL_MS);
+  setCloud(true, CLOUD_IDLE_MSG);
 }
 
 /* ===============================
@@ -1910,17 +1961,22 @@ async function startCloud(){
 let helpersLastTs = null;
 async function pullHelpers(){
   if(!supa) return;
+  if(document.hidden) return;
   try{
+    const metaTs = await readDocumentMeta('helpers');
+    if(!metaTs) return;
+    if(helpersLastTs && new Date(metaTs) <= new Date(helpersLastTs)) return;
     const doc = await readDocument('helpers');
     if(!doc || !doc.payload) return;
-    const ts = doc.updated_at || null;
+    const ts = doc.updated_at || metaTs || null;
     if(helpersLastTs && ts && new Date(ts) <= new Date(helpersLastTs)) return;
     helpersLastTs = ts || nowIso();
     HELPERS = doc.payload;
     try{ localStorage.setItem(LS_KEY_HELPERS, JSON.stringify(HELPERS)); }catch(_e){}
     rebuildDatalists();
+    __helpersDelayMs = HELPERS_META_POLL_MS;
   }catch(_e){
-    // silent
+    __helpersDelayMs = Math.min(CLOUD_ERROR_BACKOFF_MS_MAX, Math.max(HELPERS_META_POLL_MS, __helpersDelayMs * 2));
   }
 }
 
@@ -2158,6 +2214,22 @@ window.addEventListener('message', (e)=>{
   }
 });
 
+document.addEventListener('visibilitychange', ()=>{
+  if(document.hidden) return;
+  __pollDelayMs = CLOUD_META_POLL_MS;
+  __helpersDelayMs = HELPERS_META_POLL_MS;
+  try{ pull(); }catch(_e){}
+  try{ pullHelpers(); }catch(_e){}
+  scheduleNextPull(1200);
+  scheduleNextHelpersPull(2500);
+});
+
+window.addEventListener('beforeunload', ()=>{
+  if(pollTimer) clearTimeout(pollTimer);
+  if(pushTimer) clearTimeout(pushTimer);
+  if(helpersTimer) clearTimeout(helpersTimer);
+});
+
 /* ===============================
    INIT
    =============================== */
@@ -2183,7 +2255,7 @@ window.addEventListener('message', (e)=>{
     applyRole(role, email, access);
     startCloud();
     pullHelpers();
-    setInterval(pullHelpers, 5000);
+    scheduleNextHelpersPull(HELPERS_META_POLL_MS);
   });
 })();
 </script>
