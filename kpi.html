@@ -373,16 +373,20 @@
       function pickValue(obj, candidates){
         if (!obj || typeof obj !== 'object') return undefined;
         const entries = Object.keys(obj).map(key => ({ key, norm: normalizeText(key) }));
+
         for (const cand of candidates){
           const candNorm = normalizeText(cand);
           const exact = entries.find(item => item.norm === candNorm);
           if (exact) return obj[exact.key];
         }
+
         for (const cand of candidates){
           const candNorm = normalizeText(cand);
+          if (!candNorm || candNorm.length < 3) continue;
           const near = entries.find(item => item.norm.includes(candNorm) || candNorm.includes(item.norm));
           if (near) return obj[near.key];
         }
+
         return undefined;
       }
 
@@ -607,70 +611,9 @@
         });
       }
 
-      function sortDocsNewestFirst(docs){
-        return [...(docs || [])].sort((a, b) => new Date(b?.updated_at || 0) - new Date(a?.updated_at || 0));
-      }
-
-      function pickPreferredDocs(allDocs, exactCandidates, fuzzyCandidates){
-        const docs = sortDocsNewestFirst(allDocs);
-        const exactWanted = (exactCandidates || []).map(normalizeDocKey);
-        const fuzzyWanted = (fuzzyCandidates || []).map(normalizeDocKey);
-
-        const exact = docs.filter(doc => exactWanted.includes(normalizeDocKey(doc?.doc_key || doc?.page_key || doc?.key)));
-        if (exact.length) return [exact[0]];
-
-        const near = docs.filter(doc => {
-          const key = normalizeDocKey(doc?.doc_key || doc?.page_key || doc?.key);
-          return exactWanted.some(w => key.startsWith(w) || key.endsWith(w) || key === w);
-        });
-        if (near.length) return [near[0]];
-
-        const fuzzy = docs.filter(doc => {
-          const key = normalizeDocKey(doc?.doc_key || doc?.page_key || doc?.key);
-          return fuzzyWanted.some(w => key.includes(w) || w.includes(key));
-        });
-        return fuzzy.length ? [fuzzy[0]] : [];
-      }
-
-      function scoreTable(kind, rows){
-        const scorer = kind === 'tact' ? scoreTactRow : scoreForjateRow;
-        const threshold = 8;
-        const safeRows = Array.isArray(rows) ? rows : [];
-        const scores = safeRows.map(row => scorer(row));
-        const matched = scores.filter(value => value >= threshold).length;
-        const avg = safeRows.length ? (scores.reduce((sum, value) => sum + value, 0) / safeRows.length) : 0;
-        return { matched, avg, total: safeRows.length, rank: matched * 1000 + avg * 10 + (safeRows.length / 100000) };
-      }
-
-      function extractBestRowsFromDocs(docs, kind){
-        const selectedRows = [];
-        const debug = [];
-
-        (docs || []).forEach(doc => {
-          const tables = collectTables(extractDocPayload(doc));
-          let best = null;
-
-          tables.forEach(table => {
-            const rows = Array.isArray(table.rows) ? table.rows : [];
-            const stats = scoreTable(kind, rows);
-            if (!stats.matched) return;
-            if (!best || stats.rank > best.stats.rank){
-              best = { rows, path: table.path, stats };
-            }
-          });
-
-          if (best){
-            debug.push({
-              doc_key: doc?.doc_key || doc?.page_key || doc?.key || '',
-              path: best.path,
-              matched: best.stats.matched,
-              total: best.stats.total
-            });
-            best.rows.forEach(row => selectedRows.push(row));
-          }
-        });
-
-        return { rows: dedupeRows(selectedRows), debug };
+      function preferExactDoc(docs, exactKeys){
+        const exact = (docs || []).filter(doc => exactKeys.includes(normalizeDocKey(doc?.doc_key || doc?.page_key || doc?.key)));
+        return exact.length ? exact : (docs || []);
       }
 
       function extractAllRowsFromDocs(docs){
@@ -1001,24 +944,18 @@
         try{
           await fetchDocs();
 
-          let forjateDocs = pickPreferredDocs(rfDocs, ['forjate', 'forjate-data', 'forjatehtml'], FORJATE_DOC_KEYS);
-          let helperDocs = pickPreferredDocs(rfDocs, ['helper-data', 'helperdata', 'tacturi'], HELPER_DOC_KEYS);
+          let forjateDocs = preferExactDoc(findMatchingDocs(rfDocs, FORJATE_DOC_KEYS), ['forjate','forjatehtml']);
+          let helperDocs = preferExactDoc(findMatchingDocs(rfDocs, HELPER_DOC_KEYS), ['tacturi','helperdata','helperdatahtml','helper-data']);
 
-          if (!forjateDocs.length) forjateDocs = pickPreferredDocs(scanLocalStorageDocs(FORJATE_DOC_KEYS), ['forjate', 'forjate-data', 'forjatehtml'], FORJATE_DOC_KEYS);
-          if (!helperDocs.length) helperDocs = pickPreferredDocs(scanLocalStorageDocs(HELPER_DOC_KEYS), ['helper-data', 'helperdata', 'tacturi'], HELPER_DOC_KEYS);
+          if (!forjateDocs.length) forjateDocs = preferExactDoc(scanLocalStorageDocs(FORJATE_DOC_KEYS), ['forjate','forjatehtml']);
+          if (!helperDocs.length) helperDocs = preferExactDoc(scanLocalStorageDocs(HELPER_DOC_KEYS), ['tacturi','helperdata','helperdatahtml','helper-data']);
 
-          const forjateExtract = extractBestRowsFromDocs(forjateDocs, 'forjate');
-          const helperExtract = extractBestRowsFromDocs(helperDocs, 'tact');
-
-          const rawForjateRows = forjateExtract.rows;
-          const rawHelperRows = helperExtract.rows;
+          const rawForjateRows = extractAllRowsFromDocs(forjateDocs);
+          const rawHelperRows = extractAllRowsFromDocs(helperDocs);
 
           forjateRows = transformForjate(rawForjateRows);
           tactRows = transformTact(rawHelperRows);
 
-          if (!tactRows.length){
-            tactRows = transformTact(rawForjateRows);
-          }
 
           updateYearOptions();
           updateMonthOptions();
@@ -1034,8 +971,8 @@
           const latest = latestTs.length ? new Date(Math.max(...latestTs.map(date => date.getTime()))) : new Date();
           setSyncText(`Sincronizat • ${formatDateTime(latest)}`);
 
-          console.log('KPI forjate docs:', forjateDocs.map(doc => doc.doc_key), 'best tables:', forjateExtract.debug, 'rows:', rawForjateRows.length, 'mapped:', forjateRows.length);
-          console.log('KPI helper docs:', helperDocs.map(doc => doc.doc_key), 'best tables:', helperExtract.debug, 'rows:', rawHelperRows.length, 'mapped tact:', tactRows.length);
+          console.log('KPI forjate docs:', forjateDocs.map(doc => doc.doc_key), 'rows:', rawForjateRows.length, 'mapped:', forjateRows.length);
+          console.log('KPI helper docs:', helperDocs.map(doc => doc.doc_key), 'rows:', rawHelperRows.length, 'mapped tact:', tactRows.length);
         } catch (error) {
           console.error('KPI load error:', error);
           forjateRows = [];
