@@ -249,7 +249,7 @@
       const DAY_NAMES = ['duminică','luni','marți','miercuri','joi','vineri','sâmbătă'];
       const EQUIPMENT = ['5 T CHINA','MP','1,25 T','2,5 T','3 T BR'];
       const DEFAULT_OEE = 0.85;
-      const PLAN_MINUTES = 405;
+      const DEFAULT_PLAN_MINUTES = 405;
       const FORJATE_DOC_KEYS = ['forjate', 'foaia forjate', 'rapoarte', 'raport forja', 'forjate.html'];
       const HELPER_DOC_KEYS = ['helper-data', 'helper_data', 'helperdata', 'helper data'];
 
@@ -266,6 +266,7 @@
       let tactRows = [];
       let activeChannel = null;
       let refreshTimer = null;
+      let initialSelectionDone = false;
 
       function normalizeText(value){
         return String(value ?? '')
@@ -309,6 +310,7 @@
           base.setUTCDate(base.getUTCDate() + Math.floor(value));
           return new Date(base.getUTCFullYear(), base.getUTCMonth(), base.getUTCDate());
         }
+
         const text = String(value ?? '').trim();
         if (text) {
           const iso = text.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
@@ -319,9 +321,9 @@
           if (!isNaN(native)) return new Date(native.getFullYear(), native.getMonth(), native.getDate());
         }
 
-        const yearValue = pickValue(row, ['an', 'anul']);
-        const monthValue = pickValue(row, ['luna']);
-        const dayValue = pickValue(row, ['zi', 'ziua', 'data']);
+        const yearValue = pickValue(row, ['an', 'anul', 'a']);
+        const monthValue = pickValue(row, ['luna', 'b']);
+        const dayValue = pickValue(row, ['zi', 'ziua', 'data', 'c', 'bm']);
         const year = toNumber(yearValue);
 
         let month = null;
@@ -367,6 +369,12 @@
         return String(Math.round(value));
       }
 
+      function formatAverage(value){
+        if (value == null || !Number.isFinite(value)) return '';
+        if (Math.abs(value - Math.round(value)) < 0.000001) return String(Math.round(value));
+        return value.toFixed(2).replace('.', ',');
+      }
+
       function formatTact(value){
         if (value == null || !Number.isFinite(value)) return '';
         return Number.isInteger(value) ? String(value) : value.toFixed(2).replace('.', ',');
@@ -390,8 +398,8 @@
         const norm = normalizeText(raw);
         if (norm === '5tchina' || norm === '5tchinaforja') return '5 T CHINA';
         if (norm === 'mp') return 'MP';
-        if (['125t','125tona','125tone'].includes(norm)) return '1,25 T';
-        if (['25t','25tona','25tone'].includes(norm)) return '2,5 T';
+        if (['125t','125tona','125tone','125tforja'].includes(norm)) return '1,25 T';
+        if (['25t','25tona','25tone','25tforja'].includes(norm)) return '2,5 T';
         if (['3tbr','3tonbr'].includes(norm)) return '3 T BR';
         if (raw === '5 T CHINA' || raw === 'MP' || raw === '1,25 T' || raw === '2,5 T' || raw === '3 T BR') return raw;
         if (raw === '5 T China'.toUpperCase()) return '5 T CHINA';
@@ -400,9 +408,13 @@
       }
 
       function tableFromHeadersRows(headers, rows){
-        const head = headers.map(h => typeof h === 'object' ? (h.label ?? h.name ?? h.key ?? '') : String(h ?? ''));
+        const head = headers.map(h => typeof h === 'object' ? (h.label ?? h.name ?? h.key ?? h.title ?? '') : String(h ?? ''));
         return rows.map(row => {
-          const source = Array.isArray(row) ? row : Array.isArray(row?.cells) ? row.cells.map(cell => cell?.value ?? cell?.text ?? cell) : head.map(key => row?.[key]);
+          const source = Array.isArray(row)
+            ? row
+            : Array.isArray(row?.cells)
+              ? row.cells.map(cell => cell?.value ?? cell?.text ?? cell)
+              : head.map(key => row?.[key]);
           const obj = {};
           head.forEach((key, idx) => { obj[key || `COL_${idx+1}`] = source?.[idx] ?? null; });
           return obj;
@@ -412,7 +424,7 @@
       function looksLikePlainRow(obj){
         if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return false;
         const keys = Object.keys(obj);
-        if (!keys.length || keys.length > 60) return false;
+        if (!keys.length || keys.length > 80) return false;
         let primitive = 0;
         for (const key of keys){
           const val = obj[key];
@@ -422,7 +434,7 @@
       }
 
       function collectTables(node, path = 'root', out = [], depth = 0){
-        if (depth > 7 || node == null) return out;
+        if (depth > 8 || node == null) return out;
 
         if (Array.isArray(node)) {
           if (!node.length) return out;
@@ -436,56 +448,64 @@
         }
 
         if (typeof node === 'object') {
-          if (Array.isArray(node.rows) && Array.isArray(node.headers)) {
-            out.push({ path: `${path}.rows`, rows: tableFromHeadersRows(node.headers, node.rows) });
-          }
-          if (Array.isArray(node.rows) && Array.isArray(node.columns)) {
-            out.push({ path: `${path}.rows`, rows: tableFromHeadersRows(node.columns, node.rows) });
-          }
-          if (Array.isArray(node.data) && Array.isArray(node.headers)) {
-            out.push({ path: `${path}.data`, rows: tableFromHeadersRows(node.headers, node.data) });
-          }
-          if (Array.isArray(node.data) && Array.isArray(node.columns)) {
-            out.push({ path: `${path}.data`, rows: tableFromHeadersRows(node.columns, node.data) });
-          }
-          if (looksLikePlainRow(node)) {
-            out.push({ path, rows: [node] });
-          }
+          if (Array.isArray(node.rows) && Array.isArray(node.headers)) out.push({ path: `${path}.rows`, rows: tableFromHeadersRows(node.headers, node.rows) });
+          if (Array.isArray(node.rows) && Array.isArray(node.columns)) out.push({ path: `${path}.rows`, rows: tableFromHeadersRows(node.columns, node.rows) });
+          if (Array.isArray(node.data) && Array.isArray(node.headers)) out.push({ path: `${path}.data`, rows: tableFromHeadersRows(node.headers, node.data) });
+          if (Array.isArray(node.data) && Array.isArray(node.columns)) out.push({ path: `${path}.data`, rows: tableFromHeadersRows(node.columns, node.data) });
+          if (Array.isArray(node.items) && Array.isArray(node.headers)) out.push({ path: `${path}.items`, rows: tableFromHeadersRows(node.headers, node.items) });
+          if (looksLikePlainRow(node)) out.push({ path, rows: [node] });
           Object.keys(node).forEach(key => collectTables(node[key], `${path}.${key}`, out, depth + 1));
         }
 
         return out;
       }
 
+      function rowFitForjate(row){
+        let fit = 0;
+        if (parseDateAny(pickValue(row, ['data', 'bm', 'c']), row)) fit++;
+        if (normalizeEquipment(pickValue(row, ['utilaj', 'linie de forjare', 'echipament', 'bo', 'e']) ?? '')) fit++;
+        if (String(pickValue(row, ['reper', 'bp', 'f']) ?? '').trim()) fit++;
+        if (toNumber(pickValue(row, ['buc realizate', 'bucati realizate', 'realizat', 'cantitate realizata', 'cantitate', 'cb', 'r'])) != null) fit++;
+        return fit;
+      }
+
+      function rowFitTact(row){
+        let fit = 0;
+        if (String(pickValue(row, ['reper', 'b']) ?? '').trim()) fit++;
+        if (normalizeEquipment(pickValue(row, ['utilaj', 'linie de forjare', 'echipament', 'c']) ?? '')) fit++;
+        if (toNumber(pickValue(row, ['tact', 'sec', 'secunde', 'd'])) != null) fit++;
+        return fit;
+      }
+
       function scoreForjate(table){
-        const pathBoost = /(forjate|rapoarte|raport)/i.test(table.path) ? 5 : 0;
-        const sample = table.rows.slice(0, 25);
-        let score = pathBoost;
-        for (const row of sample){
-          if (pickValue(row, ['data'])) score += 3;
-          if (pickValue(row, ['utilaj', 'linie de forjare', 'echipament'])) score += 3;
-          if (pickValue(row, ['reper'])) score += 3;
-          if (pickValue(row, ['buc realizate', 'bucati realizate', 'realizat', 'cantitate realizata'])) score += 2;
-        }
-        return score;
+        const pathBoost = /(forjate|rapoarte|raport)/i.test(table.path) ? 8 : 0;
+        const rows = Array.isArray(table.rows) ? table.rows : [];
+        const sample = rows.slice(0, 50);
+        const fitValues = sample.map(rowFitForjate);
+        const matchedRows = fitValues.filter(v => v >= 3).length;
+        const avgFit = fitValues.length ? fitValues.reduce((a,b) => a+b, 0) / fitValues.length : 0;
+        return pathBoost + matchedRows * 2 + avgFit * 5 + Math.min(rows.length, 300) * 0.02;
       }
 
       function scoreTact(table){
-        const pathBoost = /(tact|tacturi)/i.test(table.path) ? 8 : 0;
-        const sample = table.rows.slice(0, 25);
-        let score = pathBoost;
-        for (const row of sample){
-          if (pickValue(row, ['reper'])) score += 3;
-          if (pickValue(row, ['utilaj', 'linie de forjare', 'echipament'])) score += 3;
-          if (pickValue(row, ['tact', 'sec', 'secunde'])) score += 4;
-        }
-        return score;
+        const pathBoost = /(tact|tacturi)/i.test(table.path) ? 10 : 0;
+        const rows = Array.isArray(table.rows) ? table.rows : [];
+        const sample = rows.slice(0, 50);
+        const fitValues = sample.map(rowFitTact);
+        const matchedRows = fitValues.filter(v => v >= 3).length;
+        const avgFit = fitValues.length ? fitValues.reduce((a,b) => a+b, 0) / fitValues.length : 0;
+        return pathBoost + matchedRows * 2 + avgFit * 5 + Math.min(rows.length, 300) * 0.02;
       }
 
       function bestTable(payload, scorer){
         const tables = collectTables(payload).filter(item => Array.isArray(item.rows) && item.rows.length);
         if (!tables.length) return { rows: [], path: 'none' };
-        tables.sort((a,b) => scorer(b) - scorer(a));
+        tables.sort((a,b) => {
+          const sb = scorer(b);
+          const sa = scorer(a);
+          if (sb !== sa) return sb - sa;
+          return (b.rows?.length || 0) - (a.rows?.length || 0);
+        });
         return tables[0];
       }
 
@@ -536,9 +556,9 @@
       function buildTactLookup(rows){
         const map = new Map();
         rows.forEach(row => {
-          const reper = String(pickValue(row, ['reper']) ?? '').trim();
-          const equipment = normalizeEquipment(pickValue(row, ['utilaj', 'linie de forjare', 'echipament']) ?? '');
-          const tact = toNumber(pickValue(row, ['tact', 'sec', 'secunde']));
+          const reper = String(pickValue(row, ['reper', 'b']) ?? '').trim();
+          const equipment = normalizeEquipment(pickValue(row, ['utilaj', 'linie de forjare', 'echipament', 'c']) ?? '');
+          const tact = toNumber(pickValue(row, ['tact', 'sec', 'secunde', 'd']));
           if (!reper || !equipment || tact == null) return;
           map.set(`${normalizeText(reper)}|${normalizeText(equipment)}`, tact);
         });
@@ -547,11 +567,11 @@
 
       function transformForjate(rows){
         return rows.map(row => {
-          const rawDate = pickValue(row, ['data']);
+          const rawDate = pickValue(row, ['data', 'bm', 'c']);
           const date = parseDateAny(rawDate, row);
-          const equipment = normalizeEquipment(pickValue(row, ['utilaj', 'linie de forjare', 'echipament']) ?? '');
-          const reper = String(pickValue(row, ['reper']) ?? '').trim();
-          const realized = toNumber(pickValue(row, ['buc realizate', 'bucati realizate', 'realizat', 'cantitate realizata', 'cantitate', 'buc realizate'])) ?? 0;
+          const equipment = normalizeEquipment(pickValue(row, ['utilaj', 'linie de forjare', 'echipament', 'bo', 'e']) ?? '');
+          const reper = String(pickValue(row, ['reper', 'bp', 'f']) ?? '').trim();
+          const realized = toNumber(pickValue(row, ['buc realizate', 'bucati realizate', 'realizat', 'cantitate realizata', 'cantitate', 'cb', 'r'])) ?? 0;
           return { date, equipment, reper, realized, raw: row };
         }).filter(item => item.date && item.equipment && item.reper);
       }
@@ -583,6 +603,17 @@
           monthSelect.appendChild(opt);
         });
         monthSelect.value = MONTHS.includes(currentValue) ? currentValue : MONTHS[currentMonth];
+      }
+
+      function applyInitialSelectionFromData(){
+        if (initialSelectionDone) return;
+        if (!forjateRows.length) return;
+        const latest = new Date(Math.max(...forjateRows.map(item => item.date.getTime())));
+        if (!isNaN(latest)) {
+          yearSelect.value = String(latest.getFullYear());
+          monthSelect.value = MONTHS[latest.getMonth()];
+        }
+        initialSelectionDone = true;
       }
 
       function buildHeader(){
@@ -624,6 +655,10 @@
         kpiHead.appendChild(tr2);
       }
 
+      function getPlanMinutes(date, equipment){
+        return DEFAULT_PLAN_MINUTES;
+      }
+
       function renderTable(){
         buildHeader();
 
@@ -633,7 +668,7 @@
         const daysInMonth = new Date(year, monthIndex + 1, 0).getDate();
         const tactLookup = buildTactLookup(tactRows);
         const dataByEquipment = Object.fromEntries(EQUIPMENT.map(eq => [eq, getMachineData(forjateRows, year, monthIndex, eq)]));
-        const media = Object.fromEntries(EQUIPMENT.map(eq => [eq, []]));
+        const media = Object.fromEntries(EQUIPMENT.map(eq => [eq, { realized: [], percent: [] }]));
 
         kpiBody.innerHTML = '';
 
@@ -656,14 +691,16 @@
             const list = dataByEquipment[eq].get(dateKey) || [];
             const uniqueRepere = [...new Set(list.map(item => item.reper).filter(Boolean))];
             const reperText = uniqueRepere.join(', ');
-            let tact = null;
-            if (uniqueRepere.length === 1) {
-              tact = tactLookup.get(`${normalizeText(uniqueRepere[0])}|${normalizeText(eq)}`) ?? null;
-            }
+            const tact = uniqueRepere.length === 1
+              ? (tactLookup.get(`${normalizeText(uniqueRepere[0])}|${normalizeText(eq)}`) ?? null)
+              : null;
             const realized = list.reduce((sum, item) => sum + (item.realized || 0), 0);
-            const planned = tact ? Math.round((PLAN_MINUTES * 60 * oee) / tact) : null;
+            const planMinutes = getPlanMinutes(date, eq);
+            const planned = tact ? Math.round((planMinutes * 60 * oee) / tact) : null;
             const percent = planned && realized ? (realized / planned) : null;
-            if (percent != null && Number.isFinite(percent)) media[eq].push(percent);
+
+            if (realized > 0) media[eq].realized.push(realized);
+            if (percent != null && Number.isFinite(percent) && percent > 0) media[eq].percent.push(percent);
 
             const tdReper = document.createElement('td');
             tdReper.className = 'w-reper';
@@ -697,26 +734,36 @@
         const mediaRow = document.createElement('tr');
         mediaRow.className = 'media-row';
 
-        const mediaLabel = document.createElement('td');
-        mediaLabel.className = 'sticky-left-1';
-        mediaLabel.textContent = 'MEDIA';
-        mediaRow.appendChild(mediaLabel);
+        const blankDate = document.createElement('td');
+        blankDate.className = 'sticky-left-1';
+        blankDate.textContent = '';
+        mediaRow.appendChild(blankDate);
 
-        const mediaBlank = document.createElement('td');
-        mediaBlank.className = 'sticky-left-2';
-        mediaBlank.textContent = '';
-        mediaRow.appendChild(mediaBlank);
+        const blankDay = document.createElement('td');
+        blankDay.className = 'sticky-left-2';
+        blankDay.textContent = '';
+        mediaRow.appendChild(blankDay);
 
         EQUIPMENT.forEach(eq => {
-          for (let i = 0; i < 4; i++) {
-            const td = document.createElement('td');
-            td.textContent = '';
-            mediaRow.appendChild(td);
-          }
-          const avg = media[eq].length ? media[eq].reduce((a,b) => a+b, 0) / media[eq].length : null;
-          const tdAvg = document.createElement('td');
-          tdAvg.textContent = formatPercent(avg);
-          mediaRow.appendChild(tdAvg);
+          const tdLabel = document.createElement('td');
+          tdLabel.colSpan = 3;
+          tdLabel.textContent = 'MEDIA';
+          mediaRow.appendChild(tdLabel);
+
+          const realizedAvg = media[eq].realized.length
+            ? media[eq].realized.reduce((a,b) => a+b, 0) / media[eq].realized.length
+            : null;
+          const percentAvg = media[eq].percent.length
+            ? media[eq].percent.reduce((a,b) => a+b, 0) / media[eq].percent.length
+            : null;
+
+          const tdRealAvg = document.createElement('td');
+          tdRealAvg.textContent = formatAverage(realizedAvg);
+          mediaRow.appendChild(tdRealAvg);
+
+          const tdPercentAvg = document.createElement('td');
+          tdPercentAvg.textContent = formatPercent(percentAvg);
+          mediaRow.appendChild(tdPercentAvg);
         });
 
         kpiBody.appendChild(mediaRow);
@@ -747,10 +794,11 @@
           const bestTact = bestTable(extractDocPayload(helperDoc), scoreTact);
 
           forjateRows = transformForjate(bestForjate.rows);
-          tactRows = bestTact.rows;
+          tactRows = Array.isArray(bestTact.rows) ? bestTact.rows : [];
 
           updateYearOptions();
           updateMonthOptions();
+          applyInitialSelectionFromData();
           renderTable();
 
           const timestamps = [forjateDoc?.updated_at, helperDoc?.updated_at].filter(Boolean).map(v => new Date(v)).filter(d => !isNaN(d));
@@ -758,8 +806,8 @@
           const hasCloudData = forjateRows.length || tactRows.length;
           setSyncText(hasCloudData ? `Sincronizat • ${formatDateTime(latest)}` : 'Sincronizat • fără date');
 
-          console.log('KPI source forjate:', bestForjate.path, 'rows:', forjateRows.length);
-          console.log('KPI source tacturi:', bestTact.path, 'rows:', tactRows.length);
+          console.log('KPI source forjate:', bestForjate.path, 'rows:', bestForjate.rows?.length || 0, 'mapped:', forjateRows.length);
+          console.log('KPI source tacturi:', bestTact.path, 'rows:', bestTact.rows?.length || 0);
         } catch (error) {
           console.error('KPI load error:', error);
           setSyncText('Sincronizat • eroare citire');
@@ -808,8 +856,14 @@
       }
 
       function bindEvents(){
-        yearSelect.addEventListener('change', renderTable);
-        monthSelect.addEventListener('change', renderTable);
+        yearSelect.addEventListener('change', () => {
+          initialSelectionDone = true;
+          renderTable();
+        });
+        monthSelect.addEventListener('change', () => {
+          initialSelectionDone = true;
+          renderTable();
+        });
         oeeInput.addEventListener('change', () => {
           const value = parseOee();
           oeeInput.value = value.toFixed(2).replace('.', ',');
