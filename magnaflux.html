@@ -23,8 +23,6 @@
       --warn:#b07a13;
       --shadow:0 8px 20px rgba(18,53,84,.10);
       --row-h:36px;
-      --visible-rows:8;
-      --visible-rows-mobile:5;
       --radius:14px;
     }
 
@@ -202,12 +200,27 @@
       flex-wrap:wrap;
     }
 
-    .table-wrap{
+    .table-shell{
       position:relative;
       flex:0 0 auto;
+      align-self:flex-start;
+      width:100%;
+      min-width:680px;
+      max-width:100%;
+      min-height:calc(var(--row-h) * 22 + 4px);
+      height:calc(var(--row-h) * 22 + 4px);
+      max-height:calc(100vh - 250px);
+      resize:both;
+      overflow:hidden;
+      background:#f7fbff;
+    }
+
+    .table-wrap{
+      position:absolute;
+      inset:0;
       min-height:0;
-      height:calc(var(--row-h) * var(--visible-rows) + 4px);
-      max-height:calc(var(--row-h) * var(--visible-rows) + 4px);
+      width:100%;
+      height:100%;
       overflow:auto;
       scrollbar-gutter:stable both-edges;
       background:#f7fbff;
@@ -572,7 +585,16 @@
       .topbar-right{justify-content:flex-start}
       .stats{grid-template-columns:repeat(2,minmax(120px,1fr))}
       .grid-card{min-height:auto}
-      .table-wrap{height:calc(var(--row-h) * var(--visible-rows-mobile) + 4px);max-height:calc(var(--row-h) * var(--visible-rows-mobile) + 4px)}
+      .table-shell{
+        width:100%!important;
+        min-width:100%;
+        max-width:100%;
+        min-height:calc(var(--row-h) * 22 + 4px);
+        height:calc(var(--row-h) * 22 + 4px);
+        max-height:calc(var(--row-h) * 22 + 4px);
+        resize:none;
+      }
+      .table-wrap{height:100%;max-height:none}
       .fab{display:flex}
       #btnAdd{display:none}
       .modal{position:relative;left:auto;top:auto;transform:none;width:min(1180px,100%);margin:auto;touch-action:auto}
@@ -622,15 +644,17 @@
 
     <section class="grid-card">
       <div class="grid-toolbar">
-        <div id="gridInfo">Dublu click pe un rând pentru editare. Sunt vizibile mai puține rânduri, ca să încapă tabelul pe ecran și să se vadă clar scroll-ul de jos.</div>
+        <div id="gridInfo">Dublu click pe un rând pentru editare. Sunt vizibile 20 de rânduri, cu scroll sus-jos și stânga-dreapta.</div>
         <div id="gridMeta">Sursă: local</div>
       </div>
-      <div class="table-wrap" id="tableWrap">
-        <table id="magnafluxTable" aria-label="Magnaflux">
-          <thead id="tableHead"></thead>
-          <tbody id="tableBody"></tbody>
-        </table>
-        <div class="empty-state hidden" id="emptyState">Nu există date încă.</div>
+      <div class="table-shell" id="tableShell">
+        <div class="table-wrap" id="tableWrap">
+          <table id="magnafluxTable" aria-label="Magnaflux">
+            <thead id="tableHead"></thead>
+            <tbody id="tableBody"></tbody>
+          </table>
+          <div class="empty-state hidden" id="emptyState">Nu există date încă.</div>
+        </div>
       </div>
     </section>
   </div>
@@ -755,8 +779,10 @@
       const PAGE_KEY = 'magnaflux';
       const DOC_KEY = 'magnaflux';
       const CACHE_KEY = 'rf:magnaflux:cache:v1';
-      const META_POLL_MS = 30000;
+      const TABLE_SIZE_KEY = 'rf:magnaflux:table-size:v1';
+      const META_POLL_MS = 120000;
       const SAVE_DELAY_MS = 1800;
+      const FILTER_INPUT_DEBOUNCE_MS = 120;
       const MONTHS_RO = ['Ianuarie','Februarie','Martie','Aprilie','Mai','Iunie','Iulie','August','Septembrie','Octombrie','Noiembrie','Decembrie'];
 
       const columns = [
@@ -796,6 +822,7 @@
         gridMeta: document.getElementById('gridMeta'),
         tableHead: document.getElementById('tableHead'),
         tableBody: document.getElementById('tableBody'),
+        tableShell: document.getElementById('tableShell'),
         tableWrap: document.getElementById('tableWrap'),
         emptyState: document.getElementById('emptyState'),
         toast: document.getElementById('toast'),
@@ -896,8 +923,13 @@
         xlsxLoader: null,
         saveTimer: null,
         pollTimer: null,
+        tableSizeTimer: null,
+        tableResizeObserver: null,
+        filterTimer: null,
         sourceLabel: 'local',
-        forceScrollToBottom: true
+        forceScrollToBottom: true,
+        helperLoaded: false,
+        helperLoadingPromise: null
       };
 
       function showToast(message){
@@ -967,6 +999,71 @@
           .replace(/[\u0300-\u036f]/g,'')
           .toLowerCase()
           .trim();
+      }
+
+      function getDefaultTableShellHeight(){
+        return 22 * 36 + 4;
+      }
+
+      function clampTableShellSize(size){
+        const parentWidth = el.tableShell && el.tableShell.parentElement
+          ? el.tableShell.parentElement.clientWidth
+          : Math.max(680, window.innerWidth - 24);
+        const minWidth = Math.min(680, Math.max(320, parentWidth));
+        const maxWidth = Math.max(minWidth, parentWidth);
+        const minHeight = getDefaultTableShellHeight();
+        const maxHeight = Math.max(minHeight, window.innerHeight - 250);
+
+        let width = Number(size && size.width) || maxWidth;
+        let height = Number(size && size.height) || minHeight;
+
+        width = Math.min(Math.max(minWidth, width), maxWidth);
+        height = Math.min(Math.max(minHeight, height), maxHeight);
+
+        return { width: Math.round(width), height: Math.round(height) };
+      }
+
+      function saveTableShellSize(){
+        if(window.innerWidth <= 900 || !el.tableShell) return;
+        const size = clampTableShellSize({
+          width: el.tableShell.offsetWidth,
+          height: el.tableShell.offsetHeight
+        });
+        localStorage.setItem(TABLE_SIZE_KEY, JSON.stringify(size));
+      }
+
+      function applyTableShellSize(){
+        if(!el.tableShell) return;
+
+        if(window.innerWidth <= 900){
+          el.tableShell.style.width = '100%';
+          el.tableShell.style.height = `${getDefaultTableShellHeight()}px`;
+          return;
+        }
+
+        let stored = null;
+        try{
+          stored = JSON.parse(localStorage.getItem(TABLE_SIZE_KEY) || 'null');
+        }catch(_err){
+          stored = null;
+        }
+
+        const size = clampTableShellSize(stored);
+        el.tableShell.style.width = `${size.width}px`;
+        el.tableShell.style.height = `${size.height}px`;
+      }
+
+      function initTableShellResizePersistence(){
+        if(!el.tableShell || !window.ResizeObserver) return;
+        if(state.tableResizeObserver){
+          try{ state.tableResizeObserver.disconnect(); }catch(_err){}
+        }
+        state.tableResizeObserver = new ResizeObserver(() => {
+          if(window.innerWidth <= 900) return;
+          clearTimeout(state.tableSizeTimer);
+          state.tableSizeTimer = setTimeout(saveTableShellSize, 120);
+        });
+        state.tableResizeObserver.observe(el.tableShell);
       }
 
       function computeDerived(row){
@@ -1238,10 +1335,27 @@
         state.saveTimer = setTimeout(() => { saveDocToCloud(); }, SAVE_DELAY_MS);
       }
 
-      async function loadHelperData(){
-        const helper = await fetchDocByKey('helper-data');
-        state.helperDoc = helper || { rows: [] };
-        state.helperSuggestions = extractHelperSuggestions(helper || {});
+      async function ensureHelperDataLoaded(){
+        if(state.helperLoaded) return state.helperDoc;
+        if(state.helperLoadingPromise) return state.helperLoadingPromise;
+
+        state.helperLoadingPromise = (async () => {
+          const helper = await fetchDocByKey('helper-data');
+          state.helperDoc = helper || { rows: [] };
+          state.helperLoaded = true;
+          refreshHelperSuggestions();
+          return state.helperDoc;
+        })();
+
+        try{
+          return await state.helperLoadingPromise;
+        }finally{
+          state.helperLoadingPromise = null;
+        }
+      }
+
+      function refreshHelperSuggestions(){
+        state.helperSuggestions = extractHelperSuggestions(state.helperDoc || {});
         refreshDatalists();
       }
 
@@ -1464,41 +1578,40 @@
         });
       }
 
+      function syncSelectedRowUi(){
+        const rows = el.tableBody.querySelectorAll('tr[data-id]');
+        rows.forEach(tr => tr.classList.toggle('selected', tr.dataset.id === state.selectedId));
+      }
+
       function renderBody(){
         const rows = filteredRows();
-        el.tableBody.innerHTML = '';
+
         if(!rows.length){
+          el.tableBody.innerHTML = '';
           el.emptyState.classList.remove('hidden');
         }else{
           el.emptyState.classList.add('hidden');
+          const bodyHtml = rows.map(row => {
+            const trClasses = [];
+            if(state.selectedId === row.id) trClasses.push('selected');
+            if(!state.permissions.canEdit) trClasses.push('readonly');
+
+            const cellsHtml = columns.map(col => {
+              const classes = [];
+              if(col.align === 'left') classes.push('align-left');
+              if(col.align === 'right') classes.push('align-right');
+              if(col.colClass) classes.push(col.colClass);
+              if(isPositiveRebutCell(row, col.key)) classes.push('rebut-hot');
+              const classAttr = classes.length ? ` class="${classes.join(' ')}"` : '';
+              return `<td${classAttr}>${escapeHtml(formatCell(row, col))}</td>`;
+            }).join('');
+
+            const classAttr = trClasses.length ? ` class="${trClasses.join(' ')}"` : '';
+            return `<tr data-id="${escapeHtml(row.id)}"${classAttr}>${cellsHtml}</tr>`;
+          }).join('');
+
+          el.tableBody.innerHTML = bodyHtml;
         }
-
-        rows.forEach(row => {
-          const tr = document.createElement('tr');
-          tr.dataset.id = row.id;
-          if(state.selectedId === row.id) tr.classList.add('selected');
-          if(!state.permissions.canEdit) tr.classList.add('readonly');
-          tr.addEventListener('click', () => {
-            state.selectedId = row.id;
-            renderBody();
-          });
-          tr.addEventListener('dblclick', () => {
-            if(!state.permissions.canEdit) return showToast('Ai doar drept de vizualizare pe această pagină.');
-            openEditor(row.id);
-          });
-
-          columns.forEach(col => {
-            const td = document.createElement('td');
-            if(col.align === 'left') td.classList.add('align-left');
-            if(col.align === 'right') td.classList.add('align-right');
-            if(col.colClass) td.classList.add(col.colClass);
-            if(isPositiveRebutCell(row, col.key)) td.classList.add('rebut-hot');
-            td.textContent = formatCell(row, col);
-            tr.appendChild(td);
-          });
-
-          el.tableBody.appendChild(tr);
-        });
 
         updateStats(rows);
 
@@ -1541,7 +1654,7 @@
         el.statAcceptate.textContent = nf(totalAcceptate);
         el.statRebut.textContent = nf(totalRebut);
         el.statRejectRate.textContent = pf(totalControlate > 0 ? totalRebut / totalControlate : 0);
-        el.gridInfo.textContent = `Dublu click pe un rând pentru editare. Sunt afișate mai puține rânduri ca să se vadă scroll-ul de jos. ${rows.length} rând(uri) după filtrare.`;
+        el.gridInfo.textContent = `Dublu click pe un rând pentru editare. 20 rânduri vizibile în fereastră. ${rows.length} rând(uri) după filtrare.`;
       }
 
       function updateStatusText(){
@@ -1551,23 +1664,25 @@
         el.gridMeta.textContent = `Sursă activă: ${state.sourceLabel} · ${dirtyText} · ${cloudText} · total rânduri: ${total}`;
       }
 
-      function renderAll(){
-        state.forceScrollToBottom = true;
+      function renderAll(options){
+        const opts = options || {};
+        state.forceScrollToBottom = !!opts.forceScrollToBottom;
         renderHeader();
         renderBody();
-        state.helperSuggestions = extractHelperSuggestions(state.helperDoc || {});
-        refreshDatalists();
         updateRoleUi();
         updateStatusText();
       }
 
       function onFilterInput(ev){
         state.filters[ev.target.dataset.key] = ev.target.value || '';
-        state.forceScrollToBottom = true;
-        renderBody();
+        clearTimeout(state.filterTimer);
+        state.filterTimer = setTimeout(() => {
+          renderBody();
+        }, FILTER_INPUT_DEBOUNCE_MS);
       }
 
       function openEditor(id){
+        ensureHelperDataLoaded().catch(() => {});
         refreshDatalists();
         const row = id ? clone(state.rows.find(r => r.id === id)) : defaultRow();
         state.editorId = row.id;
@@ -1691,7 +1806,8 @@
         state.dirty = true;
         state.sourceLabel = 'local';
         saveLocal();
-        renderAll();
+        refreshHelperSuggestions();
+        renderAll({ forceScrollToBottom:true });
         fillForm(row);
         el.modalTitle.textContent = 'Editează înregistrare MAGNAFLUX';
         el.btnDeleteRow.classList.toggle('hidden', !state.permissions.canDelete);
@@ -1711,6 +1827,7 @@
         state.dirty = true;
         state.sourceLabel = 'local';
         saveLocal();
+        refreshHelperSuggestions();
         renderAll();
         closeEditor();
         showToast('Rândul a fost șters.');
@@ -1964,7 +2081,8 @@
           state.dirty = true;
           state.sourceLabel = 'local';
           saveLocal();
-          renderAll();
+          refreshHelperSuggestions();
+          renderAll({ forceScrollToBottom:true });
           scheduleCloudSave();
           setSyncBadge('Import Excel finalizat', 'ok');
           showToast(`Import finalizat: ${importedRows.length} rând(uri).`);
@@ -2013,7 +2131,8 @@
           state.dirty = false;
           state.sourceLabel = 'cloud';
           saveLocal();
-          renderAll();
+          refreshHelperSuggestions();
+          renderAll({ forceScrollToBottom:true });
           setSyncBadge('Cloud încărcat', 'ok');
           showToast('Datele au fost reîncărcate din cloud.');
         }else{
@@ -2023,7 +2142,7 @@
       }
 
       async function pollCloudMeta(){
-        if(!state.supabase || state.dirty) return;
+        if(!state.supabase || state.dirty || document.hidden || !navigator.onLine) return;
         const remoteUpdatedAt = await fetchDocMeta(DOC_KEY);
         if(!remoteUpdatedAt) return;
         if(state.lastCloudUpdatedAt && remoteUpdatedAt <= state.lastCloudUpdatedAt) return;
@@ -2033,7 +2152,8 @@
         state.lastCloudUpdatedAt = doc.updated_at || remoteUpdatedAt;
         state.sourceLabel = 'cloud';
         saveLocal();
-        renderAll();
+        refreshHelperSuggestions();
+        renderAll({ forceScrollToBottom:true });
         setSyncBadge('Actualizare nouă din cloud', 'ok');
       }
 
@@ -2090,6 +2210,20 @@
       function bindEvents(){
         el.btnBack.addEventListener('click', () => window.location.href = 'index.html');
         el.btnReload.addEventListener('click', manualReload);
+
+        el.tableBody.addEventListener('click', ev => {
+          const tr = ev.target.closest('tr[data-id]');
+          if(!tr) return;
+          state.selectedId = tr.dataset.id || null;
+          syncSelectedRowUi();
+        });
+
+        el.tableBody.addEventListener('dblclick', ev => {
+          const tr = ev.target.closest('tr[data-id]');
+          if(!tr) return;
+          if(!state.permissions.canEdit) return showToast('Ai doar drept de vizualizare pe această pagină.');
+          openEditor(tr.dataset.id);
+        });
         el.btnSync.addEventListener('click', async () => {
           if(!state.permissions.canEdit) return showToast('Nu ai drept de sincronizare/editare.');
           const ok = await saveDocToCloud();
@@ -2111,7 +2245,10 @@
         el.btnSaveRow.addEventListener('click', saveRowFromForm);
         el.btnDeleteRow.addEventListener('click', deleteEditorRow);
         el.modalBackdrop.addEventListener('click', ev => { if(ev.target === el.modalBackdrop) closeEditor(); });
-        window.addEventListener('resize', () => { if(window.innerWidth <= 900) resetModalPosition(); });
+        window.addEventListener('resize', () => {
+          if(window.innerWidth <= 900) resetModalPosition();
+          applyTableShellSize();
+        });
 
         el.fData.addEventListener('input', () => { syncDateParts(); refreshFormComputed(); });
         el.fReper.addEventListener('change', () => { applyReperMapping(); refreshFormComputed(); });
@@ -2125,11 +2262,20 @@
         });
         document.querySelectorAll('.calc-input').forEach(input => input.addEventListener('input', refreshFormComputed));
 
-        window.addEventListener('online', () => setSyncBadge(state.dirty ? 'Ai modificări locale de sincronizat' : 'Conexiune online', state.dirty ? 'warn' : 'ok'));
+        window.addEventListener('online', () => {
+          setSyncBadge(state.dirty ? 'Ai modificări locale de sincronizat' : 'Conexiune online', state.dirty ? 'warn' : 'ok');
+          pollCloudMeta();
+        });
         window.addEventListener('offline', () => setSyncBadge('Offline · datele rămân local', 'err'));
+        document.addEventListener('visibilitychange', () => {
+          if(!document.hidden && !state.dirty) pollCloudMeta();
+        });
       }
 
       async function initialLoad(){
+        applyTableShellSize();
+        initTableShellResizePersistence();
+
         const localDoc = loadLocal();
         if(localDoc && Array.isArray(localDoc.rows)){
           state.rows = localDoc.rows.map(sanitizeRow);
@@ -2139,7 +2285,8 @@
           state.rows = [];
         }
 
-        renderAll();
+        refreshHelperSuggestions();
+        renderAll({ forceScrollToBottom:true });
         setSyncBadge(navigator.onLine ? 'Conectare...' : 'Offline · datele rămân local', navigator.onLine ? 'warn' : 'err');
 
         try{
@@ -2148,7 +2295,6 @@
           await requireSession();
           await resolveRole();
           await resolvePermissions();
-          await loadHelperData();
 
           const cloudDoc = await fetchDocByKey(DOC_KEY);
           if(cloudDoc && Array.isArray(cloudDoc.rows)){
@@ -2163,12 +2309,15 @@
             }
           }
 
-          renderAll();
+          refreshHelperSuggestions();
+          renderAll({ forceScrollToBottom:true });
           setSyncBadge(state.dirty ? 'Ai modificări locale de sincronizat' : 'Pregătit', state.dirty ? 'warn' : 'ok');
+          ensureHelperDataLoaded().catch(() => {});
           clearInterval(state.pollTimer);
           state.pollTimer = setInterval(pollCloudMeta, META_POLL_MS);
         }catch(err){
-          renderAll();
+          refreshHelperSuggestions();
+          renderAll({ forceScrollToBottom:true });
           setSyncBadge('Funcționează local', 'warn');
           showToast('Pagina a pornit local. Cloud-ul nu este disponibil momentan.');
         }
