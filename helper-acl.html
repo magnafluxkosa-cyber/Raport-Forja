@@ -741,6 +741,108 @@
         return '';
       }
 
+      async function tryLoadAdminUsers(){
+        const baseUrl = String(window.RF_SUPABASE_URL || (window.RF_CONFIG && window.RF_CONFIG.supabase && window.RF_CONFIG.supabase.url) || '').trim().replace(/\/+$/,'');
+        const anonKey = String(window.RF_SUPABASE_ANON_KEY || (window.RF_CONFIG && window.RF_CONFIG.supabase && window.RF_CONFIG.supabase.anonKey) || '').trim();
+        const accessToken = (session && session.access_token) ? session.access_token : '';
+        if (!baseUrl || !accessToken) return [];
+
+        const urls = [
+          baseUrl + '/functions/v1/admin-control/list-users',
+          baseUrl + '/functions/v1/admin-control'
+        ];
+
+        for (const url of urls) {
+          try {
+            const res = await fetch(url, {
+              method: 'GET',
+              headers: {
+                Authorization: 'Bearer ' + accessToken,
+                apikey: anonKey,
+                'Content-Type': 'application/json'
+              }
+            });
+            if (!res.ok) continue;
+            const payload = await res.json().catch(() => null);
+            const rows = extractAdminUsers(payload);
+            if (rows.length) return rows;
+          } catch(_){}
+        }
+
+        return [];
+      }
+
+      function extractAdminUsers(payload){
+        const buckets = [];
+        if (Array.isArray(payload)) buckets.push(payload);
+        if (payload && Array.isArray(payload.users)) buckets.push(payload.users);
+        if (payload && payload.data) {
+          if (Array.isArray(payload.data)) buckets.push(payload.data);
+          if (Array.isArray(payload.data.users)) buckets.push(payload.data.users);
+        }
+        if (payload && Array.isArray(payload.items)) buckets.push(payload.items);
+
+        const rows = [];
+        buckets.forEach(arr => {
+          arr.forEach(item => {
+            const email = safeLower(
+              item && (
+                item.email ||
+                item.user_email ||
+                item.primary_email ||
+                (item.user && item.user.email) ||
+                (item.attributes && item.attributes.email)
+              )
+            );
+            const userId = item && (
+              item.user_id ||
+              item.id ||
+              item.uid ||
+              (item.user && item.user.id) ||
+              null
+            );
+            if (!email) return;
+            rows.push({
+              email,
+              user_id: userId || null,
+              profile_role: normalizeRole(item && item.role ? item.role : ''),
+              acl_role: '',
+              source: 'auth users'
+            });
+          });
+        });
+
+        const seen = new Set();
+        return rows.filter(row => {
+          const key = row.email;
+          if (!key || seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        });
+      }
+
+      function mergeUserIntoMap(userMap, row){
+        const email = safeLower(row && row.email);
+        if (!email) return;
+        const existing = userMap.get(email) || {
+          email,
+          user_id: null,
+          profile_role: '',
+          acl_role: '',
+          source: ''
+        };
+
+        if (row.user_id && !existing.user_id) existing.user_id = row.user_id;
+        if (row.profile_role) existing.profile_role = normalizeRole(row.profile_role);
+        if (row.acl_role) existing.acl_role = normalizeRole(row.acl_role);
+
+        const sourceSet = new Set(String(existing.source || '').split(' + ').map(x => x.trim()).filter(Boolean));
+        if (row.source) sourceSet.add(row.source);
+        existing.source = Array.from(sourceSet).join(' + ') || '-';
+
+        userMap.set(email, existing);
+      }
+
       async function loadUsers(){
         setUserBusy(true);
         hideLeftMessage();
@@ -748,15 +850,18 @@
           const userMap = new Map();
 
           try {
+            const adminUsers = await tryLoadAdminUsers();
+            adminUsers.forEach(row => mergeUserIntoMap(userMap, row));
+          } catch(_){}
+
+          try {
             const profilesRes = await supabase.from('profiles').select('user_id,id,email,role,created_at').order('email', { ascending:true });
             if (!profilesRes.error && Array.isArray(profilesRes.data)) {
               profilesRes.data.forEach(row => {
-                const email = safeLower(row.email);
-                if (!email) return;
-                userMap.set(email, {
-                  email,
+                mergeUserIntoMap(userMap, {
+                  email: row.email,
                   user_id: row.user_id || row.id || null,
-                  profile_role: normalizeRole(row.role || ''),
+                  profile_role: row.role || '',
                   acl_role: '',
                   source: 'profiles'
                 });
@@ -768,24 +873,19 @@
             const aclRes = await supabase.from('rf_acl').select('email,role,updated_at').order('email', { ascending:true });
             if (!aclRes.error && Array.isArray(aclRes.data)) {
               aclRes.data.forEach(row => {
-                const email = safeLower(row.email);
-                if (!email) return;
-                const existing = userMap.get(email) || {
-                  email,
+                mergeUserIntoMap(userMap, {
+                  email: row.email,
                   user_id: null,
                   profile_role: '',
-                  acl_role: '',
+                  acl_role: row.role || '',
                   source: 'rf_acl'
-                };
-                existing.acl_role = normalizeRole(row.role || '');
-                existing.source = existing.source === 'profiles' ? 'profiles + rf_acl' : 'rf_acl';
-                userMap.set(email, existing);
+                });
               });
             }
           } catch(_){}
 
           if (!userMap.size && signedInEmail) {
-            userMap.set(signedInEmail, {
+            mergeUserIntoMap(userMap, {
               email: signedInEmail,
               user_id: session && session.user ? session.user.id : null,
               profile_role: signedInRole,
