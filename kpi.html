@@ -6,6 +6,8 @@
   <title>KPI</title>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="./rf-config.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
   <style>
     :root{
       --bg:#c9d8e5;
@@ -116,6 +118,27 @@
       text-align:center;
     }
 
+
+    .pdf-btn{
+      height:32px;
+      display:inline-flex;
+      align-items:center;
+      justify-content:center;
+      padding:0 12px;
+      border:1px solid var(--panel-border);
+      border-radius:8px;
+      background:var(--input);
+      color:var(--text);
+      font-size:12px;
+      font-weight:700;
+      white-space:nowrap;
+      cursor:pointer;
+      font-family:inherit;
+    }
+
+    .pdf-btn:hover{filter:brightness(.98)}
+    .pdf-btn:disabled{opacity:.7;cursor:wait}
+
     .sync-box{
       min-height:32px;
       display:flex;
@@ -142,11 +165,21 @@
     .table-wrap{
       min-height:0;
       flex:1;
-      overflow:auto;
+      overflow:hidden;
+      position:relative;
       background:#f0f4f8;
       border:1px solid var(--panel-border);
       border-radius:10px;
-      scrollbar-gutter:stable both-edges;
+      display:flex;
+      align-items:flex-start;
+      justify-content:flex-start;
+      padding:4px;
+    }
+
+    .table-fit{
+      transform-origin:top left;
+      will-change:transform;
+      display:inline-block;
     }
 
     table{
@@ -262,8 +295,7 @@
     .tooltip-box{
       position:fixed;
       z-index:9999;
-      width:260px;
-      max-width:260px;
+      max-width:360px;
       background:#f8fbfe;
       color:var(--text);
       border:1px solid var(--panel-border);
@@ -272,9 +304,7 @@
       padding:10px 12px;
       font-size:12px;
       line-height:1.35;
-      white-space:pre-wrap;
-      overflow-wrap:anywhere;
-      word-break:break-word;
+      white-space:pre-line;
       pointer-events:none;
       display:none;
     }
@@ -305,16 +335,19 @@
         <label class="control">OEE
           <input id="oeeInput" class="oee" type="text" inputmode="decimal" value="0,85" />
         </label>
+        <button id="pdfBtn" class="pdf-btn" type="button">Export PDF</button>
         <div id="syncBox" class="sync-box">Sincronizat • --</div>
       </div>
     </div>
 
     <div class="table-shell">
-      <div class="table-wrap">
-        <table id="kpiTable">
-          <thead id="kpiHead"></thead>
-          <tbody id="kpiBody"></tbody>
-        </table>
+      <div class="table-wrap" id="tableWrap">
+        <div class="table-fit" id="tableFit">
+          <table id="kpiTable">
+            <thead id="kpiHead"></thead>
+            <tbody id="kpiBody"></tbody>
+          </table>
+        </div>
       </div>
     </div>
   </div>
@@ -337,11 +370,21 @@
       const HELPER_DOC_KEYS = ['helper-data', 'helper_data', 'helperdata', 'helper data'];
       const PROGRAM_DOC_KEYS = ['program-utilaje', 'program utilaje', 'programutilaje'];
       const PROBLEME_DOC_KEYS = ['probleme-raportate', 'probleme raportate', 'probleme_raportate', 'problemeraportate'];
+      const DOC_SELECTIONS = {
+        forjate: { yearPrefix: 'forjate:', exact: ['forjate', 'forjate.html'], legacy: ['foaia forjate', 'rapoarte', 'raport forja'] },
+        helper: { yearPrefix: 'helper-data:', exact: ['helper-data', 'helper_data', 'helperdata', 'helper data'], legacy: [] },
+        program: { yearPrefix: 'program-utilaje:', exact: ['program-utilaje', 'program utilaje', 'programutilaje'], legacy: [] },
+        probleme: { yearPrefix: 'probleme-raportate:', exact: ['probleme-raportate', 'probleme raportate', 'probleme_raportate', 'problemeraportate'], legacy: [] }
+      };
 
       const yearSelect = document.getElementById('yearSelect');
       const monthSelect = document.getElementById('monthSelect');
       const oeeInput = document.getElementById('oeeInput');
+      const pdfBtn = document.getElementById('pdfBtn');
       const syncBox = document.getElementById('syncBox');
+      const tableWrap = document.getElementById('tableWrap');
+      const tableFit = document.getElementById('tableFit');
+      const kpiTable = document.getElementById('kpiTable');
       const kpiHead = document.getElementById('kpiHead');
       const kpiBody = document.getElementById('kpiBody');
       const tooltipBox = document.getElementById('tooltipBox');
@@ -349,6 +392,7 @@
       let supabaseClient = null;
       let activeChannel = null;
       let refreshTimer = null;
+      let fitTimer = null;
       let forjateRows = [];
       let tactRows = [];
       let programRows = [];
@@ -643,6 +687,63 @@
         return rows;
       }
 
+      function stableStringify(value){
+        if (Array.isArray(value)) return '[' + value.map(stableStringify).join(',') + ']';
+        if (value && typeof value === 'object') {
+          const keys = Object.keys(value).sort();
+          return '{' + keys.map(key => JSON.stringify(key) + ':' + stableStringify(value[key])).join(',') + '}';
+        }
+        return JSON.stringify(value);
+      }
+
+      function buildRawRowSignature(row){
+        const raw = row?.raw || row;
+        return stableStringify(raw);
+      }
+
+      function dedupeTransformedRows(rows, keyFn){
+        const list = Array.isArray(rows) ? rows : [];
+        const seen = new Set();
+        return list.filter(item => {
+          let key = '';
+          try {
+            key = keyFn ? String(keyFn(item)) : stableStringify(item);
+          } catch (_) {
+            key = '';
+          }
+          if (!key) return true;
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        });
+      }
+
+      function isYearPartitionDoc(raw, prefix){
+        return !!prefix && raw.startsWith(prefix) && /^\d{4}$/.test(raw.slice(prefix.length));
+      }
+
+      function selectBestDocs(allDocs, candidates, config){
+        const matches = findMatchingDocs(allDocs, candidates);
+        if (!matches.length) return [];
+
+        const prepared = matches.map(doc => ({
+          doc,
+          raw: getDocKeyRaw(doc),
+          norm: normalizeDocKey(getDocKeyRaw(doc))
+        }));
+
+        const yearDocs = prepared.filter(item => isYearPartitionDoc(item.raw, config?.yearPrefix || ''));
+        if (yearDocs.length) return yearDocs.map(item => item.doc);
+
+        const exactDocs = prepared.filter(item => (config?.exact || []).some(key => item.norm === normalizeDocKey(key)));
+        if (exactDocs.length) return exactDocs.map(item => item.doc);
+
+        const legacyDocs = prepared.filter(item => (config?.legacy || []).some(key => item.norm.includes(normalizeDocKey(key)) || normalizeDocKey(key).includes(item.norm)));
+        if (legacyDocs.length) return legacyDocs.map(item => item.doc);
+
+        return matches;
+      }
+
       function scoreForjateRow(row){
         let score = 0;
         if (parseDateAny(pickField(row, ['data'], ['bm']), row)) score += 3;
@@ -810,6 +911,34 @@
         return 'pct-bad';
       }
 
+      function fitTableToViewport(){
+        if (!tableWrap || !tableFit || !kpiTable) return;
+
+        tableFit.style.transform = 'scale(1)';
+        tableFit.style.width = 'auto';
+        tableFit.style.height = 'auto';
+
+        const naturalWidth = kpiTable.offsetWidth;
+        const naturalHeight = kpiTable.offsetHeight;
+        const availableWidth = Math.max(0, tableWrap.clientWidth - 2);
+        const availableHeight = Math.max(0, tableWrap.clientHeight - 2);
+
+        if (!naturalWidth || !naturalHeight || !availableWidth || !availableHeight) return;
+
+        const scale = Math.min(1, availableWidth / naturalWidth, availableHeight / naturalHeight);
+
+        tableFit.style.width = `${naturalWidth * scale}px`;
+        tableFit.style.height = `${naturalHeight * scale}px`;
+        tableFit.style.transform = `scale(${scale})`;
+      }
+
+      function scheduleFitTable(){
+        if (fitTimer) cancelAnimationFrame(fitTimer);
+        fitTimer = requestAnimationFrame(() => {
+          fitTimer = requestAnimationFrame(fitTableToViewport);
+        });
+      }
+
       function buildTooltip(metric, equipment, date){
         const lines = [];
         lines.push(`${equipment} • ${formatDate(date)} • Schimb ${metric.shift}`);
@@ -970,6 +1099,7 @@
         });
 
         kpiBody.appendChild(mediaRow);
+        scheduleFitTable();
       }
 
       function updateYearOptions(){
@@ -1021,32 +1151,46 @@
       async function loadData(){
         try {
           const docs = await fetchDocs();
-          let forjateDocs = findMatchingDocs(docs, FORJATE_DOC_KEYS);
-          let helperDocs = findMatchingDocs(docs, HELPER_DOC_KEYS);
-          let programDocs = findMatchingDocs(docs, PROGRAM_DOC_KEYS);
-          let problemeDocs = findMatchingDocs(docs, PROBLEME_DOC_KEYS);
+          let forjateDocs = selectBestDocs(docs, FORJATE_DOC_KEYS, DOC_SELECTIONS.forjate);
+          let helperDocs = selectBestDocs(docs, HELPER_DOC_KEYS, DOC_SELECTIONS.helper);
+          let programDocs = selectBestDocs(docs, PROGRAM_DOC_KEYS, DOC_SELECTIONS.program);
+          let problemeDocs = selectBestDocs(docs, PROBLEME_DOC_KEYS, DOC_SELECTIONS.probleme);
 
-          if (!forjateDocs.length) forjateDocs = scanLocalStorageDocs(FORJATE_DOC_KEYS);
-          if (!helperDocs.length) helperDocs = scanLocalStorageDocs(HELPER_DOC_KEYS);
-          if (!programDocs.length) programDocs = scanLocalStorageDocs(PROGRAM_DOC_KEYS);
-          if (!problemeDocs.length) problemeDocs = scanLocalStorageDocs(PROBLEME_DOC_KEYS);
+          if (!forjateDocs.length) forjateDocs = selectBestDocs(scanLocalStorageDocs(FORJATE_DOC_KEYS), FORJATE_DOC_KEYS, DOC_SELECTIONS.forjate);
+          if (!helperDocs.length) helperDocs = selectBestDocs(scanLocalStorageDocs(HELPER_DOC_KEYS), HELPER_DOC_KEYS, DOC_SELECTIONS.helper);
+          if (!programDocs.length) programDocs = selectBestDocs(scanLocalStorageDocs(PROGRAM_DOC_KEYS), PROGRAM_DOC_KEYS, DOC_SELECTIONS.program);
+          if (!problemeDocs.length) problemeDocs = selectBestDocs(scanLocalStorageDocs(PROBLEME_DOC_KEYS), PROBLEME_DOC_KEYS, DOC_SELECTIONS.probleme);
 
           const rawForjateRows = extractAllRowsFromDocs(forjateDocs);
           const rawHelperRows = extractAllRowsFromDocs(helperDocs);
           const rawProgramRows = extractAllRowsFromDocs(programDocs);
           const rawProblemeRows = extractAllRowsFromDocs(problemeDocs);
 
-          forjateRows = transformForjate(rawForjateRows);
-          tactRows = transformTact(rawHelperRows);
-          programRows = transformProgram(rawProgramRows);
-          problemeRows = transformProbleme(rawProblemeRows);
+          forjateRows = dedupeTransformedRows(
+            transformForjate(rawForjateRows),
+            row => `${formatDate(row.date)}|${row.equipment}|${row.shift}|${row.reper}|${row.realized}|${row.tact ?? ''}|${buildRawRowSignature(row)}`
+          );
+          tactRows = dedupeTransformedRows(
+            transformTact(rawHelperRows),
+            row => `${row.equipment}|${row.reper}|${row.tact ?? ''}|${buildRawRowSignature(row)}`
+          );
+          programRows = dedupeTransformedRows(
+            transformProgram(rawProgramRows),
+            row => `${formatDate(row.date)}|${row.equipment}|${row.shift}|${row.hours ?? ''}|${buildRawRowSignature(row)}`
+          );
+          problemeRows = dedupeTransformedRows(
+            transformProbleme(rawProblemeRows),
+            row => `${formatDate(row.date)}|${row.equipment}|${row.shift}|${row.minutes ?? ''}|${row.label || ''}|${buildRawRowSignature(row)}`
+          );
           buildIndices();
 
           updateYearOptions();
           updateMonthOptions();
           renderTable();
 
-          const latestTs = docs.map(doc => doc?.updated_at).filter(Boolean).map(v => new Date(v)).filter(d => !isNaN(d));
+          const selectedDocs = [...forjateDocs, ...helperDocs, ...programDocs, ...problemeDocs];
+          const latestSource = selectedDocs.length ? selectedDocs : docs;
+          const latestTs = latestSource.map(doc => doc?.updated_at).filter(Boolean).map(v => new Date(v)).filter(d => !isNaN(d));
           const latest = latestTs.length ? new Date(Math.max(...latestTs.map(d => d.getTime()))) : new Date();
           setSyncText(`Sincronizat • ${formatDateTime(latest)}`);
         } catch (error) {
@@ -1092,6 +1236,60 @@
         });
       }
 
+      async function exportPdf(){
+        if (!window.html2canvas || !window.jspdf || !pdfBtn) return;
+
+        const originalText = pdfBtn.textContent;
+        const previousTooltipDisplay = tooltipBox.style.display;
+        pdfBtn.disabled = true;
+        pdfBtn.textContent = 'Se exportă...';
+        tooltipBox.style.display = 'none';
+
+        try {
+          scheduleFitTable();
+          await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+
+          const target = document.querySelector('.page');
+          const canvas = await window.html2canvas(target, {
+            backgroundColor: getComputedStyle(document.body).backgroundColor || '#c9d8e5',
+            scale: Math.max(2, Math.ceil(window.devicePixelRatio || 1)),
+            useCORS: true,
+            logging: false,
+            scrollX: 0,
+            scrollY: 0,
+            width: target.scrollWidth,
+            height: target.scrollHeight,
+            windowWidth: document.documentElement.clientWidth,
+            windowHeight: document.documentElement.clientHeight
+          });
+
+          const { jsPDF } = window.jspdf;
+          const pdf = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4', compress: true });
+          const pageWidth = pdf.internal.pageSize.getWidth();
+          const pageHeight = pdf.internal.pageSize.getHeight();
+          const margin = 6;
+          const usableWidth = pageWidth - margin * 2;
+          const usableHeight = pageHeight - margin * 2;
+          const ratio = Math.min(usableWidth / canvas.width, usableHeight / canvas.height);
+          const imgWidth = canvas.width * ratio;
+          const imgHeight = canvas.height * ratio;
+          const x = (pageWidth - imgWidth) / 2;
+          const y = (pageHeight - imgHeight) / 2;
+
+          pdf.addImage(canvas.toDataURL('image/png'), 'PNG', x, y, imgWidth, imgHeight, undefined, 'FAST');
+          const safeMonth = normalizeText(monthSelect.value || 'luna');
+          const safeYear = normalizeText(yearSelect.value || new Date().getFullYear());
+          pdf.save(`kpi_${safeYear}_${safeMonth}.pdf`);
+        } catch (error) {
+          console.error('KPI export PDF error:', error);
+          alert('Exportul PDF a eșuat.');
+        } finally {
+          pdfBtn.disabled = false;
+          pdfBtn.textContent = originalText;
+          tooltipBox.style.display = previousTooltipDisplay;
+        }
+      }
+
       function bindEvents(){
         yearSelect.addEventListener('change', () => { updateMonthOptions(); renderTable(); });
         monthSelect.addEventListener('change', renderTable);
@@ -1100,6 +1298,8 @@
           oeeInput.value = value.toFixed(2).replace('.', ',');
           renderTable();
         });
+
+        if (pdfBtn) pdfBtn.addEventListener('click', exportPdf);
 
         document.addEventListener('mouseover', event => {
           const target = event.target.closest('[data-tooltip]');
@@ -1125,6 +1325,8 @@
           if (!event.target.closest('[data-tooltip]')) return;
           tooltipBox.style.display = 'none';
         });
+
+        window.addEventListener('resize', scheduleFitTable);
       }
 
       async function start(){
