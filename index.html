@@ -472,6 +472,21 @@
 
       const ADMIN_ONLY_KEYS = new Set(['helper-data','helper-acl']);
       const ADMIN_ONLY_HREFS = new Set(['helper-data.html','helper-acl.html']);
+      const ID_STORAGE_KEYS = ['rf_display_id','rf_login_id','rf_user_id','rf_user_email','rf_email'];
+      const ROLE_STORAGE_KEYS = ['rf_login_role','rf_role','rf_user_role','rf_cached_role'];
+
+      function readStoredValue(keys){
+        const stores = [window.sessionStorage, window.localStorage];
+        for (const store of stores) {
+          for (const key of keys) {
+            try {
+              const value = store.getItem(key);
+              if (value) return String(value);
+            } catch (_) {}
+          }
+        }
+        return '';
+      }
 
       function safeIdFromEmail(email){
         if (!email) return '—';
@@ -481,8 +496,53 @@
         return at > 0 ? raw.slice(0, at).toUpperCase() : raw.toUpperCase();
       }
 
+      function normalizeRoleName(role){
+        const raw = String(role || '').trim().toLowerCase();
+        if (!raw) return '';
+        if (['admin','editor','operator','viewer'].includes(raw)) return raw;
+        return raw;
+      }
+
       function getStoredDisplayId(){
-        return localStorage.getItem('rf_display_id') || localStorage.getItem('rf_login_id') || '';
+        const raw = readStoredValue(ID_STORAGE_KEYS);
+        if (!raw) return '';
+        return raw.includes('@') ? safeIdFromEmail(raw) : raw;
+      }
+
+      function getStoredRole(){
+        return normalizeRoleName(readStoredValue(ROLE_STORAGE_KEYS));
+      }
+
+      function parseSupabaseUserFromStorage(){
+        const stores = [window.localStorage, window.sessionStorage];
+        for (const store of stores) {
+          try {
+            for (let i = 0; i < store.length; i += 1) {
+              const key = store.key(i);
+              if (!key || !key.startsWith('sb-') || !key.endsWith('-auth-token')) continue;
+              const raw = store.getItem(key);
+              if (!raw) continue;
+              const parsed = JSON.parse(raw);
+              const user = parsed?.user || parsed?.currentSession?.user || parsed?.session?.user || null;
+              if (user?.id || user?.email) return user;
+            }
+          } catch (_) {}
+        }
+        return null;
+      }
+
+      function setStatusChips(isAuthenticated, userForDisplay, roleForDisplay){
+        if (isAuthenticated) {
+          chipAuth.textContent = 'Autentificat';
+          chipAuth.className = 'chip ok';
+          chipUser.textContent = `ID: ${getStoredDisplayId() || safeIdFromEmail(userForDisplay?.email)}`;
+          chipRole.textContent = `Rol: ${normalizeRoleName(roleForDisplay) || '—'}`;
+        } else {
+          chipAuth.textContent = 'Neautentificat';
+          chipAuth.className = 'chip warn';
+          chipUser.textContent = 'ID: —';
+          chipRole.textContent = 'Rol: —';
+        }
       }
 
       async function resolveRole(user){
@@ -490,23 +550,43 @@
         if (email && email === cfg.adminEmail) {
           return { role:'admin', source:'admin hardcoded' };
         }
-        if (!sb || !user?.id) return { role:'viewer', source:'fallback viewer' };
 
-        try {
-          const a = await sb.from('profiles').select('role').eq('user_id', user.id).maybeSingle();
-          if (!a.error && a.data?.role) return { role:String(a.data.role).toLowerCase(), source:'profiles.user_id' };
-        } catch(_){ }
+        const metadataRole = normalizeRoleName(
+          user?.app_metadata?.role ||
+          user?.user_metadata?.role ||
+          user?.role || ''
+        );
+        if (metadataRole) {
+          return { role:metadataRole, source:'user metadata' };
+        }
 
-        try {
-          const b = await sb.from('profiles').select('role').eq('id', user.id).maybeSingle();
-          if (!b.error && b.data?.role) return { role:String(b.data.role).toLowerCase(), source:'profiles.id' };
-        } catch(_){ }
-
-        if (email) {
+        if (sb && user?.id) {
           try {
-            const c = await sb.from('rf_acl').select('role').eq('email', email).maybeSingle();
-            if (!c.error && c.data?.role) return { role:String(c.data.role).toLowerCase(), source:'rf_acl' };
+            const a = await sb.from('profiles').select('role').eq('user_id', user.id).maybeSingle();
+            if (!a.error && a.data?.role) return { role:normalizeRoleName(a.data.role), source:'profiles.user_id' };
           } catch(_){ }
+
+          try {
+            const b = await sb.from('profiles').select('role').eq('id', user.id).maybeSingle();
+            if (!b.error && b.data?.role) return { role:normalizeRoleName(b.data.role), source:'profiles.id' };
+          } catch(_){ }
+
+          if (email) {
+            try {
+              const c = await sb.from('profiles').select('role').eq('email', email).maybeSingle();
+              if (!c.error && c.data?.role) return { role:normalizeRoleName(c.data.role), source:'profiles.email' };
+            } catch(_){ }
+
+            try {
+              const d = await sb.from('rf_acl').select('role').eq('email', email).maybeSingle();
+              if (!d.error && d.data?.role) return { role:normalizeRoleName(d.data.role), source:'rf_acl' };
+            } catch(_){ }
+          }
+        }
+
+        const storedRole = getStoredRole();
+        if (storedRole) {
+          return { role:storedRole, source:'stored role' };
         }
 
         return { role:'viewer', source:'fallback viewer' };
@@ -728,10 +808,7 @@
         setVisible(btnLogout, true);
 
         if (currentUser) {
-          chipAuth.textContent = 'Autentificat';
-          chipAuth.className = 'chip ok';
-          chipUser.textContent = `ID: ${getStoredDisplayId() || safeIdFromEmail(currentUser.email)}`;
-          chipRole.textContent = `Rol: ${currentRole}`;
+          setStatusChips(true, currentUser, currentRole);
           try {
             const deniedMsg = sessionStorage.getItem('rf_acl_denied_message') || '';
             if (aclDeniedBanner) {
@@ -741,10 +818,7 @@
             sessionStorage.removeItem('rf_acl_denied_message');
           } catch (_) {}
         } else {
-          chipAuth.textContent = 'Neautentificat';
-          chipAuth.className = 'chip warn';
-          chipUser.textContent = 'ID: —';
-          chipRole.textContent = 'Rol: —';
+          setStatusChips(false, null, '');
           if (aclDeniedBanner) { aclDeniedBanner.classList.add('hidden'); aclDeniedBanner.textContent = ''; }
         }
 
@@ -791,6 +865,25 @@
         catch (_) { window.location.href = target; }
       }
 
+      async function getActiveSession(){
+        if (!sb) return null;
+
+        for (let i = 0; i < 6; i += 1) {
+          try {
+            const { data, error } = await sb.auth.getSession();
+            if (!error && data?.session?.user) return data.session;
+          } catch (_) {}
+          await new Promise(resolve => window.setTimeout(resolve, 120));
+        }
+
+        try {
+          const { data, error } = await sb.auth.getUser();
+          if (!error && data?.user) return { user:data.user };
+        } catch (_) {}
+
+        return null;
+      }
+
       async function boot(){
         if (!sb) {
           chipAuth.textContent = 'Config lipsă';
@@ -798,8 +891,14 @@
           return;
         }
 
-        const { data, error } = await sb.auth.getSession();
-        if (error || !data?.session?.user) {
+        const cachedUser = parseSupabaseUserFromStorage();
+        const cachedRole = getStoredRole();
+        if (cachedUser || cachedRole) {
+          setStatusChips(true, cachedUser, cachedRole || 'viewer');
+        }
+
+        const activeSession = await getActiveSession();
+        if (!activeSession?.user) {
           currentUser = null;
           currentRole = 'viewer';
           currentPermissions = null;
@@ -807,9 +906,20 @@
           return;
         }
 
-        currentUser = data.session.user;
+        currentUser = activeSession.user;
         const resolved = await resolveRole(currentUser);
-        currentRole = resolved.role;
+        currentRole = resolved.role || cachedRole || 'viewer';
+
+        try { localStorage.setItem('rf_cached_role', currentRole); } catch (_) {}
+        try { sessionStorage.setItem('rf_cached_role', currentRole); } catch (_) {}
+        try {
+          const displayId = getStoredDisplayId() || safeIdFromEmail(currentUser.email);
+          if (displayId) {
+            localStorage.setItem('rf_display_id', displayId);
+            sessionStorage.setItem('rf_display_id', displayId);
+          }
+        } catch (_) {}
+
         currentPermissions = await loadPermissionMap(currentRole);
         await loadDashboardAcl();
         applyLayout();
@@ -982,13 +1092,23 @@
           return;
         }
         const resolved = await resolveRole(currentUser);
-        currentRole = resolved.role;
+        currentRole = resolved.role || getStoredRole() || 'viewer';
+        try { localStorage.setItem('rf_cached_role', currentRole); } catch (_) {}
+        try { sessionStorage.setItem('rf_cached_role', currentRole); } catch (_) {}
+        try {
+          const displayId = getStoredDisplayId() || safeIdFromEmail(currentUser.email);
+          if (displayId) {
+            localStorage.setItem('rf_display_id', displayId);
+            sessionStorage.setItem('rf_display_id', displayId);
+          }
+        } catch (_) {}
         currentPermissions = await loadPermissionMap(currentRole);
         await loadDashboardAcl();
         applyLayout();
       });
 
-      window.addEventListener('DOMContentLoaded', boot);
+      if (document.readyState === 'loading') window.addEventListener('DOMContentLoaded', boot);
+      else boot();
     })();
   </script>
 </body>
