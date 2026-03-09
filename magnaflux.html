@@ -24,6 +24,7 @@
       --shadow:0 8px 20px rgba(18,53,84,.10);
       --row-h:36px;
       --radius:14px;
+      --visible-rows:14;
     }
 
     *{box-sizing:border-box}
@@ -38,7 +39,7 @@
 
     .page{
       height:100dvh;
-      min-height:100vh;
+      min-height:100dvh;
       display:flex;
       flex-direction:column;
       gap:10px;
@@ -200,13 +201,12 @@
       color:var(--muted);
       flex-wrap:wrap;
     }
-
     .table-wrap{
       position:relative;
-      flex:0 0 auto;
+      flex:1 1 auto;
       min-height:0;
-      height:calc(var(--row-h) * 22 + 4px);
-      max-height:calc(var(--row-h) * 22 + 4px);
+      height:auto;
+      max-height:none;
       overflow:auto;
       scrollbar-gutter:stable both-edges;
       background:#f7fbff;
@@ -566,12 +566,12 @@
 
     @media (max-width: 900px){
       body{overflow:auto}
-      .page{height:auto;min-height:100%;padding:10px;padding-bottom:90px}
+      .page{height:auto;min-height:100dvh;padding:10px;padding-bottom:90px}
       .topbar{align-items:flex-start}
       .topbar-right{justify-content:flex-start}
       .stats{grid-template-columns:repeat(2,minmax(120px,1fr))}
       .grid-card{min-height:auto}
-      .table-wrap{height:calc(var(--row-h) * 22 + 4px);max-height:calc(var(--row-h) * 22 + 4px)}
+      .table-wrap{height:min(52vh, calc(100dvh - 260px));max-height:min(52vh, calc(100dvh - 260px))}
       .fab{display:flex}
       #btnAdd{display:none}
       .modal{position:relative;left:auto;top:auto;transform:none;width:min(1180px,100%);margin:auto;touch-action:auto}
@@ -621,7 +621,7 @@
 
     <section class="grid-card">
       <div class="grid-toolbar">
-        <div id="gridInfo">Dublu click pe un rând pentru editare. Sunt vizibile 20 de rânduri, cu scroll sus-jos și stânga-dreapta.</div>
+        <div id="gridInfo">Dublu click pe un rând pentru editare. Tabelul este încadrat automat pe ecran, iar scroll-ul de jos rămâne vizibil.</div>
         <div id="gridMeta">Sursă: local</div>
       </div>
       <div class="table-wrap" id="tableWrap">
@@ -754,9 +754,8 @@
       const PAGE_KEY = 'magnaflux';
       const DOC_KEY = 'magnaflux';
       const CACHE_KEY = 'rf:magnaflux:cache:v1';
-      const META_POLL_MS = 180000;
+      const META_POLL_MS = 30000;
       const SAVE_DELAY_MS = 1800;
-      const FILTER_INPUT_DEBOUNCE_MS = 100;
       const MONTHS_RO = ['Ianuarie','Februarie','Martie','Aprilie','Mai','Iunie','Iulie','August','Septembrie','Octombrie','Noiembrie','Decembrie'];
 
       const columns = [
@@ -896,16 +895,8 @@
         xlsxLoader: null,
         saveTimer: null,
         pollTimer: null,
-        filterTimer: null,
         sourceLabel: 'local',
-        forceScrollToBottom: true,
-        helperLoaded: false,
-        helperLoadingPromise: null,
-        headerRendered: false,
-        viewCache: null,
-        rowTextCache: new Map(),
-        rowCellHtmlCache: new Map(),
-        rowsVersion: 0
+        forceScrollToBottom: true
       };
 
       function showToast(message){
@@ -1246,39 +1237,11 @@
         state.saveTimer = setTimeout(() => { saveDocToCloud(); }, SAVE_DELAY_MS);
       }
 
-      async function ensureHelperDataLoaded(){
-        if(state.helperLoaded) return state.helperDoc;
-        if(state.helperLoadingPromise) return state.helperLoadingPromise;
-
-        state.helperLoadingPromise = (async () => {
-          const helper = await fetchDocByKey('helper-data');
-          state.helperDoc = helper || { rows: [] };
-          state.helperLoaded = true;
-          refreshHelperSuggestions();
-          return state.helperDoc;
-        })();
-
-        try{
-          return await state.helperLoadingPromise;
-        }finally{
-          state.helperLoadingPromise = null;
-        }
-      }
-
-      function refreshHelperSuggestions(){
-        state.helperSuggestions = extractHelperSuggestions(state.helperDoc || {});
+      async function loadHelperData(){
+        const helper = await fetchDocByKey('helper-data');
+        state.helperDoc = helper || { rows: [] };
+        state.helperSuggestions = extractHelperSuggestions(helper || {});
         refreshDatalists();
-      }
-
-      function invalidateViewCaches(){
-        state.viewCache = null;
-        state.rowTextCache.clear();
-        state.rowCellHtmlCache.clear();
-      }
-
-      function bumpRowsVersion(){
-        state.rowsVersion += 1;
-        invalidateViewCaches();
       }
 
       function extractHelperSuggestions(helper){
@@ -1415,8 +1378,6 @@
       }
 
       function renderHeader(){
-        if(state.headerRendered) return;
-
         const head1 = document.createElement('tr');
         const head2 = document.createElement('tr');
         head2.className = 'filters';
@@ -1436,6 +1397,7 @@
           input.placeholder = 'Filtru';
           input.dataset.key = col.key;
           input.value = state.filters[col.key] || '';
+          input.addEventListener('input', onFilterInput);
           thFilter.appendChild(input);
           head2.appendChild(thFilter);
         });
@@ -1443,7 +1405,6 @@
         el.tableHead.innerHTML = '';
         el.tableHead.appendChild(head1);
         el.tableHead.appendChild(head2);
-        state.headerRendered = true;
       }
 
       function formatCell(row, col){
@@ -1463,92 +1424,6 @@
         node.classList.toggle('rebut-hot', !!isHot);
       }
 
-      function getNormalizedFilters(){
-        const entries = [];
-        columns.forEach(col => {
-          const raw = state.filters[col.key] || '';
-          const normalized = normalizeText(raw);
-          if(normalized) entries.push([col.key, normalized]);
-        });
-        return entries;
-      }
-
-      function getRowTextCache(row){
-        const cached = state.rowTextCache.get(row.id);
-        if(cached && cached.ref === row) return cached;
-
-        const texts = {};
-        columns.forEach(col => {
-          texts[col.key] = normalizeText(formatCell(row, col));
-        });
-
-        const entry = { ref: row, texts };
-        state.rowTextCache.set(row.id, entry);
-        return entry;
-      }
-
-      function getRowCellsHtml(row){
-        const cached = state.rowCellHtmlCache.get(row.id);
-        if(cached && cached.ref === row) return cached.html;
-
-        const html = columns.map(col => {
-          const classes = [];
-          if(col.align === 'left') classes.push('align-left');
-          if(col.align === 'right') classes.push('align-right');
-          if(col.colClass) classes.push(col.colClass);
-          if(isPositiveRebutCell(row, col.key)) classes.push('rebut-hot');
-          const classAttr = classes.length ? ` class="${classes.join(' ')}"` : '';
-          return `<td${classAttr}>${escapeHtml(formatCell(row, col))}</td>`;
-        }).join('');
-
-        state.rowCellHtmlCache.set(row.id, { ref: row, html });
-        return html;
-      }
-
-      function buildFilteredView(){
-        const normalizedFilters = getNormalizedFilters();
-        const cacheKey = JSON.stringify([state.rowsVersion, state.permissions.canEdit ? 1 : 0, state.selectedId || '', normalizedFilters]);
-        if(state.viewCache && state.viewCache.key === cacheKey) return state.viewCache.value;
-
-        const rows = [];
-        const stats = {
-          totalControlate: 0,
-          totalAcceptate: 0,
-          totalRebut: 0,
-          rebutSums: { lm:0, ibt:0, sm:0, ftt:0, fl:0, lmc:0, des:0, as:0, fb:0 }
-        };
-
-        for(const row of state.rows){
-          const cache = getRowTextCache(row);
-          let matches = true;
-          for(const [key, value] of normalizedFilters){
-            if(!(cache.texts[key] || '').includes(value)){
-              matches = false;
-              break;
-            }
-          }
-          if(!matches) continue;
-
-          rows.push(row);
-          stats.totalControlate += Number(row.controlate || 0);
-          stats.totalAcceptate += Number(row.acceptate || 0);
-          stats.totalRebut += Number(row.total_rebut || 0);
-          stats.rebutSums.lm += Number(row.lm || 0);
-          stats.rebutSums.ibt += Number(row.ibt || 0);
-          stats.rebutSums.sm += Number(row.sm || 0);
-          stats.rebutSums.ftt += Number(row.ftt || 0);
-          stats.rebutSums.fl += Number(row.fl || 0);
-          stats.rebutSums.lmc += Number(row.lmc || 0);
-          stats.rebutSums.des += Number(row.des || 0);
-          stats.rebutSums.as += Number(row.as || 0);
-          stats.rebutSums.fb += Number(row.fb || 0);
-        }
-
-        const value = { rows, stats };
-        state.viewCache = { key: cacheKey, value };
-        return value;
-      }
-
       function refreshFormRebutHighlight(row){
         setRebutHotClass(el.fLm, Number(row.lm || 0) > 0);
         setRebutHotClass(el.fIbt, Number(row.ibt || 0) > 0);
@@ -1563,6 +1438,16 @@
         setRebutHotClass(el.fProcent2, Number(row.procent2 || 0) > 0);
       }
 
+      function filteredRows(){
+        return state.rows.filter(row => {
+          return columns.every(col => {
+            const f = normalizeText(state.filters[col.key] || '');
+            if(!f) return true;
+            const cell = normalizeText(formatCell(row, col));
+            return cell.includes(f);
+          });
+        });
+      }
 
       function scrollTableToBottom(){
         const applyScroll = () => {
@@ -1578,31 +1463,43 @@
         });
       }
 
-      function syncSelectedRowUi(){
-        const rows = el.tableBody.querySelectorAll('tr[data-id]');
-        rows.forEach(tr => tr.classList.toggle('selected', tr.dataset.id === state.selectedId));
-      }
-
       function renderBody(){
-        const view = buildFilteredView();
-        const rows = view.rows;
-
+        const rows = filteredRows();
+        el.tableBody.innerHTML = '';
         if(!rows.length){
-          el.tableBody.innerHTML = '';
           el.emptyState.classList.remove('hidden');
         }else{
           el.emptyState.classList.add('hidden');
-          const bodyHtml = rows.map(row => {
-            const trClasses = [];
-            if(state.selectedId === row.id) trClasses.push('selected');
-            if(!state.permissions.canEdit) trClasses.push('readonly');
-            const classAttr = trClasses.length ? ` class="${trClasses.join(' ')}"` : '';
-            return `<tr data-id="${escapeHtml(row.id)}"${classAttr}>${getRowCellsHtml(row)}</tr>`;
-          }).join('');
-          el.tableBody.innerHTML = bodyHtml;
         }
 
-        updateStats(view);
+        rows.forEach(row => {
+          const tr = document.createElement('tr');
+          tr.dataset.id = row.id;
+          if(state.selectedId === row.id) tr.classList.add('selected');
+          if(!state.permissions.canEdit) tr.classList.add('readonly');
+          tr.addEventListener('click', () => {
+            state.selectedId = row.id;
+            renderBody();
+          });
+          tr.addEventListener('dblclick', () => {
+            if(!state.permissions.canEdit) return showToast('Ai doar drept de vizualizare pe această pagină.');
+            openEditor(row.id);
+          });
+
+          columns.forEach(col => {
+            const td = document.createElement('td');
+            if(col.align === 'left') td.classList.add('align-left');
+            if(col.align === 'right') td.classList.add('align-right');
+            if(col.colClass) td.classList.add(col.colClass);
+            if(isPositiveRebutCell(row, col.key)) td.classList.add('rebut-hot');
+            td.textContent = formatCell(row, col);
+            tr.appendChild(td);
+          });
+
+          el.tableBody.appendChild(tr);
+        });
+
+        updateStats(rows);
 
         if(state.forceScrollToBottom){
           scrollTableToBottom();
@@ -1610,8 +1507,10 @@
         }
       }
 
-      function updateStats(view){
-        const stats = view && view.stats ? view.stats : { totalControlate:0, totalAcceptate:0, totalRebut:0, rebutSums:{ lm:0, ibt:0, sm:0, ftt:0, fl:0, lmc:0, des:0, as:0, fb:0 } };
+      function updateStats(rows){
+        const totalControlate = rows.reduce((s,r) => s + Number(r.controlate || 0), 0);
+        const totalAcceptate = rows.reduce((s,r) => s + Number(r.acceptate || 0), 0);
+        const totalRebut = rows.reduce((s,r) => s + Number(r.total_rebut || 0), 0);
         const rebutKeys = [
           ['lm','LM'],
           ['ibt','IBT'],
@@ -1623,27 +1522,25 @@
           ['as','AS'],
           ['fb','FB']
         ];
-
+        let topKey = '';
         let topLabel = '—';
         let topValue = 0;
+
         rebutKeys.forEach(([key, label]) => {
-          const sum = Number((stats.rebutSums || {})[key] || 0);
+          const sum = rows.reduce((s, r) => s + Number(r[key] || 0), 0);
           if(sum > topValue){
             topValue = sum;
+            topKey = key;
             topLabel = label;
           }
         });
-
-        const totalControlate = Number(stats.totalControlate || 0);
-        const totalAcceptate = Number(stats.totalAcceptate || 0);
-        const totalRebut = Number(stats.totalRebut || 0);
 
         el.statTopRebut.textContent = topValue > 0 ? `${topLabel} ${nf(topValue)} buc` : '—';
         el.statControlate.textContent = nf(totalControlate);
         el.statAcceptate.textContent = nf(totalAcceptate);
         el.statRebut.textContent = nf(totalRebut);
         el.statRejectRate.textContent = pf(totalControlate > 0 ? totalRebut / totalControlate : 0);
-        el.gridInfo.textContent = `Dublu click pe un rând pentru editare. 20 rânduri vizibile în fereastră. ${(view && view.rows ? view.rows.length : 0)} rând(uri) după filtrare.`;
+        el.gridInfo.textContent = `Dublu click pe un rând pentru editare. Tabelul este încadrat automat pe ecran. ${rows.length} rând(uri) după filtrare.`;
       }
 
       function updateStatusText(){
@@ -1653,26 +1550,23 @@
         el.gridMeta.textContent = `Sursă activă: ${state.sourceLabel} · ${dirtyText} · ${cloudText} · total rânduri: ${total}`;
       }
 
-      function renderAll(options){
-        const opts = options || {};
-        state.forceScrollToBottom = !!opts.forceScrollToBottom;
+      function renderAll(){
+        state.forceScrollToBottom = true;
         renderHeader();
         renderBody();
+        state.helperSuggestions = extractHelperSuggestions(state.helperDoc || {});
+        refreshDatalists();
         updateRoleUi();
         updateStatusText();
       }
 
       function onFilterInput(ev){
         state.filters[ev.target.dataset.key] = ev.target.value || '';
-        state.viewCache = null;
-        clearTimeout(state.filterTimer);
-        state.filterTimer = setTimeout(() => {
-          renderBody();
-        }, FILTER_INPUT_DEBOUNCE_MS);
+        state.forceScrollToBottom = true;
+        renderBody();
       }
 
       function openEditor(id){
-        ensureHelperDataLoaded().catch(() => {});
         refreshDatalists();
         const row = id ? clone(state.rows.find(r => r.id === id)) : defaultRow();
         state.editorId = row.id;
@@ -1795,10 +1689,8 @@
         state.selectedId = row.id;
         state.dirty = true;
         state.sourceLabel = 'local';
-        bumpRowsVersion();
         saveLocal();
-        refreshHelperSuggestions();
-        renderAll({ forceScrollToBottom:true });
+        renderAll();
         fillForm(row);
         el.modalTitle.textContent = 'Editează înregistrare MAGNAFLUX';
         el.btnDeleteRow.classList.toggle('hidden', !state.permissions.canDelete);
@@ -1817,10 +1709,8 @@
         if(state.selectedId === id) state.selectedId = null;
         state.dirty = true;
         state.sourceLabel = 'local';
-        bumpRowsVersion();
         saveLocal();
-        refreshHelperSuggestions();
-        renderAll({ forceScrollToBottom:true });
+        renderAll();
         closeEditor();
         showToast('Rândul a fost șters.');
         scheduleCloudSave();
@@ -2072,10 +1962,8 @@
           state.selectedId = importedRows.length ? importedRows[importedRows.length - 1].id : null;
           state.dirty = true;
           state.sourceLabel = 'local';
-          bumpRowsVersion();
           saveLocal();
-          refreshHelperSuggestions();
-          renderAll({ forceScrollToBottom:true });
+          renderAll();
           scheduleCloudSave();
           setSyncBadge('Import Excel finalizat', 'ok');
           showToast(`Import finalizat: ${importedRows.length} rând(uri).`);
@@ -2123,10 +2011,8 @@
           state.lastCloudUpdatedAt = doc.updated_at || null;
           state.dirty = false;
           state.sourceLabel = 'cloud';
-          bumpRowsVersion();
           saveLocal();
-          refreshHelperSuggestions();
-          renderAll({ forceScrollToBottom:true });
+          renderAll();
           setSyncBadge('Cloud încărcat', 'ok');
           showToast('Datele au fost reîncărcate din cloud.');
         }else{
@@ -2136,7 +2022,7 @@
       }
 
       async function pollCloudMeta(){
-        if(!state.supabase || state.dirty || document.hidden || !navigator.onLine) return;
+        if(!state.supabase || state.dirty) return;
         const remoteUpdatedAt = await fetchDocMeta(DOC_KEY);
         if(!remoteUpdatedAt) return;
         if(state.lastCloudUpdatedAt && remoteUpdatedAt <= state.lastCloudUpdatedAt) return;
@@ -2145,10 +2031,8 @@
         state.rows = doc.rows.map(sanitizeRow);
         state.lastCloudUpdatedAt = doc.updated_at || remoteUpdatedAt;
         state.sourceLabel = 'cloud';
-        bumpRowsVersion();
         saveLocal();
-        refreshHelperSuggestions();
-        renderAll({ forceScrollToBottom:true });
+        renderAll();
         setSyncBadge('Actualizare nouă din cloud', 'ok');
       }
 
@@ -2205,27 +2089,6 @@
       function bindEvents(){
         el.btnBack.addEventListener('click', () => window.location.href = 'index.html');
         el.btnReload.addEventListener('click', manualReload);
-
-        el.tableHead.addEventListener('input', ev => {
-          if(!ev.target || !ev.target.classList.contains('filter-input')) return;
-          onFilterInput(ev);
-        });
-
-        el.tableBody.addEventListener('click', ev => {
-          const tr = ev.target.closest('tr[data-id]');
-          if(!tr) return;
-          state.selectedId = tr.dataset.id || null;
-          state.viewCache = null;
-          syncSelectedRowUi();
-        });
-
-        el.tableBody.addEventListener('dblclick', ev => {
-          const tr = ev.target.closest('tr[data-id]');
-          if(!tr) return;
-          if(!state.permissions.canEdit) return showToast('Ai doar drept de vizualizare pe această pagină.');
-          openEditor(tr.dataset.id);
-        });
-
         el.btnSync.addEventListener('click', async () => {
           if(!state.permissions.canEdit) return showToast('Nu ai drept de sincronizare/editare.');
           const ok = await saveDocToCloud();
@@ -2261,14 +2124,8 @@
         });
         document.querySelectorAll('.calc-input').forEach(input => input.addEventListener('input', refreshFormComputed));
 
-        window.addEventListener('online', () => {
-          setSyncBadge(state.dirty ? 'Ai modificări locale de sincronizat' : 'Conexiune online', state.dirty ? 'warn' : 'ok');
-          pollCloudMeta();
-        });
+        window.addEventListener('online', () => setSyncBadge(state.dirty ? 'Ai modificări locale de sincronizat' : 'Conexiune online', state.dirty ? 'warn' : 'ok'));
         window.addEventListener('offline', () => setSyncBadge('Offline · datele rămân local', 'err'));
-        document.addEventListener('visibilitychange', () => {
-          if(!document.hidden && !state.dirty) pollCloudMeta();
-        });
       }
 
       async function initialLoad(){
@@ -2281,9 +2138,7 @@
           state.rows = [];
         }
 
-        bumpRowsVersion();
-        refreshHelperSuggestions();
-        renderAll({ forceScrollToBottom:true });
+        renderAll();
         setSyncBadge(navigator.onLine ? 'Conectare...' : 'Offline · datele rămân local', navigator.onLine ? 'warn' : 'err');
 
         try{
@@ -2292,6 +2147,7 @@
           await requireSession();
           await resolveRole();
           await resolvePermissions();
+          await loadHelperData();
 
           const cloudDoc = await fetchDocByKey(DOC_KEY);
           if(cloudDoc && Array.isArray(cloudDoc.rows)){
@@ -2302,20 +2158,16 @@
               state.lastCloudUpdatedAt = cloudDoc.updated_at || null;
               state.sourceLabel = 'cloud';
               state.dirty = false;
-              bumpRowsVersion();
               saveLocal();
             }
           }
 
-          refreshHelperSuggestions();
-          renderAll({ forceScrollToBottom:true });
+          renderAll();
           setSyncBadge(state.dirty ? 'Ai modificări locale de sincronizat' : 'Pregătit', state.dirty ? 'warn' : 'ok');
-          ensureHelperDataLoaded().catch(() => {});
           clearInterval(state.pollTimer);
           state.pollTimer = setInterval(pollCloudMeta, META_POLL_MS);
         }catch(err){
-          refreshHelperSuggestions();
-          renderAll({ forceScrollToBottom:true });
+          renderAll();
           setSyncBadge('Funcționează local', 'warn');
           showToast('Pagina a pornit local. Cloud-ul nu este disponibil momentan.');
         }
