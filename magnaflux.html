@@ -753,8 +753,13 @@
       'use strict';
 
       const PAGE_KEY = 'magnaflux';
-      const DOC_KEY = 'magnaflux';
-      const CACHE_KEY = 'rf:magnaflux:cache:v1';
+      const LEGACY_CACHE_KEY = 'rf:magnaflux:cache:v1';
+      const CURRENT_YEAR = new Date().getFullYear();
+      const YEAR_STORAGE_PREFIX = 'rf:magnaflux:cache:year:v2:';
+      const YEAR_INDEX_STORAGE_KEY = 'rf:magnaflux:cache:index:v2';
+      const YEAR_MIGRATED_FLAG = 'rf:magnaflux:cache:migrated:v2';
+      const CLOUD_DOC_PREFIX = 'magnaflux:';
+      const CLOUD_INDEX_KEY = 'magnaflux:index';
       const META_POLL_MS = 30000;
       const SAVE_DELAY_MS = 1800;
       const MONTHS_RO = ['Ianuarie','Februarie','Martie','Aprilie','Mai','Iunie','Iulie','August','Septembrie','Octombrie','Noiembrie','Decembrie'];
@@ -895,10 +900,15 @@
         modalDrag: null,
         editorModalMoved: false,
         xlsxLoader: null,
-        saveTimer: null,
+        saveTimersByYear: {},
         pollTimer: null,
         sourceLabel: 'local',
-        forceScrollToBottom: true
+        forceScrollToBottom: true,
+        activeYear: String(CURRENT_YEAR),
+        yearCache: {},
+        yearMeta: {},
+        dirtyYearsSet: new Set(),
+        cloudIndexState: { years:[String(CURRENT_YEAR)], updated_at_by_year:{} }
       };
 
       function showToast(message){
@@ -1120,31 +1130,225 @@
         return computeDerived(row);
       }
 
-      function docPayload(){
+      function normalizeYearValue(value){
+        const text = String(value == null ? '' : value).trim();
+        const match = text.match(/(19|20)\d{2}/);
+        return match ? match[0] : '';
+      }
+
+      function getYearFromRow(row, fallbackYear){
+        const direct = normalizeYearValue(row && (row.an || row.year));
+        if(direct) return direct;
+        const dataYear = normalizeYearValue(row && row.data ? String(row.data).slice(0,4) : '');
+        if(dataYear) return dataYear;
+        return normalizeYearValue(fallbackYear) || String(CURRENT_YEAR);
+      }
+
+      function getYearDocKey(year){
+        return CLOUD_DOC_PREFIX + (normalizeYearValue(year) || String(CURRENT_YEAR));
+      }
+
+      function getYearStorageKey(year){
+        return YEAR_STORAGE_PREFIX + (normalizeYearValue(year) || String(CURRENT_YEAR));
+      }
+
+      function nowIso(){
+        return new Date().toISOString();
+      }
+
+      function buildYearPayload(year, rows, updatedAt){
+        const y = normalizeYearValue(year) || String(CURRENT_YEAR);
         return {
           page_key: PAGE_KEY,
-          updated_at: new Date().toISOString(),
-          rows: state.rows.map(r => clone(r))
+          year: Number(y),
+          updated_at: updatedAt || nowIso(),
+          rows: (rows || []).map(r => clone(r))
         };
       }
 
-      function saveLocal(){
+      function sortYearsAsc(values){
+        return Array.from(new Set((values || []).map(v => normalizeYearValue(v)).filter(Boolean)))
+          .sort((a,b) => Number(a) - Number(b));
+      }
+
+      function discoverLocalYears(){
+        const out = [];
         try{
-          localStorage.setItem(CACHE_KEY, JSON.stringify(docPayload()));
+          for(let i = 0; i < localStorage.length; i += 1){
+            const key = localStorage.key(i);
+            if(!key || !key.startsWith(YEAR_STORAGE_PREFIX)) continue;
+            const year = normalizeYearValue(key.slice(YEAR_STORAGE_PREFIX.length));
+            if(year) out.push(year);
+          }
+        }catch(_err){}
+        return sortYearsAsc(out);
+      }
+
+      function ensureYearInIndex(year){
+        const y = normalizeYearValue(year) || String(CURRENT_YEAR);
+        const merged = sortYearsAsc([...(state.cloudIndexState.years || []), y]);
+        state.cloudIndexState.years = merged.length ? merged : [String(CURRENT_YEAR)];
+        if(!state.cloudIndexState.updated_at_by_year || typeof state.cloudIndexState.updated_at_by_year !== 'object'){
+          state.cloudIndexState.updated_at_by_year = {};
+        }
+        return y;
+      }
+
+      function persistYearIndexLocal(){
+        try{
+          localStorage.setItem(YEAR_INDEX_STORAGE_KEY, JSON.stringify({
+            years: sortYearsAsc(state.cloudIndexState.years || []),
+            updated_at_by_year: Object.assign({}, state.cloudIndexState.updated_at_by_year || {}),
+            active_year: state.activeYear || String(CURRENT_YEAR)
+          }));
         }catch(_err){}
       }
 
-      function loadLocal(){
+      function loadYearIndexLocal(){
+        let parsed = null;
         try{
-          const raw = localStorage.getItem(CACHE_KEY);
-          if(!raw) return null;
-          const doc = JSON.parse(raw);
-          if(!doc || !Array.isArray(doc.rows)) return null;
-          doc.rows = doc.rows.map(sanitizeRow);
-          return doc;
+          parsed = JSON.parse(localStorage.getItem(YEAR_INDEX_STORAGE_KEY) || 'null');
         }catch(_err){
-          return null;
+          parsed = null;
         }
+
+        const mergedYears = sortYearsAsc([
+          ...(parsed && Array.isArray(parsed.years) ? parsed.years : []),
+          ...discoverLocalYears(),
+          String(CURRENT_YEAR)
+        ]);
+
+        state.cloudIndexState = {
+          years: mergedYears.length ? mergedYears : [String(CURRENT_YEAR)],
+          updated_at_by_year: Object.assign({}, parsed && parsed.updated_at_by_year && typeof parsed.updated_at_by_year === 'object' ? parsed.updated_at_by_year : {})
+        };
+
+        const savedActiveYear = normalizeYearValue(parsed && parsed.active_year);
+        if(savedActiveYear){
+          state.activeYear = savedActiveYear;
+        }
+      }
+
+      function migrateLegacyLocal(){
+        try{
+          if(localStorage.getItem(YEAR_MIGRATED_FLAG) === '1') return;
+          const raw = localStorage.getItem(LEGACY_CACHE_KEY);
+          if(!raw){
+            localStorage.setItem(YEAR_MIGRATED_FLAG, '1');
+            return;
+          }
+          const doc = JSON.parse(raw);
+          const legacyRows = Array.isArray(doc && doc.rows) ? doc.rows.map(sanitizeRow) : [];
+          if(legacyRows.length){
+            const groups = {};
+            legacyRows.forEach(row => {
+              const y = getYearFromRow(row, CURRENT_YEAR);
+              if(!groups[y]) groups[y] = [];
+              groups[y].push(row);
+            });
+            Object.keys(groups).forEach(year => {
+              saveYearLocal(year, groups[year], doc.updated_at || nowIso());
+            });
+          }
+          localStorage.setItem(YEAR_MIGRATED_FLAG, '1');
+        }catch(_err){
+          try{ localStorage.setItem(YEAR_MIGRATED_FLAG, '1'); }catch(_e){}
+        }
+      }
+
+      function saveYearLocal(year, rows, updatedAt){
+        const y = ensureYearInIndex(year);
+        const payload = buildYearPayload(y, rows, updatedAt);
+        const cleanRows = payload.rows.map(sanitizeRow);
+        state.yearCache[y] = cleanRows;
+        state.yearMeta[y] = { updated_at: payload.updated_at };
+        state.cloudIndexState.updated_at_by_year[y] = payload.updated_at;
+        try{
+          localStorage.setItem(getYearStorageKey(y), JSON.stringify(payload));
+        }catch(_err){}
+        persistYearIndexLocal();
+        return cleanRows;
+      }
+
+      function loadYearLocal(year){
+        const y = ensureYearInIndex(year);
+        if(Array.isArray(state.yearCache[y])) return state.yearCache[y];
+        try{
+          const raw = localStorage.getItem(getYearStorageKey(y));
+          if(!raw){
+            state.yearCache[y] = [];
+            if(!state.yearMeta[y]) state.yearMeta[y] = { updated_at: null };
+            return state.yearCache[y];
+          }
+          const doc = JSON.parse(raw);
+          const rows = Array.isArray(doc && doc.rows) ? doc.rows.map(sanitizeRow) : [];
+          state.yearCache[y] = rows;
+          state.yearMeta[y] = { updated_at: doc && doc.updated_at ? doc.updated_at : null };
+          if(doc && doc.updated_at){
+            state.cloudIndexState.updated_at_by_year[y] = doc.updated_at;
+          }
+          persistYearIndexLocal();
+          return rows;
+        }catch(_err){
+          state.yearCache[y] = [];
+          if(!state.yearMeta[y]) state.yearMeta[y] = { updated_at: null };
+          return state.yearCache[y];
+        }
+      }
+
+      function getKnownYears(){
+        return sortYearsAsc([
+          ...(state.cloudIndexState.years || []),
+          ...Object.keys(state.yearCache || {}),
+          ...Object.keys(state.yearMeta || {}),
+          ...discoverLocalYears()
+        ]);
+      }
+
+      function getRowsForYear(year){
+        const y = normalizeYearValue(year) || String(CURRENT_YEAR);
+        return Array.isArray(state.yearCache[y]) ? state.yearCache[y] : loadYearLocal(y);
+      }
+
+      function choosePreferredYear(years){
+        const normalized = sortYearsAsc(years);
+        if(!normalized.length) return String(CURRENT_YEAR);
+        const current = String(CURRENT_YEAR);
+        if(normalized.includes(current)) return current;
+        return normalized[normalized.length - 1];
+      }
+
+      function refreshDirtyFlag(){
+        state.dirty = state.dirtyYearsSet.has(state.activeYear);
+      }
+
+      function updateActiveRowsFromCache(year){
+        const y = ensureYearInIndex(year || state.activeYear);
+        state.activeYear = y;
+        state.rows = getRowsForYear(y);
+        state.lastCloudUpdatedAt = state.yearMeta[y] && state.yearMeta[y].updated_at ? state.yearMeta[y].updated_at : null;
+        refreshDirtyFlag();
+        persistYearIndexLocal();
+      }
+
+      function findYearOfRowId(id){
+        if(!id) return '';
+        const years = getKnownYears();
+        for(const year of years){
+          const list = getRowsForYear(year);
+          if(list.some(row => row.id === id)) return year;
+        }
+        return '';
+      }
+
+      function buildCloudIndexPayload(){
+        return {
+          page_key: PAGE_KEY,
+          currentYear: CURRENT_YEAR,
+          years: sortYearsAsc(state.cloudIndexState.years || []),
+          updated_at_by_year: Object.assign({}, state.cloudIndexState.updated_at_by_year || {}),
+          updated_at: nowIso()
+        };
       }
 
       function setSyncBadge(text, kind){
@@ -1287,38 +1491,166 @@
         }
       }
 
-      async function saveDocToCloud(){
-        if(!state.supabase || !state.session || !state.permissions.canEdit) return;
-        const payloadDoc = docPayload();
-        const row = { doc_key: DOC_KEY, content: payloadDoc, data: payloadDoc, updated_at: payloadDoc.updated_at };
-        setSyncBadge('Sincronizare în cloud...', 'warn');
+      async function mergeCloudIndex(){
+        const doc = await fetchDocByKey(CLOUD_INDEX_KEY);
+        if(!doc) return null;
+        const years = sortYearsAsc([
+          ...(state.cloudIndexState.years || []),
+          ...(Array.isArray(doc.years) ? doc.years : [])
+        ]);
+        const updatedAtByYear = Object.assign(
+          {},
+          state.cloudIndexState.updated_at_by_year || {},
+          doc.updated_at_by_year && typeof doc.updated_at_by_year === 'object' ? doc.updated_at_by_year : {}
+        );
+        state.cloudIndexState = {
+          years: years.length ? years : [String(CURRENT_YEAR)],
+          updated_at_by_year: updatedAtByYear
+        };
+        persistYearIndexLocal();
+        return doc;
+      }
+
+      async function saveCloudIndex(){
+        if(!state.supabase || !state.session) return true;
+        const payload = buildCloudIndexPayload();
+        const row = { doc_key: CLOUD_INDEX_KEY, content: payload, data: payload, updated_at: payload.updated_at };
         try{
           let res = await state.supabase.from('rf_documents').upsert(row, { onConflict:'doc_key' }).select('updated_at').maybeSingle();
           if(res.error && /column .*data/i.test(String(res.error.message || ''))){
-            const row2 = { doc_key: DOC_KEY, content: payloadDoc, updated_at: payloadDoc.updated_at };
+            const row2 = { doc_key: CLOUD_INDEX_KEY, content: payload, updated_at: payload.updated_at };
             res = await state.supabase.from('rf_documents').upsert(row2, { onConflict:'doc_key' }).select('updated_at').maybeSingle();
           }
           if(res.error) throw res.error;
-          state.dirty = false;
-          state.lastCloudUpdatedAt = payloadDoc.updated_at;
-          state.sourceLabel = 'cloud';
-          saveLocal();
-          updateStatusText();
-          setSyncBadge('Cloud sincronizat', 'ok');
           return true;
-        }catch(err){
-          state.dirty = true;
-          updateStatusText();
-          setSyncBadge('Cloud nesincronizat', 'err');
-          showToast('Nu am reușit sincronizarea în cloud. Datele rămân salvate local.');
+        }catch(_err){
           return false;
         }
       }
 
-      function scheduleCloudSave(){
+      async function saveYearToCloud(year){
+        const y = normalizeYearValue(year) || String(CURRENT_YEAR);
+        if(!state.supabase || !state.session || !state.permissions.canEdit) return false;
+
+        const payloadDoc = buildYearPayload(y, getRowsForYear(y), nowIso());
+        const row = { doc_key: getYearDocKey(y), content: payloadDoc, data: payloadDoc, updated_at: payloadDoc.updated_at };
+
+        if(y === state.activeYear){
+          setSyncBadge('Sincronizare în cloud...', 'warn');
+        }
+
+        try{
+          let res = await state.supabase.from('rf_documents').upsert(row, { onConflict:'doc_key' }).select('updated_at').maybeSingle();
+          if(res.error && /column .*data/i.test(String(res.error.message || ''))){
+            const row2 = { doc_key: getYearDocKey(y), content: payloadDoc, updated_at: payloadDoc.updated_at };
+            res = await state.supabase.from('rf_documents').upsert(row2, { onConflict:'doc_key' }).select('updated_at').maybeSingle();
+          }
+          if(res.error) throw res.error;
+
+          state.dirtyYearsSet.delete(y);
+          state.yearMeta[y] = { updated_at: payloadDoc.updated_at };
+          state.cloudIndexState.updated_at_by_year[y] = payloadDoc.updated_at;
+          ensureYearInIndex(y);
+          saveYearLocal(y, getRowsForYear(y), payloadDoc.updated_at);
+          await saveCloudIndex();
+
+          if(y === state.activeYear){
+            state.lastCloudUpdatedAt = payloadDoc.updated_at;
+            state.sourceLabel = 'cloud';
+          }
+          refreshDirtyFlag();
+          updateStatusText();
+
+          if(y === state.activeYear){
+            setSyncBadge('Cloud sincronizat', 'ok');
+          }
+          return true;
+        }catch(_err){
+          state.dirtyYearsSet.add(y);
+          refreshDirtyFlag();
+          updateStatusText();
+          if(y === state.activeYear){
+            setSyncBadge('Cloud nesincronizat', 'err');
+            showToast('Nu am reușit sincronizarea în cloud. Datele rămân salvate local.');
+          }
+          return false;
+        }
+      }
+
+      async function saveAllDirtyYears(explicitYears){
+        const years = sortYearsAsc((explicitYears && explicitYears.length ? explicitYears : Array.from(state.dirtyYearsSet)).concat(state.dirtyYearsSet.size ? [] : [state.activeYear]));
+        let okAll = true;
+        for(const year of years){
+          const ok = await saveYearToCloud(year);
+          if(!ok) okAll = false;
+        }
+        refreshDirtyFlag();
+        return okAll;
+      }
+
+      function scheduleCloudSave(year){
+        const y = normalizeYearValue(year) || String(CURRENT_YEAR);
         if(!state.permissions.canEdit) return;
-        clearTimeout(state.saveTimer);
-        state.saveTimer = setTimeout(() => { saveDocToCloud(); }, SAVE_DELAY_MS);
+        clearTimeout(state.saveTimersByYear[y]);
+        state.saveTimersByYear[y] = setTimeout(() => { saveYearToCloud(y); }, SAVE_DELAY_MS);
+      }
+
+      async function switchActiveYear(year, options){
+        const opts = Object.assign({ allowCloud:true, forceCloud:false, silent:false }, options || {});
+        const y = ensureYearInIndex(year || state.activeYear);
+        updateActiveRowsFromCache(y);
+        state.sourceLabel = getRowsForYear(y).length ? 'local' : state.sourceLabel;
+        state.forceScrollToBottom = true;
+        renderAll();
+
+        if(!state.supabase || opts.allowCloud === false){
+          if(!opts.silent){
+            setSyncBadge(state.dirty ? 'Ai modificări locale de sincronizat' : 'Pregătit', state.dirty ? 'warn' : 'ok');
+          }
+          return y;
+        }
+
+        if(!opts.silent){
+          const label = opts.forceCloud ? `Reîncarcă anul ${y} din cloud...` : `Încarc anul ${y}...`;
+          setSyncBadge(label, 'warn');
+        }
+
+        const cloudDoc = await fetchDocByKey(getYearDocKey(y));
+        const localRows = getRowsForYear(y);
+        const localTime = state.yearMeta[y] && state.yearMeta[y].updated_at ? state.yearMeta[y].updated_at : '';
+        const cloudTime = cloudDoc && cloudDoc.updated_at ? cloudDoc.updated_at : '';
+
+        if(cloudDoc && Array.isArray(cloudDoc.rows)){
+          const cloudRows = cloudDoc.rows.map(sanitizeRow);
+          const shouldUseCloud = opts.forceCloud || !localRows.length || !localTime || (cloudTime && cloudTime >= localTime);
+
+          if(shouldUseCloud){
+            state.yearCache[y] = cloudRows;
+            state.yearMeta[y] = { updated_at: cloudTime || nowIso() };
+            state.cloudIndexState.updated_at_by_year[y] = state.yearMeta[y].updated_at;
+            saveYearLocal(y, cloudRows, state.yearMeta[y].updated_at);
+            if(opts.forceCloud){
+              state.dirtyYearsSet.delete(y);
+            }else if(localTime && cloudTime && localTime > cloudTime){
+              state.dirtyYearsSet.add(y);
+            }
+            state.sourceLabel = 'cloud';
+          }else{
+            state.sourceLabel = 'local';
+            if(localTime && cloudTime && localTime > cloudTime){
+              state.dirtyYearsSet.add(y);
+            }
+          }
+        }else if(opts.forceCloud){
+          state.sourceLabel = 'local';
+        }
+
+        updateActiveRowsFromCache(y);
+        renderAll();
+        if(!opts.silent){
+          setSyncBadge(state.dirty ? 'Ai modificări locale de sincronizat' : 'Pregătit', state.dirty ? 'warn' : 'ok');
+        }
+        return y;
       }
 
       async function loadHelperData(){
@@ -1629,9 +1961,13 @@
 
       function updateStatusText(){
         const total = state.rows.length;
-        const dirtyText = state.dirty ? 'modificări nesincronizate' : 'fără modificări locale în așteptare';
-        const cloudText = state.lastCloudUpdatedAt ? `cloud: ${new Date(state.lastCloudUpdatedAt).toLocaleString('ro-RO')}` : 'cloud: încă neluat';
-        el.gridMeta.textContent = `Sursă activă: ${state.sourceLabel} · ${dirtyText} · ${cloudText} · total rânduri: ${total}`;
+        const dirtyText = state.dirty
+          ? `anul ${state.activeYear} are modificări nesincronizate`
+          : 'fără modificări locale în așteptare';
+        const dirtyYears = sortYearsAsc(Array.from(state.dirtyYearsSet));
+        const dirtyYearsText = dirtyYears.length ? ` · ani modificați: ${dirtyYears.join(', ')}` : '';
+        const cloudText = state.lastCloudUpdatedAt ? `ultima versiune: ${new Date(state.lastCloudUpdatedAt).toLocaleString('ro-RO')}` : 'ultima versiune: încă neluată';
+        el.gridMeta.textContent = `An activ: ${state.activeYear} · sursă activă: ${state.sourceLabel} · ${dirtyText}${dirtyYearsText} · ${cloudText} · total rânduri: ${total}`;
       }
 
       function renderAll(){
@@ -1645,7 +1981,20 @@
       }
 
       function onFilterInput(ev){
-        state.filters[ev.target.dataset.key] = ev.target.value || '';
+        const key = ev.target.dataset.key;
+        const value = ev.target.value || '';
+        state.filters[key] = value;
+
+        if(key === 'an'){
+          const wantedYear = normalizeYearValue(value);
+          if(wantedYear && wantedYear !== state.activeYear){
+            switchActiveYear(wantedYear, { allowCloud:true }).catch(() => {
+              setSyncBadge('Nu am putut încărca anul cerut', 'err');
+            });
+            return;
+          }
+        }
+
         state.forceScrollToBottom = true;
         renderBody();
       }
@@ -1748,10 +2097,17 @@
         if(!state.permissions.canEdit && !state.permissions.canAdd){
           return showToast('Nu ai drept de editare pe această pagină.');
         }
+
         syncDateParts();
         applyReperMapping();
         syncNumeralKodFromCodCat(true);
+
         const row = sanitizeRow(formSnapshot());
+        const targetYear = getYearFromRow(row, state.activeYear);
+        const sourceYear = findYearOfRowId(row.id) || state.activeYear;
+        const touchedYears = [];
+        const stamp = nowIso();
+
         if(!row.data){
           return showToast('Completează data.');
         }
@@ -1762,42 +2118,73 @@
           return showToast('Completează reperul.');
         }
 
-        const idx = state.rows.findIndex(r => r.id === row.id);
-        if(idx >= 0){
-          state.rows[idx] = row;
+        if(targetYear === sourceYear){
+          const list = [...getRowsForYear(sourceYear)];
+          const idx = list.findIndex(r => r.id === row.id);
+          if(idx >= 0) list[idx] = row;
+          else list.push(row);
+          saveYearLocal(sourceYear, list, stamp);
+          touchedYears.push(sourceYear);
+          state.activeYear = sourceYear;
+          state.rows = getRowsForYear(sourceYear);
         }else{
-          state.rows.push(row);
+          const sourceList = [...getRowsForYear(sourceYear)].filter(r => r.id !== row.id);
+          const targetList = [...getRowsForYear(targetYear)].filter(r => r.id !== row.id);
+          targetList.push(row);
+
+          saveYearLocal(sourceYear, sourceList, stamp);
+          saveYearLocal(targetYear, targetList, stamp);
+
+          touchedYears.push(sourceYear, targetYear);
+          state.activeYear = targetYear;
+          state.filters.an = targetYear;
+          state.rows = getRowsForYear(targetYear);
         }
+
+        touchedYears.forEach(year => state.dirtyYearsSet.add(year));
+        refreshDirtyFlag();
 
         state.editorId = row.id;
         state.selectedId = row.id;
-        state.dirty = true;
         state.sourceLabel = 'local';
-        saveLocal();
+        state.lastCloudUpdatedAt = state.yearMeta[state.activeYear] && state.yearMeta[state.activeYear].updated_at
+          ? state.yearMeta[state.activeYear].updated_at
+          : null;
+
         renderAll();
         fillForm(row);
         el.modalTitle.textContent = 'Editează înregistrare MAGNAFLUX';
         el.btnDeleteRow.classList.toggle('hidden', !state.permissions.canDelete);
+
         showToast('Înregistrarea a fost salvată. Fereastra rămâne deschisă.');
-        scheduleCloudSave();
+        touchedYears.forEach(year => scheduleCloudSave(year));
       }
 
       function deleteEditorRow(){
         if(!state.permissions.canDelete) return showToast('Nu ai drept de ștergere.');
         const id = state.editorId;
         if(!id) return;
-        const row = state.rows.find(r => r.id === id);
+        const sourceYear = findYearOfRowId(id) || state.activeYear;
+        const list = getRowsForYear(sourceYear);
+        const row = list.find(r => r.id === id);
         if(!row) return;
         if(!confirm('Ștergi acest rând din Magnaflux?')) return;
-        state.rows = state.rows.filter(r => r.id !== id);
+
+        const updated = list.filter(r => r.id !== id);
+        const stamp = nowIso();
+        saveYearLocal(sourceYear, updated, stamp);
+        state.dirtyYearsSet.add(sourceYear);
         if(state.selectedId === id) state.selectedId = null;
-        state.dirty = true;
-        state.sourceLabel = 'local';
-        saveLocal();
+        if(state.activeYear === sourceYear){
+          state.rows = getRowsForYear(sourceYear);
+          state.sourceLabel = 'local';
+          state.lastCloudUpdatedAt = stamp;
+        }
+        refreshDirtyFlag();
         renderAll();
         closeEditor();
         showToast('Rândul a fost șters.');
-        scheduleCloudSave();
+        scheduleCloudSave(sourceYear);
       }
 
       function updateRoleUi(){
@@ -1998,7 +2385,7 @@
           }
 
           let mode = '1';
-          if(state.rows.length){
+          if(getKnownYears().some(year => getRowsForYear(year).length)){
             mode = (prompt('Import MAGNAFLUX:\n1 = înlocuiește toate rândurile existente\n2 = adaugă peste datele existente', '2') || '').trim();
             if(!mode){
               setSyncBadge(state.dirty ? 'Ai modificări locale de sincronizat' : 'Pregătit', state.dirty ? 'warn' : 'ok');
@@ -2006,24 +2393,54 @@
             }
           }
 
+          const grouped = {};
+          importedRows.forEach(row => {
+            const year = getYearFromRow(row, CURRENT_YEAR);
+            if(!grouped[year]) grouped[year] = [];
+            grouped[year].push(row);
+          });
+
+          const touchedYears = new Set();
+          const stamp = nowIso();
+
           if(mode === '1'){
-            state.rows = importedRows;
+            const yearsToClear = getKnownYears();
+            yearsToClear.forEach(year => {
+              const replacement = grouped[year] ? grouped[year] : [];
+              saveYearLocal(year, replacement, stamp);
+              touchedYears.add(year);
+            });
+            Object.keys(grouped).forEach(year => {
+              if(!yearsToClear.includes(year)){
+                saveYearLocal(year, grouped[year], stamp);
+                touchedYears.add(year);
+              }
+            });
           }else if(mode === '2'){
-            state.rows = [...state.rows, ...importedRows];
+            Object.entries(grouped).forEach(([year, rowsForYear]) => {
+              const merged = [...getRowsForYear(year), ...rowsForYear];
+              saveYearLocal(year, merged, stamp);
+              touchedYears.add(year);
+            });
           }else{
             setSyncBadge(state.dirty ? 'Ai modificări locale de sincronizat' : 'Pregătit', state.dirty ? 'warn' : 'ok');
             return showToast('Opțiune invalidă. Import anulat.');
           }
 
+          touchedYears.forEach(year => state.dirtyYearsSet.add(year));
+          const nextYear = choosePreferredYear(Object.keys(grouped));
+          state.activeYear = nextYear;
+          state.filters.an = nextYear;
+          updateActiveRowsFromCache(nextYear);
           state.selectedId = importedRows.length ? importedRows[importedRows.length - 1].id : null;
-          state.dirty = true;
           state.sourceLabel = 'local';
-          saveLocal();
+
           renderAll();
-          scheduleCloudSave();
+
+          touchedYears.forEach(year => scheduleCloudSave(year));
           setSyncBadge('Import Excel finalizat', 'ok');
           showToast(`Import finalizat: ${importedRows.length} rând(uri).`);
-        }catch(err){
+        }catch(_err){
           setSyncBadge('Import Excel eșuat', 'err');
           showToast('Nu am putut importa fișierul Excel.');
         }finally{
@@ -2057,38 +2474,22 @@
 
       async function manualReload(){
         if(state.dirty){
-          const ok = confirm('Ai modificări locale nesincronizate. Reîncarci oricum din cloud?');
+          const ok = confirm('Ai modificări locale nesincronizate pentru anul activ. Reîncarci oricum din cloud?');
           if(!ok) return;
         }
-        setSyncBadge('Reîncărcare din cloud...', 'warn');
-        const doc = await fetchDocByKey(DOC_KEY);
-        if(doc && Array.isArray(doc.rows)){
-          state.rows = doc.rows.map(sanitizeRow);
-          state.lastCloudUpdatedAt = doc.updated_at || null;
-          state.dirty = false;
-          state.sourceLabel = 'cloud';
-          saveLocal();
-          renderAll();
-          setSyncBadge('Cloud încărcat', 'ok');
-          showToast('Datele au fost reîncărcate din cloud.');
-        }else{
-          setSyncBadge('Cloud indisponibil', 'err');
-          showToast('Nu am găsit documentul în cloud.');
-        }
+        await switchActiveYear(state.activeYear, { allowCloud:true, forceCloud:true });
+        showToast('Datele au fost reîncărcate din cloud pentru anul activ.');
       }
 
       async function pollCloudMeta(){
-        if(!state.supabase || state.dirty) return;
-        const remoteUpdatedAt = await fetchDocMeta(DOC_KEY);
+        if(!state.supabase) return;
+        const year = state.activeYear;
+        if(state.dirtyYearsSet.has(year)) return;
+        const remoteUpdatedAt = await fetchDocMeta(getYearDocKey(year));
         if(!remoteUpdatedAt) return;
-        if(state.lastCloudUpdatedAt && remoteUpdatedAt <= state.lastCloudUpdatedAt) return;
-        const doc = await fetchDocByKey(DOC_KEY);
-        if(!doc || !Array.isArray(doc.rows)) return;
-        state.rows = doc.rows.map(sanitizeRow);
-        state.lastCloudUpdatedAt = doc.updated_at || remoteUpdatedAt;
-        state.sourceLabel = 'cloud';
-        saveLocal();
-        renderAll();
+        const localUpdatedAt = state.yearMeta[year] && state.yearMeta[year].updated_at ? state.yearMeta[year].updated_at : null;
+        if(localUpdatedAt && remoteUpdatedAt <= localUpdatedAt) return;
+        await switchActiveYear(year, { allowCloud:true, forceCloud:true, silent:true });
         setSyncBadge('Actualizare nouă din cloud', 'ok');
       }
 
@@ -2147,7 +2548,7 @@
         el.btnReload.addEventListener('click', manualReload);
         el.btnSync.addEventListener('click', async () => {
           if(!state.permissions.canEdit) return showToast('Nu ai drept de sincronizare/editare.');
-          const ok = await saveDocToCloud();
+          const ok = await saveAllDirtyYears();
           if(ok) showToast('Sincronizare completă.');
         });
         el.btnImportExcel.addEventListener('click', requestImportExcel);
@@ -2181,20 +2582,19 @@
         });
         document.querySelectorAll('.calc-input').forEach(input => input.addEventListener('input', refreshFormComputed));
 
-        window.addEventListener('online', () => setSyncBadge(state.dirty ? 'Ai modificări locale de sincronizat' : 'Conexiune online', state.dirty ? 'warn' : 'ok'));
+        window.addEventListener('online', () => {
+          refreshDirtyFlag();
+          setSyncBadge(state.dirty ? 'Ai modificări locale de sincronizat' : 'Conexiune online', state.dirty ? 'warn' : 'ok');
+        });
         window.addEventListener('offline', () => setSyncBadge('Offline · datele rămân local', 'err'));
       }
 
       async function initialLoad(){
-        const localDoc = loadLocal();
-        if(localDoc && Array.isArray(localDoc.rows)){
-          state.rows = localDoc.rows.map(sanitizeRow);
-          state.lastCloudUpdatedAt = localDoc.updated_at || null;
-          state.sourceLabel = 'local';
-        } else {
-          state.rows = [];
-        }
+        migrateLegacyLocal();
+        loadYearIndexLocal();
 
+        updateActiveRowsFromCache(state.activeYear);
+        state.sourceLabel = state.rows.length ? 'local' : 'local';
         renderAll();
         setSyncBadge(navigator.onLine ? 'Conectare...' : 'Offline · datele rămân local', navigator.onLine ? 'warn' : 'err');
 
@@ -2205,25 +2605,14 @@
           await resolveRole();
           await resolvePermissions();
           await loadHelperData();
-
-          const cloudDoc = await fetchDocByKey(DOC_KEY);
-          if(cloudDoc && Array.isArray(cloudDoc.rows)){
-            const localTime = localDoc && localDoc.updated_at ? localDoc.updated_at : '';
-            const cloudTime = cloudDoc.updated_at || '';
-            if(!localDoc || cloudTime >= localTime){
-              state.rows = cloudDoc.rows.map(sanitizeRow);
-              state.lastCloudUpdatedAt = cloudDoc.updated_at || null;
-              state.sourceLabel = 'cloud';
-              state.dirty = false;
-              saveLocal();
-            }
-          }
+          await mergeCloudIndex();
+          await switchActiveYear(state.activeYear, { allowCloud:true, silent:true });
 
           renderAll();
           setSyncBadge(state.dirty ? 'Ai modificări locale de sincronizat' : 'Pregătit', state.dirty ? 'warn' : 'ok');
           clearInterval(state.pollTimer);
           state.pollTimer = setInterval(pollCloudMeta, META_POLL_MS);
-        }catch(err){
+        }catch(_err){
           renderAll();
           setSyncBadge('Funcționează local', 'warn');
           showToast('Pagina a pornit local. Cloud-ul nu este disponibil momentan.');
