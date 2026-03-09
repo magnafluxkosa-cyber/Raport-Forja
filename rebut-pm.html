@@ -199,6 +199,12 @@ const SUPABASE_ANON_KEY = RF.SUPABASE_ANON_KEY || '';
 const DOC_TABLE = 'rf_documents';
 const DOC_KEY = 'rebut-pm';
 const HELPER_DOC_KEY = 'rebut-pm-helper';
+const CURRENT_YEAR = new Date().getFullYear();
+const CLOUD_DOC_PREFIX = 'rebut-pm:';
+const CLOUD_INDEX_KEY = 'rebut-pm:index';
+const YEAR_STORAGE_PREFIX = 'REBUT_PM_year_v1_';
+const YEAR_INDEX_STORAGE_KEY = 'REBUT_PM_index_v1';
+const REFRESH_INTERVAL_MS = 45000;
 
 const DEFAULT_REPER_MAP = [
   {
@@ -535,6 +541,7 @@ const FIELD_KEYS = [
   'obs','cauza','actiuni_corective'
 ];
 
+
 const els = {
   roleText: document.getElementById('roleText'),
   cloudText: document.getElementById('cloudText'),
@@ -570,6 +577,13 @@ const els = {
 let rows = [];
 let editingIndex = -1;
 let helperData = { reper_map: DEFAULT_REPER_MAP.map(x=>({ ...x })), repere: DEFAULT_REPER_MAP.map(x=>x.nr_reper), defecte: DEFAULT_DEFECTE.slice(), operatori: DEFAULT_OPERATORI.slice(), locuri: DEFAULT_LOCURI.slice() };
+
+
+let activeYear = String(CURRENT_YEAR);
+let yearCache = {};
+let yearMeta = {};
+let cloudIndexState = { years:[String(CURRENT_YEAR)], updatedAtByYear:{} };
+let refreshTimer = null;
 
 function createClient(){
   if(!(window.supabase && window.supabase.createClient) || !SUPABASE_URL || !SUPABASE_ANON_KEY) return null;
@@ -801,6 +815,185 @@ function scrollToBottom(){
   });
 }
 
+
+
+function nowIso(){ return new Date().toISOString(); }
+function normalizeYearValue(v){
+  const s = String(v == null ? '' : v).trim();
+  if(!s) return '';
+  const m = s.match(/(19|20)\d{2}/);
+  return m ? m[0] : '';
+}
+function getRowYear(row, fallbackYear){
+  const direct = normalizeYearValue(row && row.an);
+  if(direct) return direct;
+  const d = parseRoDate(row && row.data, row && row.luna);
+  if(d) return String(d.getFullYear());
+  return normalizeYearValue(fallbackYear) || String(CURRENT_YEAR);
+}
+function getYearDocKey(year){
+  return CLOUD_DOC_PREFIX + (normalizeYearValue(year) || String(CURRENT_YEAR));
+}
+function getYearStorageKey(year){
+  return YEAR_STORAGE_PREFIX + (normalizeYearValue(year) || String(CURRENT_YEAR));
+}
+function setCloudStatus(text){
+  els.cloudText.textContent = text || 'Cloud: pregătit';
+}
+function setSyncStatus(ts){
+  els.syncText.textContent = 'Sincronizat: ' + (ts ? new Date(ts).toLocaleString('ro-RO') : '-');
+}
+function getYearPayload(year, rowsForYear, updatedAt){
+  const y = normalizeYearValue(year) || String(CURRENT_YEAR);
+  return { year:y, rows:Array.isArray(rowsForYear)?rowsForYear:[], updated_at: updatedAt || nowIso() };
+}
+function readLocalIndex(){
+  try{
+    const raw = localStorage.getItem(YEAR_INDEX_STORAGE_KEY);
+    const parsed = raw ? JSON.parse(raw) : null;
+    if(parsed && typeof parsed === 'object'){
+      const years = Array.isArray(parsed.years) ? parsed.years.map(normalizeYearValue).filter(Boolean) : [];
+      const updatedAtByYear = parsed.updatedAtByYear && typeof parsed.updatedAtByYear === 'object' ? parsed.updatedAtByYear : {};
+      return { years, updatedAtByYear };
+    }
+  }catch(_e){}
+  return { years:[], updatedAtByYear:{} };
+}
+function writeLocalIndex(payload){
+  const years = Array.isArray(payload && payload.years) ? payload.years.map(normalizeYearValue).filter(Boolean) : [];
+  const out = {
+    years: Array.from(new Set(years)).sort((a,b)=> Number(a)-Number(b)),
+    updatedAtByYear: (payload && payload.updatedAtByYear && typeof payload.updatedAtByYear === 'object') ? payload.updatedAtByYear : {}
+  };
+  try{ localStorage.setItem(YEAR_INDEX_STORAGE_KEY, JSON.stringify(out)); }catch(_e){}
+  return out;
+}
+function mergeCloudIndex(years, updatedAtByYear){
+  const localIndex = readLocalIndex();
+  const allYears = new Set([...(cloudIndexState.years || []), ...(localIndex.years || [])]);
+  (years || []).forEach(y=>{ const yy = normalizeYearValue(y); if(yy) allYears.add(yy); });
+  const mergedUpdated = Object.assign({}, localIndex.updatedAtByYear || {}, cloudIndexState.updatedAtByYear || {});
+  if(updatedAtByYear && typeof updatedAtByYear === 'object'){
+    Object.keys(updatedAtByYear).forEach(k=>{
+      const yy = normalizeYearValue(k);
+      if(yy && updatedAtByYear[k]) mergedUpdated[yy] = updatedAtByYear[k];
+    });
+  }
+  cloudIndexState = writeLocalIndex({ years:Array.from(allYears), updatedAtByYear: mergedUpdated });
+  return cloudIndexState;
+}
+function hydrateYearRows(year, rowsForYear){
+  const y = normalizeYearValue(year) || String(CURRENT_YEAR);
+  return sanitizeRows(rowsForYear).map(r=>{
+    const item = Object.assign({}, r || {});
+    item.an = y;
+    const d = parseRoDate(item.data, item.luna);
+    if(d){
+      item.data = formatDateRo(d);
+      item.luna = item.luna ? normText(item.luna) : monthNameRo(d);
+    }else{
+      item.data = formatDateRo(item.data || '');
+      item.luna = normText(item.luna || '');
+    }
+    if(!item.nr_reper && item.denumire_reper_forja) item.nr_reper = findNrForDenumire(item.denumire_reper_forja);
+    if(!item.denumire_reper_forja && item.nr_reper) item.denumire_reper_forja = findDenumireForNrReper(item.nr_reper);
+    const defect = defectByCode(item.cod_defect || '');
+    if(defect){
+      if(!item.provenienta) item.provenienta = defect.source || '';
+      if(!item.descriere_neconformitate) item.descriere_neconformitate = defect.label || '';
+      if(!item.descriere_neconformitate_1) item.descriere_neconformitate_1 = defect.label || '';
+    }
+    item.piese_neconforme = toNum(item.piese_neconforme);
+    item.piese_remaniabile = toNum(item.piese_remaniabile);
+    item.piese_conforme_dupa_remaniere = item.piese_conforme_dupa_remaniere === '' || item.piese_conforme_dupa_remaniere == null
+      ? item.piese_remaniabile
+      : toNum(item.piese_conforme_dupa_remaniere);
+    item.piese_rebut_final = item.piese_rebut_final === '' || item.piese_rebut_final == null
+      ? Math.max(0, item.piese_neconforme - item.piese_remaniabile)
+      : toNum(item.piese_rebut_final);
+    item.obs = normText(item.obs || '');
+    item.cauza = normText(item.cauza || '');
+    item.actiuni_corective = normText(item.actiuni_corective || '');
+    item.loc_depistare = normText(item.loc_depistare || '');
+    item.operator = normText(item.operator || '');
+    item.cod_defect = normText(item.cod_defect || '');
+    item.provenienta = normText(item.provenienta || '');
+    item.schimb = normText(item.schimb || '');
+    return item;
+  });
+}
+function readYearLocalPayload(year){
+  try{
+    const raw = localStorage.getItem(getYearStorageKey(year));
+    if(!raw) return null;
+    const parsed = JSON.parse(raw);
+    if(parsed && Array.isArray(parsed.rows)) return parsed;
+  }catch(_e){}
+  return null;
+}
+function saveYearLocal(year, rowsForYear, updatedAt){
+  const y = normalizeYearValue(year) || String(CURRENT_YEAR);
+  const hydrated = hydrateYearRows(y, rowsForYear);
+  const ts = updatedAt || nowIso();
+  const payload = getYearPayload(y, hydrated, ts);
+  try{ localStorage.setItem(getYearStorageKey(y), JSON.stringify(payload)); }catch(_e){}
+  yearCache[y] = hydrated;
+  yearMeta[y] = { updated_at: ts };
+  mergeCloudIndex([y], { [y]: ts });
+  if(y === activeYear){
+    rows = yearCache[y];
+    setSyncStatus(ts);
+  }
+  return hydrated;
+}
+function loadYearLocal(year){
+  const y = normalizeYearValue(year) || String(CURRENT_YEAR);
+  if(Array.isArray(yearCache[y])) return yearCache[y];
+  const payload = readYearLocalPayload(y);
+  if(payload && Array.isArray(payload.rows)) return saveYearLocal(y, payload.rows, payload.updated_at || nowIso());
+  yearCache[y] = [];
+  yearMeta[y] = yearMeta[y] || { updated_at: null };
+  mergeCloudIndex([y], yearMeta[y].updated_at ? { [y]: yearMeta[y].updated_at } : {});
+  return yearCache[y];
+}
+function getRowsForYear(year){
+  const y = normalizeYearValue(year) || String(CURRENT_YEAR);
+  return Array.isArray(yearCache[y]) ? yearCache[y] : loadYearLocal(y);
+}
+function setActiveYearLocal(year){
+  activeYear = normalizeYearValue(year) || String(CURRENT_YEAR);
+  rows = getRowsForYear(activeYear);
+  setSyncStatus(yearMeta[activeYear] && yearMeta[activeYear].updated_at ? yearMeta[activeYear].updated_at : null);
+}
+function groupRowsByYear(sourceRows, fallbackYear){
+  const grouped = {};
+  hydrateYearRows(fallbackYear || activeYear, sourceRows).forEach(item=>{
+    const y = getRowYear(item, fallbackYear || activeYear);
+    item.an = y;
+    if(!grouped[y]) grouped[y] = [];
+    grouped[y].push(item);
+  });
+  return grouped;
+}
+async function fetchDocRecord(docKey){
+  if(!supa) throw new Error('Supabase indisponibil');
+  const { data, error } = await supa.from(DOC_TABLE).select('*').eq('doc_key', docKey).maybeSingle();
+  if(error) throw error;
+  if(!data) return null;
+  return {
+    payload: data.content || data.data || {},
+    updated_at: data.updated_at || ((data.content || data.data || {}).updated_at) || null,
+    raw: data
+  };
+}
+async function upsertDocRecord(docKey, payload){
+  if(!supa) throw new Error('Supabase indisponibil');
+  const ts = payload && payload.updated_at ? payload.updated_at : nowIso();
+  const up = { doc_key: docKey, content: Object.assign({}, payload, { updated_at: ts }), updated_at: ts };
+  const { error } = await supa.from(DOC_TABLE).upsert(up, { onConflict:'doc_key' });
+  if(error) throw error;
+  return ts;
+}
 async function ensureSession(){
   if(!supa) return;
   const { data } = await supa.auth.getSession();
@@ -809,33 +1002,13 @@ async function ensureSession(){
   const email = normText(session.user && session.user.email);
   els.roleText.textContent = 'Utilizator: ' + (email || '-');
 }
-async function readDoc(){
-  if(!supa) throw new Error('Supabase indisponibil');
-  els.cloudText.textContent = 'Cloud: se încarcă...';
-  const { data, error } = await supa.from(DOC_TABLE).select('*').eq('doc_key', DOC_KEY).maybeSingle();
-  if(error) throw error;
-  const payload = (data && (data.content || data.data)) || {};
-  const sourceRows = Array.isArray(payload.rows) ? payload.rows : (Array.isArray(payload) ? payload : []);
-  rows = sanitizeRows(sourceRows);
-  els.syncText.textContent = 'Sincronizat: ' + (data && data.updated_at ? new Date(data.updated_at).toLocaleString('ro-RO') : '-');
-  els.cloudText.textContent = 'Cloud: conectat';
-}
-async function writeDoc(dataRows){
-  if(!supa) throw new Error('Supabase indisponibil');
-  const cleanRows = sanitizeRows(dataRows).map(cloneRowForStorage);
-  const payload = { rows: cleanRows, updated_at: new Date().toISOString() };
-  const up = { doc_key: DOC_KEY, content: payload, updated_at: payload.updated_at };
-  const { error } = await supa.from(DOC_TABLE).upsert(up, { onConflict:'doc_key' });
-  if(error) throw error;
-  rows = sanitizeRows(cleanRows);
-  els.syncText.textContent = 'Sincronizat: ' + new Date(payload.updated_at).toLocaleString('ro-RO');
-  els.cloudText.textContent = 'Cloud: conectat';
-}
 async function readHelperDoc(){
-  if(!supa){ helperData = { reper_map: DEFAULT_REPER_MAP.map(x=>({ ...x })), repere: DEFAULT_REPER_MAP.map(x=>x.nr_reper), defecte: DEFAULT_DEFECTE.slice(), operatori: DEFAULT_OPERATORI.slice(), locuri: DEFAULT_LOCURI.slice() }; return; }
-  const { data, error } = await supa.from(DOC_TABLE).select('*').eq('doc_key', HELPER_DOC_KEY).maybeSingle();
-  if(error) throw error;
-  const payload = (data && (data.content || data.data)) || {};
+  if(!supa){
+    helperData = { reper_map: DEFAULT_REPER_MAP.map(x=>({ ...x })), repere: DEFAULT_REPER_MAP.map(x=>x.nr_reper), defecte: DEFAULT_DEFECTE.slice(), operatori: DEFAULT_OPERATORI.slice(), locuri: DEFAULT_LOCURI.slice() };
+    return;
+  }
+  const doc = await fetchDocRecord(HELPER_DOC_KEY).catch(()=> null);
+  const payload = (doc && doc.payload) || {};
   const payloadMap = Array.isArray(payload.reper_map) ? payload.reper_map : (Array.isArray(payload.repere) ? payload.repere.map(x=>({ nr_reper:x, denumire_reper_forja:x })) : []);
   const reper_map = normalizeReperMap([...(payloadMap || []), ...DEFAULT_REPER_MAP]);
   helperData = {
@@ -845,6 +1018,102 @@ async function readHelperDoc(){
     operatori: uniqStrings((payload.operatori || []).concat(DEFAULT_OPERATORI)),
     locuri: uniqStrings((payload.locuri || []).concat(DEFAULT_LOCURI))
   };
+}
+async function readCloudIndex(){
+  try{
+    const doc = await fetchDocRecord(CLOUD_INDEX_KEY);
+    const payload = (doc && doc.payload) || {};
+    const years = Array.isArray(payload.years) ? payload.years.map(normalizeYearValue).filter(Boolean) : [];
+    const updatedAtByYear = payload.updatedAtByYear && typeof payload.updatedAtByYear === 'object' ? payload.updatedAtByYear : {};
+    return mergeCloudIndex(years, updatedAtByYear);
+  }catch(_e){
+    return mergeCloudIndex([activeYear], {});
+  }
+}
+async function writeCloudIndex(extraYears, extraUpdated){
+  const merged = mergeCloudIndex(extraYears || [], extraUpdated || {});
+  await upsertDocRecord(CLOUD_INDEX_KEY, {
+    app:'REBUT_PM_INDEX',
+    version:1,
+    years: merged.years,
+    currentYear: CURRENT_YEAR,
+    updatedAtByYear: merged.updatedAtByYear || {},
+    savedAt: nowIso()
+  });
+  return merged;
+}
+async function migrateLegacyCloudIfNeeded(){
+  const currentIndex = await readCloudIndex();
+  if(currentIndex.years && currentIndex.years.length && currentIndex.years.some(y => y !== activeYear || (currentIndex.updatedAtByYear && currentIndex.updatedAtByYear[y]))) return;
+  let legacy = null;
+  try{ legacy = await fetchDocRecord(DOC_KEY); }catch(_e){ legacy = null; }
+  if(!legacy || !legacy.payload) return;
+  const rawRows = Array.isArray(legacy.payload.rows) ? legacy.payload.rows : (Array.isArray(legacy.payload) ? legacy.payload : []);
+  if(!rawRows.length) return;
+  const grouped = groupRowsByYear(rawRows, activeYear);
+  const years = Object.keys(grouped).sort((a,b)=> Number(a)-Number(b));
+  if(!years.length) return;
+  const updatedMap = {};
+  for(const y of years){
+    const ts = legacy.updated_at || legacy.payload.updated_at || nowIso();
+    const payload = getYearPayload(y, grouped[y], ts);
+    await upsertDocRecord(getYearDocKey(y), payload);
+    saveYearLocal(y, grouped[y], ts);
+    updatedMap[y] = ts;
+  }
+  await writeCloudIndex(years, updatedMap);
+}
+async function pullYear(year, options={}){
+  const y = normalizeYearValue(year) || String(CURRENT_YEAR);
+  const localRows = getRowsForYear(y);
+  try{
+    const doc = await fetchDocRecord(getYearDocKey(y));
+    if(!doc || !doc.payload){
+      if(y === activeYear){ rows = localRows; render(); }
+      setCloudStatus('Cloud: ' + y + ' gol');
+      return localRows;
+    }
+    const remoteTs = doc.updated_at || doc.payload.updated_at || null;
+    const localTs = yearMeta[y] && yearMeta[y].updated_at ? yearMeta[y].updated_at : (readLocalIndex().updatedAtByYear || {})[y] || null;
+    if(!options.force && remoteTs && localTs && new Date(remoteTs) <= new Date(localTs) && localRows.length){
+      if(y === activeYear){ rows = localRows; setSyncStatus(localTs); render(); }
+      setCloudStatus('Cloud: ' + y + ' conectat');
+      return localRows;
+    }
+    const sourceRows = Array.isArray(doc.payload.rows) ? doc.payload.rows : [];
+    const hydrated = saveYearLocal(y, sourceRows, remoteTs || nowIso());
+    if(y === activeYear){
+      rows = hydrated;
+      render();
+    }
+    setCloudStatus('Cloud: ' + y + ' conectat');
+    return hydrated;
+  }catch(err){
+    console.error(err);
+    if(y === activeYear){ rows = localRows; render(); }
+    setCloudStatus('Cloud: eroare ' + y);
+    return localRows;
+  }
+}
+async function pushYear(year){
+  const y = normalizeYearValue(year) || String(CURRENT_YEAR);
+  const payload = getYearPayload(y, getRowsForYear(y), yearMeta[y] && yearMeta[y].updated_at ? yearMeta[y].updated_at : nowIso());
+  const ts = await upsertDocRecord(getYearDocKey(y), payload);
+  saveYearLocal(y, payload.rows, ts);
+  await writeCloudIndex([y], { [y]: ts });
+  setCloudStatus('Cloud: ' + y + ' sincronizat');
+  return ts;
+}
+async function replaceYearRows(year, rowsForYear){
+  const y = normalizeYearValue(year) || String(CURRENT_YEAR);
+  setCloudStatus('Cloud: se salvează...');
+  saveYearLocal(y, rowsForYear, nowIso());
+  const ts = await pushYear(y);
+  if(y === activeYear){ rows = getRowsForYear(y); setSyncStatus(ts); render(); }
+  return ts;
+}
+async function refreshActiveYear(force){
+  await pullYear(activeYear, { force: !!force });
 }
 function render(){
   els.tbody.innerHTML = '';
@@ -926,14 +1195,16 @@ function importPmFromWorkbook(wb){
     const nrReper = nrExcel || findNrForDenumire(denExcel) || '';
     const denumire = findDenumireForNrReper(nrReper) || denExcel || '';
     const descr = normText(pickHeaderValue(obj, ['Descriere necomformitate', 'Descriere neconformitate']));
+    const parsedDate = parseRoDate(pickHeaderValue(obj, ['Data inregistrare','Data \\ninregistrare','Data']), luna);
+    const yearFromDate = parsedDate ? String(parsedDate.getFullYear()) : normalizeYearValue(pickHeaderValue(obj, ['Anul'])) || activeYear;
     const row = {
-      an: normText(pickHeaderValue(obj, ['Anul'])),
-      luna,
-      data: formatDateRo(parseRoDate(pickHeaderValue(obj, ['Data inregistrare','Data \ninregistrare','Data']), luna) || pickHeaderValue(obj, ['Data inregistrare','Data \ninregistrare','Data'])),
+      an: yearFromDate,
+      luna: luna || (parsedDate ? monthNameRo(parsedDate) : ''),
+      data: formatDateRo(parsedDate || pickHeaderValue(obj, ['Data inregistrare','Data \\ninregistrare','Data'])),
       nr_reper: nrReper,
       denumire_reper_forja: denumire,
       cod_defect: normText(pickHeaderValue(obj, ['Cod defect'])),
-      provenienta: normText(pickHeaderValue(obj, ['Provenienta defect (FJ/PM)', 'Provenienta\n defect\n(FJ/PM)      ', 'Provenienta'])),
+      provenienta: normText(pickHeaderValue(obj, ['Provenienta defect (FJ/PM)', 'Provenienta \\n defect\\n(FJ/PM)      ', 'Provenienta'])),
       descriere_neconformitate_1: descr,
       descriere_neconformitate: descr,
       loc_depistare: normText(pickHeaderValue(obj, ['Loc depistare necomformitate', 'Loc depistare neconformitate', 'Loc depistare'])),
@@ -965,7 +1236,7 @@ function exportWorkbook(){
   });
   const ws = XLSX.utils.aoa_to_sheet(aoa);
   XLSX.utils.book_append_sheet(wb, ws, 'Rebut PM');
-  XLSX.writeFile(wb, 'rebut-pm.xlsx');
+  XLSX.writeFile(wb, 'rebut-pm-' + activeYear + '.xlsx');
 }
 function buildRowFromForm(){
   const data = formatDateRo(parseRoDate(normText(els.fData.value)) || normText(els.fData.value));
@@ -980,7 +1251,7 @@ function buildRowFromForm(){
   const rem = toNum(els.fRemaniabile.value);
   const rebutFinal = Math.max(0, neconf - rem);
   return {
-    an: d ? String(d.getFullYear()) : '',
+    an: d ? String(d.getFullYear()) : activeYear,
     luna: d ? monthNameRo(d) : '',
     data,
     nr_reper: nrReper,
@@ -1044,11 +1315,23 @@ async function saveModal(){
     window.alert('Completează cel puțin Data înregistrării, Nr. reper și Cod defect.');
     return;
   }
-  const next = rows.slice();
-  if(editingIndex >= 0 && editingIndex < next.length) next[editingIndex] = row;
-  else next.push(row);
-  els.cloudText.textContent = 'Cloud: se salvează...';
-  await writeDoc(next);
+  const sourceYear = activeYear;
+  const targetYear = getRowYear(row, activeYear);
+  const sourceRows = getRowsForYear(sourceYear).slice();
+  const hadExisting = editingIndex >= 0 && editingIndex < sourceRows.length;
+  if(hadExisting) sourceRows.splice(editingIndex, 1);
+  if(targetYear === sourceYear){
+    if(hadExisting) sourceRows.splice(editingIndex, 0, row);
+    else sourceRows.push(row);
+    await replaceYearRows(sourceYear, sourceRows);
+  }else{
+    const targetRows = getRowsForYear(targetYear).slice();
+    targetRows.push(row);
+    await replaceYearRows(sourceYear, sourceRows);
+    await replaceYearRows(targetYear, targetRows);
+    setCloudStatus('Cloud: rând mutat în anul ' + targetYear);
+  }
+  rows = getRowsForYear(activeYear);
   render();
   closeModal();
 }
@@ -1057,15 +1340,53 @@ async function deleteModalRow(){
   if(!window.confirm('Ștergi rândul selectat?')) return;
   const next = rows.slice();
   next.splice(editingIndex, 1);
-  els.cloudText.textContent = 'Cloud: se salvează...';
-  await writeDoc(next);
+  await replaceYearRows(activeYear, next);
+  rows = getRowsForYear(activeYear);
   render();
   closeModal();
+}
+async function importWorkbookToYearDocs(wb){
+  const parsed = importPmFromWorkbook(wb);
+  const grouped = groupRowsByYear(parsed, activeYear);
+  const years = Object.keys(grouped).sort((a,b)=> Number(a)-Number(b));
+  if(!years.length){
+    await replaceYearRows(activeYear, []);
+    return { count:0, years:[activeYear] };
+  }
+  setCloudStatus('Cloud: se salvează...');
+  const updatedMap = {};
+  for(const y of years){
+    const ts = nowIso();
+    saveYearLocal(y, grouped[y], ts);
+    await upsertDocRecord(getYearDocKey(y), getYearPayload(y, grouped[y], ts));
+    updatedMap[y] = ts;
+  }
+  await writeCloudIndex(years, updatedMap);
+  if(years.includes(activeYear)){
+    setActiveYearLocal(activeYear);
+  }else{
+    loadYearLocal(activeYear);
+    setActiveYearLocal(activeYear);
+  }
+  render();
+  setCloudStatus('Cloud: import terminat');
+  return { count: parsed.length, years };
+}
+function startRefreshTimer(){
+  if(refreshTimer) clearInterval(refreshTimer);
+  refreshTimer = setInterval(()=>{
+    if(document.hidden) return;
+    if(els.editModal.classList.contains('show')) return;
+    refreshActiveYear(false).catch(()=>{});
+  }, REFRESH_INTERVAL_MS);
 }
 
 els.fNrReper.addEventListener('change', syncDenumireForCurrentNrReper);
 els.fCodDefect.addEventListener('change', ()=> renderLegend(els.fCodDefect.value));
-els.btnRefresh.addEventListener('click', async ()=>{ await readDoc(); render(); });
+els.btnRefresh.addEventListener('click', async ()=>{
+  try{ await refreshActiveYear(true); }
+  catch(err){ console.error(err); window.alert('Nu am putut reîncărca anul curent.\n' + (err && err.message ? err.message : err)); }
+});
 els.btnAdd.addEventListener('click', openAddModal);
 els.btnImport.addEventListener('click', ()=> els.fileImport.click());
 els.btnExport.addEventListener('click', exportWorkbook);
@@ -1089,24 +1410,26 @@ els.fileImport.addEventListener('change', async (ev)=>{
   try{
     const buf = await file.arrayBuffer();
     const wb = XLSX.read(buf, { type:'array' });
-    const parsed = importPmFromWorkbook(wb);
-    els.cloudText.textContent = 'Cloud: se salvează...';
-    await writeDoc(parsed);
-    render();
-    window.alert('Import reușit: ' + parsed.length + ' rânduri.');
+    const result = await importWorkbookToYearDocs(wb);
+    window.alert('Import reușit: ' + result.count + ' rânduri. Ani actualizați: ' + result.years.join(', '));
   }catch(err){
     console.error(err);
     window.alert('Importul Excel nu a reușit.\n' + (err && err.message ? err.message : err));
   }
 });
-document.addEventListener('visibilitychange', ()=>{ if(!document.hidden) readDoc().then(render).catch(console.error); });
-setInterval(()=>{ if(!document.hidden && !els.editModal.classList.contains('show')) readDoc().then(render).catch(()=>{}); }, 45000);
+document.addEventListener('visibilitychange', ()=>{ if(!document.hidden) refreshActiveYear(false).catch(console.error); });
 (async function boot(){
   try{
+    setCloudStatus('Cloud: pregătire...');
+    mergeCloudIndex([activeYear], {});
+    loadYearLocal(activeYear);
+    setActiveYearLocal(activeYear);
     await ensureSession();
     await readHelperDoc();
-    await readDoc();
-    render();
+    await migrateLegacyCloudIfNeeded();
+    await readCloudIndex();
+    await refreshActiveYear(true);
+    startRefreshTimer();
   }catch(err){
     console.error(err);
     window.alert('Nu am putut încărca Rebut PM.\n' + (err && err.message ? err.message : err));
