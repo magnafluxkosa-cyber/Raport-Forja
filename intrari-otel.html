@@ -1612,17 +1612,23 @@ function applyFilters(){
 </script>
 
 
+
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="rf-config.js"></script>
 <script>
 (function(){
   const PAGE_KEY = 'intrari-otel';
-  const DOC_KEY = 'intrari-otel';
+  const ADMIN_EMAIL = 'forja.editor@gmail.com';
+  const HELPERS_KEY = 'RF_HELPERS_v1';
+  const LEGACY_AUTO_KEY = 'INTRARI_OTEL_autosave_v3';
+  const CURRENT_YEAR = new Date().getFullYear();
+  const YEAR_STORAGE_PREFIX = 'INTRARI_OTEL_autosave_year_v2_';
+  const YEAR_INDEX_STORAGE_KEY = 'INTRARI_OTEL_autosave_index_v2';
+  const YEAR_MIGRATED_FLAG = 'INTRARI_OTEL_autosave_year_migrated_v2';
+  const CLOUD_DOC_PREFIX = 'intrari-otel:';
+  const CLOUD_INDEX_KEY = 'intrari-otel:index';
   const HELPER_DOC_KEYS = ['helper-data', 'helper_data'];
   const NUMERALKOD_DOC_KEYS = ['numeralkod', 'numeral-kod', 'numeralkod-data'];
-  const ADMIN_EMAIL = 'forja.editor@gmail.com';
-  const AUTO_KEY = 'INTRARI_OTEL_autosave_v3';
-  const HELPERS_KEY = 'RF_HELPERS_v1';
 
   const APP = {
     supa: null,
@@ -1632,26 +1638,60 @@ function applyFilters(){
     helperPayload: null,
     numeralkodPayload: null,
     cloudCodeIndex: new Map(),
-    lastPulledAt: null,
-    pushTimer: null,
-    pollTimer: null
+    pollTimer: null,
+    pushTimersByYear: {},
+    pushLocksByYear: {},
+    pullLocksByYear: {},
+    cloudIndexState: { years:[String(CURRENT_YEAR)], updatedAtByYear:{} },
+    dirtyYearsSet: new Set(),
+    autosaveTimer: null,
+    activeYear: String(CURRENT_YEAR)
   };
 
   const roleBadge = document.getElementById('roleBadge');
   const roleText = document.getElementById('roleText');
   const roleDot = document.getElementById('roleDot');
   const cloudBadge = document.getElementById('cloudBadge');
+  const sumYearSel = document.getElementById('sumYear');
+  const sumMonthSel = document.getElementById('sumMonth');
+  const tableWrapEl = document.getElementById('tableWrap');
 
-  function getConfig(){
-    const cfg = (window.RF_CONFIG && typeof window.RF_CONFIG === 'object') ? window.RF_CONFIG : {};
-    return {
-      url: cfg.SUPABASE_URL || cfg.supabaseUrl || 'https://addlybnigrywqowpbhvd.supabase.co',
-      key: cfg.SUPABASE_ANON_KEY || cfg.supabaseAnonKey || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFkZGx5Ym5pZ3J5d3Fvd3BiaHZkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzI2NjY2NjQsImV4cCI6MjA4ODI0MjY2NH0.VjbSKs7G_5T7GhdrjT8dtj2HCF6Az9KYfkpkSE7JTo4'
-    };
-  }
+  let yearCache = {};
+  let yearMeta = {};
+  let pendingYears = {};
+  let activeYear = String(CURRENT_YEAR);
 
   function normalizeText(v){
-    return (v ?? '').toString().trim().toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+    return (v ?? '').toString().trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  }
+
+  function normalizeYearValue(v){
+    const s = String(v == null ? '' : v).trim();
+    if (!s) return '';
+    const m = s.match(/(19|20)\d{2}/);
+    return m ? m[0] : '';
+  }
+
+  function rowYearFromValues(vals, fallbackYear){
+    const arr = Array.isArray(vals) ? vals : [];
+    const direct = normalizeYearValue(arr[0]);
+    if (direct) return direct;
+    const dateVal = String(arr[2] ?? '').trim();
+    const m = dateVal.match(/(?:\.|\/|-)(\d{4})$/);
+    if (m && m[1]) return normalizeYearValue(m[1]);
+    return normalizeYearValue(fallbackYear) || String(CURRENT_YEAR);
+  }
+
+  function getYearDocKey(year){
+    return CLOUD_DOC_PREFIX + (normalizeYearValue(year) || String(CURRENT_YEAR));
+  }
+
+  function getYearStorageKey(year){
+    return YEAR_STORAGE_PREFIX + (normalizeYearValue(year) || String(CURRENT_YEAR));
+  }
+
+  function nowIso(){
+    return new Date().toISOString();
   }
 
   function uniqueSorted(values){
@@ -1667,12 +1707,12 @@ function applyFilters(){
 
   function walkAny(node, visitor){
     if (Array.isArray(node)) {
-      for (const item of node) walkAny(item, visitor);
+      node.forEach(item => walkAny(item, visitor));
       return;
     }
     if (node && typeof node === 'object') {
       visitor(node);
-      for (const value of Object.values(node)) walkAny(value, visitor);
+      Object.values(node).forEach(value => walkAny(value, visitor));
     }
   }
 
@@ -1681,11 +1721,11 @@ function applyFilters(){
     const keys = new Set((wantedKeys || []).map(normalizeText));
     const out = [];
     walkAny(root, obj => {
-      for (const [k, v] of Object.entries(obj)) {
-        if (!keys.has(normalizeText(k))) continue;
+      Object.entries(obj).forEach(([k, v]) => {
+        if (!keys.has(normalizeText(k))) return;
         if (Array.isArray(v)) out.push(...v);
         else out.push(v);
-      }
+      });
     });
     return out
       .flatMap(v => Array.isArray(v) ? v : [v])
@@ -1696,9 +1736,9 @@ function applyFilters(){
 
   function getObjValueByNames(obj, names){
     if (!obj || typeof obj !== 'object') return '';
-    const normNames = new Set((names || []).map(normalizeText));
+    const wanted = new Set((names || []).map(normalizeText));
     for (const [k, v] of Object.entries(obj)) {
-      if (!normNames.has(normalizeText(k))) continue;
+      if (!wanted.has(normalizeText(k))) continue;
       if (v == null || typeof v === 'object') continue;
       const s = String(v).trim();
       if (s) return s;
@@ -1716,13 +1756,13 @@ function applyFilters(){
     if (!payload) return idx;
     walkAny(payload, obj => {
       const rawCode = getObjValueByNames(obj, ['cod intern', 'cod_intern', 'cod intern otel', 'cod_intern_otel', 'cod', 'marcaj', 'code']);
-      const code = (rawCode || '').toString().trim().toUpperCase().replace(/[^A-Z]/g, '').slice(0,3);
+      const code = String(rawCode || '').trim().toUpperCase().replace(/[^A-Z]/g, '').slice(0,3);
       if (!/^[A-Z]{3}$/.test(code)) return;
       const dim = getObjValueByNames(obj, ['diametru', 'diametru otel', 'diametru_otel', 'dimensiune', 'dimensiune otel', 'dimensiune_otel', 'diam']);
       const grade = getObjValueByNames(obj, ['calitate', 'calitate otel', 'calitate_otel', 'grade']);
       const sarja = getObjValueByNames(obj, ['sarja', 'sarja material', 'sarja materialului', 'sarja_material', 'cod sarja', 'cod_sarja']);
       if (!dim && !grade && !sarja) return;
-      if (!idx.has(code)) idx.set(code, { dim, grade, sarja, source: 'cloud' });
+      if (!idx.has(code)) idx.set(code, { dim, grade, sarja, source:'cloud' });
     });
     return idx;
   }
@@ -1743,7 +1783,7 @@ function applyFilters(){
     });
   }
 
-  function refreshHelperDatalists(){
+  function refreshHelperDatalistsCloudAware(){
     const local = getLocalHelpers();
     const localDiam = Array.isArray(local.lista_diametre) ? local.lista_diametre : [];
     const localCal = Array.isArray(local.lista_calitati) ? local.lista_calitati : [];
@@ -1759,30 +1799,25 @@ function applyFilters(){
     ];
     const cloudFurn = collectByKeys(APP.helperPayload, ['furnizor', 'furnizori', 'supplier', 'suppliers']);
 
-    const diamValues = [...localDiam, ...cloudDiam].map(v => String(v ?? '').trim()).filter(Boolean);
-    const calValues = [...localCal, ...cloudCal].map(v => String(v ?? '').trim()).filter(Boolean);
-    const furnValues = [...localFurn, ...cloudFurn].map(v => String(v ?? '').trim()).filter(Boolean);
-
-    if (diamValues.length) setDatalistOptionsSafe('diamList', diamValues);
-    if (calValues.length) setDatalistOptionsSafe('gradeList', calValues);
-    if (furnValues.length) populateSupplierSelect(furnValues);
+    if ([...localDiam, ...cloudDiam].length) setDatalistOptionsSafe('diamList', [...localDiam, ...cloudDiam]);
+    if ([...localCal, ...cloudCal].length) setDatalistOptionsSafe('gradeList', [...localCal, ...cloudCal]);
+    if ([...localFurn, ...cloudFurn].length) populateSupplierSelect([...localFurn, ...cloudFurn]);
   }
 
-  function refreshCodeList(){
+  function refreshCodeListCloudAware(){
     const codes = new Set();
-    try {
+    try{
       if (typeof buildMarcajIndex === 'function') {
         const map = buildMarcajIndex();
-        for (const k of map.keys()) codes.add(k);
+        map.forEach((_v, k) => codes.add(k));
       }
-    } catch (_e) {}
-    for (const k of APP.cloudCodeIndex.keys()) codes.add(k);
+    }catch(_e){}
+    APP.cloudCodeIndex.forEach((_v, k) => codes.add(k));
     if (APP.helperPayload) {
-      collectByKeys(APP.helperPayload, ['cod intern', 'cod_intern', 'cod intern otel', 'cod_intern_otel', 'cod', 'numeralkod', 'numeral kod'])
-        .forEach(v => {
-          const code = String(v ?? '').trim().toUpperCase().replace(/[^A-Z]/g, '').slice(0,3);
-          if (/^[A-Z]{3}$/.test(code)) codes.add(code);
-        });
+      collectByKeys(APP.helperPayload, ['cod intern', 'cod_intern', 'cod intern otel', 'cod_intern_otel', 'cod', 'numeralkod', 'numeral kod']).forEach(v => {
+        const code = String(v ?? '').trim().toUpperCase().replace(/[^A-Z]/g,'').slice(0,3);
+        if (/^[A-Z]{3}$/.test(code)) codes.add(code);
+      });
     }
     setDatalistOptionsSafe('codeList', Array.from(codes));
   }
@@ -1790,13 +1825,15 @@ function applyFilters(){
   function applyAutoFillFromCodInternCloudAware(){
     const inp = document.getElementById('fPrem');
     if (!inp) return;
-    const code = (typeof normalizeCodIntern === 'function') ? normalizeCodIntern(inp.value) : String(inp.value || '').trim().toUpperCase();
+    const code = typeof normalizeCodIntern === 'function'
+      ? normalizeCodIntern(inp.value)
+      : String(inp.value || '').trim().toUpperCase().replace(/[^A-Z]/g,'').slice(0,3);
     inp.value = code;
     if (!code || code.length !== 3) return;
     let hit = null;
-    try {
+    try{
       if (typeof buildMarcajIndex === 'function') hit = buildMarcajIndex().get(code) || null;
-    } catch (_e) {}
+    }catch(_e){}
     if (!hit) hit = APP.cloudCodeIndex.get(code) || null;
     if (!hit) return;
     const fDim = document.getElementById('fDim');
@@ -1830,36 +1867,44 @@ function applyFilters(){
     }
   }
 
+  function getConfig(){
+    const cfg = (window.RF_CONFIG && typeof window.RF_CONFIG === 'object') ? window.RF_CONFIG : {};
+    return {
+      url: cfg.SUPABASE_URL || cfg.supabaseUrl || 'https://addlybnigrywqowpbhvd.supabase.co',
+      key: cfg.SUPABASE_ANON_KEY || cfg.supabaseAnonKey || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYm5pZ3J5d3Fvd3BiaHZkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzI2NjY2NjQsImV4cCI6MjA4ODI0MjY2NH0.VjbSKs7G_5T7GhdrjT8dtj2HCF6Az9KYfkpkSE7JTo4'
+    };
+  }
+
   async function readDocument(docKey){
-    const keys = Array.from(new Set([docKey, docKey.replace(/_/g, '-'), docKey.replace(/-/g, '_')]));
+    const keys = Array.from(new Set([docKey, docKey.replace(/_/g,'-'), docKey.replace(/-/g,'_')]));
     const cols = ['content', 'data'];
     for (const key of keys) {
       for (const col of cols) {
-        try {
+        try{
           const { data, error } = await APP.supa.from('rf_documents').select(`doc_key,${col},updated_at`).eq('doc_key', key).maybeSingle();
           if (error) throw error;
-          if (data && data[col]) return { payload: data[col], updated_at: data.updated_at || null, doc_key: key };
-        } catch (_e) {}
+          if (data && data[col]) return { payload:data[col], updated_at:data.updated_at || null, doc_key:key };
+        }catch(_e){}
       }
     }
     return { payload:null, updated_at:null, doc_key:docKey };
   }
 
   async function saveDocument(docKey, payload){
-    const variants = Array.from(new Set([docKey, docKey.replace(/_/g, '-'), docKey.replace(/-/g, '_')]));
-    const now = new Date().toISOString();
+    const variants = Array.from(new Set([docKey, docKey.replace(/_/g,'-'), docKey.replace(/-/g,'_')]));
+    const ts = nowIso();
     let lastErr = null;
     for (const key of variants) {
-      try {
-        const { error } = await APP.supa.from('rf_documents').upsert({ doc_key:key, content:payload, updated_at:now }, { onConflict:'doc_key' });
-        if (!error) return { updated_at: now, doc_key:key };
+      try{
+        const { error } = await APP.supa.from('rf_documents').upsert({ doc_key:key, content:payload, updated_at:ts }, { onConflict:'doc_key' });
+        if (!error) return { updated_at:ts, doc_key:key };
         lastErr = error;
-      } catch (e) { lastErr = e; }
-      try {
-        const { error } = await APP.supa.from('rf_documents').upsert({ doc_key:key, data:payload, updated_at:now }, { onConflict:'doc_key' });
-        if (!error) return { updated_at: now, doc_key:key };
+      }catch(e){ lastErr = e; }
+      try{
+        const { error } = await APP.supa.from('rf_documents').upsert({ doc_key:key, data:payload, updated_at:ts }, { onConflict:'doc_key' });
+        if (!error) return { updated_at:ts, doc_key:key };
         lastErr = error;
-      } catch (e) { lastErr = e; }
+      }catch(e){ lastErr = e; }
     }
     throw lastErr || new Error('Nu s-a putut salva documentul.');
   }
@@ -1875,10 +1920,10 @@ function applyFilters(){
       async () => APP.supa.from('rf_acl').select('role,email').eq('email', email).maybeSingle()
     ];
     for (const run of attempts) {
-      try {
+      try{
         const { data, error } = await run();
         if (!error && data?.role) return String(data.role).toLowerCase();
-      } catch (_e) {}
+      }catch(_e){}
     }
     return 'viewer';
   }
@@ -1887,7 +1932,7 @@ function applyFilters(){
     const fallback = defaultPermissions(role);
     const keys = Array.from(new Set([PAGE_KEY, PAGE_KEY.replace(/-/g,'_')]));
     for (const key of keys) {
-      try {
+      try{
         const { data, error } = await APP.supa.from('page_permissions').select('can_view,can_add,can_edit,can_delete').eq('role', role).eq('page_key', key).maybeSingle();
         if (!error && data) {
           return {
@@ -1897,7 +1942,7 @@ function applyFilters(){
             can_delete: !!data.can_delete
           };
         }
-      } catch (_e) {}
+      }catch(_e){}
     }
     return fallback;
   }
@@ -1908,8 +1953,10 @@ function applyFilters(){
 
   function applyPermissions(){
     const p = APP.permissions;
-    window.__CAN_EDIT__ = !!(p.can_add || p.can_edit);
+    window.__CAN_ADD__ = !!p.can_add;
+    window.__CAN_EDIT__ = !!p.can_edit;
     window.__CAN_DELETE__ = !!p.can_delete;
+    window.__CAN_VIEW__ = !!p.can_view;
     setRoleBadge(APP.role);
 
     const btnAdd = findTopbarButton('Adaugă');
@@ -1920,127 +1967,888 @@ function applyFilters(){
     if (btnImportJson) btnImportJson.style.display = APP.role === 'admin' ? '' : 'none';
     if (btnImportExcel) btnImportExcel.style.display = APP.role === 'admin' ? '' : 'none';
 
-    const editableSelectors = ['#fAn','#fLuna','#fData','#fDim','#fCal','#fPrem','#fCat','#fKg','#fPre','#fFurn','#fFurnOther'];
-    editableSelectors.forEach(sel => {
+    ['#fAn','#fLuna','#fData','#fDim','#fCal','#fPrem','#fCat','#fKg','#fPre','#fFurn','#fFurnOther'].forEach(sel => {
       const el = document.querySelector(sel);
-      if (el) el.disabled = !window.__CAN_EDIT__;
+      if (el) el.disabled = !(window.__CAN_ADD__ || window.__CAN_EDIT__);
     });
-
-    const fileInputs = ['#fileImport','#fileImportXLSX'];
-    fileInputs.forEach(sel => {
-      const el = document.querySelector(sel);
-      if (el) el.disabled = APP.role !== 'admin';
-    });
-
-    if (typeof __setModalMode === 'function') {
-      const originalSetModalMode = __setModalMode;
-      __setModalMode = function(isEdit){
-        originalSetModalMode(isEdit);
-        try {
-          if (!window.__CAN_DELETE__ && typeof __btnDeleteRow !== 'undefined' && __btnDeleteRow) {
-            __btnDeleteRow.style.display = 'none';
-          }
-        } catch (_e) {}
-      };
-    }
-  }
-
-  function isUserEditing(){
-    const ae = document.activeElement;
-    return !!(ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.tagName === 'SELECT' || ae.isContentEditable));
-  }
-
-  function getPayload(){
-    const rows = (typeof getTableData === 'function') ? getTableData() : [];
-    return {
-      app: 'INTRARI_OTEL',
-      version: 4,
-      savedAt: new Date().toISOString(),
-      rows
-    };
-  }
-
-  function applyPayload(payload){
-    if (!payload || !Array.isArray(payload.rows)) return false;
-    try {
-      localStorage.setItem(AUTO_KEY, JSON.stringify(payload));
-      if (typeof autoLoad === 'function') autoLoad();
-      if (typeof applyFilters === 'function') applyFilters();
-      if (typeof buildSummaryFilters === 'function') buildSummaryFilters();
-      if (typeof refreshSummary === 'function') refreshSummary();
-      return true;
-    } catch (_e) {
-      return false;
-    }
-  }
-
-  async function pullCloud(force){
-    if (!APP.supa) return;
-    try {
-      const { payload, updated_at } = await readDocument(DOC_KEY);
-      if (!payload || !Array.isArray(payload.rows)) {
-        setCloudStatus('Cloud: gol', true);
-        return;
-      }
-      const ts = payload.savedAt || payload.updatedAt || updated_at || null;
-      if (!force && APP.lastPulledAt && ts && new Date(ts) <= new Date(APP.lastPulledAt)) return;
-      if (!force && isUserEditing()) return;
-      if (applyPayload(payload)) APP.lastPulledAt = ts || new Date().toISOString();
-      setCloudStatus('Cloud: ON', true);
-    } catch (e) {
-      console.error(e);
-      setCloudStatus('Cloud: eroare', false);
-    }
-  }
-
-  async function pushCloud(){
-    if (!APP.supa || !window.__CAN_EDIT__) return;
-    try {
-      const payload = getPayload();
-      const result = await saveDocument(DOC_KEY, payload);
-      APP.lastPulledAt = result.updated_at || payload.savedAt;
-      setCloudStatus('Cloud: ON', true);
-    } catch (e) {
-      console.error(e);
-      setCloudStatus('Cloud: eroare', false);
-    }
-  }
-
-  function schedulePush(){
-    if (!window.__CAN_EDIT__) return;
-    clearTimeout(APP.pushTimer);
-    APP.pushTimer = setTimeout(pushCloud, 900);
-  }
-
-  async function loadCloudLists(){
-    try {
-      for (const key of HELPER_DOC_KEYS) {
-        const doc = await readDocument(key);
-        if (doc.payload) { APP.helperPayload = doc.payload; break; }
-      }
-    } catch (_e) {}
-
-    try {
-      for (const key of NUMERALKOD_DOC_KEYS) {
-        const doc = await readDocument(key);
-        if (doc.payload) { APP.numeralkodPayload = doc.payload; break; }
-      }
-    } catch (_e) {}
-
-    APP.cloudCodeIndex = new Map([
-      ...buildCloudCodeIndexFromPayload(APP.helperPayload),
-      ...buildCloudCodeIndexFromPayload(APP.numeralkodPayload)
-    ]);
-
-    refreshHelperDatalists();
-    refreshCodeList();
-    applyAutoFillFromCodInternCloudAware();
   }
 
   function guardAction(allowed, message){
     if (allowed) return true;
     if (message) alert(message);
     return false;
+  }
+
+  function readLocalIndex(){
+    try{
+      const raw = localStorage.getItem(YEAR_INDEX_STORAGE_KEY);
+      const parsed = raw ? JSON.parse(raw) : null;
+      if (parsed && typeof parsed === 'object') {
+        const years = Array.isArray(parsed.years) ? parsed.years.map(normalizeYearValue).filter(Boolean) : [];
+        const updatedAtByYear = parsed.updatedAtByYear && typeof parsed.updatedAtByYear === 'object' ? parsed.updatedAtByYear : {};
+        return { years, updatedAtByYear };
+      }
+    }catch(_e){}
+    return { years:[], updatedAtByYear:{} };
+  }
+
+  function writeLocalIndex(payload){
+    const years = Array.isArray(payload?.years) ? payload.years.map(normalizeYearValue).filter(Boolean) : [];
+    const updatedAtByYear = payload?.updatedAtByYear && typeof payload.updatedAtByYear === 'object' ? payload.updatedAtByYear : {};
+    const cleaned = {
+      years: Array.from(new Set(years)).sort((a,b) => Number(a) - Number(b)),
+      updatedAtByYear
+    };
+    try{ localStorage.setItem(YEAR_INDEX_STORAGE_KEY, JSON.stringify(cleaned)); }catch(_e){}
+    return cleaned;
+  }
+
+  function mergeCloudIndex(years, updatedAtByYear){
+    const current = readLocalIndex();
+    const mergedYears = new Set([...(APP.cloudIndexState.years || []), ...(current.years || [])]);
+    (years || []).forEach(y => { const yy = normalizeYearValue(y); if (yy) mergedYears.add(yy); });
+    const mergedUpdated = Object.assign({}, current.updatedAtByYear || {}, APP.cloudIndexState.updatedAtByYear || {});
+    if (updatedAtByYear && typeof updatedAtByYear === 'object') {
+      Object.keys(updatedAtByYear).forEach(k => {
+        const yy = normalizeYearValue(k);
+        if (yy && updatedAtByYear[k]) mergedUpdated[yy] = updatedAtByYear[k];
+      });
+    }
+    APP.cloudIndexState = {
+      years: Array.from(mergedYears).sort((a,b) => Number(a) - Number(b)),
+      updatedAtByYear: mergedUpdated
+    };
+    writeLocalIndex(APP.cloudIndexState);
+    return APP.cloudIndexState;
+  }
+
+  function getYearPayload(year, rowsForYear, updatedAt){
+    const y = normalizeYearValue(year) || String(CURRENT_YEAR);
+    return {
+      app: 'INTRARI_OTEL',
+      version: 4,
+      year: y,
+      updated_at: updatedAt || nowIso(),
+      rows: Array.isArray(rowsForYear) ? rowsForYear : []
+    };
+  }
+
+  function readYearLocalPayload(year){
+    const y = normalizeYearValue(year) || String(CURRENT_YEAR);
+    try{
+      const raw = localStorage.getItem(getYearStorageKey(y));
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      if (parsed && Array.isArray(parsed.rows)) return parsed;
+    }catch(_e){}
+    return null;
+  }
+
+  function saveYearLocal(year, rowsForYear, updatedAt){
+    const y = normalizeYearValue(year) || String(CURRENT_YEAR);
+    const normalizedRows = (Array.isArray(rowsForYear) ? rowsForYear : []).map(vals => {
+      const row = Array.isArray(vals) ? vals.slice(0,10) : [];
+      while (row.length < 10) row.push('');
+      row[0] = y;
+      row[2] = typeof toDisplayDate === 'function' ? toDisplayDate(row[2]) : String(row[2] || '').trim();
+      return row;
+    });
+    const ts = updatedAt || nowIso();
+    const payload = getYearPayload(y, normalizedRows, ts);
+    try{ localStorage.setItem(getYearStorageKey(y), JSON.stringify(payload)); }catch(_e){}
+    yearCache[y] = normalizedRows;
+    yearMeta[y] = { updated_at: ts };
+    mergeCloudIndex([y], { [y]: ts });
+    return normalizedRows;
+  }
+
+  function loadYearLocal(year){
+    const y = normalizeYearValue(year) || String(CURRENT_YEAR);
+    if (Array.isArray(yearCache[y])) return yearCache[y];
+    const payload = readYearLocalPayload(y);
+    if (payload && Array.isArray(payload.rows)) return saveYearLocal(y, payload.rows, payload.updated_at || nowIso());
+    yearCache[y] = [];
+    yearMeta[y] = yearMeta[y] || { updated_at:null };
+    mergeCloudIndex([y], yearMeta[y].updated_at ? { [y]: yearMeta[y].updated_at } : {});
+    return yearCache[y];
+  }
+
+  function getRowsForYear(year){
+    const y = normalizeYearValue(year) || String(CURRENT_YEAR);
+    return Array.isArray(yearCache[y]) ? yearCache[y] : loadYearLocal(y);
+  }
+
+  function getActiveRows(){
+    return getRowsForYear(activeYear);
+  }
+
+  function migrateLegacyLocalPayloads(){
+    try{
+      if (localStorage.getItem(YEAR_MIGRATED_FLAG) === '1') return;
+    }catch(_e){}
+    const index = readLocalIndex();
+    if (index.years && index.years.length) {
+      try{ localStorage.setItem(YEAR_MIGRATED_FLAG, '1'); }catch(_e){}
+      return;
+    }
+    let legacy = null;
+    try{
+      const raw = localStorage.getItem(LEGACY_AUTO_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && Array.isArray(parsed.rows)) legacy = parsed;
+      }
+    }catch(_e){}
+    if (!legacy) {
+      try{ localStorage.setItem(YEAR_MIGRATED_FLAG, '1'); }catch(_e){}
+      return;
+    }
+    const grouped = {};
+    legacy.rows.forEach(vals => {
+      const row = Array.isArray(vals) ? vals.slice(0,10) : [];
+      while (row.length < 10) row.push('');
+      const y = rowYearFromValues(row, CURRENT_YEAR);
+      row[0] = y;
+      if (!grouped[y]) grouped[y] = [];
+      grouped[y].push(row);
+    });
+    Object.keys(grouped).forEach(y => saveYearLocal(y, grouped[y], legacy.savedAt || legacy.updated_at || nowIso()));
+    try{ localStorage.setItem(YEAR_MIGRATED_FLAG, '1'); }catch(_e){}
+  }
+
+  function getKnownYears(){
+    const years = new Set();
+    const localIndex = readLocalIndex();
+    (APP.cloudIndexState.years || []).forEach(y => { const yy = normalizeYearValue(y); if (yy) years.add(yy); });
+    (localIndex.years || []).forEach(y => { const yy = normalizeYearValue(y); if (yy) years.add(yy); });
+    Object.keys(yearCache || {}).forEach(y => { const yy = normalizeYearValue(y); if (yy) years.add(yy); });
+    years.add(normalizeYearValue(activeYear) || String(CURRENT_YEAR));
+    return Array.from(years).sort((a,b) => Number(a) - Number(b));
+  }
+
+  function monthLower(v){
+    return String(v ?? '').trim().toLowerCase();
+  }
+
+  function getMonthsForYear(year){
+    const set = new Set();
+    getRowsForYear(year).forEach(r => {
+      const m = monthLower(r?.[1]);
+      if (m) set.add(m);
+    });
+    return MONTHS.filter(m => set.has(m)).concat(Array.from(set).filter(m => !MONTHS.includes(m)).sort((a,b) => a.localeCompare(b,'ro')));
+  }
+
+  function fillSelectOptions(select, placeholder, values){
+    if (!select) return;
+    const current = select.value;
+    const opts = [placeholder ? `<option value="">${placeholder}</option>` : '']
+      .concat((values || []).map(v => `<option value="${String(v).replace(/"/g,'&quot;')}">${/^\d{4}$/.test(String(v)) ? v : capMonth(String(v))}</option>`));
+    select.innerHTML = opts.join('');
+    if ((values || []).includes(current)) select.value = current;
+  }
+
+  function buildSummaryFilters(){
+    const years = getKnownYears();
+    const selectedYear = normalizeYearValue((sumYearSel && sumYearSel.value) || activeYear) || (normalizeYearValue(activeYear) || String(CURRENT_YEAR));
+    const months = getMonthsForYear(selectedYear);
+
+    fillSelectOptions(sumYearSel, '(toți)', years);
+    fillSelectOptions(sumMonthSel, '(toate)', months);
+
+    if (sumYearSel) {
+      const desiredYear = years.includes(selectedYear) ? selectedYear : (normalizeYearValue(activeYear) || String(CURRENT_YEAR));
+      if (years.includes(desiredYear)) sumYearSel.value = desiredYear;
+      else sumYearSel.value = '';
+    }
+
+    if (sumMonthSel) {
+      const currentMonth = monthLower(sumMonthSel.value);
+      if (months.includes(currentMonth)) sumMonthSel.value = currentMonth;
+      else if (!currentMonth && months.length) sumMonthSel.value = months[months.length - 1];
+      else if (!months.includes(currentMonth)) sumMonthSel.value = '';
+    }
+  }
+
+  function refreshSummary(){
+    const tbody = document.getElementById('sumTbody');
+    if (!tbody) return;
+    const selectedYear = normalizeYearValue((sumYearSel && sumYearSel.value) || activeYear) || (normalizeYearValue(activeYear) || String(CURRENT_YEAR));
+    const selectedMonth = monthLower(sumMonthSel ? sumMonthSel.value : '');
+
+    const rows = getRowsForYear(selectedYear).filter(r => {
+      if (selectedMonth && monthLower(r?.[1]) !== selectedMonth) return false;
+      return true;
+    });
+
+    const map = new Map();
+    rows.forEach(r => {
+      const diam = String(r?.[3] || '').trim() || '(fără diametru)';
+      const qual = String(r?.[4] || '').trim() || '(fără calitate)';
+      const kg = typeof parseKg === 'function' ? parseKg(r?.[7]) : Number(String(r?.[7] || '').replace(',', '.')) || 0;
+      const key = diam + '||' + qual;
+      map.set(key, (map.get(key) || 0) + kg);
+    });
+
+    const items = Array.from(map.entries()).map(([key, total]) => {
+      const [diam, qual] = key.split('||');
+      return { diam, qual, total };
+    }).sort((a,b) => b.total - a.total);
+
+    tbody.innerHTML = '';
+    if (!items.length) {
+      const tr = document.createElement('tr');
+      const td = document.createElement('td');
+      td.colSpan = 3;
+      td.style.textAlign = 'center';
+      td.style.color = '#475569';
+      td.textContent = 'Nu există date pentru filtrul selectat.';
+      tr.appendChild(td);
+      tbody.appendChild(tr);
+      return;
+    }
+
+    items.forEach(it => {
+      const tr = document.createElement('tr');
+      const td1 = document.createElement('td'); td1.textContent = it.diam;
+      const td2 = document.createElement('td'); td2.textContent = it.qual;
+      const td3 = document.createElement('td'); td3.textContent = typeof formatKg === 'function' ? formatKg(it.total) : String(it.total);
+      tr.appendChild(td1); tr.appendChild(td2); tr.appendChild(td3);
+      tbody.appendChild(tr);
+    });
+  }
+
+  function renderActiveYear(options = {}){
+    const y = normalizeYearValue(activeYear) || String(CURRENT_YEAR);
+    const rows = getRowsForYear(y);
+    const needed = Math.max(30, rows.length + 5);
+    if (typeof rebuildTbody === 'function') rebuildTbody(needed);
+    if (typeof fillTopDown === 'function') fillTopDown(rows);
+    if (typeof applyFilters === 'function') applyFilters();
+    buildSummaryFilters();
+    refreshSummary();
+
+    const yearInput = document.querySelector('#filterRow input[data-col="0"]');
+    if (yearInput && options.syncYearInput) yearInput.value = y;
+
+    if (sumYearSel && (options.syncSummaryYear || !sumYearSel.value)) {
+      const known = getKnownYears();
+      if (known.includes(y)) sumYearSel.value = y;
+    }
+
+    if (options.scrollBottom && tableWrapEl) {
+      requestAnimationFrame(() => { tableWrapEl.scrollTop = tableWrapEl.scrollHeight; });
+    }
+  }
+
+  function setActiveYearLocal(year, options = {}){
+    activeYear = normalizeYearValue(year) || String(CURRENT_YEAR);
+    APP.activeYear = activeYear;
+    loadYearLocal(activeYear);
+    renderActiveYear({
+      syncYearInput: options.syncYearInput !== false,
+      syncSummaryYear: options.syncSummaryYear !== false,
+      scrollBottom: !!options.scrollBottom
+    });
+  }
+
+  function markPending(year){
+    const y = normalizeYearValue(year) || String(CURRENT_YEAR);
+    pendingYears[y] = true;
+  }
+
+  function clearPending(year){
+    const y = normalizeYearValue(year) || String(CURRENT_YEAR);
+    delete pendingYears[y];
+  }
+
+  function hasPending(year){
+    const y = normalizeYearValue(year) || String(CURRENT_YEAR);
+    return !!pendingYears[y];
+  }
+
+  function markDirty(targetYears){
+    const years = (Array.isArray(targetYears) ? targetYears : [targetYears || activeYear]).map(normalizeYearValue).filter(Boolean);
+    if (!years.length) return;
+    years.forEach(y => {
+      APP.dirtyYearsSet.add(y);
+      yearMeta[y] = yearMeta[y] || {};
+      yearMeta[y].updated_at = nowIso();
+      mergeCloudIndex([y], { [y]: yearMeta[y].updated_at });
+      markPending(y);
+    });
+    scheduleAutosave();
+    schedulePush(years);
+    buildSummaryFilters();
+    refreshSummary();
+  }
+
+  function autoSaveNow(){
+    const years = Array.from(APP.dirtyYearsSet);
+    if (!years.length) {
+      saveYearLocal(activeYear, getRowsForYear(activeYear), yearMeta[activeYear]?.updated_at || nowIso());
+      return;
+    }
+    years.forEach(y => {
+      saveYearLocal(y, getRowsForYear(y), yearMeta[y]?.updated_at || nowIso());
+    });
+    APP.dirtyYearsSet.clear();
+  }
+
+  function scheduleAutosave(){
+    clearTimeout(APP.autosaveTimer);
+    APP.autosaveTimer = setTimeout(autoSaveNow, 220);
+  }
+
+  function autoLoad(){
+    migrateLegacyLocalPayloads();
+    mergeCloudIndex([], readLocalIndex().updatedAtByYear || {});
+    loadYearLocal(activeYear);
+    setActiveYearLocal(activeYear, { syncYearInput:true, syncSummaryYear:true });
+    return true;
+  }
+
+  window.autoSaveNow = autoSaveNow;
+  window.scheduleAutosave = scheduleAutosave;
+  window.autoLoad = autoLoad;
+  window.buildSummaryFilters = buildSummaryFilters;
+  window.refreshSummary = refreshSummary;
+  window.notifyDataChanged = function(targetYears){
+    const years = (Array.isArray(targetYears) ? targetYears : [targetYears || activeYear]).map(normalizeYearValue).filter(Boolean);
+    buildSummaryFilters();
+    refreshSummary();
+    if (years.length) schedulePush(years);
+  };
+
+  function rowsFromCurrentTable(){
+    return typeof getTableData === 'function' ? getTableData() : [];
+  }
+
+  function exportJSON(){
+    const y = normalizeYearValue(activeYear) || String(CURRENT_YEAR);
+    const payload = getYearPayload(y, getRowsForYear(y), yearMeta[y]?.updated_at || nowIso());
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type:'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `INTRARI_OTEL_${y}_${new Date().toISOString().slice(0,10)}.json`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  async function importJSON(){
+    if (!guardAction(APP.role === 'admin', 'Importul JSON este disponibil doar pentru admin.')) return;
+    const inp = document.createElement('input');
+    inp.type = 'file';
+    inp.accept = 'application/json';
+    inp.addEventListener('change', async () => {
+      const file = inp.files && inp.files[0];
+      if (!file) return;
+      try{
+        const txt = await file.text();
+        const obj = JSON.parse(txt);
+        if (!obj || !Array.isArray(obj.rows)) throw new Error("Fișier JSON invalid (lipsește 'rows').");
+
+        const grouped = {};
+        obj.rows.forEach(vals => {
+          const row = Array.isArray(vals) ? vals.slice(0,10) : [];
+          while (row.length < 10) row.push('');
+          const y = rowYearFromValues(row, activeYear);
+          row[0] = y;
+          if (!grouped[y]) grouped[y] = [];
+          grouped[y].push(row);
+        });
+
+        const touchedYears = Object.keys(grouped).sort((a,b) => Number(a) - Number(b));
+        touchedYears.forEach(y => {
+          saveYearLocal(y, grouped[y], nowIso());
+          markPending(y);
+          try{ queuePushYear(y); }catch(_e){}
+        });
+
+        if (touchedYears.length) {
+          await switchActiveYear(touchedYears.includes(activeYear) ? activeYear : touchedYears[touchedYears.length - 1], { preferCloud:false, syncSelectors:true });
+        } else {
+          setActiveYearLocal(activeYear, { syncYearInput:true, syncSummaryYear:true });
+        }
+      }catch(err){
+        alert('Nu am putut importa: ' + (err?.message || err));
+      }
+    });
+    inp.click();
+  }
+
+  function exportXLSX(){
+    ensureXLSX().then(ok => {
+      if (!ok) return;
+      const y = normalizeYearValue(activeYear) || String(CURRENT_YEAR);
+      const headers = ["Anul","LUNA","Data Intrare","Dimensiune Otel","Calitate otel","Cod intern otel (3 litere)","Sarja material (furnizor)","Cantitate in KG","PRETEST","Furnizor"];
+      const rows = getRowsForYear(y);
+      const ws = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+      ws["!cols"] = [{wch:8},{wch:12},{wch:14},{wch:16},{wch:16},{wch:22},{wch:26},{wch:16},{wch:14},{wch:18}];
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, "INTRARI_OTEL");
+      XLSX.writeFile(wb, `INTRARI_OTEL_${y}_${new Date().toISOString().slice(0,10)}.xlsx`);
+    });
+  }
+
+  async function importXLSX(){
+    if (!guardAction(APP.role === 'admin', 'Importul Excel este disponibil doar pentru admin.')) return;
+    const ok = await ensureXLSX();
+    if (!ok) return;
+
+    const inp = document.createElement('input');
+    inp.type = 'file';
+    inp.accept = '.xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+    inp.addEventListener('change', async () => {
+      const file = inp.files && inp.files[0];
+      if (!file) return;
+      try{
+        const buf = await file.arrayBuffer();
+        const wb = XLSX.read(buf, { type:'array' });
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        const aoa = XLSX.utils.sheet_to_json(ws, { header:1, raw:false, defval:'' });
+
+        if (!aoa || !aoa.length) throw new Error('Fișier Excel gol.');
+
+        let headerRowIndex = -1;
+        for (let i=0; i<Math.min(10, aoa.length); i++){
+          const row = (aoa[i] || []).map(x => String(x ?? '').trim());
+          if (row.some(x => x !== '')) { headerRowIndex = i; break; }
+        }
+        if (headerRowIndex === -1) throw new Error('Nu găsesc date în Excel.');
+
+        const header = (aoa[headerRowIndex] || []).map(normalizeHeader);
+        const want = {
+          an: ["an intrare","anul","an"],
+          luna: ["luna intrare","luna"],
+          data: ["data intrare","data"],
+          diam: ["diametrul otelului","diametru otelului","diametru","dimensiune otel","dimensiune otelului"],
+          cal: ["calitatea otelului","calitate otelului","calitate otel","calitate"],
+          cod: ["cod intern otel 3 litere","cod intern otel 3","cod intern otel","cod intern","cod sarja premagro"],
+          sarja: ["sarja material furnizor","sarja materialului","sarja material","sarja","cod sarja cat"],
+          kg: ["cantitate in kg","cantitate kg","cantitate","cantitatea in kg","kg"],
+          pre: ["pretest"],
+          furn: ["furnizor","supplier"]
+        };
+
+        function findIndexBySyn(syns){
+          for (const s of syns){
+            const idx = header.indexOf(normalizeHeader(s));
+            if (idx >= 0) return idx;
+          }
+          return -1;
+        }
+
+        const idxMap = {
+          an: findIndexBySyn(want.an),
+          luna: findIndexBySyn(want.luna),
+          data: findIndexBySyn(want.data),
+          diam: findIndexBySyn(want.diam),
+          cal: findIndexBySyn(want.cal),
+          cod: findIndexBySyn(want.cod),
+          sarja: findIndexBySyn(want.sarja),
+          kg: findIndexBySyn(want.kg),
+          pre: findIndexBySyn(want.pre),
+          furn: findIndexBySyn(want.furn)
+        };
+
+        const hasHeaders = Object.values(idxMap).some(v => v >= 0);
+        const grouped = {};
+        const start = hasHeaders ? headerRowIndex + 1 : headerRowIndex;
+
+        for (let r=start; r<aoa.length; r++){
+          const row = aoa[r] || [];
+          const get = (i) => i >= 0 ? (row[i] ?? '') : '';
+
+          let vals;
+          if (hasHeaders){
+            vals = [
+              String(get(idxMap.an) ?? '').trim(),
+              String(get(idxMap.luna) ?? '').trim(),
+              normalizeDate(get(idxMap.data)),
+              normalizeDiametru(get(idxMap.diam)),
+              String(get(idxMap.cal) ?? '').trim(),
+              normalizeCodIntern(get(idxMap.cod)),
+              String(get(idxMap.sarja) ?? '').trim(),
+              normalizeKg(get(idxMap.kg)),
+              normalizePretest(get(idxMap.pre)),
+              String(get(idxMap.furn) ?? '').trim() || 'Necunoscut'
+            ];
+          } else {
+            const padded = Array.from({length:10}, (_,i) => String(row[i] ?? '').trim());
+            vals = [
+              padded[0],
+              padded[1],
+              normalizeDate(padded[2]),
+              normalizeDiametru(padded[3]),
+              padded[4],
+              normalizeCodIntern(padded[5]),
+              padded[6],
+              normalizeKg(padded[7]),
+              normalizePretest(padded[8]),
+              padded[9] || 'Necunoscut'
+            ];
+          }
+
+          const any = vals.some(v => String(v ?? '').trim() !== '');
+          if (!any) continue;
+          const y = rowYearFromValues(vals, activeYear);
+          vals[0] = y;
+          if (!grouped[y]) grouped[y] = [];
+          grouped[y].push(vals);
+        }
+
+        const touchedYears = Object.keys(grouped).sort((a,b) => Number(a) - Number(b));
+        touchedYears.forEach(y => {
+          saveYearLocal(y, grouped[y], nowIso());
+          markPending(y);
+          try{ queuePushYear(y); }catch(_e){}
+        });
+
+        if (touchedYears.length) {
+          await switchActiveYear(touchedYears.includes(activeYear) ? activeYear : touchedYears[touchedYears.length - 1], { preferCloud:false, syncSelectors:true });
+        } else {
+          setActiveYearLocal(activeYear, { syncYearInput:true, syncSummaryYear:true });
+        }
+      }catch(err){
+        alert('Nu am putut importa Excel: ' + (err?.message || err));
+      }
+    });
+    inp.click();
+  }
+
+  window.exportJSON = exportJSON;
+  window.importJSON = importJSON;
+  window.exportXLSX = exportXLSX;
+  window.importXLSX = importXLSX;
+
+  function getRowIndexFromTr(tr){
+    const tbody = document.getElementById('tbody');
+    if (!tbody || !tr) return -1;
+    return Array.from(tbody.children).indexOf(tr);
+  }
+
+  function buildFormRowArray(){
+    const an = String(document.getElementById('fAn')?.value || '').trim();
+    const luna = String(document.getElementById('fLuna')?.value || '').trim();
+    const data = String(document.getElementById('fData')?.value || '').trim();
+    const dim = String(document.getElementById('fDim')?.value || '').trim();
+    const cal = String(document.getElementById('fCal')?.value || '').trim();
+    const prem = typeof normalizeCodIntern === 'function'
+      ? normalizeCodIntern(document.getElementById('fPrem')?.value || '')
+      : String(document.getElementById('fPrem')?.value || '').trim().toUpperCase();
+    const cat = String(document.getElementById('fCat')?.value || '').trim();
+    const kg = String(document.getElementById('fKg')?.value || '').trim();
+    const pre = String(document.getElementById('fPre')?.value || '').trim();
+    let furn = String(document.getElementById('fFurn')?.value || '').trim();
+    const furnOther = String(document.getElementById('fFurnOther')?.value || '').trim();
+    if (furn.toLowerCase() === 'altul') furn = furnOther;
+
+    if (!an || !luna || !data || !dim || !cal || !prem || !cat || !kg || !pre || !furn) {
+      alert('Completează: Anul, Luna, Data, Diametru, Calitate, Cod intern (3 litere), Sarja material, Cantitate (kg), Pretest, Furnizor.');
+      return null;
+    }
+    if (typeof isValidCodIntern === 'function' && !isValidCodIntern(prem)) {
+      alert('Cod intern invalid. Trebuie să fie exact 3 litere din setul: N U M E R A L K O D.');
+      return null;
+    }
+
+    const parts = data.split('-');
+    const dataDisp = parts.length === 3 ? `${parts[2]}.${parts[1]}.${parts[0]}` : (typeof toDisplayDate === 'function' ? toDisplayDate(data) : data);
+    const y = normalizeYearValue(an || activeYear) || (normalizeYearValue(activeYear) || String(CURRENT_YEAR));
+    return [y, luna, dataDisp, dim, cal, prem, cat, kg, pre, furn];
+  }
+
+  function saveRow(){
+    if (typeof __EDIT_TR !== 'undefined' && __EDIT_TR && !guardAction(APP.permissions.can_edit, 'Nu ai drept de modificare pe această pagină.')) return;
+    if ((typeof __EDIT_TR === 'undefined' || !__EDIT_TR) && !guardAction(APP.permissions.can_add || APP.permissions.can_edit, 'Nu ai drept de salvare pe această pagină.')) return;
+
+    const row = buildFormRowArray();
+    if (!row) return;
+
+    const targetYear = normalizeYearValue(row[0]) || (normalizeYearValue(activeYear) || String(CURRENT_YEAR));
+    const currentYear = normalizeYearValue(activeYear) || String(CURRENT_YEAR);
+    let touchedYears = [targetYear];
+
+    if (typeof __EDIT_TR !== 'undefined' && __EDIT_TR) {
+      const editIndex = getRowIndexFromTr(__EDIT_TR);
+      const currentList = [...getRowsForYear(currentYear)];
+      if (editIndex < 0 || editIndex >= currentList.length) {
+        alert('Nu am găsit rândul pentru editare.');
+        return;
+      }
+      if (targetYear === currentYear) {
+        currentList[editIndex] = row;
+        saveYearLocal(currentYear, currentList, nowIso());
+      } else {
+        currentList.splice(editIndex, 1);
+        saveYearLocal(currentYear, currentList, nowIso());
+        const targetList = [...getRowsForYear(targetYear)];
+        targetList.push(row);
+        saveYearLocal(targetYear, targetList, nowIso());
+        touchedYears = [currentYear, targetYear];
+      }
+    } else {
+      const targetList = [...getRowsForYear(targetYear)];
+      targetList.push(row);
+      saveYearLocal(targetYear, targetList, nowIso());
+    }
+
+    markDirty(touchedYears);
+
+    if (targetYear !== currentYear) {
+      switchActiveYear(targetYear, { preferCloud:false, syncSelectors:true, scrollBottom:true });
+    } else {
+      renderActiveYear({ syncYearInput:true, syncSummaryYear:true, scrollBottom:true });
+    }
+  }
+
+  function deleteCurrentRow(){
+    if (!guardAction(APP.permissions.can_delete, 'Nu ai drept de ștergere pe această pagină.')) return;
+    if (typeof __EDIT_TR === 'undefined' || !__EDIT_TR) return;
+    const ok = confirm('Sigur vrei să ștergi acest rând?');
+    if (!ok) return;
+
+    const y = normalizeYearValue(activeYear) || String(CURRENT_YEAR);
+    const idx = getRowIndexFromTr(__EDIT_TR);
+    const list = [...getRowsForYear(y)];
+    if (idx >= 0 && idx < list.length) {
+      list.splice(idx, 1);
+      saveYearLocal(y, list, nowIso());
+      markDirty(y);
+      if (typeof closeForm === 'function') closeForm();
+      if (typeof __setModalMode === 'function') __setModalMode(false);
+      try{ __EDIT_TR = null; }catch(_e){}
+      renderActiveYear({ syncYearInput:true, syncSummaryYear:true });
+    }
+  }
+
+  window.saveRow = saveRow;
+  window.deleteCurrentRow = deleteCurrentRow;
+
+  async function loadFromPayload(payload, targetYear){
+    const y = normalizeYearValue((payload && payload.year) || targetYear || activeYear) || String(CURRENT_YEAR);
+    if (!payload || !Array.isArray(payload.rows)) return false;
+    const normalized = payload.rows.map(vals => {
+      const row = Array.isArray(vals) ? vals.slice(0,10) : [];
+      while (row.length < 10) row.push('');
+      row[0] = y;
+      row[2] = typeof toDisplayDate === 'function' ? toDisplayDate(row[2]) : String(row[2] || '').trim();
+      return row;
+    });
+    saveYearLocal(y, normalized, payload.updated_at || payload.savedAt || nowIso());
+    clearPending(y);
+    if (y === normalizeYearValue(activeYear)) renderActiveYear({ syncYearInput:true, syncSummaryYear:true });
+    return true;
+  }
+
+  async function pullCloudIndex(force){
+    try{
+      const doc = await readDocument(CLOUD_INDEX_KEY);
+      const payload = doc && doc.payload ? doc.payload : {};
+      const years = Array.isArray(payload?.years) ? payload.years.map(normalizeYearValue).filter(Boolean) : [];
+      const updatedAtByYear = payload?.updatedAtByYear && typeof payload.updatedAtByYear === 'object' ? payload.updatedAtByYear : {};
+      mergeCloudIndex(years, updatedAtByYear);
+      if (force && !years.length) mergeCloudIndex([normalizeYearValue(activeYear) || String(CURRENT_YEAR)], updatedAtByYear);
+      return APP.cloudIndexState;
+    }catch(_e){
+      return mergeCloudIndex([normalizeYearValue(activeYear) || String(CURRENT_YEAR)], {});
+    }
+  }
+
+  async function pushCloudIndex(extraYears){
+    const merged = mergeCloudIndex(extraYears, APP.cloudIndexState.updatedAtByYear || {});
+    try{
+      await saveDocument(CLOUD_INDEX_KEY, {
+        app: 'INTRARI_OTEL_INDEX',
+        version: 1,
+        years: merged.years,
+        currentYear: CURRENT_YEAR,
+        updatedAtByYear: merged.updatedAtByYear || {},
+        savedAt: nowIso()
+      });
+    }catch(_e){}
+  }
+
+  async function pullYear(year, options = {}){
+    const y = normalizeYearValue(year) || String(CURRENT_YEAR);
+    if (APP.pullLocksByYear[y]) return getRowsForYear(y);
+    if (!APP.supa) return getRowsForYear(y);
+    APP.pullLocksByYear[y] = true;
+    try{
+      if (!options.force && hasPending(y)) {
+        setCloudStatus('Cloud: pending ' + y, true);
+        return getRowsForYear(y);
+      }
+      const doc = await readDocument(getYearDocKey(y));
+      if (!doc || !doc.payload) {
+        mergeCloudIndex([y], {});
+        setCloudStatus('Cloud: ' + y + ' gol', true);
+        return getRowsForYear(y);
+      }
+      const localTs = yearMeta[y]?.updated_at || readLocalIndex().updatedAtByYear?.[y] || null;
+      const remoteTs = doc.updated_at || doc.payload.updated_at || doc.payload.savedAt || null;
+      if (!options.force && localTs && remoteTs && new Date(remoteTs) <= new Date(localTs) && getRowsForYear(y).length) {
+        setCloudStatus('Cloud: ' + y + ' ON', true);
+        return getRowsForYear(y);
+      }
+      await loadFromPayload(Object.assign({}, doc.payload, { year:y, updated_at: remoteTs || doc.payload.updated_at || nowIso() }), y);
+      setCloudStatus('Cloud: ' + y + ' ON', true);
+      return getRowsForYear(y);
+    }catch(e){
+      console.error(e);
+      setCloudStatus('Cloud: eroare ' + y, false);
+      return getRowsForYear(y);
+    }finally{
+      APP.pullLocksByYear[y] = false;
+    }
+  }
+
+  async function ensureYearLoaded(year, options = {}){
+    const y = normalizeYearValue(year) || String(CURRENT_YEAR);
+    let currentRows = Array.isArray(yearCache[y]) ? yearCache[y] : null;
+    if (!currentRows) currentRows = loadYearLocal(y);
+    if (options.preferCloud !== false) await pullYear(y, { force: !!options.force || !currentRows.length });
+    return getRowsForYear(y);
+  }
+
+  async function switchActiveYear(year, options = {}){
+    const y = normalizeYearValue(year) || String(CURRENT_YEAR);
+    await ensureYearLoaded(y, { preferCloud: options.preferCloud !== false, force: !!options.force });
+    setActiveYearLocal(y, {
+      syncYearInput: options.syncSelectors !== false,
+      syncSummaryYear: options.syncSelectors !== false,
+      scrollBottom: !!options.scrollBottom
+    });
+    setCloudStatus('Cloud: anul activ ' + y, true);
+    return getRowsForYear(y);
+  }
+
+  async function pushYearNow(year){
+    const y = normalizeYearValue(year) || String(CURRENT_YEAR);
+    if (!APP.supa) return null;
+    if (!(window.__CAN_ADD__ || window.__CAN_EDIT__ || window.__CAN_DELETE__)) return null;
+    if (APP.pushLocksByYear[y]) return null;
+    APP.pushLocksByYear[y] = true;
+    try{
+      const payload = getYearPayload(y, getRowsForYear(y), yearMeta[y]?.updated_at || nowIso());
+      await saveDocument(getYearDocKey(y), payload);
+      saveYearLocal(y, getRowsForYear(y), payload.updated_at);
+      mergeCloudIndex([y], { [y]: payload.updated_at });
+      await pushCloudIndex([y]);
+      clearPending(y);
+      setCloudStatus('Cloud: ' + y + ' sincronizat', true);
+      return payload;
+    }catch(e){
+      console.error(e);
+      markPending(y);
+      setCloudStatus('Cloud: ' + y + ' nesincronizat', false);
+      return null;
+    }finally{
+      APP.pushLocksByYear[y] = false;
+    }
+  }
+
+  function queuePushYear(year){
+    const y = normalizeYearValue(year) || String(CURRENT_YEAR);
+    if (!y || !window.__CAN_VIEW__) return;
+    clearTimeout(APP.pushTimersByYear[y]);
+    APP.pushTimersByYear[y] = setTimeout(() => { pushYearNow(y); }, 900);
+  }
+
+  function schedulePush(targetYears){
+    const years = (Array.isArray(targetYears) ? targetYears : [targetYears || activeYear]).map(normalizeYearValue).filter(Boolean);
+    years.forEach(queuePushYear);
+  }
+
+  async function pull(forceFull){
+    if (!APP.supa) return;
+    try{
+      await pullCloudIndex(!!forceFull);
+      const active = normalizeYearValue(activeYear) || String(CURRENT_YEAR);
+      await pullYear(active, { force: !!forceFull });
+      buildSummaryFilters();
+      refreshSummary();
+      setCloudStatus('Cloud: ' + active + ' ON', true);
+    }catch(e){
+      console.error(e);
+      setCloudStatus('Cloud: eroare', false);
+    }
+  }
+
+  async function loadCloudLists(){
+    try{
+      for (const key of HELPER_DOC_KEYS) {
+        const doc = await readDocument(key);
+        if (doc.payload) { APP.helperPayload = doc.payload; break; }
+      }
+    }catch(_e){}
+    try{
+      for (const key of NUMERALKOD_DOC_KEYS) {
+        const doc = await readDocument(key);
+        if (doc.payload) { APP.numeralkodPayload = doc.payload; break; }
+      }
+    }catch(_e){}
+    APP.cloudCodeIndex = new Map([
+      ...buildCloudCodeIndexFromPayload(APP.helperPayload),
+      ...buildCloudCodeIndexFromPayload(APP.numeralkodPayload)
+    ]);
+    refreshHelperDatalistsCloudAware();
+    refreshCodeListCloudAware();
+    applyAutoFillFromCodInternCloudAware();
+  }
+
+  function wireCloudAwareAutofill(){
+    const inp = document.getElementById('fPrem');
+    if (!inp) return;
+    inp.addEventListener('input', function(){
+      const code = typeof normalizeCodIntern === 'function'
+        ? normalizeCodIntern(inp.value)
+        : String(inp.value || '').trim().toUpperCase().replace(/[^A-Z]/g,'').slice(0,3);
+      inp.value = code;
+      if (code.length === 3) applyAutoFillFromCodInternCloudAware();
+    });
+    inp.addEventListener('change', applyAutoFillFromCodInternCloudAware);
+    inp.addEventListener('blur', applyAutoFillFromCodInternCloudAware);
+  }
+
+  function wireYearSelectors(){
+    if (sumYearSel) {
+      sumYearSel.addEventListener('change', async () => {
+        const y = normalizeYearValue(sumYearSel.value);
+        if (!y) { refreshSummary(); return; }
+        await switchActiveYear(y, { preferCloud:true, syncSelectors:true });
+        const yearInput = document.querySelector('#filterRow input[data-col="0"]');
+        if (yearInput) yearInput.value = y;
+        refreshSummary();
+      });
+    }
+
+    if (sumMonthSel) {
+      sumMonthSel.addEventListener('change', refreshSummary);
+    }
+
+    const yearInput = document.querySelector('#filterRow input[data-col="0"]');
+    if (yearInput) {
+      async function trySwitch(){
+        const y = normalizeYearValue(yearInput.value);
+        if (!y || y === normalizeYearValue(activeYear)) return;
+        await switchActiveYear(y, { preferCloud:true, syncSelectors:true });
+        yearInput.value = y;
+        if (typeof applyFilters === 'function') applyFilters();
+      }
+      yearInput.addEventListener('change', trySwitch);
+      yearInput.addEventListener('blur', trySwitch);
+      yearInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          trySwitch();
+        }
+      });
+    }
   }
 
   function wirePermissionGuards(){
@@ -2059,59 +2867,16 @@ function applyFilters(){
         return originalOpenEditRow.apply(this, arguments);
       };
     }
-
-    const originalSaveRow = window.saveRow;
-    if (typeof originalSaveRow === 'function') {
-      window.saveRow = function(){
-        if (!guardAction(APP.permissions.can_add || APP.permissions.can_edit, 'Nu ai drept de salvare pe această pagină.')) return;
-        return originalSaveRow.apply(this, arguments);
-      };
-    }
-
-    const originalDeleteRow = window.deleteCurrentRow;
-    if (typeof originalDeleteRow === 'function') {
-      window.deleteCurrentRow = function(){
-        if (!guardAction(APP.permissions.can_delete, 'Nu ai drept de ștergere pe această pagină.')) return;
-        return originalDeleteRow.apply(this, arguments);
-      };
-    }
-
-    const originalImportJson = window.importJSON;
-    if (typeof originalImportJson === 'function') {
-      window.importJSON = function(){
-        if (!guardAction(APP.role === 'admin', 'Importul JSON este disponibil doar pentru admin.')) return;
-        return originalImportJson.apply(this, arguments);
-      };
-    }
-
-    const originalImportXlsx = window.importXLSX;
-    if (typeof originalImportXlsx === 'function') {
-      window.importXLSX = function(){
-        if (!guardAction(APP.role === 'admin', 'Importul Excel este disponibil doar pentru admin.')) return;
-        return originalImportXlsx.apply(this, arguments);
-      };
-    }
-  }
-
-  function wireCloudAwareAutofill(){
-    const inp = document.getElementById('fPrem');
-    if (!inp) return;
-    inp.addEventListener('input', function(){
-      const code = (typeof normalizeCodIntern === 'function') ? normalizeCodIntern(inp.value) : String(inp.value || '').trim().toUpperCase();
-      inp.value = code;
-      if (code.length === 3) applyAutoFillFromCodInternCloudAware();
-    });
-    inp.addEventListener('change', applyAutoFillFromCodInternCloudAware);
-    inp.addEventListener('blur', applyAutoFillFromCodInternCloudAware);
   }
 
   async function init(){
-    try {
+    try{
+      autoLoad();
       const cfg = getConfig();
       APP.supa = (window.supabase && window.supabase.createClient)
         ? window.supabase.createClient(cfg.url, cfg.key, { auth:{ persistSession:true, autoRefreshToken:true, detectSessionInUrl:false } })
         : null;
-      window.__SUPA__ = APP.supa;
+
       if (!APP.supa) {
         setCloudStatus('Cloud: client indisponibil', false);
         return;
@@ -2136,22 +2901,20 @@ function applyFilters(){
       applyPermissions();
       wirePermissionGuards();
       wireCloudAwareAutofill();
+      wireYearSelectors();
       await loadCloudLists();
-      await pullCloud(true);
+      await pullCloudIndex(true);
+      await ensureYearLoaded(activeYear, { preferCloud:true, force:true });
+      setActiveYearLocal(activeYear, { syncYearInput:true, syncSummaryYear:true });
+      setCloudStatus('Cloud: ' + activeYear + ' ON', true);
 
       clearInterval(APP.pollTimer);
-      APP.pollTimer = setInterval(() => { pullCloud(false); }, 30000);
-    } catch (e) {
+      APP.pollTimer = setInterval(() => { pull(false); }, 30000);
+    }catch(e){
       console.error(e);
       setCloudStatus('Cloud: eroare', false);
     }
   }
-
-  const originalNotifyDataChanged = window.notifyDataChanged;
-  window.notifyDataChanged = function(){
-    if (typeof originalNotifyDataChanged === 'function') originalNotifyDataChanged.apply(this, arguments);
-    schedulePush();
-  };
 
   window.addEventListener('load', init);
 })();
