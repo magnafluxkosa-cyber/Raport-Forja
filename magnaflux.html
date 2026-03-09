@@ -917,28 +917,108 @@
         return new Intl.NumberFormat('ro-RO', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(num) + '%';
       }
 
-      function isoDateToRo(iso){
-        if(!iso) return '';
-        const d = new Date(iso + 'T00:00:00');
-        if(Number.isNaN(d.getTime())) return iso;
-        const dd = String(d.getDate()).padStart(2,'0');
-        const mm = String(d.getMonth()+1).padStart(2,'0');
-        const yyyy = d.getFullYear();
+      function makeIsoDate(y, m, d){
+        const yy = Number(y);
+        const mm = Number(m);
+        const dd = Number(d);
+        if(!Number.isInteger(yy) || !Number.isInteger(mm) || !Number.isInteger(dd)) return '';
+        if(mm < 1 || mm > 12 || dd < 1 || dd > 31) return '';
+        const test = new Date(Date.UTC(yy, mm - 1, dd));
+        if(
+          test.getUTCFullYear() !== yy ||
+          test.getUTCMonth() + 1 !== mm ||
+          test.getUTCDate() !== dd
+        ) return '';
+        return `${String(yy).padStart(4,'0')}-${String(mm).padStart(2,'0')}-${String(dd).padStart(2,'0')}`;
+      }
+
+      function monthNumberFromRo(value){
+        const idx = MONTHS_RO.findIndex(m => normalizeText(m) === normalizeText(value || ''));
+        return idx >= 0 ? idx + 1 : 0;
+      }
+
+      function pickBestIsoDate(candidates, hintMonth, hintYear){
+        const valid = Array.from(new Set((candidates || []).filter(Boolean)));
+        if(!valid.length) return '';
+        const monthHint = Number(hintMonth || 0);
+        const yearHint = Number(hintYear || 0);
+        valid.sort((a, b) => {
+          const [ya, ma] = a.split('-').map(Number);
+          const [yb, mb] = b.split('-').map(Number);
+          const sa = (yearHint && ya === yearHint ? 2 : 0) + (monthHint && ma === monthHint ? 4 : 0);
+          const sb = (yearHint && yb === yearHint ? 2 : 0) + (monthHint && mb === monthHint ? 4 : 0);
+          return sb - sa;
+        });
+        return valid[0];
+      }
+
+      function normalizeAnyDateToIso(value, hintMonth, hintYear){
+        if(value == null || value === '') return '';
+        if(value instanceof Date && !Number.isNaN(value.getTime())) return value.toISOString().slice(0,10);
+
+        const text = String(value).trim();
+        if(!text) return '';
+
+        const candidates = [];
+
+        if(/^\d{4}-\d{2}-\d{2}$/.test(text)){
+          const [y, a, b] = text.split('-').map(Number);
+          candidates.push(makeIsoDate(y, a, b));
+          candidates.push(makeIsoDate(y, b, a));
+          return pickBestIsoDate(candidates, hintMonth, hintYear);
+        }
+
+        if(/^\d{4}[.\/-]\d{1,2}[.\/-]\d{1,2}$/.test(text)){
+          const [y, a, b] = text.split(/[.\/-]/).map(Number);
+          candidates.push(makeIsoDate(y, a, b));
+          candidates.push(makeIsoDate(y, b, a));
+          return pickBestIsoDate(candidates, hintMonth, hintYear);
+        }
+
+        if(/^\d{1,2}[.\/-]\d{1,2}[.\/-]\d{4}$/.test(text)){
+          const [a, b, y] = text.split(/[.\/-]/).map(Number);
+          candidates.push(makeIsoDate(y, b, a));
+          candidates.push(makeIsoDate(y, a, b));
+          return pickBestIsoDate(candidates, hintMonth, hintYear);
+        }
+
+        if(/^\d{1,2}[.\/-]\d{1,2}[.\/-]\d{2}$/.test(text)){
+          const [a, b, yy] = text.split(/[.\/-]/).map(Number);
+          const y = yy >= 70 ? 1900 + yy : 2000 + yy;
+          candidates.push(makeIsoDate(y, b, a));
+          candidates.push(makeIsoDate(y, a, b));
+          return pickBestIsoDate(candidates, hintMonth, hintYear);
+        }
+
+        const num = Number(String(text).replace(',', '.'));
+        if(Number.isFinite(num) && num > 20000 && window.XLSX && XLSX.SSF && typeof XLSX.SSF.parse_date_code === 'function'){
+          const parsed = XLSX.SSF.parse_date_code(num);
+          if(parsed && parsed.y && parsed.m && parsed.d){
+            candidates.push(makeIsoDate(parsed.y, parsed.m, parsed.d));
+            return pickBestIsoDate(candidates, hintMonth, hintYear);
+          }
+        }
+
+        const parsed = new Date(text);
+        if(!Number.isNaN(parsed.getTime())) return parsed.toISOString().slice(0,10);
+        return '';
+      }
+
+      function isoDateToRo(iso, hintMonth, hintYear){
+        const fixed = normalizeAnyDateToIso(iso, hintMonth, hintYear);
+        if(!fixed) return iso || '';
+        const [yyyy, mm, dd] = fixed.split('-');
         return `${dd}.${mm}.${yyyy}`;
       }
 
-      function roDateToIso(ro){
-        if(!ro) return '';
-        if(/^\d{4}-\d{2}-\d{2}$/.test(ro)) return ro;
-        const parts = String(ro).split(/[.\/\-]/);
-        if(parts.length !== 3) return '';
-        const [d,m,y] = parts;
-        if(y.length !== 4) return '';
-        return `${y}-${String(m).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+      function roDateToIso(ro, hintMonth, hintYear){
+        return normalizeAnyDateToIso(ro, hintMonth, hintYear);
       }
 
       function monthNameFromIso(iso){
-        const d = new Date(iso + 'T00:00:00');
+        const fixed = normalizeAnyDateToIso(iso);
+        if(!fixed) return '';
+        const d = new Date(fixed + 'T00:00:00');
         return MONTHS_RO[d.getMonth()] || '';
       }
 
@@ -1022,9 +1102,11 @@
       function sanitizeRow(raw){
         const base = defaultRow();
         const row = Object.assign(base, raw || {});
-        row.data = roDateToIso(row.data) || row.data || nowIsoDate();
-        row.an = Number(row.an || row.data.slice(0,4) || new Date().getFullYear());
-        row.luna = row.luna || monthNameFromIso(row.data);
+        const hintedMonth = monthNumberFromRo(row.luna);
+        const hintedYear = Number(row.an || 0);
+        row.data = normalizeAnyDateToIso(row.data, hintedMonth, hintedYear) || nowIsoDate();
+        row.an = Number(row.data.slice(0,4) || hintedYear || new Date().getFullYear());
+        row.luna = monthNameFromIso(row.data) || row.luna || '';
         ['controlate','acceptate','rz','bav','planeit','lov','lm','ibt','sm','ftt','fl','lmc','des','as','fb','total_rebut'].forEach(k => row[k] = Math.max(0, parseIntSafe(row[k])));
         row.procent = Number(row.procent || 0);
         row.procent2 = Number(row.procent2 || 0);
@@ -1411,7 +1493,7 @@
 
       function formatCell(row, col){
         const value = row[col.key];
-        if(col.key === 'data') return isoDateToRo(value);
+        if(col.key === 'data') return isoDateToRo(value, monthNumberFromRo(row.luna), Number(row.an || 0));
         if(col.key === 'procent' || col.key === 'procent2') return pf(value);
         if(['controlate','acceptate','rz','bav','planeit','lov','lm','ibt','sm','ftt','fl','lmc','des','as','fb','total_rebut'].includes(col.key)) return nf(value);
         return value == null ? '' : String(value);
@@ -1773,35 +1855,7 @@
       }
 
       function normalizeImportedDate(value){
-        if(value == null || value === '') return '';
-        if(value instanceof Date && !isNaN(value.getTime())) return value.toISOString().slice(0,10);
-
-        const text = String(value).trim();
-        if(!text) return '';
-        if(/^\d{4}-\d{2}-\d{2}/.test(text)) return text.slice(0,10);
-
-        if(/^\d{2}[.\/-]\d{2}[.\/-]\d{4}$/.test(text)){
-          const parts = text.split(/[.\/-]/);
-          return `${parts[2]}-${parts[1].padStart(2,'0')}-${parts[0].padStart(2,'0')}`;
-        }
-
-        if(/^\d{1,2}[.\/-]\d{1,2}[.\/-]\d{2}$/.test(text)){
-          const parts = text.split(/[.\/-]/);
-          const year = Number(parts[2]) >= 70 ? `19${parts[2]}` : `20${parts[2]}`;
-          return `${year}-${String(parts[1]).padStart(2,'0')}-${String(parts[0]).padStart(2,'0')}`;
-        }
-
-        const num = Number(String(text).replace(',', '.'));
-        if(Number.isFinite(num) && num > 20000 && window.XLSX && XLSX.SSF && typeof XLSX.SSF.parse_date_code === 'function'){
-          const parsed = XLSX.SSF.parse_date_code(num);
-          if(parsed && parsed.y && parsed.m && parsed.d){
-            return `${String(parsed.y).padStart(4,'0')}-${String(parsed.m).padStart(2,'0')}-${String(parsed.d).padStart(2,'0')}`;
-          }
-        }
-
-        const date = new Date(text);
-        if(!isNaN(date.getTime())) return date.toISOString().slice(0,10);
-        return '';
+        return normalizeAnyDateToIso(value);
       }
 
       function parseImportedNumber(value){
