@@ -453,12 +453,21 @@ function buildSummary(){
   const magna = normalizeMagnafluxRows(state.docs.magnaflux);
   const pm = state.docs.rebutPm.map(normalizePmRow).filter(Boolean);
 
-  const years = Array.from(new Set(forjate.map(r=> r.an))).sort((a,b)=> b-a);
+  const sourceYears = [
+    ...forjate.map(r=> r.an),
+    ...magna.map(r=> r.an),
+    ...pm.map(r=> r.an)
+  ].filter(Boolean);
+  const years = Array.from(new Set(sourceYears)).sort((a,b)=> b-a);
   state.years = years;
   if(!state.an) state.an = years[0] || String(new Date().getFullYear());
   if(typeof state.an === 'number') state.an = String(state.an);
 
-  const availMonths = new Set(forjate.filter(r=> String(r.an)===String(state.an)).map(r=> r.luna));
+  const availMonths = new Set([
+    ...forjate.filter(r=> String(r.an)===String(state.an)).map(r=> r.luna),
+    ...magna.filter(r=> String(r.an)===String(state.an)).map(r=> r.luna),
+    ...pm.filter(r=> String(r.an)===String(state.an)).map(r=> r.luna)
+  ].filter(Boolean));
   if(!state.luna || !availMonths.has(state.luna)){
     const sortedMonths = Array.from(availMonths).sort((a,b)=> monthIndex(b)-monthIndex(a));
     state.luna = sortedMonths[0] || MONTHS[new Date().getMonth()];
@@ -466,10 +475,21 @@ function buildSummary(){
 
   const selectedForjate = forjate.filter(r=> String(r.an)===String(state.an) && r.luna===state.luna);
   const byReper = new Map();
+  const utilajByReper = new Map();
+
+  forjate.forEach(r=>{
+    if(!r.reper) return;
+    const prev = utilajByReper.get(r.reper) || { dataKey:'', utilaj:'' };
+    const dk = r.dataKey || '';
+    if(dk >= prev.dataKey){
+      utilajByReper.set(r.reper, { dataKey: dk, utilaj: r.utilaj || prev.utilaj || '' });
+    }
+  });
 
   function ensure(reper){
     if(!byReper.has(reper)){
-      const base = { an: String(state.an), luna: state.luna, reper, utilaj: '', cantitate:0, rebut_fj:0, rebut_total:0, pct:0 };
+      const inferredUtilaj = (utilajByReper.get(reper) || {}).utilaj || '';
+      const base = { an: String(state.an), luna: state.luna, reper, utilaj: inferredUtilaj, cantitate:0, rebut_fj:0, rebut_total:0, pct:0 };
       MF_CODES.forEach(c=> base[c]=0);
       PM_CODES.forEach(c=> base['pm_' + c]=0);
       base._lastDate = '';
@@ -506,8 +526,9 @@ function buildSummary(){
     const pmTotal = PM_CODES.reduce((s,c)=> s + toNum(item['pm_'+c]), 0);
     item.rebut_total = item.rebut_fj + mfTotal + pmTotal;
     item.pct = item.cantitate > 0 ? item.rebut_total / item.cantitate : 0;
+    item._pmTotal = pmTotal;
     return item;
-  }).filter(item=> item.cantitate > 0 && item.rebut_total > 0)
+  }).filter(item=> item.rebut_total > 0 && (item.cantitate > 0 || item._pmTotal > 0))
     .sort((a,b)=> a.reper.localeCompare(b.reper,'ro'));
 
   state.rows = rows;
@@ -516,7 +537,14 @@ function renderSelectors(){
   const curAn = String(state.an || '');
   const curLuna = state.luna || '';
   els.selAn.innerHTML = state.years.map(y=> `<option value="${y}" ${String(y)===curAn?'selected':''}>${y}</option>`).join('');
-  const months = MONTHS.filter(m=> state.docs.forjate.map(normalizeForjateRow).filter(Boolean).some(r=> String(r.an)===curAn && r.luna===m));
+  const forjateRows = state.docs.forjate.map(normalizeForjateRow).filter(Boolean);
+  const magnaRows = normalizeMagnafluxRows(state.docs.magnaflux);
+  const pmRows = state.docs.rebutPm.map(normalizePmRow).filter(Boolean);
+  const months = MONTHS.filter(m=> (
+    forjateRows.some(r=> String(r.an)===curAn && r.luna===m) ||
+    magnaRows.some(r=> String(r.an)===curAn && r.luna===m) ||
+    pmRows.some(r=> String(r.an)===curAn && r.luna===m)
+  ));
   els.selLuna.innerHTML = months.map(m=> `<option value="${m}" ${m===curLuna?'selected':''}>${m.charAt(0).toUpperCase()+m.slice(1)}</option>`).join('');
   if(!months.includes(curLuna) && months[0]){
     state.luna = months[0];
@@ -555,7 +583,7 @@ function renderTable(){
       ${MF_CODES.map(code=> `<td class="${r[code]>0?'num-red':''}">${r[code] ? roInt(r[code]) : ''}</td>`).join('')}
       ${PM_CODES.map(code=> `<td class="${r['pm_'+code]>0?'num-red':''}">${r['pm_'+code] ? roInt(r['pm_'+code]) : ''}</td>`).join('')}
       <td class="${r.rebut_total>0?'num-red':''}">${roInt(r.rebut_total)}</td>
-      <td class="pct ${pctClass(r.pct)}">${roPct(r.pct)}</td>
+      <td class="pct ${r.cantitate > 0 ? pctClass(r.pct) : ""}">${r.cantitate > 0 ? roPct(r.pct) : "-"}</td>
     `;
     frag.appendChild(tr);
   });
@@ -686,7 +714,7 @@ function buildRebutSheetAoA(){
       r.an, r.luna.charAt(0).toUpperCase()+r.luna.slice(1), r.reper, r.utilaj || '',
       r.cantitate, r.rebut_fj,
       r.LM, r.IBT, r.SM, r.FTT, r.FL, r.LMC, r.DES, r.AS, r.DIV,
-      r.pm_06, r.pm_07, r.pm_13, r.rebut_total, r.cantitate > 0 ? r.pct : 0
+      r.pm_06, r.pm_07, r.pm_13, r.rebut_total, r.cantitate > 0 ? r.pct : ''
     ]);
   });
   const totalPct = totals.cantitate > 0 ? (totals.rebut_total / totals.cantitate) : 0;
