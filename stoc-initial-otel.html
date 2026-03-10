@@ -796,6 +796,24 @@
     }
 
     function normalizeEntryLookupRow(row, index){
+      if (Array.isArray(row)) {
+        const data = formatDate(row[2]);
+        const an = clean(row[0]) || yearFromDate(data);
+        const luna = monthNameFromAny(row[1]) || monthFromDate(data);
+        return {
+          _index: index,
+          an,
+          luna,
+          data,
+          diametru: clean(row[3]),
+          calitate: clean(row[4]),
+          codIntern: upper(row[5]),
+          sarjaMaterial: clean(row[6]),
+          pretest: clean(row[8]),
+          furnizor: clean(row[9])
+        };
+      }
+
       const data = formatDate(pick(row, ['data','date','data intrare','DATA','Date','Data Intrare','C']));
       const an = clean(pick(row, ['an','year','an intrare','AN','Year','An intrare','A'])) || yearFromDate(data);
       const luna = monthNameFromAny(pick(row, ['luna','month','luna intrare','Luna','Month','Luna intrare','B'])) || monthFromDate(data);
@@ -1106,30 +1124,56 @@
     }
 
     async function fetchEntryLookup(){
-      const aliases = ['intrari-otel','intrari_otel','intrari otel','intrariotel'];
-      const { data, error } = await state.supabase
+      const exactAliases = ['intrari-otel','intrari_otel','intrari otel','intrariotel'];
+      const prefixAliases = ['intrari-otel:%','intrari_otel:%'];
+      const allDocs = [];
+
+      const pushDocs = (items) => {
+        (Array.isArray(items) ? items : []).forEach(doc => {
+          if (!doc || !doc.doc_key) return;
+          if (allDocs.some(existing => existing.doc_key === doc.doc_key)) return;
+          allDocs.push(doc);
+        });
+      };
+
+      const exactRes = await state.supabase
         .from('rf_documents')
         .select('*')
-        .in('doc_key', aliases);
+        .in('doc_key', exactAliases);
 
-      if (error) throw error;
+      if (exactRes.error) throw exactRes.error;
+      pushDocs(exactRes.data);
 
-      const docs = Array.isArray(data) ? data : [];
-      let picked = null;
-      for (const key of aliases) {
-        const doc = docs.find(x => x.doc_key === key && extractRows(x).length);
-        if (doc) { picked = doc; break; }
+      for (const pattern of prefixAliases) {
+        const res = await state.supabase
+          .from('rf_documents')
+          .select('*')
+          .ilike('doc_key', pattern);
+
+        if (res.error) throw res.error;
+        pushDocs(res.data);
       }
-      if (!picked) picked = docs.find(x => aliases.includes(x.doc_key)) || null;
 
-      state.entryDocKey = picked?.doc_key || 'intrari-otel';
+      const docsWithRows = allDocs
+        .filter(doc => extractRows(doc).length)
+        .sort((a, b) => String(a.updated_at || '').localeCompare(String(b.updated_at || '')) || String(a.doc_key || '').localeCompare(String(b.doc_key || ''), 'ro'));
+
+      state.entryDocKey = docsWithRows.length > 1
+        ? 'intrari-otel (toți anii)'
+        : (docsWithRows[0]?.doc_key || allDocs[0]?.doc_key || 'intrari-otel');
+
       const lookup = new Map();
-      extractRows(picked).forEach((raw, index) => {
-        const row = normalizeEntryLookupRow(raw, index);
-        if (!row.codIntern) return;
-        const existing = lookup.get(row.codIntern);
-        if (shouldReplaceEntryLookup(existing, row)) lookup.set(row.codIntern, row);
+      let globalIndex = 0;
+
+      docsWithRows.forEach(doc => {
+        extractRows(doc).forEach(raw => {
+          const row = normalizeEntryLookupRow(raw, globalIndex++);
+          if (!row.codIntern) return;
+          const existing = lookup.get(row.codIntern);
+          if (shouldReplaceEntryLookup(existing, row)) lookup.set(row.codIntern, row);
+        });
       });
+
       state.entryLookup = lookup;
       if (clean(els.txtCodIntern.value)) applyLookupFromCode(els.txtCodIntern.value, true);
     }
