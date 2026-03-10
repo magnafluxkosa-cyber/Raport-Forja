@@ -418,7 +418,8 @@
       lastLoadTs: 0,
       lastRefreshReason: 'Inițializare',
       entryDocKey: 'intrari-otel',
-      entryLookup: new Map()
+      entryLookup: new Map(),
+      entryLookupReady: false
     };
 
     const els = {
@@ -481,15 +482,6 @@
         .replace(/[\u0300-\u036f]/g, '');
     }
 
-    function keyCanon(value){
-      return normText(value)
-        .replace(/[()\[\]{}]/g, ' ')
-        .replace(/[._\/\-]/g, ' ')
-        .replace(/[^a-z0-9\s]/g, ' ')
-        .replace(/\s+/g, ' ')
-        .trim();
-    }
-
     function clean(value){ return String(value ?? '').trim(); }
     function upper(value){ return clean(value).toUpperCase(); }
 
@@ -498,21 +490,41 @@
       for (const key of keys) {
         if (obj[key] !== undefined && obj[key] !== null && obj[key] !== '') return obj[key];
       }
-      const canonEntries = Object.entries(obj).map(([k, v]) => ({ rawKey:k, canon:keyCanon(k), value:v }));
-      for (const key of keys) {
-        const wanted = keyCanon(key);
-        if (!wanted) continue;
-        const exact = canonEntries.find(entry => entry.canon === wanted && entry.value !== undefined && entry.value !== null && entry.value !== '');
-        if (exact) return exact.value;
+
+    function normalizeHeaderKey(value){
+      return normText(value).replace(/[^a-z0-9]+/g, ' ').trim();
+    }
+
+    function pickLoose(obj, exactKeys = [], containsGroups = []){
+      const exact = pick(obj, exactKeys);
+      if (exact !== '' && exact !== undefined && exact !== null) return exact;
+      if (!obj || typeof obj !== 'object') return '';
+
+      const entries = Object.entries(obj).map(([key, value]) => ({
+        key,
+        normalized: normalizeHeaderKey(key),
+        value
+      }));
+
+      for (const group of containsGroups) {
+        const parts = (Array.isArray(group) ? group : [group])
+          .map(normalizeHeaderKey)
+          .filter(Boolean);
+        if (!parts.length) continue;
+        const found = entries.find(entry =>
+          parts.every(part => entry.normalized.includes(part)) &&
+          entry.value !== undefined && entry.value !== null && String(entry.value).trim() !== ''
+        );
+        if (found) return found.value;
       }
+
+      return '';
+    }
+      const loweredMap = {};
+      for (const [k,v] of Object.entries(obj)) loweredMap[normText(k)] = v;
       for (const key of keys) {
-        const wanted = keyCanon(key);
-        if (!wanted) continue;
-        const fuzzy = canonEntries.find(entry => {
-          if (entry.value === undefined || entry.value === null || entry.value === '') return false;
-          return entry.canon.includes(wanted) || wanted.includes(entry.canon);
-        });
-        if (fuzzy) return fuzzy.value;
+        const v = loweredMap[normText(key)];
+        if (v !== undefined && v !== null && v !== '') return v;
       }
       return '';
     }
@@ -602,18 +614,81 @@
       if (window.crypto?.randomUUID) return window.crypto.randomUUID();
       return 'id-' + Date.now() + '-' + Math.random().toString(16).slice(2);
     }
+    function headerNamesFromAny(headers){
+      if (!Array.isArray(headers)) return [];
+      return headers.map((header, index) => {
+        if (header && typeof header === 'object') {
+          return clean(header.key || header.field || header.name || header.label || header.title || header.text || `col_${index + 1}`);
+        }
+        return clean(header || `col_${index + 1}`);
+      });
+    }
+
+    function rowsWithHeadersToObjects(rows, headers){
+      if (!Array.isArray(rows)) return [];
+      const names = headerNamesFromAny(headers);
+      return rows.map((row, rowIndex) => {
+        if (row && typeof row === 'object' && !Array.isArray(row)) return row;
+        if (Array.isArray(row)) {
+          const obj = {};
+          const keys = names.length ? names : row.map((_, idx) => `col_${idx + 1}`);
+          keys.forEach((key, idx) => { obj[key || `col_${idx + 1}`] = row[idx]; });
+          return obj;
+        }
+        return { value: row, index: rowIndex };
+      });
+    }
+
+    function maybeObjectsFromMatrix(matrix){
+      if (!Array.isArray(matrix) || !matrix.length) return [];
+      if (!Array.isArray(matrix[0])) return matrix;
+      if (matrix.length < 2) return [];
+      const headerRow = matrix[0];
+      const dataRows = matrix.slice(1).filter(Array.isArray);
+      const headerScore = headerRow.reduce((acc, cell) => acc + ((typeof cell === 'string' || typeof cell === 'number') ? 1 : 0), 0);
+      if (!dataRows.length || headerScore < Math.max(2, Math.ceil(headerRow.length / 2))) return [];
+      return rowsWithHeadersToObjects(dataRows, headerRow);
+    }
 
     function extractRows(doc){
       if (!doc) return [];
-      const candidates = [doc.content, doc.data];
-      for (const candidate of candidates) {
-        if (Array.isArray(candidate)) return candidate;
+      const directCandidates = [doc, doc?.content, doc?.data].filter(Boolean);
+      const nestedCandidates = [];
+      directCandidates.forEach(candidate => {
         if (candidate && typeof candidate === 'object') {
-          if (Array.isArray(candidate.rows)) return candidate.rows;
-          if (Array.isArray(candidate.items)) return candidate.items;
-          if (Array.isArray(candidate.data)) return candidate.data;
-          if (Array.isArray(candidate.records)) return candidate.records;
-          if (Array.isArray(candidate.values)) return candidate.values;
+          ['payload','sheet','table','tableData','dataset','state','result','value','content','data'].forEach(key => {
+            if (candidate[key]) nestedCandidates.push(candidate[key]);
+          });
+        }
+      });
+      const candidates = [...directCandidates, ...nestedCandidates];
+
+      for (const candidate of candidates) {
+        if (!candidate) continue;
+        if (Array.isArray(candidate)) {
+          const asObjects = maybeObjectsFromMatrix(candidate);
+          if (asObjects.length) return asObjects;
+          if (candidate.length && (Array.isArray(candidate[0]) || (candidate[0] && typeof candidate[0] === 'object'))) return candidate;
+        }
+        if (candidate && typeof candidate === 'object') {
+          const variants = [
+            [candidate.rows, candidate.headers || candidate.columns || candidate.cols || candidate.fields],
+            [candidate.items, candidate.headers || candidate.columns || candidate.cols || candidate.fields],
+            [candidate.data, candidate.headers || candidate.columns || candidate.cols || candidate.fields],
+            [candidate.records, candidate.headers || candidate.columns || candidate.cols || candidate.fields],
+            [candidate.values, candidate.headers || candidate.columns || candidate.cols || candidate.fields],
+            [candidate.tableRows, candidate.tableHeaders || candidate.headers || candidate.columns],
+            [candidate.tableData, candidate.tableHeaders || candidate.headers || candidate.columns]
+          ];
+          for (const [rows, headers] of variants) {
+            if (!Array.isArray(rows)) continue;
+            const mapped = rowsWithHeadersToObjects(rows, headers);
+            if (mapped.length) return mapped;
+          }
+          if (Array.isArray(candidate.matrix)) {
+            const mapped = maybeObjectsFromMatrix(candidate.matrix);
+            if (mapped.length) return mapped;
+          }
         }
       }
       return [];
@@ -638,22 +713,48 @@
         observatii: clean(pick(row, ['observatii','observații','notes']))
       };
     }
-
     function normalizeEntryLookupRow(row, index){
-      const data = formatDate(pick(row, ['data','date','data intrare','DATA','Date','Data Intrare','C']));
-      const an = clean(pick(row, ['an','year','an intrare','AN','Year','An intrare','A'])) || yearFromDate(data);
-      const luna = monthNameFromAny(pick(row, ['luna','month','luna intrare','Luna','Month','Luna intrare','B'])) || monthFromDate(data);
+      const data = formatDate(pickLoose(row,
+        ['data','date','DATA','Date','C'],
+        [['data','intrare'], ['data'], ['date']]
+      ));
+      const an = clean(pickLoose(row,
+        ['an','year','AN','Year','A'],
+        [['an'], ['year']]
+      )) || yearFromDate(data);
+      const luna = monthNameFromAny(pickLoose(row,
+        ['luna','month','Luna','Month','B'],
+        [['luna'], ['month']]
+      )) || monthFromDate(data);
       return {
         _index: index,
         an,
         luna,
         data,
-        diametru: clean(pick(row, ['diametru','diametru otel','diametru_otel','dimensiune otel','dimensiune oțel','Dimensiune Oțel','Diametru oțel','Diametru','D'])),
-        calitate: clean(pick(row, ['calitate','calitate otel','calitate_otel','Calitate oțel','Calitate','E'])),
-        codIntern: upper(pick(row, ['cod intern otel','cod intern otel 3 litere','cod intern otel 3 lit','cod intern oțel (3 litere)','cod intern oțel (3 lit)','cod_intern_otel','cod intern','codInternOtel','codIntern','cod','F'])),
-        sarjaMaterial: clean(pick(row, ['sarja material','sarja materialului','sarja_material','sarja','cod furnizorului','cod_furnizorului','lot','heat','batch','G'])),
-        pretest: clean(pick(row, ['pretest','I'])),
-        furnizor: clean(pick(row, ['furnizor','supplier','J']))
+        diametru: clean(pickLoose(row,
+          ['diametru','diametru otel','diametru_otel','Diametru oțel','Diametru','dimensiune otel','dimensiune oțel','dimensiune','dim','D'],
+          [['dimensiune','otel'], ['dimensiune','oțel'], ['diametru','otel'], ['diametru','oțel'], ['diametru'], ['dim']]
+        )),
+        calitate: clean(pickLoose(row,
+          ['calitate','calitate otel','calitate_otel','Calitate oțel','Calitate','E'],
+          [['calitate','otel'], ['calitate','oțel'], ['calitate']]
+        )),
+        codIntern: upper(pickLoose(row,
+          ['cod intern otel','cod intern oțel','cod intern otel 3 litere','cod intern oțel 3 litere','cod intern otel (3 litere)','cod intern oțel (3 litere)','cod_intern_otel','cod intern','codInternOtel','codIntern','cod','F'],
+          [['cod','intern','3','litere'], ['cod','intern','otel'], ['cod','intern','oțel'], ['cod','intern']]
+        )),
+        sarjaMaterial: clean(pickLoose(row,
+          ['sarja material','sarja_material','sarja','cod furnizorului','cod_furnizorului','lot','heat','batch','G'],
+          [['sarja','material'], ['sarja'], ['lot'], ['heat'], ['batch']]
+        )),
+        pretest: clean(pickLoose(row,
+          ['pretest','I'],
+          [['pretest']]
+        )),
+        furnizor: clean(pickLoose(row,
+          ['furnizor','supplier','J'],
+          [['furnizor'], ['supplier']]
+        ))
       };
     }
 
@@ -945,23 +1046,47 @@
       state.lastLoadTs = Date.now();
       persistCache();
     }
+    function countUsefulEntryRows(doc){
+      return extractRows(doc).reduce((acc, raw, index) => {
+        const row = normalizeEntryLookupRow(raw, index);
+        return acc + ((row.codIntern && (row.diametru || row.calitate || row.sarjaMaterial || row.furnizor || row.pretest)) ? 1 : 0);
+      }, 0);
+    }
+
+    function scoreEntryDoc(doc, aliases){
+      const docKey = clean(doc?.doc_key);
+      const pageKey = clean(pick(doc?.content || {}, ['page_key','pageKey','page']));
+      const signals = [docKey, pageKey].map(normText).join(' ');
+      const usefulRows = countUsefulEntryRows(doc);
+      let score = usefulRows;
+      if (aliases.includes(docKey)) score += 1000;
+      if (signals.includes('intrari') && signals.includes('otel')) score += 300;
+      if (signals.includes('intrariotel')) score += 300;
+      return score;
+    }
 
     async function fetchEntryLookup(){
-      const aliases = ['intrari-otel','intrari_otel','intrari otel','intrariotel'];
-      const { data, error } = await state.supabase
+      const aliases = ['intrari-otel','intrari_otel','intrari otel','intrariotel','intrari-otel.html','intrari otel.html'];
+      let docs = [];
+
+      const first = await state.supabase
         .from('rf_documents')
         .select('*')
         .in('doc_key', aliases);
 
-      if (error) throw error;
+      if (first.error) throw first.error;
+      docs = Array.isArray(first.data) ? first.data : [];
 
-      const docs = Array.isArray(data) ? data : [];
-      let picked = null;
-      for (const key of aliases) {
-        const doc = docs.find(x => x.doc_key === key && extractRows(x).length);
-        if (doc) { picked = doc; break; }
+      if (!docs.length || docs.every(doc => !countUsefulEntryRows(doc))) {
+        const fallback = await state.supabase.from('rf_documents').select('*');
+        if (fallback.error) throw fallback.error;
+        docs = Array.isArray(fallback.data) ? fallback.data : [];
       }
-      if (!picked) picked = docs.find(x => aliases.includes(x.doc_key)) || null;
+
+      const picked = [...docs]
+        .map(doc => ({ doc, score: scoreEntryDoc(doc, aliases) }))
+        .filter(item => item.score > 0)
+        .sort((a, b) => b.score - a.score)[0]?.doc || null;
 
       state.entryDocKey = picked?.doc_key || 'intrari-otel';
       const lookup = new Map();
@@ -972,14 +1097,19 @@
         if (shouldReplaceEntryLookup(existing, row)) lookup.set(row.codIntern, row);
       });
       state.entryLookup = lookup;
-      if (clean(els.txtCodIntern.value)) applyLookupFromCode(els.txtCodIntern.value, true);
+      state.entryLookupReady = true;
     }
-
-    function applyLookupFromCode(rawCode, force = false){
+    function applyLookupFromCode(rawCode, force = false, showMiss = false){
       const code = upper(rawCode);
       if (!code) return false;
+      if (!state.entryLookupReady) return false;
       const match = state.entryLookup.get(code);
-      if (!match) return false;
+      if (!match) {
+        if (showMiss) {
+          els.formHint.textContent = `Nu am găsit codul ${code} în ${state.entryDocKey || 'intrari-otel'}. Verifică dacă există în INTRĂRI OȚEL și dacă a fost salvat în cloud.`;
+        }
+        return false;
+      }
 
       const setValue = (element, value) => {
         if (!element || value === undefined || value === null || value === '') return;
@@ -1127,7 +1257,13 @@
       els.btnRefresh.disabled = true;
       try {
         await fetchRows();
-        try { await fetchEntryLookup(); } catch (lookupError) { console.warn('Nu am putut încărca lookup-ul din intrari-otel.', lookupError); }
+        try {
+          await fetchEntryLookup();
+          if (clean(els.txtCodIntern.value)) applyLookupFromCode(els.txtCodIntern.value, true, true);
+        } catch (lookupError) {
+          console.warn('Nu am putut încărca lookup-ul din intrari-otel.', lookupError);
+          state.entryLookupReady = false;
+        }
         renderFilters();
         state.lastRefreshReason = reason;
         applyFilters();
@@ -1161,17 +1297,19 @@
         if (!els.txtLuna.value) els.txtLuna.value = monthFromDate(formatted);
       });
 
-      const tryLookupNow = () => {
+      els.txtCodIntern.addEventListener('input', () => {
         els.txtCodIntern.value = upper(els.txtCodIntern.value);
-        const ok = applyLookupFromCode(els.txtCodIntern.value, true);
-        if (!ok && clean(els.txtCodIntern.value)) {
-          els.formHint.textContent = `Nu am găsit codul ${els.txtCodIntern.value} în ${state.entryDocKey}. Verifică dacă există în INTRĂRI OȚEL și dacă a fost salvat în cloud.`;
-        }
-      };
+        applyLookupFromCode(els.txtCodIntern.value, true, false);
+      });
 
-      els.txtCodIntern.addEventListener('input', tryLookupNow);
-      els.txtCodIntern.addEventListener('change', tryLookupNow);
-      els.txtCodIntern.addEventListener('blur', tryLookupNow);
+      els.txtCodIntern.addEventListener('change', () => {
+        els.txtCodIntern.value = upper(els.txtCodIntern.value);
+        applyLookupFromCode(els.txtCodIntern.value, true, true);
+      });
+
+      els.txtCodIntern.addEventListener('blur', () => {
+        applyLookupFromCode(els.txtCodIntern.value, true, true);
+      });
 
       document.addEventListener('visibilitychange', () => {
         if (!document.hidden && Date.now() - state.lastLoadTs > 60000) loadCloud('Revenire în pagină');
