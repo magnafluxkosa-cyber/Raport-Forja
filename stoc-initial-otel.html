@@ -966,10 +966,18 @@
       els.cloudInfo.innerHTML = `Document: <b>${escapeHtml(state.selectedDocKey || MAIN_DOC_KEY)}</b><br>Ultim sync: <b>${escapeHtml(formatDate(state.lastCloudUpdatedAt) || '-')}</b>`;
     }
 
-    function clearForm(resetSelection = true){
-      els.txtData.value = todayStr();
-      els.txtAn.value = yearFromDate(els.txtData.value);
-      els.txtLuna.value = monthFromDate(els.txtData.value);
+    function clearForm(resetSelection = true, preserveDateFields = false){
+      const keptData = preserveDateFields ? clean(els.txtData.value) : '';
+      const keptAn = preserveDateFields ? clean(els.txtAn.value) : '';
+      const keptLuna = preserveDateFields ? clean(els.txtLuna.value) : '';
+
+      const nextData = keptData || todayStr();
+      const nextAn = keptAn || yearFromDate(nextData);
+      const nextLuna = keptLuna || monthFromDate(nextData);
+
+      els.txtData.value = nextData;
+      els.txtAn.value = nextAn;
+      els.txtLuna.value = nextLuna;
       els.txtDiametru.value = '';
       els.txtCalitate.value = '';
       els.txtCodIntern.value = '';
@@ -1125,7 +1133,8 @@
 
     async function fetchEntryLookup(){
       const exactAliases = ['intrari-otel','intrari_otel','intrari otel','intrariotel'];
-      const prefixAliases = ['intrari-otel:%','intrari_otel:%'];
+      const indexAliases = ['intrari-otel:index','intrari_otel:index'];
+      const prefixAliases = ['intrari-otel:%','intrari_otel:%','intrari otel:%','intrariotel:%'];
       const allDocs = [];
 
       const pushDocs = (items) => {
@@ -1136,13 +1145,52 @@
         });
       };
 
-      const exactRes = await state.supabase
-        .from('rf_documents')
-        .select('*')
-        .in('doc_key', exactAliases);
+      const normalizeYearValue = (value) => {
+        const s = String(value == null ? '' : value).trim();
+        if (!s) return '';
+        const m = s.match(/(19|20)\d{2}/);
+        return m ? m[0] : '';
+      };
 
-      if (exactRes.error) throw exactRes.error;
-      pushDocs(exactRes.data);
+      const extractIndexYears = (doc) => {
+        const payloads = [doc?.content, doc?.data];
+        const years = [];
+        payloads.forEach(payload => {
+          if (!payload || typeof payload !== 'object') return;
+          if (Array.isArray(payload.years)) years.push(...payload.years);
+          if (Array.isArray(payload.ani)) years.push(...payload.ani);
+          if (payload.updatedAtByYear && typeof payload.updatedAtByYear === 'object') years.push(...Object.keys(payload.updatedAtByYear));
+        });
+        return Array.from(new Set(years.map(normalizeYearValue).filter(Boolean))).sort((a,b) => Number(a) - Number(b));
+      };
+
+      const queryByDocKeys = async (keys) => {
+        const list = Array.from(new Set((Array.isArray(keys) ? keys : []).filter(Boolean)));
+        if (!list.length) return;
+        for (let i = 0; i < list.length; i += 100) {
+          const chunk = list.slice(i, i + 100);
+          const res = await state.supabase
+            .from('rf_documents')
+            .select('*')
+            .in('doc_key', chunk);
+          if (res.error) throw res.error;
+          pushDocs(res.data);
+        }
+      };
+
+      await queryByDocKeys(exactAliases);
+      await queryByDocKeys(indexAliases);
+
+      const indexDocs = allDocs.filter(doc => indexAliases.includes(doc.doc_key));
+      const indexedYears = Array.from(new Set(indexDocs.flatMap(extractIndexYears)));
+      const indexedYearDocKeys = indexedYears.flatMap(year => [
+        `intrari-otel:${year}`,
+        `intrari_otel:${year}`,
+        `intrari otel:${year}`,
+        `intrariotel:${year}`
+      ]);
+
+      await queryByDocKeys(indexedYearDocKeys);
 
       for (const pattern of prefixAliases) {
         const res = await state.supabase
@@ -1156,10 +1204,19 @@
 
       const docsWithRows = allDocs
         .filter(doc => extractRows(doc).length)
-        .sort((a, b) => String(a.updated_at || '').localeCompare(String(b.updated_at || '')) || String(a.doc_key || '').localeCompare(String(b.doc_key || ''), 'ro'));
+        .sort((a, b) => {
+          const aYear = normalizeYearValue(a.doc_key);
+          const bYear = normalizeYearValue(b.doc_key);
+          const aTime = String(a.updated_at || '');
+          const bTime = String(b.updated_at || '');
+          return Number(aYear || 0) - Number(bYear || 0)
+            || aTime.localeCompare(bTime)
+            || String(a.doc_key || '').localeCompare(String(b.doc_key || ''), 'ro');
+        });
 
-      state.entryDocKey = docsWithRows.length > 1
-        ? 'intrari-otel (toți anii)'
+      const yearsFound = Array.from(new Set(docsWithRows.map(doc => normalizeYearValue(doc.doc_key)).filter(Boolean))).sort((a,b) => Number(a) - Number(b));
+      state.entryDocKey = yearsFound.length > 1
+        ? `intrari-otel (toți anii: ${yearsFound.join(', ')})`
         : (docsWithRows[0]?.doc_key || allDocs[0]?.doc_key || 'intrari-otel');
 
       const lookup = new Map();
@@ -1258,10 +1315,11 @@
         } else {
           state.rows.push(row);
         }
+        const wasEdit = !!state.selectedId;
         await saveRows();
         renderFilters();
-        state.lastRefreshReason = state.selectedId ? 'Modificare salvată' : 'Rând adăugat';
-        clearForm(true);
+        state.lastRefreshReason = wasEdit ? 'Modificare salvată' : 'Rând adăugat';
+        clearForm(true, !wasEdit);
         applyFilters();
       } catch (error) {
         console.error(error);
