@@ -757,6 +757,52 @@
     }
 
 
+
+function normalizeHeaderText(value){
+  return normText(String(value ?? '')
+    .replace(/\u00A0/g,' ')
+    .replace(/[\r\n]+/g,' ')
+    .replace(/[_]/g,' ')
+    .trim());
+}
+
+function findExcelHeaderRow(rawArrays, expectedHeaders, aliases = {}){
+  const expected = expectedHeaders.map(h => [h, ...(aliases[h] || [])].map(normalizeHeaderText));
+  const limit = Math.min(rawArrays.length, 20);
+  for (let i = 0; i < limit; i++) {
+    const row = Array.isArray(rawArrays[i]) ? rawArrays[i].map(normalizeHeaderText) : [];
+    let matched = 0;
+    expected.forEach(variants => {
+      if (row.some(cell => cell && variants.some(v => cell === v || cell.includes(v) || v.includes(cell)))) matched++;
+    });
+    if (matched >= expectedHeaders.length - 1) return i;
+  }
+  return -1;
+}
+
+function readExcelRowsFromSheet(ws, expectedHeaders, aliases = {}){
+  const rawArrays = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '', raw: false });
+  if (!rawArrays.length) return [];
+  const headerRowIndex = findExcelHeaderRow(rawArrays, expectedHeaders, aliases);
+  if (headerRowIndex < 0) return [];
+  const headerRow = (rawArrays[headerRowIndex] || []).map(normalizeHeaderText);
+  const indexMap = {};
+  expectedHeaders.forEach(header => {
+    const variants = [header, ...(aliases[header] || [])].map(normalizeHeaderText);
+    let idx = headerRow.findIndex(cell => variants.some(v => cell === v));
+    if (idx < 0) idx = headerRow.findIndex(cell => variants.some(v => cell && (cell.includes(v) || v.includes(cell))));
+    indexMap[header] = idx;
+  });
+  return rawArrays.slice(headerRowIndex + 1).map(row => {
+    const obj = {};
+    expectedHeaders.forEach(header => {
+      const idx = indexMap[header];
+      obj[header] = idx >= 0 ? row[idx] : '';
+    });
+    return obj;
+  }).filter(obj => expectedHeaders.some(header => String(obj[header] ?? '').trim() !== ''));
+}
+
     function normalizeRow(row, index){
       if (Array.isArray(row)) {
         const an = normalizeYearValue(row[0]) || CURRENT_YEAR;
@@ -1399,102 +1445,100 @@
 
 
     function workbookRows(rows){
-      return rows.map(row => ({
-        'Anul': row.an || '',
-        'Luna': row.luna || '',
-        'Reper': row.reper || '',
-        'Dimensiune': row.dimensiune || '',
-        'Calitate Otel': row.calitate || '',
-        'Rebut Analiza (buc)': Math.round(toNumber(row.rebutAnaliza)),
-        'stoc FINAL Piese Forjate (buc)': Math.round(toNumber(row.stocFinal))
-      }));
+  return rows.map(row => ({
+    'Anul': row.an || '',
+    'Luna': row.luna || '',
+    'Reper': row.reper || '',
+    'Dimensiune': row.dimensiune || '',
+    'Calitate Otel': row.calitate || '',
+    'Rebut Analiza (buc)': Math.round(toNumber(row.rebutAnaliza)),
+    'stoc FINAL Piese Forjate (buc)': Math.round(toNumber(row.stocFinal))
+  }));
+}
+
+function exportXlsx(){
+  if (!window.XLSX) {
+    alert('Biblioteca Excel nu s-a încărcat.');
+    return;
+  }
+  const rows = workbookRows(state.filtered);
+  const header = ['Anul','Luna','Reper','Dimensiune','Calitate Otel','Rebut Analiza (buc)','stoc FINAL Piese Forjate (buc)'];
+  const sheetData = [header, ...rows.map(item => header.map(key => item[key]))];
+  const ws = XLSX.utils.aoa_to_sheet(sheetData);
+  ws['!cols'] = [
+    { wch: 10 }, { wch: 14 }, { wch: 18 }, { wch: 14 }, { wch: 22 }, { wch: 20 }, { wch: 28 }
+  ];
+  ws['!autofilter'] = { ref: `A1:G${Math.max(sheetData.length, 1)}` };
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Sheet1');
+  XLSX.writeFile(wb, `inventar-forjat_${state.activeYear}.xlsx`);
+}
+
+async function handleImportXlsx(file){
+  if (!file) return;
+  if (!state.permissions.add && !state.permissions.edit) {
+    alert('Nu ai permisiune de import pe această pagină.');
+    return;
+  }
+  if (!window.XLSX) {
+    alert('Biblioteca Excel nu s-a încărcat.');
+    return;
+  }
+
+  const ok = window.confirm('Importul Excel va înlocui rândurile pentru anii găsiți în fișier. Continui?');
+  if (!ok) return;
+
+  const buffer = await file.arrayBuffer();
+  const wb = XLSX.read(buffer, { type: 'array' });
+  const sheetName = wb.SheetNames[0];
+  if (!sheetName) {
+    alert('Fișierul Excel nu conține foi.');
+    return;
+  }
+
+  const ws = wb.Sheets[sheetName];
+  const rawRows = readExcelRowsFromSheet(ws,
+    ['Anul','Luna','Reper','Dimensiune','Calitate Otel','Rebut Analiza (buc)','stoc FINAL Piese Forjate (buc)'],
+    {
+      'Dimensiune': ['Dimensiune OTEL','Diametru'],
+      'Calitate Otel': ['Calitate oțel','Calitate'],
+      'Rebut Analiza (buc)': ['Rebut analiza (buc)','Rebut Analiza'],
+      'stoc FINAL Piese Forjate (buc)': ['Stoc FINAL Piese Forjate (buc)','stoc final piese forjate (buc)','Stoc final']
     }
+  );
 
-    function exportXlsx(){
-      if (!window.XLSX) {
-        alert('Biblioteca Excel nu s-a încărcat.');
-        return;
-      }
-      const rows = workbookRows(state.filtered);
-      const header = ['Anul','Luna','Reper','Dimensiune','Calitate Otel','Rebut Analiza (buc)','stoc FINAL Piese Forjate (buc)'];
-      const sheetData = [header, ...rows.map(item => header.map(key => item[key]))];
-      const ws = XLSX.utils.aoa_to_sheet(sheetData);
-      ws['!cols'] = [
-        { wch: 10 }, { wch: 14 }, { wch: 18 }, { wch: 14 }, { wch: 22 }, { wch: 20 }, { wch: 28 }
-      ];
-      ws['!autofilter'] = { ref: `A1:G${Math.max(sheetData.length, 1)}` };
-      const wb = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(wb, ws, 'Sheet1');
-      XLSX.writeFile(wb, `inventar-forjat_${state.activeYear}.xlsx`);
+  const imported = rawRows.map((row, index) => normalizeRow(row, index))
+    .filter(row => row.an || row.luna || row.reper || row.dimensiune || row.calitate || row.rebutAnaliza || row.stocFinal);
+
+  if (!imported.length) {
+    alert('Nu am găsit rânduri valide în fișierul Excel.');
+    return;
+  }
+
+  const grouped = new Map();
+  imported.forEach(row => {
+    const y = normalizeYearValue(row.an) || CURRENT_YEAR;
+    if (!grouped.has(y)) grouped.set(y, []);
+    grouped.get(y).push(row);
+  });
+
+  els.btnImport.disabled = true;
+  try {
+    for (const [year, rows] of grouped.entries()) {
+      await saveRowsForYear(year, rows);
     }
-
-    async function handleImportXlsx(file){
-      if (!file) return;
-      if (!state.permissions.add && !state.permissions.edit) {
-        alert('Nu ai permisiune de import pe această pagină.');
-        return;
-      }
-      if (!window.XLSX) {
-        alert('Biblioteca Excel nu s-a încărcat.');
-        return;
-      }
-
-      const ok = window.confirm('Importul Excel va înlocui rândurile pentru anii găsiți în fișier. Continui?');
-      if (!ok) return;
-
-      const buffer = await file.arrayBuffer();
-      const wb = XLSX.read(buffer, { type: 'array' });
-      const sheetName = wb.SheetNames[0];
-      if (!sheetName) {
-        alert('Fișierul Excel nu conține foi.');
-        return;
-      }
-
-      const ws = wb.Sheets[sheetName];
-      let rawRows = XLSX.utils.sheet_to_json(ws, { defval: '', raw: false });
-      if (!rawRows.length) {
-        const rawArrays = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '', raw: false });
-        if (rawArrays.length > 1) {
-          rawRows = rawArrays.slice(1).map(r => ({
-            'Anul': r[0], 'Luna': r[1], 'Reper': r[2], 'Dimensiune': r[3], 'Calitate Otel': r[4],
-            'Rebut Analiza (buc)': r[5], 'stoc FINAL Piese Forjate (buc)': r[6]
-          }));
-        }
-      }
-
-      const imported = rawRows.map((row, index) => normalizeRow(row, index))
-        .filter(row => row.an || row.luna || row.reper || row.dimensiune || row.calitate || row.rebutAnaliza || row.stocFinal);
-
-      if (!imported.length) {
-        alert('Nu am găsit rânduri valide în fișierul Excel.');
-        return;
-      }
-
-      const grouped = new Map();
-      imported.forEach(row => {
-        const y = normalizeYearValue(row.an) || CURRENT_YEAR;
-        if (!grouped.has(y)) grouped.set(y, []);
-        grouped.get(y).push(row);
-      });
-
-      els.btnImport.disabled = true;
-      try {
-        for (const [year, rows] of grouped.entries()) {
-          await saveRowsForYear(year, rows);
-        }
-        const targetYear = Array.from(grouped.keys()).sort((a,b)=>Number(a)-Number(b)).slice(-1)[0] || state.activeYear;
-        await fetchIndex();
-        await switchActiveYear(targetYear, `Import Excel (${file.name})`);
-        alert(`Import finalizat. Am încărcat ${imported.length} rânduri.`);
-      } catch (error) {
-        console.error(error);
-        alert('Nu am putut salva importul Excel în cloud.');
-      } finally {
-        els.btnImport.disabled = false;
-        if (els.fileImportXlsx) els.fileImportXlsx.value = '';
-      }
-    }
-
+    const targetYear = Array.from(grouped.keys()).sort((a,b)=>Number(a)-Number(b)).slice(-1)[0] || state.activeYear;
+    await fetchIndex();
+    await switchActiveYear(targetYear, `Import Excel (${file.name})`);
+    alert(`Import finalizat. Am încărcat ${imported.length} rânduri.`);
+  } catch (error) {
+    console.error(error);
+    alert('Nu am putut salva importul Excel în cloud.');
+  } finally {
+    els.btnImport.disabled = false;
+    if (els.fileImportXlsx) els.fileImportXlsx.value = '';
+  }
+}
 
     async function logout(){
       try { await state.supabase.auth.signOut(); } catch (_) {}
