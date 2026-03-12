@@ -6,7 +6,6 @@
   <title>248-2307/08 - ERP Forjă</title>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="./rf-config.js"></script>
-  <script src="./auth-common.js"></script>
   <style>
     :root{
       --bg:#b7d7f0; --panel:#d8e8f7; --head:#cfe3f6; --head-2:#e3dfef; --line:#7ea4c3; --grid:#91aec7;
@@ -519,30 +518,59 @@
       return 'Viewer';
     }
 
-    function createSharedClient(){
+    const FALLBACK_SUPABASE_URL = 'https://addlybnigrywqowpbhvd.supabase.co';
+    const FALLBACK_SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFkZGx5Ym5pZ3J5d3Fvd3BiaHZkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzI2NjY2NjQsImV4cCI6MjA4ODI0MjY2NH0.VjbSKs7G_5T7GhdrjT8dtj2HCF6Az9KYfkpkSE7JTo4';
+
+    async function waitForSupabaseLib(timeoutMs){
+      const start = Date.now();
+      while(!(window.supabase && typeof window.supabase.createClient === 'function')){
+        if(Date.now() - start > timeoutMs) return false;
+        await new Promise(resolve => setTimeout(resolve, 50));
+      }
+      return true;
+    }
+
+    async function createSharedClient(){
       if(state.supa) return state.supa;
+      if(window.__RF_SHARED_SUPA__) {
+        state.supa = window.__RF_SHARED_SUPA__;
+        return state.supa;
+      }
+      await waitForSupabaseLib(4000);
+      const cfg = window.RF_CONFIG || window.rfConfig || window.__RF_CONFIG__ || {};
+      const url = cfg.SUPABASE_URL || cfg.supabaseUrl || window.RF_SUPABASE_URL || FALLBACK_SUPABASE_URL;
+      const key = cfg.SUPABASE_ANON_KEY || cfg.supabaseAnonKey || window.RF_SUPABASE_ANON_KEY || FALLBACK_SUPABASE_ANON_KEY;
       try{
         if(typeof window.createRfSupabaseClient === 'function'){
           state.supa = window.createRfSupabaseClient({ auth:{ persistSession:true, autoRefreshToken:true, detectSessionInUrl:true } });
-          return state.supa;
         }
-      }catch(err){ console.error(err); }
-      try{
-        const cfg = window.RF_CONFIG || window.rfConfig || window.__RF_CONFIG__ || {};
-        const url = cfg.SUPABASE_URL || cfg.supabaseUrl || window.RF_SUPABASE_URL || '';
-        const key = cfg.SUPABASE_ANON_KEY || cfg.supabaseAnonKey || window.RF_SUPABASE_ANON_KEY || '';
-        if(window.supabase && window.supabase.createClient && url && key){
-          state.supa = window.supabase.createClient(url, key, { auth:{ persistSession:true, autoRefreshToken:true, detectSessionInUrl:true } });
-          return state.supa;
+      }catch(err){
+        console.error('createRfSupabaseClient failed', err);
+      }
+      if(!state.supa){
+        try{
+          if(window.supabase && typeof window.supabase.createClient === 'function' && url && key){
+            state.supa = window.supabase.createClient(url, key, { auth:{ persistSession:true, autoRefreshToken:true, detectSessionInUrl:true } });
+          }
+        }catch(err){
+          console.error('direct createClient failed', err);
         }
-      }catch(err){ console.error(err); }
-      return null;
+      }
+      if(state.supa) window.__RF_SHARED_SUPA__ = state.supa;
+      return state.supa || null;
     }
 
     async function resolveAuthRole(user){
       if(!state.supa || !user) return 'viewer';
       const email = String(user.email || '').trim();
       if(lower(email) === 'forja.editor@gmail.com') return 'admin';
+      if(window.RF_ACL && typeof window.RF_ACL.resolveRole === 'function'){
+        try{
+          const resolved = await window.RF_ACL.resolveRole(state.supa, user);
+          const role = lower(resolved && resolved.role);
+          if(role) return role;
+        }catch(err){ console.error(err); }
+      }
       const tries = [
         () => state.supa.from('profiles').select('role').eq('user_id', user.id).maybeSingle(),
         () => state.supa.from('profiles').select('role').eq('id', user.id).maybeSingle(),
@@ -560,10 +588,10 @@
     }
 
     async function initAuth(){
-      state.supa = createSharedClient();
+      state.supa = await createSharedClient();
       if(!state.supa){
         setRoleBadge('Neconfigurat', 'bad');
-        setCloud('Cloud: config lipsă', 'bad');
+        setCloud('Cloud: indisponibil', 'bad');
         state.perms = { can_view:true, can_add:false, can_edit:false, can_delete:false };
         els.btnAdd.disabled = true;
         els.btnDelete.disabled = true;
@@ -571,32 +599,51 @@
       }
       let session = null;
       let user = null;
-      try{
-        const { data } = await state.supa.auth.getSession();
-        session = data && data.session ? data.session : null;
-        user = session && session.user ? session.user : null;
-      }catch(err){ console.error(err); }
-      if(!user){
+      for(let i=0;i<3 && !user;i++){
         try{
-          const { data } = await state.supa.auth.getUser();
-          user = data && data.user ? data.user : null;
+          const res = await state.supa.auth.getSession();
+          session = res && res.data ? res.data.session : null;
+          user = session && session.user ? session.user : null;
         }catch(err){ console.error(err); }
+        if(!user){
+          try{
+            const res = await state.supa.auth.getUser();
+            user = res && res.data ? res.data.user : null;
+          }catch(err){ console.error(err); }
+        }
+        if(!user && i < 2) await new Promise(resolve => setTimeout(resolve, 150));
       }
       if(user){
         state.role = await resolveAuthRole(user);
         state.auth = { user, role: state.role, session };
-        setRoleBadge(roleLabelSimple(state.role));
+        setRoleBadge(roleLabelSimple(state.role), 'ok');
         state.perms = await loadPagePermissions(state.role);
         setCloud('Cloud: conectat', 'ok');
       }else{
         state.role = 'viewer';
         state.auth = null;
         state.perms = { can_view:true, can_add:false, can_edit:false, can_delete:false };
-        setRoleBadge('Neautentificat', 'bad');
+        setRoleBadge('Viewer', 'warn');
         setCloud('Cloud: local only', 'warn');
       }
       els.btnAdd.disabled = !state.perms.can_add;
       els.btnDelete.disabled = !state.perms.can_delete;
+      if(state.supa && typeof state.supa.auth?.onAuthStateChange === 'function'){
+        state.supa.auth.onAuthStateChange(async (_event, nextSession) => {
+          const nextUser = nextSession && nextSession.user ? nextSession.user : null;
+          if(nextUser && (!state.auth || !state.auth.user || state.auth.user.id !== nextUser.id)){
+            state.role = await resolveAuthRole(nextUser);
+            state.auth = { user: nextUser, role: state.role, session: nextSession };
+            state.perms = await loadPagePermissions(state.role);
+            setRoleBadge(roleLabelSimple(state.role), 'ok');
+            setCloud('Cloud: conectat', 'ok');
+            els.btnAdd.disabled = !state.perms.can_add;
+            els.btnDelete.disabled = !state.perms.can_delete;
+            await loadAll(true);
+            renderAll();
+          }
+        });
+      }
     }
 
     async function loadAll(forceCloud){
