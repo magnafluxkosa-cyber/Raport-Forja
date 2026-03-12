@@ -406,6 +406,35 @@
       font-size: 15px;
     }
 
+    .year-group td {
+      background: var(--head-2);
+      border: 1px solid #000;
+      padding: 6px 10px;
+      text-align: left;
+      font-size: 13px;
+      font-weight: 700;
+      cursor: pointer;
+      user-select: none;
+    }
+
+    .year-group:hover td {
+      background: var(--head);
+    }
+
+    .year-toggle {
+      display: inline-block;
+      min-width: 18px;
+      margin-right: 4px;
+      font-weight: 700;
+    }
+
+    .year-meta {
+      margin-left: 10px;
+      font-size: 12px;
+      font-weight: 400;
+      color: var(--muted);
+    }
+
     @media (max-width: 1080px) {
       .status-wrap {
         grid-template-columns: 1fr;
@@ -470,13 +499,15 @@
     @media (max-width: 760px) {
       html,
       body {
+        width: 100%;
         height: auto !important;
-        min-height: 100%;
+        min-height: 100dvh;
         overflow: auto !important;
         overflow-x: hidden !important;
         overflow-y: auto !important;
         -webkit-overflow-scrolling: touch;
         overscroll-behavior-y: auto;
+        position: static !important;
       }
 
       body {
@@ -486,7 +517,7 @@
       .page {
         display: block;
         height: auto !important;
-        min-height: 0;
+        min-height: calc(100dvh - 16px);
       }
 
       .card,
@@ -501,17 +532,16 @@
       .table-wrap {
         width: 100%;
         max-width: 100%;
+        max-height: none !important;
         overflow-x: auto !important;
         overflow-y: visible !important;
         -webkit-overflow-scrolling: touch;
-        touch-action: pan-x pinch-zoom;
-        overscroll-behavior-x: contain;
-        overscroll-behavior-y: auto;
+        touch-action: pan-x pan-y pinch-zoom;
         border-top: 1px solid var(--line);
       }
 
       table[aria-label="Probleme raportate"] {
-        width: 1600px;
+        width: max-content;
         min-width: 1600px;
       }
 
@@ -741,9 +771,7 @@
   <script>
     const PAGE_KEY = "probleme-raportate";
     const DOC_KEYS = ["probleme-raportate", "probleme_raportate", "Probleme Raportate"];
-    const YEAR_DOC_PREFIX = `${PAGE_KEY}:`;
     const LOCAL_KEY = "rf-probleme-raportate-cache-v2";
-    const LOCAL_GROUPED_KEY = "rf-probleme-raportate-grouped-v1";
     const FORJATE_DOC_KEYS = ["forjate", "FORJATE", "Forjate", "raport-forjate", "pagina-forjate", "foaia-forjate", "forjate.html"];
     const FORJATE_LOCAL_KEYS = ["rf-forjate-cache-v2", "rf-forjate-cache-v1", "rf-forjate-cache", "forjate-cache"];
     const CLOUD_REFRESH_MS = 45000;
@@ -772,11 +800,8 @@
       loadedFromCloud: false,
       sheetJsPromise: null,
       autoScrollToBottom: true,
-      yearCache: {},
-      knownYears: [],
-      activeYear: "",
-      dirtyYears: [],
-      cloudYearUpdatedAt: {}
+      expandedYears: new Set(),
+      didInitYearGroups: false
     };
 
     const dom = {
@@ -981,128 +1006,6 @@
       return [...new Set((values || []).filter(Boolean).map(v => String(v).trim()))].sort((a, b) => a.localeCompare(b, "ro"));
     }
 
-    function normalizeYearValue(value) {
-      const match = String(value ?? "").match(/\d{4}/);
-      return match ? match[0] : "";
-    }
-
-    function sortYearsDesc(values) {
-      return [...new Set((values || []).map(normalizeYearValue).filter(Boolean))].sort((a, b) => Number(b) - Number(a));
-    }
-
-    function cloneRows(rows) {
-      return (rows || []).map(row => ({ ...row }));
-    }
-
-    function splitRowsByYear(rows) {
-      const grouped = {};
-      for (const row of rows || []) {
-        const year = normalizeYearValue(row?.an);
-        if (!year) continue;
-        if (!grouped[year]) grouped[year] = [];
-        grouped[year].push(normalizeRow(row));
-      }
-      return grouped;
-    }
-
-    function setKnownYears(years) {
-      state.knownYears = sortYearsDesc(years || []);
-    }
-
-    function getYearDocKey(year) {
-      const normalized = normalizeYearValue(year);
-      return normalized ? `${YEAR_DOC_PREFIX}${normalized}` : "";
-    }
-
-    function getRowsForYear(year) {
-      const normalized = normalizeYearValue(year);
-      return normalized && Array.isArray(state.yearCache[normalized]) ? state.yearCache[normalized] : [];
-    }
-
-    function setRowsForYear(year, rows) {
-      const normalized = normalizeYearValue(year);
-      if (!normalized) return;
-      state.yearCache[normalized] = cloneRows(rows || []).map(normalizeRow);
-      setKnownYears([...state.knownYears, normalized, ...Object.keys(state.yearCache)]);
-    }
-
-    function getLatestKnownYear() {
-      const years = sortYearsDesc([...(state.knownYears || []), ...Object.keys(state.yearCache || {})]);
-      return years[0] || normalizeYearValue(DEFAULTS.ani?.[DEFAULTS.ani.length - 1]) || "";
-    }
-
-    function mergeLoadedYearRows() {
-      const years = sortYearsDesc([...(state.knownYears || []), ...Object.keys(state.yearCache || {})]);
-      const merged = [];
-      for (const year of years) {
-        if (Array.isArray(state.yearCache[year])) merged.push(...cloneRows(state.yearCache[year]));
-      }
-      return merged;
-    }
-
-    function applyYearSelectionState(yearValue) {
-      const normalized = normalizeYearValue(yearValue);
-      state.activeYear = normalized;
-      state.rows = normalized ? cloneRows(getRowsForYear(normalized)) : mergeLoadedYearRows();
-    }
-
-    function rowByIdFromCache(id) {
-      for (const year of sortYearsDesc([...(state.knownYears || []), ...Object.keys(state.yearCache || {})])) {
-        const row = getRowsForYear(year).find(item => item.id === id);
-        if (row) return { row, year };
-      }
-      return { row: null, year: "" };
-    }
-
-    function markYearDirty(year) {
-      const normalized = normalizeYearValue(year);
-      if (!normalized) return;
-      if (!state.dirtyYears.includes(normalized)) state.dirtyYears.push(normalized);
-    }
-
-    function removeRowFromCaches(id) {
-      let removed = null;
-      for (const year of Object.keys(state.yearCache || {})) {
-        const list = getRowsForYear(year);
-        const index = list.findIndex(item => item.id === id);
-        if (index >= 0) {
-          removed = list[index];
-          const next = list.slice();
-          next.splice(index, 1);
-          state.yearCache[year] = next;
-          markYearDirty(year);
-          if (!next.length) {
-            delete state.yearCache[year];
-          }
-          break;
-        }
-      }
-      setKnownYears([...(state.knownYears || []), ...Object.keys(state.yearCache || {})]);
-      return removed;
-    }
-
-    function currentSelectedYearValue() {
-      return normalizeYearValue(dom.filters?.an?.value || state.activeYear || getLatestKnownYear());
-    }
-
-    function buildGroupedLocalPayload() {
-      const stamp = nowIso();
-      const years = sortYearsDesc([...(state.knownYears || []), ...Object.keys(state.yearCache || {})]);
-      const grouped = {};
-      for (const year of years) {
-        grouped[year] = { rows: cloneRows(getRowsForYear(year)) };
-      }
-      return {
-        page_key: PAGE_KEY,
-        version: 3,
-        grouped_by_year: true,
-        updated_at: stamp,
-        active_year: state.activeYear || "",
-        known_years: years,
-        years: grouped
-      };
-    }
-
     function nowIso() {
       return new Date().toISOString();
     }
@@ -1267,7 +1170,7 @@
 
     function buildOptionSources() {
       const rowVals = {
-        an: sortYearsDesc([...(state.knownYears || []), ...state.rows.map(r => r.an)]),
+        an: uniqueSorted(state.rows.map(r => r.an)),
         luna: uniqueSorted(state.rows.map(r => r.luna)),
         schimbul: uniqueSorted(state.rows.map(r => r.schimbul)),
         utilaj: uniqueSorted(state.rows.map(r => r.utilaj)),
@@ -1278,7 +1181,7 @@
       };
 
       return {
-        ani: sortYearsDesc([...(DEFAULTS.ani || []), ...(state.knownYears || []), ...(rowVals.an || [])]),
+        ani: uniqueSorted([...(DEFAULTS.ani || []), ...(rowVals.an || [])]),
         luni: uniqueSorted([...(DEFAULTS.luni || []), ...(rowVals.luna || [])]),
         schimburi: uniqueSorted([...(DEFAULTS.schimburi || []), ...(rowVals.schimbul || [])]),
         utilaje: uniqueSorted([...(DEFAULTS.utilaje || []), ...(state.helper.utilaje || []), ...(rowVals.utilaj || [])]),
@@ -1561,52 +1464,28 @@
         page_key: PAGE_KEY,
         version: 2,
         updated_at: nowIso(),
-        rows: mergeLoadedYearRows().map(r => ({ ...r }))
+        rows: state.rows.map(r => ({ ...r }))
       };
     }
 
     function persistLocal() {
-      const groupedPayload = buildGroupedLocalPayload();
-      state.localUpdatedAt = groupedPayload.updated_at;
-      localStorage.setItem(LOCAL_GROUPED_KEY, JSON.stringify(groupedPayload));
-      localStorage.setItem(LOCAL_KEY, JSON.stringify(currentPayload()));
+      const payload = currentPayload();
+      state.localUpdatedAt = payload.updated_at;
+      localStorage.setItem(LOCAL_KEY, JSON.stringify(payload));
     }
 
     function restoreLocal() {
       try {
-        const groupedRaw = localStorage.getItem(LOCAL_GROUPED_KEY);
-        if (groupedRaw) {
-          const parsed = JSON.parse(groupedRaw);
-          const groupedYears = {};
-          const sourceYears = parsed && parsed.years && typeof parsed.years === "object" ? parsed.years : {};
-
-          for (const [yearKey, entry] of Object.entries(sourceYears)) {
-            const normalizedYear = normalizeYearValue(yearKey);
-            const rows = Array.isArray(entry?.rows) ? entry.rows.map(normalizeRow) : rowsFromPayload(entry);
-            if (normalizedYear && rows.length) groupedYears[normalizedYear] = rows;
-          }
-
-          if (Object.keys(groupedYears).length) {
-            state.yearCache = groupedYears;
-            setKnownYears([...(parsed.known_years || []), ...Object.keys(groupedYears)]);
-            applyYearSelectionState(parsed.active_year || getLatestKnownYear());
-            state.localUpdatedAt = parsed.updated_at || "";
-            state.source = "local";
-            setModeStatus("Sursă: local cache", "warning");
-            return true;
-          }
-        }
-
         const raw = localStorage.getItem(LOCAL_KEY);
         if (!raw) return false;
         const parsed = JSON.parse(raw);
         const rows = rowsFromPayload(parsed);
         if (!rows.length) return false;
-        state.yearCache = splitRowsByYear(rows);
-        setKnownYears([...(parsed.known_years || []), ...Object.keys(state.yearCache)]);
-        applyYearSelectionState(getLatestKnownYear());
+        state.rows = rows;
         state.localUpdatedAt = parsed.updated_at || "";
         state.source = "local";
+        state.didInitYearGroups = false;
+        state.expandedYears = new Set();
         setModeStatus("Sursă: local cache", "warning");
         return true;
       } catch (error) {
@@ -1616,11 +1495,11 @@
     }
 
     function seedIfEmpty() {
-      if (Object.keys(state.yearCache || {}).length || state.rows.length) return;
-      state.yearCache = splitRowsByYear(SEED_ROWS.map(normalizeRow));
-      setKnownYears(Object.keys(state.yearCache));
-      applyYearSelectionState(getLatestKnownYear());
+      if (state.rows.length) return;
+      state.rows = SEED_ROWS.map(normalizeRow);
       state.source = "seed";
+      state.didInitYearGroups = false;
+      state.expandedYears = new Set();
       setModeStatus("Sursă: seed din Excel", "");
       persistLocal();
     }
@@ -1665,6 +1544,86 @@
       dom.statMinutes.textContent = String(state.filteredRows.reduce((sum, row) => sum + toInt(row.timp_minute), 0));
     }
 
+    function buildYearGroups(rows) {
+      const groups = [];
+      const map = new Map();
+
+      for (const row of rows) {
+        const yearKey = String(row.an || "Fără an").trim() || "Fără an";
+        if (!map.has(yearKey)) {
+          const group = { year: yearKey, rows: [] };
+          map.set(yearKey, group);
+          groups.push(group);
+        }
+        map.get(yearKey).rows.push(row);
+      }
+
+      return groups;
+    }
+
+    function getVisibleYearSet(groups) {
+      const filterYear = String(dom.filters.an.value || "").trim();
+      if (filterYear) {
+        state.expandedYears = new Set([filterYear]);
+        state.didInitYearGroups = true;
+        return state.expandedYears;
+      }
+
+      if (!groups.length) {
+        state.expandedYears = new Set();
+        state.didInitYearGroups = false;
+        return state.expandedYears;
+      }
+
+      const availableYears = new Set(groups.map(group => group.year));
+      state.expandedYears = new Set([...state.expandedYears].filter(year => availableYears.has(year)));
+
+      if (!state.didInitYearGroups || !state.expandedYears.size) {
+        const lastGroup = groups[groups.length - 1];
+        state.expandedYears = new Set(lastGroup ? [lastGroup.year] : []);
+        state.didInitYearGroups = true;
+      }
+
+      return state.expandedYears;
+    }
+
+    function rowMarkup(row) {
+      const selected = row.id === state.selectedId ? "selected" : "";
+      const readonly = (!state.permissions.canEdit && !state.permissions.canDelete) ? "readonly" : "";
+      return `
+          <tr class="${selected} ${readonly}" data-id="${escapeHtml(row.id)}">
+            <td>${escapeHtml(row.an)}</td>
+            <td>${escapeHtml(row.luna)}</td>
+            <td>${escapeHtml(row.data)}</td>
+            <td>${escapeHtml(row.schimbul)}</td>
+            <td>${escapeHtml(row.utilaj)}</td>
+            <td>${escapeHtml(row.reper)}</td>
+            <td>${escapeHtml(row.timp_minute)}</td>
+            <td class="obs-cell" title="${escapeHtml(row.observatii)}">${escapeHtml(row.observatii)}</td>
+            <td>${escapeHtml(row.operatiune)}</td>
+            <td>${escapeHtml(row.departament)}</td>
+            <td>${escapeHtml(row.planificat)}</td>
+          </tr>
+        `;
+    }
+
+    function renderGroupedRows(rows) {
+      const groups = buildYearGroups(rows);
+      const visibleYears = getVisibleYearSet(groups);
+
+      return groups.map(group => {
+        const isOpen = visibleYears.has(group.year);
+        const totalMinutes = group.rows.reduce((sum, row) => sum + toInt(row.timp_minute), 0);
+        const header = `
+          <tr class="year-group${isOpen ? ' open' : ''}" data-year-group="${escapeHtml(group.year)}">
+            <td colspan="11"><span class="year-toggle">${isOpen ? '▼' : '▶'}</span>${escapeHtml(group.year)}<span class="year-meta">${group.rows.length} rânduri • ${totalMinutes} minute</span></td>
+          </tr>
+        `;
+        const body = isOpen ? group.rows.map(rowMarkup).join("") : "";
+        return header + body;
+      }).join("");
+    }
+
     function scrollTableToBottom() {
       if (!dom.tableWrap) return;
       requestAnimationFrame(() => {
@@ -1684,28 +1643,13 @@
         return;
       }
 
-      dom.tableBody.innerHTML = state.filteredRows.map(row => {
-        const selected = row.id === state.selectedId ? "selected" : "";
-        const readonly = (!state.permissions.canEdit && !state.permissions.canDelete) ? "readonly" : "";
-        return `
-          <tr class="${selected} ${readonly}" data-id="${escapeHtml(row.id)}">
-            <td>${escapeHtml(row.an)}</td>
-            <td>${escapeHtml(row.luna)}</td>
-            <td>${escapeHtml(row.data)}</td>
-            <td>${escapeHtml(row.schimbul)}</td>
-            <td>${escapeHtml(row.utilaj)}</td>
-            <td>${escapeHtml(row.reper)}</td>
-            <td>${escapeHtml(row.timp_minute)}</td>
-            <td class="obs-cell" title="${escapeHtml(row.observatii)}">${escapeHtml(row.observatii)}</td>
-            <td>${escapeHtml(row.operatiune)}</td>
-            <td>${escapeHtml(row.departament)}</td>
-            <td>${escapeHtml(row.planificat)}</td>
-          </tr>
-        `;
-      }).join("");
+      dom.tableBody.innerHTML = renderGroupedRows(state.filteredRows);
 
       if (state.autoScrollToBottom) scrollTableToBottom();
       requestMobileStickyHeadUpdate(true);
+      if (isMobileTableLayout()) {
+        setTimeout(() => requestMobileStickyHeadUpdate(true), 280);
+      }
     }
 
     function refreshUi(autoScrollBottom = false) {
@@ -1715,10 +1659,8 @@
       applyPermissionsToUi();
     }
 
-    function markDirty(sourceText = "Modificări locale nesincronizate", years = []) {
+    function markDirty(sourceText = "Modificări locale nesincronizate") {
       state.dirty = true;
-      const dirtyYears = years.length ? years : [currentSelectedYearValue() || getLatestKnownYear()];
-      for (const year of dirtyYears) markYearDirty(year);
       persistLocal();
       setCloudStatus(`Cloud: ${sourceText}`, "warning");
       scheduleCloudSave();
@@ -1767,9 +1709,7 @@
     }
 
     function rowById(id) {
-      const localRow = state.rows.find(row => row.id === id);
-      if (localRow) return localRow;
-      return rowByIdFromCache(id).row || null;
+      return state.rows.find(row => row.id === id) || null;
     }
 
     function handleRowSave(event) {
@@ -1805,28 +1745,21 @@
       }
 
       const isEditing = !!state.editingId;
-      const previous = isEditing ? rowByIdFromCache(state.editingId) : { row: null, year: "" };
-      const targetYear = normalizeYearValue(payload.an);
-      if (!targetYear) {
-        alert("Anul introdus nu este valid.");
-        return;
-      }
 
-      if (isEditing && previous.row && previous.year === targetYear) {
-        state.yearCache[targetYear] = getRowsForYear(targetYear).map(row => row.id === state.editingId ? payload : row);
+      if (isEditing) {
+        state.rows = state.rows.map(row => row.id === state.editingId ? payload : row);
+        state.selectedId = payload.id;
       } else {
-        if (isEditing && previous.row) removeRowFromCaches(state.editingId);
-        const nextYearRows = getRowsForYear(targetYear).slice();
-        nextYearRows.push(payload);
-        setRowsForYear(targetYear, nextYearRows);
+        state.rows.push(payload);
+        state.selectedId = payload.id;
       }
 
-      state.selectedId = payload.id;
-      applyYearSelectionState(dom.filters.an.value || targetYear);
+      state.expandedYears.add(String(payload.an || "Fără an").trim() || "Fără an");
+      state.didInitYearGroups = true;
 
       state.source = "local";
       setModeStatus("Sursă: local modificat", "warning");
-      markDirty("Modificări locale nesincronizate", [targetYear, previous.year].filter(Boolean));
+      markDirty();
       refreshUi(true);
 
       if (isEditing) {
@@ -1994,114 +1927,52 @@
       refreshSelectOptions();
     }
 
-    async function loadLegacyCloudRows() {
-      const { data, error } = await state.supabase
-        .from("rf_documents")
-        .select("*")
-        .in("doc_key", DOC_KEYS)
-        .order("updated_at", { ascending: false })
-        .limit(5);
-
-      if (error) throw error;
-      if (!Array.isArray(data) || !data.length) return false;
-
-      const doc = data.find(Boolean);
-      const payload = doc?.content || doc?.data || doc;
-      const rows = rowsFromPayload(payload);
-      if (!rows.length) return false;
-
-      state.yearCache = splitRowsByYear(rows);
-      setKnownYears(Object.keys(state.yearCache));
-      const remoteStamp = doc?.updated_at || payload?.updated_at || nowIso();
-      for (const year of Object.keys(state.yearCache)) {
-        state.cloudYearUpdatedAt[year] = remoteStamp;
-      }
-      state.cloudUpdatedAt = remoteStamp;
-      return true;
-    }
-
-    async function loadCloudYearList() {
-      const { data, error } = await state.supabase
-        .from("rf_documents")
-        .select("doc_key,updated_at")
-        .like("doc_key", `${YEAR_DOC_PREFIX}%`)
-        .limit(200);
-
-      if (error) throw error;
-      const years = [];
-      for (const item of data || []) {
-        const normalizedYear = normalizeYearValue(String(item?.doc_key || "").replace(YEAR_DOC_PREFIX, ""));
-        if (!normalizedYear) continue;
-        years.push(normalizedYear);
-        if (item?.updated_at) state.cloudYearUpdatedAt[normalizedYear] = item.updated_at;
-      }
-      setKnownYears([...(state.knownYears || []), ...years]);
-      return sortYearsDesc(years);
-    }
-
-    async function ensureYearLoaded(year, force = false) {
-      const normalizedYear = normalizeYearValue(year);
-      if (!normalizedYear) return false;
-      if (!force && Array.isArray(state.yearCache[normalizedYear])) return true;
-      if (!state.supabase || !state.user) return Array.isArray(state.yearCache[normalizedYear]);
-
-      const docKey = getYearDocKey(normalizedYear);
-      const { data, error } = await state.supabase
-        .from("rf_documents")
-        .select("*")
-        .eq("doc_key", docKey)
-        .limit(1);
-
-      if (error) throw error;
-
-      if (Array.isArray(data) && data.length) {
-        const doc = data[0];
-        const payload = doc?.content || doc?.data || doc;
-        const rows = rowsFromPayload(payload);
-        state.yearCache[normalizedYear] = rows;
-        state.cloudYearUpdatedAt[normalizedYear] = doc?.updated_at || payload?.updated_at || nowIso();
-        setKnownYears([...(state.knownYears || []), normalizedYear]);
-        return true;
-      }
-
-      const migrated = await loadLegacyCloudRows();
-      return migrated && Array.isArray(state.yearCache[normalizedYear]);
-    }
-
     async function loadCloudDocument(force = false) {
       if (!state.supabase || !state.user) return false;
 
       try {
-        let years = await loadCloudYearList();
-        if (!years.length) {
-          const migrated = await loadLegacyCloudRows();
-          if (!migrated) {
-            if (force) setCloudStatus("Cloud: fără document, rulezi local", "warning");
-            return false;
-          }
-          years = sortYearsDesc(Object.keys(state.yearCache));
+        const { data, error } = await state.supabase
+          .from("rf_documents")
+          .select("*")
+          .in("doc_key", DOC_KEYS)
+          .order("updated_at", { ascending: false })
+          .limit(5);
+
+        if (error) {
+          throw error;
         }
 
-        const selectedYear = normalizeYearValue(dom.filters.an.value || state.activeYear || getLatestKnownYear() || years[0]);
+        if (!Array.isArray(data) || !data.length) {
+          if (force) setCloudStatus("Cloud: fără document, rulezi local", "warning");
+          return false;
+        }
+
+        const doc = data.find(Boolean);
+        const payload = doc?.content || doc?.data || doc;
+        const rows = rowsFromPayload(payload);
+        if (!rows.length) return false;
+
+        const remoteStamp = doc?.updated_at || payload?.updated_at || "";
         const canReplace = !state.rows.length || !state.dirty || force;
-        if (!canReplace) return false;
 
-        if (selectedYear) {
-          await ensureYearLoaded(selectedYear, force);
-          applyYearSelectionState(selectedYear);
-          state.cloudUpdatedAt = state.cloudYearUpdatedAt[selectedYear] || state.cloudUpdatedAt || nowIso();
-        } else {
-          state.rows = mergeLoadedYearRows();
+        if (canReplace) {
+          state.rows = rows;
+          state.cloudUpdatedAt = remoteStamp;
+          state.loadedFromCloud = true;
+          state.source = "cloud";
+          state.selectedId = null;
+          state.didInitYearGroups = false;
+          state.expandedYears = new Set();
+          persistLocal();
+          setModeStatus("Sursă: cloud", "success");
+          setCloudStatus("Cloud: sincronizat", "success");
+          refreshUi(true);
+          return true;
         }
 
-        state.loadedFromCloud = true;
-        state.source = "cloud";
-        state.selectedId = null;
-        persistLocal();
-        setModeStatus("Sursă: cloud", "success");
-        setCloudStatus(`Cloud: sincronizat pe an${selectedYear ? ` ${selectedYear}` : ""}`, "success");
-        refreshUi(true);
-        return true;
+        if (remoteStamp && remoteStamp !== state.cloudUpdatedAt) {
+          setCloudStatus("Cloud: există versiune nouă, folosește Refresh", "warning");
+        }
       } catch (error) {
         console.error("loadCloudDocument", error);
         setCloudStatus("Cloud: eroare la citire", "danger");
@@ -2117,58 +1988,25 @@
       state.syncInFlight = true;
       setCloudStatus("Cloud: se sincronizează...", "warning");
 
-      const yearsToSave = sortYearsDesc(force ? [...new Set([...(state.dirtyYears || []), ...Object.keys(state.yearCache || {})])] : state.dirtyYears);
-      if (!yearsToSave.length) {
-        state.syncInFlight = false;
-        return true;
-      }
-
-      const stamp = nowIso();
+      const payload = currentPayload();
+      const row = {
+        doc_key: PAGE_KEY,
+        content: payload,
+        updated_at: payload.updated_at
+      };
 
       try {
-        for (const year of yearsToSave) {
-          const rows = getRowsForYear(year);
-          const docKey = getYearDocKey(year);
+        const { error } = await state.supabase
+          .from("rf_documents")
+          .upsert(row, { onConflict: "doc_key" });
 
-          if (rows.length) {
-            const payload = {
-              page_key: PAGE_KEY,
-              version: 3,
-              grouped_by_year: true,
-              year,
-              updated_at: stamp,
-              rows: cloneRows(rows)
-            };
+        if (error) throw error;
 
-            const { error } = await state.supabase
-              .from("rf_documents")
-              .upsert({ doc_key: docKey, content: payload, updated_at: stamp }, { onConflict: "doc_key" });
-
-            if (error) throw error;
-            state.cloudYearUpdatedAt[year] = stamp;
-          } else {
-            const emptyPayload = {
-              page_key: PAGE_KEY,
-              version: 3,
-              grouped_by_year: true,
-              year,
-              updated_at: stamp,
-              rows: []
-            };
-            const { error } = await state.supabase
-              .from("rf_documents")
-              .upsert({ doc_key: docKey, content: emptyPayload, updated_at: stamp }, { onConflict: "doc_key" });
-            if (error) throw error;
-            state.cloudYearUpdatedAt[year] = stamp;
-          }
-        }
-
-        state.cloudUpdatedAt = stamp;
+        state.cloudUpdatedAt = payload.updated_at;
         state.dirty = false;
-        state.dirtyYears = [];
         state.source = "cloud";
         setModeStatus("Sursă: cloud", "success");
-        setCloudStatus("Cloud: sincronizat pe ani", "success");
+        setCloudStatus("Cloud: sincronizat", "success");
         persistLocal();
         return true;
       } catch (error) {
@@ -2186,17 +2024,13 @@
         const { data, error } = await state.supabase
           .from("rf_documents")
           .select("doc_key,updated_at")
-          .like("doc_key", `${YEAR_DOC_PREFIX}%`)
-          .limit(200);
+          .in("doc_key", DOC_KEYS)
+          .order("updated_at", { ascending: false })
+          .limit(3);
 
         if (error) throw error;
-
-        const newestRemote = (data || []).reduce((latest, item) => {
-          const stamp = item?.updated_at || "";
-          return stamp > latest ? stamp : latest;
-        }, "");
-
-        if (newestRemote && newestRemote !== state.cloudUpdatedAt && !state.dirty) {
+        const remote = Array.isArray(data) && data[0] ? data[0].updated_at : "";
+        if (remote && remote !== state.cloudUpdatedAt && !state.dirty) {
           await loadCloudDocument(true);
         }
       } catch (error) {
@@ -2298,29 +2132,15 @@
 
         const replace = confirm("OK = înlocuiește datele curente. Cancel = adaugă peste datele existente.");
         if (replace) {
-          const previousYears = Object.keys(state.yearCache || {});
-          state.yearCache = splitRowsByYear(imported.map((row, index) => ({ ...row, id: row.id || `imp-${index+1}-${Date.now()}` })));
-          setKnownYears([...previousYears, ...Object.keys(state.yearCache)]);
-          state.dirtyYears = sortYearsDesc([...previousYears, ...Object.keys(state.yearCache)]);
-          applyYearSelectionState(currentSelectedYearValue() || getLatestKnownYear());
+          state.rows = imported.map((row, index) => ({ ...row, id: row.id || `imp-${index+1}-${Date.now()}` }));
         } else {
-          const dirtyYears = [];
-          for (const row of imported.map(row => ({ ...row, id: row.id || randomId() }))) {
-            const year = normalizeYearValue(row.an);
-            if (!year) continue;
-            const nextRows = getRowsForYear(year).slice();
-            nextRows.push(normalizeRow(row));
-            setRowsForYear(year, nextRows);
-            dirtyYears.push(year);
-          }
-          applyYearSelectionState(dom.filters.an.value || state.activeYear);
-          state.dirtyYears = sortYearsDesc([...(state.dirtyYears || []), ...dirtyYears]);
+          state.rows = [...state.rows, ...imported.map(row => ({ ...row, id: row.id || randomId() }))];
         }
 
         state.selectedId = null;
         state.source = "local";
         setModeStatus("Sursă: import Excel", "warning");
-        markDirty("import Excel local, nesincronizat", state.dirtyYears);
+        markDirty("import Excel local, nesincronizat");
         refreshUi(true);
       } catch (error) {
         console.error("importExcelFile", error);
@@ -2330,39 +2150,11 @@
       }
     }
 
-    async function handleYearFilterChange(forceCloud = false) {
-      const selectedYear = normalizeYearValue(dom.filters.an.value);
-      if (selectedYear) {
-        await ensureYearLoaded(selectedYear, forceCloud);
-        applyYearSelectionState(selectedYear);
-      } else {
-        for (const year of sortYearsDesc(state.knownYears)) {
-          await ensureYearLoaded(year, forceCloud);
-        }
-        applyYearSelectionState("");
-      }
-      persistLocal();
-      refreshUi(false);
-      requestMobileStickyHeadUpdate(true);
-    }
-
-    function unlockMobilePageScroll() {
-      if (!isMobileTableLayout()) return;
-      document.documentElement.style.overflowY = "auto";
-      document.documentElement.style.height = "auto";
-      document.body.style.overflowY = "auto";
-      document.body.style.height = "auto";
-      if (dom.tableWrap) {
-        dom.tableWrap.style.overflowX = "auto";
-        dom.tableWrap.style.overflowY = "visible";
-      }
-    }
-
     function resetFilters() {
-      Object.entries(dom.filters).forEach(([key, el]) => {
-        if (key !== "an") el.value = "";
-      });
-      void handleYearFilterChange(false);
+      Object.values(dom.filters).forEach(el => el.value = "");
+      state.didInitYearGroups = false;
+      state.expandedYears = new Set();
+      renderTable();
     }
 
     function deleteSelected() {
@@ -2374,12 +2166,12 @@
       const row = rowById(state.selectedId);
       if (!row) return;
       if (!confirm("Ștergi rândul selectat?")) return;
-      const removed = removeRowFromCaches(state.selectedId);
+      state.rows = state.rows.filter(item => item.id !== state.selectedId);
       state.selectedId = null;
-      applyYearSelectionState(dom.filters.an.value || state.activeYear);
+      state.didInitYearGroups = true;
       state.source = "local";
       setModeStatus("Sursă: local modificat", "warning");
-      markDirty("Modificări locale nesincronizate", [removed?.an].filter(Boolean));
+      markDirty();
       refreshUi(true);
     }
 
@@ -2421,23 +2213,56 @@
       dom.form.operatiune.addEventListener("change", autoFillOperationDefaults);
 
       for (const [key, input] of Object.entries(dom.filters)) {
-        if (key === "an") continue;
-        input.addEventListener("input", renderTable);
-        input.addEventListener("change", renderTable);
+        const rerender = () => {
+          if (key === "an") {
+            state.didInitYearGroups = false;
+            state.expandedYears = new Set();
+          }
+          renderTable();
+        };
+        input.addEventListener("input", rerender);
+        input.addEventListener("change", rerender);
       }
 
-      dom.filters.an.addEventListener("change", () => { void handleYearFilterChange(false); });
-      dom.filters.an.addEventListener("input", () => { void handleYearFilterChange(false); });
+      function handleMobileViewportRefresh() {
+        if (!isMobileTableLayout()) return;
+        hideMobileStickyHead();
+        document.documentElement.style.height = "auto";
+        document.body.style.height = "auto";
+        document.documentElement.style.overflowY = "auto";
+        document.body.style.overflowY = "auto";
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => {
+            requestMobileStickyHeadUpdate(true);
+          });
+        });
+      }
 
       dom.tableWrap.addEventListener("scroll", () => requestMobileStickyHeadUpdate(false), { passive: true });
       window.addEventListener("scroll", () => requestMobileStickyHeadUpdate(false), { passive: true });
-      window.addEventListener("resize", () => { unlockMobilePageScroll(); requestMobileStickyHeadUpdate(true); }, { passive: true });
-      window.addEventListener("orientationchange", () => {
-        setTimeout(() => { unlockMobilePageScroll(); requestMobileStickyHeadUpdate(true); }, 120);
-        setTimeout(() => { unlockMobilePageScroll(); requestMobileStickyHeadUpdate(true); }, 420);
-      });
+      window.addEventListener("resize", () => requestMobileStickyHeadUpdate(true), { passive: true });
+      window.addEventListener("orientationchange", () => setTimeout(handleMobileViewportRefresh, 220));
+      if (window.visualViewport) {
+        window.visualViewport.addEventListener("resize", () => setTimeout(handleMobileViewportRefresh, 60), { passive: true });
+        window.visualViewport.addEventListener("scroll", () => requestMobileStickyHeadUpdate(false), { passive: true });
+      }
 
       dom.tableBody.addEventListener("click", event => {
+        const groupRow = event.target.closest("tr[data-year-group]");
+        if (groupRow) {
+          const year = String(groupRow.dataset.yearGroup || "").trim();
+          if (year) {
+            if (state.expandedYears.has(year)) {
+              state.expandedYears.delete(year);
+            } else {
+              state.expandedYears.add(year);
+            }
+            state.didInitYearGroups = true;
+            renderTable();
+          }
+          return;
+        }
+
         const tr = event.target.closest("tr[data-id]");
         if (!tr) return;
         state.selectedId = tr.dataset.id;
@@ -2445,6 +2270,7 @@
       });
 
       dom.tableBody.addEventListener("dblclick", event => {
+        if (event.target.closest("tr[data-year-group]")) return;
         const tr = event.target.closest("tr[data-id]");
         if (!tr) return;
         state.selectedId = tr.dataset.id;
@@ -2471,8 +2297,6 @@
       bindEvents();
       restoreLocal();
       seedIfEmpty();
-      if (!dom.filters.an.value) dom.filters.an.value = state.activeYear || getLatestKnownYear();
-      unlockMobilePageScroll();
       refreshUi(true);
       setDefaultFormValues();
       dom.pollBadge.textContent = "Refresh economic: 45s";
