@@ -109,7 +109,7 @@
       </div>
       <div class="top-right">
         <div class="chip" id="roleBadge">Rol: Viewer</div>
-        <div class="chip warn" id="cloudBadge">Cloud: local</div>
+        <div class="chip warn" id="cloudBadge">Cloud: ...</div>
         <button class="btn" id="btnAddTruck">Adaugă camion complet</button>
         <button class="btn-soft" id="btnAddRow">Adaugă rând</button>
         <button class="btn-soft" id="btnRefresh">Refresh</button>
@@ -130,6 +130,7 @@
 
     <div class="toolbar">
       <div class="toolbar-left">
+        <div class="field"><label>An</label><select class="select" id="fltAn"></select></div>
         <div class="field"><label>Nr. transport</label><input class="input" id="fltTransport" placeholder="ex: 394" /></div>
         <div class="field"><label>Reper</label><select class="select" id="fltReper"></select></div>
         <div class="field"><label>Operator</label><select class="select" id="fltOperator"></select></div>
@@ -307,18 +308,119 @@ function resolveRowsPayload(payload){
   if(Array.isArray(payload.entries)) return payload.entries;
   return [];
 }
-async function getUserContext(){
-  if(window.ERPAuth && typeof window.ERPAuth.requireAuth === 'function'){
-    try{
-      authState = await window.ERPAuth.requireAuth({ redirectToLogin:false, next: location.pathname.split('/').pop() || '' });
-      if(authState) return authState;
-    }catch(_){ }
+
+let supabaseClient = null;
+function roleLabelLocal(role){
+  const key = String(role || 'viewer').toLowerCase();
+  const map = { admin:'Admin', editor:'Editor', operator:'Operator', viewer:'Viewer' };
+  return map[key] || (role || 'Viewer');
+}
+function redirectToLoginNow(){
+  const next = location.pathname.split('/').pop() || (PAGE_KEY + '.html');
+  try{
+    const u = new URL('login.html', location.href);
+    u.searchParams.set('next', next);
+    window.location.href = u.toString();
+  }catch(_){
+    window.location.href = 'login.html';
   }
-  return { user:null, role:'viewer', email:'' };
+}
+async function createSupabase(){
+  if(supabaseClient) return supabaseClient;
+  try{
+    if(window.createRfSupabaseClient){
+      supabaseClient = window.createRfSupabaseClient();
+      return supabaseClient;
+    }
+  }catch(_){}
+  try{
+    if(window.RF_CONFIG && window.supabase && typeof window.supabase.createClient === 'function'){
+      supabaseClient = window.supabase.createClient(window.RF_CONFIG.SUPABASE_URL, window.RF_CONFIG.SUPABASE_ANON_KEY, {
+        auth: { persistSession:true, autoRefreshToken:true, detectSessionInUrl:true }
+      });
+      return supabaseClient;
+    }
+  }catch(_){}
+  try{
+    if(window.ERPAuth && typeof window.ERPAuth.getSupabaseClient === 'function'){
+      supabaseClient = window.ERPAuth.getSupabaseClient();
+      return supabaseClient;
+    }
+  }catch(_){}
+  return null;
+}
+async function directResolveRole(sb, user){
+  const email = toStr(user && user.email).toLowerCase();
+  if(email && window.RF_ADMIN_EMAIL && email === String(window.RF_ADMIN_EMAIL).toLowerCase()) return 'admin';
+  try{
+    const a = await sb.from('profiles').select('role').eq('user_id', user.id).maybeSingle();
+    if(!a.error && a.data && a.data.role) return String(a.data.role).toLowerCase();
+  }catch(_){}
+  try{
+    const b = await sb.from('profiles').select('role').eq('id', user.id).maybeSingle();
+    if(!b.error && b.data && b.data.role) return String(b.data.role).toLowerCase();
+  }catch(_){}
+  try{
+    const c = await sb.from('profiles').select('role').eq('email', email).maybeSingle();
+    if(!c.error && c.data && c.data.role) return String(c.data.role).toLowerCase();
+  }catch(_){}
+  try{
+    const d = await sb.from('rf_acl').select('role').eq('email', email).maybeSingle();
+    if(!d.error && d.data && d.data.role) return String(d.data.role).toLowerCase();
+  }catch(_){}
+  return 'viewer';
+}
+async function getUserContext(){
+  const sb = await createSupabase();
+  if(!sb){
+    alert('Pagina nu poate porni fără conexiunea comună Supabase din rf-config.js.');
+    return { client:null, user:null, role:'viewer', email:'' };
+  }
+
+  let user = null;
+  try{
+    const { data, error } = await sb.auth.getUser();
+    if(!error) user = data && data.user ? data.user : null;
+  }catch(_){}
+  if(!user){
+    try{
+      const { data, error } = await sb.auth.getSession();
+      if(!error) user = data && data.session ? data.session.user : null;
+    }catch(_){}
+  }
+  if(!user){
+    redirectToLoginNow();
+    return { client:sb, user:null, role:'viewer', email:'' };
+  }
+
+  let role = 'viewer';
+  try{
+    if(window.RF_ACL && typeof window.RF_ACL.resolveRole === 'function'){
+      const resolved = await window.RF_ACL.resolveRole(sb, user);
+      role = String((resolved && resolved.role) || 'viewer').toLowerCase();
+    }else{
+      role = await directResolveRole(sb, user);
+    }
+  }catch(_){
+    role = await directResolveRole(sb, user);
+  }
+
+  try{
+    if(window.RF_ACL && typeof window.RF_ACL.canViewPage === 'function'){
+      const access = await window.RF_ACL.canViewPage(PAGE_KEY, { client: sb, user });
+      if(access && access.allowed === false){
+        alert(access.message || 'Nu ai acces în această foaie.');
+        window.location.href = 'index.html';
+        return { client:sb, user, role, email:user.email || '' };
+      }
+    }
+  }catch(_){}
+
+  return { client:sb, user, role, email:user.email || '' };
 }
 function applyRoleBadge(role){
   const el = document.getElementById('roleBadge');
-  if(el) el.textContent = 'Rol: ' + ((window.ERPAuth && window.ERPAuth.roleLabel) ? window.ERPAuth.roleLabel(role) : (role || 'Viewer'));
+  if(el) el.textContent = 'Rol: ' + ((window.ERPAuth && window.ERPAuth.roleLabel) ? window.ERPAuth.roleLabel(role) : roleLabelLocal(role));
 }
 function setCloudBadge(text, cls){
   const el = document.getElementById('cloudBadge');
@@ -330,14 +432,17 @@ function canEdit(){
   const role = String((authState && authState.role) || 'viewer').toLowerCase();
   return role !== 'viewer';
 }
-async function createSupabase(){
-  if(window.ERPAuth && typeof window.ERPAuth.getSupabaseClient === 'function'){
-    try{ return window.ERPAuth.getSupabaseClient(); }catch(_){ return null; }
+async function readCloudDocByKeys(docKeys){
+  const sb = await createSupabase();
+  if(!(sb && authState && authState.user && Array.isArray(docKeys) && docKeys.length)) return null;
+  try{
+    const { data, error } = await sb.from('rf_documents').select('doc_key,content,updated_at').in('doc_key', docKeys);
+    if(error || !Array.isArray(data) || !data.length) return null;
+    const exact = docKeys.map(k => data.find(x => x.doc_key === k)).find(Boolean) || data[0];
+    return exact ? { doc_key: exact.doc_key, payload: exact.content, updated_at: exact.updated_at || null } : null;
+  }catch(_){
+    return null;
   }
-  if(window.supabase && window.ERP_FORJA_CONFIG){
-    try{ return window.supabase.createClient(window.ERP_FORJA_CONFIG.SUPABASE_URL, window.ERP_FORJA_CONFIG.SUPABASE_ANON_KEY); }catch(_){ return null; }
-  }
-  return null;
 }
 async function loadDocByKeys(docKeys, localKey, seedRows){
   let rows = [];
@@ -349,21 +454,15 @@ async function loadDocByKeys(docKeys, localKey, seedRows){
       rows = resolveRowsPayload(parsed);
       updatedAt = parsed.updated_at || parsed.updatedAt || null;
     }
-  }catch(_){ }
-  const sb = await createSupabase();
-  if(sb && authState && authState.user){
-    try{
-      const { data, error } = await sb.from('rf_documents').select('doc_key,content,updated_at').in('doc_key', docKeys);
-      if(!error && Array.isArray(data) && data.length){
-        const exact = docKeys.map(k => data.find(x => x.doc_key === k)).find(Boolean) || data[0];
-        const cloudRows = resolveRowsPayload(exact.content);
-        if(cloudRows.length){
-          rows = cloudRows;
-          updatedAt = exact.updated_at || updatedAt;
-          localStorage.setItem(localKey, JSON.stringify({ rows, updated_at: updatedAt }));
-        }
-      }
-    }catch(_){ }
+  }catch(_){}
+  const cloud = await readCloudDocByKeys(docKeys);
+  if(cloud){
+    const cloudRows = resolveRowsPayload(cloud.payload);
+    if(cloudRows.length){
+      rows = cloudRows;
+      updatedAt = cloud.updated_at || updatedAt;
+      try{ localStorage.setItem(localKey, JSON.stringify({ rows, updated_at: updatedAt })); }catch(_){}
+    }
   }
   if(!rows.length){
     rows = JSON.parse(JSON.stringify(seedRows || []));
@@ -373,10 +472,11 @@ async function loadDocByKeys(docKeys, localKey, seedRows){
 }
 async function saveDoc(docKey, localKey, rows){
   const payload = { rows: JSON.parse(JSON.stringify(rows)), updated_at: nowIso() };
-  try{ localStorage.setItem(localKey, JSON.stringify(payload)); }catch(_){ }
+  try{ localStorage.setItem(localKey, JSON.stringify(payload)); }catch(_){}
   const sb = await createSupabase();
   if(!(sb && authState && authState.user)){
-    setCloudBadge('Cloud: local only', 'warn');
+    setCloudBadge('Cloud: sesiune lipsă', 'warn');
+    redirectToLoginNow();
     return false;
   }
   try{
@@ -390,6 +490,7 @@ async function saveDoc(docKey, localKey, rows){
     return false;
   }
 }
+
 function debounceSave(fn){
   clearTimeout(saveTimer);
   saveTimer = setTimeout(fn, SAVE_DEBOUNCE_MS);
@@ -595,12 +696,14 @@ function scrollTableToBottom(){
     }
 
     function filteredRows(){
+      const fa = normKey(document.getElementById('fltAn').value);
       const ft = normKey(document.getElementById('fltTransport').value);
       const fr = normKey(document.getElementById('fltReper').value);
       const fo = normKey(document.getElementById('fltOperator').value);
       const fd = normKey(document.getElementById('fltData').value);
       const fs = normKey(document.getElementById('fltShift').value);
       return state.rows.filter(row => {
+        if(fa && normKey(yearFromDate(row.data)) !== fa) return false;
         if(ft && !normKey(row.nr_transport).includes(ft)) return false;
         if(fr && normKey(row.reper) !== fr) return false;
         if(fo && normKey(row.operator) !== fo) return false;
@@ -659,6 +762,14 @@ function scrollTableToBottom(){
     }
 
     function refreshFilters(){
+      const fltAn = document.getElementById('fltAn');
+      const currentYear = fltAn ? fltAn.value : '';
+      const years = Array.from(new Set(state.rows.map(r => yearFromDate(r.data)).filter(Boolean))).sort((a,b)=> Number(a) - Number(b));
+      if(fltAn){
+        fillSelect(fltAn, years, true, 'Toți anii');
+        if(!currentYear && years.length) fltAn.value = years[years.length - 1];
+        else if(currentYear && years.includes(currentYear)) fltAn.value = currentYear;
+      }
       fillSelect(document.getElementById('fltReper'), state.rows.map(r => r.reper), true, 'Toate reperele');
       fillSelect(document.getElementById('fltOperator'), state.rows.map(r => r.operator), true, 'Toți operatorii');
       fillSelect(document.getElementById('fltShift'), state.rows.map(r => r.schimbul), true, 'Toate schimburile');
@@ -762,7 +873,7 @@ function scrollTableToBottom(){
     async function init(){
       authState = await getUserContext();
       applyRoleBadge(authState.role || 'viewer');
-      setCloudBadge(authState && authState.user ? 'Cloud: conectat' : 'Cloud: local only', authState && authState.user ? 'ok' : 'warn');
+      setCloudBadge('Cloud: conectat', 'ok');
       const main = await loadDocByKeys(DOC_KEYS, LOCAL_KEY, SEED_ROWS);
       state.rows = (main.rows || []).map(normalizeRow).sort(rowSort);
       refreshFilters(); state.pendingScrollBottom = true; renderTable(); renderSummary();
@@ -777,8 +888,8 @@ function scrollTableToBottom(){
       document.getElementById('fileImportXLSX').addEventListener('change', ev => { const file = ev.target.files && ev.target.files[0]; if(file) handleImportXLSX(file); });
       document.getElementById('btnRefresh').addEventListener('click', async () => { const main2 = await loadDocByKeys(DOC_KEYS, LOCAL_KEY, SEED_ROWS); state.rows = (main2.rows || []).map(normalizeRow).sort(rowSort); state.pendingScrollBottom = true; refreshFilters(); renderTable(); renderSummary(); });
       document.getElementById('btnDelete').addEventListener('click', async () => { if(!canEdit() || !state.selectedId) return; state.rows = state.rows.filter(r => r.id !== state.selectedId); state.selectedId = null; renderTable(); renderSummary(); debounceSave(persistRows); });
-      document.getElementById('btnClearFilters').addEventListener('click', () => { ['fltTransport','fltData'].forEach(id => document.getElementById(id).value=''); ['fltReper','fltOperator','fltShift'].forEach(id => document.getElementById(id).value=''); state.pendingScrollBottom = true; renderTable(); });
-      ['fltTransport','fltReper','fltOperator','fltData','fltShift'].forEach(id => document.getElementById(id).addEventListener('input', () => { state.pendingScrollBottom = true; renderTable(); }));
+      document.getElementById('btnClearFilters').addEventListener('click', () => { ['fltTransport','fltData'].forEach(id => document.getElementById(id).value=''); ['fltReper','fltOperator','fltShift','fltAn'].forEach(id => { const el = document.getElementById(id); if(el) el.value=''; }); state.pendingScrollBottom = true; renderTable(); });
+      ['fltTransport','fltReper','fltOperator','fltData','fltShift','fltAn'].forEach(id => document.getElementById(id).addEventListener('input', () => { state.pendingScrollBottom = true; renderTable(); }));
       document.getElementById('btnCloseRowModal').addEventListener('click', closeRowModal);
       document.getElementById('btnCancelRow').addEventListener('click', closeRowModal);
       document.getElementById('btnSaveRow').addEventListener('click', saveRow);
