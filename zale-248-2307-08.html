@@ -511,29 +511,89 @@
       return { can_view:true, can_add: role !== 'viewer', can_edit: role !== 'viewer', can_delete: role !== 'viewer' };
     }
 
-    async function initAuth(){
+    function roleLabelSimple(role){
+      const r = lower(role);
+      if(r === 'admin') return 'Admin';
+      if(r === 'editor') return 'Editor';
+      if(r === 'operator') return 'Operator';
+      return 'Viewer';
+    }
+
+    function createSharedClient(){
+      if(state.supa) return state.supa;
       try{
-        state.supa = window.ERPAuth.getSupabaseClient();
-      }catch(err){
-        console.error(err);
+        if(typeof window.createRfSupabaseClient === 'function'){
+          state.supa = window.createRfSupabaseClient({ auth:{ persistSession:true, autoRefreshToken:true, detectSessionInUrl:true } });
+          return state.supa;
+        }
+      }catch(err){ console.error(err); }
+      try{
+        const cfg = window.RF_CONFIG || window.rfConfig || window.__RF_CONFIG__ || {};
+        const url = cfg.SUPABASE_URL || cfg.supabaseUrl || window.RF_SUPABASE_URL || '';
+        const key = cfg.SUPABASE_ANON_KEY || cfg.supabaseAnonKey || window.RF_SUPABASE_ANON_KEY || '';
+        if(window.supabase && window.supabase.createClient && url && key){
+          state.supa = window.supabase.createClient(url, key, { auth:{ persistSession:true, autoRefreshToken:true, detectSessionInUrl:true } });
+          return state.supa;
+        }
+      }catch(err){ console.error(err); }
+      return null;
+    }
+
+    async function resolveAuthRole(user){
+      if(!state.supa || !user) return 'viewer';
+      const email = String(user.email || '').trim();
+      if(lower(email) === 'forja.editor@gmail.com') return 'admin';
+      const tries = [
+        () => state.supa.from('profiles').select('role').eq('user_id', user.id).maybeSingle(),
+        () => state.supa.from('profiles').select('role').eq('id', user.id).maybeSingle(),
+        () => state.supa.from('profiles').select('role').eq('email', email).maybeSingle(),
+        () => state.supa.from('rf_acl').select('role').eq('email', email).maybeSingle()
+      ];
+      for(const run of tries){
+        try{
+          const { data, error } = await run();
+          const role = lower(data && data.role);
+          if(!error && role) return role;
+        }catch(_){ }
+      }
+      return 'viewer';
+    }
+
+    async function initAuth(){
+      state.supa = createSharedClient();
+      if(!state.supa){
         setRoleBadge('Neconfigurat', 'bad');
         setCloud('Cloud: config lipsă', 'bad');
+        state.perms = { can_view:true, can_add:false, can_edit:false, can_delete:false };
+        els.btnAdd.disabled = true;
+        els.btnDelete.disabled = true;
         return;
       }
+      let session = null;
+      let user = null;
       try{
-        state.auth = await window.ERPAuth.getCurrentUserWithRole();
-      }catch(err){
-        console.error(err);
-        state.auth = null;
+        const { data } = await state.supa.auth.getSession();
+        session = data && data.session ? data.session : null;
+        user = session && session.user ? session.user : null;
+      }catch(err){ console.error(err); }
+      if(!user){
+        try{
+          const { data } = await state.supa.auth.getUser();
+          user = data && data.user ? data.user : null;
+        }catch(err){ console.error(err); }
       }
-      if(state.auth && state.auth.user){
-        state.role = lower(state.auth.role || 'viewer');
-        setRoleBadge(window.ERPAuth.roleLabel(state.role));
+      if(user){
+        state.role = await resolveAuthRole(user);
+        state.auth = { user, role: state.role, session };
+        setRoleBadge(roleLabelSimple(state.role));
         state.perms = await loadPagePermissions(state.role);
+        setCloud('Cloud: conectat', 'ok');
       }else{
-        state.role = '';
-        state.perms = { can_view:false, can_add:false, can_edit:false, can_delete:false };
+        state.role = 'viewer';
+        state.auth = null;
+        state.perms = { can_view:true, can_add:false, can_edit:false, can_delete:false };
         setRoleBadge('Neautentificat', 'bad');
+        setCloud('Cloud: local only', 'warn');
       }
       els.btnAdd.disabled = !state.perms.can_add;
       els.btnDelete.disabled = !state.perms.can_delete;
