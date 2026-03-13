@@ -256,6 +256,10 @@
     const FORJATE_YEAR_PREFIXES = ['FORJATE_autosave_year_v2_','forjate_year_'];
     const FORJATE_CLOUD_INDEX_KEY = 'forjate:index';
     const FORJATE_CLOUD_YEAR_PREFIX = 'forjate:';
+    const INVENTAR_DOC_KEYS = ['inventar-forjat','inventar_forjat','Inventar Forjat','stoc-initial-forjate','stoc_initial_forjate'];
+    const INVENTAR_LOCAL_KEYS = ['rf-inventar-forjat','inventar-forjat','inventar_forjat','stoc-initial-forjate','stoc_initial_forjate'];
+    const INVENTAR_YEAR_INDEX_KEYS = ['inventar-forjat:index','inventar_forjat:index','inventar-forjat_index','inventar_forjat_index'];
+    const INVENTAR_YEAR_PREFIXES = ['inventar-forjat:','inventar_forjat:','stoc-initial-forjate:','stoc_initial_forjate:'];
     const ADMIN_EMAIL = 'forja.editor@gmail.com';
     const DOC_TABLE = 'rf_documents';
     const SAVE_DEBOUNCE_MS = 900;
@@ -278,6 +282,7 @@
       derivedRows: [],
       packRows: [],
       forjateRows: [],
+      inventarRows: [],
       updatedAt: null,
       selectedYear: '',
       editingId: ''
@@ -721,6 +726,30 @@
         piese_bune: bucReal !== '' ? toInt(bucReal) : toInt(buc)
       };
     }
+    function normalizeInventarRow(row) {
+      const src = { ...(row || {}) };
+      const data = normalizeDate(pickValue(src, ['data','DATA','ultima data','ultima_data','ultima dată','ultima_dată']));
+      return {
+        an: normalizeYear(pickValue(src, ['an','AN'])) || yearFromDate(data),
+        luna: normalizeMonthName(pickValue(src, ['luna','LUNA'])) || monthFromDate(data),
+        data,
+        reper: normalizeReper248(pickValue(src, ['reper','REPER','reper_forjat','REPER_FORJAT','denumire reper','DENUMIRE REPER','denumire','DENUMIRE'])),
+        stock: toInt(pickValue(src, [
+          'stoc_final_piese_forjate_buc','STOC_FINAL_PIESE_FORJATE_BUC',
+          'stoc final piese forjate (buc)','Stoc final piese forjate (buc)',
+          'stoc final piese forjate buc','Stoc final piese forjate buc',
+          'stoc_final_piese_forjate','STOC_FINAL_PIESE_FORJATE',
+          'stoc final piese forjate','Stoc final piese forjate',
+          'stoc_final','STOC_FINAL',
+          'stoc final','Stoc final',
+          'stoc_actual','STOC_ACTUAL',
+          'stoc actual','Stoc actual',
+          'cantitate','CANTITATE',
+          'buc','BUC',
+          'stoc','STOC'
+        ]))
+      };
+    }
     function transportSort(a, b) {
       const ta = toInt(a.nr_transport), tb = toInt(b.nr_transport);
       if(ta !== tb) return ta - tb;
@@ -812,6 +841,59 @@
       }
       return dedupeRows(rows.map(normalizeForjateRow).filter(r => r.reper && r.an && r.luna), row => [row.an,row.luna,row.reper,row.data,row.piese_bune].join('|'));
     }
+    function previousMonthInfo(year, month) {
+      const y = Number(normalizeYear(year));
+      const m = MONTHS.indexOf(normalizeMonthName(month)) + 1;
+      if(!y || !m) return { an:'', luna:'' };
+      if(m === 1) return { an: String(y - 1), luna: MONTHS[11] };
+      return { an: String(y), luna: MONTHS[m - 2] };
+    }
+    async function loadInventarRows() {
+      let rows = [];
+      INVENTAR_LOCAL_KEYS.forEach(key => {
+        const payload = readLocalJson(key);
+        if(payload) rows.push(...resolveRowsPayload(payload));
+      });
+      INVENTAR_YEAR_INDEX_KEYS.forEach(indexKey => {
+        const idx = readLocalJson(indexKey);
+        extractYears(idx).forEach(year => {
+          INVENTAR_YEAR_PREFIXES.forEach(prefix => {
+            const payload = readLocalJson(prefix + year);
+            if(payload) rows.push(...resolveRowsPayload(payload));
+          });
+        });
+      });
+      if(authState && authState.user) {
+        for(const indexKey of INVENTAR_YEAR_INDEX_KEYS) {
+          const indexDoc = await readDocByKey(indexKey);
+          const years = extractYears(indexDoc && indexDoc.payload);
+          for(const year of years) {
+            for(const prefix of INVENTAR_YEAR_PREFIXES) {
+              const doc = await readDocByKey(prefix + year);
+              if(doc && doc.payload) rows.push(...resolveRowsPayload(doc.payload));
+            }
+          }
+        }
+        const legacy = await readDocByKeys(INVENTAR_DOC_KEYS);
+        if(legacy && legacy.payload) rows.push(...resolveRowsPayload(legacy.payload));
+      }
+      return dedupeRows(
+        rows.map(normalizeInventarRow).filter(r => r.reper && r.an && r.luna),
+        row => [row.an,row.luna,row.reper,row.data,row.stock].join('|')
+      );
+    }
+    function getInventarPreviousMonthStocks(inventarRows) {
+      const map = new Map();
+      (inventarRows || []).forEach(row => {
+        const year = normalizeYear(row.an);
+        const month = normalizeMonthName(row.luna);
+        const reper = normalizeReper248(row.reper);
+        if(!year || !month || !reper) return;
+        const key = `${year}|${month}|${reper}`;
+        map.set(key, (map.get(key) || 0) + toInt(row.stock));
+      });
+      return map;
+    }
     function getMonthlyTotals(forjateRows) {
       const map = new Map();
       (forjateRows || []).forEach(row => {
@@ -849,6 +931,7 @@
     function computeDerivedRows(baseRows) {
       const sorted = (baseRows || []).map(normalizeMainRow).sort(transportSort);
       const monthlyTotals = getMonthlyTotals(state.forjateRows);
+      const previousMonthStocks = getInventarPreviousMonthStocks(state.inventarRows);
       const packTotals = getPackTotals(state.packRows);
       const positions = new Map();
       return sorted.map(base => {
@@ -860,15 +943,20 @@
 
         const key2307 = `${year}|${month}|248-2307`;
         const key2308 = `${year}|${month}|248-2308`;
-        const has2307 = monthlyTotals.has(key2307);
-        const has2308 = monthlyTotals.has(key2308);
+        const prevMonth = previousMonthInfo(year, month);
+        const prevKey2307 = `${prevMonth.an}|${prevMonth.luna}|248-2307`;
+        const prevKey2308 = `${prevMonth.an}|${prevMonth.luna}|248-2308`;
+        const total2307 = toInt(monthlyTotals.get(key2307)) + toInt(previousMonthStocks.get(prevKey2307));
+        const total2308 = toInt(monthlyTotals.get(key2308)) + toInt(previousMonthStocks.get(prevKey2308));
+        const has2307 = total2307 !== 0;
+        const has2308 = total2308 !== 0;
 
         const pack = packTotals.get(toStr(base.nr_transport));
         const hasPack = !!pack;
         const forceScriptic1650 = isScripticUntilFeb2026(year, month);
 
-        const forjat2307 = forceScriptic1650 ? 1650 : (has2307 ? productionValue(monthlyTotals.get(key2307), pos) : toInt(base.forjat_2307));
-        const forjat2308 = forceScriptic1650 ? 1650 : (has2308 ? productionValue(monthlyTotals.get(key2308), pos) : toInt(base.forjat_2308));
+        const forjat2307 = forceScriptic1650 ? 1650 : (has2307 ? productionValue(total2307, pos) : toInt(base.forjat_2307));
+        const forjat2308 = forceScriptic1650 ? 1650 : (has2308 ? productionValue(total2308, pos) : toInt(base.forjat_2308));
 
         const ambalat2307 = hasPack ? toInt(pack.p2307) : toInt(base.ambalat_2307);
         const ambalat2308 = hasPack ? toInt(pack.p2308) : toInt(base.ambalat_2308);
@@ -1124,15 +1212,17 @@
     }
     async function refreshAll(options={}) {
       if(options.showBadge !== false) setCloudBadge('Cloud: actualizez…', 'warn');
-      const [main, packRows, forjateRows] = await Promise.all([
+      const [main, packRows, forjateRows, inventarRows] = await Promise.all([
         loadMainRows(),
         loadPackRows(),
-        loadForjateRows()
+        loadForjateRows(),
+        loadInventarRows()
       ]);
       state.rows = main.rows;
       state.updatedAt = main.updatedAt || state.updatedAt;
       state.packRows = packRows;
       state.forjateRows = forjateRows;
+      state.inventarRows = inventarRows;
       refreshFilters();
       renderTable();
       if(options.showBadge !== false) setCloudBadge('Cloud: conectat', 'ok');
