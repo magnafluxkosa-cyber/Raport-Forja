@@ -127,7 +127,6 @@
     tbody td.forjat-neg{color:#c62828 !important;font-weight:800 !important;}
     .date-past, tbody td.date-past{background:#dff3df !important;}
     .date-future, tbody td.date-future{background:#fff4bf !important;}
-    .ambalat-ok, tbody td.ambalat-ok{background:#dff3df !important;}
     .ambalat-warn, tbody td.ambalat-warn{background:#fff4bf !important;color:#c62828 !important;font-weight:800 !important;}
     .date-inline-input{width:100%;min-width:96px;height:28px;border:1px solid #95b5cd;border-radius:6px;padding:4px 6px;font-size:12px;font-weight:700;color:var(--text);background:#fff;outline:none}
 
@@ -265,7 +264,11 @@
     const DOC_KEYS = ['zale-248-2307-08','248-2307-08'];
     const LOCAL_KEY = 'rf-zale-248-2307-08';
     const PACK_DOC_KEYS = ['ambalare-248-2307-08','Ambalare 248'];
+    const PACK_INDEX_DOC_KEYS = ['ambalare-248-2307-08:index','Ambalare 248:index','ambalare_248:index'];
+    const PACK_CLOUD_YEAR_PREFIXES = ['ambalare-248-2307-08:','Ambalare 248:','ambalare_248:'];
     const PACK_LOCAL_KEY = 'rf-ambalare-248-2307-08';
+    const PACK_LOCAL_INDEX_KEYS = ['rf-ambalare-248-2307-08:index','rf_ambalare_248_index_v1','rf-ambalare-248-2307-08-index'];
+    const PACK_LOCAL_YEAR_PREFIXES = ['rf-ambalare-248-2307-08:','rf_ambalare_248_cache_v1:','rf-ambalare-248-2307-08-year:'];
     const FORJATE_DOC_KEYS = ['forjate','FORJATE','Forjate'];
     const FORJATE_LOCAL_KEYS = ['FORJATE_autosave_v1'];
     const FORJATE_YEAR_INDEX_KEYS = ['FORJATE_autosave_index_v2','forjate_index'];
@@ -729,15 +732,17 @@
       const src = { ...(row || {}) };
       return {
         id: src.id || uid('pk'),
-        nr_transport: toStr(src.nr_transport || src.nr_transp || src['Nr Transp']),
-        lada: toStr(src.lada || src.LADA),
-        reper: normalizeReper248(src.reper || src.REPER),
-        cod_matrita: toStr(src.cod_matrita || src.codMatrita || src['Cod Matriță'] || src['Cod Matrita']),
-        cod_cat: toStr(src.cod_cat || src.codCat || src['Cod-Cat'] || src.COD_CAT),
-        buc: toInt(src.buc || src.BUC || src['Buc']),
-        operator: toStr(src.operator || src.OPERATOR),
-        data: normalizeDate(src.data || src.DATA),
-        schimbul: toStr(src.schimbul || src.SCHIMBUL)
+        nr_transport: toStr(
+          pickValue(src, ['nr_transport','nr transp','nr_transp','nr transport','Nr Transp','Nr. Transp','Nr Transport','Nr. Transport','transport','nr'])
+        ),
+        lada: toStr(pickValue(src, ['lada','LADA','Lada'])),
+        reper: normalizeReper248(pickValue(src, ['reper','REPER','Reper'])),
+        cod_matrita: toStr(pickValue(src, ['cod_matrita','codMatrita','cod matrita','Cod Matriță','Cod Matrita','Cod matrita'])),
+        cod_cat: toStr(pickValue(src, ['cod_cat','codCat','cod cat','Cod-Cat','Cod Cat','COD_CAT'])),
+        buc: toInt(pickValue(src, ['buc','BUC','Buc','cantitate','Cantitate'])),
+        operator: toStr(pickValue(src, ['operator','OPERATOR','Operator'])),
+        data: normalizeDate(pickValue(src, ['data','DATA','Data'])),
+        schimbul: toStr(pickValue(src, ['schimbul','SCHIMBUL','Schimbul']))
       };
     }
     function pickValue(obj, keys) {
@@ -813,15 +818,37 @@
       let rows = [];
       const local = readLocalJson(PACK_LOCAL_KEY);
       if(local) rows.push(...resolveRowsPayload(local));
-      const cloud = await readDocByKeys(PACK_DOC_KEYS);
-      if(cloud) {
-        const cloudRows = resolveRowsPayload(cloud.payload);
-        if(cloudRows.length) {
-          rows = cloudRows;
-          writeLocalJson(PACK_LOCAL_KEY, { rows: cloudRows, updated_at: cloud.updated_at || nowIso() });
+      PACK_LOCAL_INDEX_KEYS.forEach(indexKey => {
+        const idx = readLocalJson(indexKey);
+        extractYears(idx).forEach(year => {
+          PACK_LOCAL_YEAR_PREFIXES.forEach(prefix => {
+            const payload = readLocalJson(prefix + year);
+            if(payload) rows.push(...resolveRowsPayload(payload));
+          });
+        });
+      });
+      if(authState && authState.user) {
+        const cloud = await readDocByKeys(PACK_DOC_KEYS);
+        if(cloud && cloud.payload) {
+          const cloudRows = resolveRowsPayload(cloud.payload);
+          if(cloudRows.length) {
+            rows.push(...cloudRows);
+            writeLocalJson(PACK_LOCAL_KEY, { rows: cloudRows, updated_at: cloud.updated_at || nowIso() });
+          }
+        }
+        const indexDoc = await readDocByKeys(PACK_INDEX_DOC_KEYS);
+        const years = extractYears(indexDoc && indexDoc.payload);
+        for(const year of years) {
+          for(const prefix of PACK_CLOUD_YEAR_PREFIXES) {
+            const doc = await readDocByKey(prefix + year);
+            if(doc && doc.payload) rows.push(...resolveRowsPayload(doc.payload));
+          }
         }
       }
-      return dedupeRows(rows.map(normalizePackRow), row => [row.nr_transport,row.lada,row.reper,row.cod_matrita,row.cod_cat,row.buc,row.data,row.operator,row.schimbul].join('|'));
+      return dedupeRows(
+        rows.map(normalizePackRow).filter(r => r.nr_transport && r.reper),
+        row => [row.nr_transport,row.lada,row.reper,row.cod_matrita,row.cod_cat,row.buc,row.data,row.operator,row.schimbul].join('|')
+      );
     }
     async function loadForjateRows() {
       let rows = [];
@@ -1214,14 +1241,10 @@
       return '';
     }
     function getAmbalatCellClass(value) {
-      const n = toInt(value);
-      if(n === 1650) return 'ambalat-ok';
-      return n !== 1650 ? 'ambalat-warn' : '';
+      return toInt(value) < 1650 ? 'ambalat-warn' : '';
     }
     function getAmbalatCellStyle(value) {
-      const n = toInt(value);
-      if(n === 1650) return 'background:#dff3df !important;';
-      return n !== 1650 ? 'background:#fff4bf !important;color:#c62828 !important;font-weight:800 !important;' : '';
+      return toInt(value) < 1650 ? 'background:#fff4bf !important;color:#c62828 !important;font-weight:800 !important;' : '';
     }
     function saveInlineDate(rowId, rawValue) {
       if(!pageAccess.can_edit) return;
