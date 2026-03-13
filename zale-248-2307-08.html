@@ -261,6 +261,10 @@
     const INVENTAR_CLOUD_YEAR_PREFIX = 'inventar-forjat:';
     const INVENTAR_LOCAL_INDEX_KEY = 'rf_inventar_forjat_index_v1';
     const INVENTAR_LOCAL_YEAR_PREFIX = 'rf_inventar_forjat_cache_v1:';
+    const MAGNAFLUX_DOC_KEYS = ['magnaflux','MAGNAFLUX','Magnaflux'];
+    const REBUT_PM_DOC_KEYS = ['rebut-pm','rebut_pm','Rebut PM','rebut pm'];
+    const MF_CODES = ['LM','IBT','SM','FTT','FL','LMC','DES','AS','DIV'];
+    const PM_CODES = ['06','07','13'];
     const ADMIN_EMAIL = 'forja.editor@gmail.com';
     const DOC_TABLE = 'rf_documents';
     const SAVE_DEBOUNCE_MS = 900;
@@ -284,6 +288,8 @@
       packRows: [],
       forjateRows: [],
       inventarRows: [],
+      magnafluxRows: [],
+      rebutPmRows: [],
       updatedAt: null,
       selectedYear: '',
       editingId: ''
@@ -884,6 +890,96 @@
       }
       return dedupeRows(rows.map(normalizeInventarRow).filter(r => r.reper && r.an && r.luna), row => [row.an,row.luna,row.reper,row.data,row.stoc_final].join('|'));
     }
+    function mfCategoryFromString(value) {
+      const raw = stripDiacritics(value).toUpperCase().replace(/\s+/g, '');
+      if(!raw) return '';
+      return MF_CODES.find(code => raw === code || raw.includes(code)) || '';
+    }
+    function normalizeMagnafluxRows(rows) {
+      const out = [];
+      (rows || []).forEach(row => {
+        const src = { ...(row || {}) };
+        const data = normalizeDate(pickValue(src, ['data','DATA','date','Date']));
+        const an = normalizeYear(pickValue(src, ['an','AN','anul','Anul'])) || yearFromDate(data);
+        const luna = normalizeMonthName(pickValue(src, ['luna','LUNA','Luna'])) || monthFromDate(data);
+        const reper = normalizeReper248(pickValue(src, ['reper','REPER','denumire reper forja','Denumire reper forja','denumire reper','reper forjat']));
+        if(!an || !luna || !reper) return;
+
+        let hasWide = false;
+        const wide = { an, luna, reper };
+        MF_CODES.forEach(code => {
+          const val = toInt(pickValue(src, [code, code.toLowerCase()]));
+          wide[code] = val;
+          if(val > 0) hasWide = true;
+        });
+        if(hasWide) {
+          out.push(wide);
+          return;
+        }
+
+        const cat = mfCategoryFromString(pickValue(src, [
+          'categorie','Categorie','defect','Defect','tip defect','Tip defect','rezultat','Rezultat',
+          'cod defect','Cod defect','loc depistare','Loc depistare necomformitate'
+        ]));
+        const qty = toInt(pickValue(src, [
+          'cantitate','Cantitate','qty','Quantity','buc','Buc','rebut','Rebut','piese rebut final','Piese rebut final  [buc]'
+        ]));
+        if(!cat || qty <= 0) return;
+        const item = { an, luna, reper };
+        MF_CODES.forEach(code => item[code] = 0);
+        item[cat] = qty;
+        out.push(item);
+      });
+      return out;
+    }
+    function normalizePmRow(row) {
+      const src = { ...(row || {}) };
+      const data = normalizeDate(pickValue(src, ['data','DATA','date','Date','data inregistrare','Data inregistrare']));
+      const an = normalizeYear(pickValue(src, ['an','AN','anul','Anul'])) || yearFromDate(data);
+      const luna = normalizeMonthName(pickValue(src, ['luna','LUNA','Luna'])) || monthFromDate(data);
+      const reper = normalizeReper248(pickValue(src, ['denumire_reper_forja','Denumire reper forja','denumire reper forja','reper','REPER']));
+      const cod = toStr(pickValue(src, ['cod defect','Cod defect','cod_defect']));
+      const qty = toInt(pickValue(src, ['piese rebut final  [buc]','Piese rebut final  [buc]','piese_rebut_final','piese rebut final','qty','cantitate']));
+      if(!an || !luna || !reper || !PM_CODES.includes(cod) || qty <= 0) return null;
+      return { an, luna, reper, cod, qty };
+    }
+    async function loadMagnafluxRows() {
+      let rows = [];
+      if(authState && authState.user) {
+        const cloud = await readDocByKeys(MAGNAFLUX_DOC_KEYS);
+        if(cloud && cloud.payload) rows.push(...resolveRowsPayload(cloud.payload));
+      }
+      return normalizeMagnafluxRows(rows);
+    }
+    async function loadRebutPmRows() {
+      let rows = [];
+      if(authState && authState.user) {
+        const cloud = await readDocByKeys(REBUT_PM_DOC_KEYS);
+        if(cloud && cloud.payload) rows.push(...resolveRowsPayload(cloud.payload));
+      }
+      return dedupeRows(rows.map(normalizePmRow).filter(Boolean), row => [row.an,row.luna,row.reper,row.cod,row.qty].join('|'));
+    }
+    function getMonthlyExternalRebutTotals(magnafluxRows, rebutPmRows) {
+      const map = new Map();
+      (magnafluxRows || []).forEach(row => {
+        const year = normalizeYear(row.an);
+        const month = normalizeMonthName(row.luna);
+        const reper = normalizeReper248(row.reper);
+        if(!year || !month || !reper) return;
+        const key = `${year}|${month}|${reper}`;
+        const total = MF_CODES.reduce((sum, code) => sum + toInt(row[code]), 0);
+        map.set(key, (map.get(key) || 0) + total);
+      });
+      (rebutPmRows || []).forEach(row => {
+        const year = normalizeYear(row.an);
+        const month = normalizeMonthName(row.luna);
+        const reper = normalizeReper248(row.reper);
+        if(!year || !month || !reper) return;
+        const key = `${year}|${month}|${reper}`;
+        map.set(key, (map.get(key) || 0) + toInt(row.qty));
+      });
+      return map;
+    }
     function previousMonthPeriod(year, month) {
       const y = Number(normalizeYear(year));
       const m = MONTHS.indexOf(normalizeMonthName(month)) + 1;
@@ -917,6 +1013,7 @@
       const sorted = (baseRows || []).map(normalizeMainRow).sort(transportSort);
       const monthlyTotals = getMonthlyTotals(state.forjateRows);
       const packTotals = getPackTotals(state.packRows);
+      const externalRebutTotals = getMonthlyExternalRebutTotals(state.magnafluxRows, state.rebutPmRows);
       const positions = new Map();
       return sorted.map(base => {
         const year = normalizeYear(base.an) || yearFromDate(base.data_livrarii);
@@ -930,8 +1027,10 @@
         const has2307 = monthlyTotals.has(key2307);
         const has2308 = monthlyTotals.has(key2308);
         const previousStock = getInventarPreviousMonthTotals(state.inventarRows, year, month);
-        const total2307 = toInt(monthlyTotals.get(key2307)) + toInt(previousStock.p2307);
-        const total2308 = toInt(monthlyTotals.get(key2308)) + toInt(previousStock.p2308);
+        const externalRebut2307 = toInt(externalRebutTotals.get(key2307));
+        const externalRebut2308 = toInt(externalRebutTotals.get(key2308));
+        const total2307 = toInt(monthlyTotals.get(key2307)) + toInt(previousStock.p2307) - externalRebut2307;
+        const total2308 = toInt(monthlyTotals.get(key2308)) + toInt(previousStock.p2308) - externalRebut2308;
 
         const pack = packTotals.get(toStr(base.nr_transport));
         const hasPack = !!pack;
@@ -1196,17 +1295,21 @@
     }
     async function refreshAll(options={}) {
       if(options.showBadge !== false) setCloudBadge('Cloud: actualizez…', 'warn');
-      const [main, packRows, forjateRows, inventarRows] = await Promise.all([
+      const [main, packRows, forjateRows, inventarRows, magnafluxRows, rebutPmRows] = await Promise.all([
         loadMainRows(),
         loadPackRows(),
         loadForjateRows(),
-        loadInventarRows()
+        loadInventarRows(),
+        loadMagnafluxRows(),
+        loadRebutPmRows()
       ]);
       state.rows = main.rows;
       state.updatedAt = main.updatedAt || state.updatedAt;
       state.packRows = packRows;
       state.forjateRows = forjateRows;
       state.inventarRows = inventarRows;
+      state.magnafluxRows = magnafluxRows;
+      state.rebutPmRows = rebutPmRows;
       refreshFilters();
       renderTable();
       if(options.showBadge !== false) setCloudBadge('Cloud: conectat', 'ok');
