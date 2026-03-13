@@ -278,15 +278,13 @@
     const INVENTAR_LOCAL_YEAR_PREFIX = 'rf_inventar_forjat_cache_v1:';
     const MAGNAFLUX_DOC_KEYS = ['magnaflux','MAGNAFLUX','Magnaflux'];
     const REBUT_PM_DOC_KEYS = ['rebut-pm','rebut_pm','Rebut PM','rebut pm'];
-    const MAGNAFLUX_LOCAL_KEY = 'rf_zale248_magnaflux_cache_v1';
-    const REBUT_PM_LOCAL_KEY = 'rf_zale248_rebutpm_cache_v1';
     const MF_CODES = ['LM','IBT','SM','FTT','FL','LMC','DES','AS','DIV'];
     const PM_CODES = ['06','07','13'];
     const ADMIN_EMAIL = 'forja.editor@gmail.com';
     const DOC_TABLE = 'rf_documents';
     const SAVE_DEBOUNCE_MS = 900;
-    const REFRESH_MS_VISIBLE = 90000;
-    const REFRESH_MS_HIDDEN = 240000;
+    const REFRESH_MS_VISIBLE = 15000;
+    const REFRESH_MS_HIDDEN = 45000;
     const TRUCK_SIZE = 1650;
     const MONTHS = ['Ianuarie','Februarie','Martie','Aprilie','Mai','Iunie','Iulie','August','Septembrie','Octombrie','Noiembrie','Decembrie'];
     const FORM_MONTHS = Object.fromEntries(MONTHS.map((m,i)=> [i+1,m]));
@@ -599,23 +597,6 @@
         return null;
       }
     }
-    async function readDocsByKeys(docKeys) {
-      const client = await createSupabaseClient();
-      if(!(client && authState && authState.user && Array.isArray(docKeys) && docKeys.length)) return [];
-      const cols = await detectDocColumns();
-      try {
-        const selectCols = ['doc_key', ...cols, 'updated_at'].join(',');
-        const { data, error } = await client.from(DOC_TABLE).select(selectCols).in('doc_key', docKeys);
-        if(error || !Array.isArray(data) || !data.length) return [];
-        return data.map(item => ({
-          doc_key: item.doc_key,
-          payload: item.content ?? item.data ?? null,
-          updated_at: item.updated_at || null
-        }));
-      } catch(_) {
-        return [];
-      }
-    }
     async function writeDoc(docKey, payload) {
       const client = await createSupabaseClient();
       if(!(client && authState && authState.user && docKey)) return false;
@@ -859,14 +840,12 @@
       if(authState && authState.user) {
         const indexDoc = await readDocByKey(FORJATE_CLOUD_INDEX_KEY);
         const years = extractYears(indexDoc && indexDoc.payload);
-        const yearDocs = years.length ? await readDocsByKeys(years.map(year => FORJATE_CLOUD_YEAR_PREFIX + year)) : [];
-        yearDocs.forEach(doc => {
+        for(const year of years) {
+          const doc = await readDocByKey(FORJATE_CLOUD_YEAR_PREFIX + year);
           if(doc && doc.payload) rows.push(...resolveRowsPayload(doc.payload));
-        });
-        const legacyDocs = await readDocsByKeys(FORJATE_DOC_KEYS);
-        legacyDocs.forEach(doc => {
-          if(doc && doc.payload) rows.push(...resolveRowsPayload(doc.payload));
-        });
+        }
+        const legacy = await readDocByKeys(FORJATE_DOC_KEYS);
+        if(legacy && legacy.payload) rows.push(...resolveRowsPayload(legacy.payload));
       }
       return dedupeRows(rows.map(normalizeForjateRow).filter(r => r.reper && r.an && r.luna), row => [row.an,row.luna,row.reper,row.data,row.piese_bune].join('|'));
     }
@@ -927,14 +906,12 @@
       if(authState && authState.user) {
         const indexDoc = await readDocByKeys(INVENTAR_INDEX_DOC_KEYS);
         const years = extractYears(indexDoc && indexDoc.payload);
-        const yearDocs = years.length ? await readDocsByKeys(years.map(year => INVENTAR_CLOUD_YEAR_PREFIX + year)) : [];
-        yearDocs.forEach(doc => {
+        for(const year of years) {
+          const doc = await readDocByKey(INVENTAR_CLOUD_YEAR_PREFIX + year);
           if(doc && doc.payload) rows.push(...resolveRowsPayload(doc.payload));
-        });
-        const legacyDocs = await readDocsByKeys(INVENTAR_DOC_KEYS);
-        legacyDocs.forEach(doc => {
-          if(doc && doc.payload) rows.push(...resolveRowsPayload(doc.payload));
-        });
+        }
+        const legacy = await readDocByKeys(INVENTAR_DOC_KEYS);
+        if(legacy && legacy.payload) rows.push(...resolveRowsPayload(legacy.payload));
       }
       return dedupeRows(rows.map(normalizeInventarRow).filter(r => r.reper && r.an && r.luna), row => [row.an,row.luna,row.reper,row.data,row.stoc_final].join('|'));
     }
@@ -993,27 +970,17 @@
     }
     async function loadMagnafluxRows() {
       let rows = [];
-      const local = readLocalJson(MAGNAFLUX_LOCAL_KEY);
-      if(local) rows.push(...resolveRowsPayload(local));
       if(authState && authState.user) {
         const cloud = await readDocByKeys(MAGNAFLUX_DOC_KEYS);
-        if(cloud && cloud.payload) {
-          rows = resolveRowsPayload(cloud.payload);
-          writeLocalJson(MAGNAFLUX_LOCAL_KEY, { rows, updated_at: cloud.updated_at || nowIso() });
-        }
+        if(cloud && cloud.payload) rows.push(...resolveRowsPayload(cloud.payload));
       }
       return normalizeMagnafluxRows(rows);
     }
     async function loadRebutPmRows() {
       let rows = [];
-      const local = readLocalJson(REBUT_PM_LOCAL_KEY);
-      if(local) rows.push(...resolveRowsPayload(local));
       if(authState && authState.user) {
         const cloud = await readDocByKeys(REBUT_PM_DOC_KEYS);
-        if(cloud && cloud.payload) {
-          rows = resolveRowsPayload(cloud.payload);
-          writeLocalJson(REBUT_PM_LOCAL_KEY, { rows, updated_at: cloud.updated_at || nowIso() });
-        }
+        if(cloud && cloud.payload) rows.push(...resolveRowsPayload(cloud.payload));
       }
       return dedupeRows(rows.map(normalizePmRow).filter(Boolean), row => [row.an,row.luna,row.reper,row.cod,row.qty].join('|'));
     }
@@ -1501,49 +1468,6 @@
       renderTable();
       queueSave();
     }
-    function primeLocalRender() {
-      try {
-        const localMain = readLocalJson(LOCAL_KEY);
-        state.rows = (localMain ? resolveRowsPayload(localMain) : JSON.parse(JSON.stringify(SEED_ROWS))).map(normalizeMainRow).sort(transportSort);
-
-        const localPack = readLocalJson(PACK_LOCAL_KEY);
-        state.packRows = localPack ? dedupeRows(resolveRowsPayload(localPack).map(normalizePackRow), row => [row.nr_transport,row.lada,row.reper,row.cod_matrita,row.cod_cat,row.buc,row.data,row.operator,row.schimbul].join('|')) : [];
-
-        let localForjate = [];
-        FORJATE_LOCAL_KEYS.forEach(key => {
-          const payload = readLocalJson(key);
-          if(payload) localForjate.push(...resolveRowsPayload(payload));
-        });
-        FORJATE_YEAR_INDEX_KEYS.forEach(indexKey => {
-          const idx = readLocalJson(indexKey);
-          extractYears(idx).forEach(year => {
-            FORJATE_YEAR_PREFIXES.forEach(prefix => {
-              const payload = readLocalJson(prefix + year);
-              if(payload) localForjate.push(...resolveRowsPayload(payload));
-            });
-          });
-        });
-        state.forjateRows = dedupeRows(localForjate.map(normalizeForjateRow).filter(r => r.reper && r.an && r.luna), row => [row.an,row.luna,row.reper,row.data,row.piese_bune].join('|'));
-
-        let localInventar = [];
-        const localInventarIndex = readLocalJson(INVENTAR_LOCAL_INDEX_KEY);
-        extractYears(localInventarIndex).forEach(year => {
-          const payload = readLocalJson(INVENTAR_LOCAL_YEAR_PREFIX + year);
-          if(payload) localInventar.push(...resolveRowsPayload(payload));
-        });
-        state.inventarRows = dedupeRows(localInventar.map(normalizeInventarRow).filter(r => r.reper && r.an && r.luna), row => [row.an,row.luna,row.reper,row.data,row.stoc_final].join('|'));
-
-        const localMagna = readLocalJson(MAGNAFLUX_LOCAL_KEY);
-        state.magnafluxRows = normalizeMagnafluxRows(localMagna ? resolveRowsPayload(localMagna) : []);
-
-        const localPm = readLocalJson(REBUT_PM_LOCAL_KEY);
-        state.rebutPmRows = dedupeRows((localPm ? resolveRowsPayload(localPm) : []).map(normalizePmRow).filter(Boolean), row => [row.an,row.luna,row.reper,row.cod,row.qty].join('|'));
-
-        refreshFilters();
-        renderTable();
-      } catch(_) {}
-    }
-
     async function refreshAll(options={}) {
       if(options.showBadge !== false) setCloudBadge('Cloud: actualizez…', 'warn');
       const [main, packRows, forjateRows, inventarRows, magnafluxRows, rebutPmRows] = await Promise.all([
@@ -1622,7 +1546,6 @@
     }
     async function init() {
       bindEvents();
-      primeLocalRender();
       const ok = await bootstrapAuth();
       if(!ok) return;
       await refreshAll({ showBadge:false });
