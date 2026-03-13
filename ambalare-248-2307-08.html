@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Ambalare 248 - ERP Forjă</title>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/jspdf-autotable@3.8.4/dist/jspdf.plugin.autotable.min.js"></script>
   <script src="./rf-config.js"></script>
@@ -117,12 +118,9 @@
         <button class="btn" id="btnAddTruck">Adaugă camion complet</button>
         <button class="btn-soft" id="btnAddRow">Adaugă rând</button>
         <button class="btn-soft" id="btnRefresh">Refresh</button>
-        <input id="fileImportJson" type="file" accept=".json,application/json" class="hidden" />
+        <input id="fileImportJson" type="file" accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" class="hidden" />
         <button class="btn-soft" id="btnImport">Import</button>
         <button class="btn-soft" id="btnExport">Export</button>
-        <button class="btn-soft" id="btnPdf">Export PDF</button>
-        <button class="btn-danger" id="btnDelete">Șterge selectatul</button>
-        <button class="btn-danger" id="btnDeleteTruck">Șterge camionul</button>
       </div>
     </div>
 
@@ -349,6 +347,12 @@ function setCloudBadge(text, cls){
 function canEdit(){
   const role = String((authState && authState.role) || 'viewer').toLowerCase();
   return role !== 'viewer';
+}
+function isLocalOnlyMode(){
+  return !(authState && authState.user);
+}
+function canModifyRows(){
+  return canEdit() || isLocalOnlyMode();
 }
 async function createSupabase(){
   if(window.ERPAuth && typeof window.ERPAuth.getSupabaseClient === 'function'){
@@ -598,7 +602,7 @@ function fillSelect(select, values, includeAll=true, allLabel='Toate'){
     }
 
     function openRowModal(id = null){
-      if(!canEdit()) return;
+      if(!canModifyRows()) return;
       state.editingId = id;
       const row = state.rows.find(r => r.id === id) || normalizeRow({
         nr_transport: String(Math.max(0, ...state.rows.map(r => toInt(r.nr_transport))) + 1),
@@ -618,7 +622,7 @@ function fillSelect(select, values, includeAll=true, allLabel='Toate'){
     }
     function closeRowModal(){ document.getElementById('modalRowWrap').classList.remove('show'); state.editingId = null; }
     function openTruckModal(){
-      if(!canEdit()) return;
+      if(!canModifyRows()) return;
       const next = Math.max(0, ...state.rows.map(r => toInt(r.nr_transport))) + 1;
       document.getElementById('t_transport').value = String(next);
       document.getElementById('t_data').value = normalizeDate(new Date());
@@ -646,7 +650,7 @@ function fillSelect(select, values, includeAll=true, allLabel='Toate'){
     }
 
     async function deleteSelectedTruck(){
-      if(!canEdit()) return;
+      if(!canModifyRows()) return;
       const selected = getSelectedRow();
       if(!selected){ alert('Selectează mai întâi un rând din camionul pe care vrei să îl ștergi.'); return; }
       const truckRows = state.rows.filter(r => isSameTruck(r, selected));
@@ -668,29 +672,92 @@ function fillSelect(select, values, includeAll=true, allLabel='Toate'){
     }
 
     function exportJson(){
-      const payload = {
-        page_key: PAGE_KEY,
-        exported_at: nowIso(),
-        rows: state.rows
+      if(!window.XLSX){
+        alert('Librăria Excel nu a fost încărcată.');
+        return;
+      }
+      const exportRows = state.rows.map(r => ({
+        'Nr transport': toStr(r.nr_transport),
+        'Lada': toStr(r.lada),
+        'Reper': toStr(r.reper),
+        'Cod matriță': toStr(r.cod_matrita),
+        'Cod-Cat': toStr(r.cod_cat),
+        'Buc': toInt(r.buc),
+        'Operator': toStr(r.operator),
+        'Data': toStr(r.data),
+        'Schimbul': toStr(r.schimbul)
+      }));
+      const ws = window.XLSX.utils.json_to_sheet(exportRows.length ? exportRows : [{
+        'Nr transport':'', 'Lada':'', 'Reper':'', 'Cod matriță':'', 'Cod-Cat':'', 'Buc':'', 'Operator':'', 'Data':'', 'Schimbul':''
+      }]);
+      ws['!cols'] = [
+        { wch: 14 }, { wch: 10 }, { wch: 14 }, { wch: 18 }, { wch: 16 }, { wch: 10 }, { wch: 18 }, { wch: 14 }, { wch: 10 }
+      ];
+      const wb = window.XLSX.utils.book_new();
+      window.XLSX.utils.book_append_sheet(wb, ws, 'Ambalare 248');
+      window.XLSX.writeFile(wb, 'ambalare-248.xlsx');
+    }
+
+    function mapImportedExcelRow(source){
+      const mapped = {};
+      const headerMap = {
+        'id':'id',
+        'nr transport':'nr_transport',
+        'transport':'nr_transport',
+        'lada':'lada',
+        'reper':'reper',
+        'cod matrita':'cod_matrita',
+        'cod cat':'cod_cat',
+        'buc':'buc',
+        'bucati':'buc',
+        'operator':'operator',
+        'data':'data',
+        'schimb':'schimbul',
+        'schimbul':'schimbul'
       };
-      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = 'ambalare-248.json';
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(url);
+      for(const [key, value] of Object.entries(source || {})){
+        const target = headerMap[normKey(key)];
+        if(target) mapped[target] = value;
+      }
+      return normalizeRow({
+        id: mapped.id || uid('pk'),
+        nr_transport: mapped.nr_transport,
+        lada: mapped.lada,
+        reper: mapped.reper,
+        cod_matrita: mapped.cod_matrita,
+        cod_cat: mapped.cod_cat,
+        buc: mapped.buc,
+        operator: mapped.operator,
+        data: mapped.data,
+        schimbul: mapped.schimbul
+      });
     }
 
     async function importJsonFile(file){
-      if(!canEdit()) return;
+      if(!canModifyRows()) return;
       if(!file) return;
+      if(!window.XLSX){
+        alert('Librăria Excel nu a fost încărcată.');
+        return;
+      }
       try{
-        const text = await file.text();
-        const payload = JSON.parse(text);
-        const rows = resolveRowsPayload(payload).map(normalizeRow).sort(rowSort);
+        const buffer = await file.arrayBuffer();
+        const workbook = window.XLSX.read(buffer, { type:'array', cellDates:true, raw:false });
+        const sheetName = workbook.SheetNames && workbook.SheetNames[0];
+        if(!sheetName){
+          alert('Fișierul Excel nu conține foi.');
+          return;
+        }
+        const sheet = workbook.Sheets[sheetName];
+        const rawRows = window.XLSX.utils.sheet_to_json(sheet, { defval:'', raw:false });
+        const rows = rawRows
+          .map(mapImportedExcelRow)
+          .filter(r => r.nr_transport || r.lada || r.reper || r.cod_matrita || r.cod_cat || r.buc || r.operator || r.data || r.schimbul)
+          .sort(rowSort);
+        if(!rows.length){
+          alert('Fișierul Excel nu conține rânduri valide pentru import.');
+          return;
+        }
         state.rows = rows;
         state.selectedId = rows[0] ? rows[0].id : null;
         refreshFilters();
@@ -698,51 +765,14 @@ function fillSelect(select, values, includeAll=true, allLabel='Toate'){
         renderSummary();
         debounceSave(persistRows);
       }catch(error){
-        console.error('Import JSON error:', error);
-        alert('Fișierul de import nu este valid.');
+        console.error('Import Excel error:', error);
+        alert('Fișierul Excel de import nu este valid.');
       }
       document.getElementById('fileImportJson').value = '';
     }
 
-    function exportPdf(){
-      const rows = filteredRows();
-      if(!rows.length){ alert('Nu există rânduri pentru export PDF.'); return; }
-      if(!window.jspdf || typeof window.jspdf.jsPDF !== 'function'){
-        alert('Librăria PDF nu a fost încărcată.');
-        return;
-      }
-      const { jsPDF } = window.jspdf;
-      const pdf = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
-      const activeYear = document.getElementById('fltYear').value || 'Toți anii';
-      pdf.setFontSize(16);
-      pdf.text('Ambalare 248', 14, 12);
-      pdf.setFontSize(10);
-      pdf.text(`An: ${activeYear} | Rânduri: ${fmtInt(rows.length)} | Export: ${new Date().toLocaleString('ro-RO')}`, 14, 18);
-      pdf.autoTable({
-        startY: 22,
-        head: [['Nr Transp','Lada','Reper','Cod Matriță','Cod-Cat','Buc','Operator','Data','Schimbul']],
-        body: rows.map(r => [
-          toStr(r.nr_transport),
-          toStr(r.lada),
-          toStr(r.reper),
-          toStr(r.cod_matrita),
-          toStr(r.cod_cat),
-          fmtInt(r.buc),
-          toStr(r.operator),
-          toStr(r.data),
-          toStr(r.schimbul)
-        ]),
-        theme: 'grid',
-        styles: { fontSize: 8, cellPadding: 1.7, textColor: [23,50,74] },
-        headStyles: { fillColor: [207,227,246], textColor: [23,50,74] },
-        margin: { top: 22, right: 8, bottom: 8, left: 8 }
-      });
-      const safeYear = activeYear === 'Toți anii' ? 'toate' : activeYear;
-      pdf.save(`ambalare_248_${safeYear}.pdf`);
-    }
-
     async function saveRow(){
-      if(!canEdit()) return;
+      if(!canModifyRows()) return;
       const row = normalizeRow({
         id: state.editingId || uid('pk'),
         nr_transport: document.getElementById('r_transport').value,
@@ -764,7 +794,7 @@ function fillSelect(select, values, includeAll=true, allLabel='Toate'){
     }
 
     async function generateTruck(){
-      if(!canEdit()) return;
+      if(!canModifyRows()) return;
       const nr = toStr(document.getElementById('t_transport').value);
       const data = normalizeDate(document.getElementById('t_data').value);
       const shift = toStr(document.getElementById('t_shift').value) || '1';
@@ -803,20 +833,16 @@ function fillSelect(select, values, includeAll=true, allLabel='Toate'){
       const main = await loadDocByKeys(DOC_KEYS, LOCAL_KEY, SEED_ROWS);
       state.rows = (main.rows || []).map(normalizeRow).sort(rowSort);
       refreshFilters(); renderTable(); renderSummary();
-      document.getElementById('btnDelete').disabled = !canEdit();
-      document.getElementById('btnDeleteTruck').disabled = !canEdit();
-      document.getElementById('btnAddTruck').disabled = !canEdit();
-      document.getElementById('btnAddRow').disabled = !canEdit();
-      document.getElementById('btnImport').disabled = !canEdit();
+      document.getElementById('btnAddTruck').disabled = !canModifyRows();
+      document.getElementById('btnAddRow').disabled = !canModifyRows();
+      document.getElementById('btnImport').disabled = !canModifyRows();
+      document.getElementById('btnExport').disabled = false;
       document.getElementById('btnAddTruck').addEventListener('click', openTruckModal);
       document.getElementById('btnAddRow').addEventListener('click', () => openRowModal());
       document.getElementById('btnRefresh').addEventListener('click', async () => { const main2 = await loadDocByKeys(DOC_KEYS, LOCAL_KEY, SEED_ROWS); state.rows = (main2.rows || []).map(normalizeRow).sort(rowSort); refreshFilters(); renderTable(); renderSummary(); });
-      document.getElementById('btnImport').addEventListener('click', () => { if(canEdit()) document.getElementById('fileImportJson').click(); });
+      document.getElementById('btnImport').addEventListener('click', () => { if(canModifyRows()) document.getElementById('fileImportJson').click(); });
       document.getElementById('btnExport').addEventListener('click', exportJson);
-      document.getElementById('btnPdf').addEventListener('click', exportPdf);
       document.getElementById('fileImportJson').addEventListener('change', event => importJsonFile(event.target.files && event.target.files[0]));
-      document.getElementById('btnDelete').addEventListener('click', async () => { if(!canEdit() || !state.selectedId) return; state.rows = state.rows.filter(r => r.id !== state.selectedId); state.selectedId = null; refreshFilters(); renderTable(); renderSummary(); debounceSave(persistRows); });
-      document.getElementById('btnDeleteTruck').addEventListener('click', deleteSelectedTruck);
       document.getElementById('btnClearFilters').addEventListener('click', () => { ['fltYear','fltTransport','fltData','colTransport','colLada','colBuc','colData'].forEach(id => document.getElementById(id).value=''); ['fltReper','fltMatrita','fltCodCat','fltOperator','fltShift','colReper','colMatrita','colCodCat','colOperator','colShift'].forEach(id => document.getElementById(id).value=''); renderTable(); renderSummary(); });
       ['fltYear','fltTransport','fltReper','fltMatrita','fltCodCat','fltOperator','fltData','fltShift','colTransport','colLada','colReper','colMatrita','colCodCat','colBuc','colOperator','colData','colShift'].forEach(id => {
         const el = document.getElementById(id);
