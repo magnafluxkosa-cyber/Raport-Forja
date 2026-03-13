@@ -128,7 +128,6 @@
     .date-past, tbody td.date-past{background:#dff3df !important;}
     .date-future, tbody td.date-future{background:#fff4bf !important;}
     .ambalat-warn, tbody td.ambalat-warn{background:#fff4bf !important;color:#c62828 !important;font-weight:800 !important;}
-    .ambalat-ok, tbody td.ambalat-ok{background:#dff3df !important;}
     .date-inline-input{width:100%;min-width:96px;height:28px;border:1px solid #95b5cd;border-radius:6px;padding:4px 6px;font-size:12px;font-weight:700;color:var(--text);background:#fff;outline:none}
 
   </style>
@@ -585,41 +584,63 @@
       }
     }
     async function readDocByKeys(docKeys) {
-      const docs = await readDocsByKeys(docKeys);
-      if(!docs.length) return null;
-      return docs[0];
-    }
-    async function readDocsByKeys(docKeys) {
       const client = await createSupabaseClient();
-      if(!(client && authState && authState.user && Array.isArray(docKeys) && docKeys.length)) return [];
+      if(!(client && authState && authState.user && Array.isArray(docKeys) && docKeys.length)) return null;
       const cols = await detectDocColumns();
       try {
         const selectCols = ['doc_key', ...cols, 'updated_at'].join(',');
         const { data, error } = await client.from(DOC_TABLE).select(selectCols).in('doc_key', docKeys);
-        if(error || !Array.isArray(data) || !data.length) return [];
-        const ordered = [];
-        docKeys.forEach(key => {
-          data.filter(x => x.doc_key === key).forEach(item => {
-            ordered.push({
-              doc_key: item.doc_key,
-              payload: item.content ?? item.data ?? null,
-              updated_at: item.updated_at || null
-            });
-          });
-        });
-        data.forEach(item => {
-          if(!ordered.find(x => x.doc_key === item.doc_key)) {
-            ordered.push({
-              doc_key: item.doc_key,
-              payload: item.content ?? item.data ?? null,
-              updated_at: item.updated_at || null
-            });
-          }
-        });
-        return ordered;
+        if(error || !Array.isArray(data) || !data.length) return null;
+        const exact = docKeys.map(k => data.find(x => x.doc_key === k)).find(Boolean) || data[0];
+        return exact ? {
+          doc_key: exact.doc_key,
+          payload: exact.content ?? exact.data ?? null,
+          updated_at: exact.updated_at || null
+        } : null;
       } catch(_) {
-        return [];
+        return null;
       }
+    }
+    function packStorageKeyMatches(key) {
+      const k = toStr(key).toLowerCase();
+      if(!k) return false;
+      const hasAmb = k.includes('ambal');
+      const has248 = k.includes('248') || k.includes('2307') || k.includes('2308');
+      return hasAmb && has248;
+    }
+    function collectLocalPackPayloads() {
+      const payloads = [];
+      try {
+        for(let i = 0; i < localStorage.length; i += 1) {
+          const key = localStorage.key(i);
+          if(!packStorageKeyMatches(key)) continue;
+          const parsed = readLocalJson(key);
+          if(parsed) payloads.push(parsed);
+        }
+      } catch(_) {}
+      return payloads;
+    }
+    async function readPackDocsFromCloud() {
+      const client = await createSupabaseClient();
+      if(!(client && authState && authState.user)) return [];
+      const cols = await detectDocColumns();
+      const selectCols = ['doc_key', ...cols, 'updated_at'].join(',');
+      const out = [];
+      try {
+        const { data, error } = await client.from(DOC_TABLE).select(selectCols).ilike('doc_key', '%ambal%');
+        if(!error && Array.isArray(data)) out.push(...data);
+      } catch(_) {}
+      if(!out.length) {
+        try {
+          const { data, error } = await client.from(DOC_TABLE).select(selectCols).limit(300);
+          if(!error && Array.isArray(data)) out.push(...data.filter(row => packStorageKeyMatches(row.doc_key)));
+        } catch(_) {}
+      }
+      return out.filter(row => packStorageKeyMatches(row.doc_key)).map(row => ({
+        doc_key: row.doc_key,
+        payload: row.content ?? row.data ?? null,
+        updated_at: row.updated_at || null
+      }));
     }
     async function writeDoc(docKey, payload) {
       const client = await createSupabaseClient();
@@ -847,31 +868,12 @@
           });
         });
       });
+      collectLocalPackPayloads().forEach(payload => rows.push(...resolveRowsPayload(payload)));
       if(authState && authState.user) {
-        const cloudDocs = await readDocsByKeys(PACK_DOC_KEYS);
-        let bestCloudRows = [];
-        let bestUpdatedAt = null;
+        const cloudDocs = await readPackDocsFromCloud();
         cloudDocs.forEach(doc => {
-          const docRows = resolveRowsPayload(doc && doc.payload);
-          if(docRows.length) {
-            rows.push(...docRows);
-            if(docRows.length > bestCloudRows.length) {
-              bestCloudRows = docRows;
-              bestUpdatedAt = doc.updated_at || null;
-            }
-          }
+          if(doc && doc.payload) rows.push(...resolveRowsPayload(doc.payload));
         });
-        if(bestCloudRows.length) {
-          writeLocalJson(PACK_LOCAL_KEY, { rows: bestCloudRows, updated_at: bestUpdatedAt || nowIso() });
-        }
-        const indexDocs = await readDocsByKeys(PACK_INDEX_DOC_KEYS);
-        const years = Array.from(new Set(indexDocs.flatMap(doc => extractYears(doc && doc.payload)))).sort((a,b)=> Number(a)-Number(b));
-        for(const year of years) {
-          for(const prefix of PACK_CLOUD_YEAR_PREFIXES) {
-            const doc = await readDocByKey(prefix + year);
-            if(doc && doc.payload) rows.push(...resolveRowsPayload(doc.payload));
-          }
-        }
       }
       return dedupeRows(
         rows.map(normalizePackRow).filter(r => r.nr_transport && r.reper),
@@ -1124,8 +1126,8 @@
         let remaining2307 = toInt(monthlyTotals.get(key2307)) + toInt(previousStock.p2307) - externalRebut2307;
         let remaining2308 = toInt(monthlyTotals.get(key2308)) + toInt(previousStock.p2308) - externalRebut2308;
         monthRows.forEach((base, idx) => {
-          const pack = packTotals.get(toStr(base.nr_transport)) || { p2307:0, p2308:0 };
-          const hasPack = toInt(pack.p2307) !== 0 || toInt(pack.p2308) !== 0;
+          const pack = packTotals.get(toStr(base.nr_transport));
+          const hasPack = !!pack;
           const forceScriptic1650 = isScripticUntilFeb2026(year, month);
           const default2307 = forceScriptic1650 ? 1650 : ((has2307 || previousStock.p2307) ? Math.min(TRUCK_SIZE, remaining2307) : toInt(base.forjat_2307));
           const default2308 = forceScriptic1650 ? 1650 : ((has2308 || previousStock.p2308) ? Math.min(TRUCK_SIZE, remaining2308) : toInt(base.forjat_2308));
@@ -1134,8 +1136,8 @@
           remaining2307 = Math.max(0, remaining2307 - forjat2307);
           remaining2308 = Math.max(0, remaining2308 - forjat2308);
 
-          const ambalat2307 = toInt(pack.p2307);
-          const ambalat2308 = toInt(pack.p2308);
+          const ambalat2307 = hasPack ? toInt(pack.p2307) : toInt(base.ambalat_2307);
+          const ambalat2308 = hasPack ? toInt(pack.p2308) : toInt(base.ambalat_2308);
           const autoTratate2307 = hasPack ? ambalat2307 : toInt(base.tratate_2307);
           const autoTratate2308 = hasPack ? ambalat2308 : toInt(base.tratate_2308);
           const tratate2307 = base.manual_tratate_2307 != null ? toInt(base.manual_tratate_2307) : autoTratate2307;
@@ -1269,12 +1271,10 @@
       return '';
     }
     function getAmbalatCellClass(value) {
-      return toInt(value) === 1650 ? 'ambalat-ok' : 'ambalat-warn';
+      return toInt(value) < 1650 ? 'ambalat-warn' : '';
     }
     function getAmbalatCellStyle(value) {
-      return toInt(value) === 1650
-        ? 'background:#dff3df !important;'
-        : 'background:#fff4bf !important;color:#c62828 !important;font-weight:800 !important;';
+      return toInt(value) < 1650 ? 'background:#fff4bf !important;color:#c62828 !important;font-weight:800 !important;' : '';
     }
     function saveInlineDate(rowId, rawValue) {
       if(!pageAccess.can_edit) return;
