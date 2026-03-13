@@ -601,46 +601,22 @@
         return null;
       }
     }
-    function packStorageKeyMatches(key) {
-      const k = toStr(key).toLowerCase();
-      if(!k) return false;
-      const hasAmb = k.includes('ambal');
-      const has248 = k.includes('248') || k.includes('2307') || k.includes('2308');
-      return hasAmb && has248;
-    }
-    function collectLocalPackPayloads() {
-      const payloads = [];
-      try {
-        for(let i = 0; i < localStorage.length; i += 1) {
-          const key = localStorage.key(i);
-          if(!packStorageKeyMatches(key)) continue;
-          const parsed = readLocalJson(key);
-          if(parsed) payloads.push(parsed);
-        }
-      } catch(_) {}
-      return payloads;
-    }
-    async function readPackDocsFromCloud() {
+    async function readDocsByPrefix(prefix) {
       const client = await createSupabaseClient();
-      if(!(client && authState && authState.user)) return [];
+      if(!(client && authState && authState.user && prefix)) return [];
       const cols = await detectDocColumns();
-      const selectCols = ['doc_key', ...cols, 'updated_at'].join(',');
-      const out = [];
       try {
-        const { data, error } = await client.from(DOC_TABLE).select(selectCols).ilike('doc_key', '%ambal%');
-        if(!error && Array.isArray(data)) out.push(...data);
-      } catch(_) {}
-      if(!out.length) {
-        try {
-          const { data, error } = await client.from(DOC_TABLE).select(selectCols).limit(300);
-          if(!error && Array.isArray(data)) out.push(...data.filter(row => packStorageKeyMatches(row.doc_key)));
-        } catch(_) {}
+        const selectCols = ['doc_key', ...cols, 'updated_at'].join(',');
+        const { data, error } = await client.from(DOC_TABLE).select(selectCols).like('doc_key', prefix + '%');
+        if(error || !Array.isArray(data) || !data.length) return [];
+        return data.map(item => ({
+          doc_key: item.doc_key,
+          payload: item.content ?? item.data ?? null,
+          updated_at: item.updated_at || null
+        }));
+      } catch(_) {
+        return [];
       }
-      return out.filter(row => packStorageKeyMatches(row.doc_key)).map(row => ({
-        doc_key: row.doc_key,
-        payload: row.content ?? row.data ?? null,
-        updated_at: row.updated_at || null
-      }));
     }
     async function writeDoc(docKey, payload) {
       const client = await createSupabaseClient();
@@ -855,26 +831,79 @@
       });
       return Array.from(map.values());
     }
+    function payloadHasPackRows(payload) {
+      const rows = resolveRowsPayload(payload);
+      if(!rows.length) return false;
+      return rows.some(row => {
+        const nr = pickValue(row || {}, ['nr_transport','nr transp','nr_transp','nr transport','Nr Transp','Nr. Transp','Nr Transport','Nr. Transport','transport','nr']);
+        const reper = pickValue(row || {}, ['reper','REPER','Reper']);
+        const buc = pickValue(row || {}, ['buc','BUC','Buc','cantitate','Cantitate']);
+        return toStr(nr) && toStr(reper) && toStr(buc) !== '';
+      });
+    }
     async function loadPackRows() {
       let rows = [];
-      const local = readLocalJson(PACK_LOCAL_KEY);
-      if(local) rows.push(...resolveRowsPayload(local));
+      const seenLocalKeys = new Set();
+      const pushPayload = (payload) => {
+        if(payload && payloadHasPackRows(payload)) rows.push(...resolveRowsPayload(payload));
+      };
+
+      [PACK_LOCAL_KEY, ...PACK_LOCAL_INDEX_KEYS].forEach(key => {
+        const payload = readLocalJson(key);
+        if(payload) {
+          seenLocalKeys.add(key);
+          pushPayload(payload);
+        }
+      });
       PACK_LOCAL_INDEX_KEYS.forEach(indexKey => {
         const idx = readLocalJson(indexKey);
         extractYears(idx).forEach(year => {
           PACK_LOCAL_YEAR_PREFIXES.forEach(prefix => {
-            const payload = readLocalJson(prefix + year);
-            if(payload) rows.push(...resolveRowsPayload(payload));
+            const key = prefix + year;
+            const payload = readLocalJson(key);
+            if(payload) {
+              seenLocalKeys.add(key);
+              pushPayload(payload);
+            }
           });
         });
       });
-      collectLocalPackPayloads().forEach(payload => rows.push(...resolveRowsPayload(payload)));
+      try {
+        for(let i = 0; i < localStorage.length; i++) {
+          const key = localStorage.key(i);
+          if(!key || seenLocalKeys.has(key)) continue;
+          const norm = stripDiacritics(key).toLowerCase();
+          if(!(norm.includes('ambalare') && norm.includes('248'))) continue;
+          const payload = readLocalJson(key);
+          if(payload) pushPayload(payload);
+        }
+      } catch(_) {}
+
       if(authState && authState.user) {
-        const cloudDocs = await readPackDocsFromCloud();
-        cloudDocs.forEach(doc => {
-          if(doc && doc.payload) rows.push(...resolveRowsPayload(doc.payload));
+        const cloudDocs = [];
+        const exactDoc = await readDocByKeys(PACK_DOC_KEYS);
+        if(exactDoc && exactDoc.payload) cloudDocs.push(exactDoc);
+
+        const indexDoc = await readDocByKeys(PACK_INDEX_DOC_KEYS);
+        extractYears(indexDoc && indexDoc.payload).forEach(year => {
+          PACK_CLOUD_YEAR_PREFIXES.forEach(prefix => cloudDocs.push({ doc_key: prefix + year, lazy: true }));
         });
+
+        for(const prefix of PACK_CLOUD_YEAR_PREFIXES) {
+          const docs = await readDocsByPrefix(prefix);
+          docs.forEach(doc => cloudDocs.push(doc));
+        }
+
+        const loaded = new Set();
+        for(const item of cloudDocs) {
+          const key = item && item.doc_key ? item.doc_key : '';
+          if(!key || loaded.has(key)) continue;
+          loaded.add(key);
+          const doc = item.lazy ? await readDocByKey(key) : item;
+          if(doc && doc.payload) pushPayload(doc.payload);
+        }
       }
+
       return dedupeRows(
         rows.map(normalizePackRow).filter(r => r.nr_transport && r.reper),
         row => [row.nr_transport,row.lada,row.reper,row.cod_matrita,row.cod_cat,row.buc,row.data,row.operator,row.schimbul].join('|')
@@ -1136,8 +1165,8 @@
           remaining2307 = Math.max(0, remaining2307 - forjat2307);
           remaining2308 = Math.max(0, remaining2308 - forjat2308);
 
-          const ambalat2307 = hasPack ? toInt(pack.p2307) : toInt(base.ambalat_2307);
-          const ambalat2308 = hasPack ? toInt(pack.p2308) : toInt(base.ambalat_2308);
+          const ambalat2307 = hasPack ? toInt(pack.p2307) : 0;
+          const ambalat2308 = hasPack ? toInt(pack.p2308) : 0;
           const autoTratate2307 = hasPack ? ambalat2307 : toInt(base.tratate_2307);
           const autoTratate2308 = hasPack ? ambalat2308 : toInt(base.tratate_2308);
           const tratate2307 = base.manual_tratate_2307 != null ? toInt(base.manual_tratate_2307) : autoTratate2307;
