@@ -982,6 +982,84 @@
         dom.selectedRoleBadge.textContent = 'rol curent: ' + selectedUserRole;
       }
 
+
+      async function saveRoleInProfiles(user, email, role){
+        const safeEmail = safeLower(email);
+        const safeRole = normalizeRole(role);
+        const safeUserId = user && user.user_id ? String(user.user_id).trim() : '';
+        let lastError = null;
+
+        if (safeUserId) {
+          try {
+            const res = await supabase.from('profiles').upsert({ user_id: safeUserId, email: safeEmail, role: safeRole }, { onConflict:'user_id' });
+            if (!res.error) return null;
+            lastError = res.error;
+          } catch (error) {
+            lastError = error;
+          }
+          try {
+            const upd = await supabase.from('profiles').update({ email: safeEmail, role: safeRole }).eq('user_id', safeUserId);
+            if (!upd.error) return null;
+            lastError = upd.error;
+          } catch (error) {
+            lastError = error;
+          }
+        }
+
+        if (safeEmail) {
+          try {
+            const existing = await supabase.from('profiles').select('user_id,email').eq('email', safeEmail).maybeSingle();
+            if (!existing.error && existing.data) {
+              if (existing.data.user_id) {
+                const updByUserId = await supabase.from('profiles').update({ role: safeRole, email: safeEmail }).eq('user_id', existing.data.user_id);
+                if (!updByUserId.error) return null;
+                lastError = updByUserId.error;
+              } else {
+                const updByEmail = await supabase.from('profiles').update({ role: safeRole }).eq('email', safeEmail);
+                if (!updByEmail.error) return null;
+                lastError = updByEmail.error;
+              }
+            }
+          } catch (error) {
+            lastError = error;
+          }
+        }
+
+        return lastError;
+      }
+
+      async function saveRoleInAcl(email, role){
+        const safeEmail = safeLower(email);
+        const safeRole = normalizeRole(role);
+        let lastError = null;
+        if (!safeEmail) return new Error('Email lipsă pentru rf_acl.');
+
+        try {
+          const upsertRes = await supabase.from('rf_acl').upsert({ email: safeEmail, role: safeRole, updated_at: new Date().toISOString() }, { onConflict:'email' });
+          if (!upsertRes.error) return null;
+          lastError = upsertRes.error;
+        } catch (error) {
+          lastError = error;
+        }
+
+        try {
+          const existing = await supabase.from('rf_acl').select('email').eq('email', safeEmail).maybeSingle();
+          if (!existing.error && existing.data) {
+            const updateRes = await supabase.from('rf_acl').update({ role: safeRole, updated_at: new Date().toISOString() }).eq('email', safeEmail);
+            if (!updateRes.error) return null;
+            lastError = updateRes.error;
+          } else {
+            const insertRes = await supabase.from('rf_acl').insert({ email: safeEmail, role: safeRole, updated_at: new Date().toISOString() });
+            if (!insertRes.error) return null;
+            lastError = insertRes.error;
+          }
+        } catch (error) {
+          lastError = error;
+        }
+
+        return lastError;
+      }
+
       async function saveSelectedUserRole(){
         if (!selectedUser) {
           showLeftMessage('Selectează mai întâi un utilizator.', 'error');
@@ -993,39 +1071,17 @@
         hideLeftMessage();
         showLeftMessage('Se salvează rolul pentru ' + email + '...', 'success');
 
-        let profileError = null;
-        let aclError = null;
-
+        const profileError = await saveRoleInProfiles(selectedUser, email, role);
+        const aclError = await saveRoleInAcl(email, role);
+        let mirrorError = null;
         try {
-          const payload = { email, role };
-          if (selectedUser.user_id) payload.user_id = selectedUser.user_id;
-          const res = await supabase.from('profiles').upsert(payload, { onConflict:'user_id' });
-          profileError = res.error || null;
-          if (profileError && selectedUser.user_id) {
-            const fallback = await supabase.from('profiles').update({ role }).eq('user_id', selectedUser.user_id);
-            profileError = fallback.error || null;
-          }
-          if (profileError) {
-            const byEmail = await supabase.from('profiles').update({ role }).eq('email', email);
-            profileError = byEmail.error || null;
-          }
+          await syncDashboardUserRoleMirror(email, role);
         } catch (error) {
-          profileError = error;
+          mirrorError = error;
         }
 
-        try {
-          const aclRes = await supabase.from('rf_acl').upsert({ email, role }, { onConflict:'email' });
-          aclError = aclRes.error || null;
-          if (aclError) {
-            const aclFallback = await supabase.from('rf_acl').update({ role }).eq('email', email);
-            aclError = aclFallback.error || null;
-          }
-        } catch (error) {
-          aclError = error;
-        }
-
-        if (profileError && aclError) {
-          showLeftMessage('Nu am putut salva rolul în profiles sau rf_acl. Verifică RLS și cheile unice.', 'error');
+        if (profileError && aclError && mirrorError) {
+          showLeftMessage('Nu am putut salva rolul în profiles, rf_acl sau oglinda dashboard_acl_v1. Verifică RLS și cheile unice.', 'error');
           return;
         }
 
