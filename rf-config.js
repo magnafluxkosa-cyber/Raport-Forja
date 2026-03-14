@@ -18,6 +18,8 @@
     { page_key: 'inventar-otel', page_name: 'Inventar Oțel' },
     { page_key: 'inventar-debitat', page_name: 'Inventar Debitat' },
     { page_key: 'inventar-forjat', page_name: 'Inventar Forjat' },
+    { page_key: 'planificare-forja', page_name: 'Planificare Forjă' },
+    { page_key: 'comenzi-livrare', page_name: 'Comenzi Livrare' },
     { page_key: 'zale-9k-6628-29', page_name: '9K-6628/29' },
     { page_key: 'zale-229-6909-10', page_name: '229-6909/10' },
     { page_key: 'zale-503-0761-62', page_name: '503-0761/62' },
@@ -1179,6 +1181,11 @@
   }
 
   window.RF_CONFIG = CONFIG;
+  window.ERP_FORJA_CONFIG = window.ERP_FORJA_CONFIG || {};
+  window.ERP_FORJA_CONFIG.SUPABASE_URL = CONFIG.SUPABASE_URL;
+  window.ERP_FORJA_CONFIG.SUPABASE_ANON_KEY = CONFIG.SUPABASE_ANON_KEY;
+  window.ERP_FORJA_CONFIG.ADMIN_EMAIL = CONFIG.ADMIN_EMAIL;
+  window.__ERP_FORJA_CONFIG__ = window.ERP_FORJA_CONFIG;
   window.RF_SUPABASE_URL = CONFIG.SUPABASE_URL;
   window.RF_SUPABASE_ANON_KEY = CONFIG.SUPABASE_ANON_KEY;
   window.RF_ADMIN_EMAIL = CONFIG.ADMIN_EMAIL;
