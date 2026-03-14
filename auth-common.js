@@ -165,6 +165,41 @@
     return data && data.role ? String(data.role).trim() : '';
   }
 
+
+  async function readRoleMirror(sb){
+    const tryContent = async () => {
+      const data = await maybeSelect(
+        sb.from('rf_documents')
+          .select('content')
+          .eq('doc_key', 'acl_roles_v1')
+          .maybeSingle()
+      );
+      return data && data.content && typeof data.content === 'object' ? data.content : null;
+    };
+
+    const tryData = async () => {
+      const data = await maybeSelect(
+        sb.from('rf_documents')
+          .select('data')
+          .eq('doc_key', 'acl_roles_v1')
+          .maybeSingle()
+      );
+      return data && data.data && typeof data.data === 'object' ? data.data : null;
+    };
+
+    return (await tryContent()) || (await tryData()) || null;
+  }
+
+  async function tryRoleFromMirror(sb, email){
+    const doc = await readRoleMirror(sb);
+    const roles = doc && doc.roles && typeof doc.roles === 'object' ? doc.roles : null;
+    if(!roles){
+      return '';
+    }
+    const byNormalized = roles[normalizeEmail(email)];
+    return byNormalized ? String(byNormalized).trim() : '';
+  }
+
   async function resolveUserRole(user){
     const email = normalizeEmail(user && user.email);
     if(!user){
@@ -180,7 +215,8 @@
       () => tryRoleFromProfilesByUserId(sb, user.id),
       () => tryRoleFromProfilesByLegacyId(sb, user.id),
       () => tryRoleFromProfilesByEmail(sb, email),
-      () => tryRoleFromAcl(sb, email)
+      () => tryRoleFromAcl(sb, email),
+      () => tryRoleFromMirror(sb, email)
     ];
 
     for(const attempt of attempts){

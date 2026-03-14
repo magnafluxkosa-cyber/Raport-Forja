@@ -988,58 +988,51 @@
           return;
         }
 
-        const email = safeLower(selectedUser.email);
+        const email = safeLower(selectedUser && selectedUser.email);
         const role = normalizeRole(selectedUserRole);
+        selectedUser.email = email;
         hideLeftMessage();
         showLeftMessage('Se salvează rolul pentru ' + email + '...', 'success');
 
         let profileError = null;
         let aclError = null;
-        const now = new Date().toISOString();
 
         try {
-          const aclPayload = { email, role, updated_at: now };
-          const aclRes = await supabase.from('rf_acl').upsert(aclPayload, { onConflict:'email' });
+          const payload = { email, role };
+          if (selectedUser.user_id) payload.user_id = selectedUser.user_id;
+          const res = await supabase.from('profiles').upsert(payload, { onConflict:'user_id' });
+          profileError = res.error || null;
+          if (profileError && selectedUser.user_id) {
+            const fallback = await supabase.from('profiles').update({ role }).eq('user_id', selectedUser.user_id);
+            profileError = fallback.error || null;
+          }
+          if (profileError) {
+            const byEmail = await supabase.from('profiles').update({ role }).eq('email', email);
+            profileError = byEmail.error || null;
+          }
+        } catch (error) {
+          profileError = error;
+        }
+
+        try {
+          const aclRes = await supabase.from('rf_acl').upsert({ email, role }, { onConflict:'email' });
           aclError = aclRes.error || null;
           if (aclError) {
-            const aclFallback = await supabase.from('rf_acl').update({ role, updated_at: now }).eq('email', email);
+            const aclFallback = await supabase.from('rf_acl').update({ role }).eq('email', email);
             aclError = aclFallback.error || null;
           }
         } catch (error) {
           aclError = error;
         }
 
-        try {
-          if (selectedUser.user_id) {
-            const profilePayload = { user_id: selectedUser.user_id, email, role };
-            const byUserId = await supabase.from('profiles').upsert(profilePayload, { onConflict:'user_id' });
-            profileError = byUserId.error || null;
-          }
-          if (profileError || !selectedUser.user_id) {
-            const byEmailUpdate = await supabase.from('profiles').update({ email, role }).eq('email', email);
-            profileError = byEmailUpdate.error || null;
-            if (profileError) {
-              const byEmailInsert = await supabase.from('profiles').insert({ email, role });
-              profileError = byEmailInsert.error || null;
-            }
-          }
-        } catch (error) {
-          profileError = error;
-        }
-
-        if (aclError && profileError) {
-          showLeftMessage('Nu am putut salva rolul. Verifică RLS pentru rf_acl și profiles.', 'error');
+        if (profileError && aclError) {
+          showLeftMessage('Nu am putut salva rolul în profiles sau rf_acl. Verifică RLS și cheile unice.', 'error');
           return;
         }
 
-        selectedUser.acl_role = role;
-        selectedUser.profile_role = role;
-        selectedUserRole = role;
-        updateSelectedRoleButtons();
-        renderUsers();
+        try { await syncAclRolesMirror(email, role); } catch (_) {}
         showLeftMessage('Rolul a fost salvat pentru ' + email + '.', 'success');
         await loadUsers();
-        selectUser(email);
       }
 
       async function loadPagesAndPermissions(){
@@ -1209,6 +1202,46 @@
             throw (secondError || firstError);
           }
         }
+      }
+
+
+      async function readAclRolesMirror(){
+        try {
+          const a = await supabase.from('rf_documents').select('content').eq('doc_key', 'acl_roles_v1').maybeSingle();
+          if (!a.error && a.data && a.data.content && typeof a.data.content === 'object') return a.data.content;
+        } catch(_){ }
+        try {
+          const b = await supabase.from('rf_documents').select('data').eq('doc_key', 'acl_roles_v1').maybeSingle();
+          if (!b.error && b.data && b.data.data && typeof b.data.data === 'object') return b.data.data;
+        } catch(_){ }
+        return { version:1, source:'helper-acl', updated_at:new Date().toISOString(), roles:{} };
+      }
+
+      async function writeAclRolesMirror(doc){
+        const payload = Object.assign({ version:1, source:'helper-acl', updated_at:new Date().toISOString(), roles:{} }, doc || {});
+        try {
+          const res = await supabase.from('rf_documents').upsert({ doc_key:'acl_roles_v1', content:payload, data:payload }, { onConflict:'doc_key' });
+          if (!res.error) return;
+          throw res.error;
+        } catch(firstError) {
+          try {
+            const retry = await supabase.from('rf_documents').upsert({ doc_key:'acl_roles_v1', content:payload }, { onConflict:'doc_key' });
+            if (!retry.error) return;
+            throw retry.error;
+          } catch(secondError) {
+            throw (secondError || firstError);
+          }
+        }
+      }
+
+      async function syncAclRolesMirror(email, role){
+        const safeEmail = safeLower(email);
+        const safeRole = normalizeRole(role);
+        if (!safeEmail) return;
+        const doc = await readAclRolesMirror();
+        const roles = Object.assign({}, doc && doc.roles && typeof doc.roles === 'object' ? doc.roles : {});
+        roles[safeEmail] = safeRole;
+        await writeAclRolesMirror(Object.assign({}, doc || {}, { roles, updated_at:new Date().toISOString() }));
       }
 
       async function syncDashboardAclMirrorForRole(role, rows){
