@@ -287,8 +287,7 @@
     const ADMIN_EMAIL = 'forja.editor@gmail.com';
     const DOC_TABLE = 'rf_documents';
     const SAVE_DEBOUNCE_MS = 900;
-    const REFRESH_MS_VISIBLE = 15000;
-    const REFRESH_MS_HIDDEN = 45000;
+    const WAKE_REFRESH_DEBOUNCE_MS = 1200;
     const TRUCK_SIZE = 1650;
     const MONTHS = ['Ianuarie','Februarie','Martie','Aprilie','Mai','Iunie','Iulie','August','Septembrie','Octombrie','Noiembrie','Decembrie'];
     const FORM_MONTHS = Object.fromEntries(MONTHS.map((m,i)=> [i+1,m]));
@@ -297,7 +296,7 @@
     let supa = null;
     let docColumnsCache = null;
     let saveTimer = null;
-    let refreshTimer = null;
+    let lastWakeRefreshAt = 0;
     let selectedRowId = '';
     let authState = null;
     let pageAccess = { can_view:true, can_add:false, can_edit:false, can_delete:false };
@@ -634,19 +633,6 @@
         return false;
       }
     }
-
-    async function readAclRolesMirror(client) {
-      try {
-        const a = await client.from(DOC_TABLE).select('content').eq('doc_key', 'acl_roles_v1').maybeSingle();
-        if(!a.error && a.data && a.data.content && typeof a.data.content === 'object') return a.data.content;
-      } catch(_) {}
-      try {
-        const b = await client.from(DOC_TABLE).select('data').eq('doc_key', 'acl_roles_v1').maybeSingle();
-        if(!b.error && b.data && b.data.data && typeof b.data.data === 'object') return b.data.data;
-      } catch(_) {}
-      return null;
-    }
-
     async function resolveRole(user) {
       const email = toStr(user && user.email).toLowerCase();
       if(!user) return 'viewer';
@@ -655,8 +641,8 @@
       const tries = [
         () => client.from('profiles').select('role').eq('user_id', user.id).maybeSingle(),
         () => client.from('profiles').select('role').eq('id', user.id).maybeSingle(),
-        () => client.from('profiles').select('role').eq('email', email).maybeSingle(),
-        () => client.from('rf_acl').select('role').eq('email', email).maybeSingle()
+        () => client.from('profiles').select('role').eq('email', user.email || '').maybeSingle(),
+        () => client.from('rf_acl').select('role').eq('email', user.email || '').maybeSingle()
       ];
       for(const run of tries) {
         try {
@@ -665,12 +651,6 @@
           if(!error && role) return role;
         } catch(_) {}
       }
-      try {
-        const mirror = await readAclRolesMirror(client);
-        const roles = mirror && mirror.roles && typeof mirror.roles === 'object' ? mirror.roles : null;
-        const mirrorRole = toStr(roles && roles[email]).toLowerCase();
-        if(mirrorRole) return mirrorRole;
-      } catch(_) {}
       return 'viewer';
     }
     async function getPageAccess(role) {
@@ -1646,26 +1626,27 @@
         renderTable();
       });
       document.addEventListener('visibilitychange', () => {
-        startRefreshTimer();
+        if(document.hidden) return;
+        refreshOnWake();
+      });
+      window.addEventListener('focus', () => {
+        refreshOnWake();
       });
       document.addEventListener('keydown', event => {
         if(event.key === 'Escape') closeModal();
       });
     }
-    function startRefreshTimer() {
-      if(refreshTimer) clearInterval(refreshTimer);
-      const ms = document.hidden ? REFRESH_MS_HIDDEN : REFRESH_MS_VISIBLE;
-      refreshTimer = setInterval(() => {
-        if(document.hidden) return;
-        refreshAll({ showBadge:false });
-      }, ms);
+    function refreshOnWake() {
+      const now = Date.now();
+      if(now - lastWakeRefreshAt < WAKE_REFRESH_DEBOUNCE_MS) return;
+      lastWakeRefreshAt = now;
+      refreshAll({ showBadge:false });
     }
     async function init() {
       bindEvents();
       const ok = await bootstrapAuth();
       if(!ok) return;
       await refreshAll({ showBadge:false });
-      startRefreshTimer();
     }
     window.addEventListener('DOMContentLoaded', init);
   </script>
