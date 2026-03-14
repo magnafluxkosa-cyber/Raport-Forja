@@ -892,50 +892,59 @@
       return Array.from(map.values());
     }
     async function loadPackRows() {
-      const localExact = readLocalJson(PACK_LOCAL_KEY);
-      let exactPayload = payloadHasPackRows(localExact) ? localExact : null;
-
-      if(authState && authState.user) {
-        const cloudExact = await readDocByKeys(PACK_DOC_KEYS);
-        if(cloudExact && payloadHasPackRows(cloudExact.payload)) {
-          const localUpdated = payloadUpdatedAt(exactPayload);
-          const cloudUpdated = toStr(cloudExact.updated_at || payloadUpdatedAt(cloudExact.payload));
-          if(!exactPayload || compareIsoDates(cloudUpdated, localUpdated) >= 0) {
-            exactPayload = cloudExact.payload;
-          }
-        }
-      }
-
-      if(exactPayload) {
-        return dedupePackRows(
-          resolveRowsPayload(exactPayload)
-            .map(normalizePackRow)
-            .filter(r => r.nr_transport && r.reper)
-        );
-      }
-
       let rows = [];
+      const seenLocalKeys = new Set();
       const pushPayload = (payload) => {
         if(payload && payloadHasPackRows(payload)) rows.push(...resolveRowsPayload(payload));
       };
 
+      [PACK_LOCAL_KEY, ...PACK_LOCAL_INDEX_KEYS].forEach(key => {
+        const payload = readLocalJson(key);
+        if(payload) {
+          seenLocalKeys.add(key);
+          pushPayload(payload);
+        }
+      });
       PACK_LOCAL_INDEX_KEYS.forEach(indexKey => {
         const idx = readLocalJson(indexKey);
         extractYears(idx).forEach(year => {
-          PACK_LOCAL_YEAR_PREFIXES.forEach(prefix => pushPayload(readLocalJson(prefix + year)));
+          PACK_LOCAL_YEAR_PREFIXES.forEach(prefix => {
+            const key = prefix + year;
+            const payload = readLocalJson(key);
+            if(payload) {
+              seenLocalKeys.add(key);
+              pushPayload(payload);
+            }
+          });
         });
       });
+      try {
+        for(let i = 0; i < localStorage.length; i++) {
+          const key = localStorage.key(i);
+          if(!key || seenLocalKeys.has(key)) continue;
+          const norm = stripDiacritics(key).toLowerCase();
+          const looksLike9k = norm.includes('ambalare') && norm.includes('9k') && (norm.includes('6628') || norm.includes('6629'));
+          if(!looksLike9k) continue;
+          const payload = readLocalJson(key);
+          if(payload) pushPayload(payload);
+        }
+      } catch(_) {}
 
       if(authState && authState.user) {
         const cloudDocs = [];
+        const exactDoc = await readDocByKeys(PACK_DOC_KEYS);
+        if(exactDoc && exactDoc.payload) cloudDocs.push(exactDoc);
+
         const indexDoc = await readDocByKeys(PACK_INDEX_DOC_KEYS);
         extractYears(indexDoc && indexDoc.payload).forEach(year => {
           PACK_CLOUD_YEAR_PREFIXES.forEach(prefix => cloudDocs.push({ doc_key: prefix + year, lazy: true }));
         });
+
         for(const prefix of PACK_CLOUD_YEAR_PREFIXES) {
           const docs = await readDocsByPrefix(prefix);
           docs.forEach(doc => cloudDocs.push(doc));
         }
+
         const loaded = new Set();
         for(const item of cloudDocs) {
           const key = item && item.doc_key ? item.doc_key : '';
@@ -946,8 +955,9 @@
         }
       }
 
-      return dedupePackRows(
-        rows.map(normalizePackRow).filter(r => r.nr_transport && r.reper)
+      return dedupeRows(
+        rows.map(normalizePackRow).filter(r => r.nr_transport && r.reper),
+        row => [row.nr_transport,row.lada,row.reper,row.cod_matrita,row.cod_cat,row.buc,row.data,row.operator,row.schimbul].join('|')
       );
     }
     async function loadForjateRows() {
