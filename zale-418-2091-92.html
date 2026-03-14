@@ -210,12 +210,10 @@
       <aside class="side-card">
         <div class="side-head">Rezumat și logică</div>
         <div class="side-body">
-          <div class="note-box hidden" id="logicNote"></div>
-          <table class="mini-table">
+                    <table class="mini-table">
             <thead><tr><th>Reper</th><th>Total ambalat</th><th>Stoc calculat</th></tr></thead>
             <tbody id="summaryBody"></tbody>
           </table>
-                    <div class="note-box hidden" id="selectedNote"></div>
         </div>
       </aside>
     </div>
@@ -261,14 +259,14 @@
   <script>
     const PAGE_KEY = 'zale-418-2091-92';
     const PAGE_HREF = 'zale-418-2091-92.html';
-    const DOC_KEYS = ['zale-418-2091-92','418-2091-92'];
+    const DOC_KEYS = ['zale-418-2091-92','418-2091-08'];
     const LOCAL_KEY = 'rf-zale-418-2091-92';
     const PACK_DOC_KEYS = ['ambalare-418-2091-92','Ambalare 418'];
-    const PACK_INDEX_DOC_KEYS = ['ambalare-418-2091-92:index','Ambalare 418:index','ambalare_418:index'];
-    const PACK_CLOUD_YEAR_PREFIXES = ['ambalare-418-2091-92:','Ambalare 418:','ambalare_418:'];
+    const PACK_INDEX_DOC_KEYS = ['ambalare-418-2091-92:index','Ambalare 418:index','ambalare_248:index'];
+    const PACK_CLOUD_YEAR_PREFIXES = ['ambalare-418-2091-92:','Ambalare 418:','ambalare_248:'];
     const PACK_LOCAL_KEY = 'rf-ambalare-418-2091-92';
-    const PACK_LOCAL_INDEX_KEYS = ['rf-ambalare-418-2091-92:index','rf_ambalare_418_index_v1','rf-ambalare-418-2091-92-index'];
-    const PACK_LOCAL_YEAR_PREFIXES = ['rf-ambalare-418-2091-92:','rf_ambalare_418_cache_v1:','rf-ambalare-418-2091-92-year:'];
+    const PACK_LOCAL_INDEX_KEYS = ['rf-ambalare-418-2091-92:index','rf_ambalare_248_index_v1','rf-ambalare-418-2091-92-index'];
+    const PACK_LOCAL_YEAR_PREFIXES = ['rf-ambalare-418-2091-92:','rf_ambalare_248_cache_v1:','rf-ambalare-418-2091-92-year:'];
     const FORJATE_DOC_KEYS = ['forjate','FORJATE','Forjate'];
     const FORJATE_LOCAL_KEYS = ['FORJATE_autosave_v1'];
     const FORJATE_YEAR_INDEX_KEYS = ['FORJATE_autosave_index_v2','forjate_index'];
@@ -413,8 +411,8 @@
     }
     function normalizeReper248(value) {
       const key = stripDiacritics(value).replace(/[^a-z0-9]+/gi,' ').trim().toLowerCase();
-      if(key.includes('418 2091')) return '418-2091';
-      if(key.includes('418 2092')) return '418-2092';
+      if(key.includes('248 2307')) return '418-2091';
+      if(key.includes('248 2308')) return '418-2092';
       return toStr(value);
     }
     function resolveRowsPayload(payload) {
@@ -874,65 +872,72 @@
       });
       return Array.from(map.values());
     }
-    async function loadPackRows() {
-      const localExact = readLocalJson(PACK_LOCAL_KEY);
-      let exactPayload = payloadHasPackRows(localExact) ? localExact : null;
-
-      if(authState && authState.user) {
-        const cloudExact = await readDocByKeys(PACK_DOC_KEYS);
-        if(cloudExact && payloadHasPackRows(cloudExact.payload)) {
-          const localUpdated = payloadUpdatedAt(exactPayload);
-          const cloudUpdated = toStr(cloudExact.updated_at || payloadUpdatedAt(cloudExact.payload));
-          if(!exactPayload || compareIsoDates(cloudUpdated, localUpdated) >= 0) {
-            exactPayload = cloudExact.payload;
+        async function loadPackRows() {
+          const localExact = readLocalJson(PACK_LOCAL_KEY);
+          const localExactRows = payloadHasPackRows(localExact)
+            ? dedupePackRows(
+                resolveRowsPayload(localExact)
+                  .map(normalizePackRow)
+                  .filter(r => r.nr_transport && r.reper)
+              )
+            : [];
+    
+          if(authState && authState.user) {
+            const cloudExact = await readDocByKeys(PACK_DOC_KEYS);
+            if(cloudExact && payloadHasPackRows(cloudExact.payload)) {
+              const exactRows = dedupePackRows(
+                resolveRowsPayload(cloudExact.payload)
+                  .map(normalizePackRow)
+                  .filter(r => r.nr_transport && r.reper)
+              );
+              if(exactRows.length) {
+                writeLocalJson(PACK_LOCAL_KEY, {
+                  rows: exactRows,
+                  updated_at: toStr(cloudExact.updated_at || payloadUpdatedAt(cloudExact.payload) || nowIso())
+                });
+                return exactRows;
+              }
+            }
           }
+    
+          if(localExactRows.length) return localExactRows;
+    
+          let rows = [];
+          const pushPayload = (payload) => {
+            if(payload && payloadHasPackRows(payload)) rows.push(...resolveRowsPayload(payload));
+          };
+    
+          PACK_LOCAL_INDEX_KEYS.forEach(indexKey => {
+            const idx = readLocalJson(indexKey);
+            extractYears(idx).forEach(year => {
+              PACK_LOCAL_YEAR_PREFIXES.forEach(prefix => pushPayload(readLocalJson(prefix + year)));
+            });
+          });
+    
+          if(authState && authState.user) {
+            const cloudDocs = [];
+            const indexDoc = await readDocByKeys(PACK_INDEX_DOC_KEYS);
+            extractYears(indexDoc && indexDoc.payload).forEach(year => {
+              PACK_CLOUD_YEAR_PREFIXES.forEach(prefix => cloudDocs.push({ doc_key: prefix + year, lazy: true }));
+            });
+            for(const prefix of PACK_CLOUD_YEAR_PREFIXES) {
+              const docs = await readDocsByPrefix(prefix);
+              docs.forEach(doc => cloudDocs.push(doc));
+            }
+            const loaded = new Set();
+            for(const item of cloudDocs) {
+              const key = item && item.doc_key ? item.doc_key : '';
+              if(!key || loaded.has(key)) continue;
+              loaded.add(key);
+              const doc = item.lazy ? await readDocByKey(key) : item;
+              if(doc && doc.payload) pushPayload(doc.payload);
+            }
+          }
+    
+          return dedupePackRows(
+            rows.map(normalizePackRow).filter(r => r.nr_transport && r.reper)
+          );
         }
-      }
-
-      if(exactPayload) {
-        return dedupePackRows(
-          resolveRowsPayload(exactPayload)
-            .map(normalizePackRow)
-            .filter(r => r.nr_transport && r.reper)
-        );
-      }
-
-      let rows = [];
-      const pushPayload = (payload) => {
-        if(payload && payloadHasPackRows(payload)) rows.push(...resolveRowsPayload(payload));
-      };
-
-      PACK_LOCAL_INDEX_KEYS.forEach(indexKey => {
-        const idx = readLocalJson(indexKey);
-        extractYears(idx).forEach(year => {
-          PACK_LOCAL_YEAR_PREFIXES.forEach(prefix => pushPayload(readLocalJson(prefix + year)));
-        });
-      });
-
-      if(authState && authState.user) {
-        const cloudDocs = [];
-        const indexDoc = await readDocByKeys(PACK_INDEX_DOC_KEYS);
-        extractYears(indexDoc && indexDoc.payload).forEach(year => {
-          PACK_CLOUD_YEAR_PREFIXES.forEach(prefix => cloudDocs.push({ doc_key: prefix + year, lazy: true }));
-        });
-        for(const prefix of PACK_CLOUD_YEAR_PREFIXES) {
-          const docs = await readDocsByPrefix(prefix);
-          docs.forEach(doc => cloudDocs.push(doc));
-        }
-        const loaded = new Set();
-        for(const item of cloudDocs) {
-          const key = item && item.doc_key ? item.doc_key : '';
-          if(!key || loaded.has(key)) continue;
-          loaded.add(key);
-          const doc = item.lazy ? await readDocByKey(key) : item;
-          if(doc && doc.payload) pushPayload(doc.payload);
-        }
-      }
-
-      return dedupePackRows(
-        rows.map(normalizePackRow).filter(r => r.nr_transport && r.reper)
-      );
-    }
     async function loadForjateRows() {
       let rows = [];
       FORJATE_LOCAL_KEYS.forEach(key => {
@@ -1293,17 +1298,7 @@
         <tr><td>418-2092</td><td class="right mono">${fmtInt(pack2308)}</td><td class="right mono">${fmtInt(stock2308)}</td></tr>`;
 
       const selected = getSelectedRow();
-      if(selected) {
-        document.getElementById('selectedNote').innerHTML =
-          `Transport <b>${escapeHtml(selected.nr_transport)}</b><br>` +
-          `FORJAT: ${fmtInt(selected.forjat_2307)} / ${fmtInt(selected.forjat_2308)}<br>` +
-          `AMBALAT: ${fmtInt(selected.ambalat_2307)} / ${fmtInt(selected.ambalat_2308)}<br>` +
-          `Data livrării: ${escapeHtml(selected.data_livrarii || '-')}`;
-      } else {
-        document.getElementById('selectedNote').textContent = 'Nu ai selectat niciun transport.';
-      }
-      document.getElementById('logicNote').textContent =
-        'FORJAT se calculează din buc realizate din FORJATE pentru luna curentă plus stocul final din INVENTAR FORJAT al lunii anterioare, apoi se împarte în ordinea transporturilor din lună, în pași de 1650 buc pe fiecare reper. Tratate = Ambalat, iar Ambalat se ia din Ambalare 418 după Nr. transport.';
+      void selected;
     }
 
     function getForjatCellClass(value) {
