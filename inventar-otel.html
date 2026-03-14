@@ -270,7 +270,8 @@
         <button id="btnBack" class="secondary" type="button">Înapoi la Dashboard</button>
         <button id="btnPhysical" type="button">Inventar fizic</button>
         <button id="btnRefresh" type="button">Reîncarcă</button>
-        <button id="btnExport" type="button">Export CSV</button>
+        <button id="btnImportExcel" type="button">Import Excel</button>
+        <button id="btnExport" type="button">Export Excel</button>
         <button id="btnLogout" class="secondary" type="button">Logout</button>
       </div>
     </div>
@@ -361,6 +362,7 @@
       </div>
     </div>
   </div>
+  <input id="fileImportExcel" type="file" accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" style="display:none" />
 
   <script>
     const PAGE_KEY = 'inventar-otel';
@@ -399,6 +401,8 @@
       emptyBox: document.getElementById('emptyBox'),
       btnPhysical: document.getElementById('btnPhysical'),
       btnRefresh: document.getElementById('btnRefresh'),
+      btnImportExcel: document.getElementById('btnImportExcel'),
+      fileImportExcel: document.getElementById('fileImportExcel'),
       btnExport: document.getElementById('btnExport'),
       btnLogout: document.getElementById('btnLogout'),
       btnBack: document.getElementById('btnBack'),
@@ -873,28 +877,268 @@
       els.totalConsumption.textContent = prettyNumber(totals.consumption);
     }
 
-    function toCsvValue(value){
-      const text = String(value ?? '');
-      if (/[";,\n]/.test(text)) return '"' + text.replace(/"/g,'""') + '"';
-      return text;
+
+    function canImportExcel(){
+      return ['admin','editor','operator'].includes(normText(state.role));
     }
 
-    function exportCsv(){
-      const header = ['An','Luna','Ultima data','Diametru otel','Calitate otel','Cod intern otel','Furnizor','Pretest','Stoc initial (kg)','Intrari (kg)','Consum (kg)','Stoc actual (kg)'];
-      const lines = [header.join(';')];
-      state.filtered.forEach(row => {
-        lines.push([
-          row.an,row.luna,row.data,row.diametru,row.calitate,row.codIntern,row.furnizor,row.pretest,
-          prettyNumber(row.initialKg),prettyNumber(row.entryKg),prettyNumber(row.consumptionKg),prettyNumber(row.stockKg)
-        ].map(toCsvValue).join(';'));
+    function loadScriptOnce(src){
+      return new Promise((resolve, reject) => {
+        const already = [...document.scripts].find(s => s.src === src);
+        if (already) {
+          if (window.XLSX) return resolve();
+          already.addEventListener('load', () => resolve(), { once:true });
+          already.addEventListener('error', () => reject(new Error('Nu pot încărca librăria XLSX.')), { once:true });
+          return;
+        }
+        const script = document.createElement('script');
+        script.src = src;
+        script.async = true;
+        script.onload = () => resolve();
+        script.onerror = () => reject(new Error('Nu pot încărca librăria XLSX.'));
+        document.head.appendChild(script);
       });
-      const blob = new Blob(["\uFEFF" + lines.join('\n')], { type: 'text/csv;charset=utf-8;' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = 'inventar-otel.csv';
-      a.click();
-      URL.revokeObjectURL(url);
+    }
+
+    async function ensureXLSX(){
+      if (window.XLSX) return true;
+      try {
+        const base = parent.location.href.split('#')[0].split('?')[0];
+        await loadScriptOnce(new URL('xlsx.full.min.js', base).href);
+        if (window.XLSX) return true;
+      } catch (_) {}
+      try {
+        await loadScriptOnce('https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js');
+        if (window.XLSX) return true;
+      } catch (_) {}
+      alert("Nu pot încărca librăria XLSX. Pune fișierul xlsx.full.min.js lângă HTML sau pornește internetul.");
+      return false;
+    }
+
+    function mapImportedInitialRows(rawRows){
+      const rows = [];
+      if (!Array.isArray(rawRows) || !rawRows.length) return rows;
+
+      const first = rawRows[0];
+      if (first && typeof first === 'object' && !Array.isArray(first)) {
+        rawRows.forEach((item, index) => {
+          const normalized = normalizeInitialRow(item);
+          if (normalized.diametru || normalized.calitate || normalized.codIntern || normalized.cantitate) {
+            rows.push({
+              id: `imp-${Date.now()}-${index}`,
+              an: normalized.an,
+              luna: normalized.luna,
+              data: normalized.data,
+              diametru: normalized.diametru,
+              calitate: normalized.calitate,
+              codIntern: normalized.codIntern,
+              furnizor: normalized.furnizor,
+              pretest: normalized.pretest,
+              cantitateKg: normalized.cantitate
+            });
+          }
+        });
+        return rows;
+      }
+
+      const aoa = rawRows;
+      const headerRow = Array.isArray(aoa[0]) ? aoa[0] : [];
+      const headerLooksReal = headerRow.some(cell => {
+        const t = normText(cell);
+        return ['an','luna','data','diametru','diametru otel','diametru oțel','calitate','calitate otel','calitate oțel','cod intern','cod intern otel','cod intern oțel','furnizor','pretest','cantitate','cantitate kg','kg','stoc initial','stoc inițial'].includes(t);
+      });
+
+      let startIndex = 0;
+      let indexMap = {};
+      if (headerLooksReal) {
+        startIndex = 1;
+        headerRow.forEach((cell, idx) => {
+          indexMap[normText(cell)] = idx;
+        });
+      } else {
+        indexMap = {
+          'an': 0,
+          'luna': 1,
+          'data': 2,
+          'diametru': 3,
+          'calitate': 4,
+          'cod intern otel': 5,
+          'furnizor': 6,
+          'pretest': 7,
+          'cantitate kg': 8
+        };
+      }
+
+      const byIndex = (row, keys, fallback = '') => {
+        for (const key of keys) {
+          if (indexMap[key] !== undefined) return row[indexMap[key]] ?? fallback;
+        }
+        return fallback;
+      };
+
+      for (let i = startIndex; i < aoa.length; i += 1) {
+        const row = Array.isArray(aoa[i]) ? aoa[i] : [];
+        const normalized = normalizeInitialRow({
+          an: byIndex(row, ['an']),
+          luna: byIndex(row, ['luna']),
+          data: byIndex(row, ['data']),
+          diametru: byIndex(row, ['diametru','diametru otel','diametru oțel']),
+          calitate: byIndex(row, ['calitate','calitate otel','calitate oțel']),
+          'cod intern otel': byIndex(row, ['cod intern otel','cod intern oțel','cod intern']),
+          furnizor: byIndex(row, ['furnizor']),
+          pretest: byIndex(row, ['pretest']),
+          'cantitate kg': byIndex(row, ['cantitate kg','cantitate','kg','stoc initial','stoc inițial'])
+        });
+        if (normalized.diametru || normalized.calitate || normalized.codIntern || normalized.cantitate) {
+          rows.push({
+            id: `imp-${Date.now()}-${i}`,
+            an: normalized.an,
+            luna: normalized.luna,
+            data: normalized.data,
+            diametru: normalized.diametru,
+            calitate: normalized.calitate,
+            codIntern: normalized.codIntern,
+            furnizor: normalized.furnizor,
+            pretest: normalized.pretest,
+            cantitateKg: normalized.cantitate
+          });
+        }
+      }
+
+      return rows;
+    }
+
+    async function saveImportedInitialRows(rows){
+      const payload = { rows };
+      let result = await state.supabase
+        .from('rf_documents')
+        .upsert([{ doc_key: 'stoc-initial-otel', content: payload, data: payload }], { onConflict: 'doc_key' });
+
+      if (result.error && /data/i.test(String(result.error.message || ''))) {
+        result = await state.supabase
+          .from('rf_documents')
+          .upsert([{ doc_key: 'stoc-initial-otel', content: payload }], { onConflict: 'doc_key' });
+      }
+
+      if (result.error) throw result.error;
+    }
+
+    async function handleImportExcelFile(file){
+      if (!file) return;
+      if (!canImportExcel()) {
+        alert('Nu ai drept de import pe această pagină.');
+        return;
+      }
+      const ok = await ensureXLSX();
+      if (!ok) return;
+
+      const arrayBuffer = await file.arrayBuffer();
+      const workbook = XLSX.read(arrayBuffer, { type:'array', cellDates:false });
+      const firstSheetName = workbook.SheetNames[0];
+      if (!firstSheetName) {
+        alert('Fișierul Excel nu conține foi.');
+        return;
+      }
+
+      const sheet = workbook.Sheets[firstSheetName];
+      let rawRows = XLSX.utils.sheet_to_json(sheet, { defval:'', raw:false });
+      let importedRows = mapImportedInitialRows(rawRows);
+
+      if (!importedRows.length) {
+        const aoa = XLSX.utils.sheet_to_json(sheet, { header:1, defval:'', raw:false });
+        importedRows = mapImportedInitialRows(aoa);
+      }
+
+      if (!importedRows.length) {
+        alert('Nu am găsit rânduri valide pentru inventar în fișierul Excel.');
+        return;
+      }
+
+      const confirmReplace = confirm(`Import găsit: ${importedRows.length} rânduri. Importul va înlocui inventarul fizic actual din cloud. Continui?`);
+      if (!confirmReplace) return;
+
+      els.btnImportExcel.disabled = true;
+      els.btnRefresh.disabled = true;
+      try {
+        await saveImportedInitialRows(importedRows);
+        await loadCloud('Import Excel');
+        alert(`Import Excel finalizat. Au fost salvate ${importedRows.length} rânduri.`);
+      } catch (error) {
+        console.error(error);
+        alert('Importul Excel a eșuat. Verifică structura fișierului și conexiunea Supabase.');
+      } finally {
+        els.btnImportExcel.disabled = false;
+        els.btnRefresh.disabled = false;
+        els.fileImportExcel.value = '';
+      }
+    }
+
+    function requestImportExcel(){
+      if (!canImportExcel()) {
+        alert('Nu ai drept de import pe această pagină.');
+        return;
+      }
+      els.fileImportExcel.click();
+    }
+
+    async function exportXlsx(){
+      const ok = await ensureXLSX();
+      if (!ok) return;
+
+      const header = [[
+        'An','Luna','Ultima data','Diametru otel','Calitate otel','Cod intern otel','Furnizor','Pretest',
+        'Stoc initial (kg)','Intrari (kg)','Consum (kg)','Stoc actual (kg)'
+      ]];
+
+      const rows = state.filtered.map(row => ([
+        clean(row.an),
+        clean(row.luna),
+        clean(row.data),
+        clean(row.diametru),
+        clean(row.calitate),
+        clean(row.codIntern),
+        clean(row.furnizor),
+        clean(row.pretest),
+        Number((row.initialKg || 0).toFixed(3)),
+        Number((row.entryKg || 0).toFixed(3)),
+        Number((row.consumptionKg || 0).toFixed(3)),
+        Number((row.stockKg || 0).toFixed(3))
+      ]));
+
+      const totals = state.filtered.reduce((acc, row) => {
+        acc.initial += row.initialKg || 0;
+        acc.entries += row.entryKg || 0;
+        acc.consumption += row.consumptionKg || 0;
+        acc.stock += row.stockKg || 0;
+        return acc;
+      }, { initial:0, entries:0, consumption:0, stock:0 });
+
+      const totalRow = [[
+        '', '', '', '', '', '', 'TOTAL', '',
+        Number(totals.initial.toFixed(3)),
+        Number(totals.entries.toFixed(3)),
+        Number(totals.consumption.toFixed(3)),
+        Number(totals.stock.toFixed(3))
+      ]];
+
+      const ws = XLSX.utils.aoa_to_sheet([...header, ...rows, ...totalRow]);
+      ws['!cols'] = [
+        { wch: 10 }, { wch: 14 }, { wch: 14 }, { wch: 16 }, { wch: 16 }, { wch: 18 },
+        { wch: 18 }, { wch: 14 }, { wch: 16 }, { wch: 14 }, { wch: 14 }, { wch: 16 }
+      ];
+
+      const range = XLSX.utils.decode_range(ws['!ref'] || 'A1');
+      for (let r = 1; r <= range.e.r; r += 1) {
+        for (let c = 8; c <= 11; c += 1) {
+          const cell = ws[XLSX.utils.encode_cell({ r, c })];
+          if (cell && typeof cell.v === 'number') cell.z = '0.000';
+        }
+      }
+
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, 'Inventar otel');
+      const today = new Date().toISOString().slice(0,10);
+      XLSX.writeFile(wb, `inventar-otel_${today}.xlsx`);
     }
 
     async function logout(){
@@ -927,7 +1171,12 @@
       els.fSearch.addEventListener('input', applyFilters);
       els.btnPhysical.addEventListener('click', () => { window.location.href = 'stoc-initial-otel.html'; });
       els.btnRefresh.addEventListener('click', () => loadCloud('Reîncărcare manuală'));
-      els.btnExport.addEventListener('click', exportCsv);
+      els.btnImportExcel.addEventListener('click', requestImportExcel);
+      els.fileImportExcel.addEventListener('change', (event) => {
+        const file = event.target.files && event.target.files[0];
+        handleImportExcelFile(file);
+      });
+      els.btnExport.addEventListener('click', exportXlsx);
       els.btnLogout.addEventListener('click', logout);
       els.btnBack.addEventListener('click', () => { window.location.href = 'index.html'; });
 
@@ -963,6 +1212,7 @@
         state.role = await resolveRole(session);
         const allowed = await canViewPage(state.role);
         els.authBox.innerHTML = `Utilizator: <b>${escapeHtml(session.user.email || '')}</b><br>Rol: <b>${escapeHtml(state.role)}</b>${allowed ? '' : '<br><span class="bad">Fără acces pe această pagină</span>'}`;
+        els.btnImportExcel.style.display = canImportExcel() ? '' : 'none';
 
         if (!allowed) {
           els.emptyBox.style.display = 'block';
