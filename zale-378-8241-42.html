@@ -872,102 +872,65 @@
       });
       return Array.from(map.values());
     }
-        async function loadPackRows() {
-          const relevantReperSet = new Set(["378-8241", "378-8242"]);
+    async function loadPackRows() {
+      const localExact = readLocalJson(PACK_LOCAL_KEY);
+      let exactPayload = payloadHasPackRows(localExact) ? localExact : null;
 
-          const normalizeAndFilter = (rows) => dedupePackRows(
-            (rows || [])
-              .map(normalizePackRow)
-              .filter(r => {
-                const transport = normalizeTransportKey(r.nr_transport);
-                const reper = normalizeReper248(r.reper);
-                return transport && relevantReperSet.has(reper);
-              })
-          );
-
-          const localExact = readLocalJson(PACK_LOCAL_KEY);
-          const localExactRows = payloadHasPackRows(localExact)
-            ? normalizeAndFilter(resolveRowsPayload(localExact))
-            : [];
-
-          if(authState && authState.user) {
-            const cloudExact = await readDocByKeys(PACK_DOC_KEYS);
-            if(cloudExact && payloadHasPackRows(cloudExact.payload)) {
-              const exactRows = normalizeAndFilter(resolveRowsPayload(cloudExact.payload));
-              if(exactRows.length) {
-                writeLocalJson(PACK_LOCAL_KEY, {
-                  rows: exactRows,
-                  updated_at: toStr(cloudExact.updated_at || payloadUpdatedAt(cloudExact.payload) || nowIso())
-                });
-                return exactRows;
-              }
-            }
+      if(authState && authState.user) {
+        const cloudExact = await readDocByKeys(PACK_DOC_KEYS);
+        if(cloudExact && payloadHasPackRows(cloudExact.payload)) {
+          const localUpdated = payloadUpdatedAt(exactPayload);
+          const cloudUpdated = toStr(cloudExact.updated_at || payloadUpdatedAt(cloudExact.payload));
+          if(!exactPayload || compareIsoDates(cloudUpdated, localUpdated) >= 0) {
+            exactPayload = cloudExact.payload;
           }
-
-          let rows = [];
-          const pushPayload = (payload) => {
-            if(payload && payloadHasPackRows(payload)) rows.push(...resolveRowsPayload(payload));
-          };
-
-          if(localExactRows.length) rows.push(...localExactRows);
-
-          PACK_LOCAL_INDEX_KEYS.forEach(indexKey => {
-            const idx = readLocalJson(indexKey);
-            extractYears(idx).forEach(year => {
-              PACK_LOCAL_YEAR_PREFIXES.forEach(prefix => pushPayload(readLocalJson(prefix + year)));
-            });
-          });
-
-          try {
-            for(let i = 0; i < localStorage.length; i += 1) {
-              const key = toStr(localStorage.key(i));
-              if(!key) continue;
-              const lowered = key.toLowerCase();
-              if(
-                lowered.startsWith('rf-ambalare-') ||
-                lowered.startsWith('rf_ambalare_') ||
-                lowered.includes('ambalare')
-              ) {
-                pushPayload(readLocalJson(key));
-              }
-            }
-          } catch(_) {}
-
-          if(authState && authState.user) {
-            const cloudDocs = [];
-            const indexDoc = await readDocByKeys(PACK_INDEX_DOC_KEYS);
-            extractYears(indexDoc && indexDoc.payload).forEach(year => {
-              PACK_CLOUD_YEAR_PREFIXES.forEach(prefix => cloudDocs.push({ doc_key: prefix + year, lazy: true }));
-            });
-            for(const prefix of PACK_CLOUD_YEAR_PREFIXES) {
-              const docs = await readDocsByPrefix(prefix);
-              docs.forEach(doc => cloudDocs.push(doc));
-            }
-            const genericPrefixes = ['ambalare-', 'AMBALARE ', 'ambalare_'];
-            for(const prefix of genericPrefixes) {
-              const docs = await readDocsByPrefix(prefix);
-              docs.forEach(doc => cloudDocs.push(doc));
-            }
-            const loaded = new Set();
-            for(const item of cloudDocs) {
-              const key = item && item.doc_key ? item.doc_key : '';
-              if(!key || loaded.has(key)) continue;
-              loaded.add(key);
-              const doc = item.lazy ? await readDocByKey(key) : item;
-              if(doc && doc.payload) pushPayload(doc.payload);
-            }
-          }
-
-          const finalRows = normalizeAndFilter(rows);
-          if(finalRows.length) {
-            writeLocalJson(PACK_LOCAL_KEY, {
-              rows: finalRows,
-              updated_at: nowIso()
-            });
-          }
-          return finalRows;
         }
+      }
 
+      if(exactPayload) {
+        return dedupePackRows(
+          resolveRowsPayload(exactPayload)
+            .map(normalizePackRow)
+            .filter(r => r.nr_transport && r.reper)
+        );
+      }
+
+      let rows = [];
+      const pushPayload = (payload) => {
+        if(payload && payloadHasPackRows(payload)) rows.push(...resolveRowsPayload(payload));
+      };
+
+      PACK_LOCAL_INDEX_KEYS.forEach(indexKey => {
+        const idx = readLocalJson(indexKey);
+        extractYears(idx).forEach(year => {
+          PACK_LOCAL_YEAR_PREFIXES.forEach(prefix => pushPayload(readLocalJson(prefix + year)));
+        });
+      });
+
+      if(authState && authState.user) {
+        const cloudDocs = [];
+        const indexDoc = await readDocByKeys(PACK_INDEX_DOC_KEYS);
+        extractYears(indexDoc && indexDoc.payload).forEach(year => {
+          PACK_CLOUD_YEAR_PREFIXES.forEach(prefix => cloudDocs.push({ doc_key: prefix + year, lazy: true }));
+        });
+        for(const prefix of PACK_CLOUD_YEAR_PREFIXES) {
+          const docs = await readDocsByPrefix(prefix);
+          docs.forEach(doc => cloudDocs.push(doc));
+        }
+        const loaded = new Set();
+        for(const item of cloudDocs) {
+          const key = item && item.doc_key ? item.doc_key : '';
+          if(!key || loaded.has(key)) continue;
+          loaded.add(key);
+          const doc = item.lazy ? await readDocByKey(key) : item;
+          if(doc && doc.payload) pushPayload(doc.payload);
+        }
+      }
+
+      return dedupePackRows(
+        rows.map(normalizePackRow).filter(r => r.nr_transport && r.reper)
+      );
+    }
     async function loadForjateRows() {
       let rows = [];
       FORJATE_LOCAL_KEYS.forEach(key => {
