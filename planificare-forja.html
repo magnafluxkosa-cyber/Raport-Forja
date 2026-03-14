@@ -976,18 +976,58 @@
       queueSave();
     }
 
-    async function initAuth(){
+        async function initAuth(){
       try {
-        if(window.ERPAuth && typeof window.ERPAuth.requireAuth === 'function'){
-          const auth = await window.ERPAuth.requireAuth({ redirectToLogin:true, next:'planificare-forja.html' });
-          state.user = auth && auth.user ? auth.user : null;
-          state.role = auth && auth.role ? String(auth.role) : 'viewer';
-          state.supabase = typeof window.ERPAuth.getSupabaseClient === 'function' ? window.ERPAuth.getSupabaseClient() : null;
-          setStatus(els.authStatus, els.authSub, state.user ? (state.user.email || 'Autentificat') : 'Autentificat', state.user ? ('ID: ' + safeText(state.user.id || '-')) : 'Sesiune activă');
-        } else {
-          els.authStatus.textContent = 'Fără helper auth';
-          els.authSub.textContent = 'Pagina rulează fără auth-common.js.';
+        if(typeof window.createRfSupabaseClient === 'function'){
+          state.supabase = window.createRfSupabaseClient();
+        } else if(window.supabase && typeof window.supabase.createClient === 'function'){
+          const cfg = (typeof window.getRfSupabaseConfig === 'function' ? window.getRfSupabaseConfig() : null) || {};
+          const url = cfg.url || (window.RF_CONFIG && window.RF_CONFIG.SUPABASE_URL) || '';
+          const anonKey = cfg.anonKey || (window.RF_CONFIG && window.RF_CONFIG.SUPABASE_ANON_KEY) || '';
+          if(url && anonKey){
+            state.supabase = window.supabase.createClient(url, anonKey, {
+              auth: { persistSession:true, autoRefreshToken:true, detectSessionInUrl:true }
+            });
+          }
         }
+
+        if(!state.supabase){
+          throw new Error('Configul Supabase nu este disponibil în rf-config.js.');
+        }
+
+        let session = null;
+        for(let i = 0; i < 6; i += 1){
+          try {
+            const res = await state.supabase.auth.getSession();
+            if(!res.error && res.data && res.data.session && res.data.session.user){
+              session = res.data.session;
+              break;
+            }
+          } catch(_e){}
+          await new Promise(resolve => setTimeout(resolve, 120));
+        }
+
+        if(!session || !session.user){
+          const next = encodeURIComponent('planificare-forja.html');
+          location.href = 'login.html?next=' + next;
+          return;
+        }
+
+        state.user = session.user;
+
+        if(window.RF_ACL && typeof window.RF_ACL.resolveRole === 'function'){
+          const resolved = await window.RF_ACL.resolveRole(state.supabase, state.user);
+          state.role = resolved && resolved.role ? String(resolved.role) : 'viewer';
+        } else {
+          state.role = safeText(localStorage.getItem('rf_role') || sessionStorage.getItem('rf_cached_role') || 'viewer');
+        }
+
+        setStatus(
+          els.authStatus,
+          els.authSub,
+          state.user ? (state.user.email || 'Autentificat') : 'Autentificat',
+          state.user ? ('ID: ' + safeText(state.user.id || '-')) : 'Sesiune activă'
+        );
       } catch(error) {
         console.error(error);
         els.authStatus.textContent = 'Eroare auth';
@@ -1013,11 +1053,12 @@
       });
       els.planBody.addEventListener('input', handleTableInput);
       els.btnLogout.addEventListener('click', async () => {
-        if(window.ERPAuth && typeof window.ERPAuth.signOut === 'function'){
-          await window.ERPAuth.signOut({ redirectTo:'login.html' });
-        } else {
-          location.href = 'login.html';
-        }
+        try {
+          if(state.supabase){
+            await state.supabase.auth.signOut();
+          }
+        } catch(_e){}
+        location.href = 'login.html';
       });
       els.btnResetMonth.addEventListener('click', () => {
         resetCurrentMonthFromSeed();
