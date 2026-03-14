@@ -982,111 +982,64 @@
         dom.selectedRoleBadge.textContent = 'rol curent: ' + selectedUserRole;
       }
 
-
-      async function saveRoleInProfiles(user, email, role){
-        const safeEmail = safeLower(email);
-        const safeRole = normalizeRole(role);
-        const safeUserId = user && user.user_id ? String(user.user_id).trim() : '';
-        let lastError = null;
-
-        if (safeUserId) {
-          try {
-            const res = await supabase.from('profiles').upsert({ user_id: safeUserId, email: safeEmail, role: safeRole }, { onConflict:'user_id' });
-            if (!res.error) return null;
-            lastError = res.error;
-          } catch (error) {
-            lastError = error;
-          }
-          try {
-            const upd = await supabase.from('profiles').update({ email: safeEmail, role: safeRole }).eq('user_id', safeUserId);
-            if (!upd.error) return null;
-            lastError = upd.error;
-          } catch (error) {
-            lastError = error;
-          }
-        }
-
-        if (safeEmail) {
-          try {
-            const existing = await supabase.from('profiles').select('user_id,email').eq('email', safeEmail).maybeSingle();
-            if (!existing.error && existing.data) {
-              if (existing.data.user_id) {
-                const updByUserId = await supabase.from('profiles').update({ role: safeRole, email: safeEmail }).eq('user_id', existing.data.user_id);
-                if (!updByUserId.error) return null;
-                lastError = updByUserId.error;
-              } else {
-                const updByEmail = await supabase.from('profiles').update({ role: safeRole }).eq('email', safeEmail);
-                if (!updByEmail.error) return null;
-                lastError = updByEmail.error;
-              }
-            }
-          } catch (error) {
-            lastError = error;
-          }
-        }
-
-        return lastError;
-      }
-
-      async function saveRoleInAcl(email, role){
-        const safeEmail = safeLower(email);
-        const safeRole = normalizeRole(role);
-        let lastError = null;
-        if (!safeEmail) return new Error('Email lipsă pentru rf_acl.');
-
-        try {
-          const upsertRes = await supabase.from('rf_acl').upsert({ email: safeEmail, role: safeRole, updated_at: new Date().toISOString() }, { onConflict:'email' });
-          if (!upsertRes.error) return null;
-          lastError = upsertRes.error;
-        } catch (error) {
-          lastError = error;
-        }
-
-        try {
-          const existing = await supabase.from('rf_acl').select('email').eq('email', safeEmail).maybeSingle();
-          if (!existing.error && existing.data) {
-            const updateRes = await supabase.from('rf_acl').update({ role: safeRole, updated_at: new Date().toISOString() }).eq('email', safeEmail);
-            if (!updateRes.error) return null;
-            lastError = updateRes.error;
-          } else {
-            const insertRes = await supabase.from('rf_acl').insert({ email: safeEmail, role: safeRole, updated_at: new Date().toISOString() });
-            if (!insertRes.error) return null;
-            lastError = insertRes.error;
-          }
-        } catch (error) {
-          lastError = error;
-        }
-
-        return lastError;
-      }
-
       async function saveSelectedUserRole(){
         if (!selectedUser) {
           showLeftMessage('Selectează mai întâi un utilizator.', 'error');
           return;
         }
 
-        const email = selectedUser.email;
+        const email = safeLower(selectedUser.email);
         const role = normalizeRole(selectedUserRole);
         hideLeftMessage();
         showLeftMessage('Se salvează rolul pentru ' + email + '...', 'success');
 
-        const profileError = await saveRoleInProfiles(selectedUser, email, role);
-        const aclError = await saveRoleInAcl(email, role);
-        let mirrorError = null;
+        let profileError = null;
+        let aclError = null;
+        const now = new Date().toISOString();
+
         try {
-          await syncDashboardUserRoleMirror(email, role);
+          const aclPayload = { email, role, updated_at: now };
+          const aclRes = await supabase.from('rf_acl').upsert(aclPayload, { onConflict:'email' });
+          aclError = aclRes.error || null;
+          if (aclError) {
+            const aclFallback = await supabase.from('rf_acl').update({ role, updated_at: now }).eq('email', email);
+            aclError = aclFallback.error || null;
+          }
         } catch (error) {
-          mirrorError = error;
+          aclError = error;
         }
 
-        if (profileError && aclError && mirrorError) {
-          showLeftMessage('Nu am putut salva rolul în profiles, rf_acl sau oglinda dashboard_acl_v1. Verifică RLS și cheile unice.', 'error');
+        try {
+          if (selectedUser.user_id) {
+            const profilePayload = { user_id: selectedUser.user_id, email, role };
+            const byUserId = await supabase.from('profiles').upsert(profilePayload, { onConflict:'user_id' });
+            profileError = byUserId.error || null;
+          }
+          if (profileError || !selectedUser.user_id) {
+            const byEmailUpdate = await supabase.from('profiles').update({ email, role }).eq('email', email);
+            profileError = byEmailUpdate.error || null;
+            if (profileError) {
+              const byEmailInsert = await supabase.from('profiles').insert({ email, role });
+              profileError = byEmailInsert.error || null;
+            }
+          }
+        } catch (error) {
+          profileError = error;
+        }
+
+        if (aclError && profileError) {
+          showLeftMessage('Nu am putut salva rolul. Verifică RLS pentru rf_acl și profiles.', 'error');
           return;
         }
 
+        selectedUser.acl_role = role;
+        selectedUser.profile_role = role;
+        selectedUserRole = role;
+        updateSelectedRoleButtons();
+        renderUsers();
         showLeftMessage('Rolul a fost salvat pentru ' + email + '.', 'success');
         await loadUsers();
+        selectUser(email);
       }
 
       async function loadPagesAndPermissions(){
