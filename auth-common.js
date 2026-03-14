@@ -165,7 +165,6 @@
     return data && data.role ? String(data.role).trim() : '';
   }
 
-
   async function readRoleMirror(sb){
     const tryContent = async () => {
       const data = await maybeSelect(
@@ -212,11 +211,11 @@
 
     const sb = getSupabaseClient();
     const attempts = [
+      () => tryRoleFromMirror(sb, email),
       () => tryRoleFromProfilesByUserId(sb, user.id),
       () => tryRoleFromProfilesByLegacyId(sb, user.id),
       () => tryRoleFromProfilesByEmail(sb, email),
-      () => tryRoleFromAcl(sb, email),
-      () => tryRoleFromMirror(sb, email)
+      () => tryRoleFromAcl(sb, email)
     ];
 
     for(const attempt of attempts){
