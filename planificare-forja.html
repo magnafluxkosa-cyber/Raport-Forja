@@ -1,7 +1,7 @@
 <!doctype html>
 <html lang="ro">
 <head>
-  <!-- PF_BUILD: STEP2_2026-03-15_12-55 -->
+  <!-- PF_BUILD: STEP4_2026-03-15_18-10 -->
 
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
@@ -1213,7 +1213,7 @@ function normalizeSteelSnapshotRow(row, index){
       pick(row,['diametru','diametru_otel','diametru otel','dimensiune otel','Dimensiune OTEL','Diametru Oțel','Diametru']),
       pick(row,['calitate','calitate_otel','calitate otel','Calitate Otel','Calitate Oțel','Calitate'])
     ),
-    qty: S.toNum(pick(row,['cantitateKg','Stoc Otel (Kg)','stoc otel (kg)','stoc actual (kg)','stockKg','kg'])),
+    qty: S.toNum(pick(row,['cantitateKg','Stoc Otel (Kg)','stoc otel (kg)','stoc actual (kg)','stockKg','cantitate','cantitate kg','cantitate_kg','stoc initial','stoc_initial','kg'])),
     ts: rowTsFromAny(row)
   };
 }
@@ -1279,8 +1279,8 @@ function shouldReplaceBaseline(existing, candidate){
 }
 async function loadInventoryStocks(){
   const steelBaseDocs = uniqueDocs(excludeIndexDocs([
-    ...(await queryDocsByKeys(['inventar-otel'])),
-    ...(await queryDocsByPrefixes(['inventar-otel']))
+    ...(await queryDocsByKeys(['stoc-initial-otel','stoc_initial_otel','inventar-otel'])),
+    ...(await queryDocsByPrefixes(['stoc-initial-otel','stoc_initial_otel','inventar-otel']))
   ]));
   const entryDocs = uniqueDocs(excludeIndexDocs([
     ...(await queryDocsByKeys(['intrari-otel','intrari_otel','intrari otel'])),
@@ -1299,26 +1299,27 @@ async function loadInventoryStocks(){
     ...(await queryDocsByPrefixes(['forjate']))
   ]));
 
-  const steelBaseline = new Map();
+  const steelBaselineQty = Object.create(null);
+  const steelBaselineTs = Object.create(null);
   steelBaseDocs.flatMap(doc => extractRows(doc.content || doc.data || doc)).forEach((raw, index) => {
     const row = normalizeSteelSnapshotRow(raw, index);
     if(!row.key) return;
-    const existing = steelBaseline.get(row.key);
-    if(shouldReplaceBaseline(existing, row)) steelBaseline.set(row.key, row);
+    steelBaselineQty[row.key] = S.toNum(steelBaselineQty[row.key]) + S.toNum(row.qty);
+    steelBaselineTs[row.key] = Math.max(S.toNum(steelBaselineTs[row.key]), S.toNum(row.ts));
   });
   const steelByMaterial = Object.create(null);
-  steelBaseline.forEach((row, key) => { steelByMaterial[key] = S.toNum(row.qty); });
+  Object.keys(steelBaselineQty).forEach(key => { steelByMaterial[key] = S.toNum(steelBaselineQty[key]); });
   entryDocs.flatMap(doc => extractRows(doc.content || doc.data || doc)).forEach((raw, index) => {
     const row = normalizeEntryStockRow(raw, index);
     if(!row.key) return;
-    const base = steelBaseline.get(row.key);
-    if(!base || row.ts > base.ts) steelByMaterial[row.key] = S.toNum(steelByMaterial[row.key]) + S.toNum(row.qty);
+    const baseTs = S.toNum(steelBaselineTs[row.key]);
+    if(!baseTs || row.ts >= baseTs) steelByMaterial[row.key] = S.toNum(steelByMaterial[row.key]) + S.toNum(row.qty);
   });
   consDocs.flatMap(doc => extractRows(doc.content || doc.data || doc)).forEach((raw, index) => {
     const row = normalizeConsumptionStockRow(raw, index);
     if(!row.key) return;
-    const base = steelBaseline.get(row.key);
-    if(!base || row.ts > base.ts) steelByMaterial[row.key] = S.toNum(steelByMaterial[row.key]) - S.toNum(row.qty);
+    const baseTs = S.toNum(steelBaselineTs[row.key]);
+    if(!baseTs || row.ts >= baseTs) steelByMaterial[row.key] = S.toNum(steelByMaterial[row.key]) - S.toNum(row.qty);
   });
 
   const debBaseline = new Map();
@@ -1334,13 +1335,13 @@ async function loadInventoryStocks(){
     const row = normalizeDebitareProductionRow(raw, index);
     if(!row.key) return;
     const base = debBaseline.get(row.key);
-    if(!base || row.ts > base.ts) debByReper[row.key] = Math.max(0, S.toNum(debByReper[row.key]) + S.toNum(row.qty));
+    if(!base || row.ts >= base.ts) debByReper[row.key] = Math.max(0, S.toNum(debByReper[row.key]) + S.toNum(row.qty));
   });
   forjateDocs.flatMap(doc => extractRows(doc.content || doc.data || doc)).forEach((raw, index) => {
     const row = normalizeForjateConsumptionRow(raw, index);
     if(!row.key) return;
     const base = debBaseline.get(row.key);
-    if(!base || row.ts > base.ts) debByReper[row.key] = Math.max(0, S.toNum(debByReper[row.key]) - S.toNum(row.qty));
+    if(!base || row.ts >= base.ts) debByReper[row.key] = Math.max(0, S.toNum(debByReper[row.key]) - S.toNum(row.qty));
   });
 
   state.liveStocks = { steelByMaterial, debByReper };
@@ -1437,10 +1438,7 @@ async function loadInventoryStocks(){
         || lookup.bySlot[dataKey + '|' + utilajKey]
         || '';
     }
-    function selectorValue(v){
-      return String(v || '').replace(/\\/g, '\\\\').replace(/"/g, '\"');
-    }
-    function render(options){
+    function render(){
       const rows = getRowsForYear(state.activeYear);
       const calc = getCalc();
       const calcLookup = buildCalcLookup(calc.rows || []);
@@ -1478,15 +1476,6 @@ async function loadInventoryStocks(){
       state.pendingScroll = null;
       markSaveInfo(state.updatedAt ? ('Salvat: ' + new Date(state.updatedAt).toLocaleString('ro-RO')) : 'Model Excel încărcat');
       els.todayText.textContent = 'Astăzi: ' + new Date().toLocaleDateString('ro-RO');
-      if(options && options.reopenEditor && state.canEdit){
-        requestAnimationFrame(() => {
-          const info = options.reopenEditor || {};
-          const td = els.tbodyRows.querySelector(
-            'td[data-date="' + selectorValue(info.data) + '"][data-utilaj="' + selectorValue(info.utilaj) + '"][data-field="' + selectorValue(info.field) + '"]'
-          );
-          if(td) openEditor(td, info);
-        });
-      }
     }
     function bindRowHover(){
       els.tbodyRows.querySelectorAll('tr').forEach(tr => {
@@ -1519,7 +1508,7 @@ async function loadInventoryStocks(){
       setPendingScrollFromCurrent();
       render();
     }
-    function openEditor(td, reopenInfo){
+    function openEditor(td){
       if(!state.canEdit) return;
       if(td.querySelector('input')) return;
       const data = td.dataset.date;
@@ -1528,15 +1517,7 @@ async function loadInventoryStocks(){
       const row = findRow(data);
       if(!row) return;
       const slot = row.slots[utilaj];
-      const baseCurrent = field === 'reper' ? (slot.reper || '') : String(slot.planificat || '');
-      const originalRaw = reopenInfo && Object.prototype.hasOwnProperty.call(reopenInfo, 'originalRaw')
-        ? String(reopenInfo.originalRaw)
-        : baseCurrent;
-      const current = reopenInfo && Object.prototype.hasOwnProperty.call(reopenInfo, 'value')
-        ? String(reopenInfo.value)
-        : baseCurrent;
-      let suppressBlurSave = false;
-      let finished = false;
+      const current = field === 'reper' ? (slot.reper || '') : String(slot.planificat || '');
       const input = document.createElement('input');
       input.className = 'cell-editor';
       input.value = current;
@@ -1550,60 +1531,16 @@ async function loadInventoryStocks(){
       td.textContent = '';
       td.appendChild(input);
       input.focus();
-      if(reopenInfo && Number.isInteger(reopenInfo.selStart) && Number.isInteger(reopenInfo.selEnd)){
-        try{ input.setSelectionRange(reopenInfo.selStart, reopenInfo.selEnd); }catch(_e){ input.select(); }
-      } else {
-        input.select();
-      }
-      const restoreOriginal = () => {
-        const targetRow = findRow(data);
-        const targetSlot = targetRow && targetRow.slots ? targetRow.slots[utilaj] : null;
-        if(!targetSlot) return;
-        if(field === 'reper') targetSlot.reper = S.safeText(originalRaw);
-        if(field === 'planificat') targetSlot.planificat = S.numClean(originalRaw || 0);
-        invalidateCalc();
-        setPendingScrollFromCurrent();
-        render();
-      };
+      input.select();
       const finish = (save) => {
-        if(finished) return;
-        finished = true;
-        if(save){
-          commitCell(data, utilaj, field, input.value);
-        } else {
-          restoreOriginal();
-        }
+        const next = save ? input.value : current;
+        commitCell(data, utilaj, field, next);
       };
-      if(field === 'planificat'){
-        input.addEventListener('input', () => {
-          const targetRow = findRow(data);
-          const targetSlot = targetRow && targetRow.slots ? targetRow.slots[utilaj] : null;
-          if(!targetSlot) return;
-          targetSlot.planificat = S.numClean(input.value || 0);
-          invalidateCalc();
-          setPendingScrollFromCurrent();
-          suppressBlurSave = true;
-          render({
-            reopenEditor: {
-              data,
-              utilaj,
-              field,
-              value: input.value,
-              selStart: input.selectionStart,
-              selEnd: input.selectionEnd,
-              originalRaw
-            }
-          });
-        });
-      }
       input.addEventListener('keydown', ev => {
         if(ev.key === 'Enter'){ ev.preventDefault(); finish(true); }
-        if(ev.key === 'Escape'){ ev.preventDefault(); finish(false); }
+        if(ev.key === 'Escape'){ ev.preventDefault(); setPendingScrollFromCurrent(); render(); }
       });
-      input.addEventListener('blur', () => {
-        if(suppressBlurSave) return;
-        finish(true);
-      }, { once:true });
+      input.addEventListener('blur', () => finish(true), { once:true });
     }
     function bindEditors(){
       if(!state.canEdit) return;
