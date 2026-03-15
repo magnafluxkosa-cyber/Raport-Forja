@@ -1,6 +1,8 @@
 <!doctype html>
 <html lang="ro">
 <head>
+  <!-- PF_BUILD: STEP2_2026-03-15_12-55 -->
+
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Planificare Forjă</title>
@@ -1435,7 +1437,10 @@ async function loadInventoryStocks(){
         || lookup.bySlot[dataKey + '|' + utilajKey]
         || '';
     }
-    function render(){
+    function selectorValue(v){
+      return String(v || '').replace(/\\/g, '\\\\').replace(/"/g, '\"');
+    }
+    function render(options){
       const rows = getRowsForYear(state.activeYear);
       const calc = getCalc();
       const calcLookup = buildCalcLookup(calc.rows || []);
@@ -1473,6 +1478,15 @@ async function loadInventoryStocks(){
       state.pendingScroll = null;
       markSaveInfo(state.updatedAt ? ('Salvat: ' + new Date(state.updatedAt).toLocaleString('ro-RO')) : 'Model Excel încărcat');
       els.todayText.textContent = 'Astăzi: ' + new Date().toLocaleDateString('ro-RO');
+      if(options && options.reopenEditor && state.canEdit){
+        requestAnimationFrame(() => {
+          const info = options.reopenEditor || {};
+          const td = els.tbodyRows.querySelector(
+            'td[data-date="' + selectorValue(info.data) + '"][data-utilaj="' + selectorValue(info.utilaj) + '"][data-field="' + selectorValue(info.field) + '"]'
+          );
+          if(td) openEditor(td, info);
+        });
+      }
     }
     function bindRowHover(){
       els.tbodyRows.querySelectorAll('tr').forEach(tr => {
@@ -1505,7 +1519,7 @@ async function loadInventoryStocks(){
       setPendingScrollFromCurrent();
       render();
     }
-    function openEditor(td){
+    function openEditor(td, reopenInfo){
       if(!state.canEdit) return;
       if(td.querySelector('input')) return;
       const data = td.dataset.date;
@@ -1514,7 +1528,15 @@ async function loadInventoryStocks(){
       const row = findRow(data);
       if(!row) return;
       const slot = row.slots[utilaj];
-      const current = field === 'reper' ? (slot.reper || '') : String(slot.planificat || '');
+      const baseCurrent = field === 'reper' ? (slot.reper || '') : String(slot.planificat || '');
+      const originalRaw = reopenInfo && Object.prototype.hasOwnProperty.call(reopenInfo, 'originalRaw')
+        ? String(reopenInfo.originalRaw)
+        : baseCurrent;
+      const current = reopenInfo && Object.prototype.hasOwnProperty.call(reopenInfo, 'value')
+        ? String(reopenInfo.value)
+        : baseCurrent;
+      let suppressBlurSave = false;
+      let finished = false;
       const input = document.createElement('input');
       input.className = 'cell-editor';
       input.value = current;
@@ -1528,16 +1550,60 @@ async function loadInventoryStocks(){
       td.textContent = '';
       td.appendChild(input);
       input.focus();
-      input.select();
-      const finish = (save) => {
-        const next = save ? input.value : current;
-        commitCell(data, utilaj, field, next);
+      if(reopenInfo && Number.isInteger(reopenInfo.selStart) && Number.isInteger(reopenInfo.selEnd)){
+        try{ input.setSelectionRange(reopenInfo.selStart, reopenInfo.selEnd); }catch(_e){ input.select(); }
+      } else {
+        input.select();
+      }
+      const restoreOriginal = () => {
+        const targetRow = findRow(data);
+        const targetSlot = targetRow && targetRow.slots ? targetRow.slots[utilaj] : null;
+        if(!targetSlot) return;
+        if(field === 'reper') targetSlot.reper = S.safeText(originalRaw);
+        if(field === 'planificat') targetSlot.planificat = S.numClean(originalRaw || 0);
+        invalidateCalc();
+        setPendingScrollFromCurrent();
+        render();
       };
+      const finish = (save) => {
+        if(finished) return;
+        finished = true;
+        if(save){
+          commitCell(data, utilaj, field, input.value);
+        } else {
+          restoreOriginal();
+        }
+      };
+      if(field === 'planificat'){
+        input.addEventListener('input', () => {
+          const targetRow = findRow(data);
+          const targetSlot = targetRow && targetRow.slots ? targetRow.slots[utilaj] : null;
+          if(!targetSlot) return;
+          targetSlot.planificat = S.numClean(input.value || 0);
+          invalidateCalc();
+          setPendingScrollFromCurrent();
+          suppressBlurSave = true;
+          render({
+            reopenEditor: {
+              data,
+              utilaj,
+              field,
+              value: input.value,
+              selStart: input.selectionStart,
+              selEnd: input.selectionEnd,
+              originalRaw
+            }
+          });
+        });
+      }
       input.addEventListener('keydown', ev => {
         if(ev.key === 'Enter'){ ev.preventDefault(); finish(true); }
-        if(ev.key === 'Escape'){ ev.preventDefault(); setPendingScrollFromCurrent(); render(); }
+        if(ev.key === 'Escape'){ ev.preventDefault(); finish(false); }
       });
-      input.addEventListener('blur', () => finish(true), { once:true });
+      input.addEventListener('blur', () => {
+        if(suppressBlurSave) return;
+        finish(true);
+      }, { once:true });
     }
     function bindEditors(){
       if(!state.canEdit) return;
