@@ -214,7 +214,8 @@
       rows: S.hydrateRowsFromPayload(null),
       helperMaps: S.buildHelperMaps([], []),
       activeYear: Number(new URLSearchParams(window.location.search).get('year') || 0) || new Date().getFullYear(),
-      realizedSummary: Object.create(null)
+      realizedSummary: Object.create(null),
+      inventoryAnchors: null
     };
 
     function scrollKey(year){ return 'rf_planificare_calc_scroll_' + String(year || ''); }
@@ -262,6 +263,54 @@
       }catch(_e){}
       return null;
     }
+
+    function extractRowsFromPayload(payload){
+      if (!payload) return [];
+      if (Array.isArray(payload)) return payload;
+      if (Array.isArray(payload.rows)) return payload.rows;
+      if (Array.isArray(payload.items)) return payload.items;
+      if (Array.isArray(payload.data)) return payload.data;
+      if (Array.isArray(payload.records)) return payload.records;
+      if (Array.isArray(payload.values)) return payload.values;
+      return [];
+    }
+    async function readDocumentsExact(keys){
+      if(!state.supabase || !Array.isArray(keys) || !keys.length) return [];
+      try{
+        const res = await state.supabase.from('rf_documents').select('*').in('doc_key', keys);
+        return res && !res.error && Array.isArray(res.data) ? res.data : [];
+      }catch(_e){ return []; }
+    }
+    async function readDocumentsPatterns(patterns){
+      if(!state.supabase || !Array.isArray(patterns) || !patterns.length) return [];
+      const out = [];
+      for(const pattern of patterns){
+        try{
+          const res = await state.supabase.from('rf_documents').select('*').ilike('doc_key', pattern);
+          if(res && !res.error && Array.isArray(res.data)) out.push(...res.data);
+        }catch(_e){}
+      }
+      const seen = new Set();
+      return out.filter(doc => {
+        const key = String(doc && doc.doc_key || '');
+        if(!key || seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+    }
+    async function loadInventoryAnchors(){
+      const steelDocs = await readDocumentsExact(['inventar-otel','inventar_otel','stoc-initial-otel','stoc_initial_otel','inventar-otel-initial','inventar_otel_initial']);
+      const debDocs = [
+        ...(await readDocumentsExact(['inventar-debitat','inventar_debitat','stoc-initial-debitat','stoc_initial_debitat'])),
+        ...(await readDocumentsPatterns(['inventar-debitat:%','inventar_debitat:%','stoc-initial-debitat:%','stoc_initial_debitat:%']))
+      ];
+      const steelRows = [];
+      const debRows = [];
+      steelDocs.forEach(doc => steelRows.push(...extractRowsFromPayload(doc.content || doc.data || null)));
+      debDocs.forEach(doc => debRows.push(...extractRowsFromPayload(doc.content || doc.data || null)));
+      state.inventoryAnchors = S.buildInventoryAnchors(steelRows, debRows);
+    }
+
     async function loadPlanRows(){
       const cached = S.readCachedPayload();
       if(cached){
@@ -310,7 +359,7 @@
     }
     function render(){
       els.theadRow.innerHTML = HEADERS.map(h => '<th>' + h + '</th>').join('');
-      const calc = S.computeCalcForYear(state.rows.filter(r => Number(r.an) === Number(state.activeYear)), state.realizedSummary, state.helperMaps, state.activeYear);
+      const calc = S.computeCalcForYear(state.rows.filter(r => Number(r.an) === Number(state.activeYear)), state.realizedSummary, state.helperMaps, state.activeYear, state.inventoryAnchors);
       const todayIso = S.todayIso();
       els.rowInfo.textContent = 'Rânduri: ' + calc.rows.length;
       els.yearInfo.textContent = 'An: ' + state.activeYear;
@@ -351,6 +400,7 @@
         const years = Array.from(new Set(state.rows.map(r => Number(r.an)).filter(Boolean))).sort((a,b)=>a-b);
         if(years.length && !years.includes(Number(state.activeYear))) state.activeYear = years[0];
         await loadHelpers();
+        await loadInventoryAnchors();
         await loadForjateSummary();
         render();
       }catch(err){

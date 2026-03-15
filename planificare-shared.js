@@ -118,6 +118,7 @@
   const BASE_CALC_BY_SLOT = new Map();
   const BASE_CALC_BY_REPER = new Map();
   const GROUP_FIRST_ANCHOR = new Map();
+  const STEEL_FIRST_ANCHOR = new Map();
   BASE_CALC_ROWS.forEach(row => {
     const key = slotKey(row.DATA, row.UTILAJ);
     BASE_CALC_BY_SLOT.set(key, row);
@@ -129,6 +130,10 @@
         steel: toNum(row.STOC_OTEL_INAINTE),
         deb: toNum(row.STOC_DEBITAT_INAINTE)
       });
+    }
+    const steelKey = steelStockKey(row.DIAMETRU_OTEL, row.CALITATE_OTEL, groupKey || reperKey || key);
+    if (steelKey && !STEEL_FIRST_ANCHOR.has(steelKey)) {
+      STEEL_FIRST_ANCHOR.set(steelKey, toNum(row.STOC_OTEL_INAINTE));
     }
   });
 
@@ -332,6 +337,111 @@
     };
   }
 
+
+  function monthNumberFromAny(value) {
+    const raw = safeText(value);
+    if (!raw) return 0;
+    const byName = MONTHS.findIndex(m => norm(m) === norm(raw));
+    if (byName >= 0) return byName + 1;
+    const num = Number(raw);
+    return Number.isInteger(num) && num >= 1 && num <= 12 ? num : 0;
+  }
+
+  function parseInventoryDate(value, fallbackYear, fallbackMonth) {
+    const s = safeText(value);
+    if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0,10);
+    if (/^\d{2}\.\d{2}\.\d{4}$/.test(s)) {
+      return `${s.slice(6,10)}-${s.slice(3,5)}-${s.slice(0,2)}`;
+    }
+    if (/^\d{2}\/\d{2}\/\d{4}$/.test(s)) {
+      const [d,m,y] = s.split('/');
+      return `${y}-${m}-${d}`;
+    }
+    const dt = s ? new Date(s) : null;
+    if (dt && !Number.isNaN(dt.getTime())) {
+      const y = String(dt.getFullYear());
+      const m = String(dt.getMonth() + 1).padStart(2, '0');
+      const d = String(dt.getDate()).padStart(2, '0');
+      return `${y}-${m}-${d}`;
+    }
+    const year = Number(fallbackYear) || 0;
+    const month = Number(fallbackMonth) || 0;
+    if (year && month) return `${year}-${String(month).padStart(2,'0')}-01`;
+    return '';
+  }
+
+  function steelStockKey(diametru, calitate, fallback) {
+    const rawDiam = safeText(diametru);
+    const diam = rawDiam ? safeText(numClean(rawDiam)) : '';
+    const cal = normUpper(calitate);
+    if (diam || cal) return `${diam}|${cal}`;
+    return fallback ? `FALLBACK|${normUpper(fallback)}` : '';
+  }
+
+  function debitStockKey(reper) {
+    return normUpper(reper);
+  }
+
+  function normalizeSteelInventoryRow(row) {
+    const data = parseInventoryDate(row && (row.data || row.date || row.DATA || row.Date), row && (row.an || row.AN || row.year || row.Year), monthNumberFromAny(row && (row.luna || row.LUNA || row.month || row.Month)));
+    const year = Number(row && (row.an || row.AN || row.year || row.Year || (data ? data.slice(0,4) : 0)) || 0) || 0;
+    const month = monthNumberFromAny(row && (row.luna || row.LUNA || row.month || row.Month || (data ? data.slice(5,7) : 0)));
+    return {
+      data,
+      year,
+      month,
+      diametru: safeText(row && (row.diametru || row.diametru_otel || row['diametru otel'] || row.DIAMETRU_OTEL || row.Diametru || row['Dimensiune Oțel'] || row['dimensiune otel'])),
+      calitate: safeText(row && (row.calitate || row.calitate_otel || row['calitate otel'] || row.CALITATE_OTEL || row.Calitate)),
+      cantitateKg: toNum(row && (row.cantitateKg || row.cantitate_kg || row['cantitate kg'] || row.cantitate || row.kg || row['stoc initial'] || row.stoc_initial || row['Stoc Otel (Kg)'] || row['STOC OTEL (KG)'] || row['STOC OTEL'] || row['stoc otel (kg)']))
+    };
+  }
+
+  function normalizeDebInventoryRow(row) {
+    const data = parseInventoryDate(row && (row.data || row.date || row.DATA || row.Date), row && (row.an || row.AN || row.year || row.Year), monthNumberFromAny(row && (row.luna || row.LUNA || row.month || row.Month)));
+    const year = Number(row && (row.an || row.AN || row.year || row.Year || (data ? data.slice(0,4) : 0)) || 0) || 0;
+    const month = monthNumberFromAny(row && (row.luna || row.LUNA || row.month || row.Month || (data ? data.slice(5,7) : 0)));
+    return {
+      data,
+      year,
+      month,
+      reper: safeText(row && (row.reper || row.REPER || row.reper_debitare || row.REPER_DEBITARE || row['Denumire reper debitare'] || row['denumire reper debitare'])),
+      cantitateBuc: toNum(row && (row.cantitateBuc || row.cantitate_buc || row['cantitate buc'] || row.cantitate || row.buc || row['STOC DEBITATE FINAL (buc)'] || row['Stoc debitate final (buc)'] || row['stoc debitate final (buc)'] || row['Stoc Debitat (Buc)']))
+    };
+  }
+
+  function latestSnapshotRows(rows, normalizer) {
+    const normalized = (Array.isArray(rows) ? rows : []).map(normalizer).filter(r => {
+      return r && (r.data || r.year || r.month) && Object.keys(r).some(key => !['data','year','month'].includes(key));
+    });
+    if (!normalized.length) return [];
+    let bestScore = -1;
+    normalized.forEach(row => {
+      const score = Number(`${String(row.year || 0).padStart(4,'0')}${String(row.month || 0).padStart(2,'0')}${row.data ? row.data.slice(8,10) : '01'}`);
+      if (score > bestScore) bestScore = score;
+    });
+    return normalized.filter(row => Number(`${String(row.year || 0).padStart(4,'0')}${String(row.month || 0).padStart(2,'0')}${row.data ? row.data.slice(8,10) : '01'}`) === bestScore);
+  }
+
+  function buildInventoryAnchors(steelRows, debRows) {
+    const steelByKey = new Map();
+    const debByKey = new Map();
+    const latestSteel = latestSnapshotRows(steelRows, normalizeSteelInventoryRow);
+    const latestDeb = latestSnapshotRows(debRows, normalizeDebInventoryRow);
+
+    latestSteel.forEach(row => {
+      const key = steelStockKey(row.diametru, row.calitate);
+      if (!key) return;
+      steelByKey.set(key, toNum(steelByKey.get(key)) + toNum(row.cantitateKg));
+    });
+    latestDeb.forEach(row => {
+      const key = debitStockKey(row.reper);
+      if (!key) return;
+      debByKey.set(key, toNum(debByKey.get(key)) + toNum(row.cantitateBuc));
+    });
+
+    return { steelByKey, debByKey, steelRows: latestSteel, debRows: latestDeb };
+  }
+
   function buildCalcRowFromBase(base, slot, obsOverride) {
     const row = Object.assign({}, base);
     row.DATA = slot.data;
@@ -343,10 +453,15 @@
     return row;
   }
 
-  function computeCalcForYear(rows, realizedSummary, helperMaps, year) {
+
+  function computeCalcForYear(rows, realizedSummary, helperMaps, year, inventoryAnchors) {
     const sourceRows = (Array.isArray(rows) ? rows : [])
       .filter(row => Number(row.an) === Number(year))
-      .sort((a,b) => safeText(a.data).localeCompare(safeText(b.data)));
+      .sort((a,b) => {
+        const d = safeText(a.data).localeCompare(safeText(b.data));
+        if (d) return d;
+        return 0;
+      });
 
     const flatSlots = [];
     sourceRows.forEach(row => {
@@ -371,140 +486,152 @@
       });
     });
 
-    const groups = new Map();
-    flatSlots.forEach(slot => {
-      const groupKey = normUpper(slot.meta.reper_debitare || slot.reper || slot.utilaj);
-      if (!groups.has(groupKey)) groups.set(groupKey, []);
-      groups.get(groupKey).push(slot);
+    flatSlots.sort((a,b) => {
+      const d = safeText(a.data).localeCompare(safeText(b.data));
+      if (d) return d;
+      return utilajOrder(a.utilaj) - utilajOrder(b.utilaj);
     });
 
     const calcRows = [];
     const statusBySlot = Object.create(null);
+    const rollingSteelByKey = new Map();
+    const rollingDebByKey = new Map();
+    const inventorySteelApplied = new Set();
+    const inventoryDebApplied = new Set();
+    const inventory = inventoryAnchors || null;
+    const today = todayIso();
 
-    groups.forEach((slots, groupKey) => {
-      slots.sort((a,b) => {
-        const d = safeText(a.data).localeCompare(safeText(b.data));
-        if (d) return d;
-        return utilajOrder(a.utilaj) - utilajOrder(b.utilaj);
-      });
+    flatSlots.forEach(slot => {
+      const debKey = debitStockKey(slot.meta.reper_debitare || slot.reper || slot.utilaj);
+      const steelKey = steelStockKey(slot.meta.diametru_otel || 0, slot.meta.calitate_otel || '', debKey || slot.reper || slot.utilaj);
+      const base = slot.base;
+      const isTodayOrFuture = safeText(slot.data) >= today;
 
-      let rollingSteel;
-      let rollingDeb;
-      let recompute = false;
-
-      slots.forEach(slot => {
-        const base = slot.base;
-        const unchanged = !!(base &&
-          normUpper(base.REPER_FORJAT) === normUpper(slot.reper) &&
-          numClean(base.PLANIFICAT_BUC) === numClean(slot.planificat) &&
-          numClean(base.REALIZAT_BUC) === numClean(slot.realized)
-        );
-
-        if (!recompute && unchanged) {
-          const baseRow = buildCalcRowFromBase(base, slot);
-          calcRows.push(baseRow);
-          statusBySlot[slot.slotKey] = safeText(baseRow.STATUS).toUpperCase();
-          rollingSteel = toNum(baseRow.OTEL_RAMAS_DACA_DEBITEZI);
-          rollingDeb = toNum(baseRow.STOC_DEBITAT_RAMAS);
-          return;
+      if (isTodayOrFuture && inventory) {
+        if (steelKey && inventory.steelByKey instanceof Map && inventory.steelByKey.has(steelKey) && !inventorySteelApplied.has(steelKey)) {
+          rollingSteelByKey.set(steelKey, toNum(inventory.steelByKey.get(steelKey)));
+          inventorySteelApplied.add(steelKey);
         }
-
-        if (!recompute) {
-          recompute = true;
-          if (rollingSteel === undefined) {
-            if (base) rollingSteel = toNum(base.STOC_OTEL_INAINTE);
-            else {
-              const anchor = GROUP_FIRST_ANCHOR.get(groupKey);
-              rollingSteel = anchor ? toNum(anchor.steel) : 0;
-            }
-          }
-          if (rollingDeb === undefined) {
-            if (base) rollingDeb = toNum(base.STOC_DEBITAT_INAINTE);
-            else {
-              const anchor = GROUP_FIRST_ANCHOR.get(groupKey);
-              rollingDeb = anchor ? toNum(anchor.deb) : 0;
-            }
-          }
+        if (debKey && inventory.debByKey instanceof Map && inventory.debByKey.has(debKey) && !inventoryDebApplied.has(debKey)) {
+          rollingDebByKey.set(debKey, toNum(inventory.debByKey.get(debKey)));
+          inventoryDebApplied.add(debKey);
         }
+      }
 
-        let row;
-        if (slot.realized > 0) {
-          const obs = `Exista realizari (${formatIntRO(slot.realized)} buc). Consumul este deja reflectat de FORJATE/DEBITATE.`;
-          if (base && normUpper(base.REPER_FORJAT) === normUpper(slot.reper)) {
-            row = buildCalcRowFromBase(base, slot, obs);
-            row.BUC_SIMULAT = 0;
-            row.KG_TOTAL_DEBITAT = 0;
-            row.OTEL_NECESAR_DEBITARE = 0;
-            row.STATUS = 'REAL';
-            row.OBS = obs;
-            rollingSteel = toNum(row.OTEL_RAMAS_DACA_DEBITEZI);
-            rollingDeb = toNum(row.STOC_DEBITAT_RAMAS);
-          } else {
-            const steelBefore = toNum(rollingSteel);
-            const debBefore = toNum(rollingDeb);
-            row = {
-              DATA: slot.data,
-              UTILAJ: slot.utilaj,
-              REPER_FORJAT: slot.reper,
-              PLANIFICAT_BUC: numClean(slot.planificat),
-              REALIZAT_BUC: numClean(slot.realized),
-              BUC_SIMULAT: 0,
-              REPER_DEBITARE: slot.meta.reper_debitare || '',
-              DIAMETRU_OTEL: numClean(slot.meta.diametru_otel || 0),
-              CALITATE_OTEL: slot.meta.calitate_otel || '',
-              KG_BUC_DEBITAT: numClean(slot.meta.kg_buc_debitat || 0),
-              KG_TOTAL_DEBITAT: 0,
-              STOC_OTEL_INAINTE: numClean(steelBefore),
-              OTEL_NECESAR_DEBITARE: 0,
-              OTEL_RAMAS_DACA_DEBITEZI: numClean(steelBefore),
-              STOC_DEBITAT_INAINTE: numClean(debBefore),
-              CONSUM_DEBITAT_SIMULAT: 0,
-              STOC_DEBITAT_RAMAS: numClean(debBefore),
-              STATUS: 'REAL',
-              OBS: obs
-            };
-          }
+      const unchanged = !!(base &&
+        normUpper(base.REPER_FORJAT) === normUpper(slot.reper) &&
+        numClean(base.PLANIFICAT_BUC) === numClean(slot.planificat) &&
+        numClean(base.REALIZAT_BUC) === numClean(slot.realized)
+      );
+
+      if (!isTodayOrFuture && unchanged) {
+        const baseRow = buildCalcRowFromBase(base, slot);
+        calcRows.push(baseRow);
+        statusBySlot[slot.slotKey] = safeText(baseRow.STATUS).toUpperCase();
+        if (steelKey) rollingSteelByKey.set(steelKey, toNum(baseRow.OTEL_RAMAS_DACA_DEBITEZI));
+        if (debKey) rollingDebByKey.set(debKey, toNum(baseRow.STOC_DEBITAT_RAMAS));
+        return;
+      }
+
+      let steelBefore = steelKey && rollingSteelByKey.has(steelKey) ? toNum(rollingSteelByKey.get(steelKey)) : undefined;
+      let debBefore = debKey && rollingDebByKey.has(debKey) ? toNum(rollingDebByKey.get(debKey)) : undefined;
+
+      if (steelBefore === undefined) {
+        if (base && !isTodayOrFuture) steelBefore = toNum(base.STOC_OTEL_INAINTE);
+        else if (steelKey && inventory && inventory.steelByKey instanceof Map && inventory.steelByKey.has(steelKey)) steelBefore = toNum(inventory.steelByKey.get(steelKey));
+        else {
+          const anchor = steelKey ? STEEL_FIRST_ANCHOR.get(steelKey) : undefined;
+          steelBefore = anchor !== undefined ? toNum(anchor) : (base ? toNum(base.STOC_OTEL_INAINTE) : 0);
+        }
+        if (steelKey) rollingSteelByKey.set(steelKey, steelBefore);
+      }
+
+      if (debBefore === undefined) {
+        if (base && !isTodayOrFuture) debBefore = toNum(base.STOC_DEBITAT_INAINTE);
+        else if (debKey && inventory && inventory.debByKey instanceof Map && inventory.debByKey.has(debKey)) debBefore = toNum(inventory.debByKey.get(debKey));
+        else {
+          const anchor = debKey ? GROUP_FIRST_ANCHOR.get(debKey) : null;
+          debBefore = anchor ? toNum(anchor.deb) : (base ? toNum(base.STOC_DEBITAT_INAINTE) : 0);
+        }
+        if (debKey) rollingDebByKey.set(debKey, debBefore);
+      }
+
+      let row;
+      let steelAfter = steelBefore;
+      let debAfter = debBefore;
+
+      if (slot.realized > 0) {
+        const obs = `Exista realizari (${formatIntRO(slot.realized)} buc). Consumul este deja reflectat de FORJATE/DEBITATE.`;
+        if (base && !isTodayOrFuture && normUpper(base.REPER_FORJAT) === normUpper(slot.reper)) {
+          row = buildCalcRowFromBase(base, slot, obs);
+          row.BUC_SIMULAT = 0;
+          row.KG_TOTAL_DEBITAT = 0;
+          row.OTEL_NECESAR_DEBITARE = 0;
+          row.STATUS = 'REAL';
+          row.OBS = obs;
+          steelAfter = toNum(row.OTEL_RAMAS_DACA_DEBITEZI);
+          debAfter = toNum(row.STOC_DEBITAT_RAMAS);
         } else {
-          const steelBefore = toNum(rollingSteel);
-          const debBefore = toNum(rollingDeb);
-          const kg = toNum(slot.meta.kg_buc_debitat || 0);
-          const bucSim = Math.max(0, toNum(slot.planificat));
-          const deficitDebitat = Math.max(bucSim - debBefore, 0);
-          const kgTotal = bucSim * kg;
-          const otelNeces = deficitDebitat * kg;
-          const steelAfter = steelBefore - otelNeces;
-          const debAfter = Math.max(debBefore - bucSim, 0);
-          const status = steelAfter >= 0 ? 'SIMULAT' : 'LIPSA';
           row = {
             DATA: slot.data,
             UTILAJ: slot.utilaj,
             REPER_FORJAT: slot.reper,
             PLANIFICAT_BUC: numClean(slot.planificat),
-            REALIZAT_BUC: 0,
-            BUC_SIMULAT: numClean(bucSim),
+            REALIZAT_BUC: numClean(slot.realized),
+            BUC_SIMULAT: 0,
             REPER_DEBITARE: slot.meta.reper_debitare || '',
             DIAMETRU_OTEL: numClean(slot.meta.diametru_otel || 0),
             CALITATE_OTEL: slot.meta.calitate_otel || '',
-            KG_BUC_DEBITAT: numClean(kg),
-            KG_TOTAL_DEBITAT: numClean(kgTotal),
+            KG_BUC_DEBITAT: numClean(slot.meta.kg_buc_debitat || 0),
+            KG_TOTAL_DEBITAT: 0,
             STOC_OTEL_INAINTE: numClean(steelBefore),
-            OTEL_NECESAR_DEBITARE: numClean(otelNeces),
-            OTEL_RAMAS_DACA_DEBITEZI: numClean(steelAfter),
+            OTEL_NECESAR_DEBITARE: 0,
+            OTEL_RAMAS_DACA_DEBITEZI: numClean(steelBefore),
             STOC_DEBITAT_INAINTE: numClean(debBefore),
-            CONSUM_DEBITAT_SIMULAT: numClean(bucSim),
-            STOC_DEBITAT_RAMAS: numClean(debAfter),
-            STATUS: status,
-            OBS: status === 'LIPSA'
-              ? `Nu exista realizari -> simulez consumul din planificare. | Deficit debitat: ${formatIntRO(deficitDebitat)} buc | Otel necesar: ${formatKgRO(otelNeces)} kg.`
-              : `Nu exista realizari -> simulez consumul din planificare.`
+            CONSUM_DEBITAT_SIMULAT: 0,
+            STOC_DEBITAT_RAMAS: numClean(debBefore),
+            STATUS: 'REAL',
+            OBS: obs
           };
-          rollingSteel = steelAfter;
-          rollingDeb = debAfter;
         }
+      } else {
+        const kg = toNum(slot.meta.kg_buc_debitat || 0);
+        const bucSim = Math.max(0, toNum(slot.planificat));
+        const deficitDebitat = Math.max(bucSim - debBefore, 0);
+        const kgTotal = bucSim * kg;
+        const otelNeces = deficitDebitat * kg;
+        steelAfter = steelBefore - otelNeces;
+        debAfter = Math.max(debBefore - bucSim, 0);
+        const status = steelAfter >= 0 ? 'SIMULAT' : 'LIPSA';
+        row = {
+          DATA: slot.data,
+          UTILAJ: slot.utilaj,
+          REPER_FORJAT: slot.reper,
+          PLANIFICAT_BUC: numClean(slot.planificat),
+          REALIZAT_BUC: 0,
+          BUC_SIMULAT: numClean(bucSim),
+          REPER_DEBITARE: slot.meta.reper_debitare || '',
+          DIAMETRU_OTEL: numClean(slot.meta.diametru_otel || 0),
+          CALITATE_OTEL: slot.meta.calitate_otel || '',
+          KG_BUC_DEBITAT: numClean(kg),
+          KG_TOTAL_DEBITAT: numClean(kgTotal),
+          STOC_OTEL_INAINTE: numClean(steelBefore),
+          OTEL_NECESAR_DEBITARE: numClean(otelNeces),
+          OTEL_RAMAS_DACA_DEBITEZI: numClean(steelAfter),
+          STOC_DEBITAT_INAINTE: numClean(debBefore),
+          CONSUM_DEBITAT_SIMULAT: numClean(bucSim),
+          STOC_DEBITAT_RAMAS: numClean(debAfter),
+          STATUS: status,
+          OBS: status === 'LIPSA'
+            ? `Nu exista realizari -> simulez consumul din planificare. | Deficit debitat: ${formatIntRO(deficitDebitat)} buc | Otel necesar: ${formatKgRO(otelNeces)} kg.`
+            : `Nu exista realizari -> simulez consumul din planificare.`
+        };
+      }
 
-        calcRows.push(row);
-        statusBySlot[slot.slotKey] = safeText(row.STATUS).toUpperCase();
-      });
+      calcRows.push(row);
+      statusBySlot[slot.slotKey] = safeText(row.STATUS).toUpperCase();
+      if (steelKey) rollingSteelByKey.set(steelKey, toNum(steelAfter));
+      if (debKey) rollingDebByKey.set(debKey, toNum(debAfter));
     });
 
     calcRows.sort((a,b) => {
@@ -553,6 +680,9 @@
     readCachedPayload,
     buildForjateSummary,
     buildHelperMaps,
+    steelStockKey,
+    debitStockKey,
+    buildInventoryAnchors,
     computeCalcForYear,
     todayIso
   };
