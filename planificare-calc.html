@@ -319,18 +319,53 @@
       if(/^\d{4}-\d{2}-\d{2}/.test(s)){ const [y,m,d] = s.slice(0,10).split('-'); return `${d}.${m}.${y}`; }
       return s;
     }
-    function dateScore(v){ const s=fmtDate(v); return /^\d{2}\.\d{2}\.\d{4}$/.test(s) ? Number(s.slice(6,10)+s.slice(3,5)+s.slice(0,2)) : 0; }
+        function dateScore(v){ const s=fmtDate(v); return /^\d{2}\.\d{2}\.\d{4}$/.test(s) ? Number(s.slice(6,10)+s.slice(3,5)+s.slice(0,2)) : 0; }
+    function monthToNo(v){
+      const raw = String(v || '').trim();
+      if(!raw) return 0;
+      if(/^\d+$/.test(raw)){
+        const n = Number(raw);
+        return (n >= 1 && n <= 12) ? n : 0;
+      }
+      const key = S.normUpper(raw)
+        .replace(/Ă/g,'A').replace(/Â/g,'A').replace(/Î/g,'I').replace(/Ș/g,'S').replace(/Ş/g,'S').replace(/Ț/g,'T').replace(/Ţ/g,'T');
+      const map = {
+        IANUARIE:1, FEBRUARIE:2, MARTIE:3, APRILIE:4, MAI:5, IUNIE:6,
+        IULIE:7, AUGUST:8, SEPTEMBRIE:9, OCTOMBRIE:10, NOIEMBRIE:11, DECEMBRIE:12
+      };
+      return map[key] || 0;
+    }
+    function rowScore(row){
+      if(!row) return 0;
+      const direct = dateScore(row.data || row.date || row.DATA || row.Date || '');
+      if(direct) return direct;
+      const an = Number(pick(row,['an','anul','year','AN','Year','Anul']) || row.an || 0);
+      const luna = monthToNo(pick(row,['luna','month','Luna','Month']) || row.luna || '');
+      if(an && luna) return Number(String(an).padStart(4,'0') + String(luna).padStart(2,'0') + '01');
+      return 0;
+    }
+    function buildYearKeys(prefixes, years){
+      const out = [];
+      (Array.isArray(prefixes) ? prefixes : []).forEach(prefix => {
+        if(!prefix) return;
+        out.push(prefix);
+        (Array.isArray(years) ? years : []).forEach(year => {
+          if(year) out.push(prefix + ':' + String(year));
+        });
+      });
+      return [...new Set(out)];
+    }
     async function queryDocsByKeys(keys){
       const list = [...new Set((Array.isArray(keys)?keys:[]).map(x=>String(x||'').trim()).filter(Boolean))];
       if(!list.length) return [];
-      const { data, error } = await state.supabase.from('rf_documents').select('*').in('doc_key', list);
+      const { data, error } = await state.supabase.from('rf_documents').select('doc_key,content,data,updated_at').in('doc_key', list);
       if(error) throw error;
       return Array.isArray(data) ? data : [];
     }
     async function queryDocsByPrefixes(prefixes){
       const out = [];
       for(const prefix of [...new Set((Array.isArray(prefixes)?prefixes:[]).map(x=>String(x||'').trim()).filter(Boolean))]){
-        const { data, error } = await state.supabase.from('rf_documents').select('*').like('doc_key', `${prefix}:%`);
+        const { data, error } = await state.supabase.from('rf_documents').select('doc_key,content,data,updated_at').like('doc_key', `${prefix}:%`);
         if(error) throw error;
         if(Array.isArray(data)) out.push(...data);
       }
@@ -338,78 +373,163 @@
     }
     function uniqueDocs(docs){ const m=new Map(); (Array.isArray(docs)?docs:[]).forEach(d=>{ if(d && d.doc_key && !m.has(d.doc_key)) m.set(d.doc_key,d); }); return [...m.values()]; }
     function excludeIndexDocs(docs){ return (Array.isArray(docs)?docs:[]).filter(doc => !String(doc.doc_key || '').toLowerCase().endsWith(':index')); }
+    function normalizeSteelInventoryRow(row){
+      return {
+        diam: String(pick(row,['diametru','diametru otel','diametru_otel','dimensiune otel','Dimensiune OTEL','Dimensiune Otel','Diametru Oțel','Diametru otel','Diametru','D','diam']) || '').trim(),
+        cal: String(pick(row,['calitate','calitate otel','calitate_otel','Calitate Otel','Calitate Oțel','Calitate']) || '').trim(),
+        qty: S.toNum(pick(row,['stockKg','stocKg','cantitateKg','Stoc Otel (Kg)','Stoc otel (kg)','stoc otel (kg)','cantitate','cantitate kg','cantitate_kg','kg','stoc initial','stoc_initial','stock_kg'])),
+        data: fmtDate(pick(row,['data','date','DATA','Date'])),
+        an: String(pick(row,['an','anul','year','AN','Year','Anul']) || '').trim(),
+        luna: String(pick(row,['luna','month','Luna','Month']) || '').trim()
+      };
+    }
+    function normalizeEntryRow(row){
+      return {
+        diam: String(pick(row,['diametru','diametru otel','diametru_otel','dimensiune otel','Dimensiune OTEL','Dimensiune Otel','Diametru Oțel','Diametru']) || '').trim(),
+        cal: String(pick(row,['calitate','calitate otel','calitate_otel','Calitate Otel','Calitate Oțel','Calitate']) || '').trim(),
+        qty: S.toNum(pick(row,['cantitateKg','Cantitate in KG','Cantitate in Kg','Cantitate KG','cantitate','cantitate kg','cantitate_kg','kg','H'])),
+        data: fmtDate(pick(row,['data','date','DATA','Date','C'])),
+        an: String(pick(row,['an','anul','year','AN','Year','Anul','A']) || '').trim(),
+        luna: String(pick(row,['luna','month','Luna','Month','B']) || '').trim()
+      };
+    }
+    function normalizeConsumptionRow(row){
+      let qty = S.toNum(pick(row,['totalKg','total kg debitat','total_kg_debitat','totalKgDebitat','cantitate kg','cantitate_kg','kg']));
+      if(!qty){
+        const kgBuc = S.toNum(pick(row,['kgBuc','kg/buc','kg buc','kg_buc','Kg/buc','Kg/buc.','H']));
+        const buc = S.toNum(pick(row,['cantitate','cantitate buc','cantitate_buc','Cantitate','J']));
+        qty = kgBuc * buc;
+      }
+      return {
+        diam: String(pick(row,['diametru','diametru otel','diametru_otel','dimensiune otel','Dimensiune OTEL','Dimensiune Otel','Diametru Oțel','Diametru']) || '').trim(),
+        cal: String(pick(row,['calitate','calitate otel','calitate_otel','Calitate Otel','Calitate Oțel','Calitate']) || '').trim(),
+        qty,
+        data: fmtDate(pick(row,['data','date','DATA','Date','C'])),
+        an: String(pick(row,['an','anul','year','AN','Year','Anul','A']) || '').trim(),
+        luna: String(pick(row,['luna','month','Luna','Month','B']) || '').trim()
+      };
+    }
+    function normalizeDebInventoryRow(row, index){
+      return {
+        _index:index,
+        reper: String(pick(row,['reper','REPER','Reper','denumire reper debitare','Denumire reper debitare']) || '').trim(),
+        qty: Math.round(S.toNum(pick(row,['cantitateBuc','STOC DEBITATE FINAL (buc)','Stoc debitate final (buc)','Stoc Debitat (Buc)','cantitate','cantitate buc']))),
+        data: fmtDate(pick(row,['data','date','DATA','Date'])),
+        an: String(pick(row,['an','anul','year','AN','Year','Anul']) || '').trim(),
+        luna: String(pick(row,['luna','month','Luna','Month']) || '').trim()
+      };
+    }
+    function normalizeDebitareProducedRow(row){
+      return {
+        reper: String(pick(row,['reper','REPER','Reper','denumire reper debitare','Denumire reper debitare']) || '').trim(),
+        qty: Math.round(S.toNum(pick(row,['cantitate','cantitate buc','cantitate_buc','Cantitate','J']))),
+        data: fmtDate(pick(row,['data','date','DATA','Date','C'])),
+        an: String(pick(row,['an','anul','year','AN','Year','Anul','A']) || '').trim(),
+        luna: String(pick(row,['luna','month','Luna','Month','B']) || '').trim()
+      };
+    }
+    function normalizeForjateConsumedRow(row){
+      return {
+        reperForjat: String(pick(row,['reper','REPER','Reper','reper_forjat','REPER_FORJAT']) || '').trim(),
+        qty: Math.round(S.toNum(pick(row,['buc_realizate','BUC_REALIZATE','Buc realizate','buc','cantitate']))),
+        data: fmtDate(pick(row,['data','date','DATA','Date','C'])),
+        an: String(pick(row,['an','anul','year','AN','Year','Anul','A']) || '').trim(),
+        luna: String(pick(row,['luna','month','Luna','Month','B']) || '').trim()
+      };
+    }
+    function shouldReplaceDeb(existing, candidate){
+      if(!candidate) return false;
+      if(!existing) return true;
+      const cd = rowScore(candidate), ed = rowScore(existing);
+      if(cd !== ed) return cd > ed;
+      return (candidate._index || 0) > (existing._index || 0);
+    }
+    function sumRowsByKey(rows, keyGetter, qtyGetter){
+      const out = Object.create(null);
+      (Array.isArray(rows) ? rows : []).forEach(row => {
+        const key = normKey(keyGetter(row));
+        if(!key) return;
+        out[key] = S.toNum(out[key]) + S.toNum(qtyGetter(row));
+      });
+      return out;
+    }
+    async function loadInventoryStocks(){
+      const activeYear = Number(state.activeYear) || (new Date()).getFullYear();
+      const years = Array.from(new Set([activeYear, activeYear - 1])).filter(Boolean);
 
-function normalizeSteelInventoryRow(row, index){
-  return {
-    _index:index,
-    diam: String(pick(row,['diametru','diametru otel','diametru_otel','dimensiune otel','Dimensiune OTEL','Diametru']) || '').trim(),
-    cal: String(pick(row,['calitate','calitate otel','calitate_otel','Calitate Oțel','Calitate Otel','Calitate']) || '').trim(),
-    qty: S.toNum(pick(row,['cantitateKg','Stoc Otel (Kg)','Stoc otel (kg)','cantitate','cantitate kg','cantitate_kg','kg','stoc final','stoc_final'])),
-    data: fmtDate(pick(row,['data','date','DATA','Date'])),
-    an: String(pick(row,['an','anul','year','AN','Year','Anul']) || '').trim()
-  };
-}
-function shouldReplaceSteel(existing, candidate){
-  if(!candidate) return false;
-  if(!existing) return true;
-  const cd = dateScore(candidate.data), ed = dateScore(existing.data);
-  if(cd !== ed) return cd > ed;
-  const cy = Number(candidate.an || 0), ey = Number(existing.an || 0);
-  if(cy !== ey) return cy > ey;
-  return (candidate._index || 0) > (existing._index || 0);
-}
-function normalizeDebInventoryRow(row, index){
-  return {
-    _index:index,
-    reper: String(pick(row,['reper','REPER','Reper','denumire reper debitare','Denumire reper debitare']) || '').trim(),
-    qty: Math.round(S.toNum(pick(row,['cantitateBuc','STOC DEBITATE FINAL (buc)','Stoc debitate final (buc)','Stoc Debitat (Buc)']))),
-    data: fmtDate(pick(row,['data','date','DATA','Date'])),
-    an: String(pick(row,['an','anul','year','AN','Year','Anul']) || '').trim()
-  };
-}
-function shouldReplaceDeb(existing, candidate){
-  if(!candidate) return false;
-  if(!existing) return true;
-  const cd = dateScore(candidate.data), ed = dateScore(existing.data);
-  if(cd !== ed) return cd > ed;
-  const cy = Number(candidate.an || 0), ey = Number(existing.an || 0);
-  if(cy !== ey) return cy > ey;
-  return (candidate._index || 0) > (existing._index || 0);
-}
-async function loadInventoryStocks(){
-  const steelDocs = uniqueDocs(excludeIndexDocs([
-    ...(await queryDocsByKeys(['inventar-otel','inventar_otel','stoc-initial-otel','stoc_initial_otel'])),
-    ...(await queryDocsByPrefixes(['inventar-otel','inventar_otel','stoc-initial-otel','stoc_initial_otel']))
-  ]));
-  const debInvDocs = uniqueDocs(excludeIndexDocs([
-    ...(await queryDocsByKeys(['inventar-debitat','inventar_debitat'])),
-    ...(await queryDocsByPrefixes(['inventar-debitat','inventar_debitat','stoc-initial-debitat','stoc_initial_debitat']))
-  ]));
+      const steelMasterDocs = uniqueDocs(excludeIndexDocs(await queryDocsByKeys(buildYearKeys(['inventar-otel','inventar_otel'], years))));
+      const steelFallbackDocs = uniqueDocs(excludeIndexDocs(await queryDocsByKeys(['stoc-initial-otel','stoc_initial_otel','inventar-otel-initial','inventar_otel_initial'])));
+      const entryDocs = uniqueDocs(excludeIndexDocs(await queryDocsByKeys(buildYearKeys(['intrari-otel','intrari_otel','intrari otel'], years))));
+      const consDocs = uniqueDocs(excludeIndexDocs(await queryDocsByKeys(buildYearKeys(['debitate','debitari'], years))));
+      const debInvDocs = uniqueDocs(excludeIndexDocs(await queryDocsByKeys(buildYearKeys(['inventar-debitat','inventar_debitat','stoc-initial-debitat','stoc_initial_debitat'], years))));
+      const forjateDocs = uniqueDocs(excludeIndexDocs(await queryDocsByKeys(buildYearKeys(['forjate'], years))));
 
-  const latestSteel = new Map();
-  steelDocs.flatMap(doc => extractRows(doc.content || doc.data || doc)).forEach((raw, index) => {
-    const row = normalizeSteelInventoryRow(raw, index);
-    if(!row.diam || !row.cal) return;
-    const key = normKey(`${row.diam}|${row.cal}`);
-    const existing = latestSteel.get(key);
-    if(shouldReplaceSteel(existing, row)) latestSteel.set(key, row);
-  });
-  const steelByMaterial = Object.create(null);
-  latestSteel.forEach((row, key) => { steelByMaterial[key] = Math.max(0, S.toNum(row.qty)); });
+      const masterSteelRows = steelMasterDocs.flatMap(doc => extractRows(doc.content || doc.data || doc)).map(normalizeSteelInventoryRow).filter(r => r.diam || r.cal || r.qty);
+      const fallbackSteelRows = steelFallbackDocs.flatMap(doc => extractRows(doc.content || doc.data || doc)).map(normalizeSteelInventoryRow).filter(r => r.diam || r.cal || r.qty);
+      const steelBaseRows = masterSteelRows.length ? masterSteelRows : fallbackSteelRows;
+      const steelSnapshot = steelBaseRows.reduce((max, row) => Math.max(max, rowScore(row)), 0);
+      const steelByMaterial = sumRowsByKey(steelBaseRows, row => `${row.diam}|${row.cal}`, row => row.qty);
 
-  const latestDeb = new Map();
-  debInvDocs.flatMap(doc => extractRows(doc.content || doc.data || doc)).forEach((raw, index) => {
-    const row = normalizeDebInventoryRow(raw, index);
-    if(!row.reper) return;
-    const key = normKey(row.reper);
-    const existing = latestDeb.get(key);
-    if(shouldReplaceDeb(existing, row)) latestDeb.set(key, row);
-  });
-  const debByReper = Object.create(null);
-  latestDeb.forEach((row, key) => { debByReper[key] = Math.max(0, S.toNum(row.qty)); });
+      entryDocs
+        .flatMap(doc => extractRows(doc.content || doc.data || doc))
+        .map(normalizeEntryRow)
+        .filter(row => !steelSnapshot || rowScore(row) > steelSnapshot)
+        .forEach(row => {
+          const key = normKey(`${row.diam}|${row.cal}`);
+          if(!key) return;
+          steelByMaterial[key] = S.toNum(steelByMaterial[key]) + S.toNum(row.qty);
+        });
 
-  state.liveStocks = { steelByMaterial, debByReper };
-}
+      consDocs
+        .flatMap(doc => extractRows(doc.content || doc.data || doc))
+        .map(normalizeConsumptionRow)
+        .filter(row => !steelSnapshot || rowScore(row) > steelSnapshot)
+        .forEach(row => {
+          const key = normKey(`${row.diam}|${row.cal}`);
+          if(!key) return;
+          steelByMaterial[key] = S.toNum(steelByMaterial[key]) - S.toNum(row.qty);
+        });
+
+      const debBaseRows = debInvDocs.flatMap(doc => extractRows(doc.content || doc.data || doc)).map((raw, index) => normalizeDebInventoryRow(raw, index)).filter(r => r.reper);
+      const debSnapshot = debBaseRows.reduce((max, row) => Math.max(max, rowScore(row)), 0);
+      const debByReper = sumRowsByKey(debBaseRows, row => row.reper, row => Math.max(0, row.qty));
+
+      consDocs
+        .flatMap(doc => extractRows(doc.content || doc.data || doc))
+        .map(normalizeDebitareProducedRow)
+        .filter(row => row.reper)
+        .filter(row => !debSnapshot || rowScore(row) > debSnapshot)
+        .forEach(row => {
+          const key = normKey(row.reper);
+          if(!key) return;
+          debByReper[key] = S.toNum(debByReper[key]) + Math.max(0, S.toNum(row.qty));
+        });
+
+      forjateDocs
+        .flatMap(doc => extractRows(doc.content || doc.data || doc))
+        .map(normalizeForjateConsumedRow)
+        .filter(row => row.reperForjat && row.qty)
+        .filter(row => !debSnapshot || rowScore(row) > debSnapshot)
+        .forEach(row => {
+          const meta = state.helperMaps && state.helperMaps.byForjat ? state.helperMaps.byForjat.get(normKey(row.reperForjat)) : null;
+          const reperDebitare = (meta && meta.reper_debitare) || '';
+          const key = normKey(reperDebitare);
+          if(!key) return;
+          debByReper[key] = Math.max(0, S.toNum(debByReper[key]) - Math.max(0, S.toNum(row.qty)));
+        });
+
+      Object.keys(steelByMaterial).forEach(key => { steelByMaterial[key] = S.toNum(steelByMaterial[key]); });
+      Object.keys(debByReper).forEach(key => { debByReper[key] = Math.max(0, Math.round(S.toNum(debByReper[key]))); });
+
+      state.liveStocks = {
+        steelByMaterial,
+        debByReper,
+        steelSnapshot,
+        debSnapshot,
+        steelSource: masterSteelRows.length ? 'inventar-otel' : 'stoc-initial-otel'
+      };
+    }
+
 
     async function loadForjateSummary(){
       state.realizedSummary = Object.create(null);
