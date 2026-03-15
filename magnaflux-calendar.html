@@ -31,7 +31,7 @@
       font-family:Arial,Helvetica,sans-serif;
       background:var(--bg);
       color:var(--text);
-      overflow:hidden;
+      overflow:auto;
     }
 
     .page{
@@ -259,6 +259,8 @@
     .cell-zero{color:#9db0c1}
     .weekend{background:#f3efd4 !important}
     .today-col{box-shadow:inset 0 -3px 0 #2b6cb0}
+    .cell-max{background:#e7f7ea !important;color:#155b2c !important}
+    .cell-min{background:#ffe9e9 !important;color:#922c2c !important}
     .row-total,
     .col-total{background:#edf6ff !important;font-weight:900}
     tfoot td{
@@ -268,6 +270,58 @@
       background:#dbeaf8;
       font-weight:900;
     }
+
+    .ranking-card{
+      display:flex;
+      flex-direction:column;
+      background:linear-gradient(180deg,#cfe3f6,#d8e8f7);
+      border:1px solid var(--line);
+      border-radius:var(--radius);
+      box-shadow:var(--shadow);
+      overflow:hidden;
+      min-height:210px;
+      max-height:250px;
+    }
+
+    .ranking-wrap{
+      flex:1 1 auto;
+      min-height:0;
+      overflow:auto;
+      background:#f7fbff;
+    }
+
+    .ranking-table{
+      width:100%;
+      min-width:100%;
+      border-collapse:separate;
+      border-spacing:0;
+      background:#fff;
+      font-size:13px;
+    }
+
+    .ranking-table th,
+    .ranking-table td{
+      border-right:1px solid var(--grid);
+      border-bottom:1px solid var(--grid);
+      padding:10px 12px;
+      height:38px;
+      font-weight:700;
+    }
+
+    .ranking-table th{
+      background:var(--head);
+      text-align:left;
+      position:sticky;
+      top:0;
+      z-index:1;
+    }
+
+    .ranking-table td:nth-child(1),
+    .ranking-table td:nth-child(3){text-align:center}
+    .ranking-table td:nth-child(4){text-align:right}
+    .rank-1 td:first-child{background:#fff3bf;color:#7a5b00}
+    .rank-2 td:first-child{background:#edf2f7;color:#495057}
+    .rank-3 td:first-child{background:#f5e6dc;color:#8a4b20}
 
     .empty-state{
       padding:24px;
@@ -354,6 +408,26 @@
         <div class="empty-state hidden" id="emptyState">Nu există date pentru selecția curentă.</div>
       </div>
     </section>
+
+    <section class="ranking-card">
+      <div class="grid-toolbar">
+        <div>TOP OPERATORI PE LUNA SELECTATĂ</div>
+        <div id="rankingMeta">Locurile 1 / 2 / 3 după suma totală CONTROLATE pe luna curentă.</div>
+      </div>
+      <div class="ranking-wrap">
+        <table class="ranking-table" aria-label="Top operatori Magnaflux">
+          <thead>
+            <tr>
+              <th style="width:110px">LOC</th>
+              <th>OPERATOR</th>
+              <th style="width:140px">ZILE ACTIVE</th>
+              <th style="width:170px;text-align:right">TOTAL LUNĂ</th>
+            </tr>
+          </thead>
+          <tbody id="rankingBody"></tbody>
+        </table>
+      </div>
+    </section>
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
@@ -386,7 +460,9 @@
         tableHead: document.getElementById('tableHead'),
         tableBody: document.getElementById('tableBody'),
         tableFoot: document.getElementById('tableFoot'),
-        emptyState: document.getElementById('emptyState')
+        emptyState: document.getElementById('emptyState'),
+        rankingBody: document.getElementById('rankingBody'),
+        rankingMeta: document.getElementById('rankingMeta')
       };
 
       const state = {
@@ -1057,11 +1133,51 @@
         }
 
         const rows = Array.from(byOperator.values()).sort((a,b) => a.label.localeCompare(b.label, 'ro', { sensitivity:'base' }));
-        return { rows, dayTotals, monthTotal, days };
+        const maxPerDay = Array(days + 1).fill(0);
+        const minPerDay = Array(days + 1).fill(0);
+
+        for (let day = 1; day <= days; day++) {
+          const positives = rows.map(row => Number(row.days[day] || 0)).filter(value => value > 0);
+          if (positives.length) {
+            maxPerDay[day] = Math.max(...positives);
+            minPerDay[day] = Math.min(...positives);
+          }
+        }
+
+        return { rows, dayTotals, monthTotal, days, maxPerDay, minPerDay };
+      }
+
+      function renderRanking(rows){
+        const ranked = rows
+          .map(row => ({
+            label: row.label,
+            total: Number(row.total || 0),
+            activeDays: row.days.reduce((acc, value, idx) => idx === 0 ? acc : acc + (value > 0 ? 1 : 0), 0)
+          }))
+          .filter(row => row.total > 0)
+          .sort((a,b) => (b.total - a.total) || a.label.localeCompare(b.label, 'ro', { sensitivity:'base' }))
+          .slice(0, 3);
+
+        if (!ranked.length) {
+          el.rankingBody.innerHTML = '<tr><td colspan="4" style="text-align:center;color:var(--muted)">Nu există top operatori pentru selecția curentă.</td></tr>';
+          el.rankingMeta.textContent = 'Locurile 1 / 2 / 3 după suma totală CONTROLATE pe luna curentă.';
+          return;
+        }
+
+        el.rankingBody.innerHTML = ranked.map((row, idx) => `
+          <tr class="rank-${idx + 1}">
+            <td>${idx + 1}</td>
+            <td>${escapeHtml(row.label)}</td>
+            <td>${nf(row.activeDays)}</td>
+            <td>${nf(row.total)}</td>
+          </tr>
+        `).join('');
+
+        el.rankingMeta.textContent = `Clasament pentru ${MONTHS_RO[state.month - 1]} ${state.year}.`;
       }
 
       function renderTable(){
-        const { rows, dayTotals, monthTotal, days } = buildMatrix();
+        const { rows, dayTotals, monthTotal, days, maxPerDay, minPerDay } = buildMatrix();
         const todayCol = getTodayCol();
 
         let head = '<tr><th>OPERATOR</th>';
@@ -1081,6 +1197,7 @@
           el.metaPieces.textContent = 'Total piese: 0';
           el.metaOperators.textContent = 'Operatori activi: 0';
           el.gridMeta.textContent = 'Nu există înregistrări pentru luna și anul selectate.';
+          renderRanking([]);
           return;
         }
 
@@ -1094,7 +1211,12 @@
             const classes = [];
             if (isWeekend(state.year, state.month, day)) classes.push('weekend');
             if (todayCol === day) classes.push('today-col');
-            if (!value) classes.push('cell-zero');
+            if (!value) {
+              classes.push('cell-zero');
+            } else {
+              if (value === maxPerDay[day]) classes.push('cell-max');
+              if (value === minPerDay[day] && minPerDay[day] !== maxPerDay[day]) classes.push('cell-min');
+            }
             body += `<td class="${classes.join(' ')}">${value ? nf(value) : ''}</td>`;
           }
           body += `<td class="row-total">${row.total ? nf(row.total) : ''}</td></tr>`;
@@ -1115,6 +1237,7 @@
         el.metaPieces.textContent = 'Total piese: ' + nf(monthTotal);
         el.metaOperators.textContent = 'Operatori activi: ' + nf(rows.length);
         el.gridMeta.textContent = `Luna selectată: ${MONTHS_RO[state.month - 1]} ${state.year}. Tabelul însumează piesele CONTROLATE pe fiecare operator și pe fiecare zi.`;
+        renderRanking(rows);
       }
 
       async function applyFilterChange(){
