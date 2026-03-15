@@ -111,6 +111,7 @@
       <div class="actions">
         <a class="back-btn" href="index.html">Înapoi la Dashboard</a>
         <button class="btn secondary" type="button" id="btnRefresh">Refresh realizat</button>
+        <button class="btn secondary" type="button" id="btnAddRow">Adaugă rând</button>
         <button class="btn" type="button" id="btnSave">Salvează acum</button>
       </div>
     </div>
@@ -201,6 +202,7 @@
       planHead: document.getElementById('planHead'),
       planBody: document.getElementById('planBody'),
       btnRefresh: document.getElementById('btnRefresh'),
+      btnAddRow: document.getElementById('btnAddRow'),
       btnSave: document.getElementById('btnSave'),
       tableWrap: document.getElementById('tableWrap'),
       modePill: document.getElementById('modePill'),
@@ -302,6 +304,13 @@
       const n = Number(clean);
       return Number.isFinite(n) ? n : 0;
     }
+    function addDaysIso(iso, days){
+      const m = safeText(iso).match(/^(\d{4})-(\d{2})-(\d{2})$/);
+      if(!m) return '';
+      const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+      d.setDate(d.getDate() + Number(days || 0));
+      return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
+    }
 
     function normalizeMachineKey(value){
       const raw = normKey(value);
@@ -338,6 +347,7 @@
       return {
         id: trimText(source.id || '') || ('row-' + Math.random().toString(36).slice(2)),
         row_no: Number(source.row_no || source.rowNo || 0) || 0,
+        is_manual: !!(source.is_manual || source.isManual || source.manual || source.added_manually),
         an,
         luna: luna || (dataIso ? getMonthName(Number(dataIso.slice(5,7))) : ''),
         data: dataIso,
@@ -354,6 +364,7 @@
         rows: state.rows.map(row => ({
           id: row.id,
           row_no: row.row_no,
+          is_manual: !!row.is_manual,
           an: row.an,
           luna: row.luna,
           data: row.data,
@@ -468,6 +479,60 @@
       const years = Array.from(new Set(state.rows.map(row => String(row.an || '')).filter(Boolean))).sort();
       els.yearSelect.innerHTML = years.map(year => `<option value="${escapeHtml(year)}"${String(state.activeYear) === String(year) ? ' selected' : ''}>${escapeHtml(year)}</option>`).join('');
       els.searchInput.value = state.searchTerm;
+    }
+
+    function getNextDateForYear(year){
+      const targetYear = String(year || '').trim();
+      const dates = state.rows
+        .filter(row => String(row.an || '') === targetYear && /^\d{4}-\d{2}-\d{2}$/.test(String(row.data || '')))
+        .map(row => String(row.data));
+      if(!dates.length) return targetYear ? (targetYear + '-01-01') : '';
+      dates.sort();
+      return addDaysIso(dates[dates.length - 1], 1);
+    }
+
+    function getNextRowNo(){
+      return state.rows.reduce((maxValue, row) => Math.max(maxValue, Number(row && row.row_no || 0) || 0), 0) + 1;
+    }
+
+    function buildEmptySlots(){
+      return MACHINE_ORDER.reduce((acc, machine) => {
+        acc[machine] = normalizePlanSlot();
+        return acc;
+      }, {});
+    }
+
+    function scrollRowIntoView(rowId){
+      requestAnimationFrame(() => {
+        const input = els.planBody.querySelector('[data-row-id="' + CSS.escape(String(rowId)) + '"][data-field="reper"]');
+        if(input && typeof input.scrollIntoView === 'function'){
+          input.scrollIntoView({ block:'nearest', inline:'nearest' });
+        }
+      });
+    }
+
+    function addNewRow(){
+      if(!state.canEdit) return;
+      ensureFilters();
+      const nextDate = getNextDateForYear(state.activeYear);
+      if(!nextDate) return;
+      const newRow = normalizePlanRow({
+        id: 'manual-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 7),
+        row_no: getNextRowNo(),
+        is_manual: true,
+        an: Number(String(state.activeYear || nextDate.slice(0, 4))),
+        luna: getMonthName(Number(nextDate.slice(5, 7))),
+        data: nextDate,
+        zi: getWeekdayLabel(nextDate),
+        slots: buildEmptySlots()
+      });
+      state.rows.push(newRow);
+      state.updatedAt = nowIso();
+      renderFilters();
+      updateRepereDatalist();
+      renderTable();
+      queueSave();
+      scrollRowIntoView(newRow.id);
     }
 
     function updateRepereDatalist(){
@@ -816,6 +881,21 @@
               return acc;
             }, {})
           };
+          return;
+        }
+
+        if(remoteRow.is_manual && remoteRow.data && remoteRow.an){
+          baseRows.push({
+            ...remoteRow,
+            row_no: Number(remoteRow.row_no || 0) || getNextRowNo(),
+            an: Number(remoteRow.an || 0) || Number(String(remoteRow.data).slice(0,4)) || 0,
+            luna: trimText(remoteRow.luna) || getMonthName(Number(String(remoteRow.data).slice(5,7))),
+            zi: trimText(remoteRow.zi) || getWeekdayLabel(remoteRow.data),
+            slots: MACHINE_ORDER.reduce((acc, machine) => {
+              acc[machine] = normalizePlanSlot(remoteRow.slots[machine]);
+              return acc;
+            }, {})
+          });
         }
       });
 
@@ -866,6 +946,8 @@
       els.lockLayer.style.display = state.canEdit ? 'none' : 'flex';
       els.btnSave.disabled = !state.canEdit;
       els.btnSave.style.opacity = state.canEdit ? '1' : '.55';
+      els.btnAddRow.disabled = !state.canEdit;
+      els.btnAddRow.style.opacity = state.canEdit ? '1' : '.55';
       els.hintText.textContent = state.canEdit
         ? 'Se salvează în rf_documents / planificare-forja.'
         : 'Contul curent are doar drept de vizualizare.';
@@ -925,6 +1007,10 @@
       els.btnRefresh.addEventListener('click', async function(){
         els.modePill.textContent = 'Refresh...';
         await refreshCurrentYearLive(true);
+      });
+
+      els.btnAddRow.addEventListener('click', function(){
+        addNewRow();
       });
 
       els.btnSave.addEventListener('click', function(){
