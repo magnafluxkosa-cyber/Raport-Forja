@@ -363,8 +363,10 @@
       'use strict';
 
       const PAGE_KEY = 'magnaflux';
-      const DOC_KEY = 'magnaflux';
-      const CACHE_KEY = 'rf:magnaflux:cache:v1';
+      const MAIN_DOC_KEY = 'magnaflux';
+      const DOC_PREFIX = 'magnaflux';
+      const PAGE_ALIASES = ['magnaflux', 'magna-flux', 'magna_flux'];
+      const CACHE_KEY = 'rf:magnaflux:calendar:cache:v3';
       const FILTERS_KEY = 'rf:magnaflux:calendar:filters:v1';
       const MONTHS_RO = ['Ianuarie','Februarie','Martie','Aprilie','Mai','Iunie','Iulie','August','Septembrie','Octombrie','Noiembrie','Decembrie'];
 
@@ -398,7 +400,9 @@
         year: null,
         month: null,
         latestDateIso: '',
-        usingCloud: false
+        usingCloud: false,
+        selectedDocKey: MAIN_DOC_KEY,
+        lastCloudUpdatedAt: ''
       };
 
       function nf(value){
@@ -413,34 +417,353 @@
           .trim();
       }
 
-      function parseIntSafe(value){
-        const n = parseInt(value, 10);
-        return Number.isFinite(n) ? n : 0;
+      function clean(value){
+        return String(value == null ? '' : value).trim();
       }
 
-      function roDateToIso(value){
-        if(!value) return '';
-        if(/^\d{4}-\d{2}-\d{2}$/.test(String(value))) return String(value);
-        const parts = String(value).split(/[.\/\-]/);
-        if(parts.length !== 3) return '';
-        const [d,m,y] = parts;
-        if(String(y).length !== 4) return '';
-        return `${y}-${String(m).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+      function normKey(value){
+        return normalizeText(value).replace(/[^a-z0-9]+/g, ' ').replace(/\s+/g, ' ').trim();
+      }
+
+      function pad2(value){
+        return String(value || '').padStart(2,'0');
+      }
+
+      function escapeHtml(value){
+        return String(value == null ? '' : value)
+          .replace(/&/g,'&amp;')
+          .replace(/</g,'&lt;')
+          .replace(/>/g,'&gt;')
+          .replace(/"/g,'&quot;')
+          .replace(/'/g,'&#39;');
+      }
+
+      function parseIntSafe(value){
+        if (typeof value === 'number') return Number.isFinite(value) ? Math.max(0, Math.round(value)) : 0;
+        let s = clean(value);
+        if (!s) return 0;
+        s = s.replace(/\u00A0/g, ' ').replace(/\s+/g, '');
+        if (!s) return 0;
+        const digitsOnly = s.replace(/[^\d-]/g, '');
+        const n = parseInt(digitsOnly, 10);
+        return Number.isFinite(n) ? Math.max(0, n) : 0;
       }
 
       function monthIndexFromName(name){
-        const idx = MONTHS_RO.findIndex(m => normalizeText(m) === normalizeText(name));
-        return idx >= 0 ? idx + 1 : 0;
+        const key = normalizeText(name);
+        const idx = MONTHS_RO.findIndex(m => normalizeText(m) === key);
+        if (idx >= 0) return idx + 1;
+        const english = ['january','february','march','april','may','june','july','august','september','october','november','december'];
+        const enIdx = english.indexOf(key);
+        return enIdx >= 0 ? enIdx + 1 : 0;
       }
 
-      function sanitizeRow(raw){
-        const row = Object.assign({}, raw || {});
-        row.data = roDateToIso(row.data) || '';
-        row.operator = String(row.operator || '').trim();
-        row.controlate = Math.max(0, parseIntSafe(row.controlate));
-        row.an = Number(row.an || (row.data ? row.data.slice(0,4) : 0) || 0);
-        row.luna = String(row.luna || '').trim();
-        return row;
+      function monthNameFromAny(value){
+        if (typeof value === 'number' && value >= 1 && value <= 12) return MONTHS_RO[value - 1];
+        const s = clean(value);
+        if (!s) return '';
+        if (/^\d+$/.test(s)) {
+          const n = Number(s);
+          return n >= 1 && n <= 12 ? MONTHS_RO[n - 1] : '';
+        }
+        const idx = monthIndexFromName(s);
+        return idx ? MONTHS_RO[idx - 1] : '';
+      }
+
+      function makeIsoDate(y, m, d){
+        const yy = Number(y);
+        const mm = Number(m);
+        const dd = Number(d);
+        if (!Number.isInteger(yy) || !Number.isInteger(mm) || !Number.isInteger(dd)) return '';
+        if (yy < 1900 || yy > 2100 || mm < 1 || mm > 12 || dd < 1 || dd > 31) return '';
+        const test = new Date(Date.UTC(yy, mm - 1, dd));
+        if (
+          test.getUTCFullYear() !== yy ||
+          test.getUTCMonth() + 1 !== mm ||
+          test.getUTCDate() !== dd
+        ) return '';
+        return `${String(yy).padStart(4,'0')}-${pad2(mm)}-${pad2(dd)}`;
+      }
+
+      function excelSerialToIso(value){
+        const num = Number(value);
+        if (!Number.isFinite(num)) return '';
+        const whole = Math.floor(num);
+        if (whole < 1 || whole > 90000) return '';
+        const epoch = Date.UTC(1899, 11, 30);
+        const ms = epoch + whole * 86400000;
+        const d = new Date(ms);
+        if (Number.isNaN(d.getTime())) return '';
+        return makeIsoDate(d.getUTCFullYear(), d.getUTCMonth() + 1, d.getUTCDate());
+      }
+
+      function pickBestIsoDate(candidates, hintMonth, hintYear){
+        const valid = Array.from(new Set((candidates || []).filter(Boolean)));
+        if (!valid.length) return '';
+        const monthHint = Number(hintMonth || 0);
+        const yearHint = Number(hintYear || 0);
+        valid.sort((a, b) => {
+          const [ya, ma] = a.split('-').map(Number);
+          const [yb, mb] = b.split('-').map(Number);
+          const sa = (yearHint && ya === yearHint ? 2 : 0) + (monthHint && ma === monthHint ? 4 : 0);
+          const sb = (yearHint && yb === yearHint ? 2 : 0) + (monthHint && mb === monthHint ? 4 : 0);
+          if (sb !== sa) return sb - sa;
+          return a.localeCompare(b);
+        });
+        return valid[0];
+      }
+
+      function normalizeAnyDateToIso(value, hintMonth, hintYear){
+        if (value == null || value === '') return '';
+
+        if (value instanceof Date && !Number.isNaN(value.getTime())) {
+          return makeIsoDate(value.getFullYear(), value.getMonth() + 1, value.getDate());
+        }
+
+        if (typeof value === 'number' && Number.isFinite(value)) {
+          return excelSerialToIso(value) || '';
+        }
+
+        let text = clean(value);
+        if (!text) return '';
+        text = text.replace(/ /g, ' ').trim();
+        if (!text) return '';
+
+        const directNumeric = Number(String(text).replace(',', '.'));
+        if (Number.isFinite(directNumeric) && /^\d+(?:[\.,]\d+)?$/.test(text)) {
+          const serialIso = excelSerialToIso(directNumeric);
+          if (serialIso) return serialIso;
+        }
+
+        const compactIso = text.match(/^(\d{4})-(\d{2})-(\d{2})/);
+        if (compactIso) return makeIsoDate(compactIso[1], compactIso[2], compactIso[3]);
+
+        text = text.replace('T', ' ');
+        if (text.includes(' ')) text = text.split(' ')[0].trim();
+        if (!text) return '';
+
+        const candidates = [];
+
+        if (/^\d{4}[.\/-]\d{1,2}[.\/-]\d{1,2}$/.test(text)) {
+          const [y, a, b] = text.split(/[.\/-]/).map(Number);
+          candidates.push(makeIsoDate(y, a, b));
+          candidates.push(makeIsoDate(y, b, a));
+          return pickBestIsoDate(candidates, hintMonth, hintYear);
+        }
+
+        if (/^\d{1,2}[.\/-]\d{1,2}[.\/-]\d{4}$/.test(text)) {
+          const [a, b, y] = text.split(/[.\/-]/).map(Number);
+          candidates.push(makeIsoDate(y, b, a));
+          candidates.push(makeIsoDate(y, a, b));
+          return pickBestIsoDate(candidates, hintMonth, hintYear);
+        }
+
+        if (/^\d{1,2}[.\/-]\d{1,2}[.\/-]\d{2}$/.test(text)) {
+          const [a, b, yy] = text.split(/[.\/-]/).map(Number);
+          const y = yy >= 70 ? 1900 + yy : 2000 + yy;
+          candidates.push(makeIsoDate(y, b, a));
+          candidates.push(makeIsoDate(y, a, b));
+          return pickBestIsoDate(candidates, hintMonth, hintYear);
+        }
+
+        const parsed = new Date(text);
+        if (!Number.isNaN(parsed.getTime())) {
+          return makeIsoDate(parsed.getFullYear(), parsed.getMonth() + 1, parsed.getDate());
+        }
+
+        return '';
+      }
+
+      function formatDate(value, hintMonth, hintYear){
+        const iso = normalizeAnyDateToIso(value, hintMonth, hintYear);
+        if (!iso) return '';
+        const [yyyy, mm, dd] = iso.split('-');
+        return `${dd}.${mm}.${yyyy}`;
+      }
+
+      function yearFromDate(value, hintMonth, hintYear){
+        const iso = normalizeAnyDateToIso(value, hintMonth, hintYear);
+        return /^\d{4}-\d{2}-\d{2}$/.test(iso) ? Number(iso.slice(0,4)) : 0;
+      }
+
+      function monthFromDate(value, hintMonth, hintYear){
+        const iso = normalizeAnyDateToIso(value, hintMonth, hintYear);
+        return /^\d{4}-\d{2}-\d{2}$/.test(iso) ? MONTHS_RO[Number(iso.slice(5,7)) - 1] : '';
+      }
+
+      function normalizeOperator(value){
+        let s = clean(value);
+        if (!s) return '';
+        s = s.replace(/\s*\+\s*/g, ' + ');
+        s = s.replace(/\s*-\s*/g, '-');
+        s = s.replace(/\s{2,}/g, ' ').trim();
+        if (!s) return '';
+        if (normalizeText(s) === 'fara operator') return 'Fără operator';
+        return s.toUpperCase();
+      }
+
+      function pickDirect(row, names){
+        if (!row || typeof row !== 'object') return '';
+        for (const name of names || []) {
+          if (Object.prototype.hasOwnProperty.call(row, name) && row[name] != null && row[name] !== '') return row[name];
+        }
+        const entries = Object.entries(row);
+        for (const name of names || []) {
+          const wanted = normKey(name);
+          if (!wanted) continue;
+          const found = entries.find(([k, v]) => normKey(k) === wanted && v != null && v !== '');
+          if (found) return found[1];
+        }
+        return '';
+      }
+
+      function pickLoose(row, directNames, tokenGroups){
+        const direct = pickDirect(row, directNames);
+        if (direct !== '' && direct != null) return direct;
+        if (!row || typeof row !== 'object') return '';
+        const entries = Object.entries(row);
+        for (const tokens of tokenGroups || []) {
+          const wanted = (tokens || []).map(t => normalizeText(t)).filter(Boolean);
+          if (!wanted.length) continue;
+          for (const [key, value] of entries) {
+            if (value == null || value === '') continue;
+            const nk = normKey(key);
+            if (wanted.every(tok => nk.includes(tok))) return value;
+          }
+        }
+        return '';
+      }
+
+      function objectFromHeaderRow(headers, values){
+        const obj = {};
+        const maxLen = Math.max(Array.isArray(headers) ? headers.length : 0, Array.isArray(values) ? values.length : 0);
+        for (let i = 0; i < maxLen; i++) {
+          const key = clean(headers && headers[i]) || `col_${i+1}`;
+          obj[key] = values ? values[i] : '';
+        }
+        return obj;
+      }
+
+      function looksLikeHeaderRow(row){
+        if (!Array.isArray(row) || !row.length) return false;
+        let filled = 0;
+        let textish = 0;
+        for (const cell of row) {
+          const c = clean(cell);
+          if (c) filled += 1;
+          if (typeof cell === 'string') textish += 1;
+        }
+        return filled >= 2 && textish >= Math.max(2, Math.floor(filled / 2));
+      }
+
+      function rowsFromMatrix(matrix, headers){
+        if (!Array.isArray(matrix)) return [];
+        let hdr = Array.isArray(headers) && headers.length ? headers : null;
+        let startIndex = 0;
+        if (!hdr && matrix.length && Array.isArray(matrix[0]) && looksLikeHeaderRow(matrix[0])) {
+          hdr = matrix[0];
+          startIndex = 1;
+        }
+        const out = [];
+        for (let i = startIndex; i < matrix.length; i++) {
+          const item = matrix[i];
+          if (Array.isArray(item)) {
+            out.push(hdr ? objectFromHeaderRow(hdr, item) : Object.fromEntries(item.map((v, idx) => [`col_${idx+1}`, v])));
+          } else if (item && typeof item === 'object') {
+            out.push(item);
+          }
+        }
+        return out;
+      }
+
+      function extractRowsFromPayload(payload){
+        if (!payload) return [];
+        if (Array.isArray(payload)) {
+          if (!payload.length) return [];
+          if (Array.isArray(payload[0])) return rowsFromMatrix(payload, null);
+          if (payload[0] && typeof payload[0] === 'object') return payload;
+          return [];
+        }
+        if (typeof payload !== 'object') return [];
+
+        if (Array.isArray(payload.rows)) {
+          if (Array.isArray(payload.headers) && payload.rows.every(Array.isArray)) return rowsFromMatrix(payload.rows, payload.headers);
+          if (Array.isArray(payload.columns) && payload.rows.every(Array.isArray)) return rowsFromMatrix(payload.rows, payload.columns);
+          return extractRowsFromPayload(payload.rows);
+        }
+
+        for (const key of ['items','data','records','values','entries','list']) {
+          if (Array.isArray(payload[key])) {
+            if (Array.isArray(payload.headers) && payload[key].every(Array.isArray)) return rowsFromMatrix(payload[key], payload.headers);
+            if (Array.isArray(payload.columns) && payload[key].every(Array.isArray)) return rowsFromMatrix(payload[key], payload.columns);
+            return extractRowsFromPayload(payload[key]);
+          }
+        }
+
+        if (Array.isArray(payload.matrix)) return rowsFromMatrix(payload.matrix, payload.headers || payload.columns || null);
+        if (Array.isArray(payload.table)) return rowsFromMatrix(payload.table, payload.headers || payload.columns || null);
+        if (Array.isArray(payload.values) && Array.isArray(payload.headers)) return rowsFromMatrix(payload.values, payload.headers);
+        if (Array.isArray(payload.values) && Array.isArray(payload.columns)) return rowsFromMatrix(payload.values, payload.columns);
+
+        if (Object.keys(payload).some(k => /^col_\d+$/i.test(k) || /^[A-Z]$/.test(k))) {
+          return [payload];
+        }
+
+        return [];
+      }
+
+      function normalizeRow(raw, index, docKey){
+        const row = raw && typeof raw === 'object' ? raw : {};
+        const rawYear = clean(pickLoose(row,
+          ['an','year','AN','Year'],
+          [['an'], ['year']]
+        ));
+        const rawMonth = monthNameFromAny(pickLoose(row,
+          ['luna','month','Luna','Month'],
+          [['luna'], ['month']]
+        ));
+        const hintYear = Number(rawYear || 0);
+        const hintMonth = monthIndexFromName(rawMonth);
+        const rawDate = pickLoose(row,
+          ['data','date','Data','DATA'],
+          [['data'], ['date']]
+        );
+        const dataIso = normalizeAnyDateToIso(rawDate, hintMonth, hintYear);
+        const data = formatDate(dataIso || rawDate, hintMonth, hintYear);
+        const an = Number(rawYear || yearFromDate(dataIso || data, hintMonth, hintYear) || 0);
+        const luna = rawMonth || monthFromDate(dataIso || data, hintMonth, hintYear);
+        const operator = normalizeOperator(pickLoose(row,
+          ['operator','Operator','nume operator','Nume operator','operator magnaflux','Operator Magnaflux','inspector','Inspector'],
+          [['nume','operator'], ['operator','magnaflux'], ['operator'], ['inspector']]
+        ));
+        const controlate = parseIntSafe(pickLoose(row,
+          ['controlate','CONTROLATE','buc controlate','Buc controlate','piese controlate','Piese controlate','bucăți controlate','Bucăți controlate'],
+          [['piese','controlate'], ['bucati','controlate'], ['buc','controlate'], ['controlate'], ['controlat']]
+        ));
+        const id = clean(pickLoose(row, ['id','_id'], [['id']])) || `${docKey || MAIN_DOC_KEY}:${index + 1}`;
+
+        return {
+          id,
+          an,
+          luna,
+          data,
+          operator,
+          controlate,
+          _doc_key: docKey || MAIN_DOC_KEY
+        };
+      }
+
+      function extractRowsFromDocRecord(doc){
+        const payloads = [doc && doc.content, doc && doc.data];
+        let out = [];
+        for (const payload of payloads) {
+          const rows = extractRowsFromPayload(payload);
+          if (rows.length) out = out.concat(rows);
+        }
+        if (!out.length && doc && doc.content && typeof doc.content === 'object') {
+          out = extractRowsFromPayload(doc.content);
+        }
+        return out.map((row, idx) => normalizeRow(row, idx, doc && doc.doc_key)).filter(row => row.data && row.controlate >= 0);
       }
 
       function setSyncBadge(text, kind){
@@ -458,13 +781,13 @@
           window.SUPABASE_CONFIG
         ].filter(Boolean);
 
-        for(const item of candidates){
+        for (const item of candidates) {
           const url = item.url || item.supabaseUrl || item.SUPABASE_URL;
           const key = item.anonKey || item.supabaseAnonKey || item.SUPABASE_ANON_KEY;
-          if(url && key) return { url, key };
+          if (url && key) return { url, key };
         }
 
-        if(window.SUPABASE_URL && window.SUPABASE_ANON_KEY){
+        if (window.SUPABASE_URL && window.SUPABASE_ANON_KEY) {
           return { url: window.SUPABASE_URL, key: window.SUPABASE_ANON_KEY };
         }
 
@@ -476,7 +799,7 @@
 
       async function initSupabase(){
         const cfg = resolveSupabaseConfig();
-        if(!window.supabase || !cfg.url || !cfg.key) return null;
+        if (!window.supabase || !cfg.url || !cfg.key) return null;
         return window.supabase.createClient(cfg.url, cfg.key, {
           auth: { persistSession:true, autoRefreshToken:true, detectSessionInUrl:true }
         });
@@ -484,9 +807,9 @@
 
       async function requireSession(){
         const { data, error } = await state.supabase.auth.getSession();
-        if(error) throw error;
+        if (error) throw error;
         const session = data && data.session;
-        if(!session || !session.user){
+        if (!session || !session.user) {
           window.location.href = 'login.html';
           return null;
         }
@@ -499,105 +822,180 @@
         const email = (state.user && state.user.email) ? state.user.email : '';
         let role = null;
 
-        try{
+        try {
           let res = await state.supabase.from('profiles').select('role,email').eq('user_id', state.user.id).maybeSingle();
-          if((res.error || !res.data) && email){
+          if ((res.error || !res.data) && email) {
             res = await state.supabase.from('profiles').select('role,email').eq('email', email).maybeSingle();
           }
-          if(!res.error && res.data && res.data.role) role = res.data.role;
-        }catch(_err){}
+          if (!res.error && res.data && res.data.role) role = res.data.role;
+        } catch (_err) {}
 
-        if(!role && email){
-          try{
+        if (!role && email) {
+          try {
             const res = await state.supabase.from('rf_acl').select('role,email').eq('email', email).maybeSingle();
-            if(!res.error && res.data && res.data.role) role = res.data.role;
-          }catch(_err){}
+            if (!res.error && res.data && res.data.role) role = res.data.role;
+          } catch (_err) {}
         }
 
         role = String(role || '').trim().toLowerCase();
-        if(!role){
-          role = normalizeText(email) === 'forja.editor@gmail.com' ? 'admin' : 'viewer';
-        }
+        if (!role) role = normalizeText(email) === 'forja.editor@gmail.com' ? 'admin' : 'viewer';
         state.role = role;
         el.roleBadge.textContent = 'Rol: ' + role;
         return role;
       }
 
       function fallbackPermissions(role){
-        if(role === 'admin') return { canView:true };
-        if(role === 'editor') return { canView:true };
-        if(role === 'operator') return { canView:true };
+        if (role === 'admin') return { canView:true };
+        if (role === 'editor') return { canView:true };
+        if (role === 'operator') return { canView:true };
         return { canView:true };
       }
 
       async function resolvePermissions(){
         let perms = fallbackPermissions(state.role);
-        try{
+        try {
           const res = await state.supabase
             .from('page_permissions')
             .select('can_view')
             .eq('role', state.role)
             .eq('page_key', PAGE_KEY)
             .maybeSingle();
-          if(!res.error && res.data){
-            perms = { canView: !!res.data.can_view };
-          }
-        }catch(_err){}
+          if (!res.error && res.data) perms = { canView: !!res.data.can_view };
+        } catch (_err) {}
         state.permissions = perms;
-        if(!perms.canView){
+        if (!perms.canView) {
           alert('Nu ai drept de acces pe această pagină.');
           window.location.href = 'magnaflux.html';
         }
       }
 
+      function persistCache(){
+        try {
+          localStorage.setItem(CACHE_KEY, JSON.stringify({
+            rows: state.rows,
+            selectedDocKey: state.selectedDocKey,
+            lastCloudUpdatedAt: state.lastCloudUpdatedAt,
+            savedAt: Date.now()
+          }));
+        } catch (_err) {}
+      }
+
       function loadLocal(){
-        try{
+        try {
           const raw = localStorage.getItem(CACHE_KEY);
-          if(!raw) return null;
-          const doc = JSON.parse(raw);
-          if(!doc || !Array.isArray(doc.rows)) return null;
-          doc.rows = doc.rows.map(sanitizeRow);
-          return doc;
-        }catch(_err){
+          if (!raw) return null;
+          const parsed = JSON.parse(raw);
+          if (!parsed || !Array.isArray(parsed.rows)) return null;
+          return {
+            rows: parsed.rows.map((row, idx) => normalizeRow(row, idx, parsed.selectedDocKey || MAIN_DOC_KEY)),
+            selectedDocKey: parsed.selectedDocKey || MAIN_DOC_KEY,
+            updated_at: parsed.lastCloudUpdatedAt || ''
+          };
+        } catch (_err) {
           return null;
         }
       }
 
-      async function fetchDocByKey(docKey){
-        try{
-          let res = await state.supabase.from('rf_documents').select('doc_key,content,data,updated_at').eq('doc_key', docKey).maybeSingle();
-          if(res.error && /data/i.test(String(res.error.message || ''))){
-            res = await state.supabase.from('rf_documents').select('doc_key,content,updated_at').eq('doc_key', docKey).maybeSingle();
+      function docKeyInfo(docKey){
+        const key = normalizeText(docKey).replace(/\s+/g, '');
+        const aliases = PAGE_ALIASES.map(alias => normalizeText(alias).replace(/\s+/g, ''));
+        const matchedAlias = aliases.find(alias => key === alias || key.startsWith(alias + ':')) || '';
+        const suffix = matchedAlias ? key.slice(matchedAlias.length) : '';
+        const isMain = !!matchedAlias && suffix === '';
+        const isIndex = !!matchedAlias && suffix === ':index';
+        const isYearDoc = !!matchedAlias && /^:(19|20)\d{2}$/.test(suffix);
+        return { key, matchedAlias, isMain, isIndex, isYearDoc };
+      }
+
+      async function fetchMagnafluxDocs(){
+        try {
+          let res = await state.supabase
+            .from('rf_documents')
+            .select('doc_key,content,data,updated_at')
+            .ilike('doc_key', DOC_PREFIX + '%')
+            .order('updated_at', { ascending:false });
+
+          if (res.error && /data/i.test(String(res.error.message || ''))) {
+            res = await state.supabase
+              .from('rf_documents')
+              .select('doc_key,content,updated_at')
+              .ilike('doc_key', DOC_PREFIX + '%')
+              .order('updated_at', { ascending:false });
           }
-          if(res.error) throw res.error;
-          const row = res.data;
-          if(!row) return null;
-          const doc = row.content || row.data || null;
-          if(!doc) return { updated_at: row.updated_at, rows: [] };
-          if(Array.isArray(doc.rows)) return { updated_at: row.updated_at, rows: doc.rows.map(sanitizeRow) };
-          return { updated_at: row.updated_at, rows: [] };
-        }catch(_err){
-          return null;
+
+          if (res.error) throw res.error;
+          let docs = Array.isArray(res.data) ? res.data : [];
+          docs = docs.filter(doc => {
+            const info = docKeyInfo(doc && doc.doc_key);
+            return !!info.matchedAlias;
+          });
+          return docs;
+        } catch (_err) {
+          return [];
         }
+      }
+
+      function mergeDocs(docs){
+        const prepared = (docs || []).map(doc => ({
+          doc,
+          info: docKeyInfo(doc && doc.doc_key),
+          rows: extractRowsFromDocRecord(doc)
+        })).filter(item => item.info.matchedAlias && !item.info.isIndex);
+
+        const yearDocs = prepared.filter(item => item.info.isYearDoc && item.rows.length);
+        const sourceDocs = yearDocs.length ? yearDocs : prepared.filter(item => item.rows.length);
+
+        const sortedDocs = sourceDocs.slice().sort((a, b) => String(b.doc.updated_at || '').localeCompare(String(a.doc.updated_at || '')));
+        const allRows = [];
+        const seenIds = new Set();
+        let latestDocKey = MAIN_DOC_KEY;
+        let latestUpdatedAt = '';
+
+        for (const item of sortedDocs) {
+          if (!latestUpdatedAt) {
+            latestUpdatedAt = String(item.doc.updated_at || '');
+            latestDocKey = item.doc.doc_key || MAIN_DOC_KEY;
+          }
+          for (const row of item.rows) {
+            const id = clean(row && row.id);
+            if (id) {
+              if (seenIds.has(id)) continue;
+              seenIds.add(id);
+            }
+            allRows.push(row);
+          }
+        }
+
+        allRows.sort((a, b) => {
+          const pa = extractRowDateParts(a);
+          const pb = extractRowDateParts(b);
+          const ia = pa ? pa.iso : '';
+          const ib = pb ? pb.iso : '';
+          if (ia !== ib) return ia.localeCompare(ib);
+          return String(a.operator || '').localeCompare(String(b.operator || ''), 'ro', { sensitivity:'base' });
+        });
+
+        return {
+          rows: allRows,
+          selectedDocKey: latestDocKey,
+          updated_at: latestUpdatedAt
+        };
       }
 
       function saveFilters(){
-        try{
+        try {
           localStorage.setItem(FILTERS_KEY, JSON.stringify({ year: state.year, month: state.month }));
-        }catch(_err){}
+        } catch (_err) {}
       }
 
       function loadFilters(){
-        try{
+        try {
           const raw = localStorage.getItem(FILTERS_KEY);
-          if(!raw) return null;
+          if (!raw) return null;
           const parsed = JSON.parse(raw);
-          if(!parsed) return null;
-          return {
-            year: Number(parsed.year || 0),
-            month: Number(parsed.month || 0)
-          };
-        }catch(_err){
+          if (!parsed) return null;
+          return { year: Number(parsed.year || 0), month: Number(parsed.month || 0) };
+        } catch (_err) {
           return null;
         }
       }
@@ -606,48 +1004,23 @@
         return new Date(year, month, 0).getDate();
       }
 
-      function parseLooseDateParts(value){
-        const s = String(value || '').trim();
-        if(!s) return null;
-        const parts = s.split(/[.\/\-]/).map(x => String(x || '').trim());
-        if(parts.length !== 3) return null;
-
-        if(parts[0].length === 4){
-          let [y,m,d] = parts.map(n => Number(n));
-          if(m > 12 && d >= 1 && d <= 12){
-            const tmp = m; m = d; d = tmp;
-          }
-          return { y, m, d, source:'yfirst' };
-        }
-
-        let [d,m,y] = parts.map(n => Number(n));
-        return { y, m, d, source:'dfirst' };
-      }
-
       function extractRowDateParts(row){
-        const parsed = parseLooseDateParts(row && row.data);
-        const monthFromName = monthIndexFromName(row && row.luna ? row.luna : '');
-
-        let year = Number(parsed && parsed.y) || Number((row && row.an) || 0) || 0;
-        let month = Number(parsed && parsed.m) || monthFromName || 0;
-        let day = Number(parsed && parsed.d) || 0;
-
-        if(!(year >= 1900 && year <= 2100)) return null;
-        if(!(month >= 1 && month <= 12)) return null;
-
+        const data = formatDate(row && row.data);
+        if (!/^\d{2}\.\d{2}\.\d{4}$/.test(data)) return null;
+        const day = Number(data.slice(0,2));
+        const month = Number(data.slice(3,5));
+        const year = Number(data.slice(6,10));
+        if (!(year >= 1900 && year <= 2100 && month >= 1 && month <= 12 && day >= 1 && day <= 31)) return null;
         const maxDay = daysInMonth(year, month);
-        if(!(day >= 1 && day <= maxDay)){
-          return null;
-        }
-
-        return { year, month, day, iso:`${year}-${String(month).padStart(2,'0')}-${String(day).padStart(2,'0')}` };
+        if (day > maxDay) return null;
+        return { year, month, day, iso:`${year}-${pad2(month)}-${pad2(day)}` };
       }
 
       function computeLatestDate(){
         let latest = '';
-        for(const row of state.rows){
+        for (const row of state.rows) {
           const parts = extractRowDateParts(row);
-          if(parts && (!latest || parts.iso > latest)) latest = parts.iso;
+          if (parts && (!latest || parts.iso > latest)) latest = parts.iso;
         }
         state.latestDateIso = latest;
       }
@@ -655,20 +1028,18 @@
       function buildYearOptions(){
         const years = Array.from(new Set(
           state.rows
-            .map(r => {
-              const parts = extractRowDateParts(r);
-              return Number((parts && parts.year) || r.an || 0);
+            .map(row => {
+              const parts = extractRowDateParts(row);
+              return Number((parts && parts.year) || row.an || 0);
             })
             .filter(Boolean)
-        )).sort((a,b)=>b-a);
-        if(!years.length){
-          years.push(new Date().getFullYear());
-        }
+        )).sort((a,b) => b - a);
+        if (!years.length) years.push(new Date().getFullYear());
         el.selYear.innerHTML = years.map(y => `<option value="${y}">${y}</option>`).join('');
       }
 
       function buildMonthOptions(){
-        el.selMonth.innerHTML = MONTHS_RO.map((m,idx) => `<option value="${idx+1}">${m}</option>`).join('');
+        el.selMonth.innerHTML = MONTHS_RO.map((m, idx) => `<option value="${idx+1}">${m}</option>`).join('');
       }
 
       function initializeFilters(){
@@ -678,26 +1049,20 @@
         let year = saved && saved.year;
         let month = saved && saved.month;
 
-        if(!year || !month){
+        if (!year || !month) {
           const basis = state.latestDateIso ? new Date(state.latestDateIso + 'T00:00:00') : new Date();
           year = basis.getFullYear();
           month = basis.getMonth() + 1;
         }
 
         const availableYears = Array.from(el.selYear.options).map(opt => Number(opt.value));
-        if(!availableYears.includes(Number(year))){
-          year = availableYears[0];
-        }
+        if (!availableYears.includes(Number(year))) year = availableYears[0];
         month = Math.min(12, Math.max(1, Number(month) || 1));
 
         state.year = Number(year);
         state.month = Number(month);
         el.selYear.value = String(state.year);
         el.selMonth.value = String(state.month);
-      }
-
-      function getDaysInMonth(year, month){
-        return daysInMonth(year, month);
       }
 
       function isWeekend(year, month, day){
@@ -708,35 +1073,35 @@
 
       function getTodayCol(){
         const d = new Date();
-        if(d.getFullYear() !== state.year || (d.getMonth()+1) !== state.month) return 0;
+        if (d.getFullYear() !== state.year || (d.getMonth() + 1) !== state.month) return 0;
         return d.getDate();
       }
 
       function buildMatrix(){
         const year = Number(state.year);
         const month = Number(state.month);
-        const days = getDaysInMonth(year, month);
+        const days = daysInMonth(year, month);
         const byOperator = new Map();
         const dayTotals = Array(days + 1).fill(0);
         let monthTotal = 0;
 
-        for(const row of state.rows){
+        for (const row of state.rows) {
           const parts = extractRowDateParts(row);
-          if(!parts) continue;
-          if(parts.year !== year || parts.month !== month) continue;
+          if (!parts) continue;
+          if (parts.year !== year || parts.month !== month) continue;
 
           const day = parts.day;
-          if(!(day >= 1 && day <= days)) continue;
+          if (!(day >= 1 && day <= days)) continue;
 
-          const operator = String(row.operator || '').trim() || 'Fără operator';
-          const key = normalizeText(operator) || operator;
+          const operatorLabel = normalizeOperator(row.operator) || 'Fără operator';
+          const operatorKey = normalizeText(operatorLabel).replace(/[^a-z0-9]+/g, ' ').trim() || operatorLabel;
           const qty = Math.max(0, parseIntSafe(row.controlate));
-          if(!qty) continue;
 
-          if(!byOperator.has(key)){
-            byOperator.set(key, { label: operator, days: Array(days + 1).fill(0), total: 0 });
+          if (!byOperator.has(operatorKey)) {
+            byOperator.set(operatorKey, { label: operatorLabel, days: Array(days + 1).fill(0), total: 0 });
           }
-          const rec = byOperator.get(key);
+
+          const rec = byOperator.get(operatorKey);
           rec.days[day] += qty;
           rec.total += qty;
           dayTotals[day] += qty;
@@ -752,16 +1117,16 @@
         const todayCol = getTodayCol();
 
         let head = '<tr><th>OPERATOR</th>';
-        for(let day = 1; day <= days; day++){
+        for (let day = 1; day <= days; day++) {
           const classes = [];
-          if(isWeekend(state.year, state.month, day)) classes.push('weekend');
-          if(todayCol === day) classes.push('today-col');
+          if (isWeekend(state.year, state.month, day)) classes.push('weekend');
+          if (todayCol === day) classes.push('today-col');
           head += `<th class="${classes.join(' ')}">${day}</th>`;
         }
         head += '<th class="col-total">TOTAL</th></tr>';
         el.tableHead.innerHTML = head;
 
-        if(!rows.length){
+        if (!rows.length) {
           el.tableBody.innerHTML = '';
           el.tableFoot.innerHTML = '';
           el.emptyState.classList.remove('hidden');
@@ -774,14 +1139,14 @@
         el.emptyState.classList.add('hidden');
 
         let body = '';
-        for(const row of rows){
+        for (const row of rows) {
           body += `<tr><td>${escapeHtml(row.label)}</td>`;
-          for(let day = 1; day <= days; day++){
+          for (let day = 1; day <= days; day++) {
             const value = row.days[day] || 0;
             const classes = [];
-            if(isWeekend(state.year, state.month, day)) classes.push('weekend');
-            if(todayCol === day) classes.push('today-col');
-            if(!value) classes.push('cell-zero');
+            if (isWeekend(state.year, state.month, day)) classes.push('weekend');
+            if (todayCol === day) classes.push('today-col');
+            if (!value) classes.push('cell-zero');
             body += `<td class="${classes.join(' ')}">${value ? nf(value) : ''}</td>`;
           }
           body += `<td class="row-total">${row.total ? nf(row.total) : ''}</td></tr>`;
@@ -789,11 +1154,11 @@
         el.tableBody.innerHTML = body;
 
         let foot = '<tr><td>Total general</td>';
-        for(let day = 1; day <= days; day++){
+        for (let day = 1; day <= days; day++) {
           const value = dayTotals[day] || 0;
           const classes = [];
-          if(isWeekend(state.year, state.month, day)) classes.push('weekend');
-          if(todayCol === day) classes.push('today-col');
+          if (isWeekend(state.year, state.month, day)) classes.push('weekend');
+          if (todayCol === day) classes.push('today-col');
           foot += `<td class="${classes.join(' ')}">${value ? nf(value) : ''}</td>`;
         }
         foot += `<td class="col-total">${monthTotal ? nf(monthTotal) : ''}</td></tr>`;
@@ -804,15 +1169,6 @@
         el.gridMeta.textContent = `Luna selectată: ${MONTHS_RO[state.month - 1]} ${state.year}. Tabelul însumează piesele CONTROLATE pe fiecare operator și pe fiecare zi.`;
       }
 
-      function escapeHtml(value){
-        return String(value == null ? '' : value)
-          .replace(/&/g,'&amp;')
-          .replace(/</g,'&lt;')
-          .replace(/>/g,'&gt;')
-          .replace(/"/g,'&quot;')
-          .replace(/'/g,'&#39;');
-      }
-
       function applyFilterChange(){
         state.year = Number(el.selYear.value || 0);
         state.month = Number(el.selMonth.value || 0);
@@ -821,19 +1177,21 @@
       }
 
       function applyRows(doc, sourceLabel){
-        state.rows = Array.isArray(doc && doc.rows) ? doc.rows.map(sanitizeRow) : [];
+        const normalizedRows = Array.isArray(doc && doc.rows) ? doc.rows.map((row, idx) => normalizeRow(row, idx, doc.selectedDocKey || MAIN_DOC_KEY)) : [];
+        state.rows = normalizedRows;
         state.sourceLabel = sourceLabel || 'local';
         state.usingCloud = sourceLabel === 'cloud';
+        state.selectedDocKey = doc && doc.selectedDocKey ? doc.selectedDocKey : MAIN_DOC_KEY;
+        state.lastCloudUpdatedAt = doc && doc.updated_at ? doc.updated_at : '';
         computeLatestDate();
-        buildYearOptions();
-        buildMonthOptions();
         initializeFilters();
         renderTable();
         el.metaSource.textContent = 'Sursă: ' + state.sourceLabel;
+        el.gridInfo.textContent = 'Tabel lunar pe baza coloanei CONTROLATE din Magnaflux.';
       }
 
       async function manualReload(){
-        if(!state.supabase){
+        if (!state.supabase) {
           const localDoc = loadLocal();
           applyRows(localDoc || { rows: [] }, 'local');
           setSyncBadge('Doar local', 'warn');
@@ -841,11 +1199,13 @@
         }
 
         setSyncBadge('Reîncarcă...', 'warn');
-        const cloud = await fetchDocByKey(DOC_KEY);
-        if(cloud){
-          applyRows(cloud, 'cloud');
+        const docs = await fetchMagnafluxDocs();
+        const merged = mergeDocs(docs);
+        if (merged.rows.length) {
+          applyRows(merged, 'cloud');
+          persistCache();
           setSyncBadge('Cloud: ON', 'ok');
-        }else{
+        } else {
           const localDoc = loadLocal();
           applyRows(localDoc || { rows: [] }, 'local');
           setSyncBadge('Cloud indisponibil', 'warn');
@@ -856,7 +1216,7 @@
         el.btnBack.addEventListener('click', () => window.location.href = 'magnaflux.html');
         el.btnReload.addEventListener('click', manualReload);
         el.btnLogout.addEventListener('click', async () => {
-          try{ if(state.supabase) await state.supabase.auth.signOut(); }catch(_err){}
+          try { if (state.supabase) await state.supabase.auth.signOut(); } catch (_err) {}
           window.location.href = 'login.html';
         });
         el.selYear.addEventListener('change', applyFilterChange);
@@ -865,32 +1225,34 @@
 
       async function initialLoad(){
         const localDoc = loadLocal();
-        if(localDoc){
+        if (localDoc) {
           applyRows(localDoc, 'local');
           setSyncBadge('Local', 'warn');
-        }else{
+        } else {
           applyRows({ rows: [] }, 'local');
           setSyncBadge('Local gol', 'warn');
         }
 
         state.supabase = await initSupabase();
-        if(!state.supabase){
+        if (!state.supabase) {
           el.roleBadge.textContent = 'Rol: offline';
           return;
         }
 
-        try{
+        try {
           await requireSession();
           await resolveRole();
           await resolvePermissions();
-          const cloud = await fetchDocByKey(DOC_KEY);
-          if(cloud){
-            applyRows(cloud, 'cloud');
+          const docs = await fetchMagnafluxDocs();
+          const merged = mergeDocs(docs);
+          if (merged.rows.length) {
+            applyRows(merged, 'cloud');
+            persistCache();
             setSyncBadge('Cloud: ON', 'ok');
-          }else{
+          } else {
             setSyncBadge('Cloud indisponibil', 'warn');
           }
-        }catch(_err){
+        } catch (_err) {
           setSyncBadge('Sesiune lipsă', 'err');
           window.location.href = 'login.html';
         }
