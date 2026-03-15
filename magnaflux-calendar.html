@@ -365,12 +365,10 @@
       const PAGE_KEY = 'magnaflux';
       const MAIN_DOC_KEY = 'magnaflux';
       const DOC_PREFIX = 'magnaflux';
-      const CLOUD_INDEX_KEY = 'magnaflux:index';
-      const CALENDAR_CACHE_PREFIX = 'rf:magnaflux:calendar:year:v4:';
+      const PAGE_ALIASES = ['magnaflux', 'magna-flux', 'magna_flux'];
+      const CACHE_KEY = 'rf:magnaflux:calendar:cache:v2';
       const FILTERS_KEY = 'rf:magnaflux:calendar:filters:v1';
       const MONTHS_RO = ['Ianuarie','Februarie','Martie','Aprilie','Mai','Iunie','Iulie','August','Septembrie','Octombrie','Noiembrie','Decembrie'];
-      const SHARED_YEAR_STORAGE_PREFIX = 'rf:magnaflux:cache:year:v2:';
-      const SHARED_YEAR_INDEX_STORAGE_KEY = 'rf:magnaflux:cache:index:v2';
 
       const el = {
         btnBack: document.getElementById('btnBack'),
@@ -404,8 +402,7 @@
         latestDateIso: '',
         usingCloud: false,
         selectedDocKey: MAIN_DOC_KEY,
-        lastCloudUpdatedAt: '',
-        availableYears: []
+        lastCloudUpdatedAt: ''
       };
 
       function nf(value){
@@ -473,125 +470,55 @@
         return idx ? MONTHS_RO[idx - 1] : '';
       }
 
-      function makeIsoDate(y, m, d){
-        const yy = Number(y);
-        const mm = Number(m);
-        const dd = Number(d);
-        if (!Number.isInteger(yy) || !Number.isInteger(mm) || !Number.isInteger(dd)) return '';
-        if (yy < 1900 || yy > 2100 || mm < 1 || mm > 12 || dd < 1 || dd > 31) return '';
-        const test = new Date(Date.UTC(yy, mm - 1, dd));
-        if (
-          test.getUTCFullYear() !== yy ||
-          test.getUTCMonth() + 1 !== mm ||
-          test.getUTCDate() !== dd
-        ) return '';
-        return `${String(yy).padStart(4,'0')}-${pad2(mm)}-${pad2(dd)}`;
-      }
-
-      function excelSerialToIso(value){
-        const num = Number(value);
-        if (!Number.isFinite(num)) return '';
-        const whole = Math.floor(num);
-        if (whole < 1 || whole > 90000) return '';
-        const epoch = Date.UTC(1899, 11, 30);
-        const ms = epoch + whole * 86400000;
-        const d = new Date(ms);
-        if (Number.isNaN(d.getTime())) return '';
-        return makeIsoDate(d.getUTCFullYear(), d.getUTCMonth() + 1, d.getUTCDate());
-      }
-
-      function pickBestIsoDate(candidates, hintMonth, hintYear){
-        const valid = Array.from(new Set((candidates || []).filter(Boolean)));
-        if (!valid.length) return '';
-        const monthHint = Number(hintMonth || 0);
-        const yearHint = Number(hintYear || 0);
-        valid.sort((a, b) => {
-          const [ya, ma] = a.split('-').map(Number);
-          const [yb, mb] = b.split('-').map(Number);
-          const sa = (yearHint && ya === yearHint ? 2 : 0) + (monthHint && ma === monthHint ? 4 : 0);
-          const sb = (yearHint && yb === yearHint ? 2 : 0) + (monthHint && mb === monthHint ? 4 : 0);
-          if (sb !== sa) return sb - sa;
-          return a.localeCompare(b);
-        });
-        return valid[0];
-      }
-
-      function normalizeAnyDateToIso(value, hintMonth, hintYear){
-        if (value == null || value === '') return '';
-
+      function formatDate(value){
         if (value instanceof Date && !Number.isNaN(value.getTime())) {
-          return makeIsoDate(value.getFullYear(), value.getMonth() + 1, value.getDate());
+          return `${pad2(value.getDate())}.${pad2(value.getMonth()+1)}.${value.getFullYear()}`;
         }
 
-        if (typeof value === 'number' && Number.isFinite(value)) {
-          return excelSerialToIso(value) || '';
+        let s = clean(value);
+        if (!s) return '';
+        s = s.replace('T', ' ');
+        s = s.split(' ')[0].trim();
+        if (!s) return '';
+
+        if (/^\d{2}\.\d{2}\.\d{4}$/.test(s)) return s;
+        if (/^\d{4}-\d{2}-\d{2}$/.test(s) || /^\d{4}\/\d{2}\/\d{2}$/.test(s) || /^\d{4}\.\d{2}\.\d{2}$/.test(s)) {
+          const parts = s.split(/[.\/-]/);
+          return `${parts[2]}.${parts[1]}.${parts[0]}`;
+        }
+        if (/^\d{2}[-\/]\d{2}[-\/]\d{4}$/.test(s)) {
+          const parts = s.split(/[\/-]/);
+          return `${parts[0]}.${parts[1]}.${parts[2]}`;
         }
 
-        let text = clean(value);
-        if (!text) return '';
-        text = text.replace(/ /g, ' ').trim();
-        if (!text) return '';
+        const parts = s.split(/[.\/-]/).map(x => clean(x)).filter(Boolean);
+        if (parts.length !== 3) return '';
 
-        const directNumeric = Number(String(text).replace(',', '.'));
-        if (Number.isFinite(directNumeric) && /^\d+(?:[\.,]\d+)?$/.test(text)) {
-          const serialIso = excelSerialToIso(directNumeric);
-          if (serialIso) return serialIso;
+        let d = 0, m = 0, y = 0;
+        if (parts[0].length === 4) {
+          y = Number(parts[0]);
+          m = Number(parts[1]);
+          d = Number(parts[2]);
+        } else {
+          d = Number(parts[0]);
+          m = Number(parts[1]);
+          y = Number(parts[2]);
         }
 
-        const compactIso = text.match(/^(\d{4})-(\d{2})-(\d{2})/);
-        if (compactIso) return makeIsoDate(compactIso[1], compactIso[2], compactIso[3]);
-
-        text = text.replace('T', ' ');
-        if (text.includes(' ')) text = text.split(' ')[0].trim();
-        if (!text) return '';
-
-        const candidates = [];
-
-        if (/^\d{4}[.\/-]\d{1,2}[.\/-]\d{1,2}$/.test(text)) {
-          const [y, a, b] = text.split(/[.\/-]/).map(Number);
-          candidates.push(makeIsoDate(y, a, b));
-          candidates.push(makeIsoDate(y, b, a));
-          return pickBestIsoDate(candidates, hintMonth, hintYear);
-        }
-
-        if (/^\d{1,2}[.\/-]\d{1,2}[.\/-]\d{4}$/.test(text)) {
-          const [a, b, y] = text.split(/[.\/-]/).map(Number);
-          candidates.push(makeIsoDate(y, b, a));
-          candidates.push(makeIsoDate(y, a, b));
-          return pickBestIsoDate(candidates, hintMonth, hintYear);
-        }
-
-        if (/^\d{1,2}[.\/-]\d{1,2}[.\/-]\d{2}$/.test(text)) {
-          const [a, b, yy] = text.split(/[.\/-]/).map(Number);
-          const y = yy >= 70 ? 1900 + yy : 2000 + yy;
-          candidates.push(makeIsoDate(y, b, a));
-          candidates.push(makeIsoDate(y, a, b));
-          return pickBestIsoDate(candidates, hintMonth, hintYear);
-        }
-
-        const parsed = new Date(text);
-        if (!Number.isNaN(parsed.getTime())) {
-          return makeIsoDate(parsed.getFullYear(), parsed.getMonth() + 1, parsed.getDate());
-        }
-
-        return '';
+        if (!(y >= 1900 && y <= 2100 && m >= 1 && m <= 12 && d >= 1 && d <= 31)) return '';
+        const dt = new Date(y, m - 1, d);
+        if (dt.getFullYear() !== y || (dt.getMonth() + 1) !== m || dt.getDate() !== d) return '';
+        return `${pad2(d)}.${pad2(m)}.${y}`;
       }
 
-      function formatDate(value, hintMonth, hintYear){
-        const iso = normalizeAnyDateToIso(value, hintMonth, hintYear);
-        if (!iso) return '';
-        const [yyyy, mm, dd] = iso.split('-');
-        return `${dd}.${mm}.${yyyy}`;
+      function yearFromDate(value){
+        const d = formatDate(value);
+        return /^\d{2}\.\d{2}\.\d{4}$/.test(d) ? Number(d.slice(6,10)) : 0;
       }
 
-      function yearFromDate(value, hintMonth, hintYear){
-        const iso = normalizeAnyDateToIso(value, hintMonth, hintYear);
-        return /^\d{4}-\d{2}-\d{2}$/.test(iso) ? Number(iso.slice(0,4)) : 0;
-      }
-
-      function monthFromDate(value, hintMonth, hintYear){
-        const iso = normalizeAnyDateToIso(value, hintMonth, hintYear);
-        return /^\d{4}-\d{2}-\d{2}$/.test(iso) ? MONTHS_RO[Number(iso.slice(5,7)) - 1] : '';
+      function monthFromDate(value){
+        const d = formatDate(value);
+        return /^\d{2}\.\d{2}\.\d{4}$/.test(d) ? MONTHS_RO[Number(d.slice(3,5)) - 1] : '';
       }
 
       function normalizeOperator(value){
@@ -717,24 +644,18 @@
 
       function normalizeRow(raw, index, docKey){
         const row = raw && typeof raw === 'object' ? raw : {};
-        const rawYear = clean(pickLoose(row,
-          ['an','year','AN','Year'],
-          [['an'], ['year']]
-        ));
-        const rawMonth = monthNameFromAny(pickLoose(row,
-          ['luna','month','Luna','Month'],
-          [['luna'], ['month']]
-        ));
-        const hintYear = Number(rawYear || 0);
-        const hintMonth = monthIndexFromName(rawMonth);
-        const rawDate = pickLoose(row,
+        const data = formatDate(pickLoose(row,
           ['data','date','Data','DATA'],
           [['data'], ['date']]
-        );
-        const dataIso = normalizeAnyDateToIso(rawDate, hintMonth, hintYear);
-        const data = formatDate(dataIso || rawDate, hintMonth, hintYear);
-        const an = Number(rawYear || yearFromDate(dataIso || data, hintMonth, hintYear) || 0);
-        const luna = rawMonth || monthFromDate(dataIso || data, hintMonth, hintYear);
+        ));
+        const an = Number(clean(pickLoose(row,
+          ['an','year','AN','Year'],
+          [['an'], ['year']]
+        )) || yearFromDate(data) || 0);
+        const luna = monthNameFromAny(pickLoose(row,
+          ['luna','month','Luna','Month'],
+          [['luna'], ['month']]
+        )) || monthFromDate(data);
         const operator = normalizeOperator(pickLoose(row,
           ['operator','Operator','nume operator','Nume operator','operator magnaflux','Operator Magnaflux','inspector','Inspector'],
           [['nume','operator'], ['operator','magnaflux'], ['operator'], ['inspector']]
@@ -743,16 +664,14 @@
           ['controlate','CONTROLATE','buc controlate','Buc controlate','piese controlate','Piese controlate','bucăți controlate','Bucăți controlate'],
           [['piese','controlate'], ['bucati','controlate'], ['buc','controlate'], ['controlate'], ['controlat']]
         ));
-        const id = clean(pickLoose(row, ['id','_id'], [['id']])) || `${docKey || MAIN_DOC_KEY}:${index + 1}`;
 
         return {
-          id,
+          id: clean(pickLoose(row, ['id','_id'], [['id']])) || `${docKey || MAIN_DOC_KEY}:${index + 1}`,
           an,
           luna,
           data,
           operator,
-          controlate,
-          _doc_key: docKey || MAIN_DOC_KEY
+          controlate
         };
       }
 
@@ -873,140 +792,44 @@
       }
 
       function persistCache(){
-        saveSharedLocalYear(state.year, state.rows, state.lastCloudUpdatedAt || nowIso());
-      }
-
-      function loadLocal(){
-        return loadSharedLocalYear(state.year || new Date().getFullYear());
-      }
-
-      function nowIso(){
-        return new Date().toISOString();
-      }
-
-      function getYearDocKey(year){
-        return `${DOC_PREFIX}:${String(year || '')}`;
-      }
-
-      function getSharedYearStorageKey(year){
-        return SHARED_YEAR_STORAGE_PREFIX + String(year || '0');
-      }
-
-      function loadSharedLocalIndex(){
         try {
-          const parsed = JSON.parse(localStorage.getItem(SHARED_YEAR_INDEX_STORAGE_KEY) || 'null');
-          return parsed && typeof parsed === 'object' ? parsed : null;
-        } catch (_err) {
-          return null;
-        }
-      }
-
-      function getSharedLocalUpdatedAt(year){
-        const index = loadSharedLocalIndex();
-        if (index && index.updated_at_by_year && typeof index.updated_at_by_year === 'object') {
-          const val = index.updated_at_by_year[String(year || '')];
-          if (val) return String(val);
-        }
-        return '';
-      }
-
-      function saveSharedLocalYear(year, rows, updatedAt){
-        const y = Number(year || 0);
-        if (!y) return;
-        const payload = {
-          page_key: PAGE_KEY,
-          year: y,
-          updated_at: updatedAt || nowIso(),
-          rows: Array.isArray(rows) ? rows : []
-        };
-        try {
-          localStorage.setItem(getSharedYearStorageKey(y), JSON.stringify(payload));
-        } catch (_err) {}
-
-        try {
-          const index = loadSharedLocalIndex() || {};
-          const years = Array.isArray(index.years) ? index.years.map(v => Number(v)).filter(Boolean) : [];
-          const mergedYears = Array.from(new Set([...years, y])).sort((a,b) => a - b);
-          const updated = Object.assign({}, index.updated_at_by_year || {}, { [String(y)]: payload.updated_at });
-          localStorage.setItem(SHARED_YEAR_INDEX_STORAGE_KEY, JSON.stringify({
-            years: mergedYears,
-            updated_at_by_year: updated,
-            active_year: String(y)
+          localStorage.setItem(CACHE_KEY, JSON.stringify({
+            rows: state.rows,
+            selectedDocKey: state.selectedDocKey,
+            lastCloudUpdatedAt: state.lastCloudUpdatedAt,
+            savedAt: Date.now()
           }));
         } catch (_err) {}
       }
 
-      function loadSharedLocalYear(year){
+      function loadLocal(){
         try {
-          const raw = localStorage.getItem(getSharedYearStorageKey(year));
+          const raw = localStorage.getItem(CACHE_KEY);
           if (!raw) return null;
           const parsed = JSON.parse(raw);
           if (!parsed || !Array.isArray(parsed.rows)) return null;
           return {
-            rows: parsed.rows.map((row, idx) => normalizeRow(row, idx, parsed.selectedDocKey || getYearDocKey(year))),
-            selectedDocKey: parsed.selectedDocKey || getYearDocKey(year),
-            updated_at: String(parsed.updated_at || getSharedLocalUpdatedAt(year) || '')
+            rows: parsed.rows.map((row, idx) => normalizeRow(row, idx, parsed.selectedDocKey || MAIN_DOC_KEY)),
+            selectedDocKey: parsed.selectedDocKey || MAIN_DOC_KEY,
+            updated_at: parsed.lastCloudUpdatedAt || ''
           };
         } catch (_err) {
           return null;
         }
       }
 
-      function collectLocalYears(){
-        const years = new Set();
-        const index = loadSharedLocalIndex();
-        if (index && Array.isArray(index.years)) {
-          for (const value of index.years) {
-            const year = Number(value);
-            if (year) years.add(year);
-          }
-        }
-        try {
-          for (let i = 0; i < localStorage.length; i += 1) {
-            const key = localStorage.key(i);
-            if (!key || !key.startsWith(SHARED_YEAR_STORAGE_PREFIX)) continue;
-            const year = Number(key.slice(SHARED_YEAR_STORAGE_PREFIX.length));
-            if (year) years.add(year);
-          }
-        } catch (_err) {}
-        return Array.from(years).sort((a,b) => b - a);
+      function getYearDocKey(year){
+        return `${DOC_PREFIX}:${Number(year || new Date().getFullYear())}`;
       }
 
-      async function fetchCloudIndexMeta(){
-        try {
-          let res = await state.supabase
-            .from('rf_documents')
-            .select('doc_key,content,data,updated_at')
-            .eq('doc_key', CLOUD_INDEX_KEY)
-            .maybeSingle();
-
-          if (res.error && /data/i.test(String(res.error.message || ''))) {
-            res = await state.supabase
-              .from('rf_documents')
-              .select('doc_key,content,updated_at')
-              .eq('doc_key', CLOUD_INDEX_KEY)
-              .maybeSingle();
-          }
-          if (res.error || !res.data) return { years: [], updated_at_by_year: {} };
-          const payload = (res.data && (res.data.content || res.data.data)) || {};
-          const years = Array.isArray(payload.years) ? payload.years.map(v => Number(v)).filter(Boolean).sort((a,b) => b - a) : [];
-          const updated_at_by_year = payload && payload.updated_at_by_year && typeof payload.updated_at_by_year === 'object'
-            ? Object.assign({}, payload.updated_at_by_year)
-            : {};
-          return { years, updated_at_by_year };
-        } catch (_err) {
-          return { years: [], updated_at_by_year: {} };
-        }
-      }
-
-      async function fetchExactYearDoc(year){
-        const docKey = getYearDocKey(year);
+      async function fetchDocByKey(docKey){
         try {
           let res = await state.supabase
             .from('rf_documents')
             .select('doc_key,content,data,updated_at')
             .eq('doc_key', docKey)
             .maybeSingle();
+
           if (res.error && /data/i.test(String(res.error.message || ''))) {
             res = await state.supabase
               .from('rf_documents')
@@ -1014,27 +837,35 @@
               .eq('doc_key', docKey)
               .maybeSingle();
           }
-          if (res.error || !res.data) return null;
-          const rows = extractRowsFromDocRecord(res.data);
-          return {
-            rows,
-            selectedDocKey: res.data.doc_key || docKey,
-            updated_at: String(res.data.updated_at || '')
-          };
+
+          if (res.error) throw res.error;
+          return res.data || null;
         } catch (_err) {
           return null;
         }
       }
 
-      function refreshAvailableYears(extraYears){
-        const set = new Set((state.availableYears || []).map(Number).filter(Boolean));
-        for (const year of collectLocalYears()) set.add(Number(year));
-        for (const year of extraYears || []) if (Number(year)) set.add(Number(year));
-        if (!set.size && state.year) set.add(Number(state.year));
-        if (!set.size) set.add(new Date().getFullYear());
-        state.availableYears = Array.from(set).sort((a,b) => b - a);
-      }
+      async function fetchMagnafluxDocForYear(year){
+        const y = Number(year || new Date().getFullYear());
+        const exactKey = getYearDocKey(y);
+        const exactDoc = await fetchDocByKey(exactKey);
+        if (exactDoc) return exactDoc;
 
+        const legacyDoc = await fetchDocByKey(MAIN_DOC_KEY);
+        if (!legacyDoc) return null;
+
+        const legacyRows = extractRowsFromDocRecord(legacyDoc).filter(row => {
+          const parts = extractRowDateParts(row);
+          if (parts) return parts.year === y;
+          return Number(row && row.an) === y;
+        });
+
+        return {
+          doc_key: MAIN_DOC_KEY,
+          content: { rows: legacyRows },
+          updated_at: legacyDoc.updated_at || ''
+        };
+      }
 
       function saveFilters(){
         try {
@@ -1058,32 +889,12 @@
         return new Date(year, month, 0).getDate();
       }
 
-      function yearNumberFromRow(row){
-        const direct = Number(clean(row && (row.an || row.year)) || 0);
-        if (direct >= 1900 && direct <= 2100) return direct;
-        const data = formatDate(row && row.data);
-        if (/^\d{2}\.\d{2}\.\d{4}$/.test(data)) return Number(data.slice(6,10));
-        return 0;
-      }
-
-      function monthNumberFromRow(row){
-        const direct = monthIndexFromName(row && row.luna);
-        if (direct) return direct;
-        const data = formatDate(row && row.data);
-        if (/^\d{2}\.\d{2}\.\d{4}$/.test(data)) return Number(data.slice(3,5));
-        return 0;
-      }
-
-      function dayNumberFromRow(row){
-        const data = formatDate(row && row.data);
-        if (/^\d{2}\.\d{2}\.\d{4}$/.test(data)) return Number(data.slice(0,2));
-        return 0;
-      }
-
       function extractRowDateParts(row){
-        const year = yearNumberFromRow(row);
-        const month = monthNumberFromRow(row);
-        const day = dayNumberFromRow(row);
+        const data = formatDate(row && row.data);
+        if (!/^\d{2}\.\d{2}\.\d{4}$/.test(data)) return null;
+        const day = Number(data.slice(0,2));
+        const month = Number(data.slice(3,5));
+        const year = Number(data.slice(6,10));
         if (!(year >= 1900 && year <= 2100 && month >= 1 && month <= 12 && day >= 1 && day <= 31)) return null;
         const maxDay = daysInMonth(year, month);
         if (day > maxDay) return null;
@@ -1100,7 +911,14 @@
       }
 
       function buildYearOptions(){
-        const years = Array.from(new Set((state.availableYears || []).map(Number).filter(Boolean))).sort((a,b) => b - a);
+        const years = Array.from(new Set(
+          state.rows
+            .map(row => {
+              const parts = extractRowDateParts(row);
+              return Number((parts && parts.year) || row.an || 0);
+            })
+            .filter(Boolean)
+        )).sort((a,b) => b - a);
         if (!years.length) years.push(new Date().getFullYear());
         el.selYear.innerHTML = years.map(y => `<option value="${y}">${y}</option>`).join('');
       }
@@ -1236,73 +1054,31 @@
         el.gridMeta.textContent = `Luna selectată: ${MONTHS_RO[state.month - 1]} ${state.year}. Tabelul însumează piesele CONTROLATE pe fiecare operator și pe fiecare zi.`;
       }
 
-      async function loadYearIntoCalendar(year, sourcePreference){
-        const y = Number(year || state.year || new Date().getFullYear());
-        state.year = y;
-
-        const localDoc = loadSharedLocalYear(y);
-        const localUpdatedAt = String((localDoc && localDoc.updated_at) || getSharedLocalUpdatedAt(y) || '');
-        const cloudDoc = state.supabase ? await fetchExactYearDoc(y) : null;
-        const cloudUpdatedAt = String((cloudDoc && cloudDoc.updated_at) || '');
-
-        let chosen = null;
-        let source = 'local';
-
-        if (sourcePreference === 'cloud') {
-          if (cloudDoc && Array.isArray(cloudDoc.rows)) {
-            chosen = cloudDoc;
-            source = 'cloud';
-            saveSharedLocalYear(y, cloudDoc.rows, cloudUpdatedAt || nowIso());
-          } else if (localDoc && Array.isArray(localDoc.rows)) {
-            chosen = localDoc;
-            source = 'local';
-          }
-        } else if (sourcePreference === 'local') {
-          if (localDoc && Array.isArray(localDoc.rows)) {
-            chosen = localDoc;
-            source = 'local';
-          } else if (cloudDoc && Array.isArray(cloudDoc.rows)) {
-            chosen = cloudDoc;
-            source = 'cloud';
-            saveSharedLocalYear(y, cloudDoc.rows, cloudUpdatedAt || nowIso());
-          }
-        } else {
-          const preferLocal = !!localUpdatedAt && (!cloudUpdatedAt || localUpdatedAt > cloudUpdatedAt);
-          if (preferLocal && localDoc && Array.isArray(localDoc.rows)) {
-            chosen = localDoc;
-            source = 'local';
-          } else if (cloudDoc && Array.isArray(cloudDoc.rows)) {
-            chosen = cloudDoc;
-            source = 'cloud';
-            saveSharedLocalYear(y, cloudDoc.rows, cloudUpdatedAt || nowIso());
-          } else if (localDoc && Array.isArray(localDoc.rows)) {
-            chosen = localDoc;
-            source = 'local';
-          }
-        }
-
-        if (!chosen) {
-          chosen = { rows: [], selectedDocKey: getYearDocKey(y), updated_at: '' };
-          source = sourcePreference === 'cloud' ? 'cloud' : 'local';
-        }
-
-        applyRows(chosen, source);
-        refreshAvailableYears([y]);
-        buildYearOptions();
-        el.selYear.value = String(state.year);
-        saveFilters();
-        renderTable();
-      }
-
       async function applyFilterChange(){
         const nextYear = Number(el.selYear.value || 0);
-        state.month = Number(el.selMonth.value || 0);
-        if (nextYear && nextYear !== state.year) {
-          await loadYearIntoCalendar(nextYear);
-        } else {
-          saveFilters();
-          renderTable();
+        const nextMonth = Number(el.selMonth.value || 0);
+        const yearChanged = nextYear !== Number(state.year || 0);
+        state.year = nextYear;
+        state.month = nextMonth;
+        saveFilters();
+
+        if (yearChanged && state.supabase) {
+          setSyncBadge(`Încarc anul ${state.year}...`, 'warn');
+          const doc = await fetchMagnafluxDocForYear(state.year);
+          if (doc) {
+            const rows = extractRowsFromDocRecord(doc);
+            applyRows({ rows, selectedDocKey: doc.doc_key || getYearDocKey(state.year), updated_at: doc.updated_at || '' }, 'cloud');
+            state.month = nextMonth;
+            el.selMonth.value = String(state.month);
+            saveFilters();
+            renderTable();
+            persistCache();
+            setSyncBadge('Cloud: ON', 'ok');
+            return;
+          }
         }
+
+        renderTable();
       }
 
       function applyRows(doc, sourceLabel){
@@ -1321,15 +1097,24 @@
 
       async function manualReload(){
         if (!state.supabase) {
-          const localDoc = loadSharedLocalYear(state.year || new Date().getFullYear());
-          applyRows(localDoc || { rows: [], selectedDocKey: getYearDocKey(state.year), updated_at: '' }, 'local');
+          const localDoc = loadLocal();
+          applyRows(localDoc || { rows: [] }, 'local');
           setSyncBadge('Doar local', 'warn');
           return;
         }
 
         setSyncBadge('Reîncarcă...', 'warn');
-        await loadYearIntoCalendar(state.year, 'cloud');
-        setSyncBadge('Cloud: ON', 'ok');
+        const doc = await fetchMagnafluxDocForYear(state.year);
+        if (doc) {
+          const rows = extractRowsFromDocRecord(doc);
+          applyRows({ rows, selectedDocKey: doc.doc_key || getYearDocKey(state.year), updated_at: doc.updated_at || '' }, 'cloud');
+          persistCache();
+          setSyncBadge('Cloud: ON', 'ok');
+        } else {
+          const localDoc = loadLocal();
+          applyRows(localDoc || { rows: [] }, 'local');
+          setSyncBadge('Cloud indisponibil', 'warn');
+        }
       }
 
       function bindEvents(){
@@ -1344,17 +1129,12 @@
       }
 
       async function initialLoad(){
-        const saved = loadFilters();
-        state.year = Number((saved && saved.year) || new Date().getFullYear());
-        state.month = Number((saved && saved.month) || (new Date().getMonth() + 1));
-        refreshAvailableYears([state.year]);
-
-        const localDoc = loadSharedLocalYear(state.year);
+        const localDoc = loadLocal();
         if (localDoc) {
           applyRows(localDoc, 'local');
           setSyncBadge('Local', 'warn');
         } else {
-          applyRows({ rows: [], selectedDocKey: getYearDocKey(state.year), updated_at: '' }, 'local');
+          applyRows({ rows: [] }, 'local');
           setSyncBadge('Local gol', 'warn');
         }
 
@@ -1368,10 +1148,15 @@
           await requireSession();
           await resolveRole();
           await resolvePermissions();
-          const cloudMeta = await fetchCloudIndexMeta();
-          refreshAvailableYears(cloudMeta.years || []);
-          await loadYearIntoCalendar(state.year);
-          setSyncBadge(state.sourceLabel === 'local' ? 'Local prioritar' : 'Cloud: ON', state.sourceLabel === 'local' ? 'warn' : 'ok');
+          const doc = await fetchMagnafluxDocForYear(state.year);
+          if (doc) {
+            const rows = extractRowsFromDocRecord(doc);
+            applyRows({ rows, selectedDocKey: doc.doc_key || getYearDocKey(state.year), updated_at: doc.updated_at || '' }, 'cloud');
+            persistCache();
+            setSyncBadge('Cloud: ON', 'ok');
+          } else {
+            setSyncBadge('Cloud indisponibil', 'warn');
+          }
         } catch (_err) {
           setSyncBadge('Sesiune lipsă', 'err');
           window.location.href = 'login.html';
