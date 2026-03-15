@@ -443,12 +443,12 @@
       Object.keys(debSeed).forEach(key => { rollingDebByGroup[key] = toNum(debSeed[key]); });
 
       flatSlots.forEach(slot => {
-        const materialKey = normUpper(String(slot.meta.diametru_otel || '') + '|' + String(slot.meta.calitate_otel || ''));
+        const stockMaterialKey = materialKey(slot.meta.diametru_otel || '', slot.meta.calitate_otel || '');
         const groupKey = normUpper(slot.meta.reper_debitare || slot.reper || slot.utilaj);
-        let steelBefore = Object.prototype.hasOwnProperty.call(rollingSteelByMaterial, materialKey)
-          ? toNum(rollingSteelByMaterial[materialKey])
+        let steelBefore = Object.prototype.hasOwnProperty.call(rollingSteelByMaterial, stockMaterialKey)
+          ? toNum(rollingSteelByMaterial[stockMaterialKey])
           : (() => {
-              if (slot.base && materialKey) return toNum(slot.base.STOC_OTEL_INAINTE);
+              if (slot.base && stockMaterialKey) return toNum(slot.base.STOC_OTEL_INAINTE);
               const anchor = GROUP_FIRST_ANCHOR.get(groupKey);
               return anchor ? toNum(anchor.steel) : 0;
             })();
@@ -516,7 +516,7 @@
               ? `Nu exista realizari -> simulez consumul din planificare. | Deficit debitat: ${formatIntRO(deficitDebitat)} buc | Otel necesar: ${formatKgRO(otelNeces)} kg.`
               : `Nu exista realizari -> simulez consumul din planificare.`
           };
-          rollingSteelByMaterial[materialKey] = steelAfter;
+          rollingSteelByMaterial[stockMaterialKey] = steelAfter;
           rollingDebByGroup[groupKey] = debAfter;
         }
 
@@ -1007,7 +1007,10 @@
       saveTimer: null,
       suppressScrollSave: false,
       pendingScroll: null,
-      updatedAt: null
+      updatedAt: null,
+      stockMetaSignature: '',
+      stockWatchTimer: null,
+      refreshInFlight: false
     };
 
     function scrollKey(year){ return 'rf_planificare_forja_scroll_' + String(year || ''); }
@@ -1135,7 +1138,16 @@
       els.repereForjateList.innerHTML = state.helperRepereList.map(x => '<option value="' + x.replace(/"/g,'&quot;') + '">').join('');
     }
 
-    function normKey(v){ return S.normUpper(String(v || '').replace(/^Ø/i,'')); }
+    function cleanDiamValue(v){
+      let s = String(v || '').trim();
+      if(!s) return '';
+      s = s.replace(/^Ø\s*/i,'').replace(/\s*MM/ig,'').replace(/,/g,'.').trim();
+      const n = Number(s);
+      if(Number.isFinite(n) && s !== '') return String(S.numClean(n));
+      return s.replace(/\s+/g,'');
+    }
+    function materialKey(diam, cal){ return S.normUpper(cleanDiamValue(diam) + '|' + String(cal || '').trim()); }
+    function normKey(v){ return S.normUpper(String(v || '').trim().replace(/^Ø/i,'')); }
     function extractRows(payload){ return S.extractRowsPayload(payload); }
     function pick(obj, keys){
       if(!obj || typeof obj !== 'object') return '';
@@ -1195,7 +1207,7 @@
       return {
         diam: String(pick(row,['diametru','diametru otel','diametru_otel','Diametru otel','Diametru']) || '').trim(),
         cal: String(pick(row,['calitate','calitate otel','calitate_otel','Calitate otel','Calitate']) || '').trim(),
-        qty: S.toNum(pick(row,['cantitateKg','cantitate','cantitate kg','cantitate_kg','kg','stoc initial','stoc_initial','Stoc Otel (Kg)','stoc actual (kg)','Stoc actual (kg)']))
+        qty: S.toNum(pick(row,['cantitateKg','cantitate','cantitate kg','cantitate_kg','kg','stoc initial','stoc_initial','Stoc Otel (Kg)','stoc actual (kg)','Stoc actual (kg)','stockKg','stock kg','stoc final','stoc final (kg)','stoc actual','stoc_kg']))
       };
     }
     function normalizeEntryRow(row){
@@ -1265,36 +1277,66 @@
       if(cy !== ey) return cy > ey;
       return (candidate._index || 0) > (existing._index || 0);
     }
-    async function loadInventoryStocks(){
-      const initialDocs = await queryDocsByKeys(['stoc-initial-otel','stoc_initial_otel','inventar-otel-initial','inventar_otel_initial']);
-      const inventoryDocs = uniqueDocs(excludeIndexDocs([...(await queryDocsByKeys(['inventar-otel','inventar_otel'])), ...(await queryDocsByPrefixes(['inventar-otel','inventar_otel']))]));
-      const entryDocs = uniqueDocs(excludeIndexDocs([...(await queryDocsByKeys(['intrari-otel','intrari_otel','intrari otel'])), ...(await queryDocsByPrefixes(['intrari-otel','intrari_otel']))]));
-      const consDocs = uniqueDocs(excludeIndexDocs([...(await queryDocsByKeys(['debitate','debitari'])), ...(await queryDocsByPrefixes(['debitate','debitari']))]));
-      const debInvDocs = uniqueDocs(excludeIndexDocs([...(await queryDocsByKeys(['inventar-debitat','inventar_debitat'])), ...(await queryDocsByPrefixes(['inventar-debitat','inventar_debitat','stoc-initial-debitat','stoc_initial_debitat']))]));
 
-      const steelByMaterial = Object.create(null);
-      const bump = (key, delta) => { if(!key) return; steelByMaterial[key] = S.toNum(steelByMaterial[key]) + S.toNum(delta); };
-      const useInventorySnapshot = !initialDocs.length && inventoryDocs.length;
-      const baseSteelDocs = useInventorySnapshot ? inventoryDocs : initialDocs;
-      baseSteelDocs.flatMap(doc => extractRows(doc.content || doc.data || doc)).map(normalizeInitialRow).forEach(r => bump(normKey(`${r.diam}|${r.cal}`), r.qty));
-      if(!useInventorySnapshot){
-        entryDocs.flatMap(doc => extractRows(doc.content || doc.data || doc)).map(normalizeEntryRow).forEach(r => bump(normKey(`${r.diam}|${r.cal}`), r.qty));
-        consDocs.flatMap(doc => extractRows(doc.content || doc.data || doc)).map(normalizeConsumptionRow).forEach(r => bump(normKey(`${r.diam}|${r.cal}`), -r.qty));
-      }
+async function loadInventoryStocks(){
+  const initialDocs = await queryDocsByKeys(['stoc-initial-otel','stoc_initial_otel','inventar-otel-initial','inventar_otel_initial']);
+  const inventoryDocs = uniqueDocs(excludeIndexDocs([...(await queryDocsByKeys(['inventar-otel','inventar_otel'])), ...(await queryDocsByPrefixes(['inventar-otel','inventar_otel']))]));
+  const entryDocs = uniqueDocs(excludeIndexDocs([...(await queryDocsByKeys(['intrari-otel','intrari_otel','intrari otel'])), ...(await queryDocsByPrefixes(['intrari-otel','intrari_otel']))]));
+  const consDocs = uniqueDocs(excludeIndexDocs([...(await queryDocsByKeys(['debitate','debitari'])), ...(await queryDocsByPrefixes(['debitate','debitari']))]));
+  const debInvDocs = uniqueDocs(excludeIndexDocs([...(await queryDocsByKeys(['inventar-debitat','inventar_debitat'])), ...(await queryDocsByPrefixes(['inventar-debitat','inventar_debitat','stoc-initial-debitat','stoc_initial_debitat']))]));
 
-      const latestDeb = new Map();
-      debInvDocs.flatMap(doc => extractRows(doc.content || doc.data || doc)).forEach((raw, index) => {
-        const row = normalizeDebInventoryRow(raw, index);
-        if(!row.reper) return;
-        const key = normKey(row.reper);
-        const existing = latestDeb.get(key);
-        if(shouldReplaceDeb(existing, row)) latestDeb.set(key, row);
-      });
-      const debByReper = Object.create(null);
-      latestDeb.forEach((row, key) => { debByReper[key] = Math.max(0, S.toNum(row.qty)); });
+  const steelByMaterial = Object.create(null);
+  const bumpSteel = (key, delta) => { if(!key) return; steelByMaterial[key] = S.toNum(steelByMaterial[key]) + S.toNum(delta); };
+  const invSnapshotAt = inventoryDocs.map(d => Date.parse(d.updated_at || 0) || 0).sort((a,b)=>b-a)[0] || 0;
+  const debSnapshotAt = debInvDocs.map(d => Date.parse(d.updated_at || 0) || 0).sort((a,b)=>b-a)[0] || 0;
+  const hasInventorySnapshot = inventoryDocs.length > 0;
 
-      state.liveStocks = { steelByMaterial, debByReper };
+  const seedSteelDocs = hasInventorySnapshot ? inventoryDocs : initialDocs;
+  seedSteelDocs.flatMap(doc => extractRows(doc.content || doc.data || doc)).map(normalizeInitialRow).forEach(r => {
+    bumpSteel(materialKey(r.diam, r.cal), r.qty);
+  });
+
+  const entryDocsToApply = hasInventorySnapshot ? entryDocs.filter(doc => (Date.parse(doc.updated_at || 0) || 0) > invSnapshotAt) : entryDocs;
+  const consDocsToApply = hasInventorySnapshot ? consDocs.filter(doc => (Date.parse(doc.updated_at || 0) || 0) > invSnapshotAt) : consDocs;
+  entryDocsToApply.flatMap(doc => extractRows(doc.content || doc.data || doc)).map(normalizeEntryRow).forEach(r => {
+    bumpSteel(materialKey(r.diam, r.cal), r.qty);
+  });
+  consDocsToApply.flatMap(doc => extractRows(doc.content || doc.data || doc)).map(normalizeConsumptionRow).forEach(r => {
+    bumpSteel(materialKey(r.diam, r.cal), -r.qty);
+  });
+
+  const latestDeb = new Map();
+  debInvDocs.flatMap(doc => extractRows(doc.content || doc.data || doc)).forEach((raw, index) => {
+    const row = normalizeDebInventoryRow(raw, index);
+    if(!row.reper) return;
+    const key = normKey(row.reper);
+    const existing = latestDeb.get(key);
+    if(shouldReplaceDeb(existing, row)) latestDeb.set(key, row);
+  });
+  const debByReper = Object.create(null);
+  latestDeb.forEach((row, key) => { debByReper[key] = Math.max(0, S.toNum(row.qty)); });
+
+  const debitateDocsToApply = debSnapshotAt ? consDocs.filter(doc => (Date.parse(doc.updated_at || 0) || 0) > debSnapshotAt) : [];
+  const normalizeDebitateStockRow = (row) => {
+    if(Array.isArray(row)){
+      return {
+        reper: String(pickArrayIndexes(row,[4]) || '').trim(),
+        qty: Math.round(S.toNum(pickArrayIndexes(row,[9,10])))
+      };
     }
+    return {
+      reper: String(pick(row,['reper','REPER','Reper']) || '').trim(),
+      qty: Math.round(S.toNum(pick(row,['cantitate','cantitate buc','cantitate_buc','Cantitate','J'])))
+    };
+  };
+  debitateDocsToApply.flatMap(doc => extractRows(doc.content || doc.data || doc)).map(normalizeDebitateStockRow).forEach(r => {
+    const key = normKey(r.reper);
+    if(!key) return;
+    debByReper[key] = Math.max(0, S.toNum(debByReper[key]) + S.toNum(r.qty));
+  });
+
+  state.liveStocks = { steelByMaterial, debByReper };
+}
 
     async function loadForjateSummary(year){
       state.realizedSummary = Object.create(null);
@@ -1317,6 +1359,44 @@
         });
       }
     }
+
+async function fetchStockMetaSignature(){
+  const keys = ['stoc-initial-otel','stoc_initial_otel','inventar-otel','inventar_otel','intrari-otel','intrari_otel','intrari otel','debitate','debitari','inventar-debitat','inventar_debitat'];
+  const prefixes = ['inventar-otel','inventar_otel','intrari-otel','intrari_otel','debitate','debitari','inventar-debitat','inventar_debitat','stoc-initial-debitat','stoc_initial_debitat'];
+  const seen = new Map();
+  const addRows = (rows) => { (Array.isArray(rows)?rows:[]).forEach(r => { if(r && r.doc_key) seen.set(r.doc_key, String(r.updated_at || '')); }); };
+  const r1 = await state.supabase.from('rf_documents').select('doc_key,updated_at').in('doc_key', keys);
+  if(r1.error) throw r1.error;
+  addRows(r1.data);
+  for(const prefix of prefixes){
+    const r = await state.supabase.from('rf_documents').select('doc_key,updated_at').like('doc_key', `${prefix}:%`);
+    if(r.error) throw r.error;
+    addRows(r.data);
+  }
+  return Array.from(seen.entries()).sort((a,b)=>a[0].localeCompare(b[0])).map(([k,v])=>`${k}@${v}`).join('|');
+}
+async function refreshStocksIfChanged(reason, force){
+  if(!state.supabase || state.refreshInFlight) return false;
+  state.refreshInFlight = true;
+  try{
+    const signature = await fetchStockMetaSignature();
+    if(!force && signature && signature === state.stockMetaSignature) return false;
+    await loadInventoryStocks();
+    state.stockMetaSignature = signature;
+    if(state.calcByYear && typeof state.calcByYear.delete === 'function') state.calcByYear.delete(state.activeYear);
+    if(typeof render === 'function') render();
+    return true;
+  }finally{
+    state.refreshInFlight = false;
+  }
+}
+function startStockWatcher(){
+  if(state.stockWatchTimer) clearInterval(state.stockWatchTimer);
+  state.stockWatchTimer = setInterval(() => {
+    if(document.hidden) return;
+    refreshStocksIfChanged('interval', false).catch(err => console.warn('stock refresh failed', err));
+  }, 4000);
+}
     function getCalc(){
       if(!state.calcByYear.has(state.activeYear)){
         state.calcByYear.set(state.activeYear, S.computeCalcForYear(getRowsForYear(state.activeYear), state.realizedSummary, state.helperMaps, state.activeYear, state.liveStocks));
@@ -1551,6 +1631,7 @@
         await loadPlanRows();
         await loadHelpers();
         await loadInventoryStocks();
+        state.stockMetaSignature = await fetchStockMetaSignature();
         const queryYear = Number(new URLSearchParams(window.location.search).get('year') || 0);
         const years = getYears();
         state.activeYear = years.includes(queryYear) ? queryYear : (years.includes(new Date().getFullYear()) ? new Date().getFullYear() : years[0]);
@@ -1558,6 +1639,7 @@
         await loadForjateSummary(state.activeYear);
         render();
         restoreScrollPosition();
+        startStockWatcher();
       }catch(err){
         console.error(err);
         alert(String(err && err.message || err || 'Eroare la încărcare.'));
@@ -1568,6 +1650,8 @@
     els.yearSelect.addEventListener('change', () => changeYear(els.yearSelect.value));
     els.btnReset.addEventListener('click', resetYearToSeed);
     els.btnCalc.addEventListener('click', openCalcPage);
+    document.addEventListener('visibilitychange', () => { if(!document.hidden) refreshStocksIfChanged('visibility', false).catch(err => console.warn(err)); });
+    window.addEventListener('focus', () => { refreshStocksIfChanged('focus', false).catch(err => console.warn(err)); });
     els.btnLogout.addEventListener('click', async () => {
       try{ await window.ERPAuth.signOut(); } catch(_e){}
       window.location.href = 'login.html';
