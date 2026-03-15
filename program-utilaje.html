@@ -466,6 +466,7 @@
       let saveTimer = null;
       let activeChannel = null;
       let editingId = null;
+      let currentRole = 'viewer';
 
       const els = {
         tbody: document.getElementById('tbody'),
@@ -937,7 +938,7 @@
         try {
           const { data: auth } = await supabaseClient.auth.getUser();
           const user = auth?.user;
-          if (!user?.email) { els.roleChip.textContent = 'Rol: viewer'; return; }
+          if (!user?.email) { currentRole = 'viewer'; els.roleChip.textContent = 'Rol: viewer'; return currentRole; }
           const email = user.email.toLowerCase();
           let role = 'viewer';
           const acl = await supabaseClient.from('rf_acl').select('role').eq('email', email).maybeSingle();
@@ -946,9 +947,56 @@
             const prof = await supabaseClient.from('profiles').select('role,email,user_id').eq('email', email).maybeSingle();
             if (prof?.data?.role) role = prof.data.role;
           }
-          els.roleChip.textContent = `Rol: ${role}`;
+          currentRole = String(role || 'viewer').toLowerCase();
+          els.roleChip.textContent = `Rol: ${currentRole}`;
+          return currentRole;
         } catch (_) {
+          currentRole = 'viewer';
           els.roleChip.textContent = 'Rol: viewer';
+          return currentRole;
+        }
+      }
+
+      async function ensurePageAccess(){
+        const pageKey = 'program-utilaje';
+        const href = 'program-utilaje.html';
+        try {
+          const { data: auth } = await supabaseClient.auth.getUser();
+          const user = auth?.user;
+          if (!user?.email) {
+            window.location.href = 'login.html';
+            return false;
+          }
+
+          if (currentRole === 'admin') return true;
+
+          let allowed = null;
+          try {
+            const a = await supabaseClient.from('rf_documents').select('content').eq('doc_key', 'dashboard_acl_v1').maybeSingle();
+            const doc = (!a.error && a.data?.content && typeof a.data.content === 'object') ? a.data.content : null;
+            const grants = doc && doc.grants && doc.grants[currentRole] ? doc.grants[currentRole] : null;
+            if (grants) {
+              if (Object.prototype.hasOwnProperty.call(grants, pageKey)) allowed = grants[pageKey] !== false;
+              if (allowed === null && Object.prototype.hasOwnProperty.call(grants, href)) allowed = grants[href] !== false;
+            }
+          } catch (_) {}
+
+          if (allowed === null) {
+            try {
+              const perm = await supabaseClient.from('page_permissions').select('can_view').eq('role', currentRole).eq('page_key', pageKey).maybeSingle();
+              if (!perm.error && perm.data && typeof perm.data.can_view === 'boolean') allowed = perm.data.can_view === true;
+            } catch (_) {}
+          }
+
+          if (allowed === false) {
+            alert('Nu ai acces în această foaie. Cere acces de la admin.');
+            window.location.href = 'index.html';
+            return false;
+          }
+
+          return true;
+        } catch (_) {
+          return true;
         }
       }
 
@@ -975,6 +1023,8 @@
         bindButtons();
         bindTableEvents();
         await loadRole();
+        const canViewPage = await ensurePageAccess();
+        if (!canViewPage) return;
         rows = loadLocalCache();
         populateFilterOptions();
         renderTable();
