@@ -906,13 +906,6 @@
       background:#fff;
       outline:none;
     }
-    .cell-locked{
-      cursor:not-allowed !important;
-      box-shadow:inset 0 0 0 2px #f59e0b;
-    }
-    .cell-lock-mine{
-      box-shadow:inset 0 0 0 2px #2563eb;
-    }
     .calc-status-red{ color:var(--red) !important; }
     .today-note{font-size:11px;color:#92400e;font-weight:800}
     @media (max-width:900px){
@@ -1014,16 +1007,7 @@
       saveTimer: null,
       suppressScrollSave: false,
       pendingScroll: null,
-      updatedAt: null,
-      live: {
-        channel: null,
-        topic: '',
-        connected: false,
-        clientKey: 'pf-' + Math.random().toString(36).slice(2) + Date.now().toString(36),
-        locks: Object.create(null),
-        editingCell: '',
-        pendingRemoteRender: false
-      }
+      updatedAt: null
     };
 
     function scrollKey(year){ return 'rf_planificare_forja_scroll_' + String(year || ''); }
@@ -1055,35 +1039,6 @@
       });
     }
     function markSaveInfo(text){ els.saveInfo.textContent = text || ''; }
-    function currentUserLabel(){
-      const meta = (state.user && state.user.user_metadata) || {};
-      return S.safeText(meta.full_name || meta.name || meta.display_name || (state.user && state.user.email) || (state.user && state.user.id) || 'Utilizator');
-    }
-    function makeCellKey(data, utilaj, field){
-      return [S.safeText(data), S.normUpper(utilaj), S.safeText(field)].join('|');
-    }
-    function restoreCellTitle(td){
-      if(!td) return;
-      const status = S.safeText(td.dataset.status).toUpperCase();
-      if(status){ td.title = status; }
-      else { td.removeAttribute('title'); }
-      td.removeAttribute('aria-disabled');
-    }
-    function applyLiveLocks(){
-      els.tbodyRows.querySelectorAll('td[data-field]').forEach(td => {
-        const cellKey = makeCellKey(td.dataset.date, td.dataset.utilaj, td.dataset.field);
-        const lock = state.live.locks[cellKey];
-        const isMine = state.live.editingCell === cellKey;
-        td.classList.toggle('cell-locked', !!lock && !isMine);
-        td.classList.toggle('cell-lock-mine', !!isMine);
-        if(lock && !isMine){
-          td.title = 'Blocat temporar: ' + lock.label;
-          td.setAttribute('aria-disabled', 'true');
-        }else{
-          restoreCellTitle(td);
-        }
-      });
-    }
     function getYears(){
       const years = Array.from(new Set((state.rows || []).map(r => Number(r.an)).filter(Boolean))).sort((a,b)=>a-b);
       return years.length ? years : [new Date().getFullYear()];
@@ -1132,186 +1087,6 @@
       }
       if(res.error) throw res.error;
       return ts;
-    }
-    function liveTopic(year){
-      return 'rf-planificare-forja-live:' + String(year || '');
-    }
-    function buildPresencePayload(){
-      return {
-        clientKey: state.live.clientKey,
-        userId: S.safeText(state.user && state.user.id),
-        label: currentUserLabel(),
-        role: state.role,
-        editingCell: state.live.editingCell || '',
-        updatedAt: new Date().toISOString()
-      };
-    }
-    async function syncPresence(){
-      if(!state.live.channel || !state.live.connected) return;
-      try{
-        await state.live.channel.track(buildPresencePayload());
-      }catch(err){
-        console.warn('Presence track failed', err);
-      }
-    }
-    function refreshLocksFromPresence(){
-      const nextLocks = Object.create(null);
-      try{
-        const current = (state.live.channel && typeof state.live.channel.presenceState === 'function') ? state.live.channel.presenceState() : {};
-        Object.keys(current || {}).forEach(key => {
-          const metas = Array.isArray(current[key]) ? current[key] : [];
-          metas.forEach(meta => {
-            if(!meta) return;
-            const clientKey = S.safeText(meta.clientKey || key);
-            if(!clientKey || clientKey === state.live.clientKey) return;
-            const editingCell = S.safeText(meta.editingCell);
-            if(!editingCell) return;
-            if(!nextLocks[editingCell]){
-              nextLocks[editingCell] = {
-                clientKey,
-                label: S.safeText(meta.label || meta.userId || 'Alt utilizator')
-              };
-            }
-          });
-        });
-      }catch(err){
-        console.warn('Presence sync parse failed', err);
-      }
-      state.live.locks = nextLocks;
-      applyLiveLocks();
-    }
-    async function releaseLiveLock(){
-      const cellKey = state.live.editingCell;
-      if(!cellKey){
-        applyLiveLocks();
-        return;
-      }
-      state.live.editingCell = '';
-      await syncPresence();
-      void sendLiveEvent('cell_unlock', {
-        clientKey: state.live.clientKey,
-        cellKey
-      });
-      applyLiveLocks();
-    }
-    async function disconnectLiveChannel(){
-      const channel = state.live.channel;
-      state.live.channel = null;
-      state.live.connected = false;
-      state.live.topic = '';
-      state.live.locks = Object.create(null);
-      if(!channel) return;
-      try{ await channel.untrack(); }catch(_e){}
-      try{ await channel.unsubscribe(); }catch(_e){}
-      try{
-        if(state.supabase && typeof state.supabase.removeChannel === 'function'){
-          await state.supabase.removeChannel(channel);
-        }
-      }catch(_e){}
-    }
-    async function sendLiveEvent(event, payload){
-      if(!state.live.channel || !state.live.connected) return;
-      try{
-        await state.live.channel.send({
-          type: 'broadcast',
-          event,
-          payload
-        });
-      }catch(err){
-        console.warn('Broadcast failed', err);
-      }
-    }
-    function applyRemoteLock(payload){
-      if(!payload) return;
-      const clientKey = S.safeText(payload.clientKey);
-      const cellKey = S.safeText(payload.cellKey);
-      if(!clientKey || clientKey === state.live.clientKey || !cellKey) return;
-      state.live.locks[cellKey] = {
-        clientKey,
-        label: S.safeText(payload.userLabel || 'Alt utilizator')
-      };
-      applyLiveLocks();
-    }
-    function applyRemoteUnlock(payload){
-      if(!payload) return;
-      const clientKey = S.safeText(payload.clientKey);
-      const cellKey = S.safeText(payload.cellKey);
-      if(!clientKey || clientKey === state.live.clientKey || !cellKey) return;
-      const current = state.live.locks[cellKey];
-      if(current && current.clientKey === clientKey){
-        delete state.live.locks[cellKey];
-        applyLiveLocks();
-      }
-    }
-    function applyRemoteCellPatch(payload){
-      if(!payload) return;
-      if(S.safeText(payload.clientKey) === state.live.clientKey) return;
-      const data = S.safeText(payload.data);
-      const utilaj = S.safeText(payload.utilaj);
-      const field = S.safeText(payload.field);
-      const row = findRow(data);
-      if(!row || !row.slots[utilaj]) return;
-      if(field === 'reper'){ row.slots[utilaj].reper = S.safeText(payload.value); }
-      else if(field === 'planificat'){ row.slots[utilaj].planificat = S.numClean(payload.value || 0); }
-      state.updatedAt = payload.updatedAt || new Date().toISOString();
-      invalidateCalc();
-      S.cachePayload(S.buildSavePayload(state.rows, state.updatedAt));
-      if(state.live.editingCell){
-        state.live.pendingRemoteRender = true;
-        return;
-      }
-      setPendingScrollFromCurrent();
-      render();
-    }
-    function applyRemoteYearReset(payload){
-      if(!payload) return;
-      if(S.safeText(payload.clientKey) === state.live.clientKey) return;
-      const targetYear = Number(payload.year || 0);
-      if(!targetYear) return;
-      const keep = (state.rows || []).filter(r => Number(r.an) !== targetYear);
-      const reset = S.hydrateRowsFromPayload(null).filter(r => Number(r.an) === targetYear);
-      state.rows = keep.concat(reset).sort((a,b)=> String(a.data).localeCompare(String(b.data)));
-      state.updatedAt = payload.updatedAt || new Date().toISOString();
-      invalidateCalc();
-      S.cachePayload(S.buildSavePayload(state.rows, state.updatedAt));
-      if(state.live.editingCell){
-        state.live.pendingRemoteRender = true;
-        return;
-      }
-      state.pendingScroll = { top:0, left:0 };
-      renderYearOptions();
-      render();
-    }
-    async function connectLiveChannel(year){
-      if(!state.supabase || typeof state.supabase.channel !== 'function') return;
-      await disconnectLiveChannel();
-      const topic = liveTopic(year);
-      const channel = state.supabase.channel(topic, {
-        config: {
-          presence: { key: state.live.clientKey }
-        }
-      });
-      state.live.channel = channel;
-      state.live.topic = topic;
-      channel
-        .on('presence', { event: 'sync' }, refreshLocksFromPresence)
-        .on('broadcast', { event: 'cell_lock' }, ({ payload }) => applyRemoteLock(payload))
-        .on('broadcast', { event: 'cell_unlock' }, ({ payload }) => applyRemoteUnlock(payload))
-        .on('broadcast', { event: 'cell_patch' }, ({ payload }) => applyRemoteCellPatch(payload))
-        .on('broadcast', { event: 'year_reset' }, ({ payload }) => applyRemoteYearReset(payload));
-      channel.subscribe(async (status) => {
-        if(status === 'SUBSCRIBED'){
-          state.live.connected = true;
-          await syncPresence();
-          refreshLocksFromPresence();
-          return;
-        }
-        if(status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED'){
-          state.live.connected = false;
-          state.live.locks = Object.create(null);
-          applyLiveLocks();
-        }
-      });
     }
     function applyPayload(payload, updatedAt){
       state.rows = S.hydrateRowsFromPayload(payload);
@@ -1401,21 +1176,56 @@
     }
     function uniqueDocs(docs){ const m=new Map(); (Array.isArray(docs)?docs:[]).forEach(d=>{ if(d && d.doc_key && !m.has(d.doc_key)) m.set(d.doc_key,d); }); return [...m.values()]; }
     function excludeIndexDocs(docs){ return (Array.isArray(docs)?docs:[]).filter(doc => !String(doc.doc_key || '').toLowerCase().endsWith(':index')); }
+    function pickArrayIndexes(row, indexes){
+      if(!Array.isArray(row)) return '';
+      for(const idx of indexes){
+        const v = row[idx];
+        if(v !== undefined && v !== null && v !== '') return v;
+      }
+      return '';
+    }
     function normalizeInitialRow(row){
+      if(Array.isArray(row)){
+        return {
+          diam: String(pickArrayIndexes(row,[4]) || '').trim(),
+          cal: String(pickArrayIndexes(row,[5]) || '').trim(),
+          qty: S.toNum(pickArrayIndexes(row,[3]))
+        };
+      }
       return {
         diam: String(pick(row,['diametru','diametru otel','diametru_otel','Diametru otel','Diametru']) || '').trim(),
         cal: String(pick(row,['calitate','calitate otel','calitate_otel','Calitate otel','Calitate']) || '').trim(),
-        qty: S.toNum(pick(row,['cantitateKg','cantitate','cantitate kg','cantitate_kg','kg','stoc initial','stoc_initial']))
+        qty: S.toNum(pick(row,['cantitateKg','cantitate','cantitate kg','cantitate_kg','kg','stoc initial','stoc_initial','Stoc Otel (Kg)','stoc actual (kg)','Stoc actual (kg)']))
       };
     }
     function normalizeEntryRow(row){
+      if(Array.isArray(row)){
+        return {
+          diam: String(pickArrayIndexes(row,[3]) || '').trim(),
+          cal: String(pickArrayIndexes(row,[4]) || '').trim(),
+          qty: S.toNum(pickArrayIndexes(row,[7]))
+        };
+      }
       return {
-        diam: String(pick(row,['diametru','diametru otel','diametru_otel','dimensiune otel','Dimensiune Oțel','Diametru']) || '').trim(),
-        cal: String(pick(row,['calitate','calitate otel','calitate_otel','Calitate Oțel','Calitate']) || '').trim(),
-        qty: S.toNum(pick(row,['cantitate','cantitate kg','cantitate_kg','kg','H']))
+        diam: String(pick(row,['diametru','diametru otel','diametru_otel','dimensiune otel','Dimensiune Oțel','Dimensiune Otel','Diametru']) || '').trim(),
+        cal: String(pick(row,['calitate','calitate otel','calitate_otel','Calitate Oțel','Calitate Otel','Calitate']) || '').trim(),
+        qty: S.toNum(pick(row,['cantitate','cantitate in kg','cantitate kg','cantitate_kg','kg','Cantitate in KG','H']))
       };
     }
     function normalizeConsumptionRow(row){
+      if(Array.isArray(row)){
+        let qty = S.toNum(pickArrayIndexes(row,[12]));
+        if(!qty){
+          const kgBuc = S.toNum(pickArrayIndexes(row,[7]));
+          const buc = S.toNum(pickArrayIndexes(row,[10]));
+          qty = kgBuc * buc;
+        }
+        return {
+          diam: String(pickArrayIndexes(row,[5]) || '').trim(),
+          cal: String(pickArrayIndexes(row,[6]) || '').trim(),
+          qty
+        };
+      }
       let qty = S.toNum(pick(row,['total kg debitat','total_kg_debitat','totalKgDebitat','cantitate kg','cantitate_kg','kg']));
       if(!qty){
         const kgBuc = S.toNum(pick(row,['kg/buc','kg buc','kg_buc','Kg/buc','H']));
@@ -1423,12 +1233,21 @@
         qty = kgBuc * buc;
       }
       return {
-        diam: String(pick(row,['diametru','diametru otel','diametru_otel','Diametru Oțel','Diametru']) || '').trim(),
-        cal: String(pick(row,['calitate','calitate otel','calitate_otel','Calitate Oțel','Calitate']) || '').trim(),
+        diam: String(pick(row,['diametru','diametru otel','diametru_otel','Diametru Oțel','Diametru Otel','Diametru']) || '').trim(),
+        cal: String(pick(row,['calitate','calitate otel','calitate_otel','Calitate Oțel','Calitate Otel','Calitate']) || '').trim(),
         qty
       };
     }
     function normalizeDebInventoryRow(row, index){
+      if(Array.isArray(row)){
+        return {
+          _index:index,
+          reper: String(pickArrayIndexes(row,[2]) || '').trim(),
+          qty: Math.round(S.toNum(pickArrayIndexes(row,[5]))),
+          data: '',
+          an: String(pickArrayIndexes(row,[0]) || '').trim()
+        };
+      }
       return {
         _index:index,
         reper: String(pick(row,['reper','REPER','Reper','denumire reper debitare','Denumire reper debitare']) || '').trim(),
@@ -1437,7 +1256,7 @@
         an: String(pick(row,['an','anul','year','AN','Year','Anul']) || '').trim()
       };
     }
-    function shouldReplaceDeb(existing, candidate){
+        function shouldReplaceDeb(existing, candidate){
       if(!candidate) return false;
       if(!existing) return true;
       const cd = dateScore(candidate.data), ed = dateScore(existing.data);
@@ -1448,15 +1267,20 @@
     }
     async function loadInventoryStocks(){
       const initialDocs = await queryDocsByKeys(['stoc-initial-otel','stoc_initial_otel','inventar-otel-initial','inventar_otel_initial']);
+      const inventoryDocs = uniqueDocs(excludeIndexDocs([...(await queryDocsByKeys(['inventar-otel','inventar_otel'])), ...(await queryDocsByPrefixes(['inventar-otel','inventar_otel']))]));
       const entryDocs = uniqueDocs(excludeIndexDocs([...(await queryDocsByKeys(['intrari-otel','intrari_otel','intrari otel'])), ...(await queryDocsByPrefixes(['intrari-otel','intrari_otel']))]));
       const consDocs = uniqueDocs(excludeIndexDocs([...(await queryDocsByKeys(['debitate','debitari'])), ...(await queryDocsByPrefixes(['debitate','debitari']))]));
       const debInvDocs = uniqueDocs(excludeIndexDocs([...(await queryDocsByKeys(['inventar-debitat','inventar_debitat'])), ...(await queryDocsByPrefixes(['inventar-debitat','inventar_debitat','stoc-initial-debitat','stoc_initial_debitat']))]));
 
       const steelByMaterial = Object.create(null);
       const bump = (key, delta) => { if(!key) return; steelByMaterial[key] = S.toNum(steelByMaterial[key]) + S.toNum(delta); };
-      initialDocs.flatMap(doc => extractRows(doc.content || doc.data || doc)).map(normalizeInitialRow).forEach(r => bump(normKey(`${r.diam}|${r.cal}`), r.qty));
-      entryDocs.flatMap(doc => extractRows(doc.content || doc.data || doc)).map(normalizeEntryRow).forEach(r => bump(normKey(`${r.diam}|${r.cal}`), r.qty));
-      consDocs.flatMap(doc => extractRows(doc.content || doc.data || doc)).map(normalizeConsumptionRow).forEach(r => bump(normKey(`${r.diam}|${r.cal}`), -r.qty));
+      const useInventorySnapshot = !initialDocs.length && inventoryDocs.length;
+      const baseSteelDocs = useInventorySnapshot ? inventoryDocs : initialDocs;
+      baseSteelDocs.flatMap(doc => extractRows(doc.content || doc.data || doc)).map(normalizeInitialRow).forEach(r => bump(normKey(`${r.diam}|${r.cal}`), r.qty));
+      if(!useInventorySnapshot){
+        entryDocs.flatMap(doc => extractRows(doc.content || doc.data || doc)).map(normalizeEntryRow).forEach(r => bump(normKey(`${r.diam}|${r.cal}`), r.qty));
+        consDocs.flatMap(doc => extractRows(doc.content || doc.data || doc)).map(normalizeConsumptionRow).forEach(r => bump(normKey(`${r.diam}|${r.cal}`), -r.qty));
+      }
 
       const latestDeb = new Map();
       debInvDocs.flatMap(doc => extractRows(doc.content || doc.data || doc)).forEach((raw, index) => {
@@ -1597,7 +1421,6 @@
 
       bindRowHover();
       bindEditors();
-      applyLiveLocks();
       restoreScrollPosition(state.pendingScroll);
       state.pendingScroll = null;
       markSaveInfo(state.updatedAt ? ('Salvat: ' + new Date(state.updatedAt).toLocaleString('ro-RO')) : 'Model Excel încărcat');
@@ -1616,8 +1439,7 @@
       });
     }
     function findRow(data){ return state.rows.find(r => r.data === data); }
-    function commitCell(data, utilaj, field, value, options){
-      const opts = options || {};
+    function commitCell(data, utilaj, field, value){
       const row = findRow(data);
       if(!row) return;
       const slot = row.slots[utilaj];
@@ -1627,27 +1449,15 @@
       } else if(field === 'planificat'){
         slot.planificat = S.numClean(value || 0);
       }
-      state.updatedAt = opts.updatedAt || new Date().toISOString();
+      state.updatedAt = new Date().toISOString();
       invalidateCalc();
       const payload = S.buildSavePayload(state.rows, state.updatedAt);
       S.cachePayload(payload);
-      if(opts.save !== false) scheduleSave(payload);
-      if(opts.broadcast !== false){
-        void sendLiveEvent('cell_patch', {
-          clientKey: state.live.clientKey,
-          userLabel: currentUserLabel(),
-          year: state.activeYear,
-          data,
-          utilaj,
-          field,
-          value: field === 'reper' ? S.safeText(value) : S.numClean(value || 0),
-          updatedAt: state.updatedAt
-        });
-      }
+      scheduleSave(payload);
       setPendingScrollFromCurrent();
       render();
     }
-    async function openEditor(td){
+    function openEditor(td){
       if(!state.canEdit) return;
       if(td.querySelector('input')) return;
       const data = td.dataset.date;
@@ -1655,21 +1465,6 @@
       const field = td.dataset.field;
       const row = findRow(data);
       if(!row) return;
-      const cellKey = makeCellKey(data, utilaj, field);
-      const lock = state.live.locks[cellKey];
-      if(lock){
-        markSaveInfo('Celula este blocată temporar de ' + lock.label);
-        applyLiveLocks();
-        return;
-      }
-      state.live.editingCell = cellKey;
-      applyLiveLocks();
-      await syncPresence();
-      void sendLiveEvent('cell_lock', {
-        clientKey: state.live.clientKey,
-        cellKey,
-        userLabel: currentUserLabel()
-      });
       const slot = row.slots[utilaj];
       const current = field === 'reper' ? (slot.reper || '') : String(slot.planificat || '');
       const input = document.createElement('input');
@@ -1686,34 +1481,20 @@
       td.appendChild(input);
       input.focus();
       input.select();
-      let done = false;
-      const finish = async (save) => {
-        if(done) return;
-        done = true;
+      const finish = (save) => {
         const next = save ? input.value : current;
-        if(save){
-          commitCell(data, utilaj, field, next);
-        }else{
-          setPendingScrollFromCurrent();
-          render();
-        }
-        await releaseLiveLock();
-        if(state.live.pendingRemoteRender){
-          state.live.pendingRemoteRender = false;
-          setPendingScrollFromCurrent();
-          render();
-        }
+        commitCell(data, utilaj, field, next);
       };
       input.addEventListener('keydown', ev => {
-        if(ev.key === 'Enter'){ ev.preventDefault(); void finish(true); }
-        if(ev.key === 'Escape'){ ev.preventDefault(); void finish(false); }
+        if(ev.key === 'Enter'){ ev.preventDefault(); finish(true); }
+        if(ev.key === 'Escape'){ ev.preventDefault(); setPendingScrollFromCurrent(); render(); }
       });
-      input.addEventListener('blur', () => { void finish(true); }, { once:true });
+      input.addEventListener('blur', () => finish(true), { once:true });
     }
     function bindEditors(){
       if(!state.canEdit) return;
       els.tbodyRows.querySelectorAll('td[data-field]').forEach(td => {
-        td.addEventListener('dblclick', () => { void openEditor(td); });
+        td.addEventListener('dblclick', () => openEditor(td));
       });
     }
     function scheduleSave(payload){
@@ -1728,7 +1509,7 @@
           console.error(err);
           markSaveInfo('Eroare la salvare');
         }
-      }, 800);
+      }, 250);
     }
     function renderYearOptions(){
       const years = getYears();
@@ -1738,23 +1519,14 @@
     }
     async function changeYear(year){
       saveScrollPosition();
-      if(document.activeElement && document.activeElement.classList && document.activeElement.classList.contains('cell-editor')){
-        document.activeElement.blur();
-      }
-      await releaseLiveLock();
       state.activeYear = Number(year);
       state.calcByYear.delete(state.activeYear);
       await loadForjateSummary(state.activeYear);
-      await connectLiveChannel(state.activeYear);
       renderYearOptions();
       render();
       restoreScrollPosition();
     }
-    async function resetYearToSeed(){
-      if(document.activeElement && document.activeElement.classList && document.activeElement.classList.contains('cell-editor')){
-        document.activeElement.blur();
-      }
-      await releaseLiveLock();
+    function resetYearToSeed(){
       const keep = (state.rows || []).filter(r => Number(r.an) !== Number(state.activeYear));
       const reset = S.hydrateRowsFromPayload(null).filter(r => Number(r.an) === Number(state.activeYear));
       state.rows = keep.concat(reset).sort((a,b)=> String(a.data).localeCompare(String(b.data)));
@@ -1763,11 +1535,6 @@
       const payload = S.buildSavePayload(state.rows, state.updatedAt);
       S.cachePayload(payload);
       scheduleSave(payload);
-      void sendLiveEvent('year_reset', {
-        clientKey: state.live.clientKey,
-        year: state.activeYear,
-        updatedAt: state.updatedAt
-      });
       state.pendingScroll = { top:0, left:0 };
       renderYearOptions();
       render();
@@ -1789,7 +1556,6 @@
         state.activeYear = years.includes(queryYear) ? queryYear : (years.includes(new Date().getFullYear()) ? new Date().getFullYear() : years[0]);
         renderYearOptions();
         await loadForjateSummary(state.activeYear);
-        await connectLiveChannel(state.activeYear);
         render();
         restoreScrollPosition();
       }catch(err){
@@ -1799,17 +1565,12 @@
     }
 
     els.sheetWrap.addEventListener('scroll', saveScrollPosition, { passive:true });
-    els.yearSelect.addEventListener('change', () => { void changeYear(els.yearSelect.value); });
-    els.btnReset.addEventListener('click', () => { void resetYearToSeed(); });
+    els.yearSelect.addEventListener('change', () => changeYear(els.yearSelect.value));
+    els.btnReset.addEventListener('click', resetYearToSeed);
     els.btnCalc.addEventListener('click', openCalcPage);
     els.btnLogout.addEventListener('click', async () => {
-      try{ await releaseLiveLock(); } catch(_e){}
-      try{ await disconnectLiveChannel(); } catch(_e){}
       try{ await window.ERPAuth.signOut(); } catch(_e){}
       window.location.href = 'login.html';
-    });
-    window.addEventListener('pagehide', () => {
-      try{ if(state.live.channel){ state.live.channel.untrack(); } }catch(_e){}
     });
 
     bootstrap();
