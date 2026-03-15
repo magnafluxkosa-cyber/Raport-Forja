@@ -1,8 +1,7 @@
 <!doctype html>
 <html lang="ro">
 <head>
-  <!-- PF_BUILD: STEP4B_2026-03-15_18-35 -->
-
+  <!-- PF_BUILD: STEP4C_2026-03-15_19-25 -->
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Planificare Forjă</title>
@@ -1014,9 +1013,7 @@
       pendingScroll: null,
       updatedAt: null,
       externalRefreshTimer: null,
-      lastExternalRefreshAt: 0,
-      isEditingCell: false,
-      pendingExternalRefreshReason: ''
+      lastExternalRefreshAt: 0
     };
 
     function scrollKey(year){ return 'rf_planificare_forja_scroll_' + String(year || ''); }
@@ -1208,18 +1205,23 @@ function rowTsFromAny(row){
   const ts = iso ? Date.parse(iso + 'T00:00:00Z') : 0;
   return Number.isFinite(ts) ? ts : 0;
 }
-function normalizeSteelSnapshotRow(row, index){
+function docTs(doc){
+  const raw = (doc && (doc.updated_at || doc.updatedAt || (doc.content && doc.content.updated_at) || (doc.data && doc.data.updated_at))) || '';
+  const ts = raw ? Date.parse(String(raw)) : 0;
+  return Number.isFinite(ts) ? ts : 0;
+}
+function normalizeSteelSnapshotRow(row, index, snapshotTs){
   return {
     _index:index,
     key: S.materialKeyFromValues(
       pick(row,['diametru','diametru_otel','diametru otel','dimensiune otel','Dimensiune OTEL','Diametru Oțel','Diametru']),
       pick(row,['calitate','calitate_otel','calitate otel','Calitate Otel','Calitate Oțel','Calitate'])
     ),
-    qty: S.toNum(pick(row,['cantitateKg','Stoc Otel (Kg)','stoc otel (kg)','stoc actual (kg)','stockKg','cantitate','cantitate kg','cantitate_kg','stoc initial','stoc_initial','kg'])),
-    ts: rowTsFromAny(row)
+    qty: S.toNum(pick(row,['cantitateKg','Stoc Otel (Kg)','stoc otel (kg)','stoc actual (kg)','stockKg','kg'])),
+    ts: Number(snapshotTs || 0)
   };
 }
-function normalizeEntryStockRow(row, index){
+function normalizeEntryStockRow(row, index, sourceTs){
   return {
     _index:index,
     key: S.materialKeyFromValues(
@@ -1227,10 +1229,10 @@ function normalizeEntryStockRow(row, index){
       pick(row,['calitate','calitate_otel','calitate otel','Calitate Otel','Calitate Oțel','Calitate'])
     ),
     qty: S.toNum(pick(row,['cantitate','cantitate in kg','cantitate kg','cantitate_kg','kg','H'])),
-    ts: rowTsFromAny(row)
+    ts: Number(sourceTs || 0)
   };
 }
-function normalizeConsumptionStockRow(row, index){
+function normalizeConsumptionStockRow(row, index, sourceTs){
   let qty = S.toNum(pick(row,['total kg debitat','total_kg_debitat','totalKgDebitat','total kg','cantitate kg','cantitate_kg','kg','totalkgdebitat']));
   if(!qty){
     const kgBuc = S.toNum(pick(row,['kg/buc','kg buc','kg_buc','Kg/buc','kg/buc.','Kg/Buc','H']));
@@ -1244,33 +1246,33 @@ function normalizeConsumptionStockRow(row, index){
       pick(row,['calitate','calitate_otel','calitate otel','Calitate Otel','Calitate'])
     ),
     qty,
-    ts: rowTsFromAny(row)
+    ts: Number(sourceTs || 0)
   };
 }
-function normalizeDebInventoryBaselineRow(row, index){
+function normalizeDebInventoryBaselineRow(row, index, snapshotTs){
   return {
     _index:index,
     key: S.reperGroupKey(pick(row,['reper','REPER','Reper','denumire reper debitare','Denumire reper debitare'])),
     qty: Math.round(S.toNum(pick(row,['cantitateBuc','STOC DEBITATE FINAL (buc)','Stoc debitate final (buc)','Stoc Debitat (Buc)','buc']))),
-    ts: rowTsFromAny(row)
+    ts: Number(snapshotTs || 0)
   };
 }
-function normalizeDebitareProductionRow(row, index){
+function normalizeDebitareProductionRow(row, index, sourceTs){
   return {
     _index:index,
     key: S.reperGroupKey(pick(row,['reper','REPER','Reper','reper debitare','denumire reper debitare','Denumire reper debitare'])),
     qty: Math.round(S.toNum(pick(row,['cantitate','cantitate buc','cantitate_buc','J','buc']))),
-    ts: rowTsFromAny(row)
+    ts: Number(sourceTs || 0)
   };
 }
-function normalizeForjateConsumptionRow(row, index){
+function normalizeForjateConsumptionRow(row, index, sourceTs){
   const reperForjat = pick(row,['reper','REPER','Reper','reper_forjat','REPER_FORJAT']);
   const mapped = state.helperMaps?.byForjat?.get(S.normUpper(reperForjat));
   return {
     _index:index,
     key: S.reperGroupKey((mapped && mapped.reper_debitare) || pick(row,['reper_debitare','REPER_DEBITARE']) || reperForjat),
-    qty: Math.round(S.toNum(pick(row,['buc_realizate','BUC_REALIZATE','cantitate','CANTITATE','realizat','REALIZAT','buc']))),
-    ts: rowTsFromAny(row)
+    qty: Math.round(S.toNum(pick(row,['buc_realizate','BUC_REALIZATE','Buc realizate','cantitate','CANTITATE','realizat','REALIZAT','buc']))),
+    ts: Number(sourceTs || 0)
   };
 }
 function shouldReplaceBaseline(existing, candidate){
@@ -1281,8 +1283,8 @@ function shouldReplaceBaseline(existing, candidate){
 }
 async function loadInventoryStocks(){
   const steelBaseDocs = uniqueDocs(excludeIndexDocs([
-    ...(await queryDocsByKeys(['stoc-initial-otel','stoc_initial_otel','inventar-otel'])),
-    ...(await queryDocsByPrefixes(['stoc-initial-otel','stoc_initial_otel','inventar-otel']))
+    ...(await queryDocsByKeys(['inventar-otel'])),
+    ...(await queryDocsByPrefixes(['inventar-otel']))
   ]));
   const entryDocs = uniqueDocs(excludeIndexDocs([
     ...(await queryDocsByKeys(['intrari-otel','intrari_otel','intrari otel'])),
@@ -1301,49 +1303,66 @@ async function loadInventoryStocks(){
     ...(await queryDocsByPrefixes(['forjate']))
   ]));
 
-  const steelBaselineQty = Object.create(null);
-  const steelBaselineTs = Object.create(null);
-  steelBaseDocs.flatMap(doc => extractRows(doc.content || doc.data || doc)).forEach((raw, index) => {
-    const row = normalizeSteelSnapshotRow(raw, index);
-    if(!row.key) return;
-    steelBaselineQty[row.key] = S.toNum(steelBaselineQty[row.key]) + S.toNum(row.qty);
-    steelBaselineTs[row.key] = Math.max(S.toNum(steelBaselineTs[row.key]), S.toNum(row.ts));
+  const steelBaseline = new Map();
+  steelBaseDocs.forEach(doc => {
+    const ts = docTs(doc);
+    extractRows(doc.content || doc.data || doc).forEach((raw, index) => {
+      const row = normalizeSteelSnapshotRow(raw, index, ts);
+      if(!row.key) return;
+      const existing = steelBaseline.get(row.key);
+      if(shouldReplaceBaseline(existing, row)) steelBaseline.set(row.key, row);
+    });
   });
   const steelByMaterial = Object.create(null);
-  Object.keys(steelBaselineQty).forEach(key => { steelByMaterial[key] = S.toNum(steelBaselineQty[key]); });
-  entryDocs.flatMap(doc => extractRows(doc.content || doc.data || doc)).forEach((raw, index) => {
-    const row = normalizeEntryStockRow(raw, index);
-    if(!row.key) return;
-    const baseTs = S.toNum(steelBaselineTs[row.key]);
-    if(!baseTs || row.ts >= baseTs) steelByMaterial[row.key] = S.toNum(steelByMaterial[row.key]) + S.toNum(row.qty);
+  steelBaseline.forEach((row, key) => { steelByMaterial[key] = S.toNum(row.qty); });
+  entryDocs.forEach(doc => {
+    const ts = docTs(doc);
+    extractRows(doc.content || doc.data || doc).forEach((raw, index) => {
+      const row = normalizeEntryStockRow(raw, index, ts);
+      if(!row.key) return;
+      const base = steelBaseline.get(row.key);
+      if(!base || row.ts > base.ts) steelByMaterial[row.key] = S.toNum(steelByMaterial[row.key]) + S.toNum(row.qty);
+    });
   });
-  consDocs.flatMap(doc => extractRows(doc.content || doc.data || doc)).forEach((raw, index) => {
-    const row = normalizeConsumptionStockRow(raw, index);
-    if(!row.key) return;
-    const baseTs = S.toNum(steelBaselineTs[row.key]);
-    if(!baseTs || row.ts >= baseTs) steelByMaterial[row.key] = S.toNum(steelByMaterial[row.key]) - S.toNum(row.qty);
+  consDocs.forEach(doc => {
+    const ts = docTs(doc);
+    extractRows(doc.content || doc.data || doc).forEach((raw, index) => {
+      const row = normalizeConsumptionStockRow(raw, index, ts);
+      if(!row.key) return;
+      const base = steelBaseline.get(row.key);
+      if(!base || row.ts > base.ts) steelByMaterial[row.key] = S.toNum(steelByMaterial[row.key]) - S.toNum(row.qty);
+    });
   });
 
   const debBaseline = new Map();
-  debBaseDocs.flatMap(doc => extractRows(doc.content || doc.data || doc)).forEach((raw, index) => {
-    const row = normalizeDebInventoryBaselineRow(raw, index);
-    if(!row.key) return;
-    const existing = debBaseline.get(row.key);
-    if(shouldReplaceBaseline(existing, row)) debBaseline.set(row.key, row);
+  debBaseDocs.forEach(doc => {
+    const ts = docTs(doc);
+    extractRows(doc.content || doc.data || doc).forEach((raw, index) => {
+      const row = normalizeDebInventoryBaselineRow(raw, index, ts);
+      if(!row.key) return;
+      const existing = debBaseline.get(row.key);
+      if(shouldReplaceBaseline(existing, row)) debBaseline.set(row.key, row);
+    });
   });
   const debByReper = Object.create(null);
   debBaseline.forEach((row, key) => { debByReper[key] = Math.max(0, S.toNum(row.qty)); });
-  consDocs.flatMap(doc => extractRows(doc.content || doc.data || doc)).forEach((raw, index) => {
-    const row = normalizeDebitareProductionRow(raw, index);
-    if(!row.key) return;
-    const base = debBaseline.get(row.key);
-    if(!base || row.ts >= base.ts) debByReper[row.key] = Math.max(0, S.toNum(debByReper[row.key]) + S.toNum(row.qty));
+  consDocs.forEach(doc => {
+    const ts = docTs(doc);
+    extractRows(doc.content || doc.data || doc).forEach((raw, index) => {
+      const row = normalizeDebitareProductionRow(raw, index, ts);
+      if(!row.key) return;
+      const base = debBaseline.get(row.key);
+      if(!base || row.ts > base.ts) debByReper[row.key] = Math.max(0, S.toNum(debByReper[row.key]) + S.toNum(row.qty));
+    });
   });
-  forjateDocs.flatMap(doc => extractRows(doc.content || doc.data || doc)).forEach((raw, index) => {
-    const row = normalizeForjateConsumptionRow(raw, index);
-    if(!row.key) return;
-    const base = debBaseline.get(row.key);
-    if(!base || row.ts >= base.ts) debByReper[row.key] = Math.max(0, S.toNum(debByReper[row.key]) - S.toNum(row.qty));
+  forjateDocs.forEach(doc => {
+    const ts = docTs(doc);
+    extractRows(doc.content || doc.data || doc).forEach((raw, index) => {
+      const row = normalizeForjateConsumptionRow(raw, index, ts);
+      if(!row.key) return;
+      const base = debBaseline.get(row.key);
+      if(!base || row.ts > base.ts) debByReper[row.key] = Math.max(0, S.toNum(debByReper[row.key]) - S.toNum(row.qty));
+    });
   });
 
   state.liveStocks = { steelByMaterial, debByReper };
@@ -1532,30 +1551,15 @@ async function loadInventoryStocks(){
       }
       td.textContent = '';
       td.appendChild(input);
-      state.isEditingCell = true;
       input.focus();
       input.select();
       const finish = (save) => {
-        if(!td.contains(input)) return;
-        state.isEditingCell = false;
         const next = save ? input.value : current;
-        if(save){
-          commitCell(data, utilaj, field, next);
-        } else {
-          setPendingScrollFromCurrent();
-          render();
-        }
-        if(state.pendingExternalRefreshReason){
-          const pendingReason = state.pendingExternalRefreshReason;
-          state.pendingExternalRefreshReason = '';
-          setTimeout(() => {
-            refreshExternalSources(pendingReason).catch(err => console.warn('refreshExternalSources', err));
-          }, 50);
-        }
+        commitCell(data, utilaj, field, next);
       };
       input.addEventListener('keydown', ev => {
         if(ev.key === 'Enter'){ ev.preventDefault(); finish(true); }
-        if(ev.key === 'Escape'){ ev.preventDefault(); finish(false); }
+        if(ev.key === 'Escape'){ ev.preventDefault(); setPendingScrollFromCurrent(); render(); }
       });
       input.addEventListener('blur', () => finish(true), { once:true });
     }
@@ -1615,12 +1619,8 @@ async function loadInventoryStocks(){
 
 
 async function refreshExternalSources(reason = 'Auto'){
-  if(state.isEditingCell){
-    state.pendingExternalRefreshReason = reason || 'Sursă actualizată';
-    return;
-  }
   const now = Date.now();
-  if(now - (state.lastExternalRefreshAt || 0) < 8000) return;
+  if(now - (state.lastExternalRefreshAt || 0) < 2500) return;
   state.lastExternalRefreshAt = now;
   await loadInventoryStocks();
       await loadForjateSummary(state.activeYear || new Date().getFullYear());
@@ -1632,15 +1632,13 @@ async function refreshExternalSources(reason = 'Auto'){
 function startExternalRefreshLoop(){
   stopExternalRefreshLoop();
   state.externalRefreshTimer = setInterval(() => {
-    if(document.hidden || state.isEditingCell) return;
+    if(document.hidden) return;
     refreshExternalSources('Sursă actualizată').catch(err => console.warn('refreshExternalSources', err));
-  }, 20000);
+  }, 5000);
   document.addEventListener('visibilitychange', () => {
-    if(!document.hidden && !state.isEditingCell) refreshExternalSources('Sursă actualizată').catch(err => console.warn('refreshExternalSources', err));
+    if(!document.hidden) refreshExternalSources('Sursă actualizată').catch(err => console.warn('refreshExternalSources', err));
   });
-  window.addEventListener('focus', () => {
-    if(!state.isEditingCell) refreshExternalSources('Sursă actualizată').catch(err => console.warn('refreshExternalSources', err));
-  });
+  window.addEventListener('focus', () => refreshExternalSources('Sursă actualizată').catch(err => console.warn('refreshExternalSources', err)));
 }
 function stopExternalRefreshLoop(){
   if(state.externalRefreshTimer) clearInterval(state.externalRefreshTimer);
