@@ -259,7 +259,8 @@
       hintText: document.getElementById('hintText'),
       footerNote: document.getElementById('footerNote'),
       lockLayer: document.getElementById('lockLayer'),
-      repereList: document.getElementById('repereList')
+      repereList: document.getElementById('repereList'),
+      tooltip: document.getElementById('erpTooltip')
     };
 
     const state = {
@@ -281,7 +282,7 @@
       legacyLoaded: false,
       lastLiveRefreshAt: null,
       helperMaps: { debitByReper:Object.create(null), forjaByReper:Object.create(null), source:'-', loadedAt:'' },
-      stockSupport: { steelKgBySpec:Object.create(null), debitatByReper:Object.create(null), helperOk:false, steelOk:false, debitatOk:false, notes:[] },
+      stockSupport: { steelKgBySpec:Object.create(null), debitatByReper:Object.create(null), helperOk:false, steelOk:false, debitatOk:false, notes:[], steelPeriod:{ year:0, month:0, label:'' }, debitatPeriod:{ year:0, month:0, label:'' }, calcStart:{ year:0, month:0, label:'' } },
       stockCalcByCell: Object.create(null)
     };
 
@@ -580,6 +581,37 @@
       if(!bestYear) return { rows:list, year:0, month:0, label:'' };
       const filtered = list.filter(row => normalizePeriodYear(row) === bestYear && (!bestMonth || normalizePeriodMonth(row) === bestMonth));
       return { rows: filtered.length ? filtered : list, year: bestYear, month: bestMonth, label: bestMonth ? (String(bestYear) + ' / ' + getMonthName(bestMonth)) : String(bestYear) };
+    }
+    function compareYearMonth(aYear, aMonth, bYear, bMonth){
+      const ay = Number(aYear || 0);
+      const am = Number(aMonth || 0);
+      const by = Number(bYear || 0);
+      const bm = Number(bMonth || 0);
+      if(ay !== by) return ay - by;
+      return am - bm;
+    }
+    function maxYearMonth(periodA, periodB){
+      const a = periodA || {};
+      const b = periodB || {};
+      return compareYearMonth(a.year, a.month, b.year, b.month) >= 0 ? a : b;
+    }
+    function getRowPeriod(row){
+      const iso = trimText(row && row.data);
+      const year = Number(trimText(row && row.an) || (iso ? iso.slice(0,4) : 0) || 0);
+      let month = iso ? Number(iso.slice(5,7)) || 0 : 0;
+      if(!month) month = getMonthNumber(row && row.luna);
+      return { year, month };
+    }
+    function rowIsOnOrAfterPeriod(row, period){
+      const p = period || {};
+      if(!p.year) return true;
+      const rowPeriod = getRowPeriod(row);
+      return compareYearMonth(rowPeriod.year, rowPeriod.month, p.year, p.month) >= 0;
+    }
+    function formatPeriodLabel(period){
+      const p = period || {};
+      if(!p.year) return '';
+      return p.month ? (getMonthName(p.month) + ' ' + p.year) : String(p.year);
     }
     function getDefaultPermissions(role){
       const clean = norm(role) || 'viewer';
@@ -964,7 +996,7 @@
         bySpec[specKey] = toNumber(bySpec[specKey]) + row.cantitateKg;
       });
       const src = picked.doc_key || 'stoc-initial-otel';
-      return { map: bySpec, source: latest.label ? (src + ' • ' + latest.label) : src, ok:true, count:useRows.length, period: latest.label };
+      return { map: bySpec, source: latest.label ? (src + ' • ' + latest.label) : src, ok:true, count:useRows.length, period: latest.label, year: latest.year || 0, month: latest.month || 0 };
     }
     function buildDebitatKeysForYear(year){
       const y = trimText(year) || CURRENT_YEAR;
@@ -998,7 +1030,7 @@
         byReper[key] = Math.max(0, Math.round(toNumber(byReper[key]) + row.cantitateBuc));
       });
       const src = picked.doc_key || 'inventar-debitat';
-      return { map: byReper, source: latest.label ? (src + ' • ' + latest.label) : src, ok:true, count:useRows.length, period: latest.label };
+      return { map: byReper, source: latest.label ? (src + ' • ' + latest.label) : src, ok:true, count:useRows.length, period: latest.label, year: latest.year || 0, month: latest.month || 0 };
     }
     async function refreshSupportData(forceRefresh){
       await loadHelperMaps(forceRefresh);
@@ -1010,13 +1042,20 @@
       notes.push('Stoc oțel: ' + (steel.source || '-'));
       notes.push('Stoc debitat: ' + (debitat.source || '-'));
 
+      const steelPeriod = { year: Number(steel.year || 0), month: Number(steel.month || 0), label: trimText(steel.period || '') };
+      const debitatPeriod = { year: Number(debitat.year || 0), month: Number(debitat.month || 0), label: trimText(debitat.period || '') };
+      const calcStart = maxYearMonth(steelPeriod, debitatPeriod);
+
       state.stockSupport = {
         steelKgBySpec: steel.map || Object.create(null),
         debitatByReper: debitat.map || Object.create(null),
         helperOk: !!(Object.keys(state.helperMaps.debitByReper).length || Object.keys(state.helperMaps.forjaByReper).length),
         steelOk: !!steel.ok,
         debitatOk: !!debitat.ok,
-        notes
+        notes,
+        steelPeriod,
+        debitatPeriod,
+        calcStart
       };
     }
 
@@ -1115,14 +1154,26 @@
     function rebuildStockCalculations(){
       state.stockCalcByCell = Object.create(null);
 
-      if(String(state.activeYear) !== CURRENT_YEAR){
-        els.footerNote.textContent = 'REALIZAT este live din Forjate când există document cloud pentru anul selectat. Verificarea stocului se face doar pentru luna curentă, iar anul selectat nu este anul curent.';
+      const calcStart = state.stockSupport && state.stockSupport.calcStart ? state.stockSupport.calcStart : { year:0, month:0, label:'' };
+      if(!calcStart.year){
+        els.footerNote.textContent = 'REALIZAT este live din Forjate când există document cloud pentru anul selectat. Verificarea stocului pornește după ce există un inventar valid în inventar-otel și inventar-debitat.';
         return;
       }
 
-      const monthRows = state.rows
+      const activeYearNum = Number(trimText(state.activeYear) || 0);
+      if(!activeYearNum){
+        els.footerNote.textContent = 'REALIZAT este live din Forjate când există document cloud pentru anul selectat.';
+        return;
+      }
+
+      if(compareYearMonth(activeYearNum, 1, calcStart.year, calcStart.month) < 0){
+        els.footerNote.textContent = 'REALIZAT este live din Forjate când există document cloud pentru anul selectat. Verificarea stocului începe din ' + formatPeriodLabel(calcStart) + ', deci pentru anul selectat încă nu există bază de inventar.';
+        return;
+      }
+
+      const calcRows = state.rows
         .map((row, index) => ({ row, index }))
-        .filter(item => String(item.row.an) === CURRENT_YEAR && norm(item.row.luna) === norm(CURRENT_MONTH_NAME))
+        .filter(item => String(item.row.an) === String(state.activeYear) && rowIsOnOrAfterPeriod(item.row, calcStart))
         .sort((a,b) => {
           if(trimText(a.row.data) !== trimText(b.row.data)) return trimText(a.row.data).localeCompare(trimText(b.row.data));
           if(Number(a.row.row_no || 0) !== Number(b.row.row_no || 0)) return Number(a.row.row_no || 0) - Number(b.row.row_no || 0);
@@ -1132,7 +1183,7 @@
       const steelKgBySpec = Object.assign(Object.create(null), state.stockSupport.steelKgBySpec || {});
       const debitatByReper = Object.assign(Object.create(null), state.stockSupport.debitatByReper || {});
 
-      monthRows.forEach(item => {
+      calcRows.forEach(item => {
         const row = item.row;
         MACHINE_ORDER.forEach(machine => {
           const slot = row.slots[machine] || normalizePlanSlot();
@@ -1220,7 +1271,7 @@
         });
       });
 
-      els.footerNote.textContent = 'REALIZAT este live din Forjate când există document cloud pentru anul selectat. Verificarea stocului pentru ' + CURRENT_MONTH_NAME + ' ' + CURRENT_YEAR + ' folosește ' + state.stockSupport.notes.join(' • ') + '.';
+      els.footerNote.textContent = 'REALIZAT este live din Forjate când există document cloud pentru anul selectat. Verificarea stocului pornește din ' + formatPeriodLabel(calcStart) + ' și continuă până când introduci o lună nouă în inventare. Surse: ' + state.stockSupport.notes.join(' • ') + '.';
     }
 
     function computeOrthodoxEaster(year){
