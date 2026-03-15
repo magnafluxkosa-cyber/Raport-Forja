@@ -298,6 +298,10 @@
     }
 
     function normKey(v){ return S.normUpper(String(v || '').replace(/^Ø/i,'')); }
+    function normalizeMaterialPart(v){
+      return S.normUpper(String(v || '').replace(/^Ø\s*/i,'').replace(/\bMM\b/ig,'').replace(/,/g,'.').replace(/\s+/g,' ').trim());
+    }
+    function materialKey(diam, cal){ return normalizeMaterialPart(diam) + '|' + S.normUpper(String(cal || '')); }
     function extractRows(payload){ return S.extractRowsPayload(payload); }
     function pick(obj, keys){
       if(!obj || typeof obj !== 'object') return '';
@@ -467,41 +471,56 @@
       const masterSteelRows = steelMasterDocs.flatMap(doc => extractRows(doc.content || doc.data || doc)).map(normalizeSteelInventoryRow).filter(r => r.diam || r.cal || r.qty);
       const fallbackSteelRows = steelFallbackDocs.flatMap(doc => extractRows(doc.content || doc.data || doc)).map(normalizeSteelInventoryRow).filter(r => r.diam || r.cal || r.qty);
       const steelBaseRows = masterSteelRows.length ? masterSteelRows : fallbackSteelRows;
-      const steelSnapshot = steelBaseRows.reduce((max, row) => Math.max(max, rowScore(row)), 0);
-      const steelByMaterial = sumRowsByKey(steelBaseRows, row => `${row.diam}|${row.cal}`, row => row.qty);
+      const steelByMaterial = Object.create(null);
+      const steelSnapshotByMaterial = Object.create(null);
+      steelBaseRows.forEach(row => {
+        const key = materialKey(row.diam, row.cal);
+        if(!key || key === '|') return;
+        steelByMaterial[key] = S.toNum(steelByMaterial[key]) + S.toNum(row.qty);
+        steelSnapshotByMaterial[key] = Math.max(S.toNum(steelSnapshotByMaterial[key]), rowScore(row));
+      });
 
       entryDocs
         .flatMap(doc => extractRows(doc.content || doc.data || doc))
         .map(normalizeEntryRow)
-        .filter(row => !steelSnapshot || rowScore(row) > steelSnapshot)
         .forEach(row => {
-          const key = normKey(`${row.diam}|${row.cal}`);
-          if(!key) return;
+          const key = materialKey(row.diam, row.cal);
+          if(!key || key === '|') return;
+          const snap = S.toNum(steelSnapshotByMaterial[key]);
+          if(snap && rowScore(row) <= snap) return;
           steelByMaterial[key] = S.toNum(steelByMaterial[key]) + S.toNum(row.qty);
         });
 
       consDocs
         .flatMap(doc => extractRows(doc.content || doc.data || doc))
         .map(normalizeConsumptionRow)
-        .filter(row => !steelSnapshot || rowScore(row) > steelSnapshot)
         .forEach(row => {
-          const key = normKey(`${row.diam}|${row.cal}`);
-          if(!key) return;
+          const key = materialKey(row.diam, row.cal);
+          if(!key || key === '|') return;
+          const snap = S.toNum(steelSnapshotByMaterial[key]);
+          if(snap && rowScore(row) <= snap) return;
           steelByMaterial[key] = S.toNum(steelByMaterial[key]) - S.toNum(row.qty);
         });
 
       const debBaseRows = debInvDocs.flatMap(doc => extractRows(doc.content || doc.data || doc)).map((raw, index) => normalizeDebInventoryRow(raw, index)).filter(r => r.reper);
-      const debSnapshot = debBaseRows.reduce((max, row) => Math.max(max, rowScore(row)), 0);
-      const debByReper = sumRowsByKey(debBaseRows, row => row.reper, row => Math.max(0, row.qty));
+      const debByReper = Object.create(null);
+      const debSnapshotByReper = Object.create(null);
+      debBaseRows.forEach(row => {
+        const key = normKey(row.reper);
+        if(!key) return;
+        debByReper[key] = S.toNum(debByReper[key]) + Math.max(0, S.toNum(row.qty));
+        debSnapshotByReper[key] = Math.max(S.toNum(debSnapshotByReper[key]), rowScore(row));
+      });
 
       consDocs
         .flatMap(doc => extractRows(doc.content || doc.data || doc))
         .map(normalizeDebitareProducedRow)
         .filter(row => row.reper)
-        .filter(row => !debSnapshot || rowScore(row) > debSnapshot)
         .forEach(row => {
           const key = normKey(row.reper);
           if(!key) return;
+          const snap = S.toNum(debSnapshotByReper[key]);
+          if(snap && rowScore(row) <= snap) return;
           debByReper[key] = S.toNum(debByReper[key]) + Math.max(0, S.toNum(row.qty));
         });
 
@@ -509,12 +528,13 @@
         .flatMap(doc => extractRows(doc.content || doc.data || doc))
         .map(normalizeForjateConsumedRow)
         .filter(row => row.reperForjat && row.qty)
-        .filter(row => !debSnapshot || rowScore(row) > debSnapshot)
         .forEach(row => {
           const meta = state.helperMaps && state.helperMaps.byForjat ? state.helperMaps.byForjat.get(normKey(row.reperForjat)) : null;
           const reperDebitare = (meta && meta.reper_debitare) || '';
           const key = normKey(reperDebitare);
           if(!key) return;
+          const snap = S.toNum(debSnapshotByReper[key]);
+          if(snap && rowScore(row) <= snap) return;
           debByReper[key] = Math.max(0, S.toNum(debByReper[key]) - Math.max(0, S.toNum(row.qty)));
         });
 
@@ -524,8 +544,8 @@
       state.liveStocks = {
         steelByMaterial,
         debByReper,
-        steelSnapshot,
-        debSnapshot,
+        steelSnapshotByMaterial,
+        debSnapshotByReper,
         steelSource: masterSteelRows.length ? 'inventar-otel' : 'stoc-initial-otel'
       };
     }
