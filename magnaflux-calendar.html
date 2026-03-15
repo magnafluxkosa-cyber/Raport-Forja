@@ -676,16 +676,34 @@
       }
 
       function extractRowsFromDocRecord(doc){
-        const payloads = [doc && doc.content, doc && doc.data];
+        const contentRows = extractRowsFromPayload(doc && doc.content);
+        const dataRows = extractRowsFromPayload(doc && doc.data);
         let out = [];
-        for (const payload of payloads) {
-          const rows = extractRowsFromPayload(payload);
-          if (rows.length) out = out.concat(rows);
-        }
-        if (!out.length && doc && doc.content && typeof doc.content === 'object') {
+
+        if (contentRows.length) {
+          out = contentRows.slice();
+        } else if (dataRows.length) {
+          out = dataRows.slice();
+        } else if (doc && doc.content && typeof doc.content === 'object') {
           out = extractRowsFromPayload(doc.content);
         }
-        return out.map((row, idx) => normalizeRow(row, idx, doc && doc.doc_key)).filter(row => row.data && row.controlate >= 0);
+
+        const seen = new Set();
+        return out
+          .map((row, idx) => normalizeRow(row, idx, doc && doc.doc_key))
+          .filter(row => row.data && row.controlate >= 0)
+          .filter(row => {
+            const sig = [
+              row.an || '',
+              normalizeText(row.luna || ''),
+              row.data || '',
+              normalizeText(row.operator || ''),
+              String(row.controlate || 0)
+            ].join('|');
+            if (seen.has(sig)) return false;
+            seen.add(sig);
+            return true;
+          });
       }
 
       function setSyncBadge(text, kind){
@@ -867,6 +885,49 @@
         };
       }
 
+      function extractYearsFromIndexPayload(payload){
+        if (!payload) return [];
+        if (Array.isArray(payload)) return payload.map(v => Number(v)).filter(v => Number.isInteger(v) && v >= 1900 && v <= 2100);
+        if (typeof payload === 'object' && Array.isArray(payload.years)) {
+          return payload.years.map(v => Number(v)).filter(v => Number.isInteger(v) && v >= 1900 && v <= 2100);
+        }
+        return [];
+      }
+
+      async function fetchAvailableYears(){
+        const years = new Set();
+
+        try {
+          const idxDoc = await fetchDocByKey(`${DOC_PREFIX}:index`);
+          [idxDoc && idxDoc.content, idxDoc && idxDoc.data].forEach(payload => {
+            extractYearsFromIndexPayload(payload).forEach(y => years.add(y));
+          });
+        } catch (_err) {}
+
+        try {
+          const res = await state.supabase
+            .from('rf_documents')
+            .select('doc_key')
+            .ilike('doc_key', `${DOC_PREFIX}:%`);
+
+          if (!res.error && Array.isArray(res.data)) {
+            for (const item of res.data) {
+              const m = String(item && item.doc_key || '').match(/^magnaflux:(\d{4})$/i);
+              if (m) years.add(Number(m[1]));
+            }
+          }
+        } catch (_err) {}
+
+        state.rows.forEach(row => {
+          const parts = extractRowDateParts(row);
+          const y = Number((parts && parts.year) || row.an || 0);
+          if (y) years.add(y);
+        });
+
+        const out = Array.from(years).filter(Boolean).sort((a,b) => b - a);
+        state.availableYears = out.length ? out : [new Date().getFullYear()];
+      }
+
       function saveFilters(){
         try {
           localStorage.setItem(FILTERS_KEY, JSON.stringify({ year: state.year, month: state.month }));
@@ -911,14 +972,16 @@
       }
 
       function buildYearOptions(){
-        const years = Array.from(new Set(
-          state.rows
-            .map(row => {
-              const parts = extractRowDateParts(row);
-              return Number((parts && parts.year) || row.an || 0);
-            })
-            .filter(Boolean)
-        )).sort((a,b) => b - a);
+        const years = (Array.isArray(state.availableYears) && state.availableYears.length
+          ? state.availableYears.slice()
+          : Array.from(new Set(
+              state.rows
+                .map(row => {
+                  const parts = extractRowDateParts(row);
+                  return Number((parts && parts.year) || row.an || 0);
+                })
+                .filter(Boolean)
+            )).sort((a,b) => b - a));
         if (!years.length) years.push(new Date().getFullYear());
         el.selYear.innerHTML = years.map(y => `<option value="${y}">${y}</option>`).join('');
       }
@@ -931,8 +994,8 @@
         buildYearOptions();
         buildMonthOptions();
         const saved = loadFilters();
-        let year = saved && saved.year;
-        let month = saved && saved.month;
+        let year = Number(state.year || 0) || Number(saved && saved.year || 0);
+        let month = Number(state.month || 0) || Number(saved && saved.month || 0);
 
         if (!year || !month) {
           const basis = state.latestDateIso ? new Date(state.latestDateIso + 'T00:00:00') : new Date();
@@ -1088,6 +1151,7 @@
         state.usingCloud = sourceLabel === 'cloud';
         state.selectedDocKey = doc && doc.selectedDocKey ? doc.selectedDocKey : MAIN_DOC_KEY;
         state.lastCloudUpdatedAt = doc && doc.updated_at ? doc.updated_at : '';
+        state.loadedYear = Number(state.year || (doc && doc.selectedDocKey && String(doc.selectedDocKey).split(':')[1]) || 0) || null;
         computeLatestDate();
         initializeFilters();
         renderTable();
@@ -1104,6 +1168,7 @@
         }
 
         setSyncBadge('Reîncarcă...', 'warn');
+        await fetchAvailableYears();
         const doc = await fetchMagnafluxDocForYear(state.year);
         if (doc) {
           const rows = extractRowsFromDocRecord(doc);
@@ -1148,6 +1213,10 @@
           await requireSession();
           await resolveRole();
           await resolvePermissions();
+          await fetchAvailableYears();
+          if (!state.year && Array.isArray(state.availableYears) && state.availableYears.length) {
+            state.year = Number(state.availableYears[0]);
+          }
           const doc = await fetchMagnafluxDocForYear(state.year);
           if (doc) {
             const rows = extractRowsFromDocRecord(doc);
