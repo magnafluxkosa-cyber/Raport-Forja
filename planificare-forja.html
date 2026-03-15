@@ -630,15 +630,53 @@
       };
     }
 
-    function updateStatusCards(rows){
-      const totals = rows.reduce((acc, row) => {
+    function slotHasSeedData(slot){
+      const normalized = normalizePlanSlot(slot);
+      return !!trimText(normalized.reper) || normalized.planificat > 0 || normalized.realizat_seed > 0;
+    }
+
+    function shouldHideRepeatedSlot(rows, rowIndex, machine){
+      if(rowIndex <= 0) return false;
+      const row = rows[rowIndex];
+      const prevRow = rows[rowIndex - 1];
+      if(!row || !prevRow) return false;
+      if(trimText(row.data) !== trimText(prevRow.data)) return false;
+      const current = normalizePlanSlot(row.slots[machine]);
+      const previous = normalizePlanSlot(prevRow.slots[machine]);
+      if(!trimText(current.reper) || !trimText(previous.reper)) return false;
+      return trimText(current.reper) === trimText(previous.reper)
+        && Math.max(0, Math.round(toNumber(current.planificat))) === Math.max(0, Math.round(toNumber(previous.planificat)));
+    }
+
+    function getRenderedSlotMeta(rows, rowIndex, machine){
+      const row = rows[rowIndex];
+      const slot = normalizePlanSlot(row && row.slots[machine]);
+      const realized = getRealizedForSlot(row, machine, slot);
+      const repeated = shouldHideRepeatedSlot(rows, rowIndex, machine);
+      const displayReper = repeated ? '' : trimText(slot.reper);
+      const displayPlan = repeated || Math.max(0, Math.round(toNumber(slot.planificat))) <= 0
+        ? ''
+        : String(Math.max(0, Math.round(toNumber(slot.planificat))));
+      const displayRealized = repeated || Math.max(0, Math.round(toNumber(realized.value))) <= 0
+        ? ''
+        : roNumber(realized.value);
+      return { slot, realized, repeated, displayReper, displayPlan, displayRealized };
+    }
+
+    function calculateVisibleTotals(rows){
+      return rows.reduce((acc, row, rowIndex) => {
         MACHINE_ORDER.forEach(machine => {
-          const slot = row.slots[machine] || {};
-          acc.planificat += Math.max(0, Math.round(toNumber(slot.planificat)));
-          acc.realizat += getRealizedForSlot(row, machine, slot).value;
+          const meta = getRenderedSlotMeta(rows, rowIndex, machine);
+          if(meta.repeated) return;
+          acc.planificat += Math.max(0, Math.round(toNumber(meta.slot.planificat)));
+          acc.realizat += Math.max(0, Math.round(toNumber(meta.realized.value)));
         });
         return acc;
       }, { planificat:0, realizat:0 });
+    }
+
+    function updateStatusCards(rows){
+      const totals = calculateVisibleTotals(rows);
 
       const liveMode = state.loadedForjateYears.has(trimText(state.activeYear));
       els.modePill.textContent = liveMode ? 'Realizat live' : 'Model Excel';
@@ -662,19 +700,20 @@
         return;
       }
 
-      els.planBody.innerHTML = rows.map(row => {
+      els.planBody.innerHTML = rows.map((row, rowIndex) => {
         return `<tr>
           <td class="sticky1"><div class="cell-static">${escapeHtml(row.an)}</div></td>
           <td class="sticky2"><div class="cell-static muted">${escapeHtml(isoToDisplay(row.data))}</div></td>
           <td class="sticky3"><div class="cell-static muted">${escapeHtml(row.zi)}</div></td>
           ${MACHINE_ORDER.map(machine => {
-            const slot = row.slots[machine] || normalizePlanSlot();
-            const realized = getRealizedForSlot(row, machine, slot);
+            const meta = getRenderedSlotMeta(rows, rowIndex, machine);
+            const slot = meta.slot;
+            const realized = meta.realized;
             const readOnly = state.canEdit ? '' : ' disabled';
             return `
-              <td><input class="cell-input left" list="repereList" data-row-id="${escapeHtml(row.id)}" data-machine="${escapeHtml(machine)}" data-field="reper" value="${escapeHtml(slot.reper)}"${readOnly}></td>
-              <td><input class="cell-input" type="number" min="0" step="1" data-row-id="${escapeHtml(row.id)}" data-machine="${escapeHtml(machine)}" data-field="planificat" value="${Math.max(0, Math.round(toNumber(slot.planificat)))}"${readOnly}></td>
-              <td><div class="readonly ${realized.source === 'live' ? 'live' : 'seed'}">${roNumber(realized.value)}</div></td>
+              <td><input class="cell-input left" list="repereList" data-row-id="${escapeHtml(row.id)}" data-machine="${escapeHtml(machine)}" data-field="reper" value="${escapeHtml(meta.displayReper)}"${readOnly}></td>
+              <td><input class="cell-input" type="number" min="0" step="1" data-row-id="${escapeHtml(row.id)}" data-machine="${escapeHtml(machine)}" data-field="planificat" value="${escapeHtml(meta.displayPlan)}"${readOnly}></td>
+              <td><div class="readonly ${realized.source === 'live' ? 'live' : 'seed'}">${meta.displayRealized}</div></td>
             `;
           }).join('')}
         </tr>`;
@@ -730,6 +769,18 @@
       }, 650);
     }
 
+    function mergeSlotFromSeed(baseSlot, remoteSlot){
+      const base = normalizePlanSlot(baseSlot);
+      const remote = normalizePlanSlot(remoteSlot);
+      if(!slotHasSeedData(base)) return base;
+      if(!slotHasSeedData(remote)) return base;
+      return {
+        reper: trimText(remote.reper) || trimText(base.reper),
+        planificat: remote.planificat > 0 ? remote.planificat : Math.max(0, Math.round(toNumber(base.planificat))),
+        realizat_seed: remote.realizat_seed > 0 ? remote.realizat_seed : Math.max(0, Math.round(toNumber(base.realizat_seed)))
+      };
+    }
+
     function mergeSeedWithRows(remoteRows){
       const baseRows = cloneSeedRows();
       const normalizedRemote = (remoteRows || []).map(normalizePlanRow);
@@ -740,19 +791,13 @@
         if(row.row_no) indexByRowNo.set(String(row.row_no), index);
       });
 
-      const extraRows = [];
       normalizedRemote.forEach(remoteRow => {
         let index = -1;
         if(remoteRow.row_no && indexByRowNo.has(String(remoteRow.row_no))){
           index = indexByRowNo.get(String(remoteRow.row_no));
         } else {
           index = baseRows.findIndex(baseRow => {
-            if(baseRow.data !== remoteRow.data) return false;
-            return MACHINE_ORDER.every(machine => {
-              const a = normalizePlanSlot(baseRow.slots[machine]);
-              const b = normalizePlanSlot(remoteRow.slots[machine]);
-              return trimText(a.reper) === trimText(b.reper) && Number(a.planificat) === Number(b.planificat);
-            });
+            return baseRow.data === remoteRow.data && Number(baseRow.row_no || 0) === Number(remoteRow.row_no || 0);
           });
         }
 
@@ -761,22 +806,20 @@
           baseRows[index] = {
             ...baseRow,
             id: trimText(remoteRow.id || baseRow.id),
-            row_no: Number(remoteRow.row_no || baseRow.row_no || 0) || 0,
-            an: Number(remoteRow.an || baseRow.an || 0) || 0,
-            luna: trimText(remoteRow.luna || baseRow.luna),
-            data: trimText(remoteRow.data || baseRow.data),
-            zi: trimText(remoteRow.zi || baseRow.zi),
+            row_no: Number(baseRow.row_no || 0) || 0,
+            an: Number(baseRow.an || 0) || 0,
+            luna: trimText(baseRow.luna),
+            data: trimText(baseRow.data),
+            zi: trimText(baseRow.zi),
             slots: MACHINE_ORDER.reduce((acc, machine) => {
-              acc[machine] = normalizePlanSlot(remoteRow.slots[machine]);
+              acc[machine] = mergeSlotFromSeed(baseRow.slots[machine], remoteRow.slots[machine]);
               return acc;
             }, {})
           };
-        } else {
-          extraRows.push(remoteRow);
         }
       });
 
-      return baseRows.concat(extraRows).sort((a,b) => {
+      return baseRows.sort((a,b) => {
         const rowDiff = Number(a.row_no || 0) - Number(b.row_no || 0);
         if(rowDiff) return rowDiff;
         const dateDiff = String(a.data || '').localeCompare(String(b.data || ''));
