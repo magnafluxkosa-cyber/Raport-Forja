@@ -1,4 +1,4 @@
-// PF_BUILD: STEP1_2026-03-15_17-45
+// PF_BUILD: STEP5_2026-03-15_18-55
 
 (function(window){
   'use strict';
@@ -20,45 +20,7 @@
 
   function toNum(v) {
     if (typeof v === 'number') return Number.isFinite(v) ? v : 0;
-    const raw = String(v ?? '').trim().replace(/\s+/g, '');
-    if (!raw) return 0;
-
-    let s = raw;
-    const hasDot = s.includes('.');
-    const hasComma = s.includes(',');
-
-    if (hasDot && hasComma) {
-      const lastDot = s.lastIndexOf('.');
-      const lastComma = s.lastIndexOf(',');
-      const decimalSep = lastDot > lastComma ? '.' : ',';
-      const thousandsSep = decimalSep === '.' ? ',' : '.';
-      s = s.split(thousandsSep).join('');
-      if (decimalSep === ',') s = s.replace(',', '.');
-    } else if (hasComma) {
-      if ((s.match(/,/g) || []).length > 1) {
-        const parts = s.split(',');
-        const dec = parts.pop();
-        s = parts.join('') + '.' + dec;
-      } else {
-        s = s.replace(',', '.');
-      }
-    } else if (hasDot) {
-      const dots = (s.match(/\./g) || []).length;
-      if (dots > 1) {
-        const parts = s.split('.');
-        const dec = parts.pop();
-        if (dec.length <= 2) s = parts.join('') + '.' + dec;
-        else s = parts.join('') + dec;
-      } else {
-        const [left, right] = s.split('.');
-        if (/^\d+$/.test(left || '') && /^\d+$/.test(right || '')) {
-          if (right.length === 3 && left.length >= 1) {
-            s = left + right;
-          }
-        }
-      }
-    }
-
+    const s = String(v ?? '').trim().replace(/\./g,'').replace(',', '.');
     const n = Number(s);
     return Number.isFinite(n) ? n : 0;
   }
@@ -466,25 +428,17 @@
       const steelSeed = liveStocks.steelByMaterial || {};
       Object.keys(steelSeed).forEach(key => { rollingSteelByMaterial[key] = toNum(steelSeed[key]); });
       const debSeed = liveStocks.debByReper || {};
-      Object.keys(debSeed).forEach(key => { rollingDebByGroup[key] = toNum(debSeed[key]); });
+      Object.keys(debSeed).forEach(key => { rollingDebByGroup[key] = Math.max(0, toNum(debSeed[key])); });
 
       flatSlots.forEach(slot => {
         const materialKey = materialKeyFromValues(slot.meta.diametru_otel || '', slot.meta.calitate_otel || '');
         const groupKey = reperGroupKey(slot.meta.reper_debitare || slot.reper || slot.utilaj);
         let steelBefore = Object.prototype.hasOwnProperty.call(rollingSteelByMaterial, materialKey)
           ? toNum(rollingSteelByMaterial[materialKey])
-          : (() => {
-              if (slot.base && materialKey) return toNum(slot.base.STOC_OTEL_INAINTE);
-              const anchor = GROUP_FIRST_ANCHOR.get(groupKey);
-              return anchor ? toNum(anchor.steel) : 0;
-            })();
+          : 0;
         let debBefore = Object.prototype.hasOwnProperty.call(rollingDebByGroup, groupKey)
           ? toNum(rollingDebByGroup[groupKey])
-          : (() => {
-              if (slot.base) return toNum(slot.base.STOC_DEBITAT_INAINTE);
-              const anchor = GROUP_FIRST_ANCHOR.get(groupKey);
-              return anchor ? toNum(anchor.deb) : 0;
-            })();
+          : 0;
 
         let row;
         if (slot.realized > 0) {
@@ -705,7 +659,6 @@
   }
 
   window.RFPlanificareShared = {
-    PF_BUILD: 'STEP1_2026-03-15_17-45',
     UTILAJE,
     MONTHS,
     SEED_ROWS,
