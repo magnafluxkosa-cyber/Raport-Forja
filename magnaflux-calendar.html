@@ -367,9 +367,10 @@
       const DOC_PREFIX = 'magnaflux';
       const CLOUD_INDEX_KEY = 'magnaflux:index';
       const CALENDAR_CACHE_PREFIX = 'rf:magnaflux:calendar:year:v4:';
-      const CACHE_KEY = 'rf:magnaflux:calendar:cache:v3';
       const FILTERS_KEY = 'rf:magnaflux:calendar:filters:v1';
       const MONTHS_RO = ['Ianuarie','Februarie','Martie','Aprilie','Mai','Iunie','Iulie','August','Septembrie','Octombrie','Noiembrie','Decembrie'];
+      const SHARED_YEAR_STORAGE_PREFIX = 'rf:magnaflux:cache:year:v2:';
+      const SHARED_YEAR_INDEX_STORAGE_KEY = 'rf:magnaflux:cache:index:v2';
 
       const el = {
         btnBack: document.getElementById('btnBack'),
@@ -872,63 +873,106 @@
       }
 
       function persistCache(){
-        persistCacheYear(state.year);
+        saveSharedLocalYear(state.year, state.rows, state.lastCloudUpdatedAt || nowIso());
       }
 
       function loadLocal(){
-        return loadLocalYear(state.year || new Date().getFullYear());
+        return loadSharedLocalYear(state.year || new Date().getFullYear());
       }
 
-
-      function getCalendarCacheKey(year){
-        return CALENDAR_CACHE_PREFIX + String(year || '0');
+      function nowIso(){
+        return new Date().toISOString();
       }
 
       function getYearDocKey(year){
         return `${DOC_PREFIX}:${String(year || '')}`;
       }
 
-      function loadLocalYear(year){
+      function getSharedYearStorageKey(year){
+        return SHARED_YEAR_STORAGE_PREFIX + String(year || '0');
+      }
+
+      function loadSharedLocalIndex(){
         try {
-          const raw = localStorage.getItem(getCalendarCacheKey(year));
+          const parsed = JSON.parse(localStorage.getItem(SHARED_YEAR_INDEX_STORAGE_KEY) || 'null');
+          return parsed && typeof parsed === 'object' ? parsed : null;
+        } catch (_err) {
+          return null;
+        }
+      }
+
+      function getSharedLocalUpdatedAt(year){
+        const index = loadSharedLocalIndex();
+        if (index && index.updated_at_by_year && typeof index.updated_at_by_year === 'object') {
+          const val = index.updated_at_by_year[String(year || '')];
+          if (val) return String(val);
+        }
+        return '';
+      }
+
+      function saveSharedLocalYear(year, rows, updatedAt){
+        const y = Number(year || 0);
+        if (!y) return;
+        const payload = {
+          page_key: PAGE_KEY,
+          year: y,
+          updated_at: updatedAt || nowIso(),
+          rows: Array.isArray(rows) ? rows : []
+        };
+        try {
+          localStorage.setItem(getSharedYearStorageKey(y), JSON.stringify(payload));
+        } catch (_err) {}
+
+        try {
+          const index = loadSharedLocalIndex() || {};
+          const years = Array.isArray(index.years) ? index.years.map(v => Number(v)).filter(Boolean) : [];
+          const mergedYears = Array.from(new Set([...years, y])).sort((a,b) => a - b);
+          const updated = Object.assign({}, index.updated_at_by_year || {}, { [String(y)]: payload.updated_at });
+          localStorage.setItem(SHARED_YEAR_INDEX_STORAGE_KEY, JSON.stringify({
+            years: mergedYears,
+            updated_at_by_year: updated,
+            active_year: String(y)
+          }));
+        } catch (_err) {}
+      }
+
+      function loadSharedLocalYear(year){
+        try {
+          const raw = localStorage.getItem(getSharedYearStorageKey(year));
           if (!raw) return null;
           const parsed = JSON.parse(raw);
           if (!parsed || !Array.isArray(parsed.rows)) return null;
           return {
             rows: parsed.rows.map((row, idx) => normalizeRow(row, idx, parsed.selectedDocKey || getYearDocKey(year))),
             selectedDocKey: parsed.selectedDocKey || getYearDocKey(year),
-            updated_at: parsed.lastCloudUpdatedAt || ''
+            updated_at: String(parsed.updated_at || getSharedLocalUpdatedAt(year) || '')
           };
         } catch (_err) {
           return null;
         }
       }
 
-      function persistCacheYear(year){
-        try {
-          localStorage.setItem(getCalendarCacheKey(year), JSON.stringify({
-            rows: state.rows,
-            selectedDocKey: state.selectedDocKey,
-            lastCloudUpdatedAt: state.lastCloudUpdatedAt,
-            savedAt: Date.now()
-          }));
-        } catch (_err) {}
-      }
-
       function collectLocalYears(){
         const years = new Set();
+        const index = loadSharedLocalIndex();
+        if (index && Array.isArray(index.years)) {
+          for (const value of index.years) {
+            const year = Number(value);
+            if (year) years.add(year);
+          }
+        }
         try {
           for (let i = 0; i < localStorage.length; i += 1) {
             const key = localStorage.key(i);
-            if (!key || !key.startsWith(CALENDAR_CACHE_PREFIX)) continue;
-            const year = Number(key.slice(CALENDAR_CACHE_PREFIX.length));
+            if (!key || !key.startsWith(SHARED_YEAR_STORAGE_PREFIX)) continue;
+            const year = Number(key.slice(SHARED_YEAR_STORAGE_PREFIX.length));
             if (year) years.add(year);
           }
         } catch (_err) {}
         return Array.from(years).sort((a,b) => b - a);
       }
 
-      async function fetchCloudIndexYears(){
+      async function fetchCloudIndexMeta(){
         try {
           let res = await state.supabase
             .from('rf_documents')
@@ -943,12 +987,15 @@
               .eq('doc_key', CLOUD_INDEX_KEY)
               .maybeSingle();
           }
-          if (res.error || !res.data) return [];
+          if (res.error || !res.data) return { years: [], updated_at_by_year: {} };
           const payload = (res.data && (res.data.content || res.data.data)) || {};
-          const fromYears = Array.isArray(payload.years) ? payload.years : [];
-          return fromYears.map(v => Number(v)).filter(Boolean).sort((a,b) => b - a);
+          const years = Array.isArray(payload.years) ? payload.years.map(v => Number(v)).filter(Boolean).sort((a,b) => b - a) : [];
+          const updated_at_by_year = payload && payload.updated_at_by_year && typeof payload.updated_at_by_year === 'object'
+            ? Object.assign({}, payload.updated_at_by_year)
+            : {};
+          return { years, updated_at_by_year };
         } catch (_err) {
-          return [];
+          return { years: [], updated_at_by_year: {} };
         }
       }
 
@@ -1011,12 +1058,32 @@
         return new Date(year, month, 0).getDate();
       }
 
-      function extractRowDateParts(row){
+      function yearNumberFromRow(row){
+        const direct = Number(clean(row && (row.an || row.year)) || 0);
+        if (direct >= 1900 && direct <= 2100) return direct;
         const data = formatDate(row && row.data);
-        if (!/^\d{2}\.\d{2}\.\d{4}$/.test(data)) return null;
-        const day = Number(data.slice(0,2));
-        const month = Number(data.slice(3,5));
-        const year = Number(data.slice(6,10));
+        if (/^\d{2}\.\d{2}\.\d{4}$/.test(data)) return Number(data.slice(6,10));
+        return 0;
+      }
+
+      function monthNumberFromRow(row){
+        const direct = monthIndexFromName(row && row.luna);
+        if (direct) return direct;
+        const data = formatDate(row && row.data);
+        if (/^\d{2}\.\d{2}\.\d{4}$/.test(data)) return Number(data.slice(3,5));
+        return 0;
+      }
+
+      function dayNumberFromRow(row){
+        const data = formatDate(row && row.data);
+        if (/^\d{2}\.\d{2}\.\d{4}$/.test(data)) return Number(data.slice(0,2));
+        return 0;
+      }
+
+      function extractRowDateParts(row){
+        const year = yearNumberFromRow(row);
+        const month = monthNumberFromRow(row);
+        const day = dayNumberFromRow(row);
         if (!(year >= 1900 && year <= 2100 && month >= 1 && month <= 12 && day >= 1 && day <= 31)) return null;
         const maxDay = daysInMonth(year, month);
         if (day > maxDay) return null;
@@ -1172,32 +1239,54 @@
       async function loadYearIntoCalendar(year, sourcePreference){
         const y = Number(year || state.year || new Date().getFullYear());
         state.year = y;
-        let applied = false;
 
-        if (sourcePreference !== 'cloud') {
-          const localDoc = loadLocalYear(y);
-          if (localDoc && Array.isArray(localDoc.rows)) {
-            applyRows(localDoc, 'local');
-            applied = true;
-          }
-        }
+        const localDoc = loadSharedLocalYear(y);
+        const localUpdatedAt = String((localDoc && localDoc.updated_at) || getSharedLocalUpdatedAt(y) || '');
+        const cloudDoc = state.supabase ? await fetchExactYearDoc(y) : null;
+        const cloudUpdatedAt = String((cloudDoc && cloudDoc.updated_at) || '');
 
-        if (state.supabase) {
-          const cloudDoc = await fetchExactYearDoc(y);
+        let chosen = null;
+        let source = 'local';
+
+        if (sourcePreference === 'cloud') {
           if (cloudDoc && Array.isArray(cloudDoc.rows)) {
-            applyRows(cloudDoc, 'cloud');
-            persistCacheYear(y);
-            applied = true;
-          } else if (sourcePreference === 'cloud') {
-            applyRows({ rows: [], selectedDocKey: getYearDocKey(y), updated_at: '' }, 'cloud');
-            applied = true;
+            chosen = cloudDoc;
+            source = 'cloud';
+            saveSharedLocalYear(y, cloudDoc.rows, cloudUpdatedAt || nowIso());
+          } else if (localDoc && Array.isArray(localDoc.rows)) {
+            chosen = localDoc;
+            source = 'local';
+          }
+        } else if (sourcePreference === 'local') {
+          if (localDoc && Array.isArray(localDoc.rows)) {
+            chosen = localDoc;
+            source = 'local';
+          } else if (cloudDoc && Array.isArray(cloudDoc.rows)) {
+            chosen = cloudDoc;
+            source = 'cloud';
+            saveSharedLocalYear(y, cloudDoc.rows, cloudUpdatedAt || nowIso());
+          }
+        } else {
+          const preferLocal = !!localUpdatedAt && (!cloudUpdatedAt || localUpdatedAt > cloudUpdatedAt);
+          if (preferLocal && localDoc && Array.isArray(localDoc.rows)) {
+            chosen = localDoc;
+            source = 'local';
+          } else if (cloudDoc && Array.isArray(cloudDoc.rows)) {
+            chosen = cloudDoc;
+            source = 'cloud';
+            saveSharedLocalYear(y, cloudDoc.rows, cloudUpdatedAt || nowIso());
+          } else if (localDoc && Array.isArray(localDoc.rows)) {
+            chosen = localDoc;
+            source = 'local';
           }
         }
 
-        if (!applied) {
-          applyRows({ rows: [], selectedDocKey: getYearDocKey(y), updated_at: '' }, 'local');
+        if (!chosen) {
+          chosen = { rows: [], selectedDocKey: getYearDocKey(y), updated_at: '' };
+          source = sourcePreference === 'cloud' ? 'cloud' : 'local';
         }
 
+        applyRows(chosen, source);
         refreshAvailableYears([y]);
         buildYearOptions();
         el.selYear.value = String(state.year);
@@ -1232,14 +1321,13 @@
 
       async function manualReload(){
         if (!state.supabase) {
-          const localDoc = loadLocalYear(state.year || new Date().getFullYear());
+          const localDoc = loadSharedLocalYear(state.year || new Date().getFullYear());
           applyRows(localDoc || { rows: [], selectedDocKey: getYearDocKey(state.year), updated_at: '' }, 'local');
           setSyncBadge('Doar local', 'warn');
           return;
         }
 
         setSyncBadge('Reîncarcă...', 'warn');
-        try { localStorage.removeItem(getCalendarCacheKey(state.year)); } catch (_err) {}
         await loadYearIntoCalendar(state.year, 'cloud');
         setSyncBadge('Cloud: ON', 'ok');
       }
@@ -1261,7 +1349,7 @@
         state.month = Number((saved && saved.month) || (new Date().getMonth() + 1));
         refreshAvailableYears([state.year]);
 
-        const localDoc = loadLocalYear(state.year);
+        const localDoc = loadSharedLocalYear(state.year);
         if (localDoc) {
           applyRows(localDoc, 'local');
           setSyncBadge('Local', 'warn');
@@ -1280,10 +1368,10 @@
           await requireSession();
           await resolveRole();
           await resolvePermissions();
-          const cloudYears = await fetchCloudIndexYears();
-          refreshAvailableYears(cloudYears);
-          await loadYearIntoCalendar(state.year, 'cloud');
-          setSyncBadge('Cloud: ON', 'ok');
+          const cloudMeta = await fetchCloudIndexMeta();
+          refreshAvailableYears(cloudMeta.years || []);
+          await loadYearIntoCalendar(state.year);
+          setSyncBadge(state.sourceLabel === 'local' ? 'Local prioritar' : 'Cloud: ON', state.sourceLabel === 'local' ? 'warn' : 'ok');
         } catch (_err) {
           setSyncBadge('Sesiune lipsă', 'err');
           window.location.href = 'login.html';
