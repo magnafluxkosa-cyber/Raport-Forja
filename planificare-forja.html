@@ -626,6 +626,29 @@
       const filtered = list.filter(row => normalizePeriodYear(row) === bestYear && (!bestMonth || normalizePeriodMonth(row) === bestMonth));
       return { rows: filtered.length ? filtered : list, year: bestYear, month: bestMonth, label: bestMonth ? (String(bestYear) + ' / ' + getMonthName(bestMonth)) : String(bestYear) };
     }
+    function getNextMonthPeriod(year, month){
+      const y = Number(year) || 0;
+      const m = Number(month) || 0;
+      if(!y || !m) return { year:0, month:0, iso:'', label:'' };
+      let nextYear = y;
+      let nextMonth = m + 1;
+      if(nextMonth > 12){
+        nextMonth = 1;
+        nextYear += 1;
+      }
+      return {
+        year: nextYear,
+        month: nextMonth,
+        iso: String(nextYear) + '-' + String(nextMonth).padStart(2,'0') + '-01',
+        label: getMonthName(nextMonth) + ' ' + String(nextYear)
+      };
+    }
+    function maxIsoDate(a, b){
+      const aa = trimText(a);
+      const bb = trimText(b);
+      if(aa && bb) return aa > bb ? aa : bb;
+      return aa || bb || '';
+    }
     function getDefaultPermissions(role){
       const clean = norm(role) || 'viewer';
       return { canEdit: ['admin','editor','operator'].includes(clean) };
@@ -988,7 +1011,7 @@
     }
 
     async function loadSteelStock(forceRefresh){
-      if(!state.supabase) return { map:Object.create(null), source:'-', ok:false };
+      if(!state.supabase) return { map:Object.create(null), source:'-', ok:false, period:'', baseYear:0, baseMonth:0, startIso:'', startLabel:'' };
       const docs = await queryDocsByKeys(STEEL_DOC_KEYS);
       const picked = (() => {
         for(const key of STEEL_DOC_KEYS){
@@ -997,11 +1020,12 @@
         }
         return docs.find(item => extractRowsPayload(item.content || item.data).length) || docs[0] || null;
       })();
-      if(!picked) return { map:Object.create(null), source:'stoc-initial-otel lipsă', ok:false };
+      if(!picked) return { map:Object.create(null), source:'stoc-initial-otel lipsă', ok:false, period:'', baseYear:0, baseMonth:0, startIso:'', startLabel:'' };
 
       const rows = extractRowsPayload(picked.content || picked.data).map(normalizeSteelRow);
       const latest = pickLatestRowsByYearMonth(rows);
       const useRows = latest.rows;
+      const nextPeriod = getNextMonthPeriod(latest.year, latest.month);
       const bySpec = Object.create(null);
       useRows.forEach(row => {
         if(!row.diametru || !row.calitate || row.cantitateKg <= 0) return;
@@ -1009,7 +1033,17 @@
         bySpec[specKey] = toNumber(bySpec[specKey]) + row.cantitateKg;
       });
       const src = picked.doc_key || 'stoc-initial-otel';
-      return { map: bySpec, source: latest.label ? (src + ' • ' + latest.label) : src, ok:true, count:useRows.length, period: latest.label };
+      return {
+        map: bySpec,
+        source: latest.label ? (src + ' • ' + latest.label) : src,
+        ok:true,
+        count:useRows.length,
+        period: latest.label,
+        baseYear: latest.year || 0,
+        baseMonth: latest.month || 0,
+        startIso: nextPeriod.iso,
+        startLabel: nextPeriod.label
+      };
     }
     function buildDebitatKeysForYear(year){
       const y = trimText(year) || CURRENT_YEAR;
@@ -1032,7 +1066,7 @@
       return Array.from(new Set(keys));
     }
     async function loadDebitatStock(year){
-      if(!state.supabase) return { map:Object.create(null), source:'-', ok:false };
+      if(!state.supabase) return { map:Object.create(null), source:'-', ok:false, period:'', baseYear:0, baseMonth:0, startIso:'', startLabel:'' };
       const keys = buildDebitatKeysForYear(year);
       const docs = await queryDocsByKeys(keys);
       const picked = (() => {
@@ -1042,11 +1076,12 @@
         }
         return docs.find(item => extractRowsPayload(item.content || item.data).length) || docs[0] || null;
       })();
-      if(!picked) return { map:Object.create(null), source:'inventar-debitat lipsă', ok:false };
+      if(!picked) return { map:Object.create(null), source:'inventar-debitat lipsă', ok:false, period:'', baseYear:0, baseMonth:0, startIso:'', startLabel:'' };
 
       const rows = extractRowsPayload(picked.content || picked.data).map(normalizeDebitatRow);
       const latest = pickLatestRowsByYearMonth(rows);
       const useRows = latest.rows;
+      const nextPeriod = getNextMonthPeriod(latest.year, latest.month);
       const byReper = Object.create(null);
       useRows.forEach(row => {
         if(!row.reper || row.cantitateBuc <= 0) return;
@@ -1054,7 +1089,17 @@
         byReper[key] = Math.max(0, Math.round(toNumber(byReper[key]) + row.cantitateBuc));
       });
       const src = picked.doc_key || 'inventar-debitat';
-      return { map: byReper, source: latest.label ? (src + ' • ' + latest.label) : src, ok:true, count:useRows.length, period: latest.label };
+      return {
+        map: byReper,
+        source: latest.label ? (src + ' • ' + latest.label) : src,
+        ok:true,
+        count:useRows.length,
+        period: latest.label,
+        baseYear: latest.year || 0,
+        baseMonth: latest.month || 0,
+        startIso: nextPeriod.iso,
+        startLabel: nextPeriod.label
+      };
     }
     async function loadIntrariOtelEntries(year){
       if(!state.supabase) return { byDate:Object.create(null), source:'-', ok:false };
@@ -1128,6 +1173,20 @@
         debitatByReper: debitat.map || Object.create(null),
         steelEntriesByDate: intrari.byDate || Object.create(null),
         debitatEntriesByDate: debitari.byDate || Object.create(null),
+        steelBasePeriod: {
+          year: steel.baseYear || 0,
+          month: steel.baseMonth || 0,
+          period: steel.period || '',
+          startIso: steel.startIso || '',
+          startLabel: steel.startLabel || ''
+        },
+        debitatBasePeriod: {
+          year: debitat.baseYear || 0,
+          month: debitat.baseMonth || 0,
+          period: debitat.period || '',
+          startIso: debitat.startIso || '',
+          startLabel: debitat.startLabel || ''
+        },
         helperOk: !!(Object.keys(state.helperMaps.debitByReper).length || Object.keys(state.helperMaps.forjaByReper).length),
         steelOk: !!steel.ok,
         debitatOk: !!debitat.ok,
@@ -1158,7 +1217,7 @@
       if(meta.specLabel){
         lines.push('Oțel disponibil înainte: ' + (meta.beforeSteelKg ? String(Math.round(meta.beforeSteelKg * 1000) / 1000).replace('.',',') : '0') + ' kg (~' + roMaybeNumber(meta.beforeSteelPieces) + ' buc)');
       }
-      lines.push('Planificat: ' + roMaybeNumber(meta.plan) + ' buc');
+      lines.push((meta.usedSource === 'realizat' ? 'Realizat folosit la calcul: ' : 'Planificat folosit la calcul: ') + roMaybeNumber(meta.plan) + ' buc');
       if(meta.deficit > 0) lines.push('Deficit: ' + roMaybeNumber(meta.deficit) + ' buc');
       if(meta.specLabel){
         lines.push('Rămâne după zi: debitat ' + roMaybeNumber(meta.afterDebitat) + ' buc, oțel ' + (meta.afterSteelKg ? String(Math.round(meta.afterSteelKg * 1000) / 1000).replace('.',',') : '0') + ' kg (~' + roMaybeNumber(meta.afterSteelPieces) + ' buc)');
@@ -1172,17 +1231,22 @@
     function rebuildStockCalculations(){
       state.stockCalcByCell = Object.create(null);
 
-      if(String(state.activeYear) !== CURRENT_YEAR){
-        els.footerNote.textContent = 'REALIZAT este live din Forjate când există document cloud pentru anul selectat. Verificarea stocului se face doar pentru luna curentă, iar anul selectat nu este anul curent.';
+      const steelBase = state.stockSupport.steelBasePeriod || {};
+      const debitatBase = state.stockSupport.debitatBasePeriod || {};
+      const steelStartIso = trimText(steelBase.startIso);
+      const debitatStartIso = trimText(debitatBase.startIso);
+      const calcStartIso = maxIsoDate(steelStartIso, debitatStartIso);
+
+      if(!calcStartIso){
+        els.footerNote.textContent = 'REALIZAT este live din Forjate când există document cloud pentru anul selectat. Verificarea stocului așteaptă baza din inventare.';
         return;
       }
 
-      const calcStartIso = CURRENT_YEAR + '-' + String(TODAY.getMonth() + 1).padStart(2,'0') + '-01';
-      const monthRows = state.rows
+      const calcRows = state.rows
         .map((row, index) => ({ row, index }))
         .filter(item => {
           const iso = trimText(item.row.data);
-          return String(item.row.an) === CURRENT_YEAR && iso && iso >= calcStartIso;
+          return iso && iso >= calcStartIso;
         })
         .sort((a,b) => {
           if(trimText(a.row.data) !== trimText(b.row.data)) return trimText(a.row.data).localeCompare(trimText(b.row.data));
@@ -1194,8 +1258,8 @@
       const debitatByReper = Object.assign(Object.create(null), state.stockSupport.debitatByReper || {});
       const steelEntriesByDate = state.stockSupport.steelEntriesByDate || Object.create(null);
       const debitatEntriesByDate = state.stockSupport.debitatEntriesByDate || Object.create(null);
-      const steelEntryDates = Object.keys(steelEntriesByDate).sort();
-      const debitatEntryDates = Object.keys(debitatEntriesByDate).sort();
+      const steelEntryDates = Object.keys(steelEntriesByDate).filter(dateIso => !steelStartIso || dateIso >= steelStartIso).sort();
+      const debitatEntryDates = Object.keys(debitatEntriesByDate).filter(dateIso => !debitatStartIso || dateIso >= debitatStartIso).sort();
       let steelEntryIndex = 0;
       let debitatEntryIndex = 0;
 
@@ -1208,7 +1272,7 @@
           });
         }
         while(debitatEntryIndex < debitatEntryDates.length && debitatEntryDates[debitatEntryIndex] <= dateIso){
-          const entryDate = debitatEntriesByDate[debitatEntryIndex++];
+          const entryDate = debitatEntryDates[debitatEntryIndex++];
           const additions = debitatEntriesByDate[entryDate] || {};
           Object.keys(additions).forEach(reperKey => {
             debitatByReper[reperKey] = Math.max(0, Math.round(toNumber(debitatByReper[reperKey]) + toNumber(additions[reperKey])));
@@ -1216,7 +1280,7 @@
         }
       }
 
-      monthRows.forEach(item => {
+      calcRows.forEach(item => {
         const row = item.row;
         const rowIso = trimText(row.data);
         if(rowIso) applyEntriesUpTo(rowIso);
@@ -1224,8 +1288,11 @@
         MACHINE_ORDER.forEach(machine => {
           const slot = row.slots[machine] || normalizePlanSlot();
           const reper = trimText(slot.reper).toUpperCase();
-          const plan = Math.max(0, Math.round(toNumber(slot.planificat)));
-          if(!reper || !plan) return;
+          const planValue = Math.max(0, Math.round(toNumber(slot.planificat)));
+          const realized = getRealizedForSlot(row, machine, slot);
+          const effectiveQty = realized.value > 0 ? realized.value : planValue;
+          const usedSource = realized.value > 0 ? 'realizat' : 'planificat';
+          if(!reper || !effectiveQty) return;
 
           const helper = resolvePlanningHelper(reper);
           const debKey = helper.originReper || reper;
@@ -1242,11 +1309,11 @@
           let note = '';
           let deficit = 0;
 
-          if(beforeDebitat >= plan){
-            afterDebitat = beforeDebitat - plan;
+          if(beforeDebitat >= effectiveQty){
+            afterDebitat = beforeDebitat - effectiveQty;
             debitatByReper[debKey] = afterDebitat;
-          }else if(totalBefore >= plan && helper.kgBuc > 0 && specKey){
-            const needFromSteel = plan - beforeDebitat;
+          }else if(totalBefore >= effectiveQty && helper.kgBuc > 0 && specKey){
+            const needFromSteel = effectiveQty - beforeDebitat;
             afterDebitat = 0;
             debitatByReper[debKey] = 0;
             afterSteelKg = Math.max(0, beforeSteelKg - (needFromSteel * helper.kgBuc));
@@ -1254,11 +1321,11 @@
             afterSteelPieces = Math.floor((afterSteelKg / helper.kgBuc) + 1e-9);
           }else if(totalBefore > 0){
             status = 'partial';
-            deficit = Math.max(0, plan - totalBefore);
+            deficit = Math.max(0, effectiveQty - totalBefore);
             afterDebitat = 0;
             debitatByReper[debKey] = 0;
             if(specKey && helper.kgBuc > 0){
-              const useSteelPieces = Math.min(beforeSteelPieces, Math.max(0, plan - beforeDebitat));
+              const useSteelPieces = Math.min(beforeSteelPieces, Math.max(0, effectiveQty - beforeDebitat));
               afterSteelKg = Math.max(0, beforeSteelKg - (useSteelPieces * helper.kgBuc));
               steelKgBySpec[specKey] = afterSteelKg;
               afterSteelPieces = Math.floor((afterSteelKg / helper.kgBuc) + 1e-9);
@@ -1269,7 +1336,7 @@
             }
           }else{
             status = 'empty';
-            deficit = plan;
+            deficit = effectiveQty;
             note = helper.kgBuc > 0 && specKey
               ? 'Nu există stoc suficient pentru această planificare.'
               : 'Nu există stoc debitat și nu există regulă helper completă pentru conversia din oțel.';
@@ -1278,7 +1345,7 @@
           state.stockCalcByCell[cellCalcKey(row.id, machine)] = {
             status,
             note,
-            plan,
+            plan: effectiveQty,
             reper,
             originReper: debKey,
             beforeDebitat,
@@ -1288,10 +1355,11 @@
             afterSteelKg,
             afterSteelPieces,
             deficit,
+            usedSource,
             specLabel: specKey ? (helper.diametru + ' / ' + helper.calitate) : '',
             tooltip: buildStockTooltip({
               note,
-              plan,
+              plan: effectiveQty,
               reper,
               originReper: debKey,
               beforeDebitat,
@@ -1301,13 +1369,17 @@
               afterSteelKg,
               afterSteelPieces,
               deficit,
+              usedSource,
               specLabel: specKey ? (helper.diametru + ' / ' + helper.calitate) : ''
             })
           };
         });
       });
 
-      els.footerNote.textContent = 'REALIZAT este live din Forjate când există document cloud pentru anul selectat. Verificarea stocului pornește din ' + CURRENT_MONTH_NAME + ' ' + CURRENT_YEAR + ' și continuă în lunile următoare, folosind ' + state.stockSupport.notes.join(' • ') + '.';
+      const parts = [];
+      if(steelBase.startLabel) parts.push('oțel din ' + steelBase.startLabel);
+      if(debitatBase.startLabel) parts.push('debitat din ' + debitatBase.startLabel);
+      els.footerNote.textContent = 'REALIZAT este live din Forjate când există document cloud pentru anul selectat. Verificarea stocului pornește din luna următoare bazei din inventare' + (parts.length ? ' (' + parts.join(' • ') + ')' : '') + ' și continuă până când se schimbă luna din inventare, folosind ' + state.stockSupport.notes.join(' • ') + '.';
     }
 
     function computeOrthodoxEaster(year){
