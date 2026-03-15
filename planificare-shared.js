@@ -123,7 +123,7 @@
     BASE_CALC_BY_SLOT.set(key, row);
     const reperKey = normUpper(row.REPER_FORJAT);
     if (reperKey && !BASE_CALC_BY_REPER.has(reperKey)) BASE_CALC_BY_REPER.set(reperKey, row);
-    const groupKey = reperGroupKey(row.REPER_DEBITARE || row.REPER_FORJAT);
+    const groupKey = normUpper(row.REPER_DEBITARE || row.REPER_FORJAT);
     if (groupKey && !GROUP_FIRST_ANCHOR.has(groupKey)) {
       GROUP_FIRST_ANCHOR.set(groupKey, {
         steel: toNum(row.STOC_OTEL_INAINTE),
@@ -390,8 +390,8 @@
       Object.keys(debSeed).forEach(key => { rollingDebByGroup[key] = toNum(debSeed[key]); });
 
       flatSlots.forEach(slot => {
-        const materialKey = materialKeyFromValues(slot.meta.diametru_otel || '', slot.meta.calitate_otel || '');
-        const groupKey = reperGroupKey(slot.meta.reper_debitare || slot.reper || slot.utilaj);
+        const materialKey = normUpper(String(slot.meta.diametru_otel || '') + '|' + String(slot.meta.calitate_otel || ''));
+        const groupKey = normUpper(slot.meta.reper_debitare || slot.reper || slot.utilaj);
         let steelBefore = Object.prototype.hasOwnProperty.call(rollingSteelByMaterial, materialKey)
           ? toNum(rollingSteelByMaterial[materialKey])
           : (() => {
@@ -481,7 +481,7 @@
 
     const groups = new Map();
     flatSlots.forEach(slot => {
-      const groupKey = reperGroupKey(slot.meta.reper_debitare || slot.reper || slot.utilaj);
+      const groupKey = normUpper(slot.meta.reper_debitare || slot.reper || slot.utilaj);
       if (!groups.has(groupKey)) groups.set(groupKey, []);
       groups.get(groupKey).push(slot);
     });
@@ -659,8 +659,6 @@
     buildForjateSummary,
     buildHelperMaps,
     computeCalcForYear,
-    materialKeyFromValues,
-    reperGroupKey,
     todayIso
   };
 })(window);
