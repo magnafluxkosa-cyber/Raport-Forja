@@ -260,6 +260,8 @@
       activeYear: '',
       searchTerm: '',
       saveTimer: null,
+      derivedTimer: null,
+      isEditing: false,
       forjateSummary: Object.create(null),
       loadedForjateYears: new Set(),
       attemptedForjateYears: new Set(),
@@ -504,10 +506,14 @@
     function normalizeSteelRow(row, index){
       const data = normalizeDateAny(pick(row, ['data','date','DATA','Date']));
       const an = trimText(pick(row, ['an','year','AN','Year'])) || (data ? data.slice(0,4) : '');
+      const lunaRaw = pick(row, ['luna','month','LUNA','Month','Luna']);
+      const lunaNum = monthNumberFromAny(lunaRaw) || (data ? Number(data.slice(5,7)) : 0);
       return {
         id: trimText(pick(row, ['id','_id'])) || ('steel-' + index),
         an,
         data,
+        luna: getMonthName(lunaNum || lunaRaw),
+        lunaNum,
         diametru: trimText(pick(row, ['diametru','diametru otel','diametru_otel','Diametru oțel','Diametru'])),
         calitate: trimText(pick(row, ['calitate','calitate otel','calitate_otel','Calitate oțel','Calitate'])),
         codIntern: trimText(pick(row, ['cod intern otel','cod intern oțel','cod_intern_otel','cod intern','codInternOtel','codIntern','cod'])).toUpperCase(),
@@ -517,13 +523,51 @@
     function normalizeDebitatRow(row, index){
       const data = normalizeDateAny(pick(row, ['data','date','DATA','Date']));
       const an = trimText(pick(row, ['an','anul','year','AN','Year','Anul'])) || (data ? data.slice(0,4) : '');
+      const lunaRaw = pick(row, ['luna','month','LUNA','Month','Luna']);
+      const lunaNum = monthNumberFromAny(lunaRaw) || (data ? Number(data.slice(5,7)) : 0);
       return {
         id: trimText(pick(row, ['id','_id'])) || ('debitat-' + index),
         an,
         data,
+        luna: getMonthName(lunaNum || lunaRaw),
+        lunaNum,
         reper: trimText(pick(row, ['reper','REPER','Reper','denumire reper debitare','Denumire reper debitare'])).toUpperCase(),
-        cantitateBuc: Math.max(0, Math.round(toNumber(pick(row, ['cantitateBuc','STOC DEBITATE FINAL (buc)','Stoc debitate final (buc)','Stoc Debitat (Buc)','cantitate']))) )
+        cantitateBuc: Math.max(0, Math.round(toNumber(pick(row, ['cantitateBuc','STOC DEBITATE FINAL (buc)','Stoc debitate final (buc)','Stoc Debitat (Buc)','cantitate']))))
       };
+    }
+    function monthNumberFromAny(value){
+      const direct = getMonthNumber(value);
+      if(direct) return direct;
+      const raw = trimText(value);
+      if(!raw) return 0;
+      const iso = displayToIso(raw);
+      if(iso) return Number(iso.slice(5,7)) || 0;
+      return 0;
+    }
+    function normalizePeriodYear(row){
+      const year = Number(trimText(row && (row.an || row.year || '')) || 0);
+      return Number.isFinite(year) && year > 0 ? year : 0;
+    }
+    function normalizePeriodMonth(row){
+      if(!row) return 0;
+      const month = Number(row.lunaNum || row.month || 0);
+      return Number.isFinite(month) && month >= 1 && month <= 12 ? month : 0;
+    }
+    function pickLatestRowsByYearMonth(rows){
+      const list = Array.isArray(rows) ? rows.slice() : [];
+      let bestYear = 0;
+      let bestMonth = 0;
+      list.forEach(row => {
+        const year = normalizePeriodYear(row);
+        const month = normalizePeriodMonth(row);
+        if(year > bestYear || (year === bestYear && month > bestMonth)){
+          bestYear = year;
+          bestMonth = month;
+        }
+      });
+      if(!bestYear) return { rows:list, year:0, month:0, label:'' };
+      const filtered = list.filter(row => normalizePeriodYear(row) === bestYear && (!bestMonth || normalizePeriodMonth(row) === bestMonth));
+      return { rows: filtered.length ? filtered : list, year: bestYear, month: bestMonth, label: bestMonth ? (String(bestYear) + ' / ' + getMonthName(bestMonth)) : String(bestYear) };
     }
     function getDefaultPermissions(role){
       const clean = norm(role) || 'viewer';
@@ -622,6 +666,45 @@
       Object.keys(state.helperMaps.debitByReper || {}).forEach(key => { if(key) repSet.add(key); });
       els.repereList.innerHTML = Array.from(repSet).sort((a,b) => a.localeCompare(b, 'ro', { sensitivity:'base' }))
         .map(reper => '<option value="' + escapeHtml(reper) + '"></option>').join('');
+    }
+    function captureUiState(){
+      const snap = {
+        scrollTop: els.tableWrap ? els.tableWrap.scrollTop : 0,
+        scrollLeft: els.tableWrap ? els.tableWrap.scrollLeft : 0,
+        activeCell: null
+      };
+      const active = document.activeElement;
+      if(active && active.classList && active.classList.contains('cell-input')){
+        snap.activeCell = {
+          rowId: trimText(active.dataset.rowId),
+          machine: trimText(active.dataset.machine),
+          field: trimText(active.dataset.field),
+          start: typeof active.selectionStart === 'number' ? active.selectionStart : null,
+          end: typeof active.selectionEnd === 'number' ? active.selectionEnd : null
+        };
+      }
+      return snap;
+    }
+    function restoreUiState(snap){
+      if(!snap) return;
+      requestAnimationFrame(() => {
+        try{
+          if(els.tableWrap){
+            els.tableWrap.scrollTop = Number(snap.scrollTop || 0);
+            els.tableWrap.scrollLeft = Number(snap.scrollLeft || 0);
+          }
+          if(snap.activeCell && snap.activeCell.rowId && snap.activeCell.machine && snap.activeCell.field){
+            const selector = '.cell-input[data-row-id="' + CSS.escape(snap.activeCell.rowId) + '"][data-machine="' + CSS.escape(snap.activeCell.machine) + '"][data-field="' + CSS.escape(snap.activeCell.field) + '"]';
+            const input = els.planBody ? els.planBody.querySelector(selector) : null;
+            if(input){
+              input.focus({ preventScroll:true });
+              if(typeof snap.activeCell.start === 'number' && typeof input.setSelectionRange === 'function'){
+                input.setSelectionRange(snap.activeCell.start, typeof snap.activeCell.end === 'number' ? snap.activeCell.end : snap.activeCell.start);
+              }
+            }
+          }
+        }catch(_e){}
+      });
     }
     function buildHeader(){
       els.planHead.innerHTML = `
@@ -860,13 +943,16 @@
       if(!picked) return { map:Object.create(null), source:'stoc-initial-otel lipsă', ok:false };
 
       const rows = extractRowsPayload(picked.content || picked.data).map(normalizeSteelRow);
+      const latest = pickLatestRowsByYearMonth(rows);
+      const useRows = latest.rows;
       const bySpec = Object.create(null);
-      rows.forEach(row => {
+      useRows.forEach(row => {
         if(!row.diametru || !row.calitate || row.cantitateKg <= 0) return;
         const specKey = normUpper(row.diametru) + '|' + normUpper(row.calitate);
         bySpec[specKey] = toNumber(bySpec[specKey]) + row.cantitateKg;
       });
-      return { map: bySpec, source: picked.doc_key || 'stoc-initial-otel', ok:true, count:rows.length };
+      const src = picked.doc_key || 'stoc-initial-otel';
+      return { map: bySpec, source: latest.label ? (src + ' • ' + latest.label) : src, ok:true, count:useRows.length, period: latest.label };
     }
     function buildDebitatKeysForYear(year){
       const y = trimText(year) || CURRENT_YEAR;
@@ -891,13 +977,16 @@
       if(!picked) return { map:Object.create(null), source:'inventar-debitat lipsă', ok:false };
 
       const rows = extractRowsPayload(picked.content || picked.data).map(normalizeDebitatRow);
+      const latest = pickLatestRowsByYearMonth(rows);
+      const useRows = latest.rows;
       const byReper = Object.create(null);
-      rows.forEach(row => {
+      useRows.forEach(row => {
         if(!row.reper || row.cantitateBuc <= 0) return;
         const key = row.reper.toUpperCase();
         byReper[key] = Math.max(0, Math.round(toNumber(byReper[key]) + row.cantitateBuc));
       });
-      return { map: byReper, source: picked.doc_key || 'inventar-debitat', ok:true, count:rows.length };
+      const src = picked.doc_key || 'inventar-debitat';
+      return { map: byReper, source: latest.label ? (src + ' • ' + latest.label) : src, ok:true, count:useRows.length, period: latest.label };
     }
     async function refreshSupportData(forceRefresh){
       await loadHelperMaps(forceRefresh);
@@ -1153,11 +1242,13 @@
         ? ('Ultima sincronizare plan: ' + formatDateTime(state.updatedAt))
         : 'Încă nu există document cloud pentru planificare.';
     }
-    function renderTable(){
+    function renderTable(preserveUi){
+      const uiState = preserveUi ? captureUiState() : null;
       const rows = getFilteredRows();
       updateStatusCards(rows);
       if(!rows.length){
         els.planBody.innerHTML = '<tr><td colspan="21"><div class="empty">Nu există rânduri pentru filtrul curent.</div></td></tr>';
+        restoreUiState(uiState);
         return;
       }
 
@@ -1188,19 +1279,21 @@
           }).join('')}
         </tr>`;
       }).join('');
+      restoreUiState(uiState);
     }
 
     function findRow(rowId){
       return state.rows.find(row => String(row.id) === String(rowId)) || null;
     }
-    function rebuildLocalDerived(){
+    function rebuildLocalDerived(preserveUi){
       rebuildStockCalculations();
       updateRepereDatalist();
-      renderTable();
+      renderTable(preserveUi !== false);
     }
-    function markEdit(rowId, machine, field, value){
+    function markEdit(rowId, machine, field, value, options){
       const row = findRow(rowId);
       if(!row) return;
+      const opts = options && typeof options === 'object' ? options : {};
       const slot = row.slots[machine] || normalizePlanSlot();
       if(field === 'reper'){
         const nextValue = trimText(value).toUpperCase();
@@ -1212,8 +1305,8 @@
         slot.planificat = Math.max(0, Math.round(toNumber(value)));
       }
       row.slots[machine] = slot;
-      queueSave();
-      rebuildLocalDerived();
+      if(opts.save !== false) queueSave();
+      if(opts.rebuild) rebuildLocalDerived(true);
     }
     function buildNewRowForYear(year){
       const sameYearRows = state.rows.filter(row => String(row.an) === String(year));
@@ -1269,7 +1362,7 @@
       els.cloudValue.textContent = 'Salvare...';
       els.cloudSub.textContent = 'Pregătesc payload-ul pentru rf_documents.';
       if(state.saveTimer) clearTimeout(state.saveTimer);
-      state.saveTimer = setTimeout(() => { saveNow(); }, 850);
+      state.saveTimer = setTimeout(() => { saveNow(); }, 2200);
     }
 
     async function loadPlanDocument(forceApply){
@@ -1339,6 +1432,7 @@
       }
     }
     async function softRefresh(){
+      if(state.isEditing) return;
       await loadPlanDocument(false);
       ensureFilters();
       renderFilters();
@@ -1352,7 +1446,11 @@
       });
       els.searchInput.addEventListener('input', function(){
         state.searchTerm = this.value || '';
-        renderTable();
+        renderTable(true);
+      });
+      els.planBody.addEventListener('focusin', function(event){
+        const target = event.target;
+        if(target && target.classList && target.classList.contains('cell-input')) state.isEditing = true;
       });
       els.planBody.addEventListener('input', function(event){
         const target = event.target;
@@ -1361,7 +1459,31 @@
         const machine = target.dataset.machine;
         const field = target.dataset.field;
         if(!rowId || !machine || !field) return;
-        markEdit(rowId, machine, field, target.value);
+        markEdit(rowId, machine, field, target.value, { rebuild:false, save:true });
+      });
+      els.planBody.addEventListener('change', function(event){
+        const target = event.target;
+        if(!target || !target.dataset) return;
+        const rowId = target.dataset.rowId;
+        const machine = target.dataset.machine;
+        const field = target.dataset.field;
+        if(!rowId || !machine || !field) return;
+        if(field === 'reper') target.value = trimText(target.value).toUpperCase();
+        markEdit(rowId, machine, field, target.value, { rebuild:true, save:false });
+      });
+      els.planBody.addEventListener('focusout', function(event){
+        const target = event.target;
+        if(!target || !target.dataset) return;
+        if(target.classList && target.classList.contains('cell-input')){
+          state.isEditing = false;
+          const rowId = target.dataset.rowId;
+          const machine = target.dataset.machine;
+          const field = target.dataset.field;
+          if(rowId && machine && field){
+            if(field === 'reper') target.value = trimText(target.value).toUpperCase();
+            markEdit(rowId, machine, field, target.value, { rebuild:true, save:false });
+          }
+        }
       });
       els.btnRefresh.addEventListener('click', async function(){
         els.modePill.textContent = 'Refresh...';
@@ -1369,9 +1491,6 @@
       });
       els.btnSave.addEventListener('click', function(){ saveNow(); });
       els.btnAddRow.addEventListener('click', function(){ addRow(); });
-      document.addEventListener('visibilitychange', function(){
-        if(!document.hidden) softRefresh();
-      });
     }
 
     async function boot(){
@@ -1382,7 +1501,7 @@
       renderFilters();
       updateRepereDatalist();
       await refreshLiveAndSupport(false);
-      renderTable();
+      renderTable(false);
       bindEvents();
     }
 
