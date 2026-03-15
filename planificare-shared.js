@@ -32,46 +32,6 @@
     return safeText(v).replace(/\s+/g,' ').replace(/ţ/g,'ț').replace(/ş/g,'ș').toUpperCase();
   }
   function norm(v) { return safeText(v).replace(/\s+/g,' ').replace(/ţ/g,'ț').replace(/ş/g,'ș').toLowerCase(); }
-  function normalizeDiameter(v) {
-    const raw = safeText(v).toUpperCase().replace(/[Ø⌀]/g, '').replace(/MM/g, '').replace(/\s+/g, '');
-    if (!raw) return '';
-    const n = Number(String(raw).replace(',', '.'));
-    if (Number.isFinite(n)) {
-      return Math.abs(n - Math.round(n)) < 1e-9 ? String(Math.round(n)) : String(n);
-    }
-    return raw.replace(',', '.');
-  }
-  function materialKeyFromValues(diametru, calitate) {
-    const d = normalizeDiameter(diametru);
-    const c = normUpper(calitate);
-    return [d, c].filter(Boolean).join('|');
-  }
-  function expandGroupedReper(v) {
-    const raw = normUpper(v).replace(/_/g, '-').replace(/\s+/g, '');
-    if (!raw) return [];
-    if (!raw.includes('/')) return [raw];
-    const parts = raw.split('/').filter(Boolean);
-    if (parts.length !== 2) return [raw];
-    const first = parts[0];
-    let second = parts[1];
-    if (!second.includes('-')) {
-      const m = first.match(/^(.*?)(\d+)$/);
-      if (m) {
-        const prefix = m[1];
-        const full = m[2];
-        if (second.length < full.length) {
-          second = prefix + full.slice(0, full.length - second.length) + second;
-        } else {
-          second = prefix + second;
-        }
-      }
-    }
-    return [first, second].map(x => x.replace(/--+/g, '-'));
-  }
-  function reperGroupKey(v) {
-    const parts = expandGroupedReper(v);
-    return parts.sort().join('/');
-  }
   function utilajCanon(v) {
     const raw = normUpper(v);
     for (const u of UTILAJE) {
