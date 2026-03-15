@@ -1,3 +1,4 @@
+// PF_BUILD: STEP1_2026-03-15_17-45
 
 (function(window){
   'use strict';
@@ -19,7 +20,45 @@
 
   function toNum(v) {
     if (typeof v === 'number') return Number.isFinite(v) ? v : 0;
-    const s = String(v ?? '').trim().replace(/\./g,'').replace(',', '.');
+    const raw = String(v ?? '').trim().replace(/\s+/g, '');
+    if (!raw) return 0;
+
+    let s = raw;
+    const hasDot = s.includes('.');
+    const hasComma = s.includes(',');
+
+    if (hasDot && hasComma) {
+      const lastDot = s.lastIndexOf('.');
+      const lastComma = s.lastIndexOf(',');
+      const decimalSep = lastDot > lastComma ? '.' : ',';
+      const thousandsSep = decimalSep === '.' ? ',' : '.';
+      s = s.split(thousandsSep).join('');
+      if (decimalSep === ',') s = s.replace(',', '.');
+    } else if (hasComma) {
+      if ((s.match(/,/g) || []).length > 1) {
+        const parts = s.split(',');
+        const dec = parts.pop();
+        s = parts.join('') + '.' + dec;
+      } else {
+        s = s.replace(',', '.');
+      }
+    } else if (hasDot) {
+      const dots = (s.match(/\./g) || []).length;
+      if (dots > 1) {
+        const parts = s.split('.');
+        const dec = parts.pop();
+        if (dec.length <= 2) s = parts.join('') + '.' + dec;
+        else s = parts.join('') + dec;
+      } else {
+        const [left, right] = s.split('.');
+        if (/^\d+$/.test(left || '') && /^\d+$/.test(right || '')) {
+          if (right.length === 3 && left.length >= 1) {
+            s = left + right;
+          }
+        }
+      }
+    }
+
     const n = Number(s);
     return Number.isFinite(n) ? n : 0;
   }
@@ -666,6 +705,7 @@
   }
 
   window.RFPlanificareShared = {
+    PF_BUILD: 'STEP1_2026-03-15_17-45',
     UTILAJE,
     MONTHS,
     SEED_ROWS,
