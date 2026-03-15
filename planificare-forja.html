@@ -730,22 +730,78 @@
       }, 650);
     }
 
+    function mergeSeedWithRows(remoteRows){
+      const baseRows = cloneSeedRows();
+      const normalizedRemote = (remoteRows || []).map(normalizePlanRow);
+      if(!normalizedRemote.length) return baseRows;
+
+      const indexByRowNo = new Map();
+      baseRows.forEach((row, index) => {
+        if(row.row_no) indexByRowNo.set(String(row.row_no), index);
+      });
+
+      const extraRows = [];
+      normalizedRemote.forEach(remoteRow => {
+        let index = -1;
+        if(remoteRow.row_no && indexByRowNo.has(String(remoteRow.row_no))){
+          index = indexByRowNo.get(String(remoteRow.row_no));
+        } else {
+          index = baseRows.findIndex(baseRow => {
+            if(baseRow.data !== remoteRow.data) return false;
+            return MACHINE_ORDER.every(machine => {
+              const a = normalizePlanSlot(baseRow.slots[machine]);
+              const b = normalizePlanSlot(remoteRow.slots[machine]);
+              return trimText(a.reper) === trimText(b.reper) && Number(a.planificat) === Number(b.planificat);
+            });
+          });
+        }
+
+        if(index >= 0){
+          const baseRow = baseRows[index];
+          baseRows[index] = {
+            ...baseRow,
+            id: trimText(remoteRow.id || baseRow.id),
+            row_no: Number(remoteRow.row_no || baseRow.row_no || 0) || 0,
+            an: Number(remoteRow.an || baseRow.an || 0) || 0,
+            luna: trimText(remoteRow.luna || baseRow.luna),
+            data: trimText(remoteRow.data || baseRow.data),
+            zi: trimText(remoteRow.zi || baseRow.zi),
+            slots: MACHINE_ORDER.reduce((acc, machine) => {
+              acc[machine] = normalizePlanSlot(remoteRow.slots[machine]);
+              return acc;
+            }, {})
+          };
+        } else {
+          extraRows.push(remoteRow);
+        }
+      });
+
+      return baseRows.concat(extraRows).sort((a,b) => {
+        const rowDiff = Number(a.row_no || 0) - Number(b.row_no || 0);
+        if(rowDiff) return rowDiff;
+        const dateDiff = String(a.data || '').localeCompare(String(b.data || ''));
+        if(dateDiff) return dateDiff;
+        return String(a.id || '').localeCompare(String(b.id || ''));
+      });
+    }
+
     async function loadPlanDocument(forceApply){
       const doc = await readDocumentCompat(DOC_KEY);
       if(doc && (doc.content || doc.data)){
         const payload = doc.content || doc.data;
         const rows = extractRowsPayload(payload);
+        const mergedRows = mergeSeedWithRows(rows);
         const remoteUpdated = payload.updated_at || doc.updated_at || null;
         const shouldApply = forceApply || !state.updatedAt || (remoteUpdated && state.updatedAt && String(remoteUpdated) > String(state.updatedAt));
-        if(rows.length && shouldApply){
-          state.rows = rows.map(normalizePlanRow);
+        if(mergedRows.length && shouldApply){
+          state.rows = mergedRows;
           state.updatedAt = remoteUpdated || nowIso();
-          els.cloudValue.textContent = 'Cloud încărcat';
+          els.cloudValue.textContent = rows.length < mergedRows.length ? 'Cloud încărcat + completat' : 'Cloud încărcat';
           els.cloudSub.textContent = 'Ultima sincronizare plan: ' + formatDateTime(state.updatedAt);
           return;
         }
-        if(rows.length){
-          els.cloudValue.textContent = 'Cloud încărcat';
+        if(mergedRows.length){
+          els.cloudValue.textContent = rows.length < mergedRows.length ? 'Cloud încărcat + completat' : 'Cloud încărcat';
           els.cloudSub.textContent = 'Ultima sincronizare plan: ' + formatDateTime(remoteUpdated || state.updatedAt);
           return;
         }
