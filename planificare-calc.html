@@ -1,6 +1,4 @@
 <!doctype html>
-<!-- PF_BUILD: STEP3_2026-03-15_13-10 -->
-
 <html lang="ro">
 <head>
   <meta charset="utf-8" />
@@ -10,6 +8,7 @@
   <script src="./rf-config.js"></script>
   <script src="./auth-common.js"></script>
   <script src="./planificare-shared.js"></script>
+  <!-- PF_BUILD: STEP6_2026-03-15_21-30 -->
   <style>
     :root{
       --bg:#d8d2eb;
@@ -219,8 +218,7 @@
       realizedSummary: Object.create(null),
       liveStocks: { steelByMaterial:Object.create(null), debByReper:Object.create(null) },
       externalRefreshTimer: null,
-      lastExternalRefreshAt: 0,
-      lastHelperRefreshAt: 0
+      lastExternalRefreshAt: 0
     };
 
     function scrollKey(year){ return 'rf_planificare_calc_scroll_' + String(year || ''); }
@@ -366,6 +364,17 @@ function rowTsFromAny(row){
   const ts = iso ? Date.parse(iso + 'T00:00:00Z') : 0;
   return Number.isFinite(ts) ? ts : 0;
 }
+function normalizeInitialBaselineRow(row, index){
+  return {
+    _index:index,
+    key: S.materialKeyFromValues(
+      pick(row,['diametru','diametru_otel','diametru otel','dimensiune otel','Dimensiune OTEL','Diametru Oțel','Diametru']),
+      pick(row,['calitate','calitate_otel','calitate otel','Calitate Otel','Calitate Oțel','Calitate'])
+    ),
+    qty: S.toNum(pick(row,['cantitateKg','cantitate','cantitate kg','cantitate_kg','stoc initial','stoc_initial','stoc initial (kg)','stockKg','kg'])),
+    ts: rowTsFromAny(row)
+  };
+}
 function normalizeSteelSnapshotRow(row, index){
   return {
     _index:index,
@@ -427,7 +436,7 @@ function normalizeForjateConsumptionRow(row, index){
   return {
     _index:index,
     key: S.reperGroupKey((mapped && mapped.reper_debitare) || pick(row,['reper_debitare','REPER_DEBITARE']) || reperForjat),
-    qty: Math.round(S.toNum(pick(row,['buc_realizate','BUC_REALIZATE','cantitate','CANTITATE','realizat','REALIZAT','buc']))),
+    qty: Math.round(S.toNum(pick(row,['buc_realizate','BUC_REALIZATE','Buc realizate','buc realizate','cantitate','CANTITATE','realizat','REALIZAT','buc']))),
     ts: rowTsFromAny(row)
   };
 }
@@ -438,7 +447,11 @@ function shouldReplaceBaseline(existing, candidate){
   return (candidate._index || 0) > (existing._index || 0);
 }
 async function loadInventoryStocks(){
-  const steelBaseDocs = uniqueDocs(excludeIndexDocs([
+  const steelInitialDocs = uniqueDocs(excludeIndexDocs([
+    ...(await queryDocsByKeys(['stoc-initial-otel','stoc_initial_otel','inventar-otel-initial','inventar_otel_initial'])),
+    ...(await queryDocsByPrefixes(['stoc-initial-otel','stoc_initial_otel','inventar-otel-initial','inventar_otel_initial']))
+  ]));
+  const steelSnapshotDocs = uniqueDocs(excludeIndexDocs([
     ...(await queryDocsByKeys(['inventar-otel'])),
     ...(await queryDocsByPrefixes(['inventar-otel']))
   ]));
@@ -459,48 +472,100 @@ async function loadInventoryStocks(){
     ...(await queryDocsByPrefixes(['forjate']))
   ]));
 
-  const steelBaseline = new Map();
-  steelBaseDocs.flatMap(doc => extractRows(doc.content || doc.data || doc)).forEach((raw, index) => {
-    const row = normalizeSteelSnapshotRow(raw, index);
-    if(!row.key) return;
-    const existing = steelBaseline.get(row.key);
-    if(shouldReplaceBaseline(existing, row)) steelBaseline.set(row.key, row);
-  });
-  const steelByMaterial = Object.create(null);
-  steelBaseline.forEach((row, key) => { steelByMaterial[key] = S.toNum(row.qty); });
-  entryDocs.flatMap(doc => extractRows(doc.content || doc.data || doc)).forEach((raw, index) => {
-    const row = normalizeEntryStockRow(raw, index);
-    if(!row.key) return;
-    const base = steelBaseline.get(row.key);
-    if(!base || row.ts > base.ts) steelByMaterial[row.key] = S.toNum(steelByMaterial[row.key]) + S.toNum(row.qty);
-  });
-  consDocs.flatMap(doc => extractRows(doc.content || doc.data || doc)).forEach((raw, index) => {
-    const row = normalizeConsumptionStockRow(raw, index);
-    if(!row.key) return;
-    const base = steelBaseline.get(row.key);
-    if(!base || row.ts > base.ts) steelByMaterial[row.key] = S.toNum(steelByMaterial[row.key]) - S.toNum(row.qty);
-  });
+  const docTs = (doc) => {
+    const raw = doc && (doc.updated_at || (doc.content && doc.content.updated_at) || (doc.data && doc.data.updated_at));
+    const ts = raw ? Date.parse(raw) : 0;
+    return Number.isFinite(ts) ? ts : 0;
+  };
+  const addQty = (map, key, qty) => {
+    if(!key) return;
+    map[key] = S.toNum(map[key]) + S.toNum(qty);
+  };
 
+  const steelByMaterial = Object.create(null);
+  if(steelInitialDocs.length){
+    steelInitialDocs.forEach(doc => {
+      extractRows(doc.content || doc.data || doc).forEach((raw, index) => {
+        const row = normalizeInitialBaselineRow(raw, index);
+        if(!row.key) return;
+        addQty(steelByMaterial, row.key, row.qty);
+      });
+    });
+    entryDocs.forEach(doc => {
+      extractRows(doc.content || doc.data || doc).forEach((raw, index) => {
+        const row = normalizeEntryStockRow(raw, index);
+        if(!row.key) return;
+        addQty(steelByMaterial, row.key, row.qty);
+      });
+    });
+    consDocs.forEach(doc => {
+      extractRows(doc.content || doc.data || doc).forEach((raw, index) => {
+        const row = normalizeConsumptionStockRow(raw, index);
+        if(!row.key) return;
+        addQty(steelByMaterial, row.key, -S.toNum(row.qty));
+      });
+    });
+  } else {
+    const latestSteelSnapshotTs = steelSnapshotDocs.reduce((mx, doc) => Math.max(mx, docTs(doc)), 0);
+    const steelBaseline = new Map();
+    steelSnapshotDocs.forEach(doc => {
+      const currentTs = docTs(doc);
+      extractRows(doc.content || doc.data || doc).forEach((raw, index) => {
+        const row = normalizeSteelSnapshotRow(raw, index);
+        if(!row.key) return;
+        const existing = steelBaseline.get(row.key);
+        const candidate = { ...row, docTs: currentTs };
+        if(!existing || candidate.docTs > existing.docTs || (candidate.docTs === existing.docTs && candidate._index > existing._index)) {
+          steelBaseline.set(row.key, candidate);
+        }
+      });
+    });
+    steelBaseline.forEach((row, key) => { steelByMaterial[key] = S.toNum(row.qty); });
+    entryDocs.filter(doc => docTs(doc) > latestSteelSnapshotTs).forEach(doc => {
+      extractRows(doc.content || doc.data || doc).forEach((raw, index) => {
+        const row = normalizeEntryStockRow(raw, index);
+        if(!row.key) return;
+        addQty(steelByMaterial, row.key, row.qty);
+      });
+    });
+    consDocs.filter(doc => docTs(doc) > latestSteelSnapshotTs).forEach(doc => {
+      extractRows(doc.content || doc.data || doc).forEach((raw, index) => {
+        const row = normalizeConsumptionStockRow(raw, index);
+        if(!row.key) return;
+        addQty(steelByMaterial, row.key, -S.toNum(row.qty));
+      });
+    });
+  }
+
+  const latestDebSnapshotTs = debBaseDocs.reduce((mx, doc) => Math.max(mx, docTs(doc)), 0);
   const debBaseline = new Map();
-  debBaseDocs.flatMap(doc => extractRows(doc.content || doc.data || doc)).forEach((raw, index) => {
-    const row = normalizeDebInventoryBaselineRow(raw, index);
-    if(!row.key) return;
-    const existing = debBaseline.get(row.key);
-    if(shouldReplaceBaseline(existing, row)) debBaseline.set(row.key, row);
+  debBaseDocs.forEach(doc => {
+    const currentTs = docTs(doc);
+    extractRows(doc.content || doc.data || doc).forEach((raw, index) => {
+      const row = normalizeDebInventoryBaselineRow(raw, index);
+      if(!row.key) return;
+      const existing = debBaseline.get(row.key);
+      const candidate = { ...row, docTs: currentTs };
+      if(!existing || candidate.docTs > existing.docTs || (candidate.docTs === existing.docTs && candidate._index > existing._index)) {
+        debBaseline.set(row.key, candidate);
+      }
+    });
   });
   const debByReper = Object.create(null);
   debBaseline.forEach((row, key) => { debByReper[key] = Math.max(0, S.toNum(row.qty)); });
-  consDocs.flatMap(doc => extractRows(doc.content || doc.data || doc)).forEach((raw, index) => {
-    const row = normalizeDebitareProductionRow(raw, index);
-    if(!row.key) return;
-    const base = debBaseline.get(row.key);
-    if(!base || row.ts > base.ts) debByReper[row.key] = Math.max(0, S.toNum(debByReper[row.key]) + S.toNum(row.qty));
+  consDocs.filter(doc => !latestDebSnapshotTs || docTs(doc) > latestDebSnapshotTs).forEach(doc => {
+    extractRows(doc.content || doc.data || doc).forEach((raw, index) => {
+      const row = normalizeDebitareProductionRow(raw, index);
+      if(!row.key) return;
+      addQty(debByReper, row.key, row.qty);
+    });
   });
-  forjateDocs.flatMap(doc => extractRows(doc.content || doc.data || doc)).forEach((raw, index) => {
-    const row = normalizeForjateConsumptionRow(raw, index);
-    if(!row.key) return;
-    const base = debBaseline.get(row.key);
-    if(!base || row.ts > base.ts) debByReper[row.key] = Math.max(0, S.toNum(debByReper[row.key]) - S.toNum(row.qty));
+  forjateDocs.filter(doc => !latestDebSnapshotTs || docTs(doc) > latestDebSnapshotTs).forEach(doc => {
+    extractRows(doc.content || doc.data || doc).forEach((raw, index) => {
+      const row = normalizeForjateConsumptionRow(raw, index);
+      if(!row.key) return;
+      debByReper[row.key] = Math.max(0, S.toNum(debByReper[row.key]) - S.toNum(row.qty));
+    });
   });
 
   state.liveStocks = { steelByMaterial, debByReper };
@@ -559,21 +624,18 @@ async function refreshExternalSources(reason = 'Auto'){
   const now = Date.now();
   if(now - (state.lastExternalRefreshAt || 0) < 2500) return;
   state.lastExternalRefreshAt = now;
-  await loadPlanRows();
-  if(now - (state.lastHelperRefreshAt || 0) > 30000){
-    await loadHelpers();
-    state.lastHelperRefreshAt = now;
-  }
   await loadInventoryStocks();
-  await loadForjateSummary();
+      await loadForjateSummary();
+
   render();
+  if(reason && reason !== 'Auto' && typeof markSaveInfo === 'function') markSaveInfo(reason);
 }
 function startExternalRefreshLoop(){
   stopExternalRefreshLoop();
   state.externalRefreshTimer = setInterval(() => {
     if(document.hidden) return;
     refreshExternalSources('Sursă actualizată').catch(err => console.warn('refreshExternalSources', err));
-  }, 10000);
+  }, 5000);
   document.addEventListener('visibilitychange', () => {
     if(!document.hidden) refreshExternalSources('Sursă actualizată').catch(err => console.warn('refreshExternalSources', err));
   });

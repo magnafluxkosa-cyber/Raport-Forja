@@ -1,4 +1,4 @@
-// PF_BUILD: STEP5_2026-03-15_18-55
+// PF_BUILD: STEP6_2026-03-15_21-30
 
 (function(window){
   'use strict';
@@ -20,8 +20,24 @@
 
   function toNum(v) {
     if (typeof v === 'number') return Number.isFinite(v) ? v : 0;
-    const s = String(v ?? '').trim().replace(/\./g,'').replace(',', '.');
-    const n = Number(s);
+    const raw = String(v ?? '').trim();
+    if (!raw) return 0;
+    const compact = raw.replace(/\s+/g,'');
+    const hasComma = compact.includes(',');
+    const hasDot = compact.includes('.');
+    let normalized = compact;
+    if (hasComma && hasDot) {
+      normalized = compact.replace(/\./g,'').replace(',', '.');
+    } else if (hasComma) {
+      normalized = compact.replace(',', '.');
+    } else if (hasDot) {
+      const last = compact.lastIndexOf('.');
+      const decimals = compact.length - last - 1;
+      if (decimals === 3 && /^-?\d{1,3}(\.\d{3})+$/.test(compact)) {
+        normalized = compact.replace(/\./g,'');
+      }
+    }
+    const n = Number(normalized.replace(/[^0-9.-]/g,''));
     return Number.isFinite(n) ? n : 0;
   }
   function numClean(v) {
@@ -433,16 +449,15 @@
       flatSlots.forEach(slot => {
         const materialKey = materialKeyFromValues(slot.meta.diametru_otel || '', slot.meta.calitate_otel || '');
         const groupKey = reperGroupKey(slot.meta.reper_debitare || slot.reper || slot.utilaj);
-        let steelBefore = Object.prototype.hasOwnProperty.call(rollingSteelByMaterial, materialKey)
+        const steelBefore = Object.prototype.hasOwnProperty.call(rollingSteelByMaterial, materialKey)
           ? toNum(rollingSteelByMaterial[materialKey])
           : 0;
-        let debBefore = Object.prototype.hasOwnProperty.call(rollingDebByGroup, groupKey)
-          ? toNum(rollingDebByGroup[groupKey])
+        const debBefore = Object.prototype.hasOwnProperty.call(rollingDebByGroup, groupKey)
+          ? Math.max(0, toNum(rollingDebByGroup[groupKey]))
           : 0;
 
         let row;
         if (slot.realized > 0) {
-          const obs = `Exista realizari (${formatIntRO(slot.realized)} buc). Consumul este deja reflectat de FORJATE/DEBITATE.`;
           row = {
             DATA: slot.data,
             UTILAJ: slot.utilaj,
@@ -462,7 +477,7 @@
             CONSUM_DEBITAT_SIMULAT: 0,
             STOC_DEBITAT_RAMAS: numClean(debBefore),
             STATUS: 'REAL',
-            OBS: obs
+            OBS: `Exista realizari (${formatIntRO(slot.realized)} buc). Consumul este deja reflectat de FORJATE/DEBITATE.`
           };
         } else {
           const kg = toNum(slot.meta.kg_buc_debitat || 0);
