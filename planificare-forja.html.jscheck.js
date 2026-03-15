@@ -1,4 +1,8 @@
 
+
+
+
+
 (function(window){
   'use strict';
   const UTILAJE = ["5 T CHINA","MP","1,25 T","2,5 T","3 T BR","3 T ZR"];
@@ -76,6 +80,42 @@
     if (!d) return false;
     const day = d.getDay();
     return day === 0 || day === 6;
+  }
+  function sourceDateToIso(value) {
+    if (value == null || value === '') return '';
+    if (value instanceof Date && !Number.isNaN(value.getTime())) {
+      const y = value.getFullYear();
+      const m = String(value.getMonth() + 1).padStart(2, '0');
+      const d = String(value.getDate()).padStart(2, '0');
+      return `${y}-${m}-${d}`;
+    }
+    const raw = String(value).trim();
+    if (!raw) return '';
+    if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
+    if (/^\d{4}-\d{2}-\d{2}T/.test(raw)) return raw.slice(0, 10);
+    let m = raw.match(/^(\d{1,2})[.\/-](\d{1,2})[.\/-](\d{2,4})$/);
+    if (m) {
+      let dd = Number(m[1]);
+      let mm = Number(m[2]);
+      let yy = Number(m[3]);
+      if (yy < 100) yy += 2000;
+      if (mm > 12 && dd <= 12) {
+        const t = dd; dd = mm; mm = t;
+      }
+      return `${yy}-${String(mm).padStart(2, '0')}-${String(dd).padStart(2, '0')}`;
+    }
+    m = raw.match(/^(\d{4})[.\/-](\d{1,2})[.\/-](\d{1,2})$/);
+    if (m) {
+      return `${m[1]}-${String(Number(m[2])).padStart(2, '0')}-${String(Number(m[3])).padStart(2, '0')}`;
+    }
+    const dt = new Date(raw);
+    if (!Number.isNaN(dt.getTime())) {
+      const y = dt.getFullYear();
+      const mo = String(dt.getMonth() + 1).padStart(2, '0');
+      const d = String(dt.getDate()).padStart(2, '0');
+      return `${y}-${mo}-${d}`;
+    }
+    return raw;
   }
   function formatIntRO(v) {
     return new Intl.NumberFormat('ro-RO', { maximumFractionDigits:0 }).format(toNum(v));
@@ -243,11 +283,18 @@
   }
 
   function mapForjateRow(row) {
-    const data = safeText(row.data || row.DATA || row.date || '');
-    const reper = safeText(row.reper || row.REPER || row.reper_forjat || row.REPER_FORJAT || '');
-    const utilaj = utilajCanon(row.ciocan || row.utilaj || row.linie_forjare || row.LINIE_FORJARE || row.linie || row.CIOCAN || '');
-    const an = Number(row.an || row.AN || (data ? data.slice(0,4) : 0) || 0) || 0;
-    const buc = toNum(row.buc_realizate || row.BUC_REALIZATE || row.buc || row.cantitate || row.CANTITATE || row.realizat || 0);
+    const data = sourceDateToIso(row.data || row.DATA || row.date || row.DATE || row.data_lucru || row.DATA_LUCRU || '');
+    const reper = safeText(row.reper || row.REPER || row.reper_forjat || row.REPER_FORJAT || row.reperforjat || row.REPERFORJAT || '');
+    const utilaj = utilajCanon(row.ciocan || row.utilaj || row.linie_forjare || row.LINIE_FORJARE || row.linie || row.CIOCAN || row.ECHIPAMENT || row.echipament || '');
+    const an = Number(row.an || row.AN || (data ? String(data).slice(0,4) : 0) || 0) || 0;
+    const buc = toNum(
+      row.buc_realizate || row.BUC_REALIZATE ||
+      row.bucati_realizate || row.BUCATI_REALIZATE ||
+      row.realizat_buc || row.REALIZAT_BUC ||
+      row.buc || row.BUC ||
+      row.cantitate || row.CANTITATE ||
+      row.realizat || row.REALIZAT || 0
+    );
     return { an, data, utilaj, reper, buc };
   }
   function buildForjateSummary(rows, year) {
@@ -662,3 +709,559 @@
     todayIso
   };
 })(window);
+
+
+
+  (function(){
+    'use strict';
+    const S = window.RFPlanificareShared;
+    if(!S){ alert('Lipsește planificare-shared.js'); return; }
+
+    const els = {
+      yearSelect: document.getElementById('yearSelect'),
+      btnReset: document.getElementById('btnReset'),
+      btnLogout: document.getElementById('btnLogout'),
+      btnCalc: document.getElementById('btnCalc'),
+      todayText: document.getElementById('todayText'),
+      saveInfo: document.getElementById('saveInfo'),
+      hoverInfo: document.getElementById('hoverInfo'),
+      sheetWrap: document.getElementById('sheetWrap'),
+      tbodyRows: document.getElementById('tbodyRows'),
+      repereForjateList: document.getElementById('repereForjateList')
+    };
+
+    const state = {
+      supabase: null,
+      user: null,
+      role: 'viewer',
+      canEdit: false,
+      rows: S.hydrateRowsFromPayload(null),
+      activeYear: new Date().getFullYear(),
+      helperMaps: S.buildHelperMaps([], []),
+      helperRepereList: [],
+      realizedSummary: Object.create(null),
+      liveStocks: { steelByMaterial:Object.create(null), debByReper:Object.create(null) },
+      calcByYear: new Map(),
+      saveTimer: null,
+      suppressScrollSave: false,
+      pendingScroll: null,
+      updatedAt: null
+    };
+
+    function scrollKey(year){ return 'rf_planificare_forja_scroll_' + String(year || ''); }
+    function saveScrollPosition(){
+      if(state.suppressScrollSave) return;
+      try{
+        localStorage.setItem(scrollKey(state.activeYear), JSON.stringify({
+          top: els.sheetWrap.scrollTop,
+          left: els.sheetWrap.scrollLeft
+        }));
+      }catch(_e){}
+    }
+    function readScrollPosition(year){
+      try{
+        const raw = localStorage.getItem(scrollKey(year));
+        return raw ? JSON.parse(raw) : null;
+      }catch(_e){
+        return null;
+      }
+    }
+    function restoreScrollPosition(pos){
+      const target = pos || readScrollPosition(state.activeYear);
+      if(!target) return;
+      state.suppressScrollSave = true;
+      requestAnimationFrame(()=>{
+        els.sheetWrap.scrollTop = Number(target.top || 0);
+        els.sheetWrap.scrollLeft = Number(target.left || 0);
+        setTimeout(()=>{ state.suppressScrollSave = false; }, 40);
+      });
+    }
+    function markSaveInfo(text){ els.saveInfo.textContent = text || ''; }
+    function getYears(){
+      const years = Array.from(new Set((state.rows || []).map(r => Number(r.an)).filter(Boolean))).sort((a,b)=>a-b);
+      return years.length ? years : [new Date().getFullYear()];
+    }
+    function getRowsForYear(year){
+      return (state.rows || []).filter(r => Number(r.an) === Number(year)).sort((a,b)=> String(a.data).localeCompare(String(b.data)));
+    }
+    function defaultCanEdit(role){
+      const clean = String(role || 'viewer').toLowerCase();
+      return ['admin','editor','operator'].includes(clean);
+    }
+    async function initAuth(){
+      if(!window.ERPAuth) throw new Error('Lipsește auth-common.js');
+      state.supabase = window.ERPAuth.getSupabaseClient();
+      const info = await window.ERPAuth.getCurrentUserWithRole();
+      if(!info || !info.user){
+        window.location.href = window.ERPAuth.buildLoginUrl('planificare-forja.html');
+        return false;
+      }
+      state.user = info.user;
+      state.role = String(info.role || 'viewer').toLowerCase();
+      state.canEdit = defaultCanEdit(state.role);
+      els.btnCalc.style.display = state.role === 'admin' ? 'inline-flex' : 'none';
+      return true;
+    }
+    async function readDocument(docKey){
+      if(!state.supabase) return null;
+      try{
+        const res = await state.supabase.from('rf_documents').select('*').eq('doc_key', docKey).maybeSingle();
+        if(res && !res.error && res.data){
+          return {
+            updated_at: res.data.updated_at || (res.data.content && res.data.content.updated_at) || (res.data.data && res.data.data.updated_at) || null,
+            payload: res.data.content || res.data.data || null
+          };
+        }
+      }catch(_e){}
+      return null;
+    }
+    async function writeDocument(docKey, payload){
+      if(!state.supabase) throw new Error('Supabase indisponibil');
+      const ts = payload.updated_at || new Date().toISOString();
+      const body = { doc_key: docKey, content: payload, updated_at: ts };
+      let res = await state.supabase.from('rf_documents').upsert(body, { onConflict:'doc_key' });
+      if(res.error && /column\s+content/i.test(String(res.error.message || ''))){
+        res = await state.supabase.from('rf_documents').upsert({ doc_key: docKey, data: payload, updated_at: ts }, { onConflict:'doc_key' });
+      }
+      if(res.error) throw res.error;
+      return ts;
+    }
+    function applyPayload(payload, updatedAt){
+      state.rows = S.hydrateRowsFromPayload(payload);
+      state.updatedAt = updatedAt || (payload && payload.updated_at) || null;
+      const cachePayload = S.buildSavePayload(state.rows, state.updatedAt || new Date().toISOString());
+      S.cachePayload(cachePayload);
+    }
+    async function loadPlanRows(){
+      const cached = S.readCachedPayload();
+      if(cached){
+        applyPayload(cached, cached.updated_at);
+      }else{
+        state.rows = S.hydrateRowsFromPayload(null);
+      }
+      const remote = await readDocument('planificare-forja');
+      if(remote && remote.payload){
+        applyPayload(remote.payload, remote.updated_at);
+      }
+    }
+    async function loadHelpers(){
+      let forjateRows = [];
+      let debitRows = [];
+      if(state.supabase){
+        try{
+          const a = await state.supabase.from('rf_helper_repere_forjate')
+            .select('reper_forjat,reper_debitare_origine,dimensiune_otel,calitate_otel,kg_buc_forjat,is_active')
+            .order('sort_order', { ascending:true })
+            .order('reper_forjat', { ascending:true });
+          if(!a.error && Array.isArray(a.data)) forjateRows = a.data;
+        }catch(_e){}
+        try{
+          const b = await state.supabase.from('rf_helper_repere_debitare')
+            .select('reper_debitare,diametru_otel,calitate_otel,kg_buc_debitat,lungime_debitare_mm,is_active')
+            .order('sort_order', { ascending:true })
+            .order('reper_debitare', { ascending:true });
+          if(!b.error && Array.isArray(b.data)) debitRows = b.data;
+        }catch(_e){}
+      }
+      state.helperMaps = S.buildHelperMaps(forjateRows, debitRows);
+      const set = new Set();
+      (forjateRows.length ? forjateRows : S.FALLBACK_REPERE_FORJATE).forEach(row => {
+        const reper = S.safeText(row.reper_forjat || row.REPER_FORJAT);
+        if(reper) set.add(reper);
+      });
+      state.helperRepereList = Array.from(set).sort((a,b)=>a.localeCompare(b,'ro',{sensitivity:'base'}));
+      els.repereForjateList.innerHTML = state.helperRepereList.map(x => '<option value="' + x.replace(/"/g,'&quot;') + '">').join('');
+    }
+
+    function normKey(v){ return S.normUpper(String(v || '').replace(/^Ø/i,'')); }
+    function extractRows(payload){ return S.extractRowsPayload(payload); }
+    function pick(obj, keys){
+      if(!obj || typeof obj !== 'object') return '';
+      for(const key of keys){
+        if(obj[key] !== undefined && obj[key] !== null && obj[key] !== '') return obj[key];
+      }
+      const entries = Object.entries(obj).map(([k,v]) => ({ k:S.normUpper(k).replace(/[^A-Z0-9]/g,''), v }));
+      for(const key of keys){
+        const wanted = S.normUpper(key).replace(/[^A-Z0-9]/g,'');
+        const found = entries.find(e => e.k === wanted && e.v !== undefined && e.v !== null && e.v !== '');
+        if(found) return found.v;
+      }
+      return '';
+    }
+    function fmtDate(v){
+      const s = String(v || '').trim();
+      if(!s) return '';
+      if(/^\d{2}\.\d{2}\.\d{4}$/.test(s)) return s;
+      if(/^\d{4}-\d{2}-\d{2}/.test(s)){ const [y,m,d] = s.slice(0,10).split('-'); return `${d}.${m}.${y}`; }
+      return s;
+    }
+    function dateScore(v){ const s=fmtDate(v); return /^\d{2}\.\d{2}\.\d{4}$/.test(s) ? Number(s.slice(6,10)+s.slice(3,5)+s.slice(0,2)) : 0; }
+    async function queryDocsByKeys(keys){
+      const list = [...new Set((Array.isArray(keys)?keys:[]).map(x=>String(x||'').trim()).filter(Boolean))];
+      if(!list.length) return [];
+      const { data, error } = await state.supabase.from('rf_documents').select('*').in('doc_key', list);
+      if(error) throw error;
+      return Array.isArray(data) ? data : [];
+    }
+    async function queryDocsByPrefixes(prefixes){
+      const out = [];
+      for(const prefix of [...new Set((Array.isArray(prefixes)?prefixes:[]).map(x=>String(x||'').trim()).filter(Boolean))]){
+        const { data, error } = await state.supabase.from('rf_documents').select('*').like('doc_key', `${prefix}:%`);
+        if(error) throw error;
+        if(Array.isArray(data)) out.push(...data);
+      }
+      return out;
+    }
+    function uniqueDocs(docs){ const m=new Map(); (Array.isArray(docs)?docs:[]).forEach(d=>{ if(d && d.doc_key && !m.has(d.doc_key)) m.set(d.doc_key,d); }); return [...m.values()]; }
+    function excludeIndexDocs(docs){ return (Array.isArray(docs)?docs:[]).filter(doc => !String(doc.doc_key || '').toLowerCase().endsWith(':index')); }
+    function normalizeInitialRow(row){
+      return {
+        diam: String(pick(row,['diametru','diametru otel','diametru_otel','Diametru otel','Diametru']) || '').trim(),
+        cal: String(pick(row,['calitate','calitate otel','calitate_otel','Calitate otel','Calitate']) || '').trim(),
+        qty: S.toNum(pick(row,['cantitateKg','cantitate','cantitate kg','cantitate_kg','kg','stoc initial','stoc_initial']))
+      };
+    }
+    function normalizeEntryRow(row){
+      return {
+        diam: String(pick(row,['diametru','diametru otel','diametru_otel','dimensiune otel','Dimensiune Oțel','Diametru']) || '').trim(),
+        cal: String(pick(row,['calitate','calitate otel','calitate_otel','Calitate Oțel','Calitate']) || '').trim(),
+        qty: S.toNum(pick(row,['cantitate','cantitate kg','cantitate_kg','kg','H']))
+      };
+    }
+    function normalizeConsumptionRow(row){
+      let qty = S.toNum(pick(row,['total kg debitat','total_kg_debitat','totalKgDebitat','cantitate kg','cantitate_kg','kg']));
+      if(!qty){
+        const kgBuc = S.toNum(pick(row,['kg/buc','kg buc','kg_buc','Kg/buc','H']));
+        const buc = S.toNum(pick(row,['cantitate','cantitate buc','cantitate_buc','J']));
+        qty = kgBuc * buc;
+      }
+      return {
+        diam: String(pick(row,['diametru','diametru otel','diametru_otel','Diametru Oțel','Diametru']) || '').trim(),
+        cal: String(pick(row,['calitate','calitate otel','calitate_otel','Calitate Oțel','Calitate']) || '').trim(),
+        qty
+      };
+    }
+    function normalizeDebInventoryRow(row, index){
+      return {
+        _index:index,
+        reper: String(pick(row,['reper','REPER','Reper','denumire reper debitare','Denumire reper debitare']) || '').trim(),
+        qty: Math.round(S.toNum(pick(row,['cantitateBuc','STOC DEBITATE FINAL (buc)','Stoc debitate final (buc)','Stoc Debitat (Buc)']))),
+        data: fmtDate(pick(row,['data','date','DATA','Date'])),
+        an: String(pick(row,['an','anul','year','AN','Year','Anul']) || '').trim()
+      };
+    }
+    function shouldReplaceDeb(existing, candidate){
+      if(!candidate) return false;
+      if(!existing) return true;
+      const cd = dateScore(candidate.data), ed = dateScore(existing.data);
+      if(cd !== ed) return cd > ed;
+      const cy = Number(candidate.an || 0), ey = Number(existing.an || 0);
+      if(cy !== ey) return cy > ey;
+      return (candidate._index || 0) > (existing._index || 0);
+    }
+    async function loadInventoryStocks(){
+      const initialDocs = await queryDocsByKeys(['stoc-initial-otel','stoc_initial_otel','inventar-otel-initial','inventar_otel_initial']);
+      const entryDocs = uniqueDocs(excludeIndexDocs([...(await queryDocsByKeys(['intrari-otel','intrari_otel','intrari otel'])), ...(await queryDocsByPrefixes(['intrari-otel','intrari_otel']))]));
+      const consDocs = uniqueDocs(excludeIndexDocs([...(await queryDocsByKeys(['debitate','debitari'])), ...(await queryDocsByPrefixes(['debitate','debitari']))]));
+      const debInvDocs = uniqueDocs(excludeIndexDocs([...(await queryDocsByKeys(['inventar-debitat','inventar_debitat'])), ...(await queryDocsByPrefixes(['inventar-debitat','inventar_debitat','stoc-initial-debitat','stoc_initial_debitat']))]));
+
+      const steelByMaterial = Object.create(null);
+      const bump = (key, delta) => { if(!key) return; steelByMaterial[key] = S.toNum(steelByMaterial[key]) + S.toNum(delta); };
+      initialDocs.flatMap(doc => extractRows(doc.content || doc.data || doc)).map(normalizeInitialRow).forEach(r => bump(normKey(`${r.diam}|${r.cal}`), r.qty));
+      entryDocs.flatMap(doc => extractRows(doc.content || doc.data || doc)).map(normalizeEntryRow).forEach(r => bump(normKey(`${r.diam}|${r.cal}`), r.qty));
+      consDocs.flatMap(doc => extractRows(doc.content || doc.data || doc)).map(normalizeConsumptionRow).forEach(r => bump(normKey(`${r.diam}|${r.cal}`), -r.qty));
+
+      const latestDeb = new Map();
+      debInvDocs.flatMap(doc => extractRows(doc.content || doc.data || doc)).forEach((raw, index) => {
+        const row = normalizeDebInventoryRow(raw, index);
+        if(!row.reper) return;
+        const key = normKey(row.reper);
+        const existing = latestDeb.get(key);
+        if(shouldReplaceDeb(existing, row)) latestDeb.set(key, row);
+      });
+      const debByReper = Object.create(null);
+      latestDeb.forEach((row, key) => { debByReper[key] = Math.max(0, S.toNum(row.qty)); });
+
+      state.liveStocks = { steelByMaterial, debByReper };
+    }
+
+    async function loadForjateSummary(year){
+      state.realizedSummary = Object.create(null);
+      if(!state.supabase) return;
+      const docs = [];
+      const y = String(year);
+      const preferred = ['forjate:' + y, 'forjate'];
+      for (const key of preferred){
+        const doc = await readDocument(key);
+        if(doc && doc.payload){
+          docs.push(doc.payload);
+          if(key === 'forjate:' + y) break;
+        }
+      }
+      if(!docs.length) return;
+      for (const payload of docs){
+        const summary = S.buildForjateSummary(payload, year);
+        Object.keys(summary).forEach(key => {
+          state.realizedSummary[key] = S.toNum(state.realizedSummary[key]) + S.toNum(summary[key]);
+        });
+      }
+    }
+    function getCalc(){
+      if(!state.calcByYear.has(state.activeYear)){
+        state.calcByYear.set(state.activeYear, S.computeCalcForYear(getRowsForYear(state.activeYear), state.realizedSummary, state.helperMaps, state.activeYear, state.liveStocks));
+      }
+      return state.calcByYear.get(state.activeYear);
+    }
+    function invalidateCalc(){ state.calcByYear.delete(state.activeYear); }
+    function getModelFontColor(cellType, slot){
+      const style = slot && slot.style ? slot.style : {};
+      if(cellType === 'reper') return S.normalizeFontColor(style.reperFont, '#000000');
+      if(cellType === 'plan') return S.normalizeFontColor(style.planFont, '#000000');
+      return S.normalizeFontColor(style.realFont, '#000000');
+    }
+    function getModelFillColor(cellType, row, slot){
+      const style = slot && slot.style ? slot.style : {};
+      if(cellType === 'reper') return S.normalizeFill(style.reperFill, '#FFFFFF');
+      if(cellType === 'plan') return S.normalizeFill(style.planFill, '#FFFFFF');
+      if(cellType === 'real') return S.normalizeFill(style.realFill, '#FFFFFF');
+      if(cellType === 'an') return S.normalizeFill(row.styles && row.styles.anFill, '#FFFFFF');
+      if(cellType === 'date') return S.normalizeFill(row.styles && row.styles.dateFill, '#FFFFFF');
+      if(cellType === 'zi') return S.normalizeFill(row.styles && row.styles.ziFill, '#FFFFFF');
+      return '#FFFFFF';
+    }
+    function slotTextColor(slot, cellType, status){
+      const base = getModelFontColor(cellType, slot);
+      if((cellType === 'reper' || cellType === 'plan') && String(status || '').toUpperCase() === 'LIPSA'){
+        return '#c00000';
+      }
+      return base;
+    }
+    function getRealizedBg(row, slot, realized){
+      const base = getModelFillColor('real', row, slot);
+      const norm = String(base || '').trim().toLowerCase();
+      if(norm === '#00ffff') return '#00FFFF';
+      if(Number(realized || 0) > 0) return '#C6EFCE';
+      return base;
+    }
+    function formatRealized(v){ return S.formatIntRO(v || 0); }
+    function setPendingScrollFromCurrent(){
+      state.pendingScroll = { top: els.sheetWrap.scrollTop, left: els.sheetWrap.scrollLeft };
+    }
+    function buildCalcLookup(calcRows){
+      const byExact = Object.create(null);
+      const byReper = Object.create(null);
+      const bySlot = Object.create(null);
+      (Array.isArray(calcRows) ? calcRows : []).forEach(r => {
+        const data = S.safeText(r.DATA);
+        const utilaj = S.normUpper(r.UTILAJ);
+        const reper = S.normUpper(r.REPER_FORJAT);
+        const plan = S.numClean(r.PLANIFICAT_BUC || 0);
+        const status = S.safeText(r.STATUS).toUpperCase();
+        const exactKey = data + '|' + utilaj + '|' + reper + '|' + String(plan);
+        const reperKey = data + '|' + utilaj + '|' + reper;
+        const slotKey = data + '|' + utilaj;
+        byExact[exactKey] = status;
+        byReper[reperKey] = status;
+        if(!(slotKey in bySlot)) bySlot[slotKey] = status;
+      });
+      return { byExact, byReper, bySlot };
+    }
+    function getRenderStatus(lookup, data, utilaj, reper, planificat){
+      const dataKey = S.safeText(data);
+      const utilajKey = S.normUpper(utilaj);
+      const reperKey = S.normUpper(reper);
+      const planKey = String(S.numClean(planificat || 0));
+      return lookup.byExact[dataKey + '|' + utilajKey + '|' + reperKey + '|' + planKey]
+        || lookup.byReper[dataKey + '|' + utilajKey + '|' + reperKey]
+        || lookup.bySlot[dataKey + '|' + utilajKey]
+        || '';
+    }
+    function render(){
+      const rows = getRowsForYear(state.activeYear);
+      const calc = getCalc();
+      const calcLookup = buildCalcLookup(calc.rows || []);
+      const todayIso = S.todayIso();
+
+      els.tbodyRows.innerHTML = rows.map(row => {
+        const day = S.computeDayLabel(row.data);
+        const rowClass = [row.data === todayIso ? 'today' : ''].filter(Boolean).join(' ');
+        const cells = [];
+        cells.push('<td class="an" style="background:' + getModelFillColor('an', row) + ';color:' + S.normalizeFontColor(row.styles && row.styles.anFont, '#1f2937') + ';">' + (row.an || '') + '</td>');
+        cells.push('<td class="data" style="background:' + getModelFillColor('date', row) + ';color:' + S.normalizeFontColor(row.styles && row.styles.dateFont, '#1f2937') + ';">' + S.isoToDisplay(row.data) + '</td>');
+        cells.push('<td class="zi" style="background:' + getModelFillColor('zi', row) + ';color:' + S.normalizeFontColor(row.styles && row.styles.ziFont, '#1f2937') + ';">' + day + '</td>');
+        S.UTILAJE.forEach(utilaj => {
+          const slot = row.slots[utilaj];
+          const realized = S.toNum((state.realizedSummary && state.realizedSummary[row.data + '|' + S.normUpper(utilaj) + '|' + S.normUpper(slot.reper)]) || slot.realizat_seed || 0);
+          const status = getRenderStatus(calcLookup, row.data, utilaj, slot.reper, slot.planificat);
+          const reperColor = slotTextColor(slot, 'reper', status);
+          const planColor = slotTextColor(slot, 'plan', status);
+          const realColor = getModelFontColor('real', slot);
+          const realBg = getRealizedBg(row, slot, realized);
+          const isLipsa = String(status || '').toUpperCase() === 'LIPSA';
+          const editClass = state.canEdit ? ' editable' : '';
+          const title = status ? (' title="' + status + '"') : '';
+          const redClass = isLipsa ? ' calc-status-red' : '';
+          cells.push('<td class="slot-reper' + editClass + redClass + '" data-status="' + status + '" data-date="' + row.data + '" data-utilaj="' + utilaj + '" data-field="reper"' + title + ' style="background:' + getModelFillColor('reper', row, slot) + ';color:' + reperColor + ' !important;">' + (slot.reper || '') + '</td>');
+          cells.push('<td class="slot-plan' + editClass + redClass + '" data-status="' + status + '" data-date="' + row.data + '" data-utilaj="' + utilaj + '" data-field="planificat"' + title + ' style="background:' + getModelFillColor('plan', row, slot) + ';color:' + planColor + ' !important;">' + (slot.planificat ? S.formatIntRO(slot.planificat) : '') + '</td>');
+          cells.push('<td class="slot-real" style="background:' + realBg + ';color:' + realColor + ';">' + (realized ? formatRealized(realized) : '') + '</td>');
+        });
+        return '<tr class="' + rowClass + '" data-date="' + row.data + '">' + cells.join('') + '</tr>';
+      }).join('');
+
+      bindRowHover();
+      bindEditors();
+      restoreScrollPosition(state.pendingScroll);
+      state.pendingScroll = null;
+      markSaveInfo(state.updatedAt ? ('Salvat: ' + new Date(state.updatedAt).toLocaleString('ro-RO')) : 'Model Excel încărcat');
+      els.todayText.textContent = 'Astăzi: ' + new Date().toLocaleDateString('ro-RO');
+    }
+    function bindRowHover(){
+      els.tbodyRows.querySelectorAll('tr').forEach(tr => {
+        tr.addEventListener('mouseenter', () => {
+          tr.classList.add('hover');
+          els.hoverInfo.textContent = 'Data selectată: ' + tr.dataset.date.split('-').reverse().join('.');
+        });
+        tr.addEventListener('mouseleave', () => {
+          tr.classList.remove('hover');
+          els.hoverInfo.textContent = '';
+        });
+      });
+    }
+    function findRow(data){ return state.rows.find(r => r.data === data); }
+    function commitCell(data, utilaj, field, value){
+      const row = findRow(data);
+      if(!row) return;
+      const slot = row.slots[utilaj];
+      if(!slot) return;
+      if(field === 'reper'){
+        slot.reper = S.safeText(value);
+      } else if(field === 'planificat'){
+        slot.planificat = S.numClean(value || 0);
+      }
+      state.updatedAt = new Date().toISOString();
+      invalidateCalc();
+      const payload = S.buildSavePayload(state.rows, state.updatedAt);
+      S.cachePayload(payload);
+      scheduleSave(payload);
+      setPendingScrollFromCurrent();
+      render();
+    }
+    function openEditor(td){
+      if(!state.canEdit) return;
+      if(td.querySelector('input')) return;
+      const data = td.dataset.date;
+      const utilaj = td.dataset.utilaj;
+      const field = td.dataset.field;
+      const row = findRow(data);
+      if(!row) return;
+      const slot = row.slots[utilaj];
+      const current = field === 'reper' ? (slot.reper || '') : String(slot.planificat || '');
+      const input = document.createElement('input');
+      input.className = 'cell-editor';
+      input.value = current;
+      if(field === 'reper'){
+        input.setAttribute('list', 'repereForjateList');
+      } else {
+        input.type = 'number';
+        input.step = '1';
+        input.inputMode = 'numeric';
+      }
+      td.textContent = '';
+      td.appendChild(input);
+      input.focus();
+      input.select();
+      const finish = (save) => {
+        const next = save ? input.value : current;
+        commitCell(data, utilaj, field, next);
+      };
+      input.addEventListener('keydown', ev => {
+        if(ev.key === 'Enter'){ ev.preventDefault(); finish(true); }
+        if(ev.key === 'Escape'){ ev.preventDefault(); setPendingScrollFromCurrent(); render(); }
+      });
+      input.addEventListener('blur', () => finish(true), { once:true });
+    }
+    function bindEditors(){
+      if(!state.canEdit) return;
+      els.tbodyRows.querySelectorAll('td[data-field]').forEach(td => {
+        td.addEventListener('dblclick', () => openEditor(td));
+      });
+    }
+    function scheduleSave(payload){
+      if(state.saveTimer) clearTimeout(state.saveTimer);
+      markSaveInfo('Se salvează...');
+      state.saveTimer = setTimeout(async () => {
+        try{
+          payload.updated_at = state.updatedAt || new Date().toISOString();
+          await writeDocument('planificare-forja', payload);
+          markSaveInfo('Salvat: ' + new Date(payload.updated_at).toLocaleString('ro-RO'));
+        }catch(err){
+          console.error(err);
+          markSaveInfo('Eroare la salvare');
+        }
+      }, 250);
+    }
+    function renderYearOptions(){
+      const years = getYears();
+      if(!years.includes(Number(state.activeYear))) state.activeYear = years[0];
+      els.yearSelect.innerHTML = years.map(y => '<option value="' + y + '">' + y + '</option>').join('');
+      els.yearSelect.value = String(state.activeYear);
+    }
+    async function changeYear(year){
+      saveScrollPosition();
+      state.activeYear = Number(year);
+      state.calcByYear.delete(state.activeYear);
+      await loadForjateSummary(state.activeYear);
+      renderYearOptions();
+      render();
+      restoreScrollPosition();
+    }
+    function resetYearToSeed(){
+      const keep = (state.rows || []).filter(r => Number(r.an) !== Number(state.activeYear));
+      const reset = S.hydrateRowsFromPayload(null).filter(r => Number(r.an) === Number(state.activeYear));
+      state.rows = keep.concat(reset).sort((a,b)=> String(a.data).localeCompare(String(b.data)));
+      state.updatedAt = new Date().toISOString();
+      invalidateCalc();
+      const payload = S.buildSavePayload(state.rows, state.updatedAt);
+      S.cachePayload(payload);
+      scheduleSave(payload);
+      state.pendingScroll = { top:0, left:0 };
+      renderYearOptions();
+      render();
+    }
+    function openCalcPage(){
+      const next = 'planificare-calc.html?year=' + encodeURIComponent(String(state.activeYear));
+      window.location.href = next;
+    }
+
+    async function bootstrap(){
+      try{
+        const ok = await initAuth();
+        if(!ok) return;
+        await loadPlanRows();
+        await loadHelpers();
+        await loadInventoryStocks();
+        const queryYear = Number(new URLSearchParams(window.location.search).get('year') || 0);
+        const years = getYears();
+        state.activeYear = years.includes(queryYear) ? queryYear : (years.includes(new Date().getFullYear()) ? new Date().getFullYear() : years[0]);
+        renderYearOptions();
+        await loadForjateSummary(state.activeYear);
+        render();
+        restoreScrollPosition();
+      }catch(err){
+        console.error(err);
+        alert(String(err && err.message || err || 'Eroare la încărcare.'));
+      }
+    }
+
+    els.sheetWrap.addEventListener('scroll', saveScrollPosition, { passive:true });
+    els.yearSelect.addEventListener('change', () => changeYear(els.yearSelect.value));
+    els.btnReset.addEventListener('click', resetYearToSeed);
+    els.btnCalc.addEventListener('click', openCalcPage);
+    els.btnLogout.addEventListener('click', async () => {
+      try{ await window.ERPAuth.signOut(); } catch(_e){}
+      window.location.href = 'login.html';
+    });
+
+    bootstrap();
+  })();
+  
