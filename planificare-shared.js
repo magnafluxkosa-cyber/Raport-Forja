@@ -390,12 +390,12 @@
       Object.keys(debSeed).forEach(key => { rollingDebByGroup[key] = toNum(debSeed[key]); });
 
       flatSlots.forEach(slot => {
-        const matKey = materialKey(slot.meta.diametru_otel || '', slot.meta.calitate_otel || '');
+        const materialKey = normUpper(String(slot.meta.diametru_otel || '') + '|' + String(slot.meta.calitate_otel || ''));
         const groupKey = normUpper(slot.meta.reper_debitare || slot.reper || slot.utilaj);
-        let steelBefore = Object.prototype.hasOwnProperty.call(rollingSteelByMaterial, matKey)
-          ? toNum(rollingSteelByMaterial[matKey])
+        let steelBefore = Object.prototype.hasOwnProperty.call(rollingSteelByMaterial, materialKey)
+          ? toNum(rollingSteelByMaterial[materialKey])
           : (() => {
-              if (slot.base && matKey) return toNum(slot.base.STOC_OTEL_INAINTE);
+              if (slot.base && materialKey) return toNum(slot.base.STOC_OTEL_INAINTE);
               const anchor = GROUP_FIRST_ANCHOR.get(groupKey);
               return anchor ? toNum(anchor.steel) : 0;
             })();
@@ -463,7 +463,7 @@
               ? `Nu exista realizari -> simulez consumul din planificare. | Deficit debitat: ${formatIntRO(deficitDebitat)} buc | Otel necesar: ${formatKgRO(otelNeces)} kg.`
               : `Nu exista realizari -> simulez consumul din planificare.`
           };
-          rollingSteelByMaterial[matKey] = steelAfter;
+          rollingSteelByMaterial[materialKey] = steelAfter;
           rollingDebByGroup[groupKey] = debAfter;
         }
 
