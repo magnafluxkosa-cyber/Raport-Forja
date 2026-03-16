@@ -226,7 +226,7 @@
         </table>
       </div>
 
-      <div class="footerNote" id="footerNote">REALIZAT este live din Forjate când există document cloud pentru anul selectat. Verificarea stocului se face doar pentru luna curentă din anului selectat.</div>
+      <div class="footerNote" id="footerNote">REALIZAT este live din Forjate când există document cloud pentru anul selectat. Stocul de oțel se calculează ca bază inventar + intrări − kg debitate, iar planificarea consumă doar stocul debitat.</div>
     </div>
 
     <div class="lockLayer" id="lockLayer">
@@ -696,20 +696,42 @@
       const data = normalizeDateAny(
         Array.isArray(row)
           ? arrayCell(row, 2, '')
-          : pick(row, ['data','date','DATA','Date'])
+          : pick(row, ['data','date','DATA','Date','data debitare','Data debitare','DATA DEBITARE'])
       );
       const an = trimText(
         Array.isArray(row)
           ? arrayCell(row, 0, '')
-          : pick(row, ['an','anul','year','AN','Year','Anul'])
+          : pick(row, ['an','anul','year','AN','Year','Anul','an debitare','An debitare','AN DEBITARE'])
       ) || (data ? data.slice(0,4) : '');
       const lunaRaw = Array.isArray(row)
         ? arrayCell(row, 1, '')
-        : pick(row, ['luna','month','LUNA','Month','Luna']);
+        : pick(row, ['luna','month','LUNA','Month','Luna','luna debitare','Luna debitare','LUNA DEBITARE']);
       const lunaNum = monthNumberFromAny(lunaRaw) || (data ? Number(data.slice(5,7)) : 0);
-      const cantitateArray = Array.isArray(row)
-        ? (arrayCell(row, 11, '') !== '' ? arrayCell(row, 11, '') : arrayCell(row, 10, 0))
+      const arrayCantitate = Array.isArray(row)
+        ? (arrayCell(row, 10, '') !== '' ? arrayCell(row, 10, '') : arrayCell(row, 11, 0))
         : '';
+      const arrayKgBuc = Array.isArray(row)
+        ? arrayCell(row, 7, 0)
+        : 0;
+      const arrayTotalKg = Array.isArray(row)
+        ? (arrayCell(row, 12, '') !== '' ? arrayCell(row, 12, 0) : 0)
+        : 0;
+
+      const cantitateBuc = Math.max(0, Math.round(toNumber(
+        Array.isArray(row)
+          ? arrayCantitate
+          : pick(row, ['cantitateBuc','cantitate_buc','cantitate (buc)','Cantitate (buc)','cantitate','buc','bucati','bucăți','cantitate debitata','Cantitate debitata','cantitate debitată','Cantitate debitată'])
+      )));
+      const kgBuc = Math.max(0, toNumber(
+        Array.isArray(row)
+          ? arrayKgBuc
+          : pick(row, ['kg_buc','kg/buc','kg_buc_debitat','kg buc','Kg/Buc','KG/BUC','KG_BUC_DEBITAT','kg per buc','kg pe buc','kg_pe_buc'])
+      ));
+      const totalKgDebitatRaw = Array.isArray(row)
+        ? arrayTotalKg
+        : pick(row, ['totalKgDebitat','total_kg_debitat','total kg debitat','Total kg debitat','total kg','Total kg','kg_total','KG TOTAL']);
+      const totalKgDebitat = Math.max(0, toNumber(totalKgDebitatRaw || 0) || (cantitateBuc > 0 && kgBuc > 0 ? (cantitateBuc * kgBuc) : 0));
+
       return {
         id: trimText(Array.isArray(row) ? '' : pick(row, ['id','_id'])) || ('debitare-flow-' + index),
         an,
@@ -721,11 +743,19 @@
             ? arrayCell(row, 4, '')
             : pick(row, ['reper','REPER','Reper','denumire reper debitare','Denumire reper debitare'])
         ).toUpperCase(),
-        cantitateBuc: Math.max(0, Math.round(toNumber(
+        diametru: trimText(
           Array.isArray(row)
-            ? cantitateArray
-            : pick(row, ['cantitateBuc','cantitate_buc','cantitate (buc)','Cantitate (buc)','cantitate','buc','bucati','bucăți','cantitate debitata','Cantitate debitata','cantitate debitată','Cantitate debitată'])
-        )))
+            ? arrayCell(row, 5, '')
+            : pick(row, ['diametru','diametru otel','diametru_otel','Diametru','Diametru otel','Diametru oțel','dimensiune otel','dimensiune_otel'])
+        ),
+        calitate: trimText(
+          Array.isArray(row)
+            ? arrayCell(row, 6, '')
+            : pick(row, ['calitate','calitate otel','calitate_otel','Calitate','Calitate otel','Calitate oțel','marca material','Marca material'])
+        ),
+        kgBuc,
+        cantitateBuc,
+        totalKgDebitat
       };
     }
     function monthNumberFromAny(value){
@@ -1311,7 +1341,7 @@
       return { byDate, source: src, ok:Object.keys(byDate).length > 0, count:rows.length };
     }
     async function loadDebitariEntries(year){
-      if(!state.supabase) return { byDate:Object.create(null), source:'-', ok:false };
+      if(!state.supabase) return { byDate:Object.create(null), steelByDate:Object.create(null), source:'-', ok:false };
       const keys = buildFlowDocKeys(DEBITARI_FLOW_DOC_BASE_KEYS, year);
       const docs = await queryDocsByKeys(keys);
       const picked = (() => {
@@ -1321,20 +1351,27 @@
         }
         return docs.find(item => extractRowsPayload(item.content || item.data).length) || docs[0] || null;
       })();
-      if(!picked) return { byDate:Object.create(null), source:'debitari lipsă', ok:false };
+      if(!picked) return { byDate:Object.create(null), steelByDate:Object.create(null), source:'debitari lipsă', ok:false };
 
       const rows = extractRowsPayload(picked.content || picked.data)
         .map(normalizeDebitariFlowRow)
         .filter(row => !year || String(row.an) === String(year));
       const byDate = Object.create(null);
+      const steelByDate = Object.create(null);
       rows.forEach(row => {
-        if(!row.data || !row.reper || row.cantitateBuc <= 0) return;
-        const reperKey = normalizeReperLoose(row.reper);
-        byDate[row.data] = byDate[row.data] || Object.create(null);
-        byDate[row.data][reperKey] = Math.max(0, Math.round(toNumber(byDate[row.data][reperKey]) + row.cantitateBuc));
+        if(row.data && row.reper && row.cantitateBuc > 0){
+          const reperKey = normalizeReperLoose(row.reper);
+          byDate[row.data] = byDate[row.data] || Object.create(null);
+          byDate[row.data][reperKey] = Math.max(0, Math.round(toNumber(byDate[row.data][reperKey]) + row.cantitateBuc));
+        }
+        if(row.data && row.totalKgDebitat > 0 && row.diametru && row.calitate){
+          const specKey = buildSpecKey(row.diametru, row.calitate);
+          steelByDate[row.data] = steelByDate[row.data] || Object.create(null);
+          steelByDate[row.data][specKey] = toNumber(steelByDate[row.data][specKey]) + row.totalKgDebitat;
+        }
       });
       const src = picked.doc_key || 'debitate';
-      return { byDate, source: src, ok:Object.keys(byDate).length > 0, count:rows.length };
+      return { byDate, steelByDate, source: src, ok:(Object.keys(byDate).length > 0 || Object.keys(steelByDate).length > 0), count:rows.length };
     }
     async function refreshSupportData(forceRefresh){
       await loadHelperMaps(forceRefresh);
@@ -1355,6 +1392,7 @@
         steelKgBySpec: steel.map || Object.create(null),
         debitatByReper: debitat.map || Object.create(null),
         steelEntriesByDate: intrari.byDate || Object.create(null),
+        steelConsumptionsByDate: debitari.steelByDate || Object.create(null),
         debitatEntriesByDate: debitari.byDate || Object.create(null),
         steelBasePeriod: {
           year: steel.baseYear || 0,
@@ -1400,17 +1438,18 @@
       if(meta.note) lines.push(meta.note);
       lines.push('Debitat disponibil înainte: ' + roMaybeNumber(meta.beforeDebitat) + (meta.beforeDebitat ? ' buc' : '0 buc'));
       if(meta.specLabel){
-        lines.push('Oțel disponibil înainte: ' + (meta.beforeSteelKg ? String(Math.round(meta.beforeSteelKg * 1000) / 1000).replace('.',',') : '0') + ' kg (~' + roMaybeNumber(meta.beforeSteelPieces) + ' buc)');
+        lines.push('Oțel disponibil înainte (după intrări și debitări): ' + (meta.beforeSteelKg ? String(Math.round(meta.beforeSteelKg * 1000) / 1000).replace('.',',') : '0') + ' kg' + (meta.beforeSteelPieces > 0 ? ' (~' + roMaybeNumber(meta.beforeSteelPieces) + ' buc)' : ''));
       }
       lines.push((meta.usedSource === 'realizat' ? 'Realizat folosit la calcul: ' : 'Planificat folosit la calcul: ') + roMaybeNumber(meta.plan) + ' buc');
-      if(meta.deficit > 0) lines.push('Deficit: ' + roMaybeNumber(meta.deficit) + ' buc');
+      if(meta.deficit > 0) lines.push('Deficit debitat: ' + roMaybeNumber(meta.deficit) + ' buc');
       if(meta.specLabel){
-        lines.push('Rămâne după zi: debitat ' + roMaybeNumber(meta.afterDebitat) + ' buc, oțel ' + (meta.afterSteelKg ? String(Math.round(meta.afterSteelKg * 1000) / 1000).replace('.',',') : '0') + ' kg (~' + roMaybeNumber(meta.afterSteelPieces) + ' buc)');
+        lines.push('Rămâne după zi: debitat ' + roMaybeNumber(meta.afterDebitat) + ' buc, oțel ' + (meta.afterSteelKg ? String(Math.round(meta.afterSteelKg * 1000) / 1000).replace('.',',') : '0') + ' kg' + (meta.afterSteelPieces > 0 ? ' (~' + roMaybeNumber(meta.afterSteelPieces) + ' buc)' : ''));
       }else{
         lines.push('Rămâne după zi: debitat ' + roMaybeNumber(meta.afterDebitat) + ' buc');
       }
       if(meta.originReper && meta.originReper !== meta.reper) lines.push('Origine debitare: ' + meta.originReper);
       if(meta.specLabel) lines.push('Spec oțel: ' + meta.specLabel);
+      lines.push('Regulă: debitarea crește stocul debitat și scade kg din oțel; planificarea consumă doar debitatul.');
       return lines.join(' • ');
     }
     function rebuildStockCalculations(){
@@ -1442,10 +1481,13 @@
       const steelKgBySpec = Object.assign(Object.create(null), state.stockSupport.steelKgBySpec || {});
       const debitatByReper = Object.assign(Object.create(null), state.stockSupport.debitatByReper || {});
       const steelEntriesByDate = state.stockSupport.steelEntriesByDate || Object.create(null);
+      const steelConsumptionsByDate = state.stockSupport.steelConsumptionsByDate || Object.create(null);
       const debitatEntriesByDate = state.stockSupport.debitatEntriesByDate || Object.create(null);
       const steelEntryDates = Object.keys(steelEntriesByDate).filter(dateIso => !steelStartIso || dateIso >= steelStartIso).sort();
+      const steelConsumptionDates = Object.keys(steelConsumptionsByDate).filter(dateIso => !steelStartIso || dateIso >= steelStartIso).sort();
       const debitatEntryDates = Object.keys(debitatEntriesByDate).filter(dateIso => !debitatStartIso || dateIso >= debitatStartIso).sort();
       let steelEntryIndex = 0;
+      let steelConsumptionIndex = 0;
       let debitatEntryIndex = 0;
 
       function applyEntriesUpTo(dateIso){
@@ -1454,6 +1496,13 @@
           const additions = steelEntriesByDate[entryDate] || {};
           Object.keys(additions).forEach(specKey => {
             steelKgBySpec[specKey] = toNumber(steelKgBySpec[specKey]) + toNumber(additions[specKey]);
+          });
+        }
+        while(steelConsumptionIndex < steelConsumptionDates.length && steelConsumptionDates[steelConsumptionIndex] <= dateIso){
+          const entryDate = steelConsumptionDates[steelConsumptionIndex++];
+          const consumptions = steelConsumptionsByDate[entryDate] || {};
+          Object.keys(consumptions).forEach(specKey => {
+            steelKgBySpec[specKey] = Math.max(0, toNumber(steelKgBySpec[specKey]) - toNumber(consumptions[specKey]));
           });
         }
         while(debitatEntryIndex < debitatEntryDates.length && debitatEntryDates[debitatEntryIndex] <= dateIso){
@@ -1485,7 +1534,6 @@
           const beforeDebitat = Math.max(0, Math.round(toNumber(debitatByReper[debKey])));
           const beforeSteelKg = specKey ? Math.max(0, toNumber(steelKgBySpec[specKey])) : 0;
           const beforeSteelPieces = (specKey && helper.kgBuc > 0) ? Math.floor((beforeSteelKg / helper.kgBuc) + 1e-9) : 0;
-          const totalBefore = beforeDebitat + beforeSteelPieces;
 
           let afterDebitat = beforeDebitat;
           let afterSteelKg = beforeSteelKg;
@@ -1497,34 +1545,20 @@
           if(beforeDebitat >= effectiveQty){
             afterDebitat = beforeDebitat - effectiveQty;
             debitatByReper[debKey] = afterDebitat;
-          }else if(totalBefore >= effectiveQty && helper.kgBuc > 0 && specKey){
-            const needFromSteel = effectiveQty - beforeDebitat;
-            afterDebitat = 0;
-            debitatByReper[debKey] = 0;
-            afterSteelKg = Math.max(0, beforeSteelKg - (needFromSteel * helper.kgBuc));
-            steelKgBySpec[specKey] = afterSteelKg;
-            afterSteelPieces = Math.floor((afterSteelKg / helper.kgBuc) + 1e-9);
-          }else if(totalBefore > 0){
+          }else if(beforeDebitat > 0){
             status = 'partial';
-            deficit = Math.max(0, effectiveQty - totalBefore);
+            deficit = Math.max(0, effectiveQty - beforeDebitat);
             afterDebitat = 0;
             debitatByReper[debKey] = 0;
-            if(specKey && helper.kgBuc > 0){
-              const useSteelPieces = Math.min(beforeSteelPieces, Math.max(0, effectiveQty - beforeDebitat));
-              afterSteelKg = Math.max(0, beforeSteelKg - (useSteelPieces * helper.kgBuc));
-              steelKgBySpec[specKey] = afterSteelKg;
-              afterSteelPieces = Math.floor((afterSteelKg / helper.kgBuc) + 1e-9);
-            }else{
-              afterSteelKg = beforeSteelKg;
-              afterSteelPieces = beforeSteelPieces;
-              note = 'Nu am putut transforma stocul de oțel în bucăți: regulă helper incompletă.';
-            }
+            note = beforeSteelKg > 0
+              ? 'Există oțel brut rămas, dar nu există suficient material debitat pentru forjare în această zi.'
+              : 'Nu există suficient material debitat pentru forjare în această zi.';
           }else{
             status = 'empty';
             deficit = effectiveQty;
-            note = helper.kgBuc > 0 && specKey
-              ? 'Nu există stoc suficient pentru această planificare.'
-              : 'Nu există stoc debitat și nu există regulă helper completă pentru conversia din oțel.';
+            note = beforeSteelKg > 0
+              ? 'Există oțel brut rămas, dar planificarea consumă doar stocul debitat. Materialul trebuie debitat mai întâi.'
+              : 'Nu există stoc debitat suficient pentru această planificare.';
           }
 
           state.stockCalcByCell[cellCalcKey(row.id, machine)] = {
@@ -1564,9 +1598,8 @@
       const parts = [];
       if(steelBase.startLabel) parts.push('oțel din ' + steelBase.startLabel);
       if(debitatBase.startLabel) parts.push('debitat din ' + debitatBase.startLabel);
-      els.footerNote.textContent = 'REALIZAT este live din Forjate când există document cloud pentru anul selectat. Verificarea stocului pornește din luna următoare bazei din inventare' + (parts.length ? ' (' + parts.join(' • ') + ')' : '') + ' și continuă până când se schimbă luna din inventare, folosind ' + state.stockSupport.notes.join(' • ') + '.';
+      els.footerNote.textContent = 'REALIZAT este live din Forjate când există document cloud pentru anul selectat. Stocul de oțel pornește din baza inventarului, se adună cu intrările și se scade cu kg-urile debitate; planificarea consumă doar stocul debitat.' + (parts.length ? ' Baza de calcul pornește din luna următoare inventarelor (' + parts.join(' • ') + ').' : '') + ' Surse folosite: ' + state.stockSupport.notes.join(' • ') + '.';
     }
-
     function computeOrthodoxEaster(year){
       const a = year % 4;
       const b = year % 7;
