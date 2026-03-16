@@ -230,7 +230,12 @@ const RF = window.RF_CONFIG || {};
 const SUPABASE_URL = RF.SUPABASE_URL || 'https://addlybnigrywqowpbhvd.supabase.co';
 const SUPABASE_ANON_KEY = RF.SUPABASE_ANON_KEY || '';
 const DOC_TABLE = 'rf_documents';
-const DOC_KEYS = ['forjate','magnaflux','rebut-pm'];
+const LEGACY_DOC_KEYS = ['forjate','magnaflux','rebut-pm'];
+const SOURCE_CONFIGS = {
+  forjate: { legacyKey:'forjate', indexKey:'forjate:index', prefix:'forjate:' },
+  magnaflux: { legacyKey:'magnaflux', indexKey:'magnaflux:index', prefix:'magnaflux:' },
+  rebutPm: { legacyKey:'rebut-pm', indexKey:'rebut-pm:index', prefix:'rebut-pm:' }
+};
 const MONTHS = ['ianuarie','februarie','martie','aprilie','mai','iunie','iulie','august','septembrie','octombrie','noiembrie','decembrie'];
 const MF_CODES = ['LM','IBT','SM','FTT','FL','LMC','DES','AS','DIV'];
 const PM_CODES = ['06','07','13'];
@@ -374,16 +379,75 @@ function resolveRowsPayload(payload){
   if(Array.isArray(payload.table)) return payload.table;
   return [];
 }
+let __DOC_COLS = null;
+async function detectDocColumns(){
+  if(__DOC_COLS) return __DOC_COLS;
+  if(!supa) return ['content'];
+  const cols = [];
+  for(const col of ['content','data']){
+    try{
+      const { error } = await supa.from(DOC_TABLE).select(col).limit(1);
+      if(!error) cols.push(col);
+    }catch(_e){}
+  }
+  __DOC_COLS = cols.length ? cols : ['content'];
+  return __DOC_COLS;
+}
+async function fetchDocsByKeys(keys){
+  const cleanKeys = Array.from(new Set((keys || []).map(k=> normText(k)).filter(Boolean)));
+  if(!cleanKeys.length) return [];
+  const cols = await detectDocColumns();
+  const selectCols = ['doc_key', ...cols, 'updated_at'].join(',');
+  const { data, error } = await supa.from(DOC_TABLE).select(selectCols).in('doc_key', cleanKeys);
+  if(error) throw error;
+  return data || [];
+}
+function extractYearsFromIndexPayload(payload){
+  if(!payload || typeof payload !== 'object') return [];
+  const rawYears = Array.isArray(payload.years) ? payload.years : [];
+  return Array.from(new Set(rawYears.map(y=> String(y == null ? '' : y).trim()).filter(y=> /^\d{4}$/.test(y)))).sort();
+}
+async function readSourceRows(config){
+  const latests = [];
+  let rows = [];
+
+  const indexDocs = await fetchDocsByKeys([config.indexKey]).catch(()=> []);
+  const indexDoc = indexDocs[0] || null;
+  const indexPayload = indexDoc ? (indexDoc.content ?? indexDoc.data ?? null) : null;
+  const years = extractYearsFromIndexPayload(indexPayload);
+  if(indexDoc && indexDoc.updated_at) latests.push(indexDoc.updated_at);
+
+  if(years.length){
+    const yearKeys = years.map(y=> config.prefix + y);
+    const yearDocs = await fetchDocsByKeys(yearKeys);
+    yearDocs.forEach(doc=>{
+      const payload = doc ? (doc.content ?? doc.data ?? null) : null;
+      const part = resolveRowsPayload(payload);
+      if(part.length) rows = rows.concat(part);
+      if(doc && doc.updated_at) latests.push(doc.updated_at);
+    });
+    return { rows, latest: latests.filter(Boolean).sort().pop() || '' };
+  }
+
+  const legacyDocs = await fetchDocsByKeys([config.legacyKey]).catch(()=> []);
+  const legacyDoc = legacyDocs[0] || null;
+  const legacyPayload = legacyDoc ? (legacyDoc.content ?? legacyDoc.data ?? null) : null;
+  rows = resolveRowsPayload(legacyPayload);
+  if(legacyDoc && legacyDoc.updated_at) latests.push(legacyDoc.updated_at);
+  return { rows, latest: latests.filter(Boolean).sort().pop() || '' };
+}
 async function readDocs(){
   if(!supa) throw new Error('Supabase indisponibil');
   showCloud('se încarcă...');
-  const { data, error } = await supa.from(DOC_TABLE).select('*').in('doc_key', DOC_KEYS);
-  if(error) throw error;
-  const byKey = new Map((data || []).map(x=> [x.doc_key, x]));
-  state.docs.forjate = resolveRowsPayload((byKey.get('forjate')||{}).content || (byKey.get('forjate')||{}).data || []);
-  state.docs.magnaflux = resolveRowsPayload((byKey.get('magnaflux')||{}).content || (byKey.get('magnaflux')||{}).data || []);
-  state.docs.rebutPm = resolveRowsPayload((byKey.get('rebut-pm')||{}).content || (byKey.get('rebut-pm')||{}).data || []);
-  const latest = (data || []).map(x=> x.updated_at).filter(Boolean).sort().pop() || '';
+  const [forjateSrc, magnaSrc, rebutPmSrc] = await Promise.all([
+    readSourceRows(SOURCE_CONFIGS.forjate),
+    readSourceRows(SOURCE_CONFIGS.magnaflux),
+    readSourceRows(SOURCE_CONFIGS.rebutPm)
+  ]);
+  state.docs.forjate = forjateSrc.rows;
+  state.docs.magnaflux = magnaSrc.rows;
+  state.docs.rebutPm = rebutPmSrc.rows;
+  const latest = [forjateSrc.latest, magnaSrc.latest, rebutPmSrc.latest].filter(Boolean).sort().pop() || '';
   state.updatedAt = latest;
   showCloud('conectat');
   setSync(latest ? new Date(latest).toLocaleString('ro-RO') : '-');
