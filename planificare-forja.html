@@ -308,7 +308,8 @@
     const TODAY_ISO = new Date(TODAY.getTime() - TODAY.getTimezoneOffset() * 60000).toISOString().slice(0,10);
     const CURRENT_YEAR = String(TODAY.getFullYear());
     const CURRENT_MONTH_NAME = MONTHS[TODAY.getMonth()];
-    const STEEL_DOC_BASE_KEYS = ['inventar-otel','inventar_otel','inventar otel','INVENTAR_OTEL','INVENTAR OTEL','inventar-otel-initial','inventar_otel_initial','inventar otel initial','stoc-initial-otel','stoc_initial_otel','stoc initial otel'];
+    const INVENTAR_STEEL_DOC_BASE_KEYS = ['inventar-otel','inventar_otel','inventar otel','INVENTAR_OTEL','INVENTAR OTEL','inventar-otel-initial','inventar_otel_initial','inventar otel initial'];
+    const STEEL_FALLBACK_DOC_BASE_KEYS = ['stoc-initial-otel','stoc_initial_otel','stoc initial otel'];
     const DEBITAT_DOC_BASE_KEYS = ['inventar-debitat','inventar_debitat','stoc-initial-debitat','stoc_initial_debitat'];
     const INTRARI_OTEL_DOC_BASE_KEYS = ['intrari-otel','intrari_otel','intrari otel','INTRARI_OTEL','INTRARI OTEL'];
     const DEBITARI_FLOW_DOC_BASE_KEYS = ['debitate','debitari','debitate_otel','debitari_otel','DEBITATE','DEBITARI'];
@@ -1664,12 +1665,18 @@
     function buildSteelKeysForYear(year){
       const y = trimText(year) || CURRENT_YEAR;
       const keys = [];
-      STEEL_DOC_BASE_KEYS.forEach(base => {
+      INVENTAR_STEEL_DOC_BASE_KEYS.forEach(base => {
         const clean = trimText(base);
         if(!clean) return;
         keys.push(clean + ':' + y);
       });
-      keys.push.apply(keys, STEEL_DOC_BASE_KEYS);
+      keys.push.apply(keys, INVENTAR_STEEL_DOC_BASE_KEYS);
+      STEEL_FALLBACK_DOC_BASE_KEYS.forEach(base => {
+        const clean = trimText(base);
+        if(!clean) return;
+        keys.push(clean + ':' + y);
+      });
+      keys.push.apply(keys, STEEL_FALLBACK_DOC_BASE_KEYS);
       return Array.from(new Set(keys));
     }
     async function loadSteelStock(forceRefresh){
@@ -1677,6 +1684,7 @@
       const targetYear = trimText(state.activeYear || CURRENT_YEAR);
       const keys = buildSteelKeysForYear(targetYear);
       const docs = await queryDocsByKeys(keys);
+
       let pickedDoc = null;
       let pickedRows = [];
       let pickedAllRows = [];
@@ -2399,9 +2407,10 @@
 
       const snapEndSteel = findLatestSnapshotEnd(steelRows, minPlanIso);
       const snapEndDeb = findLatestSnapshotEnd(debitatRows, minPlanIso);
+      const commonSnapEnd = minIsoDate(snapEndSteel, snapEndDeb);
 
-      if(!snapEndSteel && !snapEndDeb){
-        els.footerNote.textContent = 'REALIZAT este live din Forjate când există document cloud pentru anul selectat. Nu pot determina snapshot-ul inventarelor înainte de prima zi planificată.' + buildDeliveryFooterSummary();
+      if(!commonSnapEnd){
+        els.footerNote.textContent = 'REALIZAT este live din Forjate când există document cloud pentru anul selectat. Nu pot determina snapshot-ul comun din inventare înainte de prima zi planificată.' + buildDeliveryFooterSummary();
         return;
       }
 
@@ -2410,21 +2419,20 @@
 
       steelRows.forEach(row => {
         const eom = endOfMonthIso(row && row.an, row && row.lunaNum);
-        if(!snapEndSteel || eom !== snapEndSteel) return;
+        if(eom !== commonSnapEnd) return;
         if(!row.diametru || !row.calitate) return;
         const specKey = buildSpecKey(row.diametru, row.calitate);
         steelStock[specKey] = toNumber(steelStock[specKey]) + toNumber(row.cantitateKg);
       });
       debitatRows.forEach(row => {
         const eom = endOfMonthIso(row && row.an, row && row.lunaNum);
-        if(!snapEndDeb || eom !== snapEndDeb) return;
+        if(eom !== commonSnapEnd) return;
         if(!row.reper) return;
         const repKey = normalizeReperLoose(row.reper);
         debStock[repKey] = toNumber(debStock[repKey]) + toNumber(row.cantitateBuc);
       });
 
-      const steelFromIso = snapEndSteel ? (nextDayIso(snapEndSteel) || snapEndSteel) : minPlanIso;
-      const debFromIso = snapEndDeb ? (nextDayIso(snapEndDeb) || snapEndDeb) : minPlanIso;
+      const fromIso = nextDayIso(commonSnapEnd) || commonSnapEnd;
       const steelDeltaByDate = Object.create(null);
       const debDeltaByDate = Object.create(null);
 
@@ -2438,20 +2446,18 @@
       }
 
       intrariRows.forEach(row => {
-        if(!row.data || row.data < steelFromIso || row.data > maxPlanIso) return;
+        if(!row.data || row.data < fromIso || row.data > maxPlanIso) return;
         if(!row.diametru || !row.calitate || toNumber(row.cantitateKg) === 0) return;
         addDailyDelta(steelDeltaByDate, row.data, buildSpecKey(row.diametru, row.calitate), toNumber(row.cantitateKg));
       });
 
       debitariRows.forEach(row => {
-        if(!row.data || row.data > maxPlanIso) return;
-        const includeDebFlow = row.data >= debFromIso;
-        const includeSteelFlow = row.data >= steelFromIso;
+        if(!row.data || row.data < fromIso || row.data > maxPlanIso) return;
         const repKey = normalizeReperLoose(row.reper);
-        if(includeDebFlow && repKey && toNumber(row.cantitateBuc) !== 0){
+        if(repKey && toNumber(row.cantitateBuc) !== 0){
           addDailyDelta(debDeltaByDate, row.data, repKey, toNumber(row.cantitateBuc));
         }
-        if(includeSteelFlow && row.diametru && row.calitate && toNumber(row.totalKgDebitat) !== 0){
+        if(row.diametru && row.calitate && toNumber(row.totalKgDebitat) !== 0){
           addDailyDelta(steelDeltaByDate, row.data, buildSpecKey(row.diametru, row.calitate), -toNumber(row.totalKgDebitat));
         }
       });
@@ -2459,7 +2465,7 @@
       const dictHasReal = Object.create(null);
       const dictRealBuc = Object.create(null);
       forjateRows.forEach(row => {
-        if(!row.data || row.data < debFromIso || row.data > maxPlanIso) return;
+        if(!row.data || row.data < fromIso || row.data > maxPlanIso) return;
         if(!row.machine || !row.reper) return;
         const keyReal = buildRealizedKey(row.data, row.machine, row.reper);
         if(toNumber(row.realizatBuc) > 0){
@@ -2612,9 +2618,8 @@
         });
       });
 
-      const snapSteelLabel = snapEndSteel ? isoToDisplay(snapEndSteel) : '-';
-      const snapDebLabel = snapEndDeb ? isoToDisplay(snapEndDeb) : '-';
-      els.footerNote.textContent = 'REALIZAT este live din Forjate când există document cloud pentru anul selectat. Calculul urmează regula VBA din PLANIFICARE_CALC: snapshot OȚEL până la ' + snapSteelLabel + ', snapshot DEBITAT până la ' + snapDebLabel + ', apoi pe fiecare zi se aplică separat fluxurile INTRARI_OTEL și DEBITATE pentru oțel, respectiv DEBITATE și FORJATE pentru debitat; planul se simulează doar unde nu există realizări. Surse folosite: ' + state.stockSupport.notes.join(' • ') + '.' + buildDeliveryFooterSummary();
+      const snapLabel = commonSnapEnd ? isoToDisplay(commonSnapEnd) : '';
+      els.footerNote.textContent = 'REALIZAT este live din Forjate când există document cloud pentru anul selectat. Calculul urmează regula VBA din PLANIFICARE_CALC: snapshot comun din inventare până la ' + snapLabel + ', apoi pe fiecare zi se aplică întâi INTRARI_OTEL, DEBITATE și FORJATE (realizat + rebut), iar planul se simulează doar unde nu există realizări. Surse folosite: ' + state.stockSupport.notes.join(' • ') + '.' + buildDeliveryFooterSummary();
     }
 
     function computeOrthodoxEaster(year){
