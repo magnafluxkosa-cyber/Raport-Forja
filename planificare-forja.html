@@ -304,6 +304,7 @@
     const WEEKDAYS = ['Duminică','Luni','Marți','Miercuri','Joi','Vineri','Sâmbătă'];
     const HOLIDAY_CACHE = Object.create(null);
     const HELPERS_LS_KEY = 'RF_HELPERS_v1';
+    const HELPER_DOC_ALIASES = ['helper-data','helper_data','helpers','helper-data:payload','helper_data:payload'];
     const TODAY = new Date();
     const TODAY_ISO = new Date(TODAY.getTime() - TODAY.getTimezoneOffset() * 60000).toISOString().slice(0,10);
     const CURRENT_YEAR = String(TODAY.getFullYear());
@@ -1695,7 +1696,11 @@
     }
     async function loadHelperMaps(forceRefresh){
       if(!state.supabase) return;
-      if(!forceRefresh && (Object.keys(state.helperMaps.debitByReper).length || Object.keys(state.helperMaps.forjaByReper).length)) return;
+      const hasLoaded = Object.keys(state.helperMaps.debitByReper).length || Object.keys(state.helperMaps.forjaByReper).length;
+      const loadedAt = trimText(state.helperMaps.loadedAt);
+      const loadedTs = loadedAt ? Date.parse(loadedAt) : 0;
+      const isFresh = !!(loadedTs && (Date.now() - loadedTs) < 15000);
+      if(!forceRefresh && hasLoaded && isFresh) return;
 
       let debitByReper = Object.create(null);
       let forjaByReper = Object.create(null);
@@ -1709,24 +1714,24 @@
         if(!debitRes.error && !forjaRes.error){
           (debitRes.data || []).forEach(row => {
             if(!isTruthyActive(row.is_active)) return;
-            const reper = trimText(row.reper_debitare || row.REPER_DEBITARE || '').toUpperCase();
+            const reper = trimText(row.reper_debitare || row.REPER_DEBITARE || row.reper || row.REPER || '').toUpperCase();
             if(!reper) return;
             debitByReper[reper] = {
               reper_debitare: reper,
-              diametru_otel: trimText(row.diametru_otel || row.DIAMETRU_OTEL || ''),
+              diametru_otel: trimText(row.diametru_otel || row.DIAMETRU_OTEL || row.dimensiune_otel || row.DIMENSIUNE_OTEL || ''),
               calitate_otel: trimText(row.calitate_otel || row.CALITATE_OTEL || ''),
-              kg_buc_debitat: toNumber(row.kg_buc_debitat || row.KG_BUC_DEBITAT || 0),
-              lungime_debitare_mm: toNumber(row.lungime_debitare_mm || row.LUNGIME_DEBITARE_MM || 0)
+              kg_buc_debitat: toNumber(row.kg_buc_debitat || row.KG_BUC_DEBITAT || row.kgBuc || 0),
+              lungime_debitare_mm: toNumber(row.lungime_debitare_mm || row.LUNGIME_DEBITARE_MM || row.lungime || 0)
             };
           });
           (forjaRes.data || []).forEach(row => {
             if(!isTruthyActive(row.is_active)) return;
-            const reper = trimText(row.reper_forjat || row.REPER_FORJAT || '').toUpperCase();
+            const reper = trimText(row.reper_forjat || row.REPER_FORJAT || row.reper || row.REPER || '').toUpperCase();
             if(!reper) return;
             forjaByReper[reper] = {
               reper_forjat: reper,
-              reper_debitare_origine: trimText(row.reper_debitare_origine || row.REPER_DEBITARE_ORIGINE || '').toUpperCase(),
-              dimensiune_otel: trimText(row.dimensiune_otel || row.DIMENSIUNE_OTEL || ''),
+              reper_debitare_origine: trimText(row.reper_debitare_origine || row.REPER_DEBITARE_ORIGINE || row.reper_debitat_origine || row.REPER_DEBITAT_ORIGINE || row.reper_debitare || row.REPER_DEBITARE || row.origine || '').toUpperCase(),
+              dimensiune_otel: trimText(row.dimensiune_otel || row.DIMENSIUNE_OTEL || row.diametru_otel || row.DIAMETRU_OTEL || ''),
               calitate_otel: trimText(row.calitate_otel || row.CALITATE_OTEL || ''),
               kg_buc_forjat: toNumber(row.kg_buc_forjat || row.KG_BUC_FORJAT || 0)
             };
@@ -1739,12 +1744,13 @@
 
       if(source === '-'){
         try{
-          const doc = await readDocumentCompat('helpers');
-          if(doc && (doc.content || doc.data)){
-            const parsed = parseHelpersPayload(doc.content || doc.data);
+          const docs = await queryDocsByKeys(HELPER_DOC_ALIASES);
+          const picked = (docs || []).find(doc => doc && (doc.content || doc.data)) || null;
+          if(picked){
+            const parsed = parseHelpersPayload(picked.content || picked.data);
             debitByReper = parsed.debitByReper;
             forjaByReper = parsed.forjaByReper;
-            if(Object.keys(debitByReper).length || Object.keys(forjaByReper).length) source = 'helpers (rf_documents)';
+            if(Object.keys(debitByReper).length || Object.keys(forjaByReper).length) source = (picked.doc_key || 'helper-data') + ' (rf_documents)';
           }
         }catch(_e){}
       }
@@ -1933,7 +1939,8 @@
     }
 
     async function refreshSupportData(forceRefresh){
-      await loadHelperMaps(forceRefresh);
+      const helperForceRefresh = !!forceRefresh || !state.helperMaps.loadedAt || /cache local|rf_documents/i.test(trimText(state.helperMaps.source));
+      await loadHelperMaps(helperForceRefresh);
       const targetYear = state.activeYear || CURRENT_YEAR;
       const steel = await loadSteelStock(forceRefresh);
       const debitat = await loadDebitatStock(targetYear);
@@ -2001,13 +2008,45 @@
       const reperRaw = normUpper(reper);
       const reperKey = normalizeReperLoose(reper);
       const forja = findLooseMapValue(state.helperMaps.forjaByReper, reperRaw) || null;
-      const originReperRaw = trimText((forja && forja.reper_debitare_origine) || reperRaw).toUpperCase();
+      const originCandidatesRaw = [
+        trimText(forja && (forja.reper_debitare_origine || forja.reper_debitat_origine || forja.reper_debitare || forja.origine || '')),
+        reperRaw
+      ].map(v => trimText(v).toUpperCase()).filter(Boolean);
+      const originReperRaw = originCandidatesRaw[0] || reperRaw;
       const originReper = normalizeReperLoose(originReperRaw || reperKey);
       const debit = findLooseMapValue(state.helperMaps.debitByReper, originReperRaw) || findLooseMapValue(state.helperMaps.debitByReper, reperRaw) || null;
       const diametru = trimText((debit && debit.diametru_otel) || (forja && forja.dimensiune_otel) || '');
       const calitate = trimText((debit && debit.calitate_otel) || (forja && forja.calitate_otel) || '');
       const kgBuc = Math.max(0, toNumber((debit && debit.kg_buc_debitat) || 0));
-      return { reperKey, reperRaw, forja, debit, originReper, originReperRaw, diametru, calitate, kgBuc };
+      return { reperKey, reperRaw, forja, debit, originReper, originReperRaw, originCandidatesRaw, diametru, calitate, kgBuc };
+    }
+    function resolveDebitatStockRef(helper, stockMap){
+      const src = stockMap || Object.create(null);
+      const candidates = [];
+      function addCandidate(value){
+        const raw = trimText(value);
+        if(!raw) return;
+        const normalized = normalizeReperLoose(raw);
+        [raw, normalized].forEach(key => {
+          const clean = trimText(key);
+          if(clean && !candidates.includes(clean)) candidates.push(clean);
+        });
+      }
+      (Array.isArray(helper && helper.originCandidatesRaw) ? helper.originCandidatesRaw : []).forEach(addCandidate);
+      addCandidate(helper && helper.originReperRaw);
+      addCandidate(helper && helper.originReper);
+      addCandidate(helper && helper.reperRaw);
+      addCandidate(helper && helper.reperKey);
+
+      let chosen = candidates.find(key => Object.prototype.hasOwnProperty.call(src, key) && toNumber(src[key]) !== 0);
+      if(!chosen) chosen = candidates.find(key => Object.prototype.hasOwnProperty.call(src, key));
+      const fallback = trimText((helper && (helper.originReper || helper.reperKey)) || '');
+      const key = chosen || fallback;
+      return {
+        key,
+        value: key ? toNumber(src[key]) : 0,
+        usedAlias: !!(key && fallback && normalizeReperLoose(key) !== normalizeReperLoose(fallback))
+      };
     }
     function cellCalcKey(rowId, machine){
       return String(rowId) + '|' + String(machine);
@@ -2628,15 +2667,19 @@
           const bucDeSimulat = hasReal ? 0 : planBuc;
 
           const helper = resolvePlanningHelper(reperForjat);
-          const reperDeb = helper.originReper || normalizeReperLoose(reperForjat);
+          const debStockRef = resolveDebitatStockRef(helper, debStock);
+          const reperDeb = debStockRef.key || helper.originReper || normalizeReperLoose(reperForjat);
           const specKey = helper.diametru && helper.calitate ? buildSpecKey(helper.diametru, helper.calitate) : '';
           const stOtelInainte = specKey ? toNumber(steelStock[specKey]) : 0;
-          const stDebInainte = reperDeb ? toNumber(debStock[reperDeb]) : 0;
+          const stDebInainte = Math.max(0, toNumber(debStockRef.value));
           const kgBuc = Math.max(0, toNumber(helper.kgBuc));
           const coverageRatio = hasReal ? 1 : (planBuc > 0 ? Math.max(0, Math.min(1, ((Math.max(0, stDebInainte) + (kgBuc > 0 ? (Math.max(0, stOtelInainte) / kgBuc) : 0)) / planBuc))) : 0);
 
           let mode = hasReal ? 'real' : 'simulated';
           let note = hasReal ? 'Există realizări reale; nu se simulează planul.' : 'Nu există realizări reale; se simulează planul din VBA.';
+          if(debStockRef.usedAlias){
+            note += ' Stocul debitat a fost citit pe aliasul ' + reperDeb + '.';
+          }
           let needSteelKg = 0;
           let afterSteelKg = stOtelInainte;
           let afterDebitat = stDebInainte;
