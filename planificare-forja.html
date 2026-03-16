@@ -1662,59 +1662,59 @@
       };
     }
 
-    function buildSteelKeysForYear(year){
+    function buildSteelDocKeysForYear(year){
       const y = trimText(year) || CURRENT_YEAR;
       const keys = [];
       INVENTAR_STEEL_DOC_BASE_KEYS.forEach(base => {
         const clean = trimText(base);
         if(!clean) return;
         keys.push(clean + ':' + y);
+        keys.push(clean);
       });
-      keys.push.apply(keys, INVENTAR_STEEL_DOC_BASE_KEYS);
       STEEL_FALLBACK_DOC_BASE_KEYS.forEach(base => {
         const clean = trimText(base);
         if(!clean) return;
         keys.push(clean + ':' + y);
+        keys.push(clean);
       });
-      keys.push.apply(keys, STEEL_FALLBACK_DOC_BASE_KEYS);
       return Array.from(new Set(keys));
     }
     async function loadSteelStock(forceRefresh){
       if(!state.supabase) return { map:Object.create(null), rows:[], source:'-', ok:false, period:'', baseYear:0, baseMonth:0, startIso:'', startLabel:'' };
-      const targetYear = trimText(state.activeYear || CURRENT_YEAR);
-      const keys = buildSteelKeysForYear(targetYear);
+      const selectedYear = Number(trimText(state.currentYear) || CURRENT_YEAR) || 0;
+      const keys = buildSteelDocKeysForYear(selectedYear);
       const docs = await queryDocsByKeys(keys);
-
+      const candidates = docs.map(doc => {
+        const allRows = extractRowsPayload(doc.content || doc.data).map(normalizeSteelRow);
+        const rowsForYear = selectedYear
+          ? allRows.filter(row => {
+              const rowYear = Number(normalizePeriodYear(row) || 0);
+              return rowYear === selectedYear;
+            })
+          : allRows.slice();
+        return { doc, allRows, rowsForYear };
+      });
+      const inventoryPriority = keys.filter(key => INVENTAR_STEEL_DOC_BASE_KEYS.some(base => key === base || key === (base + ':' + selectedYear)));
+      const fallbackPriority = keys.filter(key => STEEL_FALLBACK_DOC_BASE_KEYS.some(base => key === base || key === (base + ':' + selectedYear)));
       let pickedDoc = null;
       let pickedRows = [];
-      let pickedAllRows = [];
-      let fallbackDoc = null;
-      let fallbackRows = [];
-      let fallbackAllRows = [];
-
-      for(const key of keys){
-        const doc = docs.find(item => item.doc_key === key);
-        if(!doc) continue;
-        const allRows = extractRowsPayload(doc.content || doc.data).map(normalizeSteelRow);
-        if(!allRows.length) continue;
-        const rowsForYear = targetYear ? allRows.filter(row => String(row.an || '') === String(targetYear)) : allRows.slice();
-        if(rowsForYear.length){
-          pickedDoc = doc;
-          pickedRows = rowsForYear;
-          pickedAllRows = allRows;
-          break;
-        }
-        if(!fallbackDoc){
-          fallbackDoc = doc;
-          fallbackRows = allRows;
-          fallbackAllRows = allRows;
+      for(const key of inventoryPriority){
+        const hit = candidates.find(item => item.doc.doc_key === key && item.rowsForYear.length);
+        if(hit){ pickedDoc = hit.doc; pickedRows = hit.rowsForYear; break; }
+      }
+      if(!pickedDoc){
+        for(const key of fallbackPriority){
+          const hit = candidates.find(item => item.doc.doc_key === key && item.rowsForYear.length);
+          if(hit){ pickedDoc = hit.doc; pickedRows = hit.rowsForYear; break; }
         }
       }
-
-      if(!pickedDoc && fallbackDoc){
-        pickedDoc = fallbackDoc;
-        pickedRows = fallbackRows;
-        pickedAllRows = fallbackAllRows;
+      if(!pickedDoc){
+        const anyInventory = candidates.find(item => item.rowsForYear.length && INVENTAR_STEEL_DOC_BASE_KEYS.some(base => item.doc.doc_key === base || item.doc.doc_key === (base + ':' + selectedYear)));
+        if(anyInventory){ pickedDoc = anyInventory.doc; pickedRows = anyInventory.rowsForYear; }
+      }
+      if(!pickedDoc){
+        const anyFallback = candidates.find(item => item.rowsForYear.length);
+        if(anyFallback){ pickedDoc = anyFallback.doc; pickedRows = anyFallback.rowsForYear; }
       }
       if(!pickedDoc) return { map:Object.create(null), rows:[], source:'inventar-otel lipsă', ok:false, period:'', baseYear:0, baseMonth:0, startIso:'', startLabel:'' };
 
@@ -1730,7 +1730,7 @@
       const src = pickedDoc.doc_key || 'inventar-otel';
       return {
         map: bySpec,
-        rows: pickedAllRows,
+        rows: pickedRows,
         source: latest.label ? (src + ' • ' + latest.label) : src,
         ok:true,
         count:useRows.length,
