@@ -316,6 +316,7 @@
     const DELIVERY_DOC_ALIASES = ['comenzi-livrare','comenzi livrare'];
     const FORJAT_INV_BASE_KEYS = ['inventar-forjat','inventar_forjat','inventar-forjate','inventar_forjate','inventar-piese-forjate','inventar_piese_forjate','stoc-forjate','stoc_forjate'];
     const LOCK_DOC_KEY = 'planificare-forja:locks';
+    const PLAN_SYNC_CHANNEL_TOPIC = 'planificare-forja-sync';
     const PLAN_SYNC_INTERVAL_MS = 2500;
     const LOCK_SYNC_INTERVAL_MS = 2500;
     const LOCK_HEARTBEAT_MS = 4000;
@@ -396,7 +397,9 @@
       planPollTimer: null,
       lockSyncBusy: false,
       planSyncBusy: false,
-      hasPendingLocalChanges: false
+      hasPendingLocalChanges: false,
+      planBroadcastChannel: null,
+      remoteApplyTimer: null
     };
 
     function safeText(v){ return String(v == null ? '' : v); }
@@ -912,6 +915,57 @@
         }
       }, LOCK_HEARTBEAT_MS);
     }
+    function scheduleRemotePlanApply(sourceLabel){
+      if(state.planSyncBusy || !state.supabase) return;
+      if(document.visibilityState === 'hidden') return;
+      if(state.isEditing || state.hasPendingLocalChanges || state.saveTimer) return;
+      if(state.remoteApplyTimer){
+        clearTimeout(state.remoteApplyTimer);
+        state.remoteApplyTimer = null;
+      }
+      state.remoteApplyTimer = setTimeout(async function(){
+        state.remoteApplyTimer = null;
+        const uiState = captureUiState();
+        try{
+          await loadPlanDocument(true);
+          ensureFilters();
+          renderFilters();
+          await refreshLiveAndSupport(true, uiState);
+          els.cloudValue.textContent = 'Cloud actualizat';
+          els.cloudSub.textContent = (sourceLabel || 'Plan sincronizat') + ': ' + formatDateTime(state.updatedAt || nowIso());
+        }catch(error){
+          console.error('scheduleRemotePlanApply', error);
+        }
+      }, 120);
+    }
+    function initPlanBroadcastSync(){
+      if(!state.supabase || typeof state.supabase.channel !== 'function') return;
+      try{
+        if(state.planBroadcastChannel && typeof state.supabase.removeChannel === 'function'){
+          try{ state.supabase.removeChannel(state.planBroadcastChannel); }catch(_removeErr){}
+        }
+        const channel = state.supabase.channel(PLAN_SYNC_CHANNEL_TOPIC);
+        channel.on('broadcast', { event:'plan-saved' }, function(payload){
+          const data = payload && payload.payload ? payload.payload : {};
+          const sourceSession = trimText(data.session_id || '');
+          if(sourceSession && sourceSession === state.sessionId) return;
+          const remoteUpdated = trimText(data.updated_at || '');
+          if(remoteUpdated && state.updatedAt && String(remoteUpdated) <= String(state.updatedAt)) return;
+          scheduleRemotePlanApply('Cloud sincronizat instant');
+        });
+        channel.subscribe(function(status){
+          if(status === 'SUBSCRIBED'){
+            els.cloudSub.textContent = state.updatedAt
+              ? ('Ultima sincronizare plan: ' + formatDateTime(state.updatedAt))
+              : 'Sincronizare live activă pentru planificare.';
+          }
+        });
+        state.planBroadcastChannel = channel;
+      }catch(error){
+        console.error('initPlanBroadcastSync', error);
+      }
+    }
+
     async function pollRemotePlanDocument(){
       if(state.planSyncBusy || !state.supabase) return;
       if(document.visibilityState === 'hidden') return;
@@ -940,6 +994,7 @@
     function startCollaborativeSync(){
       if(state.lockPollTimer) clearInterval(state.lockPollTimer);
       if(state.planPollTimer) clearInterval(state.planPollTimer);
+      initPlanBroadcastSync();
       state.lockPollTimer = setInterval(function(){ refreshRemoteLocks(false); }, LOCK_SYNC_INTERVAL_MS);
       state.planPollTimer = setInterval(function(){ pollRemotePlanDocument(); }, PLAN_SYNC_INTERVAL_MS);
     }
@@ -947,6 +1002,11 @@
       if(state.lockPollTimer){ clearInterval(state.lockPollTimer); state.lockPollTimer = null; }
       if(state.planPollTimer){ clearInterval(state.planPollTimer); state.planPollTimer = null; }
       if(state.lockHeartbeatTimer){ clearInterval(state.lockHeartbeatTimer); state.lockHeartbeatTimer = null; }
+      if(state.remoteApplyTimer){ clearTimeout(state.remoteApplyTimer); state.remoteApplyTimer = null; }
+      if(state.planBroadcastChannel && state.supabase && typeof state.supabase.removeChannel === 'function'){
+        try{ await state.supabase.removeChannel(state.planBroadcastChannel); }catch(error){ console.error('remove plan channel', error); }
+      }
+      state.planBroadcastChannel = null;
       await releaseCurrentCellLock({ silent:true, skipSave:true });
     }
 
@@ -2391,22 +2451,21 @@
       }
 
       const calcYear = Number(state.activeYear || CURRENT_YEAR) || Number(CURRENT_YEAR);
-      let calcStartMonthNum = 0;
+      let calcMonthNum = 0;
       if(String(calcYear) === String(CURRENT_YEAR)){
-        calcStartMonthNum = TODAY.getMonth() + 1;
+        calcMonthNum = TODAY.getMonth() + 1;
       } else {
         allPlanItems.forEach(item => {
-          if(String(item.rowIso || '').slice(0,4) !== String(calcYear)) return;
           const m = Number(String(item.rowIso || '').slice(5,7)) || 0;
-          if(m > 0 && (!calcStartMonthNum || m < calcStartMonthNum)) calcStartMonthNum = m;
+          if(m > calcMonthNum) calcMonthNum = m;
         });
       }
 
       const planItems = allPlanItems.filter(item => {
         if(String(item.rowIso || '').slice(0,4) !== String(calcYear)) return false;
-        if(calcStartMonthNum){
+        if(calcMonthNum){
           const rowMonth = Number(String(item.rowIso || '').slice(5,7)) || 0;
-          if(rowMonth < calcStartMonthNum) return false;
+          if(rowMonth !== calcMonthNum) return false;
         }
         return true;
       });
@@ -2420,8 +2479,8 @@
       });
 
       if(!planItems.length || !minPlanIso || !maxPlanIso){
-        const monthLabel = calcStartMonthNum ? getMonthName(calcStartMonthNum) : '-';
-        els.footerNote.textContent = 'REALIZAT este live din Forjate când există document cloud pentru anul selectat. Nu există poziții cu planificat > 0 din luna de calcul ' + monthLabel + ' ' + calcYear + ' până la sfârșitul anului.' + buildDeliveryFooterSummary();
+        const monthLabel = calcMonthNum ? getMonthName(calcMonthNum) : '-';
+        els.footerNote.textContent = 'REALIZAT este live din Forjate când există document cloud pentru anul selectat. Nu există poziții cu planificat > 0 pentru luna de calcul ' + monthLabel + ' ' + calcYear + '.' + buildDeliveryFooterSummary();
         return;
       }
 
@@ -2659,8 +2718,8 @@
 
       const snapLabelSteel = snapEndSteel ? isoToDisplay(snapEndSteel) : '-';
       const snapLabelDeb = snapEndDeb ? isoToDisplay(snapEndDeb) : '-';
-      const calcMonthLabel = calcStartMonthNum ? getMonthName(calcStartMonthNum) : '-';
-      els.footerNote.textContent = 'REALIZAT este live din Forjate când există document cloud pentru anul selectat. Calculul stocului pornește din luna ' + calcMonthLabel + ' ' + calcYear + ' și continuă până la sfârșitul anului: stoc oțel din snapshot-ul ' + snapLabelSteel + ', stoc debitat din snapshot-ul ' + snapLabelDeb + ', apoi pe fiecare zi se aplică INTRARI_OTEL, DEBITATE și FORJATE (realizat + rebut) pe tot intervalul rămas din an. Surse folosite: ' + state.stockSupport.notes.join(' • ') + '.' + buildDeliveryFooterSummary();
+      const calcMonthLabel = calcMonthNum ? getMonthName(calcMonthNum) : '-';
+      els.footerNote.textContent = 'REALIZAT este live din Forjate când există document cloud pentru anul selectat. Calculul stocului se face doar pentru luna ' + calcMonthLabel + ' ' + calcYear + ': stoc oțel din snapshot-ul ' + snapLabelSteel + ', stoc debitat din snapshot-ul ' + snapLabelDeb + ', apoi pe fiecare zi se aplică INTRARI_OTEL, DEBITATE și FORJATE (realizat + rebut) numai în fereastra lunii calculate. Surse folosite: ' + state.stockSupport.notes.join(' • ') + '.' + buildDeliveryFooterSummary();
     }
 
     function computeOrthodoxEaster(year){
@@ -2958,11 +3017,30 @@
 
     async function saveNow(){
       if(!state.canEdit) return;
+      if(state.saveTimer){
+        clearTimeout(state.saveTimer);
+        state.saveTimer = null;
+      }
       try{
         state.updatedAt = nowIso();
         const payload = buildPayload();
         payload.updated_at = state.updatedAt;
         await writeDocumentCompat(DOC_KEY, payload);
+        if(state.planBroadcastChannel && typeof state.planBroadcastChannel.send === 'function'){
+          try{
+            state.planBroadcastChannel.send({
+              type:'broadcast',
+              event:'plan-saved',
+              payload:{
+                doc_key: DOC_KEY,
+                updated_at: state.updatedAt,
+                session_id: state.sessionId
+              }
+            });
+          }catch(error){
+            console.error('broadcast plan save', error);
+          }
+        }
         state.hasPendingLocalChanges = false;
         els.cloudValue.textContent = 'Cloud salvat';
         els.cloudSub.textContent = 'Ultima sincronizare plan: ' + formatDateTime(state.updatedAt);
