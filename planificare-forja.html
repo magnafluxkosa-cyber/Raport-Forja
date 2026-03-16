@@ -82,6 +82,16 @@
       border-top-color:#5f8fbe !important;
       border-bottom-color:#5f8fbe !important;
     }
+    tbody tr.row-selected td,
+    tbody tr.row-selected td .cell-static,
+    tbody tr.row-selected td .cell-input,
+    tbody tr.row-selected td .readonly{
+      box-shadow: inset 0 0 0 9999px rgba(95,143,190,.18) !important;
+    }
+    tbody tr.row-selected td{
+      border-top-color:#0b5ed7 !important;
+      border-bottom-color:#0b5ed7 !important;
+    }
     .sticky1,.sticky2,.sticky3{position:sticky;left:0;z-index:22;background:inherit}
     .sticky2{left:64px;z-index:23}
     .sticky3{left:174px;z-index:24}
@@ -175,7 +185,8 @@
       </div>
       <div class="actions">
         <a class="back-btn" href="index.html">Înapoi la Dashboard</a>
-        <button class="btn secondary" type="button" id="btnAddRow">Adaugă rând</button>
+        <button class="btn secondary" type="button" id="btnAddRow">Adaugă sub rândul selectat</button>
+        <button class="btn secondary" type="button" id="btnDeleteRow">Șterge rândul selectat</button>
         <button class="btn secondary" type="button" id="btnRefresh">Refresh realizat</button>
         <button class="btn" type="button" id="btnSave">Salvează acum</button>
       </div>
@@ -279,6 +290,7 @@
       planBody: document.getElementById('planBody'),
       btnRefresh: document.getElementById('btnRefresh'),
       btnAddRow: document.getElementById('btnAddRow'),
+      btnDeleteRow: document.getElementById('btnDeleteRow'),
       btnSave: document.getElementById('btnSave'),
       tableWrap: document.getElementById('tableWrap'),
       modePill: document.getElementById('modePill'),
@@ -317,10 +329,15 @@
       helperMaps: { debitByReper:Object.create(null), forjaByReper:Object.create(null), source:'-', loadedAt:'' },
       stockSupport: { steelKgBySpec:Object.create(null), debitatByReper:Object.create(null), steelEntriesByDate:Object.create(null), debitatEntriesByDate:Object.create(null), helperOk:false, steelOk:false, debitatOk:false, intrariOk:false, debitariFlowOk:false, notes:[] },
       stockCalcByCell: Object.create(null),
-      hoveredRowId: ''
+      hoveredRowId: '',
+      selectedRowId: ''
     };
 
     function safeText(v){ return String(v == null ? '' : v); }
+    function cssEscape(value){
+      if(typeof CSS !== 'undefined' && CSS && typeof CSS.escape === 'function') return CSS.escape(safeText(value));
+      return safeText(value).replace(/[^a-zA-Z0-9_-]/g, function(ch){ return '\\' + ch; });
+    }
     function trimText(v){ return safeText(v).trim(); }
     function stripDiacritics(v){ return safeText(v).normalize('NFD').replace(/[\u0300-\u036f]/g, ''); }
     function norm(v){ return stripDiacritics(v).toLowerCase().replace(/\s+/g,' ').trim(); }
@@ -931,6 +948,48 @@
           return normUpper(slot.reper).includes(search);
         });
       });
+    }
+    function setSelectedRow(rowId){
+      state.selectedRowId = trimText(rowId);
+      syncSelectedRowUi();
+    }
+    function syncSelectedRowUi(){
+      const selectedId = trimText(state.selectedRowId);
+      const visibleRows = Array.from(els.planBody.querySelectorAll('tr[data-row-id]'));
+      visibleRows.forEach(row => {
+        row.classList.toggle('row-selected', selectedId && row.getAttribute('data-row-id') === selectedId);
+      });
+      updateRowActionUi();
+    }
+    function getSelectedVisibleRow(){
+      const selectedId = trimText(state.selectedRowId);
+      if(!selectedId) return null;
+      const visibleRows = getFilteredRows();
+      return visibleRows.find(row => String(row.id) === selectedId) || null;
+    }
+    function updateRowActionUi(){
+      const selectedVisibleRow = getSelectedVisibleRow();
+      const canUseRowActions = !!(state.canEdit && selectedVisibleRow);
+      if(els.btnAddRow){
+        els.btnAddRow.disabled = !canUseRowActions;
+        els.btnAddRow.style.opacity = canUseRowActions ? '1' : '.55';
+      }
+      if(els.btnDeleteRow){
+        els.btnDeleteRow.disabled = !canUseRowActions;
+        els.btnDeleteRow.style.opacity = canUseRowActions ? '1' : '.55';
+      }
+    }
+    function reindexRowsInDisplayOrder(rows){
+      const list = Array.isArray(rows) ? rows.slice() : [];
+      const counters = Object.create(null);
+      list.forEach(row => {
+        const yearKey = String(row && row.an != null ? row.an : '');
+        counters[yearKey] = (counters[yearKey] || 0) + 1;
+        row.row_no = counters[yearKey];
+        row.luna = getMonthName(Number(trimText(row.data).slice(5,7)));
+        row.zi = getWeekdayLabel(trimText(row.data));
+      });
+      return list;
     }
     function renderFilters(){
       const years = Array.from(new Set(state.rows.map(row => String(row.an || '')).filter(Boolean))).sort();
@@ -1929,10 +1988,15 @@
     function renderTable(preserveUi){
       const uiState = preserveUi ? captureUiState() : null;
       const rows = getFilteredRows();
+      if(state.selectedRowId && !rows.some(row => String(row.id) === String(state.selectedRowId))){
+        state.selectedRowId = '';
+      }
       updateStatusCards(rows);
       if(!rows.length){
+        state.selectedRowId = '';
         els.planBody.innerHTML = '<tr><td colspan="21"><div class="empty">Nu există rânduri pentru filtrul curent.</div></td></tr>';
         restoreUiState(uiState);
+        updateRowActionUi();
         return;
       }
 
@@ -1940,7 +2004,8 @@
         const highlight = getRowHighlight(row);
         const dateTitle = highlight.holiday ? (' title="' + escapeHtml(highlight.holiday) + '"') : '';
         const hoverClass = trimText(state.hoveredRowId) === String(row.id) ? ' row-hover' : '';
-        return `<tr class="${escapeHtml(highlight.rowClass)}${hoverClass}" data-row-id="${escapeHtml(row.id)}">
+        const selectedClass = trimText(state.selectedRowId) === String(row.id) ? ' row-selected' : '';
+        return `<tr class="${escapeHtml(highlight.rowClass)}${hoverClass}${selectedClass}" data-row-id="${escapeHtml(row.id)}">
           <td class="sticky1"><div class="cell-static">${escapeHtml(row.an)}</div></td>
           <td class="sticky2${highlight.holiday ? ' date-holiday' : ''}"${dateTitle}><div class="cell-static muted"${dateTitle}>${escapeHtml(isoToDisplay(row.data))}</div></td>
           <td class="sticky3"><div class="cell-static muted">${escapeHtml(row.zi)}</div></td>
@@ -1966,6 +2031,7 @@
         </tr>`;
       }).join('');
       restoreUiState(uiState);
+      syncSelectedRowUi();
     }
 
     function findRow(rowId){
@@ -2014,18 +2080,62 @@
         }, {})
       };
     }
+    function buildBlankRowFromReference(referenceRow){
+      const ref = referenceRow || {};
+      const iso = trimText(ref.data) || (String(ref.an || state.activeYear || CURRENT_YEAR) + '-01-01');
+      return {
+        id: 'row-' + Date.now() + '-' + Math.random().toString(36).slice(2),
+        row_no: Number(ref.row_no || 0) + 1,
+        an: Number(ref.an || state.activeYear || CURRENT_YEAR),
+        luna: getMonthName(Number(iso.slice(5,7))),
+        data: iso,
+        zi: getWeekdayLabel(iso),
+        slots: MACHINE_ORDER.reduce((acc, machine) => {
+          acc[machine] = normalizePlanSlot({});
+          return acc;
+        }, {})
+      };
+    }
     async function addRow(){
       if(!state.canEdit) return;
-      const year = trimText(state.activeYear) || pickDefaultYear() || CURRENT_YEAR;
-      const row = buildNewRowForYear(year);
-      state.rows.push(row);
-      state.rows = sortRowsStable(state.rows);
+      const selectedRow = getSelectedVisibleRow();
+      if(!selectedRow){
+        window.alert('Selectează mai întâi rândul sub care vrei să adaugi.');
+        return;
+      }
+      const uiState = captureUiState();
+      const orderedRows = reindexRowsInDisplayOrder(sortRowsStable(state.rows));
+      const insertIndex = orderedRows.findIndex(row => String(row.id) === String(selectedRow.id));
+      const row = buildBlankRowFromReference(selectedRow);
+      orderedRows.splice(insertIndex + 1, 0, row);
+      state.rows = reindexRowsInDisplayOrder(orderedRows);
+      state.selectedRowId = row.id;
       renderFilters();
       queueSave();
       rebuildLocalDerived();
       requestAnimationFrame(() => {
-        try{ els.tableWrap.scrollTop = els.tableWrap.scrollHeight; }catch(_e){}
+        restoreUiState(uiState);
+        syncSelectedRowUi();
+        const rowEl = els.planBody.querySelector('tr[data-row-id="' + cssEscape(row.id) + '"]');
+        if(rowEl) rowEl.scrollIntoView({ block:'nearest' });
       });
+    }
+    async function deleteSelectedRow(){
+      if(!state.canEdit) return;
+      const selectedRow = getSelectedVisibleRow();
+      if(!selectedRow){
+        window.alert('Selectează mai întâi rândul pe care vrei să-l ștergi.');
+        return;
+      }
+      const visibleRows = getFilteredRows();
+      const visibleIndex = visibleRows.findIndex(row => String(row.id) === String(selectedRow.id));
+      const nextSelected = visibleRows[visibleIndex + 1] || visibleRows[visibleIndex - 1] || null;
+      state.rows = reindexRowsInDisplayOrder(sortRowsStable(state.rows.filter(row => String(row.id) !== String(selectedRow.id))));
+      state.selectedRowId = nextSelected ? nextSelected.id : '';
+      renderFilters();
+      queueSave();
+      rebuildLocalDerived();
+      requestAnimationFrame(() => { syncSelectedRowUi(); });
     }
 
     async function saveNow(){
@@ -2092,14 +2202,13 @@
     function updateAccessUi(){
       els.lockLayer.style.display = state.canEdit ? 'none' : 'flex';
       els.btnSave.disabled = !state.canEdit;
-      els.btnAddRow.disabled = !state.canEdit;
       els.btnSave.style.opacity = state.canEdit ? '1' : '.55';
-      els.btnAddRow.style.opacity = state.canEdit ? '1' : '.55';
       els.hintText.textContent = state.canEdit
         ? 'Se salvează în rf_documents / planificare-forja.'
         : 'Contul curent are doar drept de vizualizare.';
       const label = (window.ERPAuth && window.ERPAuth.roleLabel) ? window.ERPAuth.roleLabel(state.role) : state.role;
       els.userSub.textContent = state.canEdit ? (label + ' • editare activă') : (label + ' • doar vizualizare');
+      updateRowActionUi();
     }
     async function initAuth(){
       try{
@@ -2158,6 +2267,10 @@
         state.searchTerm = this.value || '';
         renderTable(true);
       });
+      els.planBody.addEventListener('click', function(event){
+        const row = event.target && event.target.closest ? event.target.closest('tr[data-row-id]') : null;
+        if(row) setSelectedRow(row.getAttribute('data-row-id'));
+      });
       els.planBody.addEventListener('mouseover', function(event){
         const row = event.target && event.target.closest ? event.target.closest('tr[data-row-id]') : null;
         setHoveredRow(row ? row.getAttribute('data-row-id') : '');
@@ -2182,6 +2295,8 @@
       });
       els.planBody.addEventListener('focusin', function(event){
         const target = event.target;
+        const row = target && target.closest ? target.closest('tr[data-row-id]') : null;
+        if(row) setSelectedRow(row.getAttribute('data-row-id'));
         if(target && target.classList && target.classList.contains('cell-input')) state.isEditing = true;
         const cell = target && target.closest ? target.closest('td.slot-plan[data-tooltip-html]') : null;
         if(cell) showPlanTooltip(cell);
@@ -2232,6 +2347,7 @@
       });
       els.btnSave.addEventListener('click', function(){ saveNow(); });
       els.btnAddRow.addEventListener('click', function(){ addRow(); });
+      if(els.btnDeleteRow) els.btnDeleteRow.addEventListener('click', function(){ deleteSelectedRow(); });
     }
 
     async function boot(){
@@ -2246,6 +2362,7 @@
       renderTable(false);
       bindEvents();
       restoreUiState(initialUiState);
+      updateRowActionUi();
     }
 
     boot();
