@@ -226,7 +226,7 @@
         </table>
       </div>
 
-      <div class="footerNote" id="footerNote">REALIZAT este live din Forjate când există document cloud pentru anul selectat. Stocul de oțel se calculează ca bază inventar + intrări − kg debitate, iar planificarea consumă doar stocul debitat.</div>
+      <div class="footerNote" id="footerNote">REALIZAT este live din Forjate când există document cloud pentru anul selectat. Calculul se face pe zile: stoc oțel = baza inventar + intrări − kg debitate, iar stoc debitat = baza inventar + bucăți debitate − bucăți forjate.</div>
     </div>
 
     <div class="lockLayer" id="lockLayer">
@@ -813,6 +813,12 @@
       const aa = trimText(a);
       const bb = trimText(b);
       if(aa && bb) return aa > bb ? aa : bb;
+      return aa || bb || '';
+    }
+    function minIsoDate(a, b){
+      const aa = trimText(a);
+      const bb = trimText(b);
+      if(aa && bb) return aa < bb ? aa : bb;
       return aa || bb || '';
     }
     function getDefaultPermissions(role){
@@ -1440,7 +1446,10 @@
       if(meta.specLabel){
         lines.push('Oțel disponibil înainte (după intrări și debitări): ' + (meta.beforeSteelKg ? String(Math.round(meta.beforeSteelKg * 1000) / 1000).replace('.',',') : '0') + ' kg' + (meta.beforeSteelPieces > 0 ? ' (~' + roMaybeNumber(meta.beforeSteelPieces) + ' buc)' : ''));
       }
-      lines.push((meta.usedSource === 'realizat' ? 'Realizat folosit la calcul: ' : 'Planificat folosit la calcul: ') + roMaybeNumber(meta.plan) + ' buc');
+      const sourceLabel = meta.usedSource === 'realizat'
+        ? 'Realizat folosit la calcul: '
+        : (meta.usedSource === 'max(planificat, realizat)' ? 'Consum folosit la calcul (max planificat / realizat): ' : 'Planificat folosit la calcul: ');
+      lines.push(sourceLabel + roMaybeNumber(meta.plan) + ' buc');
       if(meta.deficit > 0) lines.push('Deficit debitat: ' + roMaybeNumber(meta.deficit) + ' buc');
       if(meta.specLabel){
         lines.push('Rămâne după zi: debitat ' + roMaybeNumber(meta.afterDebitat) + ' buc, oțel ' + (meta.afterSteelKg ? String(Math.round(meta.afterSteelKg * 1000) / 1000).replace('.',',') : '0') + ' kg' + (meta.afterSteelPieces > 0 ? ' (~' + roMaybeNumber(meta.afterSteelPieces) + ' buc)' : ''));
@@ -1459,7 +1468,7 @@
       const debitatBase = state.stockSupport.debitatBasePeriod || {};
       const steelStartIso = trimText(steelBase.startIso);
       const debitatStartIso = trimText(debitatBase.startIso);
-      const calcStartIso = maxIsoDate(steelStartIso, debitatStartIso);
+      const calcStartIso = minIsoDate(steelStartIso, debitatStartIso);
 
       if(!calcStartIso){
         els.footerNote.textContent = 'REALIZAT este live din Forjate când există document cloud pentru anul selectat. Verificarea stocului așteaptă baza din inventare.';
@@ -1483,30 +1492,37 @@
       const steelEntriesByDate = state.stockSupport.steelEntriesByDate || Object.create(null);
       const steelConsumptionsByDate = state.stockSupport.steelConsumptionsByDate || Object.create(null);
       const debitatEntriesByDate = state.stockSupport.debitatEntriesByDate || Object.create(null);
-      const steelEntryDates = Object.keys(steelEntriesByDate).filter(dateIso => !steelStartIso || dateIso >= steelStartIso).sort();
-      const steelConsumptionDates = Object.keys(steelConsumptionsByDate).filter(dateIso => !steelStartIso || dateIso >= steelStartIso).sort();
-      const debitatEntryDates = Object.keys(debitatEntriesByDate).filter(dateIso => !debitatStartIso || dateIso >= debitatStartIso).sort();
+      const steelEntryDates = Object.keys(steelEntriesByDate).sort();
+      const steelConsumptionDates = Object.keys(steelConsumptionsByDate).sort();
+      const debitatEntryDates = Object.keys(debitatEntriesByDate).sort();
       let steelEntryIndex = 0;
       let steelConsumptionIndex = 0;
       let debitatEntryIndex = 0;
 
-      function applyEntriesUpTo(dateIso){
+      function applySteelEntriesUpTo(dateIso){
         while(steelEntryIndex < steelEntryDates.length && steelEntryDates[steelEntryIndex] <= dateIso){
           const entryDate = steelEntryDates[steelEntryIndex++];
+          if(steelStartIso && entryDate < steelStartIso) continue;
           const additions = steelEntriesByDate[entryDate] || {};
           Object.keys(additions).forEach(specKey => {
             steelKgBySpec[specKey] = toNumber(steelKgBySpec[specKey]) + toNumber(additions[specKey]);
           });
         }
+      }
+      function applySteelConsumptionsUpTo(dateIso){
         while(steelConsumptionIndex < steelConsumptionDates.length && steelConsumptionDates[steelConsumptionIndex] <= dateIso){
           const entryDate = steelConsumptionDates[steelConsumptionIndex++];
+          if(steelStartIso && entryDate < steelStartIso) continue;
           const consumptions = steelConsumptionsByDate[entryDate] || {};
           Object.keys(consumptions).forEach(specKey => {
             steelKgBySpec[specKey] = Math.max(0, toNumber(steelKgBySpec[specKey]) - toNumber(consumptions[specKey]));
           });
         }
+      }
+      function applyDebitatEntriesUpTo(dateIso){
         while(debitatEntryIndex < debitatEntryDates.length && debitatEntryDates[debitatEntryIndex] <= dateIso){
           const entryDate = debitatEntryDates[debitatEntryIndex++];
+          if(debitatStartIso && entryDate < debitatStartIso) continue;
           const additions = debitatEntriesByDate[entryDate] || {};
           Object.keys(additions).forEach(reperKey => {
             debitatByReper[reperKey] = Math.max(0, Math.round(toNumber(debitatByReper[reperKey]) + toNumber(additions[reperKey])));
@@ -1514,18 +1530,30 @@
         }
       }
 
+      let activeDate = '';
+      function applyDayOpeningIfNeeded(dateIso){
+        if(!dateIso || dateIso === activeDate) return;
+        applySteelEntriesUpTo(dateIso);
+        applySteelConsumptionsUpTo(dateIso);
+        applyDebitatEntriesUpTo(dateIso);
+        activeDate = dateIso;
+      }
+
       calcRows.forEach(item => {
         const row = item.row;
         const rowIso = trimText(row.data);
-        if(rowIso) applyEntriesUpTo(rowIso);
+        if(rowIso) applyDayOpeningIfNeeded(rowIso);
 
         MACHINE_ORDER.forEach(machine => {
           const slot = row.slots[machine] || normalizePlanSlot();
           const reper = trimText(slot.reper).toUpperCase();
           const planValue = Math.max(0, Math.round(toNumber(slot.planificat)));
           const realized = getRealizedForSlot(row, machine, slot);
-          const effectiveQty = realized.value > 0 ? realized.value : planValue;
-          const usedSource = realized.value > 0 ? 'realizat' : 'planificat';
+          const realizedValue = Math.max(0, Math.round(toNumber(realized && realized.value)));
+          const effectiveQty = Math.max(planValue, realizedValue);
+          const usedSource = realizedValue > 0 && planValue > 0
+            ? (realizedValue === planValue ? 'planificat' : 'max(planificat, realizat)')
+            : (realizedValue > 0 ? 'realizat' : 'planificat');
           if(!reper || !effectiveQty) return;
 
           const helper = resolvePlanningHelper(reper);
@@ -1557,7 +1585,7 @@
             status = 'empty';
             deficit = effectiveQty;
             note = beforeSteelKg > 0
-              ? 'Există oțel brut rămas, dar planificarea consumă doar stocul debitat. Materialul trebuie debitat mai întâi.'
+              ? 'Există oțel brut rămas, dar nu există suficient material debitat pentru această forjare în ziua curentă.'
               : 'Nu există stoc debitat suficient pentru această planificare.';
           }
 
@@ -1598,7 +1626,7 @@
       const parts = [];
       if(steelBase.startLabel) parts.push('oțel din ' + steelBase.startLabel);
       if(debitatBase.startLabel) parts.push('debitat din ' + debitatBase.startLabel);
-      els.footerNote.textContent = 'REALIZAT este live din Forjate când există document cloud pentru anul selectat. Stocul de oțel pornește din baza inventarului, se adună cu intrările și se scade cu kg-urile debitate; planificarea consumă doar stocul debitat.' + (parts.length ? ' Baza de calcul pornește din luna următoare inventarelor (' + parts.join(' • ') + ').' : '') + ' Surse folosite: ' + state.stockSupport.notes.join(' • ') + '.';
+      els.footerNote.textContent = 'REALIZAT este live din Forjate când există document cloud pentru anul selectat. Calculul se face pe zile astfel: stoc oțel = baza inventar + intrări − kg debitate, iar stoc debitat = baza inventar + bucăți debitate − bucăți forjate. În aceeași zi se aplică mai întâi intrările și debitările, apoi consumul de forjare.' + (parts.length ? ' Baza de calcul pornește din inventarele disponibile (' + parts.join(' • ') + ').' : '') + ' Surse folosite: ' + state.stockSupport.notes.join(' • ') + '.';
     }
     function computeOrthodoxEaster(year){
       const a = year % 4;
