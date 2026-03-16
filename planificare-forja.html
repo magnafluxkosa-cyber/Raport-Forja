@@ -584,6 +584,43 @@
     function cloneSeedRows(){
       return PLAN_SEED_ROWS.map((row, index) => normalizePlanRow(row, index));
     }
+    function buildEmptyPlanRow(year, iso){
+      return {
+        id: 'row-auto-' + String(year) + '-' + String(iso) + '-' + Math.random().toString(36).slice(2,8),
+        row_no: 0,
+        an: Number(year) || 0,
+        luna: getMonthName(Number(String(iso).slice(5,7))),
+        data: String(iso),
+        zi: getWeekdayLabel(String(iso)),
+        slots: MACHINE_ORDER.reduce((acc, machine) => {
+          acc[machine] = normalizePlanSlot({});
+          return acc;
+        }, {})
+      };
+    }
+    function ensureRowsContinueToYearEnd(rows){
+      const list = sortRowsStable((Array.isArray(rows) ? rows : []).map((row, index) => normalizePlanRow(row, index)));
+      if(!list.length) return list;
+      const lastIsoByYear = Object.create(null);
+      list.forEach(row => {
+        const year = String(row && row.an || '');
+        const iso = trimText(row && row.data);
+        if(!/^\d{4}-\d{2}-\d{2}$/.test(iso) || !/^\d{4}$/.test(year)) return;
+        if(!lastIsoByYear[year] || iso > lastIsoByYear[year]) lastIsoByYear[year] = iso;
+      });
+      const extraRows = [];
+      Object.keys(lastIsoByYear).forEach(year => {
+        let cursor = lastIsoByYear[year];
+        const endIso = year + '-12-31';
+        while(cursor && cursor < endIso){
+          const nextIso = nextDayIso(cursor);
+          if(!nextIso || String(nextIso).slice(0,4) !== String(year)) break;
+          extraRows.push(buildEmptyPlanRow(year, nextIso));
+          cursor = nextIso;
+        }
+      });
+      return reindexRowsInDisplayOrder(sortRowsStable(list.concat(extraRows)));
+    }
     function mergeSeedWithCloud(seedRows, cloudRows){
       const base = seedRows.map((row, index) => normalizePlanRow(row, index));
       const mapByKey = new Map();
@@ -615,45 +652,6 @@
       });
 
       return sortRowsStable(base.concat(extras));
-    }
-
-    function buildAutoRowForIso(year, iso){
-      return {
-        id: 'row-auto-' + trimText(iso) + '-' + Math.random().toString(36).slice(2),
-        row_no: 0,
-        an: Number(year) || 0,
-        luna: getMonthName(Number(trimText(iso).slice(5,7))),
-        data: trimText(iso),
-        zi: getWeekdayLabel(trimText(iso)),
-        slots: MACHINE_ORDER.reduce((acc, machine) => {
-          acc[machine] = normalizePlanSlot({});
-          return acc;
-        }, {})
-      };
-    }
-    function extendRowsToYearEnd(rows){
-      const base = sortRowsStable((Array.isArray(rows) ? rows : []).map((row, index) => normalizePlanRow(row, index)));
-      const lastIsoByYear = Object.create(null);
-      base.forEach(row => {
-        const year = Number(row && row.an || 0);
-        const iso = trimText(row && row.data);
-        if(!year || !iso) return;
-        if(!lastIsoByYear[year] || iso > lastIsoByYear[year]) lastIsoByYear[year] = iso;
-      });
-      const extras = [];
-      Object.keys(lastIsoByYear).forEach(yearKey => {
-        const year = Number(yearKey) || 0;
-        const lastIso = trimText(lastIsoByYear[year]);
-        if(!year || !lastIso) return;
-        let cursor = lastIso;
-        const yearEnd = String(year) + '-12-31';
-        while(cursor && cursor < yearEnd){
-          cursor = nextDayIso(cursor);
-          if(!cursor || cursor > yearEnd) break;
-          extras.push(buildAutoRowForIso(year, cursor));
-        }
-      });
-      return reindexRowsInDisplayOrder(sortRowsStable(base.concat(extras)));
     }
     function buildPayload(){
       return {
@@ -2374,9 +2372,7 @@
     function rebuildStockCalculations(){
       state.stockCalcByCell = Object.create(null);
 
-      const planItems = [];
-      let minPlanIso = '';
-      let maxPlanIso = '';
+      const allPlanItems = [];
       state.rows.forEach((row, index) => {
         const rowIso = trimText(row && row.data);
         if(!rowIso) return;
@@ -2385,14 +2381,46 @@
           const reper = trimText(slot.reper).toUpperCase();
           const planBuc = Math.max(0, Math.round(toNumber(slot.planificat)));
           if(!reper || planBuc <= 0) return;
-          planItems.push({ row, index, rowIso, machine, reper, planBuc });
-          if(!minPlanIso || rowIso < minPlanIso) minPlanIso = rowIso;
-          if(!maxPlanIso || rowIso > maxPlanIso) maxPlanIso = rowIso;
+          allPlanItems.push({ row, index, rowIso, machine, reper, planBuc });
         });
       });
 
-      if(!planItems.length){
+      if(!allPlanItems.length){
         els.footerNote.textContent = 'REALIZAT este live din Forjate când există document cloud pentru anul selectat. Nu există poziții cu planificat > 0 de calculat.' + buildDeliveryFooterSummary();
+        return;
+      }
+
+      const calcYear = Number(state.activeYear || CURRENT_YEAR) || Number(CURRENT_YEAR);
+      let calcMonthNum = 0;
+      if(String(calcYear) === String(CURRENT_YEAR)){
+        calcMonthNum = TODAY.getMonth() + 1;
+      } else {
+        allPlanItems.forEach(item => {
+          const m = Number(String(item.rowIso || '').slice(5,7)) || 0;
+          if(m > calcMonthNum) calcMonthNum = m;
+        });
+      }
+
+      const planItems = allPlanItems.filter(item => {
+        if(String(item.rowIso || '').slice(0,4) !== String(calcYear)) return false;
+        if(calcMonthNum){
+          const rowMonth = Number(String(item.rowIso || '').slice(5,7)) || 0;
+          if(rowMonth !== calcMonthNum) return false;
+        }
+        return true;
+      });
+
+      let minPlanIso = '';
+      let maxPlanIso = '';
+      planItems.forEach(item => {
+        const rowIso = item.rowIso;
+        if(!minPlanIso || rowIso < minPlanIso) minPlanIso = rowIso;
+        if(!maxPlanIso || rowIso > maxPlanIso) maxPlanIso = rowIso;
+      });
+
+      if(!planItems.length || !minPlanIso || !maxPlanIso){
+        const monthLabel = calcMonthNum ? getMonthName(calcMonthNum) : '-';
+        els.footerNote.textContent = 'REALIZAT este live din Forjate când există document cloud pentru anul selectat. Nu există poziții cu planificat > 0 pentru luna de calcul ' + monthLabel + ' ' + calcYear + '.' + buildDeliveryFooterSummary();
         return;
       }
 
@@ -2413,10 +2441,12 @@
 
       const snapEndSteel = findLatestSnapshotEnd(steelRows, minPlanIso);
       const snapEndDeb = findLatestSnapshotEnd(debitatRows, minPlanIso);
-      const commonSnapEnd = minIsoDate(snapEndSteel, snapEndDeb);
 
-      if(!commonSnapEnd){
-        els.footerNote.textContent = 'REALIZAT este live din Forjate când există document cloud pentru anul selectat. Nu pot determina snapshot-ul comun din inventare înainte de prima zi planificată.' + buildDeliveryFooterSummary();
+      if(!snapEndSteel || !snapEndDeb){
+        const missing = [];
+        if(!snapEndSteel) missing.push('oțel');
+        if(!snapEndDeb) missing.push('debitat');
+        els.footerNote.textContent = 'REALIZAT este live din Forjate când există document cloud pentru anul selectat. Nu pot determina snapshot-ul din inventar pentru ' + missing.join(' + ') + ' înainte de luna calculată.' + buildDeliveryFooterSummary();
         return;
       }
 
@@ -2425,20 +2455,21 @@
 
       steelRows.forEach(row => {
         const eom = endOfMonthIso(row && row.an, row && row.lunaNum);
-        if(eom !== commonSnapEnd) return;
+        if(eom !== snapEndSteel) return;
         if(!row.diametru || !row.calitate) return;
         const specKey = buildSpecKey(row.diametru, row.calitate);
         steelStock[specKey] = toNumber(steelStock[specKey]) + toNumber(row.cantitateKg);
       });
       debitatRows.forEach(row => {
         const eom = endOfMonthIso(row && row.an, row && row.lunaNum);
-        if(eom !== commonSnapEnd) return;
+        if(eom !== snapEndDeb) return;
         if(!row.reper) return;
         const repKey = normalizeReperLoose(row.reper);
         debStock[repKey] = toNumber(debStock[repKey]) + toNumber(row.cantitateBuc);
       });
 
-      const fromIso = nextDayIso(commonSnapEnd) || commonSnapEnd;
+      const fromIsoSteel = nextDayIso(snapEndSteel) || snapEndSteel;
+      const fromIsoDeb = nextDayIso(snapEndDeb) || snapEndDeb;
       const steelDeltaByDate = Object.create(null);
       const debDeltaByDate = Object.create(null);
 
@@ -2452,18 +2483,18 @@
       }
 
       intrariRows.forEach(row => {
-        if(!row.data || row.data < fromIso || row.data > maxPlanIso) return;
+        if(!row.data || row.data < fromIsoSteel || row.data > maxPlanIso) return;
         if(!row.diametru || !row.calitate || toNumber(row.cantitateKg) === 0) return;
         addDailyDelta(steelDeltaByDate, row.data, buildSpecKey(row.diametru, row.calitate), toNumber(row.cantitateKg));
       });
 
       debitariRows.forEach(row => {
-        if(!row.data || row.data < fromIso || row.data > maxPlanIso) return;
+        if(!row.data || row.data > maxPlanIso) return;
         const repKey = normalizeReperLoose(row.reper);
-        if(repKey && toNumber(row.cantitateBuc) !== 0){
+        if(row.data >= fromIsoDeb && repKey && toNumber(row.cantitateBuc) !== 0){
           addDailyDelta(debDeltaByDate, row.data, repKey, toNumber(row.cantitateBuc));
         }
-        if(row.diametru && row.calitate && toNumber(row.totalKgDebitat) !== 0){
+        if(row.data >= fromIsoSteel && row.diametru && row.calitate && toNumber(row.totalKgDebitat) !== 0){
           addDailyDelta(steelDeltaByDate, row.data, buildSpecKey(row.diametru, row.calitate), -toNumber(row.totalKgDebitat));
         }
       });
@@ -2471,13 +2502,14 @@
       const dictHasReal = Object.create(null);
       const dictRealBuc = Object.create(null);
       forjateRows.forEach(row => {
-        if(!row.data || row.data < fromIso || row.data > maxPlanIso) return;
+        if(!row.data || row.data > maxPlanIso) return;
         if(!row.machine || !row.reper) return;
         const keyReal = buildRealizedKey(row.data, row.machine, row.reper);
         if(toNumber(row.realizatBuc) > 0){
           dictHasReal[keyReal] = true;
           dictRealBuc[keyReal] = Math.max(0, Math.round(toNumber(dictRealBuc[keyReal]) + toNumber(row.realizatBuc)));
         }
+        if(row.data < fromIsoDeb) return;
         const cons = Math.max(0, Math.round(toNumber(row.realizatBuc) + toNumber(row.rebutBuc)));
         if(cons > 0){
           const helper = resolvePlanningHelper(row.reper);
@@ -2624,8 +2656,10 @@
         });
       });
 
-      const snapLabel = commonSnapEnd ? isoToDisplay(commonSnapEnd) : '';
-      els.footerNote.textContent = 'REALIZAT este live din Forjate când există document cloud pentru anul selectat. Calculul urmează regula VBA din PLANIFICARE_CALC: snapshot comun din inventare până la ' + snapLabel + ', apoi pe fiecare zi se aplică întâi INTRARI_OTEL, DEBITATE și FORJATE (realizat + rebut), iar planul se simulează doar unde nu există realizări. Surse folosite: ' + state.stockSupport.notes.join(' • ') + '.' + buildDeliveryFooterSummary();
+      const snapLabelSteel = snapEndSteel ? isoToDisplay(snapEndSteel) : '-';
+      const snapLabelDeb = snapEndDeb ? isoToDisplay(snapEndDeb) : '-';
+      const calcMonthLabel = calcMonthNum ? getMonthName(calcMonthNum) : '-';
+      els.footerNote.textContent = 'REALIZAT este live din Forjate când există document cloud pentru anul selectat. Calculul stocului se face doar pentru luna ' + calcMonthLabel + ' ' + calcYear + ': stoc oțel din snapshot-ul ' + snapLabelSteel + ', stoc debitat din snapshot-ul ' + snapLabelDeb + ', apoi pe fiecare zi se aplică INTRARI_OTEL, DEBITATE și FORJATE (realizat + rebut) numai în fereastra lunii calculate. Surse folosite: ' + state.stockSupport.notes.join(' • ') + '.' + buildDeliveryFooterSummary();
     }
 
     function computeOrthodoxEaster(year){
@@ -2957,9 +2991,10 @@
         const remoteUpdated = payload.updated_at || doc.updated_at || null;
         const isFullSnapshot = !!(payload && (payload.full_snapshot === true || Number(payload.version || 0) >= 3));
         const normalizedRows = rows.map((row, index) => normalizePlanRow(row, index));
-        const hydratedRows = isFullSnapshot
-          ? extendRowsToYearEnd(reindexRowsInDisplayOrder(sortRowsStable(normalizedRows)))
-          : extendRowsToYearEnd(mergeSeedWithCloud(seedRows, rows));
+        const hydratedRowsBase = isFullSnapshot
+          ? reindexRowsInDisplayOrder(sortRowsStable(normalizedRows))
+          : mergeSeedWithCloud(seedRows, rows);
+        const hydratedRows = ensureRowsContinueToYearEnd(hydratedRowsBase);
         const shouldApply = forceApply || !state.updatedAt || (remoteUpdated && state.updatedAt && String(remoteUpdated) > String(state.updatedAt));
         if(rows.length && shouldApply){
           state.rows = hydratedRows;
@@ -2977,7 +3012,7 @@
           return;
         }
       }
-      state.rows = extendRowsToYearEnd(seedRows);
+      state.rows = seedRows;
       state.updatedAt = null;
       state.hasPendingLocalChanges = false;
       els.cloudValue.textContent = 'Model local';
