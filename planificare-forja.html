@@ -1892,67 +1892,84 @@
       els.deliveryAlertButton.setAttribute('data-tooltip-tone', tone);
     }
     function buildDeliveryFooterSummary(){
-      const summary = state.deliverySupport && state.deliverySupport.alertSummary ? state.deliverySupport.alertSummary : { late:0, ahead:0 };
-      const ordersCount = Array.isArray(state.deliverySupport && state.deliverySupport.orders) ? state.deliverySupport.orders.filter(order => trimText(order && order.dataLivrare) > TODAY_ISO).length : 0;
-      if(!ordersCount) return ' Comenzi livrare: nu există comenzi active după azi.';
-      return ' Comenzi livrare după azi: ' + String(ordersCount) + ' • întârzieri D-2 = ' + String(summary.late || 0) + ' • avans D-4 = ' + String(summary.ahead || 0) + '.';
+      try{
+        const summary = state.deliverySupport && state.deliverySupport.alertSummary ? state.deliverySupport.alertSummary : { late:0, ahead:0 };
+        const sourceOrders = Array.isArray(state.deliverySupport && state.deliverySupport.orders) ? state.deliverySupport.orders : [];
+        const ordersCount = sourceOrders.filter(order => trimText(order && order.dataLivrare) > TODAY_ISO).length;
+        if(!ordersCount) return ' Comenzi livrare: nu există comenzi active după azi.';
+        return ' Comenzi livrare după azi: ' + String(ordersCount) + ' • întârzieri D-2 = ' + String(summary.late || 0) + ' • avans D-4 = ' + String(summary.ahead || 0) + '.';
+      }catch(error){
+        console.warn('buildDeliveryFooterSummary', error);
+        return ' Comenzi livrare: sumar indisponibil momentan.';
+      }
     }
     function rebuildDeliveryAlerts(){
-      const orders = (Array.isArray(state.deliverySupport.orders) ? state.deliverySupport.orders : []).filter(order => {
-        if(!order || !order.dataLivrare || !order.reper || order.cantitate <= 0) return false;
-        if(trimText(order.dataLivrare) <= TODAY_ISO) return false;
-        return !state.activeYear || String(order.an || order.dataLivrare.slice(0,4)) === String(state.activeYear);
-      });
-      const summary = { late:0, ahead:0, tone:'neutral', futureLate:[], futureAhead:[] };
-      if(!orders.length){
+      try{
+        const orders = (Array.isArray(state.deliverySupport.orders) ? state.deliverySupport.orders : []).filter(order => {
+          const deliveryIso = trimText(order && order.dataLivrare);
+          const reper = trimText(order && order.reper).toUpperCase();
+          const cantitate = Math.max(0, Math.round(toNumber(order && order.cantitate)));
+          if(!deliveryIso || !reper || cantitate <= 0) return false;
+          if(deliveryIso <= TODAY_ISO) return false;
+          return !state.activeYear || String(order.an || deliveryIso.slice(0,4)) === String(state.activeYear);
+        });
+        const summary = { late:0, ahead:0, tone:'neutral', futureLate:[], futureAhead:[] };
+        if(!orders.length){
+          state.deliverySupport.alertSummary = summary;
+          updateDeliveryIndicator();
+          return;
+        }
+        const dailyGoodByDate = buildProjectedGoodByDate();
+        orders.forEach(order => {
+          const deliveryIso = trimText(order && order.dataLivrare);
+          const reper = trimText(order && order.reper).toUpperCase();
+          const cantitate = Math.max(0, Math.round(toNumber(order && order.cantitate)));
+          if(!deliveryIso || !reper || cantitate <= 0) return;
+          const snapshot = findInventarForjatSnapshot(reper, deliveryIso);
+          const baseQty = Math.max(0, Math.round(toNumber(snapshot && snapshot.qty)));
+          const readyMinus4Iso = subtractDaysIso(deliveryIso, 4);
+          const readyMinus2Iso = subtractDaysIso(deliveryIso, 2);
+          const availMinus4 = baseQty + sumProjectedGood(dailyGoodByDate, reper, snapshot ? snapshot.endIso : '', readyMinus4Iso);
+          const availMinus2 = baseQty + sumProjectedGood(dailyGoodByDate, reper, snapshot ? snapshot.endIso : '', readyMinus2Iso);
+          const deficitMinus2 = Math.max(0, cantitate - Math.round(toNumber(availMinus2)));
+          const surplusMinus4 = Math.max(0, Math.round(toNumber(availMinus4)) - cantitate);
+          const label = describeDeliveryOrder({ ...order, reper, cantitate });
+          const machineLabel = collectMachinesForReper(reper, deliveryIso);
+          if(deficitMinus2 > 0 && readyMinus2Iso && readyMinus2Iso >= TODAY_ISO){
+            summary.late += 1;
+            summary.futureLate.push({
+              tone: 'late',
+              label,
+              machineLabel,
+              qty: deficitMinus2,
+              alertDate: readyMinus2Iso,
+              deliveryIso,
+              message: 'Întârziere ' + label + ' = ' + roMaybeNumber(deficitMinus2) + ' buc lipsă'
+            });
+          }
+          if(surplusMinus4 > 0 && readyMinus4Iso && readyMinus4Iso >= TODAY_ISO){
+            summary.ahead += 1;
+            summary.futureAhead.push({
+              tone: 'ahead',
+              label,
+              machineLabel,
+              qty: surplusMinus4,
+              alertDate: readyMinus4Iso,
+              deliveryIso,
+              message: 'Avans ' + label + ' = ' + roMaybeNumber(surplusMinus4) + ' buc peste'
+            });
+          }
+        });
+        summary.futureLate.sort((a,b) => String(a.alertDate).localeCompare(String(b.alertDate), 'ro', { sensitivity:'base' }) || String(a.label).localeCompare(String(b.label), 'ro', { sensitivity:'base' }));
+        summary.futureAhead.sort((a,b) => String(a.alertDate).localeCompare(String(b.alertDate), 'ro', { sensitivity:'base' }) || String(a.label).localeCompare(String(b.label), 'ro', { sensitivity:'base' }));
+        summary.tone = summary.late > 0 ? 'late' : (summary.ahead > 0 ? 'ahead' : 'neutral');
         state.deliverySupport.alertSummary = summary;
         updateDeliveryIndicator();
-        return;
+      }catch(error){
+        console.error('rebuildDeliveryAlerts', error);
+        state.deliverySupport.alertSummary = { late:0, ahead:0, tone:'neutral', futureLate:[], futureAhead:[] };
+        updateDeliveryIndicator();
       }
-      const dailyGoodByDate = buildProjectedGoodByDate();
-      orders.forEach(order => {
-        const deliveryIso = trimText(order.dataLivrare);
-        if(!deliveryIso) return;
-        const snapshot = findInventarForjatSnapshot(order.reper, deliveryIso);
-        const baseQty = snapshot.qty;
-        const readyMinus4Iso = subtractDaysIso(deliveryIso, 4);
-        const readyMinus2Iso = subtractDaysIso(deliveryIso, 2);
-        const availMinus4 = baseQty + sumProjectedGood(dailyGoodByDate, order.reper, snapshot.endIso, readyMinus4Iso);
-        const availMinus2 = baseQty + sumProjectedGood(dailyGoodByDate, order.reper, snapshot.endIso, readyMinus2Iso);
-        const deficitMinus2 = Math.max(0, Math.round(toNumber(order.cantitate) - availMinus2));
-        const surplusMinus4 = Math.max(0, Math.round(availMinus4 - toNumber(order.cantitate)));
-        const label = describeDeliveryOrder(order);
-        const machineLabel = collectMachinesForReper(order.reper, deliveryIso);
-        if(deficitMinus2 > 0 && readyMinus2Iso && readyMinus2Iso >= TODAY_ISO){
-          summary.late += 1;
-          summary.futureLate.push({
-            tone: 'late',
-            label,
-            machineLabel,
-            qty: deficitMinus2,
-            alertDate: readyMinus2Iso,
-            deliveryIso,
-            message: 'Întârziere ' + label + ' = ' + roMaybeNumber(deficitMinus2) + ' buc lipsă'
-          });
-        }
-        if(surplusMinus4 > 0 && readyMinus4Iso && readyMinus4Iso >= TODAY_ISO){
-          summary.ahead += 1;
-          summary.futureAhead.push({
-            tone: 'ahead',
-            label,
-            machineLabel,
-            qty: surplusMinus4,
-            alertDate: readyMinus4Iso,
-            deliveryIso,
-            message: 'Avans ' + label + ' = ' + roMaybeNumber(surplusMinus4) + ' buc peste'
-          });
-        }
-      });
-      summary.futureLate.sort((a,b) => String(a.alertDate).localeCompare(String(b.alertDate), 'ro', { sensitivity:'base' }) || String(a.label).localeCompare(String(b.label), 'ro', { sensitivity:'base' }));
-      summary.futureAhead.sort((a,b) => String(a.alertDate).localeCompare(String(b.alertDate), 'ro', { sensitivity:'base' }) || String(a.label).localeCompare(String(b.label), 'ro', { sensitivity:'base' }));
-      summary.tone = summary.late > 0 ? 'late' : (summary.ahead > 0 ? 'ahead' : 'neutral');
-      state.deliverySupport.alertSummary = summary;
-      updateDeliveryIndicator();
     }
     function ensureDeliveryIndicatorTooltip(){
       if(deliveryTooltipEl) return deliveryTooltipEl;
@@ -2399,9 +2416,21 @@
       return state.rows.find(row => String(row.id) === String(rowId)) || null;
     }
     function rebuildLocalDerived(preserveUi){
-      rebuildStockCalculations();
-      rebuildDeliveryAlerts();
-      updateRepereDatalist();
+      try{
+        rebuildStockCalculations();
+      }catch(error){
+        console.error('rebuildStockCalculations', error);
+      }
+      try{
+        rebuildDeliveryAlerts();
+      }catch(error){
+        console.error('rebuildDeliveryAlerts', error);
+      }
+      try{
+        updateRepereDatalist();
+      }catch(error){
+        console.error('updateRepereDatalist', error);
+      }
       renderTable(preserveUi !== false);
     }
     function markEdit(rowId, machine, field, value, options){
@@ -2553,10 +2582,13 @@
 
     async function refreshLiveAndSupport(force, uiState){
       if(!state.activeYear) return;
-      await Promise.all([
+      const results = await Promise.allSettled([
         ensureForjateYearLoaded(state.activeYear, !!force),
         refreshSupportData(!!force)
       ]);
+      results.forEach(result => {
+        if(result && result.status === 'rejected') console.error('refreshLiveAndSupport', result.reason);
+      });
       rebuildLocalDerived(uiState ? false : undefined);
       if(uiState) restoreUiState(uiState);
     }
@@ -2726,15 +2758,26 @@
       await loadPlanDocument(true);
       ensureFilters();
       renderFilters();
-      updateRepereDatalist();
-      await refreshLiveAndSupport(false);
+      try{
+        updateRepereDatalist();
+      }catch(error){
+        console.error('boot.updateRepereDatalist', error);
+      }
+      try{
+        await refreshLiveAndSupport(false);
+      }catch(error){
+        console.error('boot.refreshLiveAndSupport', error);
+      }
       renderTable(false);
       bindEvents();
       restoreUiState(initialUiState);
       updateRowActionUi();
     }
 
-    boot();
+    boot().catch(error => {
+      console.error('boot', error);
+      try{ renderTable(false); }catch(inner){ console.error('boot.renderTable', inner); }
+    });
   })();
   </script>
 </body>
