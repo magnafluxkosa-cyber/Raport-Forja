@@ -247,6 +247,7 @@
     const DOC_KEY = 'planificare-forja';
     const LEGACY_DOC_KEY = 'forjate';
     const FORJATE_DOC_PREFIX = 'forjate:';
+    const TABLE_UI_STORAGE_KEY = 'planificare-forja:table-ui:v1';
     const MACHINE_ORDER = ['5 T CHINA','MP','1,25 T','2,5 T','3 T BR','3 T ZR'];
     const MONTHS = ['Ianuarie','Februarie','Martie','Aprilie','Mai','Iunie','Iulie','August','Septembrie','Octombrie','Noiembrie','Decembrie'];
     const WEEKDAYS = ['Duminică','Luni','Marți','Miercuri','Joi','Vineri','Sâmbătă'];
@@ -787,6 +788,36 @@
       els.repereList.innerHTML = Array.from(repSet).sort((a,b) => a.localeCompare(b, 'ro', { sensitivity:'base' }))
         .map(reper => '<option value="' + escapeHtml(reper) + '"></option>').join('');
     }
+    function normalizeUiStateSnap(raw){
+      const src = raw && typeof raw === 'object' ? raw : {};
+      const active = src.activeCell && typeof src.activeCell === 'object' ? src.activeCell : null;
+      return {
+        scrollTop: Math.max(0, Number(src.scrollTop || 0)),
+        scrollLeft: Math.max(0, Number(src.scrollLeft || 0)),
+        activeCell: active ? {
+          rowId: trimText(active.rowId),
+          machine: trimText(active.machine),
+          field: trimText(active.field),
+          start: typeof active.start === 'number' ? active.start : null,
+          end: typeof active.end === 'number' ? active.end : null
+        } : null
+      };
+    }
+    function savePersistedUiState(snap){
+      try{
+        const payload = normalizeUiStateSnap(snap);
+        sessionStorage.setItem(TABLE_UI_STORAGE_KEY, JSON.stringify(payload));
+      }catch(_e){}
+    }
+    function readPersistedUiState(){
+      try{
+        const raw = sessionStorage.getItem(TABLE_UI_STORAGE_KEY);
+        if(!raw) return null;
+        return normalizeUiStateSnap(JSON.parse(raw));
+      }catch(_e){
+        return null;
+      }
+    }
     function captureUiState(){
       const snap = {
         scrollTop: els.tableWrap ? els.tableWrap.scrollTop : 0,
@@ -803,26 +834,29 @@
           end: typeof active.selectionEnd === 'number' ? active.selectionEnd : null
         };
       }
+      savePersistedUiState(snap);
       return snap;
     }
     function restoreUiState(snap){
-      if(!snap) return;
+      const finalSnap = normalizeUiStateSnap(snap || readPersistedUiState());
+      if(!finalSnap) return;
       requestAnimationFrame(() => {
         try{
           if(els.tableWrap){
-            els.tableWrap.scrollTop = Number(snap.scrollTop || 0);
-            els.tableWrap.scrollLeft = Number(snap.scrollLeft || 0);
+            els.tableWrap.scrollTop = finalSnap.scrollTop;
+            els.tableWrap.scrollLeft = finalSnap.scrollLeft;
           }
-          if(snap.activeCell && snap.activeCell.rowId && snap.activeCell.machine && snap.activeCell.field){
-            const selector = '.cell-input[data-row-id="' + CSS.escape(snap.activeCell.rowId) + '"][data-machine="' + CSS.escape(snap.activeCell.machine) + '"][data-field="' + CSS.escape(snap.activeCell.field) + '"]';
+          if(finalSnap.activeCell && finalSnap.activeCell.rowId && finalSnap.activeCell.machine && finalSnap.activeCell.field){
+            const selector = '.cell-input[data-row-id="' + CSS.escape(finalSnap.activeCell.rowId) + '"][data-machine="' + CSS.escape(finalSnap.activeCell.machine) + '"][data-field="' + CSS.escape(finalSnap.activeCell.field) + '"]';
             const input = els.planBody ? els.planBody.querySelector(selector) : null;
             if(input){
               input.focus({ preventScroll:true });
-              if(typeof snap.activeCell.start === 'number' && typeof input.setSelectionRange === 'function'){
-                input.setSelectionRange(snap.activeCell.start, typeof snap.activeCell.end === 'number' ? snap.activeCell.end : snap.activeCell.start);
+              if(typeof finalSnap.activeCell.start === 'number' && typeof input.setSelectionRange === 'function'){
+                input.setSelectionRange(finalSnap.activeCell.start, typeof finalSnap.activeCell.end === 'number' ? finalSnap.activeCell.end : finalSnap.activeCell.start);
               }
             }
           }
+          savePersistedUiState(finalSnap);
         }catch(_e){}
       });
     }
@@ -1729,6 +1763,25 @@
       await refreshLiveAndSupport(true);
     }
     function bindEvents(){
+      if(els.tableWrap){
+        let scrollPersistFrame = 0;
+        els.tableWrap.addEventListener('scroll', function(){
+          if(scrollPersistFrame) cancelAnimationFrame(scrollPersistFrame);
+          scrollPersistFrame = requestAnimationFrame(() => {
+            scrollPersistFrame = 0;
+            savePersistedUiState({
+              scrollTop: els.tableWrap ? els.tableWrap.scrollTop : 0,
+              scrollLeft: els.tableWrap ? els.tableWrap.scrollLeft : 0,
+              activeCell: null
+            });
+          });
+        }, { passive:true });
+      }
+      window.addEventListener('pagehide', function(){ savePersistedUiState(captureUiState()); });
+      window.addEventListener('beforeunload', function(){ savePersistedUiState(captureUiState()); });
+      document.addEventListener('visibilitychange', function(){
+        if(document.visibilityState === 'hidden') savePersistedUiState(captureUiState());
+      });
       els.yearSelect.addEventListener('change', async function(){
         state.activeYear = this.value;
         renderFilters();
@@ -1792,6 +1845,7 @@
     }
 
     async function boot(){
+      const initialUiState = readPersistedUiState();
       buildHeader();
       await initAuth();
       await loadPlanDocument(true);
@@ -1801,6 +1855,7 @@
       await refreshLiveAndSupport(false);
       renderTable(false);
       bindEvents();
+      restoreUiState(initialUiState);
     }
 
     boot();
