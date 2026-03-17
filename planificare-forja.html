@@ -2395,6 +2395,36 @@
         return ' Comenzi livrare: sumar indisponibil momentan.';
       }
     }
+    function deliveryAlertMonthNumber(order){
+      const deliveryIso = trimText(order && order.dataLivrare);
+      if(/^\d{4}-\d{2}-\d{2}$/.test(deliveryIso)) return Number(deliveryIso.slice(5,7)) || 0;
+      return monthNumberFromAny(order && order.luna);
+    }
+    function deliveryAlertTransportNumber(value){
+      const clean = trimText(value);
+      const match = clean.match(/\d+/);
+      return match ? (Number(match[0]) || 0) : 0;
+    }
+    function compareDeliveryAlertOrders(a, b){
+      const da = trimText(a && a.dataLivrare);
+      const db = trimText(b && b.dataLivrare);
+      if(da !== db){
+        if(!da) return 1;
+        if(!db) return -1;
+        return da.localeCompare(db, 'ro', { sensitivity:'base' });
+      }
+      const ta = deliveryAlertTransportNumber(a && a.nrTransport);
+      const tb = deliveryAlertTransportNumber(b && b.nrTransport);
+      if(ta !== tb) return ta - tb;
+      return String(trimText(a && a.id)).localeCompare(String(trimText(b && b.id)), 'ro', { sensitivity:'base' });
+    }
+    function deliveryAlertCycleKey(order){
+      const deliveryIso = trimText(order && order.dataLivrare);
+      const year = Number(order && order.an) || (deliveryIso ? Number(deliveryIso.slice(0,4)) : 0);
+      const month = deliveryAlertMonthNumber(order);
+      const reperKey = normalizeReperLoose(order && order.reper);
+      return (year > 0 && month > 0 && reperKey) ? [year, month, reperKey].join('|') : '';
+    }
     function rebuildDeliveryAlerts(){
       try{
         const orders = (Array.isArray(state.deliverySupport.orders) ? state.deliverySupport.orders : []).filter(order => {
@@ -2403,7 +2433,7 @@
           const cantitate = Math.max(0, Math.round(toNumber(order && order.cantitate)));
           if(!deliveryIso || !reper || cantitate <= 0) return false;
           return !state.activeYear || String(order.an || deliveryIso.slice(0,4)) === String(state.activeYear);
-        });
+        }).slice().sort(compareDeliveryAlertOrders);
         const summary = { late:0, ahead:0, tone:'neutral', overdueLate:[], futureLate:[], futureAhead:[] };
         if(!orders.length){
           state.deliverySupport.alertSummary = summary;
@@ -2411,21 +2441,40 @@
           return;
         }
         const dailyGoodByDate = buildProjectedGoodByDate();
+        const ordersByCycle = Object.create(null);
+        orders.forEach(order => {
+          const cycleKey = deliveryAlertCycleKey(order);
+          if(!cycleKey) return;
+          ordersByCycle[cycleKey] = ordersByCycle[cycleKey] || [];
+          ordersByCycle[cycleKey].push(order);
+        });
+        const committedBeforeMap = new Map();
+        Object.keys(ordersByCycle).forEach(cycleKey => {
+          let running = 0;
+          ordersByCycle[cycleKey].forEach(order => {
+            committedBeforeMap.set(String(order.id), running);
+            running += Math.max(0, Math.round(toNumber(order && order.cantitate)));
+          });
+        });
         orders.forEach(order => {
           const deliveryIso = trimText(order && order.dataLivrare);
           const reper = trimText(order && order.reper).toUpperCase();
           const cantitate = Math.max(0, Math.round(toNumber(order && order.cantitate)));
           if(!deliveryIso || !reper || cantitate <= 0) return;
+          const committedBefore = Math.max(0, Math.round(toNumber(committedBeforeMap.get(String(order.id)))));
           const snapshot = findInventarForjatSnapshot(reper, deliveryIso);
           const baseQty = Math.max(0, Math.round(toNumber(snapshot && snapshot.qty)));
           const readyMinus4Iso = subtractDaysIso(deliveryIso, 4);
           const readyMinus2Iso = subtractDaysIso(deliveryIso, 2);
-          const availMinus4 = baseQty + sumProjectedGood(dailyGoodByDate, reper, snapshot ? snapshot.endIso : '', readyMinus4Iso);
-          const availMinus2 = baseQty + sumProjectedGood(dailyGoodByDate, reper, snapshot ? snapshot.endIso : '', readyMinus2Iso);
-          const availToday = baseQty + sumProjectedGood(dailyGoodByDate, reper, snapshot ? snapshot.endIso : '', TODAY_ISO);
-          const deficitMinus2 = Math.max(0, cantitate - Math.round(toNumber(availMinus2)));
-          const deficitToday = Math.max(0, cantitate - Math.round(toNumber(availToday)));
-          const surplusMinus4 = Math.max(0, Math.round(toNumber(availMinus4)) - cantitate);
+          const grossMinus4 = baseQty + sumProjectedGood(dailyGoodByDate, reper, snapshot ? snapshot.endIso : '', readyMinus4Iso);
+          const grossMinus2 = baseQty + sumProjectedGood(dailyGoodByDate, reper, snapshot ? snapshot.endIso : '', readyMinus2Iso);
+          const grossToday = baseQty + sumProjectedGood(dailyGoodByDate, reper, snapshot ? snapshot.endIso : '', TODAY_ISO);
+          const availMinus4 = Math.max(0, Math.round(toNumber(grossMinus4)) - committedBefore);
+          const availMinus2 = Math.max(0, Math.round(toNumber(grossMinus2)) - committedBefore);
+          const availToday = Math.max(0, Math.round(toNumber(grossToday)) - committedBefore);
+          const deficitMinus2 = Math.max(0, cantitate - availMinus2);
+          const deficitToday = Math.max(0, cantitate - availToday);
+          const surplusMinus4 = Math.max(0, availMinus4 - cantitate);
           const label = describeDeliveryOrder({ ...order, reper, cantitate });
           const machineLabel = collectMachinesForReper(reper, deliveryIso);
           if(deliveryIso <= TODAY_ISO){
