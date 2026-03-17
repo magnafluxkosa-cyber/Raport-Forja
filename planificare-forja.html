@@ -2018,22 +2018,6 @@
       };
     }
 
-    function getDeliveryCanonicalReperKey(reper){
-      const looseKey = normalizeReperLoose(reper);
-      if(!looseKey) return '';
-      const forjaMap = state.helperMaps && state.helperMaps.forjaByReper ? state.helperMaps.forjaByReper : Object.create(null);
-      const direct = findLooseMapValue(forjaMap, reper);
-      if(direct && trimText(direct.reper_forjat)) return normalizeReperLoose(direct.reper_forjat);
-      const reverseMatches = Object.keys(forjaMap)
-        .map(key => forjaMap[key])
-        .filter(row => normalizeReperLoose(row && row.reper_debitare_origine) === looseKey && trimText(row && row.reper_forjat));
-      const uniqueForged = Array.from(new Set(reverseMatches.map(row => normalizeReperLoose(row.reper_forjat)).filter(Boolean)));
-      if(uniqueForged.length === 1) return uniqueForged[0];
-      return looseKey;
-    }
-    function buildDeliveryRealizedKey(dataIso, machine, reper){
-      return [safeText(dataIso), normalizeMachineKey(machine), getDeliveryCanonicalReperKey(reper) || normalizeReperLoose(reper)].join('|');
-    }
     function resolvePlanningHelper(reper){
       const reperRaw = normUpper(reper);
       const reperKey = normalizeReperLoose(reper);
@@ -2195,6 +2179,58 @@
         observatii: trimText(pick(obj, ['observatii','observații','notes']))
       };
     }
+
+    function getCanonicalDeliveryReperKey(reper){
+      const looseKey = normalizeReperLoose(reper);
+      if(!looseKey) return '';
+      const forjaMap = state.helperMaps && state.helperMaps.forjaByReper ? state.helperMaps.forjaByReper : Object.create(null);
+      const direct = findLooseMapValue(forjaMap, reper);
+      if(direct && trimText(direct.reper_forjat)) return normalizeReperLoose(direct.reper_forjat);
+      const reverseMatches = Object.keys(forjaMap).map(key => forjaMap[key]).filter(row => normalizeReperLoose(row && row.reper_debitare_origine) === looseKey && trimText(row && row.reper_forjat));
+      const uniqueForged = Array.from(new Set(reverseMatches.map(row => normalizeReperLoose(row.reper_forjat)).filter(Boolean)));
+      if(uniqueForged.length === 1) return uniqueForged[0];
+      return looseKey;
+    }
+    function getDeliveryOrderMonthNumber(row){
+      return monthNumberFromAny(row && row.luna) || (trimText(row && row.dataLivrare) ? Number(trimText(row.dataLivrare).slice(5,7)) : 0);
+    }
+    function getDeliveryTransportNumber(value){
+      const raw = trimText(value);
+      const match = raw.match(/(\d+)/);
+      return match ? Number(match[1]) || 0 : 0;
+    }
+    function compareDeliveryOrders(a,b){
+      const da = trimText(a && a.dataLivrare);
+      const db = trimText(b && b.dataLivrare);
+      if(da !== db){
+        if(!da) return 1;
+        if(!db) return -1;
+        return da.localeCompare(db);
+      }
+      const ta = getDeliveryTransportNumber(a && a.nrTransport);
+      const tb = getDeliveryTransportNumber(b && b.nrTransport);
+      if(ta !== tb) return ta - tb;
+      const ia = trimText(a && a.id);
+      const ib = trimText(b && b.id);
+      return ia.localeCompare(ib);
+    }
+    function getDeliveryOrderCycleKey(row){
+      const an = Number(row && row.an) || (trimText(row && row.dataLivrare) ? Number(trimText(row.dataLivrare).slice(0,4)) : 0);
+      const lunaNum = getDeliveryOrderMonthNumber(row);
+      return `${an}|${lunaNum}|${getCanonicalDeliveryReperKey(row && row.reper)}`;
+    }
+    function getPreviousCommittedQtyForOrder(sortedOrders, targetIndex){
+      const targetRow = sortedOrders && sortedOrders[targetIndex];
+      const cycleKey = getDeliveryOrderCycleKey(targetRow);
+      if(!cycleKey) return 0;
+      let total = 0;
+      for(let i = 0; i < targetIndex; i += 1){
+        const row = sortedOrders[i];
+        if(getDeliveryOrderCycleKey(row) !== cycleKey) continue;
+        total += Math.max(0, Math.round(toNumber(row && row.cantitate)));
+      }
+      return total;
+    }
     function normalizeInventarForjatRow(row, index){
       const obj = Array.isArray(row) ? {
         an: arrayCell(row, 0, 0),
@@ -2261,24 +2297,24 @@
       const forjateRows = Array.isArray(state.stockSupport.forjateRows) ? state.stockSupport.forjateRows : [];
       forjateRows.forEach(row => {
         if(!row.data || !row.reper) return;
-        const reperKey = getDeliveryCanonicalReperKey(row.reper);
+        const reperKey = normalizeReperLoose(row.reper);
         if(!reperKey) return;
         const qty = Math.max(0, Math.round(toNumber(row.realizatBuc)));
-        if(row.machine && qty > 0) actualSlotMap[buildDeliveryRealizedKey(row.data, row.machine, row.reper)] = true;
+        if(row.machine && qty > 0) actualSlotMap[buildRealizedKey(row.data, row.machine, row.reper)] = true;
         if(qty <= 0) return;
         byDate[row.data] = byDate[row.data] || Object.create(null);
         byDate[row.data][reperKey] = Math.max(0, Math.round(toNumber(byDate[row.data][reperKey]) + qty));
       });
       (Array.isArray(state.rows) ? state.rows : []).forEach(row => {
         const rowIso = trimText(row && row.data);
-        if(!rowIso || !(row && row.slots)) return;
+        if(!rowIso) return;
         MACHINE_ORDER.forEach(machine => {
-          const slot = row.slots[machine] || {};
+          const slot = row && row.slots ? (row.slots[machine] || normalizePlanSlot()) : normalizePlanSlot();
           const reper = trimText(slot.reper).toUpperCase();
           const qty = Math.max(0, Math.round(toNumber(slot.planificat)));
           if(!reper || qty <= 0) return;
-          if(actualSlotMap[buildDeliveryRealizedKey(rowIso, machine, reper)]) return;
-          const reperKey = getDeliveryCanonicalReperKey(reper);
+          if(actualSlotMap[buildRealizedKey(rowIso, machine, reper)]) return;
+          const reperKey = normalizeReperLoose(reper);
           if(!reperKey) return;
           byDate[rowIso] = byDate[rowIso] || Object.create(null);
           byDate[rowIso][reperKey] = Math.max(0, Math.round(toNumber(byDate[rowIso][reperKey]) + qty));
@@ -2287,11 +2323,11 @@
       return byDate;
     }
     function findInventarForjatSnapshot(reper, deliveryIso){
-      const reperKey = getDeliveryCanonicalReperKey(reper);
+      const reperKey = normalizeReperLoose(reper);
       let bestRow = null;
       let bestIso = '';
       (Array.isArray(state.deliverySupport.inventarRows) ? state.deliverySupport.inventarRows : []).forEach(row => {
-        if(getDeliveryCanonicalReperKey(row.reper) !== reperKey) return;
+        if(normalizeReperLoose(row.reper) !== reperKey) return;
         const eom = endOfMonthIso(row.an, row.lunaNum || monthNumberFromAny(row.luna));
         if(!eom || (deliveryIso && eom >= deliveryIso)) return;
         if(!bestIso || eom > bestIso){
@@ -2302,7 +2338,7 @@
       return { row:bestRow, endIso:bestIso, qty: bestRow ? Math.max(0, Math.round(toNumber(bestRow.stocFinal))) : 0 };
     }
     function sumProjectedGood(dailyByDate, reper, startExclusiveIso, endInclusiveIso){
-      const reperKey = getDeliveryCanonicalReperKey(reper);
+      const reperKey = normalizeReperLoose(reper);
       if(!reperKey || !endInclusiveIso) return 0;
       let total = 0;
       Object.keys(dailyByDate || {}).forEach(dateIso => {
@@ -2316,7 +2352,7 @@
       return transport ? ('Transport ' + transport + ' • ' + trimText(order.reper)) : trimText(order.reper);
     }
     function collectMachinesForReper(reper, endIso){
-      const reperKey = getDeliveryCanonicalReperKey(reper);
+      const reperKey = normalizeReperLoose(reper);
       if(!reperKey) return '-';
       const seen = new Set();
       const pushMachine = (machine) => {
@@ -2325,10 +2361,10 @@
       };
       (Array.isArray(state.rows) ? state.rows : []).forEach(row => {
         const rowIso = trimText(row && row.data);
-        if(!rowIso || rowIso < TODAY_ISO || (endIso && rowIso > endIso) || !(row && row.slots)) return;
+        if(!rowIso || rowIso < TODAY_ISO || (endIso && rowIso > endIso)) return;
         MACHINE_ORDER.forEach(machine => {
-          const slot = row.slots[machine] || {};
-          if(getDeliveryCanonicalReperKey(slot.reper) !== reperKey) return;
+          const slot = row && row.slots ? (row.slots[machine] || normalizePlanSlot()) : normalizePlanSlot();
+          if(normalizeReperLoose(slot.reper) !== reperKey) return;
           const qty = Math.max(0, Math.round(toNumber(slot.planificat)));
           if(qty > 0) pushMachine(machine);
         });
@@ -2336,7 +2372,7 @@
       (Array.isArray(state.stockSupport && state.stockSupport.forjateRows) ? state.stockSupport.forjateRows : []).forEach(row => {
         const rowIso = trimText(row && row.data);
         if(!rowIso || rowIso < TODAY_ISO || (endIso && rowIso > endIso)) return;
-        if(getDeliveryCanonicalReperKey(row.reper) !== reperKey) return;
+        if(normalizeReperLoose(row.reper) !== reperKey) return;
         const qty = Math.max(0, Math.round(toNumber(row.realizatBuc)));
         if(qty > 0) pushMachine(row.machine);
       });
@@ -2411,36 +2447,6 @@
         return ' Comenzi livrare: sumar indisponibil momentan.';
       }
     }
-    function deliveryAlertMonthNumber(order){
-      const deliveryIso = trimText(order && order.dataLivrare);
-      if(/^\d{4}-\d{2}-\d{2}$/.test(deliveryIso)) return Number(deliveryIso.slice(5,7)) || 0;
-      return monthNumberFromAny(order && order.luna);
-    }
-    function deliveryAlertTransportNumber(value){
-      const clean = trimText(value);
-      const match = clean.match(/\d+/);
-      return match ? (Number(match[0]) || 0) : 0;
-    }
-    function compareDeliveryAlertOrders(a, b){
-      const da = trimText(a && a.dataLivrare);
-      const db = trimText(b && b.dataLivrare);
-      if(da !== db){
-        if(!da) return 1;
-        if(!db) return -1;
-        return da.localeCompare(db, 'ro', { sensitivity:'base' });
-      }
-      const ta = deliveryAlertTransportNumber(a && a.nrTransport);
-      const tb = deliveryAlertTransportNumber(b && b.nrTransport);
-      if(ta !== tb) return ta - tb;
-      return String(trimText(a && a.id)).localeCompare(String(trimText(b && b.id)), 'ro', { sensitivity:'base' });
-    }
-    function deliveryAlertCycleKey(order){
-      const deliveryIso = trimText(order && order.dataLivrare);
-      const year = Number(order && order.an) || (deliveryIso ? Number(deliveryIso.slice(0,4)) : 0);
-      const month = deliveryAlertMonthNumber(order);
-      const reperKey = getDeliveryCanonicalReperKey(order && order.reper);
-      return (year > 0 && month > 0 && reperKey) ? [year, month, reperKey].join('|') : '';
-    }
     function rebuildDeliveryAlerts(){
       try{
         const orders = (Array.isArray(state.deliverySupport.orders) ? state.deliverySupport.orders : []).filter(order => {
@@ -2449,7 +2455,7 @@
           const cantitate = Math.max(0, Math.round(toNumber(order && order.cantitate)));
           if(!deliveryIso || !reper || cantitate <= 0) return false;
           return !state.activeYear || String(order.an || deliveryIso.slice(0,4)) === String(state.activeYear);
-        }).slice().sort(compareDeliveryAlertOrders);
+        }).slice().sort(compareDeliveryOrders);
         const summary = { late:0, ahead:0, tone:'neutral', overdueLate:[], futureLate:[], futureAhead:[] };
         if(!orders.length){
           state.deliverySupport.alertSummary = summary;
@@ -2457,27 +2463,12 @@
           return;
         }
         const dailyGoodByDate = buildProjectedGoodByDate();
-        const ordersByCycle = Object.create(null);
-        orders.forEach(order => {
-          const cycleKey = deliveryAlertCycleKey(order);
-          if(!cycleKey) return;
-          ordersByCycle[cycleKey] = ordersByCycle[cycleKey] || [];
-          ordersByCycle[cycleKey].push(order);
-        });
-        const committedBeforeMap = new Map();
-        Object.keys(ordersByCycle).forEach(cycleKey => {
-          let running = 0;
-          ordersByCycle[cycleKey].forEach(order => {
-            committedBeforeMap.set(String(order.id), running);
-            running += Math.max(0, Math.round(toNumber(order && order.cantitate)));
-          });
-        });
-        orders.forEach(order => {
+        orders.forEach((order, index) => {
           const deliveryIso = trimText(order && order.dataLivrare);
           const reper = trimText(order && order.reper).toUpperCase();
           const cantitate = Math.max(0, Math.round(toNumber(order && order.cantitate)));
           if(!deliveryIso || !reper || cantitate <= 0) return;
-          const committedBefore = Math.max(0, Math.round(toNumber(committedBeforeMap.get(String(order.id)))));
+          const priorCommitted = Math.max(0, getPreviousCommittedQtyForOrder(orders, index));
           const snapshot = findInventarForjatSnapshot(reper, deliveryIso);
           const baseQty = Math.max(0, Math.round(toNumber(snapshot && snapshot.qty)));
           const readyMinus4Iso = subtractDaysIso(deliveryIso, 4);
@@ -2485,9 +2476,9 @@
           const grossMinus4 = baseQty + sumProjectedGood(dailyGoodByDate, reper, snapshot ? snapshot.endIso : '', readyMinus4Iso);
           const grossMinus2 = baseQty + sumProjectedGood(dailyGoodByDate, reper, snapshot ? snapshot.endIso : '', readyMinus2Iso);
           const grossToday = baseQty + sumProjectedGood(dailyGoodByDate, reper, snapshot ? snapshot.endIso : '', TODAY_ISO);
-          const availMinus4 = Math.max(0, Math.round(toNumber(grossMinus4)) - committedBefore);
-          const availMinus2 = Math.max(0, Math.round(toNumber(grossMinus2)) - committedBefore);
-          const availToday = Math.max(0, Math.round(toNumber(grossToday)) - committedBefore);
+          const availMinus4 = Math.max(0, Math.round(toNumber(grossMinus4)) - priorCommitted);
+          const availMinus2 = Math.max(0, Math.round(toNumber(grossMinus2)) - priorCommitted);
+          const availToday = Math.max(0, Math.round(toNumber(grossToday)) - priorCommitted);
           const deficitMinus2 = Math.max(0, cantitate - availMinus2);
           const deficitToday = Math.max(0, cantitate - availToday);
           const surplusMinus4 = Math.max(0, availMinus4 - cantitate);
@@ -2503,6 +2494,7 @@
                 machineLabel,
                 qty: deficitToday,
                 orderQty: cantitate,
+                priorCommitted,
                 transportLabel: trimText(order && order.nrTransport),
                 alertDate: deliveryIso === TODAY_ISO ? TODAY_ISO : deliveryIso,
                 alertLabel: deliveryIso === TODAY_ISO ? 'Astăzi' : 'Restanță',
@@ -2521,6 +2513,7 @@
               machineLabel,
               qty: deficitMinus2,
               orderQty: cantitate,
+              priorCommitted,
               transportLabel: trimText(order && order.nrTransport),
               alertDate: readyMinus2Iso,
               alertLabel: 'Alertă',
@@ -2537,6 +2530,7 @@
               machineLabel,
               qty: surplusMinus4,
               orderQty: cantitate,
+              priorCommitted,
               transportLabel: trimText(order && order.nrTransport),
               alertDate: readyMinus4Iso,
               alertLabel: 'Alertă',
@@ -3438,16 +3432,7 @@
         if(deliveryTooltipVisible) positionDeliveryIndicatorTooltip();
       });
       document.addEventListener('visibilitychange', function(){
-        if(document.visibilityState === 'hidden'){
-          savePersistedUiState(captureUiState());
-          return;
-        }
-        if(document.visibilityState === 'visible'){
-          softRefresh().catch(error => console.error('softRefresh.visibilitychange', error));
-        }
-      });
-      window.addEventListener('focus', function(){
-        softRefresh().catch(error => console.error('softRefresh.focus', error));
+        if(document.visibilityState === 'hidden') savePersistedUiState(captureUiState());
       });
       els.yearSelect.addEventListener('change', async function(){
         state.activeYear = this.value;
