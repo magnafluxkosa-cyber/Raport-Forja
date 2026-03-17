@@ -1,5 +1,6 @@
 (function(){
   const MOBILE_WIDTH = 900;
+  let scaleObserver = null;
 
   function isMobileViewport(){
     return window.innerWidth <= MOBILE_WIDTH || (window.matchMedia && window.matchMedia('(pointer:coarse) and (max-width: 1024px)').matches);
@@ -10,10 +11,41 @@
     document.documentElement.style.setProperty('--rf-vh', `${vh}px`);
   }
 
+  function enforceUnscaledTables(){
+    if(!document.body || !document.body.classList.contains('rf-mobile')) return;
+    document.querySelectorAll('.table-fit').forEach((el) => {
+      el.style.transform = 'none';
+      el.style.width = 'max-content';
+      el.style.minWidth = '100%';
+      el.style.height = 'auto';
+    });
+  }
+
+  function attachScaleObserver(){
+    if(scaleObserver) return;
+    scaleObserver = new MutationObserver(() => {
+      enforceUnscaledTables();
+    });
+    document.querySelectorAll('.table-fit').forEach((el) => {
+      try{
+        scaleObserver.observe(el, { attributes:true, attributeFilter:['style','class'] });
+      }catch(_err){}
+    });
+  }
+
+  function dispatchMobileLayoutEvent(){
+    try{
+      window.dispatchEvent(new CustomEvent('rf:mobile-layout', { detail:{ mobile:isMobileViewport() } }));
+    }catch(_err){}
+  }
+
   function applyMobileClass(){
     if(!document.body) return;
     document.body.classList.toggle('rf-mobile', isMobileViewport());
     updateViewportVars();
+    enforceUnscaledTables();
+    attachScaleObserver();
+    dispatchMobileLayoutEvent();
   }
 
   function scrollFocusedFieldIntoView(target){
