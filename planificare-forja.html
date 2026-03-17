@@ -2215,19 +2215,17 @@
       const ib = trimText(b && b.id);
       return ia.localeCompare(ib);
     }
-    function getDeliveryOrderCycleKey(row){
-      const an = Number(row && row.an) || (trimText(row && row.dataLivrare) ? Number(trimText(row.dataLivrare).slice(0,4)) : 0);
-      const lunaNum = getDeliveryOrderMonthNumber(row);
-      return `${an}|${lunaNum}|${getCanonicalDeliveryReperKey(row && row.reper)}`;
+    function getDeliveryOrderCommitKey(row){
+      return getCanonicalDeliveryReperKey(row && row.reper) || normalizeReperLoose(row && row.reper);
     }
     function getPreviousCommittedQtyForOrder(sortedOrders, targetIndex){
       const targetRow = sortedOrders && sortedOrders[targetIndex];
-      const cycleKey = getDeliveryOrderCycleKey(targetRow);
-      if(!cycleKey) return 0;
+      const commitKey = getDeliveryOrderCommitKey(targetRow);
+      if(!commitKey) return 0;
       let total = 0;
       for(let i = 0; i < targetIndex; i += 1){
         const row = sortedOrders[i];
-        if(getDeliveryOrderCycleKey(row) !== cycleKey) continue;
+        if(getDeliveryOrderCommitKey(row) !== commitKey) continue;
         total += Math.max(0, Math.round(toNumber(row && row.cantitate)));
       }
       return total;
@@ -2292,7 +2290,10 @@
       });
       return { rows, source:picked.doc_key || 'inventar-forjat', ok:rows.length > 0 };
     }
-    function buildProjectedGoodByDate(){
+    function buildProjectedGoodByDate(options){
+      const opts = options || {};
+      const includePlanned = opts.includePlanned !== false;
+      const includePlannedToday = opts.includePlannedToday !== false;
       const byDate = Object.create(null);
       const actualSlotMap = Object.create(null);
       const forjateRows = Array.isArray(state.stockSupport.forjateRows) ? state.stockSupport.forjateRows : [];
@@ -2300,15 +2301,18 @@
         if(!row.data || !row.reper) return;
         const reperKey = getCanonicalDeliveryReperKey(row.reper) || normalizeReperLoose(row.reper);
         if(!reperKey) return;
+        if(row.machine) actualSlotMap[buildRealizedKey(row.data, row.machine, row.reper)] = true;
         const qty = Math.max(0, Math.round(toNumber(row.realizatBuc)));
-        if(row.machine && qty > 0) actualSlotMap[buildRealizedKey(row.data, row.machine, row.reper)] = true;
         if(qty <= 0) return;
         byDate[row.data] = byDate[row.data] || Object.create(null);
         byDate[row.data][reperKey] = Math.max(0, Math.round(toNumber(byDate[row.data][reperKey]) + qty));
       });
+      if(!includePlanned) return byDate;
       (Array.isArray(state.rows) ? state.rows : []).forEach(row => {
         const rowIso = trimText(row && row.data);
         if(!rowIso) return;
+        if(rowIso < TODAY_ISO) return;
+        if(rowIso === TODAY_ISO && !includePlannedToday) return;
         MACHINE_ORDER.forEach(machine => {
           const slot = row && row.slots ? (row.slots[machine] || normalizePlanSlot()) : normalizePlanSlot();
           const reper = trimText(slot.reper).toUpperCase();
@@ -2486,70 +2490,97 @@
           updateDeliveryIndicator();
           return;
         }
-        const dailyGoodByDate = buildProjectedGoodByDate();
+        const projectedGoodByDate = buildProjectedGoodByDate({ includePlanned:true, includePlannedToday:true });
+        const actualGoodByDate = buildProjectedGoodByDate({ includePlanned:false });
         orders.forEach((order, index) => {
           const deliveryIso = trimText(order && order.dataLivrare);
           const reper = trimText(order && order.reper).toUpperCase();
           const cantitate = Math.max(0, Math.round(toNumber(order && order.cantitate)));
           if(!deliveryIso || !reper || cantitate <= 0) return;
           const priorCommitted = Math.max(0, getPreviousCommittedQtyForOrder(orders, index));
-          const metrics = computeDeliveryAlertMetrics(order, dailyGoodByDate, priorCommitted);
           const readyMinus4Iso = subtractDaysIso(deliveryIso, 4);
           const readyMinus2Iso = subtractDaysIso(deliveryIso, 2);
           const label = describeDeliveryOrder({ ...order, reper, cantitate });
           const machineLabel = collectMachinesForReper(reper, deliveryIso);
-          if(deliveryIso <= TODAY_ISO){
-            if(metrics.shortageDelivery > 0){
+
+          if(deliveryIso < TODAY_ISO){
+            const overdueMetrics = computeDeliveryAlertMetrics({ ...order, dataLivrare: TODAY_ISO }, actualGoodByDate, priorCommitted);
+            if(overdueMetrics.shortageDelivery > 0){
               summary.late += 1;
               summary.overdueLate.push({
                 tone: 'late',
                 label,
                 reper,
                 machineLabel,
-                qty: metrics.shortageDelivery,
+                qty: overdueMetrics.shortageDelivery,
                 orderQty: cantitate,
                 priorCommitted,
                 transportLabel: trimText(order && order.nrTransport),
-                alertDate: deliveryIso === TODAY_ISO ? TODAY_ISO : deliveryIso,
-                alertLabel: deliveryIso === TODAY_ISO ? 'Astăzi' : 'Restanță',
+                alertDate: TODAY_ISO,
+                alertLabel: 'Restanță',
                 deliveryIso,
-                message: (deliveryIso === TODAY_ISO ? 'Neacoperit la livrare ' : 'În urmă la livrare ') + label + ' = ' + roMaybeNumber(metrics.shortageDelivery) + ' buc lipsă'
+                message: 'În urmă acum ' + label + ' = ' + roMaybeNumber(overdueMetrics.shortageDelivery) + ' buc lipsă'
               });
             }
             return;
           }
-          if(metrics.shortageD2 > 0 && readyMinus2Iso && readyMinus2Iso >= TODAY_ISO){
+
+          if(deliveryIso === TODAY_ISO){
+            const todayMetrics = computeDeliveryAlertMetrics(order, projectedGoodByDate, priorCommitted);
+            if(todayMetrics.shortageDelivery > 0){
+              summary.late += 1;
+              summary.overdueLate.push({
+                tone: 'late',
+                label,
+                reper,
+                machineLabel,
+                qty: todayMetrics.shortageDelivery,
+                orderQty: cantitate,
+                priorCommitted,
+                transportLabel: trimText(order && order.nrTransport),
+                alertDate: TODAY_ISO,
+                alertLabel: 'Astăzi',
+                deliveryIso,
+                message: 'Neacoperit azi ' + label + ' = ' + roMaybeNumber(todayMetrics.shortageDelivery) + ' buc lipsă'
+              });
+            }
+            return;
+          }
+
+          const futureMetrics = computeDeliveryAlertMetrics(order, projectedGoodByDate, priorCommitted);
+          const lateWindowActive = !!readyMinus2Iso && TODAY_ISO >= readyMinus2Iso && TODAY_ISO < deliveryIso;
+          if(futureMetrics.shortageD2 > 0 && lateWindowActive){
             summary.late += 1;
             summary.futureLate.push({
               tone: 'late',
               label,
               reper,
               machineLabel,
-              qty: metrics.shortageD2,
+              qty: futureMetrics.shortageD2,
               orderQty: cantitate,
               priorCommitted,
               transportLabel: trimText(order && order.nrTransport),
               alertDate: readyMinus2Iso,
               alertLabel: 'Alertă',
               deliveryIso,
-              message: 'Întârziere ' + label + ' = ' + roMaybeNumber(metrics.shortageD2) + ' buc lipsă'
+              message: 'Întârziere ' + label + ' = ' + roMaybeNumber(futureMetrics.shortageD2) + ' buc lipsă'
             });
           }
-          if(metrics.surplusD4 > 0 && readyMinus4Iso && readyMinus4Iso >= TODAY_ISO){
+          if(futureMetrics.surplusD4 > 0 && readyMinus4Iso && readyMinus4Iso >= TODAY_ISO){
             summary.ahead += 1;
             summary.futureAhead.push({
               tone: 'ahead',
               label,
               reper,
               machineLabel,
-              qty: metrics.surplusD4,
+              qty: futureMetrics.surplusD4,
               orderQty: cantitate,
               priorCommitted,
               transportLabel: trimText(order && order.nrTransport),
               alertDate: readyMinus4Iso,
               alertLabel: 'Alertă',
               deliveryIso,
-              message: 'Avans ' + label + ' = ' + roMaybeNumber(metrics.surplusD4) + ' buc peste'
+              message: 'Avans ' + label + ' = ' + roMaybeNumber(futureMetrics.surplusD4) + ' buc peste'
             });
           }
         });
