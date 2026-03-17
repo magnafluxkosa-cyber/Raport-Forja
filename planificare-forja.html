@@ -407,7 +407,8 @@
       planSyncBusy: false,
       hasPendingLocalChanges: false,
       planBroadcastChannel: null,
-      remoteApplyTimer: null
+      remoteApplyTimer: null,
+      pendingUiStateOverride: null
     };
 
     function safeText(v){ return String(v == null ? '' : v); }
@@ -1479,7 +1480,8 @@
           machine: trimText(active.machine),
           field: trimText(active.field),
           start: typeof active.start === 'number' ? active.start : null,
-          end: typeof active.end === 'number' ? active.end : null
+          end: typeof active.end === 'number' ? active.end : null,
+          selectAll: !!active.selectAll
         } : null
       };
     }
@@ -1530,8 +1532,10 @@
             const selector = '.cell-input[data-row-id="' + cssEscape(finalSnap.activeCell.rowId) + '"][data-machine="' + cssEscape(finalSnap.activeCell.machine) + '"][data-field="' + cssEscape(finalSnap.activeCell.field) + '"]';
             const input = els.planBody ? els.planBody.querySelector(selector) : null;
             if(input){
+              if(finalSnap.activeCell.selectAll) input.dataset.navSelectAll = '1';
+              else delete input.dataset.navSelectAll;
               input.focus({ preventScroll:true });
-              if(typeof finalSnap.activeCell.start === 'number' && typeof input.setSelectionRange === 'function'){
+              if(!finalSnap.activeCell.selectAll && typeof finalSnap.activeCell.start === 'number' && typeof input.setSelectionRange === 'function'){
                 input.setSelectionRange(finalSnap.activeCell.start, typeof finalSnap.activeCell.end === 'number' ? finalSnap.activeCell.end : finalSnap.activeCell.start);
               }
             }
@@ -2857,7 +2861,9 @@
         : 'Încă nu există document cloud pentru planificare.';
     }
     function renderTable(preserveUi){
-      const uiState = preserveUi ? captureUiState() : null;
+      const overrideUiState = state.pendingUiStateOverride ? normalizeUiStateSnap(state.pendingUiStateOverride) : null;
+      state.pendingUiStateOverride = null;
+      const uiState = overrideUiState || (preserveUi ? captureUiState() : null);
       let rows = [];
       try{
         rows = getFilteredRows();
@@ -3237,9 +3243,9 @@
       });
       return true;
     }
-    function moveGridFocusFrom(target, direction){
+    function getGridNeighborInput(target, direction){
       const pos = findEditableGridPosition(target);
-      if(pos.rowIndex < 0 || pos.colIndex < 0) return false;
+      if(pos.rowIndex < 0 || pos.colIndex < 0) return null;
       let next = null;
       if(direction === 'down' || direction === 'enter'){
         const row = pos.matrix[pos.rowIndex + 1];
@@ -3252,8 +3258,35 @@
       }else if(direction === 'right'){
         next = pos.matrix[pos.rowIndex][pos.colIndex + 1] || null;
       }
+      return isEditableNavInput(next) ? next : null;
+    }
+    function buildUiStateForInput(target, options){
+      const input = isEditableNavInput(target) ? target : null;
+      if(!input) return null;
+      const opts = options && typeof options === 'object' ? options : {};
+      const currentValue = String(input.value || '');
+      return normalizeUiStateSnap({
+        scrollTop: els.tableWrap ? els.tableWrap.scrollTop : 0,
+        scrollLeft: els.tableWrap ? els.tableWrap.scrollLeft : 0,
+        activeCell: {
+          rowId: trimText(input.dataset.rowId),
+          machine: trimText(input.dataset.machine),
+          field: trimText(input.dataset.field),
+          start: opts.selectAll ? 0 : (typeof input.selectionStart === 'number' ? input.selectionStart : null),
+          end: opts.selectAll ? currentValue.length : (typeof input.selectionEnd === 'number' ? input.selectionEnd : null),
+          selectAll: !!opts.selectAll
+        }
+      });
+    }
+    function moveGridFocusFrom(target, direction){
+      const next = getGridNeighborInput(target, direction);
       if(!next) return false;
-      return focusGridInput(next, { selectAll:true });
+      state.pendingUiStateOverride = buildUiStateForInput(next, { selectAll:true });
+      savePersistedUiState(state.pendingUiStateOverride);
+      requestAnimationFrame(() => {
+        try{ target.blur(); }catch(_blurErr){}
+      });
+      return true;
     }
     function bindEvents(){
       if(els.tableWrap){
@@ -3382,7 +3415,14 @@
         if(direction === 'enter' && target.dataset && target.dataset.field === 'reper'){
           target.value = trimText(target.value).toUpperCase();
         }
-        moveGridFocusFrom(target, direction);
+        const moved = moveGridFocusFrom(target, direction);
+        if(!moved){
+          state.pendingUiStateOverride = buildUiStateForInput(target, { selectAll:true });
+          savePersistedUiState(state.pendingUiStateOverride);
+          requestAnimationFrame(() => {
+            try{ target.blur(); }catch(_blurErr){}
+          });
+        }
       });
       els.planBody.addEventListener('focusout', function(event){
         const target = event.target;
