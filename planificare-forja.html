@@ -2292,7 +2292,10 @@
       });
       return { rows, source:picked.doc_key || 'inventar-forjat', ok:rows.length > 0 };
     }
-    function buildProjectedGoodByDate(){
+    function buildProjectedGoodByDate(options){
+      const opts = options || {};
+      const includePlanned = opts.includePlanned !== false;
+      const includePlannedToday = opts.includePlannedToday !== false;
       const byDate = Object.create(null);
       const actualSlotMap = Object.create(null);
       const forjateRows = Array.isArray(state.stockSupport.forjateRows) ? state.stockSupport.forjateRows : [];
@@ -2300,15 +2303,18 @@
         if(!row.data || !row.reper) return;
         const reperKey = getCanonicalDeliveryReperKey(row.reper) || normalizeReperLoose(row.reper);
         if(!reperKey) return;
+        if(row.machine) actualSlotMap[buildRealizedKey(row.data, row.machine, row.reper)] = true;
         const qty = Math.max(0, Math.round(toNumber(row.realizatBuc)));
-        if(row.machine && qty > 0) actualSlotMap[buildRealizedKey(row.data, row.machine, row.reper)] = true;
         if(qty <= 0) return;
         byDate[row.data] = byDate[row.data] || Object.create(null);
         byDate[row.data][reperKey] = Math.max(0, Math.round(toNumber(byDate[row.data][reperKey]) + qty));
       });
+      if(!includePlanned) return byDate;
       (Array.isArray(state.rows) ? state.rows : []).forEach(row => {
         const rowIso = trimText(row && row.data);
         if(!rowIso) return;
+        if(rowIso < TODAY_ISO) return;
+        if(rowIso === TODAY_ISO && !includePlannedToday) return;
         MACHINE_ORDER.forEach(machine => {
           const slot = row && row.slots ? (row.slots[machine] || normalizePlanSlot()) : normalizePlanSlot();
           const reper = trimText(slot.reper).toUpperCase();
@@ -2486,16 +2492,18 @@
           updateDeliveryIndicator();
           return;
         }
-        const dailyGoodByDate = buildProjectedGoodByDate();
+        const projectedGoodByDate = buildProjectedGoodByDate({ includePlanned:true, includePlannedToday:true });
+        const actualGoodByDate = buildProjectedGoodByDate({ includePlanned:false });
         orders.forEach((order, index) => {
           const deliveryIso = trimText(order && order.dataLivrare);
           const reper = trimText(order && order.reper).toUpperCase();
           const cantitate = Math.max(0, Math.round(toNumber(order && order.cantitate)));
           if(!deliveryIso || !reper || cantitate <= 0) return;
           const priorCommitted = Math.max(0, getPreviousCommittedQtyForOrder(orders, index));
-          const metrics = computeDeliveryAlertMetrics(order, dailyGoodByDate, priorCommitted);
+          const metrics = computeDeliveryAlertMetrics(order, deliveryIso <= TODAY_ISO ? actualGoodByDate : projectedGoodByDate, priorCommitted);
           const readyMinus4Iso = subtractDaysIso(deliveryIso, 4);
           const readyMinus2Iso = subtractDaysIso(deliveryIso, 2);
+          const lateWindowActive = !!readyMinus2Iso && TODAY_ISO >= readyMinus2Iso && TODAY_ISO < deliveryIso;
           const label = describeDeliveryOrder({ ...order, reper, cantitate });
           const machineLabel = collectMachinesForReper(reper, deliveryIso);
           if(deliveryIso <= TODAY_ISO){
@@ -2518,7 +2526,7 @@
             }
             return;
           }
-          if(metrics.shortageD2 > 0 && readyMinus2Iso && readyMinus2Iso >= TODAY_ISO){
+          if(metrics.shortageD2 > 0 && lateWindowActive){
             summary.late += 1;
             summary.futureLate.push({
               tone: 'late',
