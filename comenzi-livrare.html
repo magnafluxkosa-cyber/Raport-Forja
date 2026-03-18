@@ -233,11 +233,13 @@
   async function refreshSupport(){ const years = Array.from(new Set(state.rows.map(row => Number(row.an)||0).filter(v => v > 0).concat([Number(state.activeYear)||0, (Number(state.activeYear)||0)-1]).filter(v => v > 0))); await Promise.all([ loadHelperMaps(), loadPlanDocument(), loadForjateForYears(years), loadInventarForjatForYears(years) ]); buildRepereList(); renderTable(); }
   function updateAccessUi(){ els.lockLayer.style.display = state.canEdit ? 'none' : 'flex'; const label = (window.ERPAuth && window.ERPAuth.roleLabel) ? window.ERPAuth.roleLabel(state.role) : state.role; els.roleStatus.textContent = label; els.roleSub.textContent = state.canEdit ? (label + ' • editare activă') : (label + ' • doar vizualizare'); }
   async function initAuth(){ try{ if(!window.ERPAuth) throw new Error('auth-common.js nu s-a încărcat.'); const authState = await window.ERPAuth.requireAuth({ next:'comenzi-livrare.html', redirectToLogin:true }); state.supabase = window.ERPAuth.getSupabaseClient(); state.user = authState.user; state.role = trimText(authState.role || 'viewer') || 'viewer'; await resolvePagePermissions(); const displayName = trimText(state.user && (state.user.email || state.user.id) || '-'); els.authStatus.textContent = displayName; els.authSub.textContent = 'Sesiune activă.'; updateAccessUi(); }catch(error){ console.error(error); els.authStatus.textContent = 'Neautentificat'; els.authSub.textContent = trimText(error && error.message || 'Nu am putut valida sesiunea.'); } }
-  function applyOrderFieldUpdate(target){
-    if(!target || !target.dataset) return { row:null, field:'', needsRender:false };
+  function applyOrderFieldUpdate(target, options){
+    if(!target || !target.dataset) return { row:null, field:'', needsRender:false, deferCommit:false };
     const row = findRow(target.dataset.id);
-    if(!row) return { row:null, field:'', needsRender:false };
+    if(!row) return { row:null, field:'', needsRender:false, deferCommit:false };
     const field = target.dataset.field;
+    const opts = options || {};
+    const isFinal = opts.final === true;
     if(field === 'an'){
       row.an = Number(target.value || 0);
       autofillOrderDefaults(row);
@@ -250,22 +252,31 @@
     } else if(field === 'nrTransport'){
       row.nrTransport = trimText(target.value);
     } else if(field === 'dataLivrare'){
-      row.dataLivrare = displayToIso(target.value) || trimText(target.value);
-      if(row.dataLivrare){
-        row.an = Number(row.dataLivrare.slice(0,4)) || row.an;
-        row.luna = getMonthName(Number(row.dataLivrare.slice(5,7))) || row.luna;
-        target.value = isoToDisplay(row.dataLivrare);
-      } else {
+      const rawValue = trimText(target.value);
+      const parsedIso = displayToIso(rawValue);
+      if(!rawValue){
+        row.dataLivrare = '';
         target.value = '';
+        autofillOrderDefaults(row);
+      } else if(parsedIso){
+        row.dataLivrare = parsedIso;
+        row.an = Number(parsedIso.slice(0,4)) || row.an;
+        row.luna = getMonthName(Number(parsedIso.slice(5,7))) || row.luna;
+        target.value = isoToDisplay(parsedIso);
+        autofillOrderDefaults(row);
+      } else if(isFinal){
+        target.value = isoToDisplay(row.dataLivrare);
+        return { row, field, needsRender:false, deferCommit:true };
+      } else {
+        return { row, field, needsRender:false, deferCommit:true };
       }
-      autofillOrderDefaults(row);
     } else if(field === 'cantitate'){
       row.cantitate = Math.max(0, Math.round(toNumber(target.value)));
     } else if(field === 'observatii'){
       row.observatii = trimText(target.value);
     }
     const needsRender = field === 'an' || field === 'luna' || field === 'reper' || field === 'dataLivrare' || field === 'cantitate' || field === 'nrTransport';
-    return { row, field, needsRender };
+    return { row, field, needsRender, deferCommit:false };
   }
   function bindEvents(){
     els.filterYear.addEventListener('change', async function(){ state.activeYear = this.value; await refreshSupport(); });
@@ -276,14 +287,16 @@
     els.ordersBody.addEventListener('input', function(event){
       const target = event.target;
       if(!target || !target.classList || !target.classList.contains('cell-input')) return;
-      const result = applyOrderFieldUpdate(target);
-      if(result.field === 'cantitate' && target.value === '') result.row.cantitate = 0;
+      const result = applyOrderFieldUpdate(target, { final:false });
+      if(result.field === 'cantitate' && target.value === '' && result.row) result.row.cantitate = 0;
+      if(result.deferCommit) return;
       queueSave();
     });
     els.ordersBody.addEventListener('change', function(event){
       const target = event.target;
       if(!target || !target.classList || !target.classList.contains('cell-input')) return;
-      const result = applyOrderFieldUpdate(target);
+      const result = applyOrderFieldUpdate(target, { final:true });
+      if(result.deferCommit) return;
       if(result.field === 'reper') target.value = result.row ? result.row.reper : target.value;
       renderFilters();
       buildRepereList();
@@ -293,7 +306,8 @@
     els.ordersBody.addEventListener('focusout', function(event){
       const target = event.target;
       if(!target || !target.classList || !target.classList.contains('cell-input')) return;
-      const result = applyOrderFieldUpdate(target);
+      const result = applyOrderFieldUpdate(target, { final:true });
+      if(result.deferCommit) return;
       if(result.field === 'reper') target.value = result.row ? result.row.reper : target.value;
       renderFilters();
       buildRepereList();
