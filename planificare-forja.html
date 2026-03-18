@@ -104,8 +104,10 @@
     .cell-input{width:100%;height:30px;border:0;background:transparent;padding:0 6px;text-align:center;font:inherit;color:#0b1f46;outline:none}
     .cell-input:focus{background:#eef6ff;box-shadow:inset 0 0 0 2px rgba(95,143,190,.35)}
     .cell-input.left{text-align:left}
-    .cell-input.delivery-ready-marker{text-decoration-line:underline;text-decoration-thickness:3px;text-underline-offset:5px;font-weight:800}
-    .cell-input.delivery-ready-marker:not(:focus){text-decoration-color:currentColor}
+    .cell-input.delivery-ready-marker,.cell-input.delivery-ready-reper-marker{text-decoration-line:underline;text-decoration-thickness:3px;text-underline-offset:5px;font-weight:800}
+    .cell-input.delivery-ready-marker:not(:focus),.cell-input.delivery-ready-reper-marker:not(:focus){text-decoration-color:currentColor}
+    .cell-input.delivery-ready-reper-marker.delivery-ready-cycle-final-current{color:#4c1d95;text-decoration-color:#4c1d95}
+    .cell-input.delivery-ready-reper-marker.delivery-ready-cycle-final-next{color:#a855f7;text-decoration-color:#a855f7}
     td.cell-locked{position:relative;background-image:linear-gradient(135deg, rgba(95,143,190,.08) 0%, rgba(95,143,190,.08) 50%, rgba(95,143,190,.14) 50%, rgba(95,143,190,.14) 100%);background-size:14px 14px}
     td.cell-locked::after{content:'';position:absolute;inset:2px;border:1px dashed rgba(95,143,190,.38);pointer-events:none;border-radius:6px}
     td.cell-locked::before{content:attr(data-lock-message);position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);max-width:calc(100% - 10px);padding:3px 8px;border-radius:999px;background:rgba(11,31,70,.88);color:#fff;font-size:11px;font-weight:800;letter-spacing:.02em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;box-shadow:0 8px 18px rgba(11,31,70,.18);pointer-events:none;z-index:2}
@@ -2146,6 +2148,9 @@
         const detailText = item && item.readyFromStock
           ? 'Comanda era deja acoperită din stoc înainte de această zi.'
           : ('Din această celulă se folosesc ' + formatTooltipBuc(item && item.usedFromCell) + ' pentru închiderea comenzii.');
+        const cycleStatusLabel = item && item.isCycleLast
+          ? (item.finalTone === 'current' ? 'Aceasta este ultima livrare a lunii și se închide în aceeași lună.' : 'Aceasta este ultima livrare a lunii și se închide în luna următoare.')
+          : 'Livrare intermediară din luna curentă.';
         html += '<div class="plan-tip-row is-block">'
           + '<div class="plan-tip-value">' + escapeHtml(transport + ' • ' + (item && item.reper || '-')) + '</div>'
           + '<div class="plan-tip-grid">'
@@ -2161,6 +2166,7 @@
             + '<div class="plan-tip-row"><div class="plan-tip-label">Rămase la livrare</div><div class="plan-tip-value">' + escapeHtml(formatTooltipBuc(item && item.remainingByDelivery)) + '</div></div>'
             + '<div class="plan-tip-row"><div class="plan-tip-label">Snapshot inventar</div><div class="plan-tip-value">' + escapeHtml(snapshotLabel) + '</div></div>'
             + '<div class="plan-tip-row"><div class="plan-tip-label">Comenzi înainte</div><div class="plan-tip-value">' + escapeHtml(formatTooltipBuc(item && item.priorCommitted)) + '</div></div>'
+            + '<div class="plan-tip-row"><div class="plan-tip-label">Status lună</div><div class="plan-tip-value">' + escapeHtml(cycleStatusLabel) + '</div></div>'
             + '<div class="plan-tip-row is-block"><div class="plan-tip-label">Detaliu</div><div class="plan-tip-value">' + escapeHtml(detailText) + '</div></div>'
           + '</div>'
         + '</div>';
@@ -2291,12 +2297,33 @@
             usedFromCell,
             remainingAfterReady: Math.max(0, availableAfterCell - requiredQty),
             remainingByDelivery: Math.max(0, availableByDelivery - requiredQty),
-            monthSeq: Number(order && order.__monthSeq || 0)
+            monthSeq: Number(order && order.__monthSeq || 0),
+            cycleKey: getDeliveryOrderCycleKey(order) || ''
           };
           (state.deliveryReadyByCell[cellKey] = state.deliveryReadyByCell[cellKey] || []).push(readyItem);
         });
+        const readyByCycle = Object.create(null);
         Object.keys(state.deliveryReadyByCell).forEach(key => {
           state.deliveryReadyByCell[key].sort((a,b) => String(a.deliveryIso).localeCompare(String(b.deliveryIso), 'ro', { sensitivity:'base' }) || Number(a.monthSeq || 0) - Number(b.monthSeq || 0) || String(a.transportLabel || '').localeCompare(String(b.transportLabel || ''), 'ro', { sensitivity:'base' }));
+          state.deliveryReadyByCell[key].forEach(item => {
+            const cycleKey = trimText(item && item.cycleKey);
+            if(!cycleKey) return;
+            (readyByCycle[cycleKey] = readyByCycle[cycleKey] || []).push(item);
+          });
+        });
+        Object.keys(readyByCycle).forEach(cycleKey => {
+          const list = readyByCycle[cycleKey].slice().sort((a,b) => String(a.deliveryIso).localeCompare(String(b.deliveryIso), 'ro', { sensitivity:'base' }) || Number(a.monthSeq || 0) - Number(b.monthSeq || 0) || String(a.transportLabel || '').localeCompare(String(b.transportLabel || ''), 'ro', { sensitivity:'base' }));
+          const last = list[list.length - 1];
+          list.forEach(item => {
+            item.cycleCount = list.length;
+            item.isCycleLast = !!(last && item === last);
+            item.finalTone = '';
+          });
+          if(last){
+            const readyMonthIso = trimText(last.readyDateIso).slice(0,7);
+            const deliveryMonthIso = trimText(last.deliveryIso).slice(0,7);
+            last.finalTone = readyMonthIso && deliveryMonthIso && readyMonthIso === deliveryMonthIso ? 'current' : 'next';
+          }
         });
       }catch(error){
         console.error('rebuildDeliveryReadyMarkers', error);
@@ -2319,6 +2346,9 @@
       planTooltipEl.style.left = '-9999px';
       planTooltipEl.style.top = '-9999px';
       activePlanTooltipCell = null;
+    }
+    function getPlanTooltipCellFromTarget(target){
+      return target && target.closest ? target.closest('td.slot-plan[data-tooltip-html],td.slot-reper[data-tooltip-html]') : null;
     }
     function positionPlanTooltip(cell){
       if(!planTooltipEl || !cell || planTooltipEl.hidden) return;
@@ -3276,16 +3306,20 @@
             const mask = getDuplicateMask(rows, idx, machine);
             const tdPlanClass = calc && calc.status === 'partial' ? 'plan-stock-partial' : (calc && calc.status === 'empty' ? 'plan-stock-empty' : '');
             const tdReperClass = calc && (calc.status === 'partial' || calc.status === 'empty') ? 'reper-stock-alert' : '';
-            const combinedTooltip = buildCombinedPlanTooltipHtml(calc && calc.tooltip ? calc.tooltip : '', readyItems);
-            const planTooltip = combinedTooltip ? (' data-tooltip-html="' + escapeHtml(combinedTooltip) + '" data-tooltip-tone="' + escapeHtml((calc && (calc.status === 'partial' || calc.status === 'empty')) ? 'alert' : 'ok') + '"') : '';
+            const deliveryTooltip = readyItems.length ? buildDeliveryReadySectionHtml(readyItems, { standalone:true }) : '';
+            const reperTooltip = deliveryTooltip ? (' data-tooltip-html="' + escapeHtml(deliveryTooltip) + '" data-tooltip-tone="ok"') : '';
+            const planTooltip = (calc && calc.tooltip) ? (' data-tooltip-html="' + escapeHtml(calc.tooltip) + '" data-tooltip-tone="' + escapeHtml((calc && (calc.status === 'partial' || calc.status === 'empty')) ? 'alert' : 'ok') + '"') : '';
             const planDisplay = planValue ? String(planValue) : '';
             const realizedDisplay = (realized.value || planValue || trimText(slot.reper)) ? roMaybeNumber(realized.value) : '';
             const realizedClass = (planValue > 0 && realized.value >= planValue) ? 'ok' : ((planValue > 0 && realized.value < planValue && realized.value > 0) ? 'warn' : '');
-            const readyClass = readyItems.length ? ' delivery-ready-marker' : '';
-            const hidePlanDuplicate = !!(mask.hidePlan && !readyItems.length);
+            const reperReadyClass = readyItems.length ? ' delivery-ready-reper-marker' : '';
+            const reperFinalDarkClass = readyItems.some(item => item && item.isCycleLast && item.finalTone === 'current') ? ' delivery-ready-cycle-final-current' : '';
+            const reperFinalLightClass = !reperFinalDarkClass && readyItems.some(item => item && item.isCycleLast && item.finalTone === 'next') ? ' delivery-ready-cycle-final-next' : '';
+            const hideReperDuplicate = !!(mask.hideReper && !readyItems.length);
+            const hidePlanDuplicate = !!mask.hidePlan;
             return `
-              <td class="slot-reper ${tdReperClass}"><input class="cell-input left${mask.hideReper ? ' dup-hidden' : ''}" list="repereList" data-row-id="${escapeHtml(row.id)}" data-machine="${escapeHtml(machine)}" data-field="reper" value="${escapeHtml(slot.reper)}"${readOnly}></td>
-              <td class="slot-plan ${tdPlanClass}"${planTooltip}><input class="cell-input${readyClass}${hidePlanDuplicate ? ' dup-hidden' : ''}" type="number" min="0" step="1" data-row-id="${escapeHtml(row.id)}" data-machine="${escapeHtml(machine)}" data-field="planificat" value="${escapeHtml(planDisplay)}"${readOnly}></td>
+              <td class="slot-reper ${tdReperClass}"${reperTooltip}><input class="cell-input left${reperReadyClass}${reperFinalDarkClass}${reperFinalLightClass}${hideReperDuplicate ? ' dup-hidden' : ''}" list="repereList" data-row-id="${escapeHtml(row.id)}" data-machine="${escapeHtml(machine)}" data-field="reper" value="${escapeHtml(slot.reper)}"${readOnly}></td>
+              <td class="slot-plan ${tdPlanClass}"${planTooltip}><input class="cell-input${hidePlanDuplicate ? ' dup-hidden' : ''}" type="number" min="0" step="1" data-row-id="${escapeHtml(row.id)}" data-machine="${escapeHtml(machine)}" data-field="planificat" value="${escapeHtml(planDisplay)}"${readOnly}></td>
               <td class="slot-real group-end"><div class="readonly ${realized.source === 'live' ? 'live' : 'seed'} ${realizedClass}">${escapeHtml(realizedDisplay)}</div></td>
             `;
           }).join('');
@@ -3709,19 +3743,19 @@
       els.planBody.addEventListener('mouseover', function(event){
         const row = event.target && event.target.closest ? event.target.closest('tr[data-row-id]') : null;
         setHoveredRow(row ? row.getAttribute('data-row-id') : '');
-        const cell = event.target && event.target.closest ? event.target.closest('td.slot-plan[data-tooltip-html]') : null;
+        const cell = getPlanTooltipCellFromTarget(event.target);
         if(cell) showPlanTooltip(cell);
       });
       els.planBody.addEventListener('mousemove', function(event){
-        const cell = event.target && event.target.closest ? event.target.closest('td.slot-plan[data-tooltip-html]') : null;
+        const cell = getPlanTooltipCellFromTarget(event.target);
         if(cell){
           if(activePlanTooltipCell !== cell) showPlanTooltip(cell);
           else positionPlanTooltip(cell);
         }
       });
       els.planBody.addEventListener('mouseout', function(event){
-        const fromCell = event.target && event.target.closest ? event.target.closest('td.slot-plan[data-tooltip-html]') : null;
-        const toCell = event.relatedTarget && event.relatedTarget.closest ? event.relatedTarget.closest('td.slot-plan[data-tooltip-html]') : null;
+        const fromCell = getPlanTooltipCellFromTarget(event.target);
+        const toCell = getPlanTooltipCellFromTarget(event.relatedTarget);
         if(fromCell && fromCell !== toCell) hidePlanTooltip();
       });
       els.planBody.addEventListener('mouseleave', function(){
@@ -3752,7 +3786,7 @@
             });
           }
         }
-        const cell = target && target.closest ? target.closest('td.slot-plan[data-tooltip-html]') : null;
+        const cell = getPlanTooltipCellFromTarget(target);
         if(cell) showPlanTooltip(cell);
       });
       els.planBody.addEventListener('input', function(event){
@@ -3815,7 +3849,7 @@
         }
         requestAnimationFrame(() => {
           const active = document.activeElement;
-          const activeCell = active && active.closest ? active.closest('td.slot-plan[data-tooltip-html]') : null;
+          const activeCell = getPlanTooltipCellFromTarget(active);
           if(activeCell) showPlanTooltip(activeCell);
           else hidePlanTooltip();
         });
