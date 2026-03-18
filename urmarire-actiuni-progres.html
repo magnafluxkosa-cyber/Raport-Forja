@@ -478,7 +478,7 @@
       datasets: deepClone(SEED.datasets), helper: deepClone(SEED.helper), activeSheet: "forja", filteredRows: [],
       selectedId: null, editingId: null, dirty: false, syncInFlight: false, source: "seed",
       user: null, role: "viewer", permissions: { canView: true, canAdd: false, canEdit: false, canDelete: false },
-      cloudUpdatedAt: "", sheetJsPromise: null, namePromptResolver: null, supabase: null
+      cloudUpdatedAt: "", sheetJsPromise: null, namePromptResolver: null, supabase: null, aclMirror: null
     };
     const TABLE_COLUMNS = {
       forja: [
@@ -770,6 +770,31 @@
       const cfg = window.RF_CONFIG || {}; const url = cfg.SUPABASE_URL || window.SUPABASE_URL || ""; const key = cfg.SUPABASE_ANON_KEY || window.SUPABASE_ANON_KEY || ""; if (!url || !key || !window.supabase) return null;
       state.supabase = window.supabase.createClient(url, key, { auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true } }); return state.supabase;
     }
+    async function readDashboardAclMirror() {
+      if (!state.supabase || !state.user) return null;
+      try {
+        const a = await state.supabase.from("rf_documents").select("content,updated_at").eq("doc_key", "dashboard_acl_v1").maybeSingle();
+        if (!a.error && a.data && a.data.content && typeof a.data.content === "object") return a.data.content;
+      } catch (error) { console.warn("dashboard_acl_v1 content", error); }
+      try {
+        const b = await state.supabase.from("rf_documents").select("data,updated_at").eq("doc_key", "dashboard_acl_v1").maybeSingle();
+        if (!b.error && b.data && b.data.data && typeof b.data.data === "object") return b.data.data;
+      } catch (error) { console.warn("dashboard_acl_v1 data", error); }
+      return null;
+    }
+    function pageKeyAliases() {
+      return [PAGE_KEY, "urmarire_actiuni_progres", "urmarire actiuni si progres", "urmarire-actiuni-progres.html", "urmarire_actiuni_progres.html"];
+    }
+    function applyPermissionDescriptor(current, descriptor) {
+      if (descriptor === true) return { ...current, canView: true };
+      if (!descriptor || typeof descriptor !== "object") return current;
+      const next = { ...current };
+      if (Object.prototype.hasOwnProperty.call(descriptor, "can_view")) next.canView = descriptor.can_view === true;
+      if (Object.prototype.hasOwnProperty.call(descriptor, "can_add")) next.canAdd = descriptor.can_add === true;
+      if (Object.prototype.hasOwnProperty.call(descriptor, "can_edit")) next.canEdit = descriptor.can_edit === true;
+      if (Object.prototype.hasOwnProperty.call(descriptor, "can_delete")) next.canDelete = descriptor.can_delete === true;
+      return next;
+    }
     async function resolveAuthAndRole() {
       const supabase = getSupabaseClient(); if (!supabase) { setBadge(dom.chipRole, dom.dotRole, "Rol: viewer (fără rf-config.js)", "warning"); setBadge(dom.chipCloud, dom.dotCloud, "Cloud: indisponibil", "danger"); return; }
       try { const { data } = await supabase.auth.getSession(); state.user = data?.session?.user || null; } catch (error) { console.error("getSession", error); }
@@ -784,16 +809,58 @@
         try { const { data, error } = await query(); if (!error && Array.isArray(data) && data.length && data[0].role) { role = String(data[0].role); break; } } catch (error) { console.warn("profiles role fallback", error); }
       }
       try { const { data, error } = await supabase.from("rf_acl").select("*").eq("email", state.user.email).limit(1); if (!error && Array.isArray(data) && data.length && data[0].role) role = String(data[0].role); } catch (error) { console.warn("rf_acl role fallback", error); }
-      state.role = normalizeText(role) || "viewer"; if (normalizeText(state.user.email) === "forja.editor@gmail.com") state.role = "admin"; setBadge(dom.chipRole, dom.dotRole, `Rol: ${state.role}`, state.role === "viewer" ? "warning" : "success"); await resolvePagePermissions();
+      state.role = normalizeText(role) || "viewer"; if (normalizeText(state.user.email) === "forja.editor@gmail.com") state.role = "admin"; await resolvePagePermissions(); const aclExtra = state.role === "viewer" && (state.permissions.canAdd || state.permissions.canEdit || state.permissions.canDelete); setBadge(dom.chipRole, dom.dotRole, `Rol: ${state.role}${aclExtra ? " + ACL" : ""}`, state.role === "viewer" && !aclExtra ? "warning" : "success");
     }
     async function resolvePagePermissions() {
       const defaults = { canView: true, canAdd: ["admin","editor","operator"].includes(state.role), canEdit: ["admin","editor","operator"].includes(state.role), canDelete: ["admin","editor"].includes(state.role) };
       state.permissions = { ...defaults };
       if (!state.supabase || !state.user) { applyPermissionsToUi(); return; }
+
       try {
-        const { data, error } = await state.supabase.from("page_permissions").select("*").eq("role", state.role).in("page_key", [PAGE_KEY, "urmarire_actiuni_progres", "urmarire actiuni si progres"]);
-        if (!error && Array.isArray(data) && data.length) state.permissions = { canView: data.some(x => !!x.can_view), canAdd: data.some(x => !!x.can_add), canEdit: data.some(x => !!x.can_edit), canDelete: data.some(x => !!x.can_delete) };
+        const { data, error } = await state.supabase.from("page_permissions").select("*").eq("role", state.role).in("page_key", pageKeyAliases());
+        if (!error && Array.isArray(data) && data.length) {
+          state.permissions = {
+            canView: data.some(x => !!x.can_view),
+            canAdd: data.some(x => !!x.can_add),
+            canEdit: data.some(x => !!x.can_edit),
+            canDelete: data.some(x => !!x.can_delete)
+          };
+        }
       } catch (error) { console.warn("page_permissions fallback", error); }
+
+      try {
+        const mirror = await readDashboardAclMirror();
+        state.aclMirror = mirror || null;
+        const pagePermissions = mirror && mirror.page_permissions && typeof mirror.page_permissions === "object" ? mirror.page_permissions : null;
+        const rolePermissions = pagePermissions && pagePermissions[state.role] && typeof pagePermissions[state.role] === "object" ? pagePermissions[state.role] : null;
+        if (rolePermissions) {
+          for (const key of pageKeyAliases()) {
+            if (!Object.prototype.hasOwnProperty.call(rolePermissions, key)) continue;
+            state.permissions = applyPermissionDescriptor(state.permissions, rolePermissions[key]);
+          }
+        }
+
+        const grants = mirror && mirror.grants && typeof mirror.grants === "object" ? mirror.grants : null;
+        const roleGrants = grants && grants[state.role] && typeof grants[state.role] === "object" ? grants[state.role] : null;
+        if (roleGrants) {
+          for (const key of pageKeyAliases()) {
+            if (!Object.prototype.hasOwnProperty.call(roleGrants, key)) continue;
+            const grantValue = roleGrants[key];
+            if (grantValue && typeof grantValue === "object") {
+              state.permissions = applyPermissionDescriptor(state.permissions, grantValue);
+            } else if (grantValue === true) {
+              state.permissions = { ...state.permissions, canView: true, canAdd: true };
+            } else if (grantValue === false) {
+              state.permissions = { ...state.permissions, canView: false };
+            }
+          }
+        }
+      } catch (error) { console.warn("dashboard ACL mirror fallback", error); }
+
+      if (!state.permissions.canView) {
+        state.permissions = { canView: false, canAdd: false, canEdit: false, canDelete: false };
+      }
+
       applyPermissionsToUi();
     }
     function rowsFromPayload(payload) { return { forja: sortRows((payload?.datasets?.forja || []).map(row => enrichRow(row, "forja"))), prelucrari: sortRows((payload?.datasets?.prelucrari || []).map(row => enrichRow(row, "prelucrari"))) }; }
@@ -819,7 +886,7 @@
       try {
         const { error } = await state.supabase.from("rf_documents").upsert(row, { onConflict: "doc_key" }); if (error) throw error;
         state.cloudUpdatedAt = payload.updated_at; state.dirty = false; state.source = "cloud"; persistLocal(); setBadge(dom.chipSource, dom.dotSource, "Sursă: cloud", "success"); setBadge(dom.chipCloud, dom.dotCloud, "Cloud: sincronizat", "success"); return true;
-      } catch (error) { console.error("saveCloud", error); setBadge(dom.chipCloud, dom.dotCloud, "Cloud: salvare eșuată, ai cache local", "danger"); return false; } finally { state.syncInFlight = false; }
+      } catch (error) { console.error("saveCloud", error); const denied = String(error?.message || "").toLowerCase().includes("permission") || String(error?.message || "").toLowerCase().includes("policy") || String(error?.message || "").toLowerCase().includes("row-level security"); setBadge(dom.chipCloud, dom.dotCloud, denied ? "Cloud: scriere refuzată de Supabase, ai cache local" : "Cloud: salvare eșuată, ai cache local", "danger"); return false; } finally { state.syncInFlight = false; }
     }
     async function checkRemoteChanges() {
       if (!state.supabase || !state.user || document.hidden) return;
