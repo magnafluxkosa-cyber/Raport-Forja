@@ -208,6 +208,19 @@
       border:1px solid rgba(31,63,91,.14);
     }
     .progress-fill { height:100%; background: linear-gradient(90deg,#4c84b8,#6fb37b); width:0%; }
+
+    .cell-select {
+      width: 100%;
+      min-height: 32px;
+      border: 1px solid rgba(31,63,91,.18);
+      border-radius: 8px;
+      background: rgba(255,255,255,.94);
+      color: var(--text);
+      font: inherit;
+      font-weight: 700;
+      padding: 4px 8px;
+    }
+    .cell-select:disabled { opacity: .75; cursor: not-allowed; }
     .modal {
       position:fixed; inset:0; background:rgba(8,18,32,.45); display:none;
       align-items:center; justify-content:center; padding:16px; z-index:50;
@@ -277,6 +290,7 @@
           <button class="btn secondary" type="button" id="btnExport">Export Excel</button>
           <button class="btn" type="button" id="btnSync">Sync</button>
           <button class="btn" type="button" id="btnAdd">Adaugă</button>
+          <button class="btn danger" type="button" id="btnDelete">Șterge rând</button>
         </div>
       </div>
       <div class="status-wrap">
@@ -340,7 +354,7 @@
             <div class="field col-12"><label for="fldObservatii">Observații</label><textarea id="fldObservatii"></textarea></div>
           </div>
           <div class="modal-actions">
-            <div class="left"><button class="btn secondary" type="button" id="btnResetForm">Reset</button></div>
+            <div class="left"><button class="btn secondary" type="button" id="btnResetForm">Reset</button><button class="btn danger hidden" type="button" id="btnDeleteForm">Șterge rând</button></div>
             <div class="right"><button class="btn secondary" type="button" id="btnCancelForm">Anulează</button><button class="btn" type="submit" id="btnSaveForm">Salvează</button></div>
           </div>
         </form>
@@ -377,6 +391,7 @@
       btnExport: document.getElementById("btnExport"),
       btnSync: document.getElementById("btnSync"),
       btnAdd: document.getElementById("btnAdd"),
+      btnDelete: document.getElementById("btnDelete"),
       btnResetFilters: document.getElementById("btnResetFilters"),
       sheetTabs: Array.from(document.querySelectorAll(".sheet-tab")),
       filterSearch: document.getElementById("filterSearch"),
@@ -393,6 +408,7 @@
       btnCloseModal: document.getElementById("btnCloseModal"),
       btnCancelForm: document.getElementById("btnCancelForm"),
       btnResetForm: document.getElementById("btnResetForm"),
+      btnDeleteForm: document.getElementById("btnDeleteForm"),
       editForm: document.getElementById("editForm"),
       excelInput: document.getElementById("excelInput"),
       fldDescriere: document.getElementById("fldDescriere"),
@@ -451,10 +467,40 @@
       ]
     };
     function normalizeText(value) { return String(value ?? "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, " ").trim().toLowerCase(); }
+    function excelSerialToDate(serial) {
+      const num = Number(serial);
+      if (!Number.isFinite(num)) return null;
+      const utcValue = Date.UTC(1899, 11, 30) + Math.round(num * 86400000);
+      const dt = new Date(utcValue);
+      return Number.isNaN(dt.getTime()) ? null : dt;
+    }
+    function normalizePercentValue(value) {
+      if (value === null || value === undefined || value === "") return 0;
+      const raw = String(value).replace("%", "").replace(",", ".").trim();
+      let num = Number(raw);
+      if (!Number.isFinite(num)) return 0;
+      if (num > 0 && num <= 1) num *= 100;
+      const allowed = [0, 25, 50, 75, 100];
+      let best = allowed[0];
+      let diff = Math.abs(num - best);
+      for (const candidate of allowed) {
+        const nextDiff = Math.abs(num - candidate);
+        if (nextDiff < diff) {
+          diff = nextDiff;
+          best = candidate;
+        }
+      }
+      return best;
+    }
     function parseDate(value) {
-      if (!value) return null;
+      if (value === null || value === undefined || value === "") return null;
       if (value instanceof Date && !Number.isNaN(value.getTime())) return value;
+      if (typeof value === "number") return value > 59 ? excelSerialToDate(value) : null;
       const raw = String(value).trim(); if (!raw || raw === "-") return null;
+      if (/^\d+(?:[\.,]\d+)?$/.test(raw)) {
+        const serial = Number(raw.replace(",", "."));
+        if (serial > 59) return excelSerialToDate(serial);
+      }
       const normalized = raw.replace(/\//g, ".").replace(/-/g, ".");
       const parts = normalized.split(".");
       if (parts.length === 3) {
@@ -486,7 +532,7 @@
         descriere_prioritate: String(raw.descriere_prioritate || raw["Descriere nivel de prioritate"] || "").trim(),
         stadiu: String(raw.stadiu || raw["Stadiu"] || "").trim().toUpperCase(),
         descriere_stadiu: String(raw.descriere_stadiu || raw["Descriere stadiu"] || "").trim(),
-        procent_realizat: Number(raw.procent_realizat || raw["Procent realizat"] || 0) || 0,
+        procent_realizat: normalizePercentValue(raw.procent_realizat ?? raw["Procent realizat"] ?? 0),
         data_finalizare: formatDate(raw.data_finalizare || raw["Data finalizarii 100%"] || raw["Data finalizării 100%"] || ""),
         responsabil_actiune: String(raw.responsabil_actiune || raw["Responsabil Actiune"] || raw["Responsabil acțiune"] || "").trim(),
         departament: String(raw.departament || raw["Departament"] || "").trim(),
@@ -494,14 +540,26 @@
         observatii: String(raw.observatii || raw["Observatii"] || raw["Observații"] || "").trim()
       };
       const pMeta = priorityMeta(row.nivel_prioritate); const sMeta = stageMeta(row.stadiu);
-      if (pMeta && !row.descriere_prioritate) row.descriere_prioritate = pMeta.label;
-      if (sMeta) { if (!row.descriere_stadiu) row.descriere_stadiu = sMeta.label; row.procent_realizat = Number(row.procent_realizat || sMeta.percent || 0); }
+      if (pMeta) row.descriere_prioritate = pMeta.label;
+      if (sMeta) {
+        row.descriere_stadiu = sMeta.label;
+        row.procent_realizat = sMeta.percent;
+      } else {
+        row.procent_realizat = normalizePercentValue(row.procent_realizat);
+      }
       if (sheetKey !== "forja") row.departament = ""; return row;
     }
     function sortRows(rows) {
       return [...rows].sort((a,b) => {
-        const ad = parseDate(a.data_constatare)?.getTime() || 0; const bd = parseDate(b.data_constatare)?.getTime() || 0;
-        if (bd !== ad) return bd - ad; const ap = Number(a.nivel_prioritate || 99); const bp = Number(b.nivel_prioritate || 99); if (ap !== bp) return ap - bp;
+        const apct = normalizePercentValue(a.procent_realizat);
+        const bpct = normalizePercentValue(b.procent_realizat);
+        if (bpct !== apct) return bpct - apct;
+        const ad = parseDate(a.data_constatare)?.getTime() || 0;
+        const bd = parseDate(b.data_constatare)?.getTime() || 0;
+        if (bd !== ad) return bd - ad;
+        const ap = Number(a.nivel_prioritate || 99);
+        const bp = Number(b.nivel_prioritate || 99);
+        if (ap !== bp) return ap - bp;
         return a.descriere_probleme.localeCompare(b.descriere_probleme, "ro");
       });
     }
@@ -536,6 +594,14 @@
       const current = select.value; select.innerHTML = `<option value="">${placeholder}</option>` + values.map(value => `<option value="${escapeHtml(value)}">${escapeHtml(value)}</option>`).join("");
       if (values.includes(current)) select.value = current;
     }
+    function buildPriorityOptions(selected = "") {
+      const blank = `<option value="" ${selected === "" ? "selected" : ""}>—</option>`;
+      return blank + state.helper.priorities.map(item => `<option value="${escapeHtml(item.value)}" ${String(item.value) === String(selected) ? "selected" : ""}>${escapeHtml(item.value)}</option>`).join("");
+    }
+    function buildStageOptions(selected = "") {
+      const blank = `<option value="" ${selected === "" ? "selected" : ""}>—</option>`;
+      return blank + state.helper.stages.map(item => `<option value="${escapeHtml(item.code)}" ${String(item.code) === String(selected) ? "selected" : ""}>${escapeHtml(item.code)} - ${escapeHtml(item.label)}</option>`).join("");
+    }
     function refreshStaticSelects() {
       fillSelect(dom.filterStadiu, state.helper.stages.map(item => item.code), "Toate");
       fillSelect(dom.filterPrioritate, state.helper.priorities.map(item => item.value), "Toate");
@@ -566,20 +632,42 @@
     function renderStats(rows) { const total = rows.length; const done = rows.filter(rowIsDone).length; const open = total - done; const late = rows.filter(rowIsLate).length; dom.statTotal.textContent = String(total); dom.statOpen.textContent = String(open); dom.statDone.textContent = String(done); dom.statLate.textContent = String(late); }
     function renderHead() { const columns = TABLE_COLUMNS[state.activeSheet]; dom.tableHeadRow.innerHTML = columns.map(col => `<th style="width:${col.width}">${escapeHtml(col.label)}</th>`).join(""); }
     function renderRowCell(row, col) {
-      if (col.render === "progress") { const pct = Math.max(0, Math.min(100, Number(row.procent_realizat || 0))); return `<td class="center"><div class="progress-cell"><div>${pct}%</div><div class="progress-bar"><div class="progress-fill" style="width:${pct}%"></div></div></div></td>`; }
-      if (col.key === "nivel_prioritate") { const value = escapeHtml(row[col.key]); return `<td class="center"><span class="pill priority-${escapeHtml(row[col.key])}">${value || "—"}</span></td>`; }
+      if (col.render === "progress") {
+        const pct = normalizePercentValue(row.procent_realizat);
+        return `<td class="center"><div class="progress-cell"><div>${pct}%</div><div class="progress-bar"><div class="progress-fill" style="width:${pct}%"></div></div></div></td>`;
+      }
+      if (col.key === "nivel_prioritate") {
+        if (state.permissions.canEdit) {
+          return `<td class="center"><select class="cell-select" data-inline-key="nivel_prioritate" data-id="${escapeHtml(row.id)}" aria-label="Nivel prioritate">${buildPriorityOptions(row.nivel_prioritate)}</select></td>`;
+        }
+        const value = escapeHtml(row[col.key]);
+        return `<td class="center"><span class="pill priority-${escapeHtml(row[col.key])}">${value || "—"}</span></td>`;
+      }
+      if (col.key === "stadiu") {
+        if (state.permissions.canEdit) {
+          return `<td class="center"><select class="cell-select" data-inline-key="stadiu" data-id="${escapeHtml(row.id)}" aria-label="Stadiu">${buildStageOptions(row.stadiu)}</select></td>`;
+        }
+        const value = row[col.key];
+        return `<td class="${col.cls || ""}">${value ? escapeHtml(value) : "—"}</td>`;
+      }
       if (col.key === "zile_deschise") { const value = rowDaysOpen(row); return `<td class="center">${value === "" ? "—" : value}</td>`; }
-      const value = row[col.key]; return `<td class="${col.cls || ""}">${value ? escapeHtml(value) : "—"}</td>`;
+      const value = row[col.key];
+      return `<td class="${col.cls || ""}">${value ? escapeHtml(value) : "—"}</td>`;
     }
     function renderTable() {
       refreshTabUi(); refreshFilterOptions(); renderHead(); const rows = sortRows(getActiveRows()).filter(filtersMatch); state.filteredRows = rows; renderStats(rows);
-      if (!rows.length) { dom.tableBody.innerHTML = `<tr><td colspan="${TABLE_COLUMNS[state.activeSheet].length}" class="table-empty">Nu există rânduri pentru filtrele selectate.</td></tr>`; return; }
+      if (!rows.length) { dom.tableBody.innerHTML = `<tr><td colspan="${TABLE_COLUMNS[state.activeSheet].length}" class="table-empty">Nu există rânduri pentru filtrele selectate.</td></tr>`; applyPermissionsToUi(); return; }
       dom.tableBody.innerHTML = rows.map(row => {
         const classes = [`stage-${normalizeText(row.stadiu)}`, rowIsLate(row) ? "late" : "", state.selectedId === row.id ? "selected" : ""].filter(Boolean).join(" ");
         return `<tr class="${classes}" data-id="${escapeHtml(row.id)}">${TABLE_COLUMNS[state.activeSheet].map(col => renderRowCell(row, col)).join("")}</tr>`;
       }).join("");
+      applyPermissionsToUi();
     }
-    function applyPermissionsToUi() { dom.btnAdd.disabled = !state.permissions.canAdd; dom.btnSync.disabled = !(state.permissions.canAdd || state.permissions.canEdit); }
+    function applyPermissionsToUi() {
+      dom.btnAdd.disabled = !state.permissions.canAdd;
+      dom.btnSync.disabled = !(state.permissions.canAdd || state.permissions.canEdit);
+      dom.btnDelete.disabled = !state.permissions.canDelete || !state.selectedId;
+    }
     function getSupabaseClient() {
       if (state.supabase) return state.supabase;
       const cfg = window.RF_CONFIG || {}; const url = cfg.SUPABASE_URL || window.SUPABASE_URL || ""; const key = cfg.SUPABASE_ANON_KEY || window.SUPABASE_ANON_KEY || ""; if (!url || !key || !window.supabase) return null;
@@ -642,7 +730,9 @@
     }
     function openModal(row = null) {
       if (row && !state.permissions.canEdit) return; if (!row && !state.permissions.canAdd) return; state.editingId = row ? row.id : null; dom.modalTitle.textContent = row ? "Editează acțiune" : "Adaugă acțiune";
-      dom.fldDescriere.value = row?.descriere_probleme || ""; dom.fldLinie.value = row?.linie_utilaj || ""; dom.fldDataConstatare.value = row?.data_constatare || currentDateString(); dom.fldResponsabil.value = row?.responsabil_actiune || ""; dom.fldPrioritate.value = row?.nivel_prioritate || ""; dom.fldStadiu.value = row?.stadiu || ""; dom.fldDataFinalizare.value = row?.data_finalizare || ""; dom.fldDepartament.value = row?.departament || ""; dom.fldTermen.value = row?.termen_prop || ""; dom.fldObservatii.value = row?.observatii || ""; updateComputedFields(); dom.editModal.classList.add("open"); dom.editModal.setAttribute("aria-hidden", "false"); setTimeout(() => dom.fldDescriere.focus(), 30);
+      dom.fldDescriere.value = row?.descriere_probleme || ""; dom.fldLinie.value = row?.linie_utilaj || ""; dom.fldDataConstatare.value = row?.data_constatare || currentDateString(); dom.fldResponsabil.value = row?.responsabil_actiune || ""; dom.fldPrioritate.value = row?.nivel_prioritate || ""; dom.fldStadiu.value = row?.stadiu || ""; dom.fldDataFinalizare.value = row?.data_finalizare || ""; dom.fldDepartament.value = row?.departament || ""; dom.fldTermen.value = row?.termen_prop || ""; dom.fldObservatii.value = row?.observatii || ""; updateComputedFields();
+      dom.btnDeleteForm.classList.toggle("hidden", !row || !state.permissions.canDelete);
+      dom.editModal.classList.add("open"); dom.editModal.setAttribute("aria-hidden", "false"); setTimeout(() => dom.fldDescriere.focus(), 30);
     }
     function closeModal() { state.editingId = null; dom.editModal.classList.remove("open"); dom.editModal.setAttribute("aria-hidden", "true"); }
     function updateComputedFields() { const pMeta = priorityMeta(dom.fldPrioritate.value); const sMeta = stageMeta(dom.fldStadiu.value); dom.fldPrioritateDescriere.textContent = pMeta?.label || "—"; dom.fldStadiuDescriere.textContent = sMeta?.label || "—"; dom.fldProcent.textContent = `${sMeta?.percent || 0}%`; }
@@ -655,6 +745,19 @@
       state.datasets[state.activeSheet] = sortRows(target); state.selectedId = row.id; markDirty(); renderTable(); closeModal();
     }
     function rowById(id) { return getActiveRows().find(row => row.id === id) || null; }
+    function inlineUpdateRow(id, key, value) {
+      if (!state.permissions.canEdit) return;
+      const rows = getActiveRows();
+      const index = rows.findIndex(row => row.id === id);
+      if (index < 0) return;
+      const next = { ...rows[index], [key]: value };
+      const enriched = enrichRow(next, state.activeSheet);
+      rows[index] = enriched;
+      state.datasets[state.activeSheet] = sortRows(rows);
+      state.selectedId = enriched.id;
+      markDirty();
+      renderTable();
+    }
     function deleteSelected() {
       if (!state.permissions.canDelete) return; if (!state.selectedId) { alert("Selectează mai întâi un rând."); return; } if (!confirm("Ștergi rândul selectat?")) return;
       state.datasets[state.activeSheet] = getActiveRows().filter(row => row.id !== state.selectedId); state.selectedId = null; markDirty(); renderTable();
@@ -717,11 +820,29 @@
     function bindEvents() {
       dom.btnDashboard.addEventListener("click", goToDashboard);
       dom.btnRefresh.addEventListener("click", async () => { if (state.dirty) { const proceed = confirm("Ai modificări locale nesincronizate. Continui cu refresh din cloud?"); if (!proceed) return; state.dirty = false; } const loaded = await loadCloudDocument(true); if (!loaded) renderTable(); });
-      dom.btnImport.addEventListener("click", () => dom.excelInput.click()); dom.btnExport.addEventListener("click", exportExcel); dom.btnSync.addEventListener("click", () => saveCloud(true)); dom.btnAdd.addEventListener("click", () => openModal(null)); dom.btnResetFilters.addEventListener("click", resetFilters); dom.excelInput.addEventListener("change", e => importExcelFile(e.target.files?.[0]));
+      dom.btnImport.addEventListener("click", () => dom.excelInput.click()); dom.btnExport.addEventListener("click", exportExcel); dom.btnSync.addEventListener("click", () => saveCloud(true)); dom.btnAdd.addEventListener("click", () => openModal(null)); dom.btnDelete.addEventListener("click", deleteSelected); dom.btnResetFilters.addEventListener("click", resetFilters); dom.excelInput.addEventListener("change", e => importExcelFile(e.target.files?.[0]));
       dom.sheetTabs.forEach(btn => btn.addEventListener("click", () => { if (state.activeSheet === btn.dataset.sheet) return; state.activeSheet = btn.dataset.sheet; state.selectedId = null; renderTable(); }));
       [dom.filterSearch, dom.filterYear, dom.filterUtilaj, dom.filterResponsabil, dom.filterStadiu, dom.filterPrioritate, dom.filterDepartament].forEach(el => { el.addEventListener("input", renderTable); el.addEventListener("change", renderTable); }); dom.filterOpenOnly.addEventListener("change", renderTable);
-      dom.tableBody.addEventListener("click", event => { const tr = event.target.closest("tr[data-id]"); if (!tr) return; state.selectedId = tr.dataset.id; renderTable(); }); dom.tableBody.addEventListener("dblclick", event => { const tr = event.target.closest("tr[data-id]"); if (!tr) return; const row = rowById(tr.dataset.id); if (row) openModal(row); });
-      dom.btnCloseModal.addEventListener("click", closeModal); dom.btnCancelForm.addEventListener("click", closeModal); dom.btnResetForm.addEventListener("click", resetFormDefaults); dom.editForm.addEventListener("submit", handleRowSave); dom.fldPrioritate.addEventListener("change", updateComputedFields); dom.fldStadiu.addEventListener("change", updateComputedFields); dom.editModal.addEventListener("click", e => { if (e.target === dom.editModal) closeModal(); });
+      dom.tableBody.addEventListener("click", event => {
+        const tr = event.target.closest("tr[data-id]");
+        if (!tr) return;
+        state.selectedId = tr.dataset.id;
+        applyPermissionsToUi();
+        renderTable();
+      });
+      dom.tableBody.addEventListener("change", event => {
+        const select = event.target.closest("select[data-inline-key][data-id]");
+        if (!select) return;
+        inlineUpdateRow(select.dataset.id, select.dataset.inlineKey, select.value);
+      });
+      dom.tableBody.addEventListener("dblclick", event => {
+        if (event.target.closest("select")) return;
+        const tr = event.target.closest("tr[data-id]");
+        if (!tr) return;
+        const row = rowById(tr.dataset.id);
+        if (row) openModal(row);
+      });
+      dom.btnCloseModal.addEventListener("click", closeModal); dom.btnCancelForm.addEventListener("click", closeModal); dom.btnResetForm.addEventListener("click", resetFormDefaults); dom.btnDeleteForm.addEventListener("click", () => { closeModal(); deleteSelected(); }); dom.editForm.addEventListener("submit", handleRowSave); dom.fldPrioritate.addEventListener("change", updateComputedFields); dom.fldStadiu.addEventListener("change", updateComputedFields); dom.editModal.addEventListener("click", e => { if (e.target === dom.editModal) closeModal(); });
       document.addEventListener("keydown", e => { if (e.key === "Escape") closeModal(); if ((e.key === "Delete" || e.key === "Backspace") && state.selectedId && document.activeElement && !["INPUT","TEXTAREA","SELECT"].includes(document.activeElement.tagName)) deleteSelected(); });
       document.addEventListener("visibilitychange", () => { if (!document.hidden) checkRemoteChanges(); }); window.addEventListener("online", () => setBadge(dom.chipCloud, dom.dotCloud, "Cloud: online", "success")); window.addEventListener("offline", () => setBadge(dom.chipCloud, dom.dotCloud, "Cloud: offline, cache local activ", "danger"));
     }
