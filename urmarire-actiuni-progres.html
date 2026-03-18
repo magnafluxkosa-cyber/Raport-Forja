@@ -374,7 +374,7 @@
   <script>
     const PAGE_KEY = "urmarire-actiuni-progres";
     const DOC_KEYS = ["urmarire-actiuni-progres", "urmarire_actiuni_progres", "Urmarire actiuni si progres", "urmarire actiuni si progres"];
-    const LOCAL_KEY = "rf-urmarire-actiuni-progres-cache-v1";
+    const LOCAL_KEY = "rf-urmarire-actiuni-progres-cache-v2";
     const CLOUD_REFRESH_MS = 60000;
     const SAVE_DEBOUNCE_MS = 15000;
     const OPERATOR_NAME_KEY = "rf-urmarire-actiuni-progres-operator-name";
@@ -432,8 +432,6 @@
       fldDepartamentWrap: document.getElementById("fldDepartamentWrap"),
       fldDepartament: document.getElementById("fldDepartament"),
       fldTermen: document.getElementById("fldTermen"),
-      obsExistingWrap: document.getElementById("obsExistingWrap"),
-      fldObservatiiIstoric: document.getElementById("fldObservatiiIstoric"),
       fldObservatii: document.getElementById("fldObservatii")
     };
     function deepClone(value) { return JSON.parse(JSON.stringify(value)); }
@@ -543,14 +541,14 @@
       const now = new Date();
       return `${String(now.getDate()).padStart(2,"0")}.${String(now.getMonth()+1).padStart(2,"0")}.${now.getFullYear()} ${String(now.getHours()).padStart(2,"0")}:${String(now.getMinutes()).padStart(2,"0")}`;
     }
-    function guessOperatorName() {
+    function getSavedOperatorName() {
       const stored = localStorage.getItem(OPERATOR_NAME_KEY);
       if (stored && stored.trim()) return stored.trim();
       if (state.user?.email) return state.user.email;
       return "";
     }
-    function ensureOperatorName() {
-      const preset = guessOperatorName();
+    function askOperatorNameForObservation() {
+      const preset = getSavedOperatorName();
       const raw = window.prompt("Introdu numele pentru observația nouă:", preset || "");
       const value = String(raw || "").trim();
       if (!value) return "";
@@ -560,11 +558,81 @@
     function mergeObservationHistory(existingText, newText) {
       const cleanNew = String(newText || "").replace(/\r/g, "").trim();
       if (!cleanNew) return String(existingText || "").trim();
-      const author = ensureOperatorName();
+      const author = askOperatorNameForObservation();
       if (!author) return null;
       const entry = `[${currentDateTimeString()}] ${author}: ${cleanNew}`;
       const cleanExisting = String(existingText || "").replace(/\r/g, "").trim();
       return cleanExisting ? `${cleanExisting}\n${entry}` : entry;
+    }
+    function daysBetween(start, end = new Date()) { const a = parseDate(start); if (!a) return ""; const d1 = new Date(a.getFullYear(), a.getMonth(), a.getDate()); const d2 = new Date(end.getFullYear(), end.getMonth(), end.getDate()); return Math.max(0, Math.round((d2 - d1) / 86400000)); }
+    function randomId(prefix = state.activeSheet) { return prefix + "-" + Date.now() + "-" + Math.random().toString(36).slice(2,8); }
+    function priorityMeta(value) { return state.helper.priorities.find(item => String(item.value) === String(value)) || null; }
+    function stageMeta(value) { return state.helper.stages.find(item => String(item.code) === String(value)) || null; }
+    function rowIsDone(row) { return normalizeText(row.stadiu) === "d" || Number(row.procent_realizat || 0) >= 100; }
+    function rowDaysOpen(row) { return rowIsDone(row) ? "" : daysBetween(row.data_constatare); }
+    function rowIsLate(row) { if (rowIsDone(row)) return false; const meta = priorityMeta(row.nivel_prioritate); if (!meta) return false; const days = Number(meta.days || 0); if (!Number.isFinite(days) || days <= 0) return false; const open = Number(rowDaysOpen(row)); return Number.isFinite(open) && open > days; }
+    function enrichRow(raw, sheetKey) {
+      const row = {
+        id: String(raw.id || randomId(sheetKey)),
+        descriere_probleme: String(raw.descriere_probleme || raw["Descriere probleme"] || "").trim(),
+        linie_utilaj: String(raw.linie_utilaj || raw["Linie/Utilaj"] || "").trim(),
+        data_constatare: formatDate(raw.data_constatare || raw["Data constatarii actiunii"] || raw["Data constatării acțiunii"] || ""),
+        nivel_prioritate: String(raw.nivel_prioritate || raw["Nivel de prioritate"] || "").trim(),
+        descriere_prioritate: String(raw.descriere_prioritate || raw["Descriere nivel de prioritate"] || "").trim(),
+        stadiu: String(raw.stadiu || raw["Stadiu"] || "").trim().toUpperCase(),
+        descriere_stadiu: String(raw.descriere_stadiu || raw["Descriere stadiu"] || "").trim(),
+        procent_realizat: normalizePercentValue(raw.procent_realizat ?? raw["Procent realizat"] ?? 0),
+        data_finalizare: formatDate(raw.data_finalizare || raw["Data finalizarii 100%"] || raw["Data finalizării 100%"] || ""),
+        responsabil_actiune: String(raw.responsabil_actiune || raw["Responsabil Actiune"] || raw["Responsabil acțiune"] || "").trim(),
+        departament: String(raw.departament || raw["Departament"] || "").trim(),
+        termen_prop: formatDate(raw.termen_prop || raw["Termen Propus de responsabil"] || raw["Termen propus de responsabil"] || ""),
+        observatii: String(raw.observatii || raw["Observatii"] || raw["Observații"] || "").trim()
+      };
+      const pMeta = priorityMeta(row.nivel_prioritate); const sMeta = stageMeta(row.stadiu);
+      if (pMeta) row.descriere_prioritate = pMeta.label;
+      if (sMeta) {
+        row.descriere_stadiu = sMeta.label;
+        row.procent_realizat = sMeta.percent;
+      } else {
+        row.procent_realizat = normalizePercentValue(row.procent_realizat);
+      }
+      if (sheetKey !== "forja") row.departament = ""; return row;
+    }
+    function sortRows(rows) {
+      return [...rows].sort((a,b) => {
+        const apct = normalizePercentValue(a.procent_realizat);
+        const bpct = normalizePercentValue(b.procent_realizat);
+        if (bpct !== apct) return bpct - apct;
+        const ad = parseDate(a.data_constatare)?.getTime() || 0;
+        const bd = parseDate(b.data_constatare)?.getTime() || 0;
+        if (bd !== ad) return bd - ad;
+        const ap = Number(a.nivel_prioritate || 99);
+        const bp = Number(b.nivel_prioritate || 99);
+        if (ap !== bp) return ap - bp;
+        return a.descriere_probleme.localeCompare(b.descriere_probleme, "ro");
+      });
+    }
+    function getActiveRows() { return state.datasets[state.activeSheet] || []; }
+    function setBadge(chip, dot, text, kind) { const span = chip.querySelector("span:last-child") || chip; span.textContent = text; dot.className = "dot"; dot.classList.add(kind === "success" ? "success" : kind === "danger" ? "danger" : "warning"); }
+    function markDirty(sourceText = "Sursă: local modificat") { state.dirty = true; state.source = "local"; setBadge(dom.chipSource, dom.dotSource, sourceText, "warning"); persistLocal(); scheduleAutoSave(); }
+    function persistLocal() { try { localStorage.setItem(LOCAL_KEY, JSON.stringify(currentPayload())); } catch (error) { console.warn("persistLocal", error); } }
+    function loadLocalCache() {
+      try {
+        const raw = localStorage.getItem(LOCAL_KEY); if (!raw) return false; const payload = JSON.parse(raw); if (!payload || !payload.datasets) return false;
+        const forjaRows = sortRows((payload.datasets.forja || []).map(row => enrichRow(row, "forja")));
+        const prelucrariRows = sortRows((payload.datasets.prelucrari || []).map(row => enrichRow(row, "prelucrari")));
+        if (!forjaRows.length && !prelucrariRows.length) return false;
+        state.datasets.forja = forjaRows;
+        state.datasets.prelucrari = prelucrariRows;
+        if (payload.helper) state.helper = { departments: Array.isArray(payload.helper.departments) ? payload.helper.departments : state.helper.departments, priorities: Array.isArray(payload.helper.priorities) ? payload.helper.priorities : state.helper.priorities, stages: Array.isArray(payload.helper.stages) ? payload.helper.stages : state.helper.stages };
+        state.cloudUpdatedAt = payload.updated_at || ""; state.source = "local-cache"; return true;
+      } catch (error) { console.warn("loadLocalCache", error); return false; }
+    }
+    function getSerializableRows(sheetKey) {
+      return sortRows((state.datasets[sheetKey] || []).map(row => {
+        const clean = enrichRow(row, sheetKey);
+        return { id: clean.id, descriere_probleme: clean.descriere_probleme, linie_utilaj: clean.linie_utilaj, data_constatare: clean.data_constatare, nivel_prioritate: clean.nivel_prioritate, descriere_prioritate: clean.descriere_prioritate, stadiu: clean.stadiu, descriere_stadiu: clean.descriere_stadiu, procent_realizat: Number(clean.procent_realizat || 0), data_finalizare: clean.data_finalizare, responsabil_actiune: clean.responsabil_actiune, departament: sheetKey === "forja" ? clean.departament : "", termen_prop: clean.termen_prop, observatii: clean.observatii };
+      }));
     }
     function currentPayload() { return { version: 1, updated_at: new Date().toISOString(), helper: deepClone(state.helper), datasets: { forja: getSerializableRows("forja"), prelucrari: getSerializableRows("prelucrari") } }; }
     function refreshTabUi() {
