@@ -14,6 +14,7 @@
     { page_key: 'magnaflux', page_name: 'Magnaflux' },
     { page_key: 'probleme-raportate', page_name: 'Probleme Raportate' },
     { page_key: 'urmarire-actiuni-progres', page_name: 'Urmărire acțiuni și progres' },
+    { page_key: 'imbunatatire-continua', page_name: 'Îmbunătățire continuă' },
     { page_key: 'rebut', page_name: 'Rebut' },
     { page_key: 'kpi', page_name: 'KPI' },
     { page_key: 'inventar-otel', page_name: 'Inventar Oțel' },
