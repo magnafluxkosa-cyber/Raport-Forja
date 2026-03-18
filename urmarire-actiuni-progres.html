@@ -178,6 +178,10 @@
       border-right:1px solid rgba(31,63,91,.12);
       vertical-align:top;
       background:#fff;
+      white-space:normal;
+      word-break:break-word;
+      overflow-wrap:anywhere;
+      line-height:1.25;
     }
     tbody tr:hover td { background:var(--row-hover); }
     tbody tr.selected td { background:var(--row-selected); }
@@ -190,8 +194,8 @@
       border-bottom-color: var(--late-border);
     }
     .center { text-align:center; }
-    .desc, .obs { white-space:pre-wrap; word-break:break-word; }
-    .nowrap { white-space:nowrap; }
+    .desc, .obs { white-space:pre-wrap; word-break:break-word; overflow-wrap:anywhere; }
+    .nowrap { white-space:nowrap; word-break:normal; overflow-wrap:normal; }
     .table-empty { padding:32px 16px; text-align:center; color:var(--muted); }
     .pill {
       display:inline-flex; align-items:center; justify-content:center; min-width:34px;
@@ -496,22 +500,36 @@
       if (value === null || value === undefined || value === "") return null;
       if (value instanceof Date && !Number.isNaN(value.getTime())) return value;
       if (typeof value === "number") return value > 59 ? excelSerialToDate(value) : null;
-      const raw = String(value).trim(); if (!raw || raw === "-") return null;
+      const raw = String(value).trim();
+      if (!raw || raw === "-") return null;
       if (/^\d+(?:[\.,]\d+)?$/.test(raw)) {
         const serial = Number(raw.replace(",", "."));
         if (serial > 59) return excelSerialToDate(serial);
       }
       const normalized = raw.replace(/\//g, ".").replace(/-/g, ".");
+      const weirdExcelMask = normalized.match(/^(\d{1,2})\.(\d{1,2})\.(\d{5,})$/);
+      if (weirdExcelMask) {
+        const serial = Number(weirdExcelMask[3]);
+        if (serial > 59) return excelSerialToDate(serial);
+      }
       const parts = normalized.split(".");
       if (parts.length === 3) {
         const nums = parts.map(x => parseInt(x, 10));
         if (nums.every(n => Number.isFinite(n))) {
-          let d, m, y; if (parts[0].length === 4) { y = nums[0]; m = nums[1]; d = nums[2]; } else { d = nums[0]; m = nums[1]; y = nums[2]; }
-          if (y < 100) y += 2000; const dt = new Date(y, m - 1, d);
+          let d, m, y;
+          if (parts[0].length === 4) {
+            y = nums[0]; m = nums[1]; d = nums[2];
+          } else {
+            d = nums[0]; m = nums[1]; y = nums[2];
+          }
+          if (y > 9999 && y > 59) return excelSerialToDate(y);
+          if (y < 100) y += 2000;
+          const dt = new Date(y, m - 1, d);
           if (dt.getFullYear() === y && dt.getMonth() === m - 1 && dt.getDate() === d) return dt;
         }
       }
-      const maybe = new Date(raw); return Number.isNaN(maybe.getTime()) ? null : maybe;
+      const maybe = new Date(raw);
+      return Number.isNaN(maybe.getTime()) ? null : maybe;
     }
     function formatDate(value) { const dt = parseDate(value); if (!dt) return String(value ?? "").trim(); return String(dt.getDate()).padStart(2,"0") + "." + String(dt.getMonth()+1).padStart(2,"0") + "." + dt.getFullYear(); }
     function currentDateString() { return formatDate(new Date()); }
@@ -668,6 +686,12 @@
       dom.btnSync.disabled = !(state.permissions.canAdd || state.permissions.canEdit);
       dom.btnDelete.disabled = !state.permissions.canDelete || !state.selectedId;
     }
+    function updateSelectedRowUi() {
+      dom.tableBody.querySelectorAll('tr[data-id]').forEach(tr => {
+        tr.classList.toggle('selected', tr.dataset.id === state.selectedId);
+      });
+      applyPermissionsToUi();
+    }
     function getSupabaseClient() {
       if (state.supabase) return state.supabase;
       const cfg = window.RF_CONFIG || {}; const url = cfg.SUPABASE_URL || window.SUPABASE_URL || ""; const key = cfg.SUPABASE_ANON_KEY || window.SUPABASE_ANON_KEY || ""; if (!url || !key || !window.supabase) return null;
@@ -823,22 +847,28 @@
       dom.btnImport.addEventListener("click", () => dom.excelInput.click()); dom.btnExport.addEventListener("click", exportExcel); dom.btnSync.addEventListener("click", () => saveCloud(true)); dom.btnAdd.addEventListener("click", () => openModal(null)); dom.btnDelete.addEventListener("click", deleteSelected); dom.btnResetFilters.addEventListener("click", resetFilters); dom.excelInput.addEventListener("change", e => importExcelFile(e.target.files?.[0]));
       dom.sheetTabs.forEach(btn => btn.addEventListener("click", () => { if (state.activeSheet === btn.dataset.sheet) return; state.activeSheet = btn.dataset.sheet; state.selectedId = null; renderTable(); }));
       [dom.filterSearch, dom.filterYear, dom.filterUtilaj, dom.filterResponsabil, dom.filterStadiu, dom.filterPrioritate, dom.filterDepartament].forEach(el => { el.addEventListener("input", renderTable); el.addEventListener("change", renderTable); }); dom.filterOpenOnly.addEventListener("change", renderTable);
+      dom.tableBody.addEventListener("mousedown", event => {
+        if (event.target.closest("select[data-inline-key], input, textarea, button, a")) event.stopPropagation();
+      });
       dom.tableBody.addEventListener("click", event => {
+        if (event.target.closest("select, input, textarea, button, a")) return;
         const tr = event.target.closest("tr[data-id]");
         if (!tr) return;
         state.selectedId = tr.dataset.id;
-        applyPermissionsToUi();
-        renderTable();
+        updateSelectedRowUi();
       });
       dom.tableBody.addEventListener("change", event => {
         const select = event.target.closest("select[data-inline-key][data-id]");
         if (!select) return;
+        event.stopPropagation();
         inlineUpdateRow(select.dataset.id, select.dataset.inlineKey, select.value);
       });
       dom.tableBody.addEventListener("dblclick", event => {
-        if (event.target.closest("select")) return;
+        if (event.target.closest("select, input, textarea, button, a")) return;
         const tr = event.target.closest("tr[data-id]");
         if (!tr) return;
+        state.selectedId = tr.dataset.id;
+        updateSelectedRowUi();
         const row = rowById(tr.dataset.id);
         if (row) openModal(row);
       });
