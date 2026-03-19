@@ -891,17 +891,21 @@
     });
     return map;
   }
-  function aggregateIntrariByWeekAndSpec(rows){
+  function groupIntrariBySpec(rows){
     const map = Object.create(null);
     (rows || []).forEach(row => {
       if(!row.data || !row.diametru || !row.calitate || row.cantitateKg <= 0) return;
-      const meta = weekMeta(row.data);
       const spec = buildSpecKey(row.diametru, row.calitate);
-      const key = `${meta.start}|${spec}`;
-      map[key] = map[key] || { qty:0, codIntern:'', furnizor:'' };
-      map[key].qty += row.cantitateKg;
-      if(!map[key].codIntern && row.codIntern) map[key].codIntern = row.codIntern;
-      if(!map[key].furnizor && row.furnizor) map[key].furnizor = row.furnizor;
+      if(!map[spec]) map[spec] = [];
+      map[spec].push({
+        data: row.data,
+        qty: Math.max(0, toNumber(row.cantitateKg)),
+        codIntern: trimText(row.codIntern || '').toUpperCase(),
+        furnizor: trimText(row.furnizor || '')
+      });
+    });
+    Object.keys(map).forEach(spec => {
+      map[spec].sort((a,b) => String(a.data||'').localeCompare(String(b.data||'')));
     });
     return map;
   }
@@ -1003,8 +1007,9 @@
     return Object.values(grouped).sort((a,b) => (a.start||'').localeCompare(b.start||'') || a.forged.localeCompare(b.forged));
   }
 
-  function applyStocksAndManual(demandRows, steelStock, steelMetaBySpec, intrariByWeekSpec, realizedWeekSpec, realizedWeekSpecReper){
+  function applyStocksAndManual(demandRows, steelStock, steelMetaBySpec, intrariBySpec, realizedWeekSpec, realizedWeekSpecReper){
     const steelRunning = Object.assign(Object.create(null), steelStock || {});
+    const intrariCursor = Object.create(null);
     const groups = Object.create(null);
     (demandRows || []).forEach(row => {
       const specKey = buildSpecKey(row.diameter, row.quality);
@@ -1021,10 +1026,23 @@
       const g = groups[weekSpecKey];
       const sample = g.rows[0] || {};
       const specKey = g.specKey;
-      const intrariMeta = intrariByWeekSpec[weekSpecKey] || { qty:0, codIntern:'', furnizor:'' };
       const realizedMeta = realizedWeekSpec[weekSpecKey] || { bucRealizate:0, rebut:0, consumKg:0 };
       const startStockKg = Math.max(0, toNumber(steelRunning[specKey]));
-      const plannedInKg = Math.max(0, toNumber(intrariMeta.qty));
+      const intrariList = Array.isArray((intrariBySpec || {})[specKey]) ? intrariBySpec[specKey] : [];
+      let cursor = Number(intrariCursor[specKey] || 0);
+      let plannedInKg = 0;
+      let intrariMeta = { qty:0, codIntern:'', furnizor:'' };
+      const weekEnd = String(sample.end || sample.start || '');
+      while(cursor < intrariList.length){
+        const entry = intrariList[cursor];
+        if(String(entry.data || '') > weekEnd) break;
+        plannedInKg += Math.max(0, toNumber(entry.qty));
+        if(!intrariMeta.codIntern && entry.codIntern) intrariMeta.codIntern = entry.codIntern;
+        if(!intrariMeta.furnizor && entry.furnizor) intrariMeta.furnizor = entry.furnizor;
+        cursor += 1;
+      }
+      intrariMeta.qty = plannedInKg;
+      intrariCursor[specKey] = cursor;
       const groupBucRealizate = Math.max(0, Math.round(toNumber(realizedMeta.bucRealizate)));
       const groupRebut = Math.max(0, Math.round(toNumber(realizedMeta.rebut)));
       const consumRealizatKg = Math.max(0, toNumber(realizedMeta.consumKg));
@@ -1091,11 +1109,11 @@
       loadPlanRows(activeYear)
     ]);
     const realizedMap = aggregateRealizedByDateAndReper(forjateRes.rows);
-    const intrariByWeekSpec = aggregateIntrariByWeekAndSpec(intrariRes.rows);
+    const intrariBySpec = groupIntrariBySpec(intrariRes.rows);
     const realizedWeekSpec = aggregateForjateConsumptionByWeekAndSpec(forjateRes.rows);
     const realizedWeekSpecReper = aggregateForjateConsumptionByWeekSpecAndReper(forjateRes.rows);
     const demandRows = buildDemandRows(planRes.rows, realizedMap);
-    state.rows = applyStocksAndManual(demandRows, steelRes.map, steelRes.metaBySpec, intrariByWeekSpec, realizedWeekSpec, realizedWeekSpecReper);
+    state.rows = applyStocksAndManual(demandRows, steelRes.map, steelRes.metaBySpec, intrariBySpec, realizedWeekSpec, realizedWeekSpecReper);
     state.sourceNotes = [
       `Planificare: ${planRes.source}`,
       `Forjate: ${forjateRes.source}`,
