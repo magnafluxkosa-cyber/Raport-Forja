@@ -937,6 +937,25 @@
     });
     return map;
   }
+  function aggregateForjateConsumptionByWeekSpecAndReper(rows){
+    const map = Object.create(null);
+    (rows || []).forEach(row => {
+      if(!row.data || !row.reper) return;
+      const material = resolveMaterialForForgedReper(row.reper);
+      if(!material.diameter || !material.quality || material.kgPerPiece <= 0) return;
+      const meta = weekMeta(row.data);
+      const spec = buildSpecKey(material.diameter, material.quality);
+      const reperKey = normalizeReperLoose(row.reper);
+      const key = `${meta.start}|${spec}|${reperKey}`;
+      map[key] = map[key] || { bucRealizate:0, rebut:0, consumKg:0 };
+      const good = Math.max(0, Math.round(toNumber(row.bucRealizate)));
+      const rebut = Math.max(0, Math.round(toNumber(row.rebut)));
+      map[key].bucRealizate += good;
+      map[key].rebut += rebut;
+      map[key].consumKg += (good + rebut) * material.kgPerPiece;
+    });
+    return map;
+  }
   function buildDemandRows(planRows, realizedMap){
     const rows = [];
     (planRows || []).forEach(planRow => {
@@ -984,7 +1003,7 @@
     return Object.values(grouped).sort((a,b) => (a.start||'').localeCompare(b.start||'') || a.forged.localeCompare(b.forged));
   }
 
-  function applyStocksAndManual(demandRows, steelStock, steelMetaBySpec, intrariByWeekSpec, realizedWeekSpec){
+  function applyStocksAndManual(demandRows, steelStock, steelMetaBySpec, intrariByWeekSpec, realizedWeekSpec, realizedWeekSpecReper){
     const steelRunning = Object.assign(Object.create(null), steelStock || {});
     const groups = Object.create(null);
     (demandRows || []).forEach(row => {
@@ -1006,8 +1025,8 @@
       const realizedMeta = realizedWeekSpec[weekSpecKey] || { bucRealizate:0, rebut:0, consumKg:0 };
       const startStockKg = Math.max(0, toNumber(steelRunning[specKey]));
       const plannedInKg = Math.max(0, toNumber(intrariMeta.qty));
-      const bucRealizate = Math.max(0, Math.round(toNumber(realizedMeta.bucRealizate)));
-      const rebut = Math.max(0, Math.round(toNumber(realizedMeta.rebut)));
+      const groupBucRealizate = Math.max(0, Math.round(toNumber(realizedMeta.bucRealizate)));
+      const groupRebut = Math.max(0, Math.round(toNumber(realizedMeta.rebut)));
       const consumRealizatKg = Math.max(0, toNumber(realizedMeta.consumKg));
       const stocDisponibilReal = startStockKg + plannedInKg - consumRealizatKg;
       const totalConsumPlanificatKg = g.rows.reduce((s, row) => s + Math.max(0, toNumber(row.planFuturePieces) * toNumber(row.kgPerPiece)), 0);
@@ -1022,6 +1041,11 @@
         const rowNeedPreManual = Math.max(0, consumPlanificatKg - Math.max(0, remainingAvailable));
         const rowStocTeoreticFinal = remainingAvailable - consumPlanificatKg;
         remainingAvailable = Math.max(0, rowStocTeoreticFinal);
+        const rowReperKey = `${weekSpecKey}|${normalizeReperLoose(row.forged)}`;
+        const rowRealizedMeta = (realizedWeekSpecReper && realizedWeekSpecReper[rowReperKey]) || { bucRealizate:0, rebut:0, consumKg:0 };
+        const bucRealizate = Math.max(0, Math.round(toNumber(rowRealizedMeta.bucRealizate)));
+        const rebut = Math.max(0, Math.round(toNumber(rowRealizedMeta.rebut)));
+        const rowConsumRealizatKg = Math.max(0, toNumber(rowRealizedMeta.consumKg));
         const rowKey = [row.start,row.forged,row.debited,row.diameter,row.quality].join('|');
         const manual = state.manualMap[rowKey] || {};
         const defaultStatus = groupNeedKg > 0 ? 'Lipsă material' : (groupCoverage < 1 ? 'Aproape limită' : 'Acoperit');
@@ -1033,8 +1057,12 @@
           plannedInKg,
           bucRealizate,
           rebut,
-          consumRealizatKg,
+          consumRealizatKg: rowConsumRealizatKg,
+          groupBucRealizate,
+          groupRebut,
+          groupConsumRealizatKg: consumRealizatKg,
           stocDisponibilReal,
+          showGroupValues: idx === 0,
           stocTeoreticFinal: rowStocTeoreticFinal,
           groupStocTeoreticFinal,
           needKg: manual.proposedOrderKg != null ? toNumber(manual.proposedOrderKg) : rowNeedPreManual,
@@ -1065,8 +1093,9 @@
     const realizedMap = aggregateRealizedByDateAndReper(forjateRes.rows);
     const intrariByWeekSpec = aggregateIntrariByWeekAndSpec(intrariRes.rows);
     const realizedWeekSpec = aggregateForjateConsumptionByWeekAndSpec(forjateRes.rows);
+    const realizedWeekSpecReper = aggregateForjateConsumptionByWeekSpecAndReper(forjateRes.rows);
     const demandRows = buildDemandRows(planRes.rows, realizedMap);
-    state.rows = applyStocksAndManual(demandRows, steelRes.map, steelRes.metaBySpec, intrariByWeekSpec, realizedWeekSpec);
+    state.rows = applyStocksAndManual(demandRows, steelRes.map, steelRes.metaBySpec, intrariByWeekSpec, realizedWeekSpec, realizedWeekSpecReper);
     state.sourceNotes = [
       `Planificare: ${planRes.source}`,
       `Forjate: ${forjateRes.source}`,
@@ -1124,16 +1153,15 @@
         <td class="col-debited">${r.debited}</td>
         <td class="col-diameter">${r.diameter}</td>
         <td class="col-quality">${r.quality}</td>
-        <td class="col-code">${r.internalCode || ''}</td>
         <td class="num">${fmtNum(r.kgPerPiece)}</td>
         <td class="num" title="Plan inițial ${fmtNum(r.plannedPiecesOriginal)} / Realizat bun deja ${fmtNum(r.realizedPieces)}">${fmtNum(r.planFuturePieces)}</td>
         <td class="num bold">${fmtNum(r.consumPlanificatKg)}</td>
-        <td class="num">${fmtNum(r.startStockKg)}</td>
-        <td class="num">${fmtNum(r.plannedInKg)}</td>
+        <td class="num">${r.showGroupValues ? fmtNum(r.startStockKg) : ''}</td>
+        <td class="num">${r.showGroupValues ? fmtNum(r.plannedInKg) : ''}</td>
         <td class="num">${fmtNum(r.bucRealizate)}</td>
         <td class="num">${fmtNum(r.rebut)}</td>
         <td class="num">${fmtNum(r.consumRealizatKg)}</td>
-        <td class="num bold ${r.stocDisponibilReal >= 0 ? 'success':''}">${fmtNum(r.stocDisponibilReal)}</td>
+        <td class="num bold ${r.stocDisponibilReal >= 0 ? 'success':''}">${r.showGroupValues ? fmtNum(r.stocDisponibilReal) : ''}</td>
         <td class="num bold ${r.stocTeoreticFinal < 0 ? 'danger':'success'}">${fmtNum(r.stocTeoreticFinal)}</td>
         <td class="num bold ${r.needKg > 0 ? 'danger':''}">${fmtNum(r.needKg)}</td>
         <td class="num bold ${r.coverage < 1 ? 'danger':'success'}">${fmtPct(r.coverage)}</td>
@@ -1142,7 +1170,7 @@
         <td class="col-need-date"><input ${state.canEdit ? '' : 'disabled'} type="date" class="editable cell-edit" data-row-key="${r.rowKey}" data-field="needDate" value="${safe(r.needDate)}"></td>
         <td class="col-status"><select ${state.canEdit ? '' : 'disabled'} class="editable cell-edit" data-row-key="${r.rowKey}" data-field="status">${['Acoperit','Aproape limită','Lipsă material','Comandă lansată','În așteptare aprobare'].map(v => `<option ${r.status===v?'selected':''}>${v}</option>`).join('')}</select></td>
         <td class="col-notes"><input ${state.canEdit ? '' : 'disabled'} class="editable cell-edit" data-row-key="${r.rowKey}" data-field="notes" value="${safe(r.notes)}"></td>
-      </tr>`).join('') || `<tr><td colspan="27" style="text-align:center;padding:20px;font-weight:800">Nu există date pentru filtrarea selectată.</td></tr>`;
+      </tr>`).join('') || `<tr><td colspan="26" style="text-align:center;padding:20px;font-weight:800">Nu există date pentru filtrarea selectată.</td></tr>`;
   }
   function renderKPIs(){
     const rows = getFilteredRows();
