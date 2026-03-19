@@ -1,403 +1,4 @@
-<!DOCTYPE html>
-<html lang="ro">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>MRC - ERP Forja</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
-  <style>
-    :root{
-      --bg:#eef3fb;
-      --card:#ffffff;
-      --line:#0f172a;
-      --line-soft:#cbd5e1;
-      --text:#0f172a;
-      --muted:#475569;
-      --blue:#0f4aa1;
-      --blue-2:#163c74;
-      --blue-3:#dbeafe;
-      --green:#15803d;
-      --green-soft:#dcfce7;
-      --yellow:#b45309;
-      --yellow-soft:#fef3c7;
-      --red:#b91c1c;
-      --red-soft:#fee2e2;
-      --purple:#6d28d9;
-      --purple-soft:#ede9fe;
-      --shadow:0 10px 24px rgba(15, 23, 42, .08);
-      --radius:14px;
-      --header-h:56px;
-    }
-    *{box-sizing:border-box}
-    html,body{height:100%}
-    body{
-      margin:0;
-      font-family:Inter, Arial, sans-serif;
-      color:var(--text);
-      background:linear-gradient(180deg,#f8fbff 0%, var(--bg) 100%);
-    }
-    .page{
-      max-width:1800px;
-      margin:0 auto;
-      padding:14px;
-    }
-    .topbar{
-      display:flex;
-      align-items:center;
-      justify-content:space-between;
-      gap:12px;
-      background:var(--card);
-      border:2px solid var(--line);
-      border-radius:var(--radius);
-      box-shadow:var(--shadow);
-      padding:12px 16px;
-      margin-bottom:12px;
-    }
-    .brand{display:flex;align-items:center;gap:12px}
-    .logo{
-      width:42px;height:42px;border-radius:10px;
-      background:linear-gradient(135deg,var(--blue),var(--blue-2));
-      color:#fff;display:grid;place-items:center;font-weight:800;letter-spacing:.5px;
-      border:2px solid var(--line);
-    }
-    .titlebox h1{margin:0;font-size:22px;line-height:1.1}
-    .titlebox p{margin:4px 0 0;color:var(--muted);font-size:13px}
-    .top-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-    .btn{
-      height:38px;padding:0 14px;border-radius:10px;border:2px solid var(--line);background:#fff;color:var(--text);
-      font-weight:700;cursor:pointer;box-shadow:0 2px 0 rgba(15,23,42,.06);
-    }
-    .btn.primary{background:var(--blue);color:#fff}
-    .btn.secondary{background:#eff6ff;color:var(--blue-2)}
-    .btn.purple{background:var(--purple);color:#fff}
-    .btn:active{transform:translateY(1px)}
 
-    .filters{
-      display:grid;
-      grid-template-columns:repeat(4,minmax(0,1fr));
-      gap:10px;
-      background:var(--card);
-      border:2px solid var(--line);
-      border-radius:var(--radius);
-      box-shadow:var(--shadow);
-      padding:12px;
-      margin-bottom:12px;
-    }
-    .field{display:flex;flex-direction:column;gap:6px}
-    .field label{font-size:12px;font-weight:800;color:var(--blue-2);text-transform:uppercase;letter-spacing:.4px}
-    .field input,.field select{
-      width:100%;height:40px;border:2px solid var(--line);border-radius:10px;padding:0 10px;background:#fff;font-weight:600;color:var(--text);
-    }
-    .span-2{grid-column:span 1}
-    .span-3{grid-column:span 1}
-    .span-4{grid-column:span 1}
-    .span-6{grid-column:span 1}
-
-    .layout{
-      display:grid;
-      grid-template-columns:minmax(0,1.65fr) 360px;
-      gap:12px;
-      align-items:start;
-    }
-    .panel{
-      background:var(--card);
-      border:2px solid var(--line);
-      border-radius:var(--radius);
-      box-shadow:var(--shadow);
-      overflow:hidden;
-    }
-    .panel-header{
-      height:var(--header-h);
-      display:flex;align-items:center;justify-content:space-between;gap:12px;
-      padding:0 14px;background:linear-gradient(180deg,#eff6ff,#dbeafe);
-      border-bottom:2px solid var(--line);
-    }
-    .panel-title{font-size:16px;font-weight:800}
-    .panel-sub{font-size:12px;color:var(--muted);font-weight:600}
-    .card-grid{display:grid;grid-template-columns:1fr;gap:10px;padding:12px}
-    .kpi{
-      border:2px solid var(--line);border-radius:12px;padding:12px;background:#fff;
-      min-height:96px;display:flex;flex-direction:column;justify-content:space-between;
-    }
-    .kpi .k-label{font-size:12px;font-weight:800;text-transform:uppercase;color:var(--blue-2)}
-    .kpi .k-value{font-size:28px;font-weight:800;line-height:1}
-    .kpi .k-foot{font-size:12px;color:var(--muted);font-weight:600}
-    .kpi.red{background:var(--red-soft)} .kpi.red .k-value{color:var(--red)}
-    .kpi.green{background:var(--green-soft)} .kpi.green .k-value{color:var(--green)}
-    .kpi.yellow{background:var(--yellow-soft)} .kpi.yellow .k-value{color:var(--yellow)}
-    .mini-list{padding:0 12px 12px}
-    .mini-list h4{margin:10px 0 8px;font-size:13px;color:var(--blue-2);text-transform:uppercase}
-    .mini-item{
-      display:grid;grid-template-columns:1fr auto;gap:8px;align-items:center;
-      border:2px solid var(--line);border-radius:10px;padding:9px 10px;margin-bottom:8px;background:#fff;
-      font-size:13px;font-weight:700;
-    }
-    .mini-item small{display:block;color:var(--muted);font-weight:600;margin-top:3px}
-    .badge{display:inline-flex;align-items:center;justify-content:center;min-width:90px;padding:6px 10px;border-radius:999px;border:2px solid var(--line);font-size:12px;font-weight:800;background:#fff}
-    .badge.ok{background:var(--green-soft);color:var(--green)}
-    .badge.partial{background:var(--yellow-soft);color:var(--yellow)}
-    .badge.risk{background:var(--red-soft);color:var(--red)}
-    .badge.order{background:var(--purple-soft);color:var(--purple)}
-
-    .table-wrap{padding:0 0 8px}
-    .scroll{
-      overflow:auto;
-      max-height:540px;
-    }
-    table{width:100%;border-collapse:separate;border-spacing:0;min-width:2060px;table-layout:fixed}
-    th,td{border-right:1px solid #0f172a;border-bottom:1px solid #0f172a;padding:8px 9px;font-size:12px;white-space:nowrap;background:#fff;overflow:hidden;text-overflow:ellipsis}
-    th:first-child,td:first-child{border-left:1px solid #0f172a}
-    thead th{position:sticky;top:0;z-index:3;background:#dbeafe;color:#0f172a;font-weight:800}
-    tbody tr:hover td{background:#eff6ff}
-    tbody tr.selected td{background:#dbeafe}
-    .row-status-ok td{background:rgba(220,252,231,.48)}
-    .row-status-partial td{background:rgba(254,243,199,.48)}
-    .row-status-risk td{background:rgba(254,226,226,.52)}
-    .row-status-order td{background:rgba(237,233,254,.52)}
-    .num{text-align:right;font-variant-numeric:tabular-nums}
-    .bold{font-weight:800}
-    .danger{color:var(--red);font-weight:800}
-    .success{color:var(--green);font-weight:800}
-    .sticky-col{position:sticky;left:0;z-index:4;background:inherit;min-width:74px;width:74px;max-width:74px}
-    .sticky-col-2{position:sticky;left:74px;z-index:4;background:inherit;min-width:108px;width:108px;max-width:108px}
-    .col-week{min-width:76px;width:76px;max-width:76px;text-align:center}
-    .col-date{min-width:96px;width:96px;max-width:96px}
-    .editable{min-width:110px;border:1px dashed transparent;border-radius:7px;padding:6px 7px}
-    .editable:focus{outline:none;border-color:var(--blue);background:#fff}
-    .table-toolbar{display:flex;align-items:center;gap:8px;padding:10px 12px;border-bottom:2px solid var(--line)}
-    .table-toolbar .muted{font-size:12px;color:var(--muted);font-weight:700}
-
-    .bottom-grid{display:grid;grid-template-columns:1fr;gap:12px;margin-top:12px}
-    .pivot-wrap,.orders-wrap{padding:0 0 10px}
-    .pivot-controls{display:flex;gap:8px;align-items:center}
-    .seg{display:flex;border:2px solid var(--line);border-radius:999px;overflow:hidden;background:#fff}
-    .seg button{border:0;background:#fff;height:34px;padding:0 12px;font-weight:800;cursor:pointer}
-    .seg button.active{background:var(--blue);color:#fff}
-    .pivot-scroll{overflow:auto;max-height:340px}
-    .pivot-table{min-width:980px}
-    .heat-0{background:#f8fafc}
-    .heat-1{background:#dbeafe}
-    .heat-2{background:#bfdbfe}
-    .heat-3{background:#93c5fd}
-    .heat-risk{background:#fee2e2;color:#991b1b;font-weight:800}
-
-    .footer-note{margin-top:10px;color:var(--muted);font-size:12px;font-weight:600}
-    .hidden{display:none !important}
-
-    @media (max-width: 1280px){
-      .layout{grid-template-columns:1fr}
-      .filters{grid-template-columns:repeat(4,minmax(0,1fr))}
-    }
-    @media (max-width: 900px){
-      .topbar{flex-direction:column;align-items:flex-start}
-      .filters{grid-template-columns:repeat(2,minmax(0,1fr))}
-      .span-2,.span-3,.span-4,.span-6{grid-column:span 1}
-    }
-  </style>
-</head>
-<body>
-  <div class="page">
-    <div class="topbar">
-      <div class="brand">
-        <div class="logo">MRC</div>
-        <div class="titlebox">
-          <h1>Material Requirements Control</h1>
-          <p>Plan săptămânal necesar • stoc disponibil • deficit • comandă oțel</p>
-        </div>
-      </div>
-      <div class="top-actions">
-        <button class="btn" id="btnBack">Înapoi la Dashboard</button>
-        <button class="btn secondary" id="btnImport">Import Excel</button>
-        <button class="btn secondary" id="btnExport">Export Excel</button>
-        <button class="btn" id="btnRefresh">Refresh calcule</button>
-        <button class="btn primary" id="btnSave">Salvează modificările</button>
-        <button class="btn purple" id="btnGenerateOrders">Generează propunere comandă</button>
-        <input type="file" id="fileInput" accept=".xlsx,.xls,.csv" class="hidden" />
-      </div>
-    </div>
-
-    <section class="filters">
-      <div class="field">
-        <label>An</label>
-        <select id="fYear"></select>
-      </div>
-      <div class="field">
-        <label>Lună</label>
-        <select id="fMonth"></select>
-      </div>
-      <div class="field">
-        <label>Reper forjat</label>
-        <input id="fForged" placeholder="ex: AT-355" />
-      </div>
-      <div class="field">
-        <label>Diametru</label>
-        <input id="fDiameter" placeholder="ex: 80" />
-      </div>
-    </section>
-
-    <section class="layout">
-      <div class="panel">
-        <div class="panel-header">
-          <div>
-            <div class="panel-title">Tabel principal MRC</div>
-            <div class="panel-sub">Editabile: furnizor propus, comandă propusă, dată necesar, status, observații</div>
-          </div>
-          <div class="badge" id="tableCountBadge">0 rânduri</div>
-        </div>
-        <div class="table-toolbar">
-          <div class="muted" id="syncState">Cloud: neconectat</div>
-          <div class="muted" id="authState">User: demo local</div>
-        </div>
-        <div class="table-wrap">
-          <div class="scroll" id="mainScroll">
-            <table>
-              <thead>
-                <tr>
-                  <th class="sticky-col">An</th>
-                  <th class="sticky-col-2">Luna</th>
-                  <th class="col-week">Săpt.</th>
-                  <th class="col-date">Data start</th>
-                  <th class="col-date">Data final</th>
-                  <th>Reper forjat</th>
-                  <th>Reper debitat</th>
-                  <th>Diametru</th>
-                  <th>Calitate</th>
-                  <th>Cod intern</th>
-                  <th class="num">Kg/buc</th>
-                  <th class="num">Plan buc viitor</th>
-                  <th class="num">Consum planificat kg</th>
-                  <th class="num">Stoc început</th>
-                  <th class="num">Intrări</th>
-                  <th class="num">Buc realizate</th>
-                  <th class="num">Rebut</th>
-                  <th class="num">Consum realizat kg</th>
-                  <th class="num">Stoc disponibil real</th>
-                  <th class="num">Stoc teoretic final</th>
-                  <th class="num">Necesar kg</th>
-                  <th class="num">Acoperire %</th>
-                  <th class="num">Comandă propusă</th>
-                  <th>Furnizor propus</th>
-                  <th>Data necesar</th>
-                  <th>Status</th>
-                  <th>Observații</th>
-                </tr>
-              </thead>
-              <tbody id="mrcBody"></tbody>
-            </table>
-          </div>
-        </div>
-      </div>
-
-      <div class="panel">
-        <div class="panel-header">
-          <div>
-            <div class="panel-title">Sinteză rapidă</div>
-            <div class="panel-sub">Ce trebuie să vezi imediat</div>
-          </div>
-        </div>
-        <div class="card-grid">
-          <div class="kpi">
-            <div class="k-label">Consum planificat</div>
-            <div class="k-value" id="kNeed">0 kg</div>
-            <div class="k-foot">Consum planificat viitor în filtrarea curentă</div>
-          </div>
-          <div class="kpi green">
-            <div class="k-label">Stoc disponibil real</div>
-            <div class="k-value" id="kAvailable">0 kg</div>
-            <div class="k-foot">Stoc început + intrări - consum realizat</div>
-          </div>
-          <div class="kpi red">
-            <div class="k-label">Necesar total</div>
-            <div class="k-value" id="kDeficit">0 kg</div>
-            <div class="k-foot">Cantitate care trebuie comandată</div>
-          </div>
-          <div class="kpi yellow">
-            <div class="k-label">Articole cu risc</div>
-            <div class="k-value" id="kRisk">0</div>
-            <div class="k-foot">Rânduri cu deficit sau acoperire slabă</div>
-          </div>
-        </div>
-        <div class="mini-list">
-          <h4>Top materiale critice</h4>
-          <div id="criticalList"></div>
-          <h4>Top repere cu risc</h4>
-          <div id="riskPartsList"></div>
-        </div>
-      </div>
-    </section>
-
-    <section class="bottom-grid">
-      <div class="panel">
-        <div class="panel-header">
-          <div>
-            <div class="panel-title">Pivot săptămânal MRC</div>
-            <div class="panel-sub">Stoc teoretic, consum planificat și necesar pe săptămâni</div>
-          </div>
-          <div class="pivot-controls">
-            <div class="seg">
-              <button class="pivot-mode active" data-mode="need">Necesar</button>
-              <button class="pivot-mode" data-mode="stock">Stoc teoretic</button>
-              <button class="pivot-mode" data-mode="consum">Consum planificat</button>
-            </div>
-          </div>
-        </div>
-        <div class="pivot-wrap">
-          <div class="pivot-scroll">
-            <table class="pivot-table">
-              <thead id="pivotHead"></thead>
-              <tbody id="pivotBody"></tbody>
-            </table>
-          </div>
-        </div>
-      </div>
-
-      <div class="panel">
-        <div class="panel-header">
-          <div>
-            <div class="panel-title">Registru comenzi oțel</div>
-            <div class="panel-sub">Propuse, aprobate, lansate, livrate</div>
-          </div>
-          <div class="badge order" id="ordersCountBadge">0 comenzi</div>
-        </div>
-        <div class="orders-wrap">
-          <div class="pivot-scroll">
-            <table style="min-width:1180px">
-              <thead>
-                <tr>
-                  <th>Nr. comandă</th>
-                  <th>Data comandă</th>
-                  <th>Furnizor</th>
-                  <th>Diametru</th>
-                  <th>Calitate</th>
-                  <th>Cod intern</th>
-                  <th class="num">Cantitate kg</th>
-                  <th>Termen livrare</th>
-                  <th>Pentru săpt.</th>
-                  <th>Motiv</th>
-                  <th>Status</th>
-                  <th>Observații</th>
-                </tr>
-              </thead>
-              <tbody id="ordersBody"></tbody>
-            </table>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <div class="footer-note">
-      Pagina este gândită să rămână în stilul ERP Forja: tabel principal clar, pivot separat, carduri KPI și registru comenzi, fără să schimbe flow-ul general al proiectului. Folosește <b>rf_documents</b> pentru cloud sync, conform schemei proiectului. 
-    </div>
-  </div>
-
-
-<script src="rf-config.js"></script>
-<script src="auth-common.js"></script>
-<script>
 (() => {
   const PAGE_KEY = 'mrc';
   const ADJUST_DOC_KEY = 'mrc-manual';
@@ -1059,6 +660,8 @@
     const years = [...new Set(state.rows.map(r => String(r.year)).filter(Boolean))].sort();
     el('fYear').innerHTML = `<option value="">Toți</option>` + years.map(y => `<option value="${y}">${y}</option>`).join('');
     el('fMonth').innerHTML = `<option value="">Toate</option>` + MONTHS.map(m => `<option value="${m}">${m}</option>`).join('');
+    const weeks = [...new Set(state.rows.map(r => r.week).filter(Boolean))].sort();
+    el('fWeek').innerHTML = `<option value="">Toate</option>` + weeks.map(w => `<option value="${w}">${w}</option>`).join('');
     const now = new Date();
     if(years.includes(String(now.getFullYear()))) el('fYear').value = String(now.getFullYear());
     el('fMonth').value = MONTHS[now.getMonth()] || '';
@@ -1066,13 +669,25 @@
   function getFilteredRows(){
     const year = trimText(el('fYear').value);
     const month = normUpper(el('fMonth').value);
+    const week = normUpper(el('fWeek').value);
     const forged = normUpper(el('fForged').value);
     const diameter = normUpper(el('fDiameter').value);
+    const quality = normUpper(el('fQuality').value);
+    const internalCode = normUpper(el('fInternalCode').value);
+    const supplier = normUpper(el('fSupplier').value);
+    const onlyDeficit = el('fOnlyDeficit').checked;
+    const onlyOpenOrders = el('fOnlyOpenOrders').checked;
     return state.rows.filter(r => {
       if(year && String(r.year) !== year) return false;
       if(month && normUpper(r.month) !== month) return false;
+      if(week && normUpper(r.week) !== week) return false;
       if(forged && !normUpper(r.forged).includes(forged)) return false;
       if(diameter && !normUpper(r.diameter).includes(diameter)) return false;
+      if(quality && !normUpper(r.quality).includes(quality)) return false;
+      if(internalCode && !normUpper(r.internalCode).includes(internalCode)) return false;
+      if(supplier && !normUpper(r.proposedSupplier).includes(supplier)) return false;
+      if(onlyDeficit && Number(r.deficitKg) <= 0) return false;
+      if(onlyOpenOrders && !['COMANDĂ LANSATĂ','PROPUSĂ','ÎN AȘTEPTARE APROBARE'].includes(normUpper(r.status))) return false;
       return true;
     });
   }
@@ -1090,9 +705,9 @@
       <tr class="${rowClass(r)} ${state.selectedId === r.id ? 'selected' : ''}" data-id="${r.id}">
         <td class="sticky-col">${r.year}</td>
         <td class="sticky-col-2">${r.month}</td>
-        <td class="col-week">${r.week}</td>
-        <td class="col-date">${isoToDisplay(r.start)}</td>
-        <td class="col-date">${isoToDisplay(r.end)}</td>
+        <td>${r.week}</td>
+        <td>${isoToDisplay(r.start)}</td>
+        <td>${isoToDisplay(r.end)}</td>
         <td class="bold">${r.forged}</td>
         <td>${r.debited}</td>
         <td>${r.diameter}</td>
@@ -1238,10 +853,11 @@
     reader.readAsArrayBuffer(file);
   }
   function bindEvents(){
-    ['fYear','fMonth','fForged','fDiameter'].forEach(id => {
+    ['fYear','fMonth','fWeek','fForged','fDiameter','fQuality','fInternalCode','fSupplier'].forEach(id => {
       el(id).addEventListener('input', rerender);
       el(id).addEventListener('change', rerender);
     });
+    ['fOnlyDeficit','fOnlyOpenOrders'].forEach(id => el(id).addEventListener('change', rerender));
     document.querySelectorAll('.pivot-mode').forEach(btn => btn.addEventListener('click', () => {
       document.querySelectorAll('.pivot-mode').forEach(x => x.classList.remove('active'));
       btn.classList.add('active');
@@ -1278,7 +894,3 @@
   }
   boot();
 })();
-</script>
-
-</body>
-</html>
