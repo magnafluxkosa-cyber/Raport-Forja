@@ -148,7 +148,7 @@
       overflow:auto;
       max-height:540px;
     }
-    table{width:100%;border-collapse:separate;border-spacing:0;min-width:2760px;table-layout:auto}
+    table{width:100%;border-collapse:separate;border-spacing:0;min-width:2860px;table-layout:auto}
     th,td{border-right:1px solid #0f172a;border-bottom:1px solid #0f172a;padding:8px 9px;font-size:12px;white-space:normal;background:#fff;overflow:visible;text-overflow:clip;word-break:break-word;vertical-align:middle}
     th:first-child,td:first-child{border-left:1px solid #0f172a}
     thead th{position:sticky;top:0;z-index:3;background:#dbeafe;color:#0f172a;font-weight:800}
@@ -171,7 +171,6 @@
     .col-debited{min-width:150px;width:150px}
     .col-diameter{min-width:84px;width:84px;text-align:center}
     .col-quality{min-width:120px;width:120px}
-    .col-code{min-width:92px;width:92px;text-align:center}
     .col-need-date{min-width:110px;width:110px}
     .col-status{min-width:150px;width:150px}
     .col-notes{min-width:180px;width:180px}
@@ -276,7 +275,6 @@
                   <th class="col-debited">Reper debitat</th>
                   <th class="col-diameter">Diametru</th>
                   <th class="col-quality">Calitate</th>
-                  <th class="col-code">Cod intern</th>
                   <th class="num">Kg/buc</th>
                   <th class="num">Plan buc viitor</th>
                   <th class="num">Consum planificat kg</th>
@@ -383,7 +381,6 @@
                   <th>Furnizor</th>
                   <th class="col-diameter">Diametru</th>
                   <th class="col-quality">Calitate</th>
-                  <th class="col-code">Cod intern</th>
                   <th class="num">Cantitate kg</th>
                   <th>Termen livrare</th>
                   <th>Pentru săpt.</th>
@@ -989,50 +986,70 @@
 
   function applyStocksAndManual(demandRows, steelStock, steelMetaBySpec, intrariByWeekSpec, realizedWeekSpec){
     const steelRunning = Object.assign(Object.create(null), steelStock || {});
-    const seenWeekSpec = new Set();
-    return (demandRows || []).map(row => {
+    const groups = Object.create(null);
+    (demandRows || []).forEach(row => {
       const specKey = buildSpecKey(row.diameter, row.quality);
       const weekSpecKey = `${row.start}|${specKey}`;
-      const firstWeekSpecRow = !seenWeekSpec.has(weekSpecKey);
-      seenWeekSpec.add(weekSpecKey);
+      if(!groups[weekSpecKey]) groups[weekSpecKey] = { rows:[], specKey, start:row.start };
+      groups[weekSpecKey].rows.push(row);
+    });
+    const orderedKeys = Object.keys(groups).sort((a,b) => {
+      const ga = groups[a], gb = groups[b];
+      return String(ga.start || '').localeCompare(String(gb.start || '')) || String(ga.specKey || '').localeCompare(String(gb.specKey || ''));
+    });
+    const out = [];
+    orderedKeys.forEach(weekSpecKey => {
+      const g = groups[weekSpecKey];
+      const sample = g.rows[0] || {};
+      const specKey = g.specKey;
       const intrariMeta = intrariByWeekSpec[weekSpecKey] || { qty:0, codIntern:'', furnizor:'' };
       const realizedMeta = realizedWeekSpec[weekSpecKey] || { bucRealizate:0, rebut:0, consumKg:0 };
       const startStockKg = Math.max(0, toNumber(steelRunning[specKey]));
-      const plannedInKg = firstWeekSpecRow ? Math.max(0, toNumber(intrariMeta.qty)) : 0;
-      const bucRealizate = firstWeekSpecRow ? Math.max(0, Math.round(toNumber(realizedMeta.bucRealizate))) : 0;
-      const rebut = firstWeekSpecRow ? Math.max(0, Math.round(toNumber(realizedMeta.rebut))) : 0;
-      const consumRealizatKg = firstWeekSpecRow ? Math.max(0, toNumber(realizedMeta.consumKg)) : 0;
+      const plannedInKg = Math.max(0, toNumber(intrariMeta.qty));
+      const bucRealizate = Math.max(0, Math.round(toNumber(realizedMeta.bucRealizate)));
+      const rebut = Math.max(0, Math.round(toNumber(realizedMeta.rebut)));
+      const consumRealizatKg = Math.max(0, toNumber(realizedMeta.consumKg));
       const stocDisponibilReal = startStockKg + plannedInKg - consumRealizatKg;
-      const consumPlanificatKg = Math.max(0, toNumber(row.planFuturePieces) * toNumber(row.kgPerPiece));
-      const stocTeoreticFinal = stocDisponibilReal - consumPlanificatKg;
-      const necesarKg = Math.max(0, -stocTeoreticFinal);
-      const coverage = consumPlanificatKg > 0 ? Math.max(0, Math.min(1, stocDisponibilReal / consumPlanificatKg)) : 1;
-      steelRunning[specKey] = Math.max(0, stocTeoreticFinal);
-      const rowKey = [row.start,row.forged,row.debited,row.diameter,row.quality].join('|');
-      const manual = state.manualMap[rowKey] || {};
+      const totalConsumPlanificatKg = g.rows.reduce((s, row) => s + Math.max(0, toNumber(row.planFuturePieces) * toNumber(row.kgPerPiece)), 0);
+      const groupStocTeoreticFinal = stocDisponibilReal - totalConsumPlanificatKg;
+      const groupNeedKg = Math.max(0, -groupStocTeoreticFinal);
+      const groupCoverage = totalConsumPlanificatKg > 0 ? Math.max(0, Math.min(1, stocDisponibilReal / totalConsumPlanificatKg)) : 1;
+      steelRunning[specKey] = Math.max(0, groupStocTeoreticFinal);
       const specMeta = steelMetaBySpec[specKey] || {};
-      const defaultStatus = necesarKg > 0 ? 'Lipsă material' : (coverage < 1 ? 'Aproape limită' : 'Acoperit');
-      return {
-        ...row,
-        rowKey,
-        consumPlanificatKg,
-        startStockKg,
-        plannedInKg,
-        bucRealizate,
-        rebut,
-        consumRealizatKg,
-        stocDisponibilReal,
-        stocTeoreticFinal,
-        needKg: necesarKg,
-        coverage,
-        internalCode: trimText(manual.internalCode || intrariMeta.codIntern || specMeta.codIntern || row.internalCode || ''),
-        proposedOrderKg: manual.proposedOrderKg != null ? toNumber(manual.proposedOrderKg) : necesarKg,
-        proposedSupplier: trimText(manual.proposedSupplier || intrariMeta.furnizor || specMeta.furnizor || ''),
-        needDate: trimText(manual.needDate || row.start || ''),
-        status: trimText(manual.status || defaultStatus),
-        notes: trimText(manual.notes || '')
-      };
+      let remainingAvailable = stocDisponibilReal;
+      g.rows.forEach((row, idx) => {
+        const consumPlanificatKg = Math.max(0, toNumber(row.planFuturePieces) * toNumber(row.kgPerPiece));
+        const rowNeedPreManual = Math.max(0, consumPlanificatKg - Math.max(0, remainingAvailable));
+        const rowStocTeoreticFinal = remainingAvailable - consumPlanificatKg;
+        remainingAvailable = Math.max(0, rowStocTeoreticFinal);
+        const rowKey = [row.start,row.forged,row.debited,row.diameter,row.quality].join('|');
+        const manual = state.manualMap[rowKey] || {};
+        const defaultStatus = groupNeedKg > 0 ? 'Lipsă material' : (groupCoverage < 1 ? 'Aproape limită' : 'Acoperit');
+        out.push({
+          ...row,
+          rowKey,
+          consumPlanificatKg,
+          startStockKg,
+          plannedInKg,
+          bucRealizate,
+          rebut,
+          consumRealizatKg,
+          stocDisponibilReal,
+          stocTeoreticFinal: rowStocTeoreticFinal,
+          groupStocTeoreticFinal,
+          needKg: manual.proposedOrderKg != null ? toNumber(manual.proposedOrderKg) : rowNeedPreManual,
+          groupNeedKg,
+          coverage: groupCoverage,
+          proposedOrderKg: manual.proposedOrderKg != null ? toNumber(manual.proposedOrderKg) : rowNeedPreManual,
+          proposedSupplier: trimText(manual.proposedSupplier || intrariMeta.furnizor || specMeta.furnizor || ''),
+          needDate: trimText(manual.needDate || row.start || ''),
+          status: trimText(manual.status || defaultStatus),
+          notes: trimText(manual.notes || ''),
+          isWeekSpecFirst: idx === 0
+        });
+      });
     });
+    return out;
   }
 
   async function loadProjectData(){
@@ -1214,7 +1231,7 @@
   function exportExcel(){
     const rows = getFilteredRows().map(r => ({
       An:r.year,Luna:r.month,Saptamana:r.week,DataStart:r.start,DataEnd:r.end,ReperForjat:r.forged,ReperDebitat:r.debited,
-      Diametru:r.diameter,Calitate:r.quality,CodIntern:r.internalCode,KgBuc:r.kgPerPiece,
+      Diametru:r.diameter,Calitate:r.quality,KgBuc:r.kgPerPiece,
       PlanBucViitor:r.planFuturePieces,ConsumPlanificatKg:r.consumPlanificatKg,
       StocInceput:r.startStockKg,Intrari:r.plannedInKg,BucRealizate:r.bucRealizate,Rebut:r.rebut,
       ConsumRealizatKg:r.consumRealizatKg,StocDisponibilReal:r.stocDisponibilReal,StocTeoreticFinal:r.stocTeoreticFinal,
