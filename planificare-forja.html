@@ -486,7 +486,12 @@
         startY:0,
         keys:[],
         sum:0,
-        count:0
+        count:0,
+        ctx:null,
+        activeKeys:[],
+        pointerX:0,
+        pointerY:0,
+        rafId:0
       }
     };
 
@@ -3392,6 +3397,7 @@
         }
       });
       els.planBody.innerHTML = rowHtml.join('');
+      invalidatePlanSelectionContext();
       restoreUiState(uiState);
       syncSelectedRowUi();
       requestAnimationFrame(() => {
@@ -3410,10 +3416,21 @@
       if(!td) return null;
       return td.querySelector('.cell-input[data-field="planificat"]');
     }
+    function invalidatePlanSelectionContext(){
+      if(!state.planSelection) return;
+      if(state.planSelection.rafId){
+        try{ cancelAnimationFrame(state.planSelection.rafId); }catch(_rafErr){}
+        state.planSelection.rafId = 0;
+      }
+      state.planSelection.ctx = null;
+      state.planSelection.activeKeys = [];
+    }
     function getVisiblePlanSelectionContext(){
+      if(state.planSelection && state.planSelection.ctx) return state.planSelection.ctx;
       const rows = Array.from(els.planBody ? els.planBody.querySelectorAll('tr[data-row-id]') : []);
       const list = [];
       const map = Object.create(null);
+      const rowsByIndex = [];
       rows.forEach((tr, rowIndex) => {
         const inputs = Array.from(tr.querySelectorAll('td.slot-plan .cell-input[data-field="planificat"]'));
         inputs.forEach(input => {
@@ -3436,9 +3453,13 @@
           };
           list.push(meta);
           map[key] = meta;
+          if(!rowsByIndex[rowIndex]) rowsByIndex[rowIndex] = [];
+          rowsByIndex[rowIndex][colIndex] = meta;
         });
       });
-      return { list, map };
+      const ctx = { list, map, rowsByIndex };
+      if(state.planSelection) state.planSelection.ctx = ctx;
+      return ctx;
     }
     function updatePlanSelectionPanel(count, sum){
       const panel = els.sumSelectionPanel;
@@ -3471,20 +3492,24 @@
       updatePlanSelectionPanel(count, sum);
     }
     function applyPlanSelectionUi(){
-      if(els.planBody){
-        els.planBody.querySelectorAll('td.slot-plan.sum-selection-cell').forEach(td => td.classList.remove('sum-selection-cell','sum-selection-anchor'));
-      }
       const ctx = getVisiblePlanSelectionContext();
+      const prevKeys = Array.isArray(state.planSelection && state.planSelection.activeKeys) ? state.planSelection.activeKeys : [];
+      prevKeys.forEach(key => {
+        const meta = ctx.map[key];
+        if(meta && meta.td) meta.td.classList.remove('sum-selection-cell','sum-selection-anchor');
+      });
       const keepKeys = [];
       let sum = 0;
       (Array.isArray(state.planSelection && state.planSelection.keys) ? state.planSelection.keys : []).forEach(key => {
         const meta = ctx.map[key];
         if(!meta || !meta.td) return;
+        meta.value = Math.max(0, Math.round(toNumber(meta.input && meta.input.value)));
         keepKeys.push(key);
         meta.td.classList.add('sum-selection-cell');
         if(key === state.planSelection.anchorKey) meta.td.classList.add('sum-selection-anchor');
-        sum += Math.max(0, Math.round(toNumber(meta.value)));
+        sum += meta.value;
       });
+      state.planSelection.activeKeys = keepKeys.slice();
       state.planSelection.keys = keepKeys;
       state.planSelection.count = keepKeys.length;
       state.planSelection.sum = sum;
@@ -3494,6 +3519,10 @@
       const opts = options || {};
       state.planSelection.pending = false;
       state.planSelection.dragging = false;
+      if(state.planSelection.rafId){
+        try{ cancelAnimationFrame(state.planSelection.rafId); }catch(_rafErr){}
+        state.planSelection.rafId = 0;
+      }
       if(!opts.keepSuppress) state.planSelection.suppressClick = false;
       if(!opts.keepAnchor){
         state.planSelection.anchorKey = '';
@@ -3517,12 +3546,17 @@
       const rowMax = Math.max(anchor.rowIndex, current.rowIndex);
       const colMin = Math.min(anchor.colIndex, current.colIndex);
       const colMax = Math.max(anchor.colIndex, current.colIndex);
+      const keys = [];
+      for(let rowIndex = rowMin; rowIndex <= rowMax; rowIndex += 1){
+        const rowCells = ctx.rowsByIndex[rowIndex] || [];
+        for(let colIndex = colMin; colIndex <= colMax; colIndex += 1){
+          const meta = rowCells[colIndex];
+          if(meta) keys.push(meta.key);
+        }
+      }
       state.planSelection.anchorKey = anchorKey;
       state.planSelection.currentKey = currentKey;
-      state.planSelection.keys = ctx.list
-        .filter(meta => meta.rowIndex >= rowMin && meta.rowIndex <= rowMax && meta.colIndex >= colMin && meta.colIndex <= colMax)
-        .sort((a,b) => a.rowIndex - b.rowIndex || a.colIndex - b.colIndex)
-        .map(meta => meta.key);
+      state.planSelection.keys = keys;
       applyPlanSelectionUi();
     }
     function beginPlanSelection(input, event){
@@ -3551,13 +3585,28 @@
           try{ active.blur(); }catch(_blurErr){}
         }
       }
+      if(nextKey === state.planSelection.currentKey) return;
       updatePlanSelectionRange(state.planSelection.anchorKey, nextKey);
+    }
+    function queuePlanSelectionFromPoint(clientX, clientY){
+      if(!state.planSelection || !state.planSelection.pending) return;
+      state.planSelection.pointerX = clientX;
+      state.planSelection.pointerY = clientY;
+      if(state.planSelection.rafId) return;
+      state.planSelection.rafId = requestAnimationFrame(function(){
+        state.planSelection.rafId = 0;
+        extendPlanSelectionFromPoint(state.planSelection.pointerX, state.planSelection.pointerY);
+      });
     }
     function finishPlanSelection(){
       if(!state.planSelection.pending && !state.planSelection.dragging) return;
       const wasDragging = !!state.planSelection.dragging;
       state.planSelection.pending = false;
       state.planSelection.dragging = false;
+      if(state.planSelection.rafId){
+        try{ cancelAnimationFrame(state.planSelection.rafId); }catch(_rafErr){}
+        state.planSelection.rafId = 0;
+      }
       document.body.classList.remove('sum-selection-dragging');
       if(wasDragging){
         const active = document.activeElement;
@@ -3984,7 +4033,7 @@
       });
       document.addEventListener('mousemove', function(event){
         if(!state.planSelection || !state.planSelection.pending) return;
-        extendPlanSelectionFromPoint(event.clientX, event.clientY);
+        queuePlanSelectionFromPoint(event.clientX, event.clientY);
       });
       document.addEventListener('mouseup', function(){
         if(!state.planSelection) return;
