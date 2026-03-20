@@ -1,0 +1,3781 @@
+(function(){
+    'use strict';
+
+    const PAGE_KEY = 'planificare-forja';
+    const DOC_KEY = 'planificare-forja';
+    const LEGACY_DOC_KEY = 'forjate';
+    const FORJATE_DOC_PREFIX = 'forjate:';
+    const TABLE_UI_STORAGE_KEY = 'planificare-forja:table-ui:v1';
+    const MACHINE_ORDER = ['5 T CHINA','MP','1,25 T','2,5 T','3 T BR','3 T ZR'];
+    const MONTHS = ['Ianuarie','Februarie','Martie','Aprilie','Mai','Iunie','Iulie','August','Septembrie','Octombrie','Noiembrie','Decembrie'];
+    const WEEKDAYS = ['Duminică','Luni','Marți','Miercuri','Joi','Vineri','Sâmbătă'];
+    const HOLIDAY_CACHE = Object.create(null);
+    const HELPERS_LS_KEY = 'RF_HELPERS_v1';
+    const TODAY = new Date();
+    const TODAY_ISO = new Date(TODAY.getTime() - TODAY.getTimezoneOffset() * 60000).toISOString().slice(0,10);
+    const CURRENT_YEAR = String(TODAY.getFullYear());
+    const CURRENT_MONTH_NAME = MONTHS[TODAY.getMonth()];
+    const STEEL_DOC_KEYS = ['stoc-initial-otel','stoc_initial_otel','inventar-otel','inventar_otel','inventar-otel-initial','inventar_otel_initial'];
+    const DEBITAT_DOC_BASE_KEYS = ['inventar-debitat','inventar_debitat','stoc-initial-debitat','stoc_initial_debitat'];
+    const INTRARI_OTEL_DOC_BASE_KEYS = ['intrari-otel','intrari_otel','intrari otel','INTRARI_OTEL','INTRARI OTEL'];
+    const DEBITARI_FLOW_DOC_BASE_KEYS = ['debitate','debitari','debitate_otel','debitari_otel','DEBITATE','DEBITARI'];
+    const DELIVERY_DOC_KEY = 'comenzi-livrare';
+    const DELIVERY_DOC_ALIASES = ['comenzi-livrare','comenzi livrare'];
+    const FORJAT_INV_BASE_KEYS = ['inventar-forjat','inventar_forjat','inventar-forjate','inventar_forjate','inventar-piese-forjate','inventar_piese_forjate','stoc-forjate','stoc_forjate'];
+    const LOCK_DOC_KEY = 'planificare-forja:locks';
+    const PLAN_SYNC_CHANNEL_TOPIC = 'planificare-forja-sync';
+    const PLAN_SYNC_INTERVAL_MS = 2500;
+    const LOCK_SYNC_INTERVAL_MS = 2500;
+    const LOCK_HEARTBEAT_MS = 4000;
+    const LOCK_TTL_MS = 12000;
+    const SESSION_STORAGE_LOCK_KEY = 'planificare-forja:session-id';
+
+    const PLAN_SEED_ROWS = [{"id":"row-3","row_no":3,"an":2026,"luna":"Februarie","data":"2026-02-01","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-4","row_no":4,"an":2026,"luna":"Februarie","data":"2026-02-02","zi":"Luni","slots":{"5 T CHINA":{"reper":"6I-8077","planificat":350,"realizat_seed":360},"MP":{"reper":"7G-0521/22","planificat":1500,"realizat_seed":1600},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"503-0761","planificat":900,"realizat_seed":650},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-5","row_no":5,"an":2026,"luna":"Februarie","data":"2026-02-03","zi":"Marți","slots":{"5 T CHINA":{"reper":"6I-8077","planificat":350,"realizat_seed":360},"MP":{"reper":"7G-0521/22","planificat":1500,"realizat_seed":2000},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"503-0761","planificat":900,"realizat_seed":900},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-6","row_no":6,"an":2026,"luna":"Februarie","data":"2026-02-04","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"AT-355","planificat":1200,"realizat_seed":700},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"248-2308","planificat":1200,"realizat_seed":1100},"3 T BR":{"reper":"503-0761","planificat":900,"realizat_seed":900},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-7","row_no":7,"an":2026,"luna":"Februarie","data":"2026-02-05","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"AT-355","planificat":1200,"realizat_seed":1250},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"248-2308","planificat":1200,"realizat_seed":1200},"3 T BR":{"reper":"503-0762","planificat":900,"realizat_seed":300},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-8","row_no":8,"an":2026,"luna":"Februarie","data":"2026-02-06","zi":"Vineri","slots":{"5 T CHINA":{"reper":"382-3760","planificat":220,"realizat_seed":218},"MP":{"reper":"AT-355","planificat":1200,"realizat_seed":1050},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"503-0762","planificat":900,"realizat_seed":900},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-9","row_no":9,"an":2026,"luna":"Februarie","data":"2026-02-07","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"248-2308","planificat":1200,"realizat_seed":1200},"3 T BR":{"reper":"503-0762","planificat":900,"realizat_seed":900},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-10","row_no":10,"an":2026,"luna":"Februarie","data":"2026-02-08","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-11","row_no":11,"an":2026,"luna":"Februarie","data":"2026-02-09","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"BF27K01A","planificat":900,"realizat_seed":800},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"248-2308","planificat":1200,"realizat_seed":1250},"3 T BR":{"reper":"503-0762","planificat":600,"realizat_seed":600},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-12","row_no":12,"an":2026,"luna":"Februarie","data":"2026-02-09","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"248-2307","planificat":400,"realizat_seed":400},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-13","row_no":13,"an":2026,"luna":"Februarie","data":"2026-02-10","zi":"Marți","slots":{"5 T CHINA":{"reper":"6I-8077","planificat":350,"realizat_seed":350},"MP":{"reper":"229-6909","planificat":1400,"realizat_seed":277},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"248-2307","planificat":1200,"realizat_seed":1250},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-14","row_no":14,"an":2026,"luna":"Februarie","data":"2026-02-10","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"229-6910","planificat":1400,"realizat_seed":673},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-15","row_no":15,"an":2026,"luna":"Februarie","data":"2026-02-11","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"229-6910","planificat":1400,"realizat_seed":950},"1,25 T":{"reper":"358-5253/55","planificat":900,"realizat_seed":900},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"248-2307","planificat":1200,"realizat_seed":1260},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-16","row_no":16,"an":2026,"luna":"Februarie","data":"2026-02-11","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"229-6909","planificat":150,"realizat_seed":150},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-17","row_no":17,"an":2026,"luna":"Februarie","data":"2026-02-12","zi":"Joi","slots":{"5 T CHINA":{"reper":"6I-8077","planificat":350,"realizat_seed":360},"MP":{"reper":"229-6910","planificat":600,"realizat_seed":600},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"248-2307","planificat":1200,"realizat_seed":1260},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-18","row_no":18,"an":2026,"luna":"Februarie","data":"2026-02-13","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"229-6909","planificat":1800,"realizat_seed":1800},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"248-2308","planificat":1200,"realizat_seed":1100},"3 T BR":{"reper":"248-2307","planificat":1200,"realizat_seed":1200},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-19","row_no":19,"an":2026,"luna":"Februarie","data":"2026-02-14","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"248-2308","planificat":1200,"realizat_seed":1150},"3 T BR":{"reper":"248-2307","planificat":1200,"realizat_seed":1200},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-20","row_no":20,"an":2026,"luna":"Februarie","data":"2026-02-15","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-21","row_no":21,"an":2026,"luna":"Februarie","data":"2026-02-16","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"ASOLLO_M","planificat":900,"realizat_seed":450},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"248-2308","planificat":1200,"realizat_seed":1200},"3 T BR":{"reper":"248-2307","planificat":1200,"realizat_seed":1233},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-22","row_no":22,"an":2026,"luna":"Februarie","data":"2026-02-17","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"ASOLLO_M","planificat":900,"realizat_seed":1250},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"248-2308","planificat":1200,"realizat_seed":528},"3 T BR":{"reper":"248-2307","planificat":1200,"realizat_seed":1250},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-23","row_no":23,"an":2026,"luna":"Februarie","data":"2026-02-18","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"ASOLLO_M","planificat":900,"realizat_seed":850},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"248-2308","planificat":1200,"realizat_seed":802},"3 T BR":{"reper":"248-2307","planificat":1200,"realizat_seed":1200},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-24","row_no":24,"an":2026,"luna":"Februarie","data":"2026-02-19","zi":"Joi","slots":{"5 T CHINA":{"reper":"6I-8077","planificat":350,"realizat_seed":371},"MP":{"reper":"AU1CZ01A","planificat":1100,"realizat_seed":1100},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"MENTENANTA","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"248-2307","planificat":1200,"realizat_seed":900},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-25","row_no":25,"an":2026,"luna":"Februarie","data":"2026-02-20","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"417-3595","planificat":1400,"realizat_seed":1250},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"248-2308","planificat":1200,"realizat_seed":900},"3 T BR":{"reper":"418-2091","planificat":1200,"realizat_seed":1050},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-26","row_no":26,"an":2026,"luna":"Februarie","data":"2026-02-21","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"417-3595","planificat":1400,"realizat_seed":1400},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"248-2308","planificat":1200,"realizat_seed":1200},"3 T BR":{"reper":"418-2091","planificat":1200,"realizat_seed":1200},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-27","row_no":27,"an":2026,"luna":"Februarie","data":"2026-02-22","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-28","row_no":28,"an":2026,"luna":"Februarie","data":"2026-02-23","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"417-3595","planificat":1400,"realizat_seed":1600},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"248-2308","planificat":1200,"realizat_seed":1200},"3 T BR":{"reper":"418-2091","planificat":1200,"realizat_seed":1200},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-29","row_no":29,"an":2026,"luna":"Februarie","data":"2026-02-24","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"417-3595","planificat":1600,"realizat_seed":1600},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"248-2308","planificat":650,"realizat_seed":650},"3 T BR":{"reper":"418-2091","planificat":1200,"realizat_seed":1250},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-30","row_no":30,"an":2026,"luna":"Februarie","data":"2026-02-24","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"418-2092","planificat":300,"realizat_seed":300},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-31","row_no":31,"an":2026,"luna":"Februarie","data":"2026-02-25","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"SK-203034","planificat":200,"realizat_seed":0},"MP":{"reper":"417-3596","planificat":1600,"realizat_seed":1650},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"418-2092","planificat":1200,"realizat_seed":1100},"3 T BR":{"reper":"418-2091","planificat":1200,"realizat_seed":1200},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-32","row_no":32,"an":2026,"luna":"Februarie","data":"2026-02-26","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"417-3596","planificat":1800,"realizat_seed":2000},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"418-2092","planificat":1200,"realizat_seed":1120},"3 T BR":{"reper":"418-2091","planificat":1200,"realizat_seed":1100},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-33","row_no":33,"an":2026,"luna":"Februarie","data":"2026-02-27","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"417-3596","planificat":1600,"realizat_seed":1600},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"418-2092","planificat":1200,"realizat_seed":1150},"3 T BR":{"reper":"418-2091","planificat":1200,"realizat_seed":1200},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-34","row_no":34,"an":2026,"luna":"Februarie","data":"2026-02-28","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"417-3596","planificat":1600,"realizat_seed":1600},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"418-2092","planificat":1200,"realizat_seed":1200},"3 T BR":{"reper":"418-2091","planificat":1200,"realizat_seed":1200},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-35","row_no":35,"an":2026,"luna":"Martie","data":"2026-03-01","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-36","row_no":36,"an":2026,"luna":"Martie","data":"2026-03-02","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"417-3595","planificat":1400,"realizat_seed":1500},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"418-2092","planificat":1200,"realizat_seed":1100},"3 T BR":{"reper":"418-2091","planificat":1200,"realizat_seed":1250},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-37","row_no":37,"an":2026,"luna":"Martie","data":"2026-03-03","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"AT-355","planificat":1400,"realizat_seed":1800},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"418-2092","planificat":1200,"realizat_seed":1000},"3 T BR":{"reper":"418-2091","planificat":1200,"realizat_seed":850},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-38","row_no":38,"an":2026,"luna":"Martie","data":"2026-03-04","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"526-9280","planificat":400,"realizat_seed":0},"MP":{"reper":"AT-355","planificat":1200,"realizat_seed":1200},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"418-2092","planificat":1200,"realizat_seed":1220},"3 T BR":{"reper":"248-2307","planificat":1200,"realizat_seed":1225},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-39","row_no":39,"an":2026,"luna":"Martie","data":"2026-03-05","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"AU1CZ01A","planificat":1200,"realizat_seed":1200},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"418-2092","planificat":1200,"realizat_seed":1050},"3 T BR":{"reper":"248-2307","planificat":1200,"realizat_seed":1200},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-40","row_no":40,"an":2026,"luna":"Martie","data":"2026-03-06","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"ASOLLO_M","planificat":1200,"realizat_seed":1050},"1,25 T":{"reper":"7G-0521/22","planificat":1500,"realizat_seed":1200},"2,5 T":{"reper":"248-2308","planificat":1200,"realizat_seed":1200},"3 T BR":{"reper":"248-2307","planificat":1200,"realizat_seed":1200},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-41","row_no":41,"an":2026,"luna":"Martie","data":"2026-03-07","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"ASOLLO_M","planificat":1200,"realizat_seed":1200},"1,25 T":{"reper":"7G-0521/22","planificat":1500,"realizat_seed":1560},"2,5 T":{"reper":"248-2308","planificat":1200,"realizat_seed":1200},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-42","row_no":42,"an":2026,"luna":"Martie","data":"2026-03-08","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-43","row_no":43,"an":2026,"luna":"Martie","data":"2026-03-09","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"417-3595","planificat":1400,"realizat_seed":1300},"1,25 T":{"reper":"7G-0521/22","planificat":1500,"realizat_seed":1300},"2,5 T":{"reper":"248-2308","planificat":1200,"realizat_seed":1060},"3 T BR":{"reper":"248-2307","planificat":1200,"realizat_seed":1100},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-44","row_no":44,"an":2026,"luna":"Martie","data":"2026-03-10","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"417-3595","planificat":1400,"realizat_seed":1750},"1,25 T":{"reper":"7G-0521/22","planificat":1500,"realizat_seed":1500},"2,5 T":{"reper":"248-2308","planificat":1200,"realizat_seed":1170},"3 T BR":{"reper":"248-2307","planificat":1200,"realizat_seed":1200},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-45","row_no":45,"an":2026,"luna":"Martie","data":"2026-03-11","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"6I-8077","planificat":350,"realizat_seed":310},"MP":{"reper":"417-3595","planificat":1400,"realizat_seed":2000},"1,25 T":{"reper":"7G-0521/22","planificat":1500,"realizat_seed":1300},"2,5 T":{"reper":"248-2308","planificat":1200,"realizat_seed":1150},"3 T BR":{"reper":"MENTENANTA","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-46","row_no":46,"an":2026,"luna":"Martie","data":"2026-03-12","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"417-3596","planificat":1600,"realizat_seed":0},"1,25 T":{"reper":"7G-0521/22","planificat":1500,"realizat_seed":0},"2,5 T":{"reper":"248-2308","planificat":1200,"realizat_seed":0},"3 T BR":{"reper":"418-2091","planificat":1200,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-47","row_no":47,"an":2026,"luna":"Martie","data":"2026-03-13","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"417-3596","planificat":1400,"realizat_seed":0},"1,25 T":{"reper":"7G-0521/22","planificat":1500,"realizat_seed":0},"2,5 T":{"reper":"418-2092","planificat":1200,"realizat_seed":0},"3 T BR":{"reper":"418-2091","planificat":1200,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-48","row_no":48,"an":2026,"luna":"Martie","data":"2026-03-14","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-49","row_no":49,"an":2026,"luna":"Martie","data":"2026-03-15","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-50","row_no":50,"an":2026,"luna":"Martie","data":"2026-03-16","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"417-3596","planificat":1400,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"418-2092","planificat":1200,"realizat_seed":0},"3 T BR":{"reper":"418-2091","planificat":1200,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-51","row_no":51,"an":2026,"luna":"Martie","data":"2026-03-17","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"417-3596","planificat":1400,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"418-2092","planificat":1200,"realizat_seed":0},"3 T BR":{"reper":"418-2091","planificat":1200,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-52","row_no":52,"an":2026,"luna":"Martie","data":"2026-03-18","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"9K-6629","planificat":1400,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"418-2092","planificat":1200,"realizat_seed":0},"3 T BR":{"reper":"418-2091","planificat":1200,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-53","row_no":53,"an":2026,"luna":"Martie","data":"2026-03-19","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"9K-6629","planificat":700,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"418-2092","planificat":1200,"realizat_seed":0},"3 T BR":{"reper":"418-2091","planificat":1200,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-54","row_no":54,"an":2026,"luna":"Martie","data":"2026-03-19","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"9K-6628","planificat":700,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-55","row_no":55,"an":2026,"luna":"Martie","data":"2026-03-20","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"9K-6628","planificat":1400,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"418-2092","planificat":1200,"realizat_seed":0},"3 T BR":{"reper":"418-2091","planificat":1200,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-56","row_no":56,"an":2026,"luna":"Martie","data":"2026-03-21","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-57","row_no":57,"an":2026,"luna":"Martie","data":"2026-03-22","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-58","row_no":58,"an":2026,"luna":"Martie","data":"2026-03-23","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"ASOLLO_M","planificat":1200,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"418-2092","planificat":1200,"realizat_seed":0},"3 T BR":{"reper":"418-2091","planificat":1200,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-59","row_no":59,"an":2026,"luna":"Martie","data":"2026-03-24","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"ASOLLO_M","planificat":1200,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"418-2092","planificat":1200,"realizat_seed":0},"3 T BR":{"reper":"418-2091","planificat":1200,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-60","row_no":60,"an":2026,"luna":"Martie","data":"2026-03-25","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"ASOLLO_M","planificat":1200,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"418-2092","planificat":1200,"realizat_seed":0},"3 T BR":{"reper":"418-2091","planificat":1200,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-61","row_no":61,"an":2026,"luna":"Martie","data":"2026-03-26","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"ASOLLO_M","planificat":1200,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"418-2092","planificat":1200,"realizat_seed":0},"3 T BR":{"reper":"418-2091","planificat":1200,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-62","row_no":62,"an":2026,"luna":"Martie","data":"2026-03-27","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"AT-355","planificat":1200,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"418-2092","planificat":1200,"realizat_seed":0},"3 T BR":{"reper":"418-2091","planificat":1200,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-63","row_no":63,"an":2026,"luna":"Martie","data":"2026-03-28","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"AT-355","planificat":1200,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-64","row_no":64,"an":2026,"luna":"Martie","data":"2026-03-29","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-65","row_no":65,"an":2026,"luna":"Martie","data":"2026-03-30","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":1400,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"418-2092","planificat":1200,"realizat_seed":0},"3 T BR":{"reper":"503-0761","planificat":900,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-66","row_no":66,"an":2026,"luna":"Martie","data":"2026-03-31","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":1400,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"418-2092","planificat":1200,"realizat_seed":0},"3 T BR":{"reper":"503-0761","planificat":900,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-67","row_no":67,"an":2026,"luna":"Aprilie","data":"2026-04-01","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":1400,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"418-2092","planificat":1200,"realizat_seed":0},"3 T BR":{"reper":"503-0762","planificat":900,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-68","row_no":68,"an":2026,"luna":"Aprilie","data":"2026-04-02","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":1400,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"418-2092","planificat":1200,"realizat_seed":0},"3 T BR":{"reper":"418-2091","planificat":1200,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-69","row_no":69,"an":2026,"luna":"Aprilie","data":"2026-04-03","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"418-2092","planificat":1200,"realizat_seed":0},"3 T BR":{"reper":"418-2091","planificat":1200,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-70","row_no":70,"an":2026,"luna":"Aprilie","data":"2026-04-04","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-71","row_no":71,"an":2026,"luna":"Aprilie","data":"2026-04-05","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-72","row_no":72,"an":2026,"luna":"Aprilie","data":"2026-04-06","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"418-2092","planificat":1200,"realizat_seed":0},"3 T BR":{"reper":"418-2091","planificat":1200,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-73","row_no":73,"an":2026,"luna":"Aprilie","data":"2026-04-07","zi":"Marți","slots":{"5 T CHINA":{"reper":"SK-203034","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":1400,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"418-2092","planificat":1200,"realizat_seed":0},"3 T BR":{"reper":"418-2091","planificat":1200,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-74","row_no":74,"an":2026,"luna":"Aprilie","data":"2026-04-08","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":1400,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"418-2092","planificat":1200,"realizat_seed":0},"3 T BR":{"reper":"418-2091","planificat":1200,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-75","row_no":75,"an":2026,"luna":"Aprilie","data":"2026-04-09","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":1400,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"418-2092","planificat":1200,"realizat_seed":0},"3 T BR":{"reper":"418-2091","planificat":1200,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-76","row_no":76,"an":2026,"luna":"Aprilie","data":"2026-04-10","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-77","row_no":77,"an":2026,"luna":"Aprilie","data":"2026-04-11","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-78","row_no":78,"an":2026,"luna":"Aprilie","data":"2026-04-12","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-79","row_no":79,"an":2026,"luna":"Aprilie","data":"2026-04-13","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-80","row_no":80,"an":2026,"luna":"Aprilie","data":"2026-04-14","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":1400,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"418-2092","planificat":1200,"realizat_seed":0},"3 T BR":{"reper":"418-2091","planificat":1200,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-81","row_no":81,"an":2026,"luna":"Aprilie","data":"2026-04-15","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":1400,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"418-2092","planificat":1200,"realizat_seed":0},"3 T BR":{"reper":"418-2091","planificat":1200,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-82","row_no":82,"an":2026,"luna":"Aprilie","data":"2026-04-16","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":1400,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"418-2092","planificat":1200,"realizat_seed":0},"3 T BR":{"reper":"418-2091","planificat":1200,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-83","row_no":83,"an":2026,"luna":"Aprilie","data":"2026-04-17","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":1400,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"418-2092","planificat":1200,"realizat_seed":0},"3 T BR":{"reper":"418-2091","planificat":1200,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-84","row_no":84,"an":2026,"luna":"Aprilie","data":"2026-04-18","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-85","row_no":85,"an":2026,"luna":"Aprilie","data":"2026-04-19","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-86","row_no":86,"an":2026,"luna":"Aprilie","data":"2026-04-20","zi":"Luni","slots":{"5 T CHINA":{"reper":"6I-8077","planificat":350,"realizat_seed":0},"MP":{"reper":"","planificat":1400,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"248-2307","planificat":1200,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-87","row_no":87,"an":2026,"luna":"Aprilie","data":"2026-04-21","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":1400,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"248-2308","planificat":1200,"realizat_seed":0},"3 T BR":{"reper":"248-2307","planificat":1200,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-88","row_no":88,"an":2026,"luna":"Aprilie","data":"2026-04-22","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":1400,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"248-2308","planificat":1200,"realizat_seed":0},"3 T BR":{"reper":"248-2307","planificat":1200,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-89","row_no":89,"an":2026,"luna":"Aprilie","data":"2026-04-23","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"248-2308","planificat":1200,"realizat_seed":0},"3 T BR":{"reper":"248-2307","planificat":1200,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-90","row_no":90,"an":2026,"luna":"Aprilie","data":"2026-04-24","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"248-2308","planificat":1200,"realizat_seed":0},"3 T BR":{"reper":"248-2307","planificat":1200,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-91","row_no":91,"an":2026,"luna":"Aprilie","data":"2026-04-25","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-92","row_no":92,"an":2026,"luna":"Aprilie","data":"2026-04-26","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-93","row_no":93,"an":2026,"luna":"Aprilie","data":"2026-04-27","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"248-2308","planificat":1200,"realizat_seed":0},"3 T BR":{"reper":"248-2307","planificat":1200,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-94","row_no":94,"an":2026,"luna":"Aprilie","data":"2026-04-28","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-95","row_no":95,"an":2026,"luna":"Aprilie","data":"2026-04-29","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-96","row_no":96,"an":2026,"luna":"Aprilie","data":"2026-04-30","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-97","row_no":97,"an":2026,"luna":"Mai","data":"2026-05-01","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-98","row_no":98,"an":2026,"luna":"Mai","data":"2026-05-02","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-99","row_no":99,"an":2026,"luna":"Mai","data":"2026-05-03","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-100","row_no":100,"an":2026,"luna":"Mai","data":"2026-05-04","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-101","row_no":101,"an":2026,"luna":"Mai","data":"2026-05-05","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-102","row_no":102,"an":2026,"luna":"Mai","data":"2026-05-06","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-103","row_no":103,"an":2026,"luna":"Mai","data":"2026-05-07","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-104","row_no":104,"an":2026,"luna":"Mai","data":"2026-05-08","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-105","row_no":105,"an":2026,"luna":"Mai","data":"2026-05-09","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-106","row_no":106,"an":2026,"luna":"Mai","data":"2026-05-10","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-107","row_no":107,"an":2026,"luna":"Mai","data":"2026-05-11","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-108","row_no":108,"an":2026,"luna":"Mai","data":"2026-05-12","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-109","row_no":109,"an":2026,"luna":"Mai","data":"2026-05-13","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-110","row_no":110,"an":2026,"luna":"Mai","data":"2026-05-14","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-111","row_no":111,"an":2026,"luna":"Mai","data":"2026-05-15","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-112","row_no":112,"an":2026,"luna":"Mai","data":"2026-05-16","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-113","row_no":113,"an":2026,"luna":"Mai","data":"2026-05-17","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-114","row_no":114,"an":2026,"luna":"Mai","data":"2026-05-18","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-115","row_no":115,"an":2026,"luna":"Mai","data":"2026-05-19","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-116","row_no":116,"an":2026,"luna":"Mai","data":"2026-05-20","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-117","row_no":117,"an":2026,"luna":"Mai","data":"2026-05-21","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-118","row_no":118,"an":2026,"luna":"Mai","data":"2026-05-22","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-119","row_no":119,"an":2026,"luna":"Mai","data":"2026-05-23","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-120","row_no":120,"an":2026,"luna":"Mai","data":"2026-05-24","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-121","row_no":121,"an":2026,"luna":"Mai","data":"2026-05-25","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-122","row_no":122,"an":2026,"luna":"Mai","data":"2026-05-26","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-123","row_no":123,"an":2026,"luna":"Mai","data":"2026-05-27","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-124","row_no":124,"an":2026,"luna":"Mai","data":"2026-05-28","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-125","row_no":125,"an":2026,"luna":"Mai","data":"2026-05-29","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-126","row_no":126,"an":2026,"luna":"Mai","data":"2026-05-30","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-127","row_no":127,"an":2026,"luna":"Mai","data":"2026-05-31","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-128","row_no":128,"an":2026,"luna":"Iunie","data":"2026-06-01","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-129","row_no":129,"an":2026,"luna":"Iunie","data":"2026-06-02","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-130","row_no":130,"an":2026,"luna":"Iunie","data":"2026-06-03","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-131","row_no":131,"an":2026,"luna":"Iunie","data":"2026-06-04","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-132","row_no":132,"an":2026,"luna":"Iunie","data":"2026-06-05","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-133","row_no":133,"an":2026,"luna":"Iunie","data":"2026-06-06","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-134","row_no":134,"an":2026,"luna":"Iunie","data":"2026-06-07","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-135","row_no":135,"an":2026,"luna":"Iunie","data":"2026-06-08","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-136","row_no":136,"an":2026,"luna":"Iunie","data":"2026-06-09","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-137","row_no":137,"an":2026,"luna":"Iunie","data":"2026-06-10","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-138","row_no":138,"an":2026,"luna":"Iunie","data":"2026-06-11","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-139","row_no":139,"an":2026,"luna":"Iunie","data":"2026-06-12","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-140","row_no":140,"an":2026,"luna":"Iunie","data":"2026-06-13","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-141","row_no":141,"an":2026,"luna":"Iunie","data":"2026-06-14","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-142","row_no":142,"an":2026,"luna":"Iunie","data":"2026-06-15","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-143","row_no":143,"an":2026,"luna":"Iunie","data":"2026-06-16","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-144","row_no":144,"an":2026,"luna":"Iunie","data":"2026-06-17","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-145","row_no":145,"an":2026,"luna":"Iunie","data":"2026-06-18","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-146","row_no":146,"an":2026,"luna":"Iunie","data":"2026-06-19","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-147","row_no":147,"an":2026,"luna":"Iunie","data":"2026-06-20","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-148","row_no":148,"an":2026,"luna":"Iunie","data":"2026-06-21","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-149","row_no":149,"an":2026,"luna":"Iunie","data":"2026-06-22","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-150","row_no":150,"an":2026,"luna":"Iunie","data":"2026-06-23","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-151","row_no":151,"an":2026,"luna":"Iunie","data":"2026-06-24","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-152","row_no":152,"an":2026,"luna":"Iunie","data":"2026-06-25","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-153","row_no":153,"an":2026,"luna":"Iunie","data":"2026-06-26","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-154","row_no":154,"an":2026,"luna":"Iunie","data":"2026-06-27","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-155","row_no":155,"an":2026,"luna":"Iunie","data":"2026-06-28","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-156","row_no":156,"an":2026,"luna":"Iunie","data":"2026-06-29","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-157","row_no":157,"an":2026,"luna":"Iunie","data":"2026-06-30","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-158","row_no":158,"an":2026,"luna":"Iulie","data":"2026-07-01","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-159","row_no":159,"an":2026,"luna":"Iulie","data":"2026-07-02","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-160","row_no":160,"an":2026,"luna":"Iulie","data":"2026-07-03","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-161","row_no":161,"an":2026,"luna":"Iulie","data":"2026-07-04","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-162","row_no":162,"an":2026,"luna":"Iulie","data":"2026-07-05","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-163","row_no":163,"an":2026,"luna":"Iulie","data":"2026-07-06","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-164","row_no":164,"an":2026,"luna":"Iulie","data":"2026-07-07","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-165","row_no":165,"an":2026,"luna":"Iulie","data":"2026-07-08","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-166","row_no":166,"an":2026,"luna":"Iulie","data":"2026-07-09","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-167","row_no":167,"an":2026,"luna":"Iulie","data":"2026-07-10","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-168","row_no":168,"an":2026,"luna":"Iulie","data":"2026-07-11","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-169","row_no":169,"an":2026,"luna":"Iulie","data":"2026-07-12","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-170","row_no":170,"an":2026,"luna":"Iulie","data":"2026-07-13","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-171","row_no":171,"an":2026,"luna":"Iulie","data":"2026-07-14","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-172","row_no":172,"an":2026,"luna":"Iulie","data":"2026-07-15","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-173","row_no":173,"an":2026,"luna":"Iulie","data":"2026-07-16","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-174","row_no":174,"an":2026,"luna":"Iulie","data":"2026-07-17","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-175","row_no":175,"an":2026,"luna":"Iulie","data":"2026-07-18","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-176","row_no":176,"an":2026,"luna":"Iulie","data":"2026-07-19","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-177","row_no":177,"an":2026,"luna":"Iulie","data":"2026-07-20","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-178","row_no":178,"an":2026,"luna":"Iulie","data":"2026-07-21","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-179","row_no":179,"an":2026,"luna":"Iulie","data":"2026-07-22","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-180","row_no":180,"an":2026,"luna":"Iulie","data":"2026-07-23","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-181","row_no":181,"an":2026,"luna":"Iulie","data":"2026-07-24","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-182","row_no":182,"an":2026,"luna":"Iulie","data":"2026-07-25","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-183","row_no":183,"an":2026,"luna":"Iulie","data":"2026-07-26","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-184","row_no":184,"an":2026,"luna":"Iulie","data":"2026-07-27","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-185","row_no":185,"an":2026,"luna":"Iulie","data":"2026-07-28","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-186","row_no":186,"an":2026,"luna":"Iulie","data":"2026-07-29","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-187","row_no":187,"an":2026,"luna":"Iulie","data":"2026-07-30","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-188","row_no":188,"an":2026,"luna":"Iulie","data":"2026-07-31","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-189","row_no":189,"an":2026,"luna":"August","data":"2026-08-01","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-190","row_no":190,"an":2026,"luna":"August","data":"2026-08-02","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-191","row_no":191,"an":2026,"luna":"August","data":"2026-08-03","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-192","row_no":192,"an":2026,"luna":"August","data":"2026-08-04","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-193","row_no":193,"an":2026,"luna":"August","data":"2026-08-05","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-194","row_no":194,"an":2026,"luna":"August","data":"2026-08-06","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-195","row_no":195,"an":2026,"luna":"August","data":"2026-08-07","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-196","row_no":196,"an":2026,"luna":"August","data":"2026-08-08","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-197","row_no":197,"an":2026,"luna":"August","data":"2026-08-09","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-198","row_no":198,"an":2026,"luna":"August","data":"2026-08-10","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-199","row_no":199,"an":2026,"luna":"August","data":"2026-08-11","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-200","row_no":200,"an":2026,"luna":"August","data":"2026-08-12","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-201","row_no":201,"an":2026,"luna":"August","data":"2026-08-13","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-202","row_no":202,"an":2026,"luna":"August","data":"2026-08-14","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-203","row_no":203,"an":2026,"luna":"August","data":"2026-08-15","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-204","row_no":204,"an":2026,"luna":"August","data":"2026-08-16","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-205","row_no":205,"an":2026,"luna":"August","data":"2026-08-17","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-206","row_no":206,"an":2026,"luna":"August","data":"2026-08-18","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-207","row_no":207,"an":2026,"luna":"August","data":"2026-08-19","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-208","row_no":208,"an":2026,"luna":"August","data":"2026-08-20","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-209","row_no":209,"an":2026,"luna":"August","data":"2026-08-21","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-210","row_no":210,"an":2026,"luna":"August","data":"2026-08-22","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-211","row_no":211,"an":2026,"luna":"August","data":"2026-08-23","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-212","row_no":212,"an":2026,"luna":"August","data":"2026-08-24","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-213","row_no":213,"an":2026,"luna":"August","data":"2026-08-25","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-214","row_no":214,"an":2026,"luna":"August","data":"2026-08-26","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-215","row_no":215,"an":2026,"luna":"August","data":"2026-08-27","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-216","row_no":216,"an":2026,"luna":"August","data":"2026-08-28","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-217","row_no":217,"an":2026,"luna":"August","data":"2026-08-29","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-218","row_no":218,"an":2026,"luna":"August","data":"2026-08-30","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-219","row_no":219,"an":2026,"luna":"August","data":"2026-08-31","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-220","row_no":220,"an":2026,"luna":"Septembrie","data":"2026-09-01","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-221","row_no":221,"an":2026,"luna":"Septembrie","data":"2026-09-02","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-222","row_no":222,"an":2026,"luna":"Septembrie","data":"2026-09-03","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-223","row_no":223,"an":2026,"luna":"Septembrie","data":"2026-09-04","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-224","row_no":224,"an":2026,"luna":"Septembrie","data":"2026-09-05","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-225","row_no":225,"an":2026,"luna":"Septembrie","data":"2026-09-06","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-226","row_no":226,"an":2026,"luna":"Septembrie","data":"2026-09-07","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-227","row_no":227,"an":2026,"luna":"Septembrie","data":"2026-09-08","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-228","row_no":228,"an":2026,"luna":"Septembrie","data":"2026-09-09","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-229","row_no":229,"an":2026,"luna":"Septembrie","data":"2026-09-10","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-230","row_no":230,"an":2026,"luna":"Septembrie","data":"2026-09-11","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-231","row_no":231,"an":2026,"luna":"Septembrie","data":"2026-09-12","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-232","row_no":232,"an":2026,"luna":"Septembrie","data":"2026-09-13","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-233","row_no":233,"an":2026,"luna":"Septembrie","data":"2026-09-14","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-234","row_no":234,"an":2026,"luna":"Septembrie","data":"2026-09-15","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-235","row_no":235,"an":2026,"luna":"Septembrie","data":"2026-09-16","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-236","row_no":236,"an":2026,"luna":"Septembrie","data":"2026-09-17","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-237","row_no":237,"an":2026,"luna":"Septembrie","data":"2026-09-18","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-238","row_no":238,"an":2026,"luna":"Septembrie","data":"2026-09-19","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-239","row_no":239,"an":2026,"luna":"Septembrie","data":"2026-09-20","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-240","row_no":240,"an":2026,"luna":"Septembrie","data":"2026-09-21","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-241","row_no":241,"an":2026,"luna":"Septembrie","data":"2026-09-22","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-242","row_no":242,"an":2026,"luna":"Septembrie","data":"2026-09-23","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-243","row_no":243,"an":2026,"luna":"Septembrie","data":"2026-09-24","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-244","row_no":244,"an":2026,"luna":"Septembrie","data":"2026-09-25","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-245","row_no":245,"an":2026,"luna":"Septembrie","data":"2026-09-26","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-246","row_no":246,"an":2026,"luna":"Septembrie","data":"2026-09-27","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-247","row_no":247,"an":2026,"luna":"Septembrie","data":"2026-09-28","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-248","row_no":248,"an":2026,"luna":"Septembrie","data":"2026-09-29","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-249","row_no":249,"an":2026,"luna":"Septembrie","data":"2026-09-30","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-250","row_no":250,"an":2026,"luna":"Octombrie","data":"2026-10-01","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-251","row_no":251,"an":2026,"luna":"Octombrie","data":"2026-10-02","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-252","row_no":252,"an":2026,"luna":"Octombrie","data":"2026-10-03","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-253","row_no":253,"an":2026,"luna":"Octombrie","data":"2026-10-04","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-254","row_no":254,"an":2026,"luna":"Octombrie","data":"2026-10-05","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-255","row_no":255,"an":2026,"luna":"Octombrie","data":"2026-10-06","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-256","row_no":256,"an":2026,"luna":"Octombrie","data":"2026-10-07","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-257","row_no":257,"an":2026,"luna":"Octombrie","data":"2026-10-08","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-258","row_no":258,"an":2026,"luna":"Octombrie","data":"2026-10-09","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-259","row_no":259,"an":2026,"luna":"Octombrie","data":"2026-10-10","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-260","row_no":260,"an":2026,"luna":"Octombrie","data":"2026-10-11","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-261","row_no":261,"an":2026,"luna":"Octombrie","data":"2026-10-12","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-262","row_no":262,"an":2026,"luna":"Octombrie","data":"2026-10-13","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-263","row_no":263,"an":2026,"luna":"Octombrie","data":"2026-10-14","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-264","row_no":264,"an":2026,"luna":"Octombrie","data":"2026-10-15","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-265","row_no":265,"an":2026,"luna":"Octombrie","data":"2026-10-16","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-266","row_no":266,"an":2026,"luna":"Octombrie","data":"2026-10-17","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-267","row_no":267,"an":2026,"luna":"Octombrie","data":"2026-10-18","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-268","row_no":268,"an":2026,"luna":"Octombrie","data":"2026-10-19","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-269","row_no":269,"an":2026,"luna":"Octombrie","data":"2026-10-20","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-270","row_no":270,"an":2026,"luna":"Octombrie","data":"2026-10-21","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-271","row_no":271,"an":2026,"luna":"Octombrie","data":"2026-10-22","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-272","row_no":272,"an":2026,"luna":"Octombrie","data":"2026-10-23","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-273","row_no":273,"an":2026,"luna":"Octombrie","data":"2026-10-24","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-274","row_no":274,"an":2026,"luna":"Octombrie","data":"2026-10-25","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-275","row_no":275,"an":2026,"luna":"Octombrie","data":"2026-10-26","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-276","row_no":276,"an":2026,"luna":"Octombrie","data":"2026-10-27","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-277","row_no":277,"an":2026,"luna":"Octombrie","data":"2026-10-28","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-278","row_no":278,"an":2026,"luna":"Octombrie","data":"2026-10-29","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-279","row_no":279,"an":2026,"luna":"Octombrie","data":"2026-10-30","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-280","row_no":280,"an":2026,"luna":"Octombrie","data":"2026-10-31","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-281","row_no":281,"an":2026,"luna":"Noiembrie","data":"2026-11-01","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-282","row_no":282,"an":2026,"luna":"Noiembrie","data":"2026-11-02","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-283","row_no":283,"an":2026,"luna":"Noiembrie","data":"2026-11-03","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-284","row_no":284,"an":2026,"luna":"Noiembrie","data":"2026-11-04","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-285","row_no":285,"an":2026,"luna":"Noiembrie","data":"2026-11-05","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-286","row_no":286,"an":2026,"luna":"Noiembrie","data":"2026-11-06","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-287","row_no":287,"an":2026,"luna":"Noiembrie","data":"2026-11-07","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-288","row_no":288,"an":2026,"luna":"Noiembrie","data":"2026-11-08","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-289","row_no":289,"an":2026,"luna":"Noiembrie","data":"2026-11-09","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-290","row_no":290,"an":2026,"luna":"Noiembrie","data":"2026-11-10","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-291","row_no":291,"an":2026,"luna":"Noiembrie","data":"2026-11-11","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-292","row_no":292,"an":2026,"luna":"Noiembrie","data":"2026-11-12","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-293","row_no":293,"an":2026,"luna":"Noiembrie","data":"2026-11-13","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-294","row_no":294,"an":2026,"luna":"Noiembrie","data":"2026-11-14","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-295","row_no":295,"an":2026,"luna":"Noiembrie","data":"2026-11-15","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-296","row_no":296,"an":2026,"luna":"Noiembrie","data":"2026-11-16","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-297","row_no":297,"an":2026,"luna":"Noiembrie","data":"2026-11-17","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-298","row_no":298,"an":2026,"luna":"Noiembrie","data":"2026-11-18","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-299","row_no":299,"an":2026,"luna":"Noiembrie","data":"2026-11-19","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-300","row_no":300,"an":2026,"luna":"Noiembrie","data":"2026-11-20","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-301","row_no":301,"an":2026,"luna":"Noiembrie","data":"2026-11-21","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-302","row_no":302,"an":2026,"luna":"Noiembrie","data":"2026-11-22","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-303","row_no":303,"an":2026,"luna":"Noiembrie","data":"2026-11-23","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-304","row_no":304,"an":2026,"luna":"Noiembrie","data":"2026-11-24","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-305","row_no":305,"an":2026,"luna":"Noiembrie","data":"2026-11-25","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-306","row_no":306,"an":2026,"luna":"Noiembrie","data":"2026-11-26","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-307","row_no":307,"an":2026,"luna":"Noiembrie","data":"2026-11-27","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-308","row_no":308,"an":2026,"luna":"Noiembrie","data":"2026-11-28","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-309","row_no":309,"an":2026,"luna":"Noiembrie","data":"2026-11-29","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-310","row_no":310,"an":2026,"luna":"Noiembrie","data":"2026-11-30","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-311","row_no":311,"an":2026,"luna":"Decembrie","data":"2026-12-01","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-312","row_no":312,"an":2026,"luna":"Decembrie","data":"2026-12-02","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-313","row_no":313,"an":2026,"luna":"Decembrie","data":"2026-12-03","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-314","row_no":314,"an":2026,"luna":"Decembrie","data":"2026-12-04","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-315","row_no":315,"an":2026,"luna":"Decembrie","data":"2026-12-05","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-316","row_no":316,"an":2026,"luna":"Decembrie","data":"2026-12-06","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-317","row_no":317,"an":2026,"luna":"Decembrie","data":"2026-12-07","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-318","row_no":318,"an":2026,"luna":"Decembrie","data":"2026-12-08","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-319","row_no":319,"an":2026,"luna":"Decembrie","data":"2026-12-09","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-320","row_no":320,"an":2026,"luna":"Decembrie","data":"2026-12-10","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-321","row_no":321,"an":2026,"luna":"Decembrie","data":"2026-12-11","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-322","row_no":322,"an":2026,"luna":"Decembrie","data":"2026-12-12","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-323","row_no":323,"an":2026,"luna":"Decembrie","data":"2026-12-13","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-324","row_no":324,"an":2026,"luna":"Decembrie","data":"2026-12-14","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-325","row_no":325,"an":2026,"luna":"Decembrie","data":"2026-12-15","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-326","row_no":326,"an":2026,"luna":"Decembrie","data":"2026-12-16","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-327","row_no":327,"an":2026,"luna":"Decembrie","data":"2026-12-17","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-328","row_no":328,"an":2026,"luna":"Decembrie","data":"2026-12-18","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-329","row_no":329,"an":2026,"luna":"Decembrie","data":"2026-12-19","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-330","row_no":330,"an":2026,"luna":"Decembrie","data":"2026-12-20","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-331","row_no":331,"an":2026,"luna":"Decembrie","data":"2026-12-21","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-332","row_no":332,"an":2026,"luna":"Decembrie","data":"2026-12-22","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-333","row_no":333,"an":2026,"luna":"Decembrie","data":"2026-12-23","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-334","row_no":334,"an":2026,"luna":"Decembrie","data":"2026-12-24","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-335","row_no":335,"an":2026,"luna":"Decembrie","data":"2026-12-25","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-336","row_no":336,"an":2026,"luna":"Decembrie","data":"2026-12-26","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-337","row_no":337,"an":2026,"luna":"Decembrie","data":"2026-12-27","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-338","row_no":338,"an":2026,"luna":"Decembrie","data":"2026-12-28","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-339","row_no":339,"an":2026,"luna":"Decembrie","data":"2026-12-29","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-340","row_no":340,"an":2026,"luna":"Decembrie","data":"2026-12-30","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-341","row_no":341,"an":2026,"luna":"Decembrie","data":"2026-12-31","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-342","row_no":342,"an":2027,"luna":"Ianuarie","data":"2027-01-01","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-343","row_no":343,"an":2027,"luna":"Ianuarie","data":"2027-01-02","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-344","row_no":344,"an":2027,"luna":"Ianuarie","data":"2027-01-03","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-345","row_no":345,"an":2027,"luna":"Ianuarie","data":"2027-01-04","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-346","row_no":346,"an":2027,"luna":"Ianuarie","data":"2027-01-05","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-347","row_no":347,"an":2027,"luna":"Ianuarie","data":"2027-01-06","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-348","row_no":348,"an":2027,"luna":"Ianuarie","data":"2027-01-07","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-349","row_no":349,"an":2027,"luna":"Ianuarie","data":"2027-01-08","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-350","row_no":350,"an":2027,"luna":"Ianuarie","data":"2027-01-09","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-351","row_no":351,"an":2027,"luna":"Ianuarie","data":"2027-01-10","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-352","row_no":352,"an":2027,"luna":"Ianuarie","data":"2027-01-11","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-353","row_no":353,"an":2027,"luna":"Ianuarie","data":"2027-01-12","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-354","row_no":354,"an":2027,"luna":"Ianuarie","data":"2027-01-13","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-355","row_no":355,"an":2027,"luna":"Ianuarie","data":"2027-01-14","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-356","row_no":356,"an":2027,"luna":"Ianuarie","data":"2027-01-15","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-357","row_no":357,"an":2027,"luna":"Ianuarie","data":"2027-01-16","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-358","row_no":358,"an":2027,"luna":"Ianuarie","data":"2027-01-17","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-359","row_no":359,"an":2027,"luna":"Ianuarie","data":"2027-01-18","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-360","row_no":360,"an":2027,"luna":"Ianuarie","data":"2027-01-19","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-361","row_no":361,"an":2027,"luna":"Ianuarie","data":"2027-01-20","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-362","row_no":362,"an":2027,"luna":"Ianuarie","data":"2027-01-21","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-363","row_no":363,"an":2027,"luna":"Ianuarie","data":"2027-01-22","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-364","row_no":364,"an":2027,"luna":"Ianuarie","data":"2027-01-23","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-365","row_no":365,"an":2027,"luna":"Ianuarie","data":"2027-01-24","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-366","row_no":366,"an":2027,"luna":"Ianuarie","data":"2027-01-25","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-367","row_no":367,"an":2027,"luna":"Ianuarie","data":"2027-01-26","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-368","row_no":368,"an":2027,"luna":"Ianuarie","data":"2027-01-27","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-369","row_no":369,"an":2027,"luna":"Ianuarie","data":"2027-01-28","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-370","row_no":370,"an":2027,"luna":"Ianuarie","data":"2027-01-29","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-371","row_no":371,"an":2027,"luna":"Ianuarie","data":"2027-01-30","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-372","row_no":372,"an":2027,"luna":"Ianuarie","data":"2027-01-31","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-373","row_no":373,"an":2027,"luna":"Februarie","data":"2027-02-01","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-374","row_no":374,"an":2027,"luna":"Februarie","data":"2027-02-02","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-375","row_no":375,"an":2027,"luna":"Februarie","data":"2027-02-03","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-376","row_no":376,"an":2027,"luna":"Februarie","data":"2027-02-04","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-377","row_no":377,"an":2027,"luna":"Februarie","data":"2027-02-05","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-378","row_no":378,"an":2027,"luna":"Februarie","data":"2027-02-06","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-379","row_no":379,"an":2027,"luna":"Februarie","data":"2027-02-07","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-380","row_no":380,"an":2027,"luna":"Februarie","data":"2027-02-08","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-381","row_no":381,"an":2027,"luna":"Februarie","data":"2027-02-09","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-382","row_no":382,"an":2027,"luna":"Februarie","data":"2027-02-10","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-383","row_no":383,"an":2027,"luna":"Februarie","data":"2027-02-11","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-384","row_no":384,"an":2027,"luna":"Februarie","data":"2027-02-12","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-385","row_no":385,"an":2027,"luna":"Februarie","data":"2027-02-13","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-386","row_no":386,"an":2027,"luna":"Februarie","data":"2027-02-14","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-387","row_no":387,"an":2027,"luna":"Februarie","data":"2027-02-15","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-388","row_no":388,"an":2027,"luna":"Februarie","data":"2027-02-16","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-389","row_no":389,"an":2027,"luna":"Februarie","data":"2027-02-17","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-390","row_no":390,"an":2027,"luna":"Februarie","data":"2027-02-18","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-391","row_no":391,"an":2027,"luna":"Februarie","data":"2027-02-19","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-392","row_no":392,"an":2027,"luna":"Februarie","data":"2027-02-20","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-393","row_no":393,"an":2027,"luna":"Februarie","data":"2027-02-21","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-394","row_no":394,"an":2027,"luna":"Februarie","data":"2027-02-22","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-395","row_no":395,"an":2027,"luna":"Februarie","data":"2027-02-23","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-396","row_no":396,"an":2027,"luna":"Februarie","data":"2027-02-24","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-397","row_no":397,"an":2027,"luna":"Februarie","data":"2027-02-25","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-398","row_no":398,"an":2027,"luna":"Februarie","data":"2027-02-26","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-399","row_no":399,"an":2027,"luna":"Februarie","data":"2027-02-27","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-400","row_no":400,"an":2027,"luna":"Februarie","data":"2027-02-28","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-401","row_no":401,"an":2027,"luna":"Martie","data":"2027-03-01","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-402","row_no":402,"an":2027,"luna":"Martie","data":"2027-03-02","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-403","row_no":403,"an":2027,"luna":"Martie","data":"2027-03-03","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-404","row_no":404,"an":2027,"luna":"Martie","data":"2027-03-04","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-405","row_no":405,"an":2027,"luna":"Martie","data":"2027-03-05","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-406","row_no":406,"an":2027,"luna":"Martie","data":"2027-03-06","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-407","row_no":407,"an":2027,"luna":"Martie","data":"2027-03-07","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-408","row_no":408,"an":2027,"luna":"Martie","data":"2027-03-08","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-409","row_no":409,"an":2027,"luna":"Martie","data":"2027-03-09","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-410","row_no":410,"an":2027,"luna":"Martie","data":"2027-03-10","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-411","row_no":411,"an":2027,"luna":"Martie","data":"2027-03-11","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-412","row_no":412,"an":2027,"luna":"Martie","data":"2027-03-12","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-413","row_no":413,"an":2027,"luna":"Martie","data":"2027-03-13","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-414","row_no":414,"an":2027,"luna":"Martie","data":"2027-03-14","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-415","row_no":415,"an":2027,"luna":"Martie","data":"2027-03-15","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-416","row_no":416,"an":2027,"luna":"Martie","data":"2027-03-16","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-417","row_no":417,"an":2027,"luna":"Martie","data":"2027-03-17","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-418","row_no":418,"an":2027,"luna":"Martie","data":"2027-03-18","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-419","row_no":419,"an":2027,"luna":"Martie","data":"2027-03-19","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-420","row_no":420,"an":2027,"luna":"Martie","data":"2027-03-20","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-421","row_no":421,"an":2027,"luna":"Martie","data":"2027-03-21","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-422","row_no":422,"an":2027,"luna":"Martie","data":"2027-03-22","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-423","row_no":423,"an":2027,"luna":"Martie","data":"2027-03-23","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-424","row_no":424,"an":2027,"luna":"Martie","data":"2027-03-24","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-425","row_no":425,"an":2027,"luna":"Martie","data":"2027-03-25","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-426","row_no":426,"an":2027,"luna":"Martie","data":"2027-03-26","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-427","row_no":427,"an":2027,"luna":"Martie","data":"2027-03-27","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-428","row_no":428,"an":2027,"luna":"Martie","data":"2027-03-28","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-429","row_no":429,"an":2027,"luna":"Martie","data":"2027-03-29","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-430","row_no":430,"an":2027,"luna":"Martie","data":"2027-03-30","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-431","row_no":431,"an":2027,"luna":"Martie","data":"2027-03-31","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-432","row_no":432,"an":2027,"luna":"Aprilie","data":"2027-04-01","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-433","row_no":433,"an":2027,"luna":"Aprilie","data":"2027-04-02","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-434","row_no":434,"an":2027,"luna":"Aprilie","data":"2027-04-03","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-435","row_no":435,"an":2027,"luna":"Aprilie","data":"2027-04-04","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-436","row_no":436,"an":2027,"luna":"Aprilie","data":"2027-04-05","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-437","row_no":437,"an":2027,"luna":"Aprilie","data":"2027-04-06","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-438","row_no":438,"an":2027,"luna":"Aprilie","data":"2027-04-07","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-439","row_no":439,"an":2027,"luna":"Aprilie","data":"2027-04-08","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-440","row_no":440,"an":2027,"luna":"Aprilie","data":"2027-04-09","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-441","row_no":441,"an":2027,"luna":"Aprilie","data":"2027-04-10","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-442","row_no":442,"an":2027,"luna":"Aprilie","data":"2027-04-11","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-443","row_no":443,"an":2027,"luna":"Aprilie","data":"2027-04-12","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-444","row_no":444,"an":2027,"luna":"Aprilie","data":"2027-04-13","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-445","row_no":445,"an":2027,"luna":"Aprilie","data":"2027-04-14","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-446","row_no":446,"an":2027,"luna":"Aprilie","data":"2027-04-15","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-447","row_no":447,"an":2027,"luna":"Aprilie","data":"2027-04-16","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-448","row_no":448,"an":2027,"luna":"Aprilie","data":"2027-04-17","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-449","row_no":449,"an":2027,"luna":"Aprilie","data":"2027-04-18","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-450","row_no":450,"an":2027,"luna":"Aprilie","data":"2027-04-19","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-451","row_no":451,"an":2027,"luna":"Aprilie","data":"2027-04-20","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-452","row_no":452,"an":2027,"luna":"Aprilie","data":"2027-04-21","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-453","row_no":453,"an":2027,"luna":"Aprilie","data":"2027-04-22","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-454","row_no":454,"an":2027,"luna":"Aprilie","data":"2027-04-23","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-455","row_no":455,"an":2027,"luna":"Aprilie","data":"2027-04-24","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-456","row_no":456,"an":2027,"luna":"Aprilie","data":"2027-04-25","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-457","row_no":457,"an":2027,"luna":"Aprilie","data":"2027-04-26","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-458","row_no":458,"an":2027,"luna":"Aprilie","data":"2027-04-27","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-459","row_no":459,"an":2027,"luna":"Aprilie","data":"2027-04-28","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-460","row_no":460,"an":2027,"luna":"Aprilie","data":"2027-04-29","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-461","row_no":461,"an":2027,"luna":"Aprilie","data":"2027-04-30","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-462","row_no":462,"an":2027,"luna":"Mai","data":"2027-05-01","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-463","row_no":463,"an":2027,"luna":"Mai","data":"2027-05-02","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-464","row_no":464,"an":2027,"luna":"Mai","data":"2027-05-03","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-465","row_no":465,"an":2027,"luna":"Mai","data":"2027-05-04","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-466","row_no":466,"an":2027,"luna":"Mai","data":"2027-05-05","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-467","row_no":467,"an":2027,"luna":"Mai","data":"2027-05-06","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-468","row_no":468,"an":2027,"luna":"Mai","data":"2027-05-07","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-469","row_no":469,"an":2027,"luna":"Mai","data":"2027-05-08","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-470","row_no":470,"an":2027,"luna":"Mai","data":"2027-05-09","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-471","row_no":471,"an":2027,"luna":"Mai","data":"2027-05-10","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-472","row_no":472,"an":2027,"luna":"Mai","data":"2027-05-11","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-473","row_no":473,"an":2027,"luna":"Mai","data":"2027-05-12","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-474","row_no":474,"an":2027,"luna":"Mai","data":"2027-05-13","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-475","row_no":475,"an":2027,"luna":"Mai","data":"2027-05-14","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-476","row_no":476,"an":2027,"luna":"Mai","data":"2027-05-15","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-477","row_no":477,"an":2027,"luna":"Mai","data":"2027-05-16","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-478","row_no":478,"an":2027,"luna":"Mai","data":"2027-05-17","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-479","row_no":479,"an":2027,"luna":"Mai","data":"2027-05-18","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-480","row_no":480,"an":2027,"luna":"Mai","data":"2027-05-19","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-481","row_no":481,"an":2027,"luna":"Mai","data":"2027-05-20","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-482","row_no":482,"an":2027,"luna":"Mai","data":"2027-05-21","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-483","row_no":483,"an":2027,"luna":"Mai","data":"2027-05-22","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-484","row_no":484,"an":2027,"luna":"Mai","data":"2027-05-23","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-485","row_no":485,"an":2027,"luna":"Mai","data":"2027-05-24","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-486","row_no":486,"an":2027,"luna":"Mai","data":"2027-05-25","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-487","row_no":487,"an":2027,"luna":"Mai","data":"2027-05-26","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-488","row_no":488,"an":2027,"luna":"Mai","data":"2027-05-27","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-489","row_no":489,"an":2027,"luna":"Mai","data":"2027-05-28","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-490","row_no":490,"an":2027,"luna":"Mai","data":"2027-05-29","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-491","row_no":491,"an":2027,"luna":"Mai","data":"2027-05-30","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-492","row_no":492,"an":2027,"luna":"Mai","data":"2027-05-31","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-493","row_no":493,"an":2027,"luna":"Iunie","data":"2027-06-01","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-494","row_no":494,"an":2027,"luna":"Iunie","data":"2027-06-02","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-495","row_no":495,"an":2027,"luna":"Iunie","data":"2027-06-03","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-496","row_no":496,"an":2027,"luna":"Iunie","data":"2027-06-04","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-497","row_no":497,"an":2027,"luna":"Iunie","data":"2027-06-05","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-498","row_no":498,"an":2027,"luna":"Iunie","data":"2027-06-06","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-499","row_no":499,"an":2027,"luna":"Iunie","data":"2027-06-07","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-500","row_no":500,"an":2027,"luna":"Iunie","data":"2027-06-08","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-501","row_no":501,"an":2027,"luna":"Iunie","data":"2027-06-09","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-502","row_no":502,"an":2027,"luna":"Iunie","data":"2027-06-10","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-503","row_no":503,"an":2027,"luna":"Iunie","data":"2027-06-11","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-504","row_no":504,"an":2027,"luna":"Iunie","data":"2027-06-12","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-505","row_no":505,"an":2027,"luna":"Iunie","data":"2027-06-13","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-506","row_no":506,"an":2027,"luna":"Iunie","data":"2027-06-14","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-507","row_no":507,"an":2027,"luna":"Iunie","data":"2027-06-15","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-508","row_no":508,"an":2027,"luna":"Iunie","data":"2027-06-16","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-509","row_no":509,"an":2027,"luna":"Iunie","data":"2027-06-17","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-510","row_no":510,"an":2027,"luna":"Iunie","data":"2027-06-18","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-511","row_no":511,"an":2027,"luna":"Iunie","data":"2027-06-19","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-512","row_no":512,"an":2027,"luna":"Iunie","data":"2027-06-20","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-513","row_no":513,"an":2027,"luna":"Iunie","data":"2027-06-21","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-514","row_no":514,"an":2027,"luna":"Iunie","data":"2027-06-22","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-515","row_no":515,"an":2027,"luna":"Iunie","data":"2027-06-23","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-516","row_no":516,"an":2027,"luna":"Iunie","data":"2027-06-24","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-517","row_no":517,"an":2027,"luna":"Iunie","data":"2027-06-25","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-518","row_no":518,"an":2027,"luna":"Iunie","data":"2027-06-26","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-519","row_no":519,"an":2027,"luna":"Iunie","data":"2027-06-27","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-520","row_no":520,"an":2027,"luna":"Iunie","data":"2027-06-28","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-521","row_no":521,"an":2027,"luna":"Iunie","data":"2027-06-29","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-522","row_no":522,"an":2027,"luna":"Iunie","data":"2027-06-30","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-523","row_no":523,"an":2027,"luna":"Iulie","data":"2027-07-01","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-524","row_no":524,"an":2027,"luna":"Iulie","data":"2027-07-02","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-525","row_no":525,"an":2027,"luna":"Iulie","data":"2027-07-03","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-526","row_no":526,"an":2027,"luna":"Iulie","data":"2027-07-04","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-527","row_no":527,"an":2027,"luna":"Iulie","data":"2027-07-05","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-528","row_no":528,"an":2027,"luna":"Iulie","data":"2027-07-06","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-529","row_no":529,"an":2027,"luna":"Iulie","data":"2027-07-07","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-530","row_no":530,"an":2027,"luna":"Iulie","data":"2027-07-08","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-531","row_no":531,"an":2027,"luna":"Iulie","data":"2027-07-09","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-532","row_no":532,"an":2027,"luna":"Iulie","data":"2027-07-10","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-533","row_no":533,"an":2027,"luna":"Iulie","data":"2027-07-11","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-534","row_no":534,"an":2027,"luna":"Iulie","data":"2027-07-12","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-535","row_no":535,"an":2027,"luna":"Iulie","data":"2027-07-13","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-536","row_no":536,"an":2027,"luna":"Iulie","data":"2027-07-14","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-537","row_no":537,"an":2027,"luna":"Iulie","data":"2027-07-15","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-538","row_no":538,"an":2027,"luna":"Iulie","data":"2027-07-16","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-539","row_no":539,"an":2027,"luna":"Iulie","data":"2027-07-17","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-540","row_no":540,"an":2027,"luna":"Iulie","data":"2027-07-18","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-541","row_no":541,"an":2027,"luna":"Iulie","data":"2027-07-19","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-542","row_no":542,"an":2027,"luna":"Iulie","data":"2027-07-20","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-543","row_no":543,"an":2027,"luna":"Iulie","data":"2027-07-21","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-544","row_no":544,"an":2027,"luna":"Iulie","data":"2027-07-22","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-545","row_no":545,"an":2027,"luna":"Iulie","data":"2027-07-23","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-546","row_no":546,"an":2027,"luna":"Iulie","data":"2027-07-24","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-547","row_no":547,"an":2027,"luna":"Iulie","data":"2027-07-25","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-548","row_no":548,"an":2027,"luna":"Iulie","data":"2027-07-26","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-549","row_no":549,"an":2027,"luna":"Iulie","data":"2027-07-27","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-550","row_no":550,"an":2027,"luna":"Iulie","data":"2027-07-28","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-551","row_no":551,"an":2027,"luna":"Iulie","data":"2027-07-29","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-552","row_no":552,"an":2027,"luna":"Iulie","data":"2027-07-30","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-553","row_no":553,"an":2027,"luna":"Iulie","data":"2027-07-31","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-554","row_no":554,"an":2027,"luna":"August","data":"2027-08-01","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-555","row_no":555,"an":2027,"luna":"August","data":"2027-08-02","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-556","row_no":556,"an":2027,"luna":"August","data":"2027-08-03","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-557","row_no":557,"an":2027,"luna":"August","data":"2027-08-04","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-558","row_no":558,"an":2027,"luna":"August","data":"2027-08-05","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-559","row_no":559,"an":2027,"luna":"August","data":"2027-08-06","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-560","row_no":560,"an":2027,"luna":"August","data":"2027-08-07","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-561","row_no":561,"an":2027,"luna":"August","data":"2027-08-08","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-562","row_no":562,"an":2027,"luna":"August","data":"2027-08-09","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-563","row_no":563,"an":2027,"luna":"August","data":"2027-08-10","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-564","row_no":564,"an":2027,"luna":"August","data":"2027-08-11","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-565","row_no":565,"an":2027,"luna":"August","data":"2027-08-12","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-566","row_no":566,"an":2027,"luna":"August","data":"2027-08-13","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-567","row_no":567,"an":2027,"luna":"August","data":"2027-08-14","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-568","row_no":568,"an":2027,"luna":"August","data":"2027-08-15","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-569","row_no":569,"an":2027,"luna":"August","data":"2027-08-16","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-570","row_no":570,"an":2027,"luna":"August","data":"2027-08-17","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-571","row_no":571,"an":2027,"luna":"August","data":"2027-08-18","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-572","row_no":572,"an":2027,"luna":"August","data":"2027-08-19","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-573","row_no":573,"an":2027,"luna":"August","data":"2027-08-20","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-574","row_no":574,"an":2027,"luna":"August","data":"2027-08-21","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-575","row_no":575,"an":2027,"luna":"August","data":"2027-08-22","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-576","row_no":576,"an":2027,"luna":"August","data":"2027-08-23","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-577","row_no":577,"an":2027,"luna":"August","data":"2027-08-24","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-578","row_no":578,"an":2027,"luna":"August","data":"2027-08-25","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-579","row_no":579,"an":2027,"luna":"August","data":"2027-08-26","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-580","row_no":580,"an":2027,"luna":"August","data":"2027-08-27","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-581","row_no":581,"an":2027,"luna":"August","data":"2027-08-28","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-582","row_no":582,"an":2027,"luna":"August","data":"2027-08-29","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-583","row_no":583,"an":2027,"luna":"August","data":"2027-08-30","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-584","row_no":584,"an":2027,"luna":"August","data":"2027-08-31","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-585","row_no":585,"an":2027,"luna":"Septembrie","data":"2027-09-01","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-586","row_no":586,"an":2027,"luna":"Septembrie","data":"2027-09-02","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-587","row_no":587,"an":2027,"luna":"Septembrie","data":"2027-09-03","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-588","row_no":588,"an":2027,"luna":"Septembrie","data":"2027-09-04","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-589","row_no":589,"an":2027,"luna":"Septembrie","data":"2027-09-05","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-590","row_no":590,"an":2027,"luna":"Septembrie","data":"2027-09-06","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-591","row_no":591,"an":2027,"luna":"Septembrie","data":"2027-09-07","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-592","row_no":592,"an":2027,"luna":"Septembrie","data":"2027-09-08","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-593","row_no":593,"an":2027,"luna":"Septembrie","data":"2027-09-09","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-594","row_no":594,"an":2027,"luna":"Septembrie","data":"2027-09-10","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-595","row_no":595,"an":2027,"luna":"Septembrie","data":"2027-09-11","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-596","row_no":596,"an":2027,"luna":"Septembrie","data":"2027-09-12","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-597","row_no":597,"an":2027,"luna":"Septembrie","data":"2027-09-13","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-598","row_no":598,"an":2027,"luna":"Septembrie","data":"2027-09-14","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-599","row_no":599,"an":2027,"luna":"Septembrie","data":"2027-09-15","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-600","row_no":600,"an":2027,"luna":"Septembrie","data":"2027-09-16","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-601","row_no":601,"an":2027,"luna":"Septembrie","data":"2027-09-17","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-602","row_no":602,"an":2027,"luna":"Septembrie","data":"2027-09-18","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-603","row_no":603,"an":2027,"luna":"Septembrie","data":"2027-09-19","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-604","row_no":604,"an":2027,"luna":"Septembrie","data":"2027-09-20","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-605","row_no":605,"an":2027,"luna":"Septembrie","data":"2027-09-21","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-606","row_no":606,"an":2027,"luna":"Septembrie","data":"2027-09-22","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-607","row_no":607,"an":2027,"luna":"Septembrie","data":"2027-09-23","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-608","row_no":608,"an":2027,"luna":"Septembrie","data":"2027-09-24","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-609","row_no":609,"an":2027,"luna":"Septembrie","data":"2027-09-25","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-610","row_no":610,"an":2027,"luna":"Septembrie","data":"2027-09-26","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-611","row_no":611,"an":2027,"luna":"Septembrie","data":"2027-09-27","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-612","row_no":612,"an":2027,"luna":"Septembrie","data":"2027-09-28","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-613","row_no":613,"an":2027,"luna":"Septembrie","data":"2027-09-29","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-614","row_no":614,"an":2027,"luna":"Septembrie","data":"2027-09-30","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-615","row_no":615,"an":2027,"luna":"Octombrie","data":"2027-10-01","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-616","row_no":616,"an":2027,"luna":"Octombrie","data":"2027-10-02","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-617","row_no":617,"an":2027,"luna":"Octombrie","data":"2027-10-03","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-618","row_no":618,"an":2027,"luna":"Octombrie","data":"2027-10-04","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-619","row_no":619,"an":2027,"luna":"Octombrie","data":"2027-10-05","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-620","row_no":620,"an":2027,"luna":"Octombrie","data":"2027-10-06","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-621","row_no":621,"an":2027,"luna":"Octombrie","data":"2027-10-07","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-622","row_no":622,"an":2027,"luna":"Octombrie","data":"2027-10-08","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-623","row_no":623,"an":2027,"luna":"Octombrie","data":"2027-10-09","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-624","row_no":624,"an":2027,"luna":"Octombrie","data":"2027-10-10","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-625","row_no":625,"an":2027,"luna":"Octombrie","data":"2027-10-11","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-626","row_no":626,"an":2027,"luna":"Octombrie","data":"2027-10-12","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-627","row_no":627,"an":2027,"luna":"Octombrie","data":"2027-10-13","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-628","row_no":628,"an":2027,"luna":"Octombrie","data":"2027-10-14","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-629","row_no":629,"an":2027,"luna":"Octombrie","data":"2027-10-15","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-630","row_no":630,"an":2027,"luna":"Octombrie","data":"2027-10-16","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-631","row_no":631,"an":2027,"luna":"Octombrie","data":"2027-10-17","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-632","row_no":632,"an":2027,"luna":"Octombrie","data":"2027-10-18","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-633","row_no":633,"an":2027,"luna":"Octombrie","data":"2027-10-19","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-634","row_no":634,"an":2027,"luna":"Octombrie","data":"2027-10-20","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-635","row_no":635,"an":2027,"luna":"Octombrie","data":"2027-10-21","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-636","row_no":636,"an":2027,"luna":"Octombrie","data":"2027-10-22","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-637","row_no":637,"an":2027,"luna":"Octombrie","data":"2027-10-23","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-638","row_no":638,"an":2027,"luna":"Octombrie","data":"2027-10-24","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-639","row_no":639,"an":2027,"luna":"Octombrie","data":"2027-10-25","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-640","row_no":640,"an":2027,"luna":"Octombrie","data":"2027-10-26","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-641","row_no":641,"an":2027,"luna":"Octombrie","data":"2027-10-27","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-642","row_no":642,"an":2027,"luna":"Octombrie","data":"2027-10-28","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-643","row_no":643,"an":2027,"luna":"Octombrie","data":"2027-10-29","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-644","row_no":644,"an":2027,"luna":"Octombrie","data":"2027-10-30","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-645","row_no":645,"an":2027,"luna":"Octombrie","data":"2027-10-31","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-646","row_no":646,"an":2027,"luna":"Noiembrie","data":"2027-11-01","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-647","row_no":647,"an":2027,"luna":"Noiembrie","data":"2027-11-02","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-648","row_no":648,"an":2027,"luna":"Noiembrie","data":"2027-11-03","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-649","row_no":649,"an":2027,"luna":"Noiembrie","data":"2027-11-04","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-650","row_no":650,"an":2027,"luna":"Noiembrie","data":"2027-11-05","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-651","row_no":651,"an":2027,"luna":"Noiembrie","data":"2027-11-06","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-652","row_no":652,"an":2027,"luna":"Noiembrie","data":"2027-11-07","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-653","row_no":653,"an":2027,"luna":"Noiembrie","data":"2027-11-08","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-654","row_no":654,"an":2027,"luna":"Noiembrie","data":"2027-11-09","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-655","row_no":655,"an":2027,"luna":"Noiembrie","data":"2027-11-10","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-656","row_no":656,"an":2027,"luna":"Noiembrie","data":"2027-11-11","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-657","row_no":657,"an":2027,"luna":"Noiembrie","data":"2027-11-12","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-658","row_no":658,"an":2027,"luna":"Noiembrie","data":"2027-11-13","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-659","row_no":659,"an":2027,"luna":"Noiembrie","data":"2027-11-14","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-660","row_no":660,"an":2027,"luna":"Noiembrie","data":"2027-11-15","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-661","row_no":661,"an":2027,"luna":"Noiembrie","data":"2027-11-16","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-662","row_no":662,"an":2027,"luna":"Noiembrie","data":"2027-11-17","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-663","row_no":663,"an":2027,"luna":"Noiembrie","data":"2027-11-18","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-664","row_no":664,"an":2027,"luna":"Noiembrie","data":"2027-11-19","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-665","row_no":665,"an":2027,"luna":"Noiembrie","data":"2027-11-20","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-666","row_no":666,"an":2027,"luna":"Noiembrie","data":"2027-11-21","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-667","row_no":667,"an":2027,"luna":"Noiembrie","data":"2027-11-22","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-668","row_no":668,"an":2027,"luna":"Noiembrie","data":"2027-11-23","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-669","row_no":669,"an":2027,"luna":"Noiembrie","data":"2027-11-24","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-670","row_no":670,"an":2027,"luna":"Noiembrie","data":"2027-11-25","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-671","row_no":671,"an":2027,"luna":"Noiembrie","data":"2027-11-26","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-672","row_no":672,"an":2027,"luna":"Noiembrie","data":"2027-11-27","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-673","row_no":673,"an":2027,"luna":"Noiembrie","data":"2027-11-28","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-674","row_no":674,"an":2027,"luna":"Noiembrie","data":"2027-11-29","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-675","row_no":675,"an":2027,"luna":"Noiembrie","data":"2027-11-30","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-676","row_no":676,"an":2027,"luna":"Decembrie","data":"2027-12-01","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-677","row_no":677,"an":2027,"luna":"Decembrie","data":"2027-12-02","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-678","row_no":678,"an":2027,"luna":"Decembrie","data":"2027-12-03","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-679","row_no":679,"an":2027,"luna":"Decembrie","data":"2027-12-04","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-680","row_no":680,"an":2027,"luna":"Decembrie","data":"2027-12-05","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-681","row_no":681,"an":2027,"luna":"Decembrie","data":"2027-12-06","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-682","row_no":682,"an":2027,"luna":"Decembrie","data":"2027-12-07","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-683","row_no":683,"an":2027,"luna":"Decembrie","data":"2027-12-08","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-684","row_no":684,"an":2027,"luna":"Decembrie","data":"2027-12-09","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-685","row_no":685,"an":2027,"luna":"Decembrie","data":"2027-12-10","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-686","row_no":686,"an":2027,"luna":"Decembrie","data":"2027-12-11","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-687","row_no":687,"an":2027,"luna":"Decembrie","data":"2027-12-12","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-688","row_no":688,"an":2027,"luna":"Decembrie","data":"2027-12-13","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-689","row_no":689,"an":2027,"luna":"Decembrie","data":"2027-12-14","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-690","row_no":690,"an":2027,"luna":"Decembrie","data":"2027-12-15","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-691","row_no":691,"an":2027,"luna":"Decembrie","data":"2027-12-16","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-692","row_no":692,"an":2027,"luna":"Decembrie","data":"2027-12-17","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-693","row_no":693,"an":2027,"luna":"Decembrie","data":"2027-12-18","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-694","row_no":694,"an":2027,"luna":"Decembrie","data":"2027-12-19","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-695","row_no":695,"an":2027,"luna":"Decembrie","data":"2027-12-20","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-696","row_no":696,"an":2027,"luna":"Decembrie","data":"2027-12-21","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-697","row_no":697,"an":2027,"luna":"Decembrie","data":"2027-12-22","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-698","row_no":698,"an":2027,"luna":"Decembrie","data":"2027-12-23","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-699","row_no":699,"an":2027,"luna":"Decembrie","data":"2027-12-24","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-700","row_no":700,"an":2027,"luna":"Decembrie","data":"2027-12-25","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-701","row_no":701,"an":2027,"luna":"Decembrie","data":"2027-12-26","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-702","row_no":702,"an":2027,"luna":"Decembrie","data":"2027-12-27","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-703","row_no":703,"an":2027,"luna":"Decembrie","data":"2027-12-28","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-704","row_no":704,"an":2027,"luna":"Decembrie","data":"2027-12-29","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-705","row_no":705,"an":2027,"luna":"Decembrie","data":"2027-12-30","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-706","row_no":706,"an":2027,"luna":"Decembrie","data":"2027-12-31","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-707","row_no":707,"an":2028,"luna":"Ianuarie","data":"2028-01-01","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-708","row_no":708,"an":2028,"luna":"Ianuarie","data":"2028-01-02","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-709","row_no":709,"an":2028,"luna":"Ianuarie","data":"2028-01-03","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-710","row_no":710,"an":2028,"luna":"Ianuarie","data":"2028-01-04","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-711","row_no":711,"an":2028,"luna":"Ianuarie","data":"2028-01-05","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-712","row_no":712,"an":2028,"luna":"Ianuarie","data":"2028-01-06","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-713","row_no":713,"an":2028,"luna":"Ianuarie","data":"2028-01-07","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-714","row_no":714,"an":2028,"luna":"Ianuarie","data":"2028-01-08","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-715","row_no":715,"an":2028,"luna":"Ianuarie","data":"2028-01-09","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-716","row_no":716,"an":2028,"luna":"Ianuarie","data":"2028-01-10","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-717","row_no":717,"an":2028,"luna":"Ianuarie","data":"2028-01-11","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-718","row_no":718,"an":2028,"luna":"Ianuarie","data":"2028-01-12","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-719","row_no":719,"an":2028,"luna":"Ianuarie","data":"2028-01-13","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-720","row_no":720,"an":2028,"luna":"Ianuarie","data":"2028-01-14","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-721","row_no":721,"an":2028,"luna":"Ianuarie","data":"2028-01-15","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-722","row_no":722,"an":2028,"luna":"Ianuarie","data":"2028-01-16","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-723","row_no":723,"an":2028,"luna":"Ianuarie","data":"2028-01-17","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-724","row_no":724,"an":2028,"luna":"Ianuarie","data":"2028-01-18","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-725","row_no":725,"an":2028,"luna":"Ianuarie","data":"2028-01-19","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-726","row_no":726,"an":2028,"luna":"Ianuarie","data":"2028-01-20","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-727","row_no":727,"an":2028,"luna":"Ianuarie","data":"2028-01-21","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-728","row_no":728,"an":2028,"luna":"Ianuarie","data":"2028-01-22","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-729","row_no":729,"an":2028,"luna":"Ianuarie","data":"2028-01-23","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-730","row_no":730,"an":2028,"luna":"Ianuarie","data":"2028-01-24","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-731","row_no":731,"an":2028,"luna":"Ianuarie","data":"2028-01-25","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-732","row_no":732,"an":2028,"luna":"Ianuarie","data":"2028-01-26","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-733","row_no":733,"an":2028,"luna":"Ianuarie","data":"2028-01-27","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-734","row_no":734,"an":2028,"luna":"Ianuarie","data":"2028-01-28","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-735","row_no":735,"an":2028,"luna":"Ianuarie","data":"2028-01-29","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-736","row_no":736,"an":2028,"luna":"Ianuarie","data":"2028-01-30","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-737","row_no":737,"an":2028,"luna":"Ianuarie","data":"2028-01-31","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-738","row_no":738,"an":2028,"luna":"Februarie","data":"2028-02-01","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-739","row_no":739,"an":2028,"luna":"Februarie","data":"2028-02-02","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-740","row_no":740,"an":2028,"luna":"Februarie","data":"2028-02-03","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-741","row_no":741,"an":2028,"luna":"Februarie","data":"2028-02-04","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-742","row_no":742,"an":2028,"luna":"Februarie","data":"2028-02-05","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-743","row_no":743,"an":2028,"luna":"Februarie","data":"2028-02-06","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-744","row_no":744,"an":2028,"luna":"Februarie","data":"2028-02-07","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-745","row_no":745,"an":2028,"luna":"Februarie","data":"2028-02-08","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-746","row_no":746,"an":2028,"luna":"Februarie","data":"2028-02-09","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-747","row_no":747,"an":2028,"luna":"Februarie","data":"2028-02-10","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-748","row_no":748,"an":2028,"luna":"Februarie","data":"2028-02-11","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-749","row_no":749,"an":2028,"luna":"Februarie","data":"2028-02-12","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-750","row_no":750,"an":2028,"luna":"Februarie","data":"2028-02-13","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-751","row_no":751,"an":2028,"luna":"Februarie","data":"2028-02-14","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-752","row_no":752,"an":2028,"luna":"Februarie","data":"2028-02-15","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-753","row_no":753,"an":2028,"luna":"Februarie","data":"2028-02-16","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-754","row_no":754,"an":2028,"luna":"Februarie","data":"2028-02-17","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-755","row_no":755,"an":2028,"luna":"Februarie","data":"2028-02-18","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-756","row_no":756,"an":2028,"luna":"Februarie","data":"2028-02-19","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-757","row_no":757,"an":2028,"luna":"Februarie","data":"2028-02-20","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-758","row_no":758,"an":2028,"luna":"Februarie","data":"2028-02-21","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-759","row_no":759,"an":2028,"luna":"Februarie","data":"2028-02-22","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-760","row_no":760,"an":2028,"luna":"Februarie","data":"2028-02-23","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-761","row_no":761,"an":2028,"luna":"Februarie","data":"2028-02-24","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-762","row_no":762,"an":2028,"luna":"Februarie","data":"2028-02-25","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-763","row_no":763,"an":2028,"luna":"Februarie","data":"2028-02-26","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-764","row_no":764,"an":2028,"luna":"Februarie","data":"2028-02-27","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-765","row_no":765,"an":2028,"luna":"Februarie","data":"2028-02-28","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-766","row_no":766,"an":2028,"luna":"Februarie","data":"2028-02-29","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-767","row_no":767,"an":2028,"luna":"Martie","data":"2028-03-01","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-768","row_no":768,"an":2028,"luna":"Martie","data":"2028-03-02","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-769","row_no":769,"an":2028,"luna":"Martie","data":"2028-03-03","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-770","row_no":770,"an":2028,"luna":"Martie","data":"2028-03-04","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-771","row_no":771,"an":2028,"luna":"Martie","data":"2028-03-05","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-772","row_no":772,"an":2028,"luna":"Martie","data":"2028-03-06","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-773","row_no":773,"an":2028,"luna":"Martie","data":"2028-03-07","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-774","row_no":774,"an":2028,"luna":"Martie","data":"2028-03-08","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-775","row_no":775,"an":2028,"luna":"Martie","data":"2028-03-09","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-776","row_no":776,"an":2028,"luna":"Martie","data":"2028-03-10","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-777","row_no":777,"an":2028,"luna":"Martie","data":"2028-03-11","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-778","row_no":778,"an":2028,"luna":"Martie","data":"2028-03-12","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-779","row_no":779,"an":2028,"luna":"Martie","data":"2028-03-13","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-780","row_no":780,"an":2028,"luna":"Martie","data":"2028-03-14","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-781","row_no":781,"an":2028,"luna":"Martie","data":"2028-03-15","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-782","row_no":782,"an":2028,"luna":"Martie","data":"2028-03-16","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-783","row_no":783,"an":2028,"luna":"Martie","data":"2028-03-17","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-784","row_no":784,"an":2028,"luna":"Martie","data":"2028-03-18","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-785","row_no":785,"an":2028,"luna":"Martie","data":"2028-03-19","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-786","row_no":786,"an":2028,"luna":"Martie","data":"2028-03-20","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-787","row_no":787,"an":2028,"luna":"Martie","data":"2028-03-21","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-788","row_no":788,"an":2028,"luna":"Martie","data":"2028-03-22","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-789","row_no":789,"an":2028,"luna":"Martie","data":"2028-03-23","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-790","row_no":790,"an":2028,"luna":"Martie","data":"2028-03-24","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-791","row_no":791,"an":2028,"luna":"Martie","data":"2028-03-25","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-792","row_no":792,"an":2028,"luna":"Martie","data":"2028-03-26","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-793","row_no":793,"an":2028,"luna":"Martie","data":"2028-03-27","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-794","row_no":794,"an":2028,"luna":"Martie","data":"2028-03-28","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-795","row_no":795,"an":2028,"luna":"Martie","data":"2028-03-29","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-796","row_no":796,"an":2028,"luna":"Martie","data":"2028-03-30","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-797","row_no":797,"an":2028,"luna":"Martie","data":"2028-03-31","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-798","row_no":798,"an":2028,"luna":"Aprilie","data":"2028-04-01","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-799","row_no":799,"an":2028,"luna":"Aprilie","data":"2028-04-02","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-800","row_no":800,"an":2028,"luna":"Aprilie","data":"2028-04-03","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-801","row_no":801,"an":2028,"luna":"Aprilie","data":"2028-04-04","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-802","row_no":802,"an":2028,"luna":"Aprilie","data":"2028-04-05","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-803","row_no":803,"an":2028,"luna":"Aprilie","data":"2028-04-06","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-804","row_no":804,"an":2028,"luna":"Aprilie","data":"2028-04-07","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-805","row_no":805,"an":2028,"luna":"Aprilie","data":"2028-04-08","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-806","row_no":806,"an":2028,"luna":"Aprilie","data":"2028-04-09","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-807","row_no":807,"an":2028,"luna":"Aprilie","data":"2028-04-10","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-808","row_no":808,"an":2028,"luna":"Aprilie","data":"2028-04-11","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-809","row_no":809,"an":2028,"luna":"Aprilie","data":"2028-04-12","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-810","row_no":810,"an":2028,"luna":"Aprilie","data":"2028-04-13","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-811","row_no":811,"an":2028,"luna":"Aprilie","data":"2028-04-14","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-812","row_no":812,"an":2028,"luna":"Aprilie","data":"2028-04-15","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-813","row_no":813,"an":2028,"luna":"Aprilie","data":"2028-04-16","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-814","row_no":814,"an":2028,"luna":"Aprilie","data":"2028-04-17","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-815","row_no":815,"an":2028,"luna":"Aprilie","data":"2028-04-18","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-816","row_no":816,"an":2028,"luna":"Aprilie","data":"2028-04-19","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-817","row_no":817,"an":2028,"luna":"Aprilie","data":"2028-04-20","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-818","row_no":818,"an":2028,"luna":"Aprilie","data":"2028-04-21","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-819","row_no":819,"an":2028,"luna":"Aprilie","data":"2028-04-22","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-820","row_no":820,"an":2028,"luna":"Aprilie","data":"2028-04-23","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-821","row_no":821,"an":2028,"luna":"Aprilie","data":"2028-04-24","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-822","row_no":822,"an":2028,"luna":"Aprilie","data":"2028-04-25","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-823","row_no":823,"an":2028,"luna":"Aprilie","data":"2028-04-26","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-824","row_no":824,"an":2028,"luna":"Aprilie","data":"2028-04-27","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-825","row_no":825,"an":2028,"luna":"Aprilie","data":"2028-04-28","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-826","row_no":826,"an":2028,"luna":"Aprilie","data":"2028-04-29","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-827","row_no":827,"an":2028,"luna":"Aprilie","data":"2028-04-30","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-828","row_no":828,"an":2028,"luna":"Mai","data":"2028-05-01","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-829","row_no":829,"an":2028,"luna":"Mai","data":"2028-05-02","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-830","row_no":830,"an":2028,"luna":"Mai","data":"2028-05-03","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-831","row_no":831,"an":2028,"luna":"Mai","data":"2028-05-04","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-832","row_no":832,"an":2028,"luna":"Mai","data":"2028-05-05","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-833","row_no":833,"an":2028,"luna":"Mai","data":"2028-05-06","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-834","row_no":834,"an":2028,"luna":"Mai","data":"2028-05-07","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-835","row_no":835,"an":2028,"luna":"Mai","data":"2028-05-08","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-836","row_no":836,"an":2028,"luna":"Mai","data":"2028-05-09","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-837","row_no":837,"an":2028,"luna":"Mai","data":"2028-05-10","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-838","row_no":838,"an":2028,"luna":"Mai","data":"2028-05-11","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-839","row_no":839,"an":2028,"luna":"Mai","data":"2028-05-12","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-840","row_no":840,"an":2028,"luna":"Mai","data":"2028-05-13","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-841","row_no":841,"an":2028,"luna":"Mai","data":"2028-05-14","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-842","row_no":842,"an":2028,"luna":"Mai","data":"2028-05-15","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-843","row_no":843,"an":2028,"luna":"Mai","data":"2028-05-16","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-844","row_no":844,"an":2028,"luna":"Mai","data":"2028-05-17","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-845","row_no":845,"an":2028,"luna":"Mai","data":"2028-05-18","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-846","row_no":846,"an":2028,"luna":"Mai","data":"2028-05-19","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-847","row_no":847,"an":2028,"luna":"Mai","data":"2028-05-20","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-848","row_no":848,"an":2028,"luna":"Mai","data":"2028-05-21","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-849","row_no":849,"an":2028,"luna":"Mai","data":"2028-05-22","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-850","row_no":850,"an":2028,"luna":"Mai","data":"2028-05-23","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-851","row_no":851,"an":2028,"luna":"Mai","data":"2028-05-24","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-852","row_no":852,"an":2028,"luna":"Mai","data":"2028-05-25","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-853","row_no":853,"an":2028,"luna":"Mai","data":"2028-05-26","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-854","row_no":854,"an":2028,"luna":"Mai","data":"2028-05-27","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-855","row_no":855,"an":2028,"luna":"Mai","data":"2028-05-28","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-856","row_no":856,"an":2028,"luna":"Mai","data":"2028-05-29","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-857","row_no":857,"an":2028,"luna":"Mai","data":"2028-05-30","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-858","row_no":858,"an":2028,"luna":"Mai","data":"2028-05-31","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-859","row_no":859,"an":2028,"luna":"Iunie","data":"2028-06-01","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-860","row_no":860,"an":2028,"luna":"Iunie","data":"2028-06-02","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-861","row_no":861,"an":2028,"luna":"Iunie","data":"2028-06-03","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-862","row_no":862,"an":2028,"luna":"Iunie","data":"2028-06-04","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-863","row_no":863,"an":2028,"luna":"Iunie","data":"2028-06-05","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-864","row_no":864,"an":2028,"luna":"Iunie","data":"2028-06-06","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-865","row_no":865,"an":2028,"luna":"Iunie","data":"2028-06-07","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-866","row_no":866,"an":2028,"luna":"Iunie","data":"2028-06-08","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-867","row_no":867,"an":2028,"luna":"Iunie","data":"2028-06-09","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-868","row_no":868,"an":2028,"luna":"Iunie","data":"2028-06-10","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-869","row_no":869,"an":2028,"luna":"Iunie","data":"2028-06-11","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-870","row_no":870,"an":2028,"luna":"Iunie","data":"2028-06-12","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-871","row_no":871,"an":2028,"luna":"Iunie","data":"2028-06-13","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-872","row_no":872,"an":2028,"luna":"Iunie","data":"2028-06-14","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-873","row_no":873,"an":2028,"luna":"Iunie","data":"2028-06-15","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-874","row_no":874,"an":2028,"luna":"Iunie","data":"2028-06-16","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-875","row_no":875,"an":2028,"luna":"Iunie","data":"2028-06-17","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-876","row_no":876,"an":2028,"luna":"Iunie","data":"2028-06-18","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-877","row_no":877,"an":2028,"luna":"Iunie","data":"2028-06-19","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-878","row_no":878,"an":2028,"luna":"Iunie","data":"2028-06-20","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-879","row_no":879,"an":2028,"luna":"Iunie","data":"2028-06-21","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-880","row_no":880,"an":2028,"luna":"Iunie","data":"2028-06-22","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-881","row_no":881,"an":2028,"luna":"Iunie","data":"2028-06-23","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-882","row_no":882,"an":2028,"luna":"Iunie","data":"2028-06-24","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-883","row_no":883,"an":2028,"luna":"Iunie","data":"2028-06-25","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-884","row_no":884,"an":2028,"luna":"Iunie","data":"2028-06-26","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-885","row_no":885,"an":2028,"luna":"Iunie","data":"2028-06-27","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-886","row_no":886,"an":2028,"luna":"Iunie","data":"2028-06-28","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-887","row_no":887,"an":2028,"luna":"Iunie","data":"2028-06-29","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-888","row_no":888,"an":2028,"luna":"Iunie","data":"2028-06-30","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-889","row_no":889,"an":2028,"luna":"Iulie","data":"2028-07-01","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-890","row_no":890,"an":2028,"luna":"Iulie","data":"2028-07-02","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-891","row_no":891,"an":2028,"luna":"Iulie","data":"2028-07-03","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-892","row_no":892,"an":2028,"luna":"Iulie","data":"2028-07-04","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-893","row_no":893,"an":2028,"luna":"Iulie","data":"2028-07-05","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-894","row_no":894,"an":2028,"luna":"Iulie","data":"2028-07-06","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-895","row_no":895,"an":2028,"luna":"Iulie","data":"2028-07-07","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-896","row_no":896,"an":2028,"luna":"Iulie","data":"2028-07-08","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-897","row_no":897,"an":2028,"luna":"Iulie","data":"2028-07-09","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-898","row_no":898,"an":2028,"luna":"Iulie","data":"2028-07-10","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-899","row_no":899,"an":2028,"luna":"Iulie","data":"2028-07-11","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-900","row_no":900,"an":2028,"luna":"Iulie","data":"2028-07-12","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-901","row_no":901,"an":2028,"luna":"Iulie","data":"2028-07-13","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-902","row_no":902,"an":2028,"luna":"Iulie","data":"2028-07-14","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-903","row_no":903,"an":2028,"luna":"Iulie","data":"2028-07-15","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-904","row_no":904,"an":2028,"luna":"Iulie","data":"2028-07-16","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-905","row_no":905,"an":2028,"luna":"Iulie","data":"2028-07-17","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-906","row_no":906,"an":2028,"luna":"Iulie","data":"2028-07-18","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-907","row_no":907,"an":2028,"luna":"Iulie","data":"2028-07-19","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-908","row_no":908,"an":2028,"luna":"Iulie","data":"2028-07-20","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-909","row_no":909,"an":2028,"luna":"Iulie","data":"2028-07-21","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-910","row_no":910,"an":2028,"luna":"Iulie","data":"2028-07-22","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-911","row_no":911,"an":2028,"luna":"Iulie","data":"2028-07-23","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-912","row_no":912,"an":2028,"luna":"Iulie","data":"2028-07-24","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-913","row_no":913,"an":2028,"luna":"Iulie","data":"2028-07-25","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-914","row_no":914,"an":2028,"luna":"Iulie","data":"2028-07-26","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-915","row_no":915,"an":2028,"luna":"Iulie","data":"2028-07-27","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-916","row_no":916,"an":2028,"luna":"Iulie","data":"2028-07-28","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-917","row_no":917,"an":2028,"luna":"Iulie","data":"2028-07-29","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-918","row_no":918,"an":2028,"luna":"Iulie","data":"2028-07-30","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-919","row_no":919,"an":2028,"luna":"Iulie","data":"2028-07-31","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-920","row_no":920,"an":2028,"luna":"August","data":"2028-08-01","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-921","row_no":921,"an":2028,"luna":"August","data":"2028-08-02","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-922","row_no":922,"an":2028,"luna":"August","data":"2028-08-03","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-923","row_no":923,"an":2028,"luna":"August","data":"2028-08-04","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-924","row_no":924,"an":2028,"luna":"August","data":"2028-08-05","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-925","row_no":925,"an":2028,"luna":"August","data":"2028-08-06","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-926","row_no":926,"an":2028,"luna":"August","data":"2028-08-07","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-927","row_no":927,"an":2028,"luna":"August","data":"2028-08-08","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-928","row_no":928,"an":2028,"luna":"August","data":"2028-08-09","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-929","row_no":929,"an":2028,"luna":"August","data":"2028-08-10","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-930","row_no":930,"an":2028,"luna":"August","data":"2028-08-11","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-931","row_no":931,"an":2028,"luna":"August","data":"2028-08-12","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-932","row_no":932,"an":2028,"luna":"August","data":"2028-08-13","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-933","row_no":933,"an":2028,"luna":"August","data":"2028-08-14","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-934","row_no":934,"an":2028,"luna":"August","data":"2028-08-15","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-935","row_no":935,"an":2028,"luna":"August","data":"2028-08-16","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-936","row_no":936,"an":2028,"luna":"August","data":"2028-08-17","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-937","row_no":937,"an":2028,"luna":"August","data":"2028-08-18","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-938","row_no":938,"an":2028,"luna":"August","data":"2028-08-19","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-939","row_no":939,"an":2028,"luna":"August","data":"2028-08-20","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-940","row_no":940,"an":2028,"luna":"August","data":"2028-08-21","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-941","row_no":941,"an":2028,"luna":"August","data":"2028-08-22","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-942","row_no":942,"an":2028,"luna":"August","data":"2028-08-23","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-943","row_no":943,"an":2028,"luna":"August","data":"2028-08-24","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-944","row_no":944,"an":2028,"luna":"August","data":"2028-08-25","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-945","row_no":945,"an":2028,"luna":"August","data":"2028-08-26","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-946","row_no":946,"an":2028,"luna":"August","data":"2028-08-27","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-947","row_no":947,"an":2028,"luna":"August","data":"2028-08-28","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-948","row_no":948,"an":2028,"luna":"August","data":"2028-08-29","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-949","row_no":949,"an":2028,"luna":"August","data":"2028-08-30","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-950","row_no":950,"an":2028,"luna":"August","data":"2028-08-31","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-951","row_no":951,"an":2028,"luna":"Septembrie","data":"2028-09-01","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-952","row_no":952,"an":2028,"luna":"Septembrie","data":"2028-09-02","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-953","row_no":953,"an":2028,"luna":"Septembrie","data":"2028-09-03","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-954","row_no":954,"an":2028,"luna":"Septembrie","data":"2028-09-04","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-955","row_no":955,"an":2028,"luna":"Septembrie","data":"2028-09-05","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-956","row_no":956,"an":2028,"luna":"Septembrie","data":"2028-09-06","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-957","row_no":957,"an":2028,"luna":"Septembrie","data":"2028-09-07","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-958","row_no":958,"an":2028,"luna":"Septembrie","data":"2028-09-08","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-959","row_no":959,"an":2028,"luna":"Septembrie","data":"2028-09-09","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-960","row_no":960,"an":2028,"luna":"Septembrie","data":"2028-09-10","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-961","row_no":961,"an":2028,"luna":"Septembrie","data":"2028-09-11","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-962","row_no":962,"an":2028,"luna":"Septembrie","data":"2028-09-12","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-963","row_no":963,"an":2028,"luna":"Septembrie","data":"2028-09-13","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-964","row_no":964,"an":2028,"luna":"Septembrie","data":"2028-09-14","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-965","row_no":965,"an":2028,"luna":"Septembrie","data":"2028-09-15","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-966","row_no":966,"an":2028,"luna":"Septembrie","data":"2028-09-16","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-967","row_no":967,"an":2028,"luna":"Septembrie","data":"2028-09-17","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-968","row_no":968,"an":2028,"luna":"Septembrie","data":"2028-09-18","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-969","row_no":969,"an":2028,"luna":"Septembrie","data":"2028-09-19","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-970","row_no":970,"an":2028,"luna":"Septembrie","data":"2028-09-20","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-971","row_no":971,"an":2028,"luna":"Septembrie","data":"2028-09-21","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-972","row_no":972,"an":2028,"luna":"Septembrie","data":"2028-09-22","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-973","row_no":973,"an":2028,"luna":"Septembrie","data":"2028-09-23","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-974","row_no":974,"an":2028,"luna":"Septembrie","data":"2028-09-24","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-975","row_no":975,"an":2028,"luna":"Septembrie","data":"2028-09-25","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-976","row_no":976,"an":2028,"luna":"Septembrie","data":"2028-09-26","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-977","row_no":977,"an":2028,"luna":"Septembrie","data":"2028-09-27","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-978","row_no":978,"an":2028,"luna":"Septembrie","data":"2028-09-28","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-979","row_no":979,"an":2028,"luna":"Septembrie","data":"2028-09-29","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-980","row_no":980,"an":2028,"luna":"Septembrie","data":"2028-09-30","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-981","row_no":981,"an":2028,"luna":"Octombrie","data":"2028-10-01","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-982","row_no":982,"an":2028,"luna":"Octombrie","data":"2028-10-02","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-983","row_no":983,"an":2028,"luna":"Octombrie","data":"2028-10-03","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-984","row_no":984,"an":2028,"luna":"Octombrie","data":"2028-10-04","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-985","row_no":985,"an":2028,"luna":"Octombrie","data":"2028-10-05","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-986","row_no":986,"an":2028,"luna":"Octombrie","data":"2028-10-06","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-987","row_no":987,"an":2028,"luna":"Octombrie","data":"2028-10-07","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-988","row_no":988,"an":2028,"luna":"Octombrie","data":"2028-10-08","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-989","row_no":989,"an":2028,"luna":"Octombrie","data":"2028-10-09","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-990","row_no":990,"an":2028,"luna":"Octombrie","data":"2028-10-10","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-991","row_no":991,"an":2028,"luna":"Octombrie","data":"2028-10-11","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-992","row_no":992,"an":2028,"luna":"Octombrie","data":"2028-10-12","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-993","row_no":993,"an":2028,"luna":"Octombrie","data":"2028-10-13","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-994","row_no":994,"an":2028,"luna":"Octombrie","data":"2028-10-14","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-995","row_no":995,"an":2028,"luna":"Octombrie","data":"2028-10-15","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-996","row_no":996,"an":2028,"luna":"Octombrie","data":"2028-10-16","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-997","row_no":997,"an":2028,"luna":"Octombrie","data":"2028-10-17","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-998","row_no":998,"an":2028,"luna":"Octombrie","data":"2028-10-18","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-999","row_no":999,"an":2028,"luna":"Octombrie","data":"2028-10-19","zi":"Joi","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-1000","row_no":1000,"an":2028,"luna":"Octombrie","data":"2028-10-20","zi":"Vineri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-1001","row_no":1001,"an":2028,"luna":"Octombrie","data":"2028-10-21","zi":"Sâmbătă","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-1002","row_no":1002,"an":2028,"luna":"Octombrie","data":"2028-10-22","zi":"Duminică","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-1003","row_no":1003,"an":2028,"luna":"Octombrie","data":"2028-10-23","zi":"Luni","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-1004","row_no":1004,"an":2028,"luna":"Octombrie","data":"2028-10-24","zi":"Marți","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}},{"id":"row-1005","row_no":1005,"an":2028,"luna":"Octombrie","data":"2028-10-25","zi":"Miercuri","slots":{"5 T CHINA":{"reper":"","planificat":0,"realizat_seed":0},"MP":{"reper":"","planificat":0,"realizat_seed":0},"1,25 T":{"reper":"","planificat":0,"realizat_seed":0},"2,5 T":{"reper":"","planificat":0,"realizat_seed":0},"3 T BR":{"reper":"","planificat":0,"realizat_seed":0},"3 T ZR":{"reper":"","planificat":0,"realizat_seed":0}}}];
+
+    const els = {
+      yearSelect: document.getElementById('yearSelect'),
+      searchInput: document.getElementById('searchInput'),
+      planHead: document.getElementById('planHead'),
+      planBody: document.getElementById('planBody'),
+      btnRefresh: document.getElementById('btnRefresh'),
+      btnAddRow: document.getElementById('btnAddRow'),
+      btnDeleteRow: document.getElementById('btnDeleteRow'),
+      btnSave: document.getElementById('btnSave'),
+      tableWrap: document.getElementById('tableWrap'),
+      modePill: document.getElementById('modePill'),
+      userValue: document.getElementById('userValue'),
+      userSub: document.getElementById('userSub'),
+      cloudValue: document.getElementById('cloudValue'),
+      cloudSub: document.getElementById('cloudSub'),
+      filterValue: document.getElementById('filterValue'),
+      filterSub: document.getElementById('filterSub'),
+      totalValue: document.getElementById('totalValue'),
+      totalSub: document.getElementById('totalSub'),
+      hintText: document.getElementById('hintText'),
+      footerNote: document.getElementById('footerNote'),
+      lockLayer: document.getElementById('lockLayer'),
+      repereList: document.getElementById('repereList'),
+      deliveryAlertButton: document.getElementById('deliveryAlertButton'),
+      deliveryAlertText: document.getElementById('deliveryAlertText')
+    };
+
+    function getPlanSessionId(){
+      try{
+        const existing = sessionStorage.getItem(SESSION_STORAGE_LOCK_KEY);
+        if(existing) return existing;
+        const next = 'sess-' + Math.random().toString(36).slice(2) + '-' + Date.now();
+        sessionStorage.setItem(SESSION_STORAGE_LOCK_KEY, next);
+        return next;
+      }catch(_e){
+        return 'sess-' + Math.random().toString(36).slice(2) + '-' + Date.now();
+      }
+    }
+
+    const state = {
+      supabase: null,
+      user: null,
+      role: 'viewer',
+      canEdit: false,
+      rows: [],
+      updatedAt: null,
+      activeYear: '',
+      searchTerm: '',
+      saveTimer: null,
+      derivedTimer: null,
+      isEditing: false,
+      forjateSummary: Object.create(null),
+      loadedForjateYears: new Set(),
+      attemptedForjateYears: new Set(),
+      yearLiveSource: Object.create(null),
+      legacyLoaded: false,
+      lastLiveRefreshAt: null,
+      helperMaps: { debitByReper:Object.create(null), forjaByReper:Object.create(null), source:'-', loadedAt:'' },
+      stockSupport: { steelKgBySpec:Object.create(null), debitatByReper:Object.create(null), steelEntriesByDate:Object.create(null), debitatEntriesByDate:Object.create(null), helperOk:false, steelOk:false, debitatOk:false, intrariOk:false, debitariFlowOk:false, notes:[] },
+      stockCalcByCell: Object.create(null),
+      deliveryReadyByCell: Object.create(null),
+      hoveredRowId: '',
+      selectedRowId: '',
+      deliverySupport: { orders:[], inventarRows:[], ordersSource:'-', inventarSource:'-', ok:false, alertSummary:{ late:0, ahead:0, tone:'neutral', overdueLate:[], futureLate:[], futureAhead:[] } },
+      sessionId: getPlanSessionId(),
+      remoteLocks: Object.create(null),
+      activeCellLockKey: '',
+      lockUpdatedAt: '',
+      lockPollTimer: null,
+      lockHeartbeatTimer: null,
+      planPollTimer: null,
+      lockSyncBusy: false,
+      planSyncBusy: false,
+      hasPendingLocalChanges: false,
+      planBroadcastChannel: null,
+      remoteApplyTimer: null,
+      pendingUiStateOverride: null,
+      selectionHintBase: trimText(els.hintText && els.hintText.textContent) || 'Se salvează în rf_documents / planificare-forja.',
+      planSelection: {
+        pending:false,
+        dragging:false,
+        suppressClick:false,
+        anchorKey:'',
+        currentKey:'',
+        startX:0,
+        startY:0,
+        keys:[],
+        sum:0,
+        count:0
+      }
+    };
+
+    function safeText(v){ return String(v == null ? '' : v); }
+    function cssEscape(value){
+      if(typeof CSS !== 'undefined' && CSS && typeof CSS.escape === 'function') return CSS.escape(safeText(value));
+      return safeText(value).replace(/[^a-zA-Z0-9_-]/g, function(ch){ return '\\' + ch; });
+    }
+    function trimText(v){ return safeText(v).trim(); }
+    function stripDiacritics(v){ return safeText(v).normalize('NFD').replace(/[\u0300-\u036f]/g, ''); }
+    function norm(v){ return stripDiacritics(v).toLowerCase().replace(/\s+/g,' ').trim(); }
+    function normUpper(v){ return stripDiacritics(v).toUpperCase().replace(/\s+/g,' ').trim(); }
+    function normKey(v){ return normUpper(v).replace(/[^A-Z0-9]+/g,''); }
+    function normDiameterLoose(v){
+      return normUpper(v)
+        .replace(/[Øø⌀]/g,'')
+        .replace(/\s+/g,'')
+        .replace(/,/g,'.')
+        .trim();
+    }
+    function normalizeReperLoose(v){
+      return normUpper(v)
+        .replace(/[Øø⌀]/g,'')
+        .replace(/\s+/g,' ')
+        .trim();
+    }
+    function findLooseMapValue(map, key){
+      const src = map || Object.create(null);
+      const rawKey = normUpper(key);
+      const looseKey = normalizeReperLoose(key);
+      if(rawKey && Object.prototype.hasOwnProperty.call(src, rawKey)) return src[rawKey];
+      if(looseKey && Object.prototype.hasOwnProperty.call(src, looseKey)) return src[looseKey];
+      if(!looseKey) return null;
+      const matchKey = Object.keys(src).find(k => normalizeReperLoose(k) === looseKey);
+      return matchKey ? src[matchKey] : null;
+    }
+    function normalizeDeliveryReperLoose(v){
+      return normUpper(v)
+        .replace(/[Øø⌀]/g,'')
+        .replace(/\s+/g,'')
+        .replace(/_/g,'-')
+        .trim();
+    }
+    function getCanonicalDeliveryReperKey(reper){
+      const looseKey = normalizeDeliveryReperLoose(reper);
+      if(!looseKey) return '';
+      const forjaMap = state.helperMaps && state.helperMaps.forjaByReper ? state.helperMaps.forjaByReper : Object.create(null);
+      const direct = findLooseMapValue(forjaMap, reper);
+      if(direct && trimText(direct.reper_forjat)) return normalizeDeliveryReperLoose(direct.reper_forjat);
+      const reverseMatches = Object.keys(forjaMap)
+        .map(key => forjaMap[key])
+        .filter(row => normalizeDeliveryReperLoose(row && row.reper_debitare_origine) === looseKey && trimText(row && row.reper_forjat));
+      const uniqueForged = Array.from(new Set(reverseMatches.map(row => normalizeDeliveryReperLoose(row.reper_forjat)).filter(Boolean)));
+      if(uniqueForged.length === 1) return uniqueForged[0];
+      return looseKey;
+    }
+    function normalizeCalitateLoose(v){
+      return normKey(v);
+    }
+    function buildSpecKey(diametru, calitate){
+      return normDiameterLoose(diametru) + '|' + normalizeCalitateLoose(calitate);
+    }
+    function escapeHtml(value){
+      return safeText(value)
+        .replace(/&/g,'&amp;')
+        .replace(/</g,'&lt;')
+        .replace(/>/g,'&gt;')
+        .replace(/"/g,'&quot;')
+        .replace(/'/g,'&#39;');
+    }
+    function nowIso(){ return new Date().toISOString(); }
+    function roNumber(value){
+      const n = Math.round(toNumber(value));
+      return n ? safeText(n).replace(/\B(?=(\d{3})+(?!\d))/g,'.') : '0';
+    }
+    function roMaybeNumber(value){
+      const n = Math.round(toNumber(value));
+      return n ? safeText(n).replace(/\B(?=(\d{3})+(?!\d))/g,'.') : '';
+    }
+    function toNumber(value){
+      if(typeof value === 'number') return Number.isFinite(value) ? value : 0;
+      const raw = trimText(value);
+      if(!raw) return 0;
+      if(/^\d{1,3}(\.\d{3})+(,\d+)?$/.test(raw)) return Number(raw.replace(/\./g,'').replace(',','.')) || 0;
+      if(raw.includes(',') && !raw.includes('.')) return Number(raw.replace(',','.')) || 0;
+      return Number(raw.replace(/\s+/g,'').replace(/,/g,'.')) || 0;
+    }
+    function formatDateTime(iso){
+      if(!iso) return '-';
+      const d = new Date(iso);
+      if(Number.isNaN(d.getTime())) return trimText(iso);
+      const dd = String(d.getDate()).padStart(2,'0');
+      const mm = String(d.getMonth() + 1).padStart(2,'0');
+      const yyyy = d.getFullYear();
+      const hh = String(d.getHours()).padStart(2,'0');
+      const mi = String(d.getMinutes()).padStart(2,'0');
+      return dd + '.' + mm + '.' + yyyy + ', ' + hh + ':' + mi;
+    }
+    function getMonthName(month){
+      if(month == null || month === '') return '';
+      const n = Number(month);
+      if(Number.isFinite(n) && n >= 1 && n <= 12) return MONTHS[n - 1];
+      const txt = trimText(month);
+      if(!txt) return '';
+      const idx = MONTHS.findIndex(x => norm(x) === norm(txt));
+      return idx >= 0 ? MONTHS[idx] : txt;
+    }
+    function getMonthNumber(month){
+      if(month == null || month === '') return 0;
+      const n = Number(month);
+      if(Number.isFinite(n) && n >= 1 && n <= 12) return n;
+      const idx = MONTHS.findIndex(x => norm(x) === norm(month));
+      return idx >= 0 ? (idx + 1) : 0;
+    }
+    function getWeekdayLabel(iso){
+      if(!iso) return '';
+      const d = new Date(iso + 'T00:00:00');
+      if(Number.isNaN(d.getTime())) return '';
+      return WEEKDAYS[d.getDay()];
+    }
+    function isoToDisplay(iso){
+      if(!iso) return '';
+      const m = trimText(iso).match(/^(\d{4})-(\d{2})-(\d{2})$/);
+      return m ? (m[3] + '.' + m[2] + '.' + m[1]) : trimText(iso);
+    }
+    function displayToIso(value){
+      const raw = trimText(value);
+      if(!raw) return '';
+      if(/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
+      if(typeof value === 'number' && Number.isFinite(value)) return excelSerialToIso(value);
+      if(/^\d+$/.test(raw) && Number(raw) > 30000 && Number(raw) < 80000) return excelSerialToIso(Number(raw));
+      const clean = raw.replace(/\//g,'.').replace(/-/g,'.');
+      const m = clean.match(/^(\d{1,2})\.(\d{1,2})\.(\d{2,4})$/);
+      if(!m) return '';
+      let d = Number(m[1]);
+      let mo = Number(m[2]);
+      let y = Number(m[3]);
+      if(y < 100) y += 2000;
+      if(mo > 12 && d <= 12){ const t = d; d = mo; mo = t; }
+      if(!y || mo < 1 || mo > 12 || d < 1 || d > 31) return '';
+      return String(y).padStart(4,'0') + '-' + String(mo).padStart(2,'0') + '-' + String(d).padStart(2,'0');
+    }
+    function excelSerialToIso(serial){
+      const n = Number(serial);
+      if(!Number.isFinite(n)) return '';
+      const utc = Date.UTC(1899,11,30) + Math.round(n) * 86400000;
+      const d = new Date(utc);
+      return d.toISOString().slice(0,10);
+    }
+    function normalizeMachineKey(value){
+      const k = normKey(value);
+      if(!k) return '';
+      if(k.includes('5TCHINA')) return '5 T CHINA';
+      if(k === 'MP') return 'MP';
+      if(k.includes('125T') || k.includes('1T25') || k.includes('1,25T'.replace(/[^A-Z0-9]+/g,''))) return '1,25 T';
+      if(k.includes('25T') && !k.includes('125')) return '2,5 T';
+      if(k.includes('3TBR')) return '3 T BR';
+      if(k.includes('3TZR')) return '3 T ZR';
+      const found = MACHINE_ORDER.find(machine => normKey(machine) === k);
+      return found || trimText(value);
+    }
+    function normalizePlanSlot(slot){
+      const source = slot && typeof slot === 'object' ? slot : {};
+      return {
+        reper: trimText(source.reper || source.REPER || '').toUpperCase(),
+        planificat: Math.max(0, Math.round(toNumber(source.planificat || source.PLANIFICAT || 0))),
+        realizat_seed: Math.max(0, Math.round(toNumber(source.realizat_seed || source.realizat || source.REALIZAT || 0)))
+      };
+    }
+    function createRowKey(row){
+      return [trimText(row.data), String(row.row_no || 0), String(row.an || '')].join('|');
+    }
+    function normalizePlanRow(row, index){
+      const source = row && typeof row === 'object' ? row : {};
+      const dataIso = displayToIso(source.data || source.DATA || source.id || '');
+      const an = Number(source.an || source.AN || (dataIso ? dataIso.slice(0,4) : 0)) || 0;
+      const slotsSource = source.slots && typeof source.slots === 'object' ? source.slots : {};
+      const slots = {};
+      MACHINE_ORDER.forEach(machine => {
+        slots[machine] = normalizePlanSlot(slotsSource[machine] || source[machine] || {});
+      });
+      return {
+        id: trimText(source.id || '') || ('row-' + Date.now() + '-' + index + '-' + Math.random().toString(36).slice(2)),
+        row_no: Number(source.row_no || source.rowNo || index + 1) || (index + 1),
+        an,
+        luna: trimText(source.luna || source.LUNA || getMonthName(dataIso ? Number(dataIso.slice(5,7)) : '')),
+        data: dataIso,
+        zi: trimText(source.zi || source.ZI || getWeekdayLabel(dataIso)),
+        slots
+      };
+    }
+    function sortRowsStable(rows){
+      return rows
+        .map((row, index) => ({ row, index }))
+        .sort((a,b) => {
+          const ay = Number(a.row.an || 0), by = Number(b.row.an || 0);
+          if(ay !== by) return ay - by;
+          const ad = trimText(a.row.data), bd = trimText(b.row.data);
+          if(ad !== bd) return ad.localeCompare(bd);
+          const ar = Number(a.row.row_no || 0), br = Number(b.row.row_no || 0);
+          if(ar !== br) return ar - br;
+          return a.index - b.index;
+        })
+        .map(item => item.row);
+    }
+    function cloneSeedRows(){
+      return PLAN_SEED_ROWS.map((row, index) => normalizePlanRow(row, index));
+    }
+    function buildEmptyPlanRow(year, iso){
+      return {
+        id: 'row-auto-' + String(year) + '-' + String(iso) + '-' + Math.random().toString(36).slice(2,8),
+        row_no: 0,
+        an: Number(year) || 0,
+        luna: getMonthName(Number(String(iso).slice(5,7))),
+        data: String(iso),
+        zi: getWeekdayLabel(String(iso)),
+        slots: MACHINE_ORDER.reduce((acc, machine) => {
+          acc[machine] = normalizePlanSlot({});
+          return acc;
+        }, {})
+      };
+    }
+    function ensureRowsContinueToYearEnd(rows){
+      const list = sortRowsStable((Array.isArray(rows) ? rows : []).map((row, index) => normalizePlanRow(row, index)));
+      if(!list.length) return list;
+      const lastIsoByYear = Object.create(null);
+      list.forEach(row => {
+        const year = String(row && row.an || '');
+        const iso = trimText(row && row.data);
+        if(!/^\d{4}-\d{2}-\d{2}$/.test(iso) || !/^\d{4}$/.test(year)) return;
+        if(!lastIsoByYear[year] || iso > lastIsoByYear[year]) lastIsoByYear[year] = iso;
+      });
+      const extraRows = [];
+      Object.keys(lastIsoByYear).forEach(year => {
+        let cursor = lastIsoByYear[year];
+        const endIso = year + '-12-31';
+        while(cursor && cursor < endIso){
+          const nextIso = nextDayIso(cursor);
+          if(!nextIso || String(nextIso).slice(0,4) !== String(year)) break;
+          extraRows.push(buildEmptyPlanRow(year, nextIso));
+          cursor = nextIso;
+        }
+      });
+      return reindexRowsInDisplayOrder(sortRowsStable(list.concat(extraRows)));
+    }
+    function mergeSeedWithCloud(seedRows, cloudRows){
+      const base = seedRows.map((row, index) => normalizePlanRow(row, index));
+      const mapByKey = new Map();
+      const mapById = new Map();
+      base.forEach((row, index) => {
+        mapByKey.set(createRowKey(row), index);
+        mapById.set(trimText(row.id), index);
+      });
+
+      const extras = [];
+      (cloudRows || []).map((row, index) => normalizePlanRow(row, index)).forEach(cloudRow => {
+        const key = createRowKey(cloudRow);
+        const byId = mapById.get(trimText(cloudRow.id));
+        const byKey = mapByKey.get(key);
+        const idx = Number.isInteger(byId) ? byId : byKey;
+        if(Number.isInteger(idx)){
+          base[idx] = {
+            ...base[idx],
+            ...cloudRow,
+            slots: MACHINE_ORDER.reduce((acc, machine) => {
+              const merged = { ...(base[idx].slots[machine] || normalizePlanSlot()), ...(cloudRow.slots[machine] || normalizePlanSlot()) };
+              acc[machine] = normalizePlanSlot(merged);
+              return acc;
+            }, {})
+          };
+        }else{
+          extras.push(cloudRow);
+        }
+      });
+
+      return sortRowsStable(base.concat(extras));
+    }
+    function buildPayload(){
+      return {
+        app: 'PLANIFICARE_FORJA',
+        version: 3,
+        full_snapshot: true,
+        updated_at: state.updatedAt || nowIso(),
+        rows: state.rows.map(row => ({
+          id: row.id,
+          row_no: row.row_no,
+          an: row.an,
+          luna: row.luna,
+          data: row.data,
+          zi: row.zi,
+          slots: MACHINE_ORDER.reduce((acc, machine) => {
+            const slot = row.slots[machine] || normalizePlanSlot();
+            acc[machine] = {
+              reper: trimText(slot.reper),
+              planificat: Math.max(0, Math.round(toNumber(slot.planificat))),
+              realizat_seed: Math.max(0, Math.round(toNumber(slot.realizat_seed)))
+            };
+            return acc;
+          }, {})
+        }))
+      };
+    }
+    function cellFieldKey(rowId, machine, field){
+      return [trimText(rowId), trimText(machine), trimText(field)].join('||');
+    }
+    function parseCellFieldKey(key){
+      const parts = trimText(key).split('||');
+      return { rowId: parts[0] || '', machine: parts[1] || '', field: parts[2] || '' };
+    }
+    function normalizeLockRow(row){
+      const src = row && typeof row === 'object' ? row : {};
+      const key = trimText(src.key || cellFieldKey(src.rowId, src.machine, src.field));
+      const parsed = parseCellFieldKey(key);
+      const updatedAt = trimText(src.updated_at || src.updatedAt || '') || nowIso();
+      let expiresAt = trimText(src.expires_at || src.expiresAt || '');
+      if(!expiresAt){
+        const dt = new Date(updatedAt || nowIso());
+        dt.setMilliseconds(dt.getMilliseconds() + LOCK_TTL_MS);
+        expiresAt = dt.toISOString();
+      }
+      return {
+        key,
+        rowId: trimText(src.rowId || parsed.rowId),
+        machine: trimText(src.machine || parsed.machine),
+        field: trimText(src.field || parsed.field),
+        session_id: trimText(src.session_id || src.sessionId),
+        owner_email: trimText(src.owner_email || src.ownerEmail),
+        owner_name: trimText(src.owner_name || src.ownerName),
+        updated_at: updatedAt,
+        expires_at: expiresAt
+      };
+    }
+    function isLockExpired(lock){
+      const until = Date.parse(trimText(lock && lock.expires_at));
+      return !until || until <= Date.now();
+    }
+    function pruneExpiredLocksMap(map){
+      const next = Object.create(null);
+      Object.keys(map || {}).forEach(key => {
+        const lock = normalizeLockRow(map[key]);
+        if(lock.key && !isLockExpired(lock)) next[lock.key] = lock;
+      });
+      return next;
+    }
+    function locksArrayToMap(list){
+      const next = Object.create(null);
+      (Array.isArray(list) ? list : []).forEach(item => {
+        const lock = normalizeLockRow(item);
+        if(lock.key && !isLockExpired(lock)) next[lock.key] = lock;
+      });
+      return next;
+    }
+    function mapToLocksArray(map){
+      return Object.keys(map || {}).map(key => normalizeLockRow(map[key]));
+    }
+    function isCurrentSessionLock(lock){
+      return !!lock && trimText(lock.session_id) === trimText(state.sessionId);
+    }
+    function getOtherLock(rowId, machine, field){
+      const lock = state.remoteLocks[cellFieldKey(rowId, machine, field)] || null;
+      if(lock && !isCurrentSessionLock(lock) && !isLockExpired(lock)) return lock;
+      return null;
+    }
+    function lockOwnerLabel(lock){
+      return trimText(lock && (lock.owner_email || lock.owner_name || lock.session_id)) || 'alt editor';
+    }
+    function buildLockPayload(map){
+      return {
+        app: 'PLANIFICARE_FORJA_LOCKS',
+        version: 1,
+        updated_at: nowIso(),
+        locks: mapToLocksArray(pruneExpiredLocksMap(map || {}))
+      };
+    }
+    function applyCellLockUi(){
+      if(!els.planBody) return;
+      const inputs = els.planBody.querySelectorAll('.cell-input[data-row-id][data-machine][data-field]');
+      inputs.forEach(input => {
+        const rowId = trimText(input.dataset.rowId);
+        const machine = trimText(input.dataset.machine);
+        const field = trimText(input.dataset.field);
+        const otherLock = getOtherLock(rowId, machine, field);
+        const shouldDisable = !state.canEdit || !!otherLock;
+        input.disabled = shouldDisable;
+        input.classList.toggle('cell-locked-other', !!otherLock);
+        const td = input.closest('td');
+        const baseTitle = !!otherLock ? ('Editat acum de ' + lockOwnerLabel(otherLock)) : '';
+        if(td){
+          td.classList.toggle('cell-locked', !!otherLock);
+          if(otherLock){
+            td.setAttribute('data-lock-message', 'Editat de alt editor');
+            td.setAttribute('title', baseTitle);
+          }else{
+            td.removeAttribute('data-lock-message');
+            td.removeAttribute('title');
+          }
+        }
+        if(baseTitle) input.title = baseTitle;
+        else input.removeAttribute('title');
+      });
+      updateRowActionUi();
+    }
+    async function fetchLockSnapshot(){
+      const doc = await readDocumentCompat(LOCK_DOC_KEY);
+      const payload = doc && (doc.content || doc.data) ? (doc.content || doc.data) : null;
+      return {
+        map: locksArrayToMap(payload && payload.locks),
+        updatedAt: trimText(payload && payload.updated_at || doc && doc.updated_at || '')
+      };
+    }
+    async function persistLockMap(map){
+      const payload = buildLockPayload(map);
+      await writeDocumentCompat(LOCK_DOC_KEY, payload);
+      state.remoteLocks = pruneExpiredLocksMap(map || {});
+      state.lockUpdatedAt = payload.updated_at;
+      applyCellLockUi();
+    }
+    async function refreshRemoteLocks(forceRender){
+      if(state.lockSyncBusy || !state.supabase) return;
+      state.lockSyncBusy = true;
+      try{
+        const snap = await fetchLockSnapshot();
+        const nextMap = pruneExpiredLocksMap(snap.map);
+        const prevSig = JSON.stringify(Object.keys(state.remoteLocks).sort().map(key => [key, state.remoteLocks[key] && state.remoteLocks[key].session_id, state.remoteLocks[key] && state.remoteLocks[key].expires_at]));
+        const nextSig = JSON.stringify(Object.keys(nextMap).sort().map(key => [key, nextMap[key] && nextMap[key].session_id, nextMap[key] && nextMap[key].expires_at]));
+        state.remoteLocks = nextMap;
+        state.lockUpdatedAt = snap.updatedAt || state.lockUpdatedAt;
+        if(forceRender || prevSig != nextSig) applyCellLockUi();
+      }catch(error){
+        console.error('refreshRemoteLocks', error);
+      }finally{
+        state.lockSyncBusy = false;
+      }
+    }
+    async function acquireCellLock(rowId, machine, field){
+      if(!state.canEdit || !state.supabase) return false;
+      const key = cellFieldKey(rowId, machine, field);
+      if(state.activeCellLockKey && state.activeCellLockKey !== key){
+        await releaseCurrentCellLock({ silent:true, skipSave:true });
+      }
+      const snap = await fetchLockSnapshot();
+      const map = pruneExpiredLocksMap(snap.map);
+      const existing = map[key];
+      if(existing && !isCurrentSessionLock(existing)){
+        state.remoteLocks = map;
+        applyCellLockUi();
+        els.cloudSub.textContent = 'Câmpul este editat acum de ' + lockOwnerLabel(existing) + '.';
+        return false;
+      }
+      const now = nowIso();
+      const expires = new Date(Date.now() + LOCK_TTL_MS).toISOString();
+      map[key] = normalizeLockRow({
+        key, rowId, machine, field,
+        session_id: state.sessionId,
+        owner_email: trimText(state.user && state.user.email),
+        owner_name: trimText(state.user && (state.user.email || state.user.id || 'editor')),
+        updated_at: now,
+        expires_at: expires
+      });
+      await persistLockMap(map);
+      const verify = await fetchLockSnapshot();
+      const finalMap = pruneExpiredLocksMap(verify.map);
+      state.remoteLocks = finalMap;
+      state.lockUpdatedAt = verify.updatedAt || state.lockUpdatedAt;
+      const finalLock = finalMap[key];
+      const ok = !!(finalLock && isCurrentSessionLock(finalLock));
+      if(ok){
+        state.activeCellLockKey = key;
+        startLockHeartbeat();
+      }
+      applyCellLockUi();
+      return ok;
+    }
+    async function releaseCurrentCellLock(options){
+      const opts = options && typeof options === 'object' ? options : {};
+      const key = trimText(opts.key || state.activeCellLockKey);
+      if(state.lockHeartbeatTimer){
+        clearInterval(state.lockHeartbeatTimer);
+        state.lockHeartbeatTimer = null;
+      }
+      if(!key || !state.supabase){
+        state.activeCellLockKey = '';
+        return;
+      }
+      try{
+        const snap = await fetchLockSnapshot();
+        const map = pruneExpiredLocksMap(snap.map);
+        const existing = map[key];
+        if(existing && isCurrentSessionLock(existing)) delete map[key];
+        await persistLockMap(map);
+      }catch(error){
+        console.error('releaseCurrentCellLock', error);
+      }finally{
+        if(state.activeCellLockKey === key) state.activeCellLockKey = '';
+        if(!opts.skipSave && state.hasPendingLocalChanges) queueSave(250);
+        if(!opts.silent) applyCellLockUi();
+      }
+    }
+    function startLockHeartbeat(){
+      if(state.lockHeartbeatTimer){
+        clearInterval(state.lockHeartbeatTimer);
+        state.lockHeartbeatTimer = null;
+      }
+      if(!state.activeCellLockKey) return;
+      state.lockHeartbeatTimer = setInterval(async function(){
+        if(document.visibilityState === 'hidden') return;
+        const key = trimText(state.activeCellLockKey);
+        if(!key || !state.supabase) return;
+        try{
+          const snap = await fetchLockSnapshot();
+          const map = pruneExpiredLocksMap(snap.map);
+          const existing = map[key];
+          if(existing && !isCurrentSessionLock(existing)){
+            state.activeCellLockKey = '';
+            applyCellLockUi();
+            return;
+          }
+          const parsed = parseCellFieldKey(key);
+          map[key] = normalizeLockRow({
+            ...(existing || {}),
+            key,
+            rowId: parsed.rowId,
+            machine: parsed.machine,
+            field: parsed.field,
+            session_id: state.sessionId,
+            owner_email: trimText(state.user && state.user.email),
+            owner_name: trimText(state.user && (state.user.email || state.user.id || 'editor')),
+            updated_at: nowIso(),
+            expires_at: new Date(Date.now() + LOCK_TTL_MS).toISOString()
+          });
+          await persistLockMap(map);
+        }catch(error){
+          console.error('lockHeartbeat', error);
+        }
+      }, LOCK_HEARTBEAT_MS);
+    }
+    function scheduleRemotePlanApply(sourceLabel){
+      if(state.planSyncBusy || !state.supabase) return;
+      if(document.visibilityState === 'hidden') return;
+      if(state.isEditing || state.hasPendingLocalChanges || state.saveTimer) return;
+      if(state.remoteApplyTimer){
+        clearTimeout(state.remoteApplyTimer);
+        state.remoteApplyTimer = null;
+      }
+      state.remoteApplyTimer = setTimeout(async function(){
+        state.remoteApplyTimer = null;
+        const uiState = captureUiState();
+        try{
+          await loadPlanDocument(true);
+          ensureFilters();
+          renderFilters();
+          await refreshLiveAndSupport(true, uiState);
+          els.cloudValue.textContent = 'Cloud actualizat';
+          els.cloudSub.textContent = (sourceLabel || 'Plan sincronizat') + ': ' + formatDateTime(state.updatedAt || nowIso());
+        }catch(error){
+          console.error('scheduleRemotePlanApply', error);
+        }
+      }, 120);
+    }
+    function initPlanBroadcastSync(){
+      if(!state.supabase || typeof state.supabase.channel !== 'function') return;
+      try{
+        if(state.planBroadcastChannel && typeof state.supabase.removeChannel === 'function'){
+          try{ state.supabase.removeChannel(state.planBroadcastChannel); }catch(_removeErr){}
+        }
+        const channel = state.supabase.channel(PLAN_SYNC_CHANNEL_TOPIC);
+        channel.on('broadcast', { event:'plan-saved' }, function(payload){
+          const data = payload && payload.payload ? payload.payload : {};
+          const sourceSession = trimText(data.session_id || '');
+          if(sourceSession && sourceSession === state.sessionId) return;
+          const remoteUpdated = trimText(data.updated_at || '');
+          if(remoteUpdated && state.updatedAt && String(remoteUpdated) <= String(state.updatedAt)) return;
+          scheduleRemotePlanApply('Cloud sincronizat instant');
+        });
+        channel.subscribe(function(status){
+          if(status === 'SUBSCRIBED'){
+            els.cloudSub.textContent = state.updatedAt
+              ? ('Ultima sincronizare plan: ' + formatDateTime(state.updatedAt))
+              : 'Sincronizare live activă pentru planificare.';
+          }
+        });
+        state.planBroadcastChannel = channel;
+      }catch(error){
+        console.error('initPlanBroadcastSync', error);
+      }
+    }
+
+    async function pollRemotePlanDocument(){
+      if(state.planSyncBusy || !state.supabase) return;
+      if(document.visibilityState === 'hidden') return;
+      if(state.isEditing || state.hasPendingLocalChanges || state.saveTimer) return;
+      state.planSyncBusy = true;
+      try{
+        const doc = await readDocumentCompat(DOC_KEY);
+        if(!doc || !(doc.content || doc.data)) return;
+        const payload = doc.content || doc.data;
+        const remoteUpdated = trimText(payload && payload.updated_at || doc.updated_at || '');
+        if(!remoteUpdated) return;
+        if(state.updatedAt && String(remoteUpdated) <= String(state.updatedAt)) return;
+        const uiState = captureUiState();
+        await loadPlanDocument(true);
+        ensureFilters();
+        renderFilters();
+        await refreshLiveAndSupport(true, uiState);
+        els.cloudValue.textContent = 'Cloud actualizat';
+        els.cloudSub.textContent = 'Ultima sincronizare plan: ' + formatDateTime(state.updatedAt || remoteUpdated);
+      }catch(error){
+        console.error('pollRemotePlanDocument', error);
+      }finally{
+        state.planSyncBusy = false;
+      }
+    }
+    function startCollaborativeSync(){
+      if(state.lockPollTimer) clearInterval(state.lockPollTimer);
+      if(state.planPollTimer) clearInterval(state.planPollTimer);
+      initPlanBroadcastSync();
+      state.lockPollTimer = setInterval(function(){ refreshRemoteLocks(false); }, LOCK_SYNC_INTERVAL_MS);
+      state.planPollTimer = setInterval(function(){ pollRemotePlanDocument(); }, PLAN_SYNC_INTERVAL_MS);
+    }
+    async function stopCollaborativeSync(){
+      if(state.lockPollTimer){ clearInterval(state.lockPollTimer); state.lockPollTimer = null; }
+      if(state.planPollTimer){ clearInterval(state.planPollTimer); state.planPollTimer = null; }
+      if(state.lockHeartbeatTimer){ clearInterval(state.lockHeartbeatTimer); state.lockHeartbeatTimer = null; }
+      if(state.remoteApplyTimer){ clearTimeout(state.remoteApplyTimer); state.remoteApplyTimer = null; }
+      if(state.planBroadcastChannel && state.supabase && typeof state.supabase.removeChannel === 'function'){
+        try{ await state.supabase.removeChannel(state.planBroadcastChannel); }catch(error){ console.error('remove plan channel', error); }
+      }
+      state.planBroadcastChannel = null;
+      await releaseCurrentCellLock({ silent:true, skipSave:true });
+    }
+
+    function extractRowsPayload(payload){
+      if(!payload) return [];
+      if(Array.isArray(payload)) return payload;
+      if(Array.isArray(payload.rows)) return payload.rows;
+      if(Array.isArray(payload.data)) return payload.data;
+      if(Array.isArray(payload.items)) return payload.items;
+      if(Array.isArray(payload.records)) return payload.records;
+      if(Array.isArray(payload.entries)) return payload.entries;
+      if(payload.payload && Array.isArray(payload.payload.rows)) return payload.payload.rows;
+      return [];
+    }
+    function pick(obj, keys){
+      for(const key of keys){
+        if(obj && Object.prototype.hasOwnProperty.call(obj, key) && obj[key] != null && obj[key] !== '') return obj[key];
+      }
+      return '';
+    }
+    function arrayCell(row, index, fallback){
+      if(Array.isArray(row) && index >= 0 && index < row.length){
+        const value = row[index];
+        if(value != null && value !== '') return value;
+      }
+      return fallback == null ? '' : fallback;
+    }
+    function normalizeDateAny(value){
+      if(value == null || value === '') return '';
+      if(typeof value === 'number') return excelSerialToIso(value);
+      return displayToIso(value);
+    }
+    function normalizeSteelRow(row, index){
+      const data = normalizeDateAny(
+        Array.isArray(row)
+          ? ''
+          : pick(row, ['data','date','DATA','Date','data intrare','Data intrare','DATA INTRARE'])
+      );
+      const an = trimText(
+        Array.isArray(row)
+          ? arrayCell(row, 1, '')
+          : pick(row, ['an','anul','year','AN','Year','Anul','an intrare','An intrare','AN INTRARE'])
+      ) || (data ? data.slice(0,4) : '');
+      const lunaRaw = Array.isArray(row)
+        ? arrayCell(row, 2, '')
+        : pick(row, ['luna','month','LUNA','Month','Luna','luna intrare','Luna intrare','LUNA INTRARE']);
+      const lunaNum = monthNumberFromAny(lunaRaw) || (data ? Number(data.slice(5,7)) : 0);
+      return {
+        id: trimText(Array.isArray(row) ? '' : pick(row, ['id','_id'])) || ('steel-' + index),
+        an,
+        data,
+        luna: getMonthName(lunaNum || lunaRaw),
+        lunaNum,
+        diametru: trimText(
+          Array.isArray(row)
+            ? arrayCell(row, 5, '')
+            : pick(row, ['diametru','diametru otel','diametru_otel','diametrul otelului','diametrul oțelului','Diametru oțel','Diametru','Diametru otel','DIMENSIUNE OTEL','Dimensiune OTEL','Dimensiune Otel','dimensiune otel','dimensiune_otel'])
+        ),
+        calitate: trimText(
+          Array.isArray(row)
+            ? arrayCell(row, 6, '')
+            : pick(row, ['calitate','calitate otel','calitate_otel','calitatea otelului','calitatea oțelului','Calitate oțel','Calitate','Calitate otel','Calitate Otel','Calitate OTEL','marca material','Marca material'])
+        ),
+        codIntern: trimText(
+          Array.isArray(row)
+            ? arrayCell(row, 3, '')
+            : pick(row, ['cod intern otel','cod intern oțel','cod_intern_otel','cod intern','codInternOtel','codIntern','cod','COD CAT'])
+        ).toUpperCase(),
+        cantitateKg: Math.max(0, toNumber(
+          Array.isArray(row)
+            ? arrayCell(row, 4, 0)
+            : pick(row, ['cantitateKg','cantitate','cantitate kg','cantitate_kg','kg','stoc initial','stoc_initial','stoc actual','stoc actual kg','stoc_actual','stoc_final','stoc final','stoc final kg','STOC FINAL KG','Stoc Otel (Kg)','Stoc Otel Kg','Stoc otel (Kg)','STOC OTEL (KG)'])
+        ))
+      };
+    }
+    function normalizeDebitatRow(row, index){
+      const data = normalizeDateAny(
+        Array.isArray(row)
+          ? ''
+          : pick(row, ['data','date','DATA','Date','data intrare','Data intrare','DATA INTRARE'])
+      );
+      const an = trimText(
+        Array.isArray(row)
+          ? arrayCell(row, 1, '')
+          : pick(row, ['an','anul','year','AN','Year','Anul','an intrare','An intrare','AN INTRARE'])
+      ) || (data ? data.slice(0,4) : '');
+      const lunaRaw = Array.isArray(row)
+        ? arrayCell(row, 2, '')
+        : pick(row, ['luna','month','LUNA','Month','Luna','luna intrare','Luna intrare','LUNA INTRARE']);
+      const lunaNum = monthNumberFromAny(lunaRaw) || (data ? Number(data.slice(5,7)) : 0);
+      return {
+        id: trimText(Array.isArray(row) ? '' : pick(row, ['id','_id'])) || ('debitat-' + index),
+        an,
+        data,
+        luna: getMonthName(lunaNum || lunaRaw),
+        lunaNum,
+        reper: trimText(
+          Array.isArray(row)
+            ? arrayCell(row, 3, '')
+            : pick(row, ['reper','REPER','Reper','denumire reper debitare','Denumire reper debitare'])
+        ).toUpperCase(),
+        cantitateBuc: Math.max(0, Math.round(toNumber(
+          Array.isArray(row)
+            ? arrayCell(row, 6, 0)
+            : pick(row, ['cantitateBuc','STOC DEBITATE FINAL (buc)','Stoc debitate final (buc)','Stoc Debitat (Buc)','cantitate'])
+        )))
+      };
+    }
+    function normalizeIntrariOtelRow(row, index){
+      const data = normalizeDateAny(
+        Array.isArray(row)
+          ? arrayCell(row, 2, '')
+          : pick(row, ['data','date','DATA','Date','data intrare','Data intrare','DATA INTRARE','data debitare','Data debitare','DATA DEBITARE'])
+      );
+      const an = trimText(
+        Array.isArray(row)
+          ? arrayCell(row, 0, '')
+          : pick(row, ['an','anul','year','AN','Year','Anul','an intrare','An intrare','AN INTRARE','an debitare','An debitare','AN DEBITARE'])
+      ) || (data ? data.slice(0,4) : '');
+      const lunaRaw = Array.isArray(row)
+        ? arrayCell(row, 1, '')
+        : pick(row, ['luna','month','LUNA','Month','Luna','luna intrare','Luna intrare','LUNA INTRARE','luna debitare','Luna debitare','LUNA DEBITARE']);
+      const lunaNum = monthNumberFromAny(lunaRaw) || (data ? Number(data.slice(5,7)) : 0);
+      return {
+        id: trimText(Array.isArray(row) ? '' : pick(row, ['id','_id'])) || ('intrare-otel-' + index),
+        an,
+        data,
+        luna: getMonthName(lunaNum || lunaRaw),
+        lunaNum,
+        diametru: trimText(
+          Array.isArray(row)
+            ? arrayCell(row, 3, '')
+            : pick(row, ['diametru','diametru otel','diametru_otel','diametrul otelului','diametrul oțelului','Diametru oțel','Diametru','Diametru otel','Diametru oțel (mm)','Diametru (mm)','diametru material','Dimensiune Otel','Dimensiune Oțel','Dimensiune Otel (mm)'])
+        ),
+        calitate: trimText(
+          Array.isArray(row)
+            ? arrayCell(row, 4, '')
+            : pick(row, ['calitate','calitate otel','calitate_otel','calitatea otelului','calitatea oțelului','Calitate oțel','Calitate','Calitate otel','Calitate Otel','calitate material','Calitate material','marca material','Marca material'])
+        ),
+        cantitateKg: Math.max(0, toNumber(
+          Array.isArray(row)
+            ? arrayCell(row, 7, 0)
+            : pick(row, ['cantitateKg','cantitate','cantitate kg','cantitate_kg','kg','cantitate in kg','cantitate în kg','Cantitate în kg','Cantitate in kg','Cantitate KG','Cantitate kg','Cantitate (kg)','Cantitate [kg]','Cantitate in KG']
+          )
+        ))
+      };
+    }
+    function normalizeDebitariFlowRow(row, index){
+      const data = normalizeDateAny(
+        Array.isArray(row)
+          ? arrayCell(row, 2, '')
+          : pick(row, ['data','date','DATA','Date'])
+      );
+      const an = trimText(
+        Array.isArray(row)
+          ? arrayCell(row, 0, '')
+          : pick(row, ['an','anul','year','AN','Year','Anul'])
+      ) || (data ? data.slice(0,4) : '');
+      const lunaRaw = Array.isArray(row)
+        ? arrayCell(row, 1, '')
+        : pick(row, ['luna','month','LUNA','Month','Luna']);
+      const lunaNum = monthNumberFromAny(lunaRaw) || (data ? Number(data.slice(5,7)) : 0);
+      const cantitateArray = Array.isArray(row)
+        ? (arrayCell(row, 11, '') !== '' ? arrayCell(row, 11, '') : arrayCell(row, 10, 0))
+        : '';
+      return {
+        id: trimText(Array.isArray(row) ? '' : pick(row, ['id','_id'])) || ('debitare-flow-' + index),
+        an,
+        data,
+        luna: getMonthName(lunaNum || lunaRaw),
+        lunaNum,
+        reper: trimText(
+          Array.isArray(row)
+            ? arrayCell(row, 4, '')
+            : pick(row, ['reper','REPER','Reper','denumire reper debitare','Denumire reper debitare'])
+        ).toUpperCase(),
+        cantitateBuc: Math.max(0, Math.round(toNumber(
+          Array.isArray(row)
+            ? cantitateArray
+            : pick(row, ['cantitateBuc','cantitate_buc','cantitate (buc)','Cantitate (buc)','cantitate','buc','bucati','bucăți','cantitate debitata','Cantitate debitata','cantitate debitată','Cantitate debitată'])
+        )))
+      };
+    }
+
+    function normalizeForjateFlowRow(row, index){
+      const data = normalizeDateAny(
+        Array.isArray(row)
+          ? arrayCell(row, 2, '')
+          : pick(row, ['data','DATA','date','Date'])
+      );
+      const an = trimText(
+        Array.isArray(row)
+          ? arrayCell(row, 0, '')
+          : pick(row, ['an','AN','anul','ANUL','year','Year'])
+      ) || (data ? data.slice(0,4) : '');
+      const lunaRaw = Array.isArray(row)
+        ? arrayCell(row, 1, '')
+        : pick(row, ['luna','LUNA','month','Month']);
+      const lunaNum = monthNumberFromAny(lunaRaw) || (data ? Number(data.slice(5,7)) : 0);
+      const machineRaw = Array.isArray(row)
+        ? arrayCell(row, 4, '')
+        : pick(row, ['ciocan','CIOCAN','linie de forjare','Linie de forjare','linie_de_forjare','linie','Linie','utilaj','Utilaj','machine','Machine','E','BO']);
+      const reperRaw = Array.isArray(row)
+        ? arrayCell(row, 5, '')
+        : pick(row, ['reper','REPER','Reper','reper_forjat','REPER_FORJAT','Reper forjat']);
+      const realizatRaw = Array.isArray(row)
+        ? arrayCell(row, 17, 0)
+        : pick(row, ['buc_realizate','BUC_REALIZATE','bucRealizate','BUC Realizate','BUC REALIZATE','buc realizate','Buc realizate','buc','BUC','CB']);
+      const rebutRaw = Array.isArray(row)
+        ? arrayCell(row, 18, 0)
+        : pick(row, ['rebut','REBUT','Rebut','rebuturi','Rebuturi','rebut pm','Rebut PM','CC']);
+      return {
+        id: trimText(Array.isArray(row) ? '' : pick(row, ['id','_id'])) || ('forjate-flow-' + index),
+        an,
+        data,
+        luna: getMonthName(lunaNum || lunaRaw),
+        lunaNum,
+        machine: normalizeMachineKey(machineRaw),
+        reper: trimText(reperRaw).toUpperCase(),
+        realizatBuc: Math.max(0, Math.round(toNumber(realizatRaw))),
+        rebutBuc: Math.max(0, Math.round(toNumber(rebutRaw)))
+      };
+    }
+    function monthNumberFromAny(value){
+      const direct = getMonthNumber(value);
+      if(direct) return direct;
+      const raw = trimText(value);
+      if(!raw) return 0;
+      const iso = displayToIso(raw);
+      if(iso) return Number(iso.slice(5,7)) || 0;
+      return 0;
+    }
+    function normalizePeriodYear(row){
+      const year = Number(trimText(row && (row.an || row.year || '')) || 0);
+      return Number.isFinite(year) && year > 0 ? year : 0;
+    }
+    function normalizePeriodMonth(row){
+      if(!row) return 0;
+      const month = Number(row.lunaNum || row.month || 0);
+      return Number.isFinite(month) && month >= 1 && month <= 12 ? month : 0;
+    }
+    function pickLatestRowsByYearMonth(rows){
+      const list = Array.isArray(rows) ? rows.slice() : [];
+      let bestYear = 0;
+      let bestMonth = 0;
+      list.forEach(row => {
+        const year = normalizePeriodYear(row);
+        const month = normalizePeriodMonth(row);
+        if(year > bestYear || (year === bestYear && month > bestMonth)){
+          bestYear = year;
+          bestMonth = month;
+        }
+      });
+      if(!bestYear) return { rows:list, year:0, month:0, label:'' };
+      const filtered = list.filter(row => normalizePeriodYear(row) === bestYear && (!bestMonth || normalizePeriodMonth(row) === bestMonth));
+      return { rows: filtered.length ? filtered : list, year: bestYear, month: bestMonth, label: bestMonth ? (String(bestYear) + ' / ' + getMonthName(bestMonth)) : String(bestYear) };
+    }
+    function getNextMonthPeriod(year, month){
+      const y = Number(year) || 0;
+      const m = Number(month) || 0;
+      if(!y || !m) return { year:0, month:0, iso:'', label:'' };
+      let nextYear = y;
+      let nextMonth = m + 1;
+      if(nextMonth > 12){
+        nextMonth = 1;
+        nextYear += 1;
+      }
+      return {
+        year: nextYear,
+        month: nextMonth,
+        iso: String(nextYear) + '-' + String(nextMonth).padStart(2,'0') + '-01',
+        label: getMonthName(nextMonth) + ' ' + String(nextYear)
+      };
+    }
+    function maxIsoDate(a, b){
+      const aa = trimText(a);
+      const bb = trimText(b);
+      if(aa && bb) return aa > bb ? aa : bb;
+      return aa || bb || '';
+    }
+    function minIsoDate(a, b){
+      const aa = trimText(a);
+      const bb = trimText(b);
+      if(aa && bb) return aa < bb ? aa : bb;
+      return aa || bb || '';
+    }
+    function endOfMonthIso(year, month){
+      const y = Number(year) || 0;
+      const m = Number(month) || 0;
+      if(!y || !m) return '';
+      const d = new Date(Date.UTC(y, m, 0));
+      return d.toISOString().slice(0,10);
+    }
+    function nextDayIso(iso){
+      const clean = trimText(iso);
+      if(!clean) return '';
+      const d = new Date(clean + 'T00:00:00Z');
+      if(Number.isNaN(d.getTime())) return '';
+      d.setUTCDate(d.getUTCDate() + 1);
+      return d.toISOString().slice(0,10);
+    }
+
+    function getDefaultPermissions(role){
+      const clean = norm(role) || 'viewer';
+      return { canEdit: ['admin','editor','operator'].includes(clean) };
+    }
+    async function resolvePagePermissions(){
+      const defaults = getDefaultPermissions(state.role);
+      state.canEdit = defaults.canEdit;
+      if(!state.supabase) return;
+      try{
+        const res = await state.supabase.from('page_permissions').select('*').eq('role', state.role).in('page_key', [PAGE_KEY, 'planificare forja', 'planificare-forja']);
+        if(!res.error && Array.isArray(res.data) && res.data.length){
+          state.canEdit = res.data.some(row => row.can_edit === true || row.can_add === true);
+        }
+      }catch(_e){}
+    }
+    function safeRoleLabel(role){
+      try{
+        if(window.ERPAuth && typeof window.ERPAuth.roleLabel === 'function'){
+          const label = window.ERPAuth.roleLabel(role);
+          return trimText(label || role || 'viewer') || 'viewer';
+        }
+      }catch(error){
+        console.warn('safeRoleLabel', error);
+      }
+      return trimText(role || 'viewer') || 'viewer';
+    }
+    async function readDocumentCompat(docKey){
+      if(!state.supabase) return null;
+      try{
+        const res = await state.supabase.from('rf_documents').select('*').eq('doc_key', docKey).maybeSingle();
+        if(!res.error && res.data) return res.data;
+      }catch(_e){}
+      return null;
+    }
+    async function queryDocsByKeys(keys){
+      const unique = Array.from(new Set((keys || []).map(trimText).filter(Boolean)));
+      if(!unique.length || !state.supabase) return [];
+      try{
+        const res = await state.supabase.from('rf_documents').select('*').in('doc_key', unique);
+        if(!res.error && Array.isArray(res.data)) return res.data;
+      }catch(_e){}
+      return [];
+    }
+    async function writeDocumentCompat(docKey, payload){
+      if(!state.supabase) throw new Error('Supabase indisponibil');
+      const ts = payload && payload.updated_at ? payload.updated_at : nowIso();
+      let res = await state.supabase.from('rf_documents').upsert({
+        doc_key: docKey,
+        content: payload,
+        data: payload,
+        updated_at: ts
+      }, { onConflict:'doc_key' });
+      if(res && res.error){
+        res = await state.supabase.from('rf_documents').upsert({
+          doc_key: docKey,
+          content: payload,
+          updated_at: ts
+        }, { onConflict:'doc_key' });
+      }
+      if(res && res.error) throw res.error;
+      return true;
+    }
+    function pickDefaultYear(){
+      const years = Array.from(new Set(state.rows.map(row => String(row.an || '')).filter(Boolean))).sort();
+      if(!years.length) return '';
+      if(years.includes(CURRENT_YEAR)) return CURRENT_YEAR;
+      return years[0];
+    }
+    function ensureFilters(){
+      if(!state.activeYear) state.activeYear = pickDefaultYear();
+      const years = Array.from(new Set(state.rows.map(row => String(row.an || '')).filter(Boolean))).sort();
+      if(state.activeYear && !years.includes(String(state.activeYear))){
+        state.activeYear = years[0] || '';
+      }
+    }
+    function getFilteredRows(){
+      const search = normUpper(state.searchTerm);
+      return state.rows.filter(row => {
+        if(state.activeYear && String(row.an) !== String(state.activeYear)) return false;
+        if(!search) return true;
+        if(normUpper(row.data).includes(search) || normUpper(row.zi).includes(search)) return true;
+        return MACHINE_ORDER.some(machine => {
+          const slot = row.slots[machine] || {};
+          return normUpper(slot.reper).includes(search);
+        });
+      });
+    }
+    function setSelectedRow(rowId){
+      state.selectedRowId = trimText(rowId);
+      syncSelectedRowUi();
+    }
+    function syncSelectedRowUi(){
+      const selectedId = trimText(state.selectedRowId);
+      const visibleRows = Array.from(els.planBody.querySelectorAll('tr[data-row-id]'));
+      visibleRows.forEach(row => {
+        row.classList.toggle('row-selected', selectedId && row.getAttribute('data-row-id') === selectedId);
+      });
+      updateRowActionUi();
+    }
+    function getSelectedVisibleRow(){
+      const selectedId = trimText(state.selectedRowId);
+      if(!selectedId) return null;
+      const visibleRows = getFilteredRows();
+      return visibleRows.find(row => String(row.id) === selectedId) || null;
+    }
+    function updateRowActionUi(){
+      const selectedVisibleRow = getSelectedVisibleRow();
+      const canUseRowActions = !!(state.canEdit && selectedVisibleRow);
+      if(els.btnAddRow){
+        els.btnAddRow.disabled = !canUseRowActions;
+        els.btnAddRow.style.opacity = canUseRowActions ? '1' : '.55';
+      }
+      if(els.btnDeleteRow){
+        els.btnDeleteRow.disabled = !canUseRowActions;
+        els.btnDeleteRow.style.opacity = canUseRowActions ? '1' : '.55';
+      }
+    }
+    function reindexRowsInDisplayOrder(rows){
+      const list = Array.isArray(rows) ? rows.slice() : [];
+      const counters = Object.create(null);
+      list.forEach(row => {
+        const yearKey = String(row && row.an != null ? row.an : '');
+        counters[yearKey] = (counters[yearKey] || 0) + 1;
+        row.row_no = counters[yearKey];
+        row.luna = getMonthName(Number(trimText(row.data).slice(5,7)));
+        row.zi = getWeekdayLabel(trimText(row.data));
+      });
+      return list;
+    }
+    function renderFilters(){
+      const years = Array.from(new Set(state.rows.map(row => String(row.an || '')).filter(Boolean))).sort();
+      els.yearSelect.innerHTML = years.map(year => '<option value="' + escapeHtml(year) + '"' + (String(state.activeYear) === String(year) ? ' selected' : '') + '>' + escapeHtml(year) + '</option>').join('');
+      els.searchInput.value = state.searchTerm;
+    }
+    function updateRepereDatalist(){
+      const repSet = new Set();
+      state.rows.forEach(row => {
+        MACHINE_ORDER.forEach(machine => {
+          const reper = trimText(row.slots[machine] && row.slots[machine].reper);
+          if(reper) repSet.add(reper);
+        });
+      });
+      Object.keys(state.forjateSummary).forEach(key => {
+        const parts = key.split('|');
+        if(parts[2]) repSet.add(parts[2]);
+      });
+      Object.keys(state.helperMaps.forjaByReper || {}).forEach(key => { if(key) repSet.add(key); });
+      Object.keys(state.helperMaps.debitByReper || {}).forEach(key => { if(key) repSet.add(key); });
+      els.repereList.innerHTML = Array.from(repSet).sort((a,b) => a.localeCompare(b, 'ro', { sensitivity:'base' }))
+        .map(reper => '<option value="' + escapeHtml(reper) + '"></option>').join('');
+    }
+    function normalizeUiStateSnap(raw){
+      const src = raw && typeof raw === 'object' ? raw : {};
+      const active = src.activeCell && typeof src.activeCell === 'object' ? src.activeCell : null;
+      return {
+        scrollTop: Math.max(0, Number(src.scrollTop || 0)),
+        scrollLeft: Math.max(0, Number(src.scrollLeft || 0)),
+        activeCell: active ? {
+          rowId: trimText(active.rowId),
+          machine: trimText(active.machine),
+          field: trimText(active.field),
+          start: typeof active.start === 'number' ? active.start : null,
+          end: typeof active.end === 'number' ? active.end : null,
+          selectAll: !!active.selectAll
+        } : null
+      };
+    }
+    function savePersistedUiState(snap){
+      try{
+        const payload = normalizeUiStateSnap(snap);
+        sessionStorage.setItem(TABLE_UI_STORAGE_KEY, JSON.stringify(payload));
+      }catch(_e){}
+    }
+    function readPersistedUiState(){
+      try{
+        const raw = sessionStorage.getItem(TABLE_UI_STORAGE_KEY);
+        if(!raw) return null;
+        return normalizeUiStateSnap(JSON.parse(raw));
+      }catch(_e){
+        return null;
+      }
+    }
+    function captureUiState(){
+      const snap = {
+        scrollTop: els.tableWrap ? els.tableWrap.scrollTop : 0,
+        scrollLeft: els.tableWrap ? els.tableWrap.scrollLeft : 0,
+        activeCell: null
+      };
+      const active = document.activeElement;
+      if(active && active.classList && active.classList.contains('cell-input')){
+        snap.activeCell = {
+          rowId: trimText(active.dataset.rowId),
+          machine: trimText(active.dataset.machine),
+          field: trimText(active.dataset.field),
+          start: typeof active.selectionStart === 'number' ? active.selectionStart : null,
+          end: typeof active.selectionEnd === 'number' ? active.selectionEnd : null
+        };
+      }
+      savePersistedUiState(snap);
+      return snap;
+    }
+    function restoreUiState(snap){
+      const finalSnap = normalizeUiStateSnap(snap || readPersistedUiState());
+      if(!finalSnap) return;
+      requestAnimationFrame(() => {
+        try{
+          if(els.tableWrap){
+            els.tableWrap.scrollTop = finalSnap.scrollTop;
+            els.tableWrap.scrollLeft = finalSnap.scrollLeft;
+          }
+          if(finalSnap.activeCell && finalSnap.activeCell.rowId && finalSnap.activeCell.machine && finalSnap.activeCell.field){
+            const selector = '.cell-input[data-row-id="' + cssEscape(finalSnap.activeCell.rowId) + '"][data-machine="' + cssEscape(finalSnap.activeCell.machine) + '"][data-field="' + cssEscape(finalSnap.activeCell.field) + '"]';
+            const input = els.planBody ? els.planBody.querySelector(selector) : null;
+            if(input){
+              if(finalSnap.activeCell.selectAll) input.dataset.navSelectAll = '1';
+              else delete input.dataset.navSelectAll;
+              input.focus({ preventScroll:true });
+              if(!finalSnap.activeCell.selectAll && typeof finalSnap.activeCell.start === 'number' && typeof input.setSelectionRange === 'function'){
+                input.setSelectionRange(finalSnap.activeCell.start, typeof finalSnap.activeCell.end === 'number' ? finalSnap.activeCell.end : finalSnap.activeCell.start);
+              }
+            }
+          }
+          savePersistedUiState(finalSnap);
+        }catch(_e){}
+      });
+    }
+    function applyHoveredRow(){
+      if(!els.planBody) return;
+      const rows = els.planBody.querySelectorAll('tr');
+      rows.forEach(tr => {
+        const rowId = trimText(tr.getAttribute('data-row-id'));
+        tr.classList.toggle('row-hover', !!rowId && rowId === state.hoveredRowId);
+      });
+    }
+    function setHoveredRow(rowId){
+      const nextId = trimText(rowId);
+      if(state.hoveredRowId === nextId) return;
+      state.hoveredRowId = nextId;
+      applyHoveredRow();
+    }
+    function buildHeader(){
+      els.planHead.innerHTML = `
+        <tr>
+          <th class="sticky1" rowspan="2"><div class="cell-static">AN</div></th>
+          <th class="sticky2" rowspan="2"><div class="cell-static">DATA</div></th>
+          <th class="sticky3" rowspan="2"><div class="cell-static">ZI</div></th>
+          ${MACHINE_ORDER.map(machine => `<th class="group group-end" colspan="3"><div class="cell-static">${escapeHtml(machine)}</div></th>`).join('')}
+        </tr>
+        <tr>
+          ${MACHINE_ORDER.map(() => `
+            <th><div class="cell-static">REPER</div></th>
+            <th><div class="cell-static">PLANIFICAT</div></th>
+            <th class="group-end"><div class="cell-static">REALIZAT</div></th>
+          `).join('')}
+        </tr>
+      `;
+    }
+    function buildRealizedKey(dataIso, machine, reper){
+      return [safeText(dataIso), normalizeMachineKey(machine), normUpper(reper)].join('|');
+    }
+    function resolveMachineFromForjate(row){
+      return normalizeMachineKey(row && (row.ciocan || row.utilaj || row.linie || row.linie_de_forjare || row['linie de forjare'] || row.E || row.BO || ''));
+    }
+    function resolveDateFromForjate(row){
+      return normalizeDateAny(row && (row.data || row.DATA || row.date || row.Date || ''));
+    }
+    function resolveYearFromForjateRow(row){
+      const fromAn = trimText(row && (row.an || row.AN || row.anul || row.ANUL || ''));
+      if(/^\d{4}$/.test(fromAn)) return fromAn;
+      const iso = resolveDateFromForjate(row);
+      return iso ? iso.slice(0,4) : '';
+    }
+    function buildSummaryFromForjateRows(rows, year){
+      const summary = Object.create(null);
+      (rows || []).forEach((row, index) => {
+        const item = normalizeForjateFlowRow(row, index);
+        const iso = item.data;
+        const rowYear = item.an || (iso ? iso.slice(0,4) : '');
+        if(year && String(rowYear) !== String(year)) return;
+        if(!iso || !item.machine || !item.reper || item.realizatBuc <= 0) return;
+        const key = buildRealizedKey(iso, item.machine, item.reper);
+        summary[key] = Math.max(0, Math.round(toNumber(summary[key]) + item.realizatBuc));
+      });
+      return summary;
+    }
+
+    function mergeSummary(summary){
+      Object.keys(summary || {}).forEach(key => {
+        state.forjateSummary[key] = Math.max(0, Math.round(toNumber(state.forjateSummary[key]) + toNumber(summary[key])));
+      });
+    }
+    async function ensureLegacyLoaded(){
+      if(state.legacyLoaded) return;
+      const doc = await readDocumentCompat(LEGACY_DOC_KEY);
+      if(doc && (doc.content || doc.data)){
+        const payload = doc.content || doc.data;
+        const rows = extractRowsPayload(payload);
+        if(rows.length) mergeSummary(buildSummaryFromForjateRows(rows));
+      }
+      state.legacyLoaded = true;
+    }
+    async function ensureForjateYearLoaded(year, forceRefresh){
+      const cleanYear = trimText(year);
+      if(!cleanYear) return;
+      if(forceRefresh){
+        state.loadedForjateYears.delete(cleanYear);
+        state.attemptedForjateYears.delete(cleanYear);
+        Object.keys(state.forjateSummary).forEach(key => {
+          if(key.startsWith(cleanYear + '-')) delete state.forjateSummary[key];
+        });
+      }
+      if(state.attemptedForjateYears.has(cleanYear)) return;
+      state.attemptedForjateYears.add(cleanYear);
+
+      const doc = await readDocumentCompat(FORJATE_DOC_PREFIX + cleanYear);
+      if(doc && (doc.content || doc.data)){
+        const payload = doc.content || doc.data;
+        const rows = extractRowsPayload(payload);
+        const summary = buildSummaryFromForjateRows(rows, cleanYear);
+        if(Object.keys(summary).length){
+          mergeSummary(summary);
+          state.loadedForjateYears.add(cleanYear);
+          state.yearLiveSource[cleanYear] = 'Cloud live (forjate:' + cleanYear + ')';
+          state.lastLiveRefreshAt = nowIso();
+          return;
+        }
+      }
+
+      await ensureLegacyLoaded();
+      const legacyKeys = Object.keys(state.forjateSummary).filter(key => key.startsWith(cleanYear + '-'));
+      if(legacyKeys.length){
+        state.loadedForjateYears.add(cleanYear);
+        state.yearLiveSource[cleanYear] = 'Cloud live (forjate)';
+        state.lastLiveRefreshAt = nowIso();
+      }else{
+        state.yearLiveSource[cleanYear] = 'Model Excel';
+      }
+    }
+    function getRealizedForSlot(row, machine, slot){
+      const reper = trimText(slot && slot.reper);
+      if(!reper) return { value:0, source:'empty' };
+      const year = trimText(row && row.an);
+      const key = buildRealizedKey(row && row.data, machine, reper);
+      if(state.loadedForjateYears.has(year)){
+        return { value: Math.max(0, Math.round(toNumber(state.forjateSummary[key]))), source: 'live' };
+      }
+      return { value: Math.max(0, Math.round(toNumber(slot && slot.realizat_seed))), source: 'seed' };
+    }
+
+    function isTruthyActive(value){
+      if(value === false || value === 0) return false;
+      const n = norm(value);
+      if(n === 'false' || n === '0' || n === 'nu' || n === 'inactiv') return false;
+      return true;
+    }
+    function parseHelpersPayload(payload){
+      const source = payload && payload.payload ? payload.payload : (payload || {});
+      const debitRows = Array.isArray(source.repere_debitare) ? source.repere_debitare : [];
+      const forjaRows = Array.isArray(source.repere_forjate) ? source.repere_forjate : [];
+      const debitByReper = Object.create(null);
+      const forjaByReper = Object.create(null);
+
+      debitRows.forEach(row => {
+        const reper = trimText(row.reper_debitare || row.REPER_DEBITARE || row.reper || row.REPER || '').toUpperCase();
+        if(!reper) return;
+        debitByReper[reper] = {
+          reper_debitare: reper,
+          diametru_otel: trimText(row.diametru_otel || row.DIAMETRU_OTEL || row.diam || ''),
+          calitate_otel: trimText(row.calitate_otel || row.CALITATE_OTEL || row.cal || ''),
+          kg_buc_debitat: toNumber(row.kg_buc_debitat || row.KG_BUC_DEBITAT || row.kgBuc || 0),
+          lungime_debitare_mm: toNumber(row.lungime_debitare_mm || row.LUNGIME_DEBITARE_MM || row.lung || 0)
+        };
+      });
+      forjaRows.forEach(row => {
+        const reper = trimText(row.reper_forjat || row.REPER_FORJAT || row.reper || row.REPER || '').toUpperCase();
+        if(!reper) return;
+        forjaByReper[reper] = {
+          reper_forjat: reper,
+          reper_debitare_origine: trimText(row.reper_debitare_origine || row.REPER_DEBITARE_ORIGINE || row.origine || '').toUpperCase(),
+          dimensiune_otel: trimText(row.dimensiune_otel || row.DIMENSIUNE_OTEL || row.diametru_otel || ''),
+          calitate_otel: trimText(row.calitate_otel || row.CALITATE_OTEL || ''),
+          kg_buc_forjat: toNumber(row.kg_buc_forjat || row.KG_BUC_FORJAT || 0)
+        };
+      });
+
+      return { debitByReper, forjaByReper };
+    }
+    async function loadHelperMaps(forceRefresh){
+      if(!state.supabase) return;
+      if(!forceRefresh && (Object.keys(state.helperMaps.debitByReper).length || Object.keys(state.helperMaps.forjaByReper).length)) return;
+
+      let debitByReper = Object.create(null);
+      let forjaByReper = Object.create(null);
+      let source = '-';
+
+      try{
+        const [debitRes, forjaRes] = await Promise.all([
+          state.supabase.from('rf_helper_repere_debitare').select('*').order('sort_order', { ascending:true }),
+          state.supabase.from('rf_helper_repere_forjate').select('*').order('sort_order', { ascending:true })
+        ]);
+
+        if(debitRes.error) throw debitRes.error;
+        if(forjaRes.error) throw forjaRes.error;
+
+        (debitRes.data || []).forEach(row => {
+          if(!isTruthyActive(row.is_active)) return;
+          const reper = trimText(row.reper_debitare || row.REPER_DEBITARE || '').toUpperCase();
+          if(!reper) return;
+
+          debitByReper[reper] = {
+            reper_debitare: reper,
+            diametru_otel: trimText(row.diametru_otel || row.DIAMETRU_OTEL || ''),
+            calitate_otel: trimText(row.calitate_otel || row.CALITATE_OTEL || ''),
+            kg_buc_debitat: toNumber(row.kg_buc_debitat || row.KG_BUC_DEBITAT || 0),
+            lungime_debitare_mm: toNumber(row.lungime_debitare_mm || row.LUNGIME_DEBITARE_MM || 0)
+          };
+        });
+
+        (forjaRes.data || []).forEach(row => {
+          if(!isTruthyActive(row.is_active)) return;
+          const reper = trimText(row.reper_forjat || row.REPER_FORJAT || '').toUpperCase();
+          if(!reper) return;
+
+          forjaByReper[reper] = {
+            reper_forjat: reper,
+            reper_debitare_origine: trimText(row.reper_debitare_origine || row.REPER_DEBITARE_ORIGINE || '').toUpperCase(),
+            dimensiune_otel: trimText(row.dimensiune_otel || row.DIMENSIUNE_OTEL || row.diametru_otel || ''),
+            calitate_otel: trimText(row.calitate_otel || row.CALITATE_OTEL || ''),
+            kg_buc_forjat: toNumber(row.kg_buc_forjat || row.KG_BUC_FORJAT || 0)
+          };
+        });
+
+        source = 'helper-data';
+      }catch(err){
+        console.error('Nu am putut încărca helper-data:', err);
+        debitByReper = Object.create(null);
+        forjaByReper = Object.create(null);
+        source = 'helper-data error';
+      }
+
+      state.helperMaps = {
+        debitByReper,
+        forjaByReper,
+        source,
+        loadedAt: nowIso()
+      };
+    }
+
+    async function loadSteelStock(forceRefresh){
+      if(!state.supabase) return { map:Object.create(null), rows:[], source:'-', ok:false, period:'', baseYear:0, baseMonth:0, startIso:'', startLabel:'' };
+      const docs = await queryDocsByKeys(STEEL_DOC_KEYS);
+      const picked = (() => {
+        for(const key of STEEL_DOC_KEYS){
+          const doc = docs.find(item => item.doc_key === key && extractRowsPayload(item.content || item.data).length);
+          if(doc) return doc;
+        }
+        return docs.find(item => extractRowsPayload(item.content || item.data).length) || docs[0] || null;
+      })();
+      if(!picked) return { map:Object.create(null), rows:[], source:'stoc-initial-otel lipsă', ok:false, period:'', baseYear:0, baseMonth:0, startIso:'', startLabel:'' };
+
+      const rows = extractRowsPayload(picked.content || picked.data).map(normalizeSteelRow);
+      const latest = pickLatestRowsByYearMonth(rows);
+      const useRows = latest.rows;
+      const nextPeriod = getNextMonthPeriod(latest.year, latest.month);
+      const bySpec = Object.create(null);
+      useRows.forEach(row => {
+        if(!row.diametru || !row.calitate || row.cantitateKg <= 0) return;
+        const specKey = buildSpecKey(row.diametru, row.calitate);
+        bySpec[specKey] = toNumber(bySpec[specKey]) + row.cantitateKg;
+      });
+      const src = picked.doc_key || 'stoc-initial-otel';
+      return {
+        map: bySpec,
+        rows,
+        source: latest.label ? (src + ' • ' + latest.label) : src,
+        ok:true,
+        count:useRows.length,
+        period: latest.label,
+        baseYear: latest.year || 0,
+        baseMonth: latest.month || 0,
+        startIso: nextPeriod.iso,
+        startLabel: nextPeriod.label
+      };
+    }
+    function buildDebitatKeysForYear(year){
+      const y = trimText(year) || CURRENT_YEAR;
+      const keys = [];
+      DEBITAT_DOC_BASE_KEYS.forEach(base => {
+        keys.push(base + ':' + y);
+      });
+      keys.push.apply(keys, DEBITAT_DOC_BASE_KEYS);
+      return Array.from(new Set(keys));
+    }
+    function buildFlowDocKeys(baseKeys, year){
+      const y = trimText(year) || CURRENT_YEAR;
+      const keys = [];
+      (baseKeys || []).forEach(base => {
+        const clean = trimText(base);
+        if(!clean) return;
+        keys.push(clean + ':' + y);
+        keys.push(clean);
+      });
+      return Array.from(new Set(keys));
+    }
+    async function loadDebitatStock(year){
+      if(!state.supabase) return { map:Object.create(null), rows:[], source:'-', ok:false, period:'', baseYear:0, baseMonth:0, startIso:'', startLabel:'' };
+      const keys = buildDebitatKeysForYear(year);
+      const docs = await queryDocsByKeys(keys);
+      const picked = (() => {
+        for(const key of keys){
+          const doc = docs.find(item => item.doc_key === key && extractRowsPayload(item.content || item.data).length);
+          if(doc) return doc;
+        }
+        return docs.find(item => extractRowsPayload(item.content || item.data).length) || docs[0] || null;
+      })();
+      if(!picked) return { map:Object.create(null), rows:[], source:'inventar-debitat lipsă', ok:false, period:'', baseYear:0, baseMonth:0, startIso:'', startLabel:'' };
+
+      const rows = extractRowsPayload(picked.content || picked.data).map(normalizeDebitatRow);
+      const latest = pickLatestRowsByYearMonth(rows);
+      const useRows = latest.rows;
+      const nextPeriod = getNextMonthPeriod(latest.year, latest.month);
+      const byReper = Object.create(null);
+      useRows.forEach(row => {
+        if(!row.reper || row.cantitateBuc <= 0) return;
+        const key = normalizeReperLoose(row.reper);
+        byReper[key] = Math.max(0, Math.round(toNumber(byReper[key]) + row.cantitateBuc));
+      });
+      const src = picked.doc_key || 'inventar-debitat';
+      return {
+        map: byReper,
+        rows,
+        source: latest.label ? (src + ' • ' + latest.label) : src,
+        ok:true,
+        count:useRows.length,
+        period: latest.label,
+        baseYear: latest.year || 0,
+        baseMonth: latest.month || 0,
+        startIso: nextPeriod.iso,
+        startLabel: nextPeriod.label
+      };
+    }
+    async function loadIntrariOtelEntries(year){
+      if(!state.supabase) return { byDate:Object.create(null), rows:[], source:'-', ok:false };
+      const keys = buildFlowDocKeys(INTRARI_OTEL_DOC_BASE_KEYS, year);
+      const docs = await queryDocsByKeys(keys);
+      const picked = (() => {
+        for(const key of keys){
+          const doc = docs.find(item => item.doc_key === key && extractRowsPayload(item.content || item.data).length);
+          if(doc) return doc;
+        }
+        return docs.find(item => extractRowsPayload(item.content || item.data).length) || docs[0] || null;
+      })();
+      if(!picked) return { byDate:Object.create(null), rows:[], source:'intrari-otel lipsă', ok:false };
+
+      const rows = extractRowsPayload(picked.content || picked.data)
+        .map(normalizeIntrariOtelRow)
+        .filter(row => !year || String(row.an) === String(year));
+      const byDate = Object.create(null);
+      rows.forEach(row => {
+        if(!row.data || !row.diametru || !row.calitate || row.cantitateKg <= 0) return;
+        const specKey = buildSpecKey(row.diametru, row.calitate);
+        byDate[row.data] = byDate[row.data] || Object.create(null);
+        byDate[row.data][specKey] = toNumber(byDate[row.data][specKey]) + row.cantitateKg;
+      });
+      const src = picked.doc_key || 'intrari-otel';
+      return { byDate, rows, source: src, ok:Object.keys(byDate).length > 0, count:rows.length };
+    }
+    async function loadDebitariEntries(year){
+      if(!state.supabase) return { byDate:Object.create(null), source:'-', ok:false };
+      const keys = buildFlowDocKeys(DEBITARI_FLOW_DOC_BASE_KEYS, year);
+      const docs = await queryDocsByKeys(keys);
+      const picked = (() => {
+        for(const key of keys){
+          const doc = docs.find(item => item.doc_key === key && extractRowsPayload(item.content || item.data).length);
+          if(doc) return doc;
+        }
+        return docs.find(item => extractRowsPayload(item.content || item.data).length) || docs[0] || null;
+      })();
+      if(!picked) return { byDate:Object.create(null), source:'debitari lipsă', ok:false };
+
+      const rows = extractRowsPayload(picked.content || picked.data)
+        .map(normalizeDebitariFlowRow)
+        .filter(row => !year || String(row.an) === String(year));
+      const byDate = Object.create(null);
+      rows.forEach(row => {
+        if(!row.data || !row.reper || row.cantitateBuc <= 0) return;
+        const reperKey = normalizeReperLoose(row.reper);
+        byDate[row.data] = byDate[row.data] || Object.create(null);
+        byDate[row.data][reperKey] = Math.max(0, Math.round(toNumber(byDate[row.data][reperKey]) + row.cantitateBuc));
+      });
+      const src = picked.doc_key || 'debitate';
+      return { byDate, source: src, ok:Object.keys(byDate).length > 0, count:rows.length };
+    }
+    async function loadForjateDailyMovements(year){
+      if(!state.supabase) return { rows:[], source:'-', ok:false };
+      const cleanYear = trimText(year);
+      let doc = null;
+      if(cleanYear) doc = await readDocumentCompat(FORJATE_DOC_PREFIX + cleanYear);
+      if(!(doc && (doc.content || doc.data))){
+        doc = await readDocumentCompat(LEGACY_DOC_KEY);
+      }
+      if(!(doc && (doc.content || doc.data))){
+        return { rows:[], source:'forjate lipsă', ok:false };
+      }
+      const rows = extractRowsPayload(doc.content || doc.data)
+        .map(normalizeForjateFlowRow)
+        .filter(row => !cleanYear || String(row.an) === String(cleanYear));
+      const src = doc.doc_key || (cleanYear ? ('forjate:' + cleanYear) : 'forjate');
+      return { rows, source: src, ok: rows.length > 0 };
+    }
+
+    async function refreshSupportData(forceRefresh){
+      await loadHelperMaps(forceRefresh);
+      const targetYear = state.activeYear || CURRENT_YEAR;
+      const steel = await loadSteelStock(forceRefresh);
+      const debitat = await loadDebitatStock(targetYear);
+      const intrari = await loadIntrariOtelEntries(targetYear);
+      const debitari = await loadDebitariEntries(targetYear);
+      const forjateFlow = await loadForjateDailyMovements(targetYear);
+      const deliveryOrders = await loadDeliveryOrders();
+      const inventarForjat = await loadInventarForjatRows(targetYear);
+
+      const notes = [];
+      notes.push('Helper: ' + (state.helperMaps.source || '-'));
+      notes.push('Stoc oțel: ' + (steel.source || '-'));
+      notes.push('Intrări oțel: ' + (intrari.source || '-'));
+      notes.push('Stoc debitat: ' + (debitat.source || '-'));
+      notes.push('Debitări: ' + (debitari.source || '-'));
+      notes.push('Forjate: ' + (forjateFlow.source || '-'));
+      notes.push('Comenzi livrare: ' + (deliveryOrders.source || '-'));
+      notes.push('Inventar forjat: ' + (inventarForjat.source || '-'));
+
+      state.deliverySupport = {
+        orders: deliveryOrders.rows || [],
+        inventarRows: inventarForjat.rows || [],
+        ordersSource: deliveryOrders.source || '-',
+        inventarSource: inventarForjat.source || '-',
+        ok: !!(deliveryOrders.ok || inventarForjat.ok),
+        alertSummary: { late:0, ahead:0, tone:'neutral', overdueLate:[], futureLate:[], futureAhead:[] }
+      };
+
+      state.stockSupport = {
+        steelKgBySpec: steel.map || Object.create(null),
+        debitatByReper: debitat.map || Object.create(null),
+        steelEntriesByDate: intrari.byDate || Object.create(null),
+        steelConsumptionsByDate: debitari.steelByDate || Object.create(null),
+        debitatEntriesByDate: debitari.byDate || Object.create(null),
+        steelBasePeriod: {
+          year: steel.baseYear || 0,
+          month: steel.baseMonth || 0,
+          period: steel.period || '',
+          startIso: steel.startIso || '',
+          startLabel: steel.startLabel || ''
+        },
+        debitatBasePeriod: {
+          year: debitat.baseYear || 0,
+          month: debitat.baseMonth || 0,
+          period: debitat.period || '',
+          startIso: debitat.startIso || '',
+          startLabel: debitat.startLabel || ''
+        },
+        steelRows: steel.rows || [],
+        debitatRows: debitat.rows || [],
+        intrariRows: intrari.rows || [],
+        debitariRows: debitari.rows || [],
+        forjateRows: forjateFlow.rows || [],
+        helperOk: !!(Object.keys(state.helperMaps.debitByReper).length || Object.keys(state.helperMaps.forjaByReper).length),
+        steelOk: !!steel.ok,
+        debitatOk: !!debitat.ok,
+        intrariOk: !!intrari.ok,
+        debitariFlowOk: !!debitari.ok,
+        forjateFlowOk: !!forjateFlow.ok,
+        notes
+      };
+    }
+
+    function resolvePlanningHelper(reper){
+      const reperRaw = normUpper(reper);
+      const reperKey = normalizeReperLoose(reper);
+      const forja = findLooseMapValue(state.helperMaps.forjaByReper, reperRaw) || null;
+      const originReperRaw = trimText((forja && forja.reper_debitare_origine) || reperRaw).toUpperCase();
+      const originReper = normalizeReperLoose(originReperRaw || reperKey);
+      const debit = findLooseMapValue(state.helperMaps.debitByReper, originReperRaw) || findLooseMapValue(state.helperMaps.debitByReper, reperRaw) || null;
+      const diametru = trimText((debit && debit.diametru_otel) || (forja && forja.dimensiune_otel) || '');
+      const calitate = trimText((debit && debit.calitate_otel) || (forja && forja.calitate_otel) || '');
+      const kgBuc = Math.max(0, toNumber((debit && debit.kg_buc_debitat) || 0));
+      return { reperKey, reperRaw, forja, debit, originReper, originReperRaw, diametru, calitate, kgBuc };
+    }
+    function cellCalcKey(rowId, machine){
+      return String(rowId) + '|' + String(machine);
+    }
+    function formatTooltipKg(value){
+      const num = Math.max(0, toNumber(value));
+      return (Math.round(num * 1000) / 1000).toString().replace('.',',') + ' kg';
+    }
+    function formatTooltipBuc(value){
+      return roMaybeNumber(Math.max(0, Math.round(toNumber(value)))) + ' buc';
+    }
+    function formatTooltipPercent(value){
+      const safe = Math.max(0, Math.min(100, toNumber(value)));
+      return (Math.round(safe * 10) / 10).toString().replace('.',',') + '%';
+    }
+    function buildStockTooltip(meta){
+      if(!meta) return '';
+      const coverage = Math.max(0, Math.min(100, toNumber(meta.coverageRatio) * 100));
+      const deficitDebitat = meta.mode === 'real'
+        ? 0
+        : Math.max(0, Math.round(toNumber(meta.simulatedQty) - toNumber(meta.beforeDebitat)));
+      const deficitOtel = meta.mode === 'real'
+        ? 0
+        : Math.max(0, toNumber(meta.needSteelKg) - Math.max(0, toNumber(meta.beforeSteelKg)));
+      const modeLabel = meta.mode === 'real'
+        ? 'Realizat live'
+        : (meta.mode === 'lack'
+          ? 'Simulare cu lipsă material'
+          : (meta.mode === 'error' ? 'Regulă helper lipsă / invalidă' : 'Simulare planificare'));
+      const sourceLabel = meta.usedSource === 'realizat' ? 'Realizat' : 'Planificat';
+      const qtyLabel = meta.mode === 'real'
+        ? formatTooltipBuc(meta.realizedValue)
+        : formatTooltipBuc(meta.simulatedQty);
+      const badge = meta.coverageRatio < 0.999
+        ? '<div class="plan-tip-badge">Verificare stoc</div>'
+        : '<div class="plan-tip-badge">Stoc acoperit</div>';
+      function buildRows(rows, block){
+        return '<div class="plan-tip-grid">' + rows.map(([label, value]) => (
+          '<div class="plan-tip-row' + (block ? ' is-block' : '') + '">' +
+            '<div class="plan-tip-label">' + escapeHtml(label) + '</div>' +
+            '<div class="plan-tip-value">' + escapeHtml(value) + '</div>' +
+          '</div>'
+        )).join('') + '</div>';
+      }
+      const sections = [
+        '<div class="plan-tip-section"><div class="plan-tip-section-title">Identificare</div>' + buildRows([
+          ['Reper forjat', meta.reper || '—'],
+          ['Reper debitat', meta.originReper || '—'],
+          ['Specificație', meta.specLabel || '—'],
+          ['Mod calcul', modeLabel],
+          ['Sursă cantitate', sourceLabel],
+          ['Cantitate folosită', qtyLabel]
+        ]) + '</div>',
+        '<div class="plan-tip-section"><div class="plan-tip-section-title">Stoc înainte</div>' + buildRows([
+          ['Debitat disponibil', formatTooltipBuc(meta.beforeDebitat)],
+          ['Oțel disponibil', meta.specLabel ? formatTooltipKg(meta.beforeSteelKg) : '—'],
+          ['Echivalent piese', meta.specLabel ? formatTooltipBuc(meta.beforeSteelPieces) : '—']
+        ]) + '</div>',
+        '<div class="plan-tip-section"><div class="plan-tip-section-title">Necesar și acoperire</div>' + buildRows([
+          ['Planificat', formatTooltipBuc(meta.planValue)],
+          ['Realizat', formatTooltipBuc(meta.realizedValue)],
+          ['Necesar din oțel', meta.specLabel ? formatTooltipKg(meta.needSteelKg) : '—'],
+          ['Deficit debitat', formatTooltipBuc(deficitDebitat)],
+          ['Deficit oțel', meta.specLabel ? formatTooltipKg(deficitOtel) : '—'],
+          ['Acoperire', formatTooltipPercent(coverage)]
+        ]) + '</div>',
+        '<div class="plan-tip-section"><div class="plan-tip-section-title">Stoc după</div>' + buildRows([
+          ['Debitat rămas', formatTooltipBuc(meta.afterDebitat)],
+          ['Oțel rămas', meta.specLabel ? formatTooltipKg(meta.afterSteelKg) : '—'],
+          ['Echivalent rămas', meta.specLabel ? formatTooltipBuc(meta.afterSteelPieces) : '—']
+        ]) + '</div>',
+        '<div class="plan-tip-section"><div class="plan-tip-section-title">Observație</div>' + buildRows([
+          ['Detaliu', meta.note || '—']
+        ], true) + '</div>'
+      ];
+      return badge + sections.join('');
+    }
+
+    function buildDeliveryReadySectionHtml(items, options){
+      const list = Array.isArray(items) ? items.filter(Boolean) : [];
+      if(!list.length) return '';
+      const opts = options && typeof options === 'object' ? options : {};
+      let html = opts.standalone ? '<div class="plan-tip-badge">Comandă gata aici</div>' : '';
+      html += '<div class="plan-tip-section"><div class="plan-tip-section-title">Comenzi gata aici</div><div class="plan-tip-grid">';
+      list.forEach(item => {
+        const transport = trimText(item && item.transportLabel) ? ('Transport ' + trimText(item.transportLabel)) : 'Fără transport';
+        const livrareLabel = item && item.deliveryIso ? isoToDisplay(item.deliveryIso) : '-';
+        const readyLabel = item && item.readyDateIso ? isoToDisplay(item.readyDateIso) : '-';
+        const orderSeqText = item && item.monthSeq ? ('Livrarea ' + String(item.monthSeq) + ' din lună') : 'Livrare';
+        const snapshotLabel = (item && item.snapshotEndIso) ? (formatTooltipBuc(item.snapshotQty) + ' la ' + isoToDisplay(item.snapshotEndIso)) : formatTooltipBuc(item && item.snapshotQty);
+        const sourceLabel = item && item.sourceType === 'realizat' ? 'Realizat live' : (item && item.sourceType === 'stoc' ? 'Stoc anterior' : 'Planificat');
+        const detailText = item && item.readyFromStock
+          ? 'Comanda era deja acoperită din stoc înainte de această zi.'
+          : ('Din această celulă se folosesc ' + formatTooltipBuc(item && item.usedFromCell) + ' pentru închiderea comenzii.');
+        const cycleStatusLabel = item && item.isCycleLast
+          ? (item.finalTone === 'current' ? 'Aceasta este ultima livrare a lunii și se închide în aceeași lună.' : 'Aceasta este ultima livrare a lunii și se închide în luna următoare.')
+          : 'Livrare intermediară din luna curentă.';
+        html += '<div class="plan-tip-row is-block">'
+          + '<div class="plan-tip-value">' + escapeHtml(transport + ' • ' + (item && item.reper || '-')) + '</div>'
+          + '<div class="plan-tip-grid">'
+            + '<div class="plan-tip-row"><div class="plan-tip-label">Ordine</div><div class="plan-tip-value">' + escapeHtml(orderSeqText) + '</div></div>'
+            + '<div class="plan-tip-row"><div class="plan-tip-label">Cantitate comandă</div><div class="plan-tip-value">' + escapeHtml(formatTooltipBuc(item && item.requiredQty)) + '</div></div>'
+            + '<div class="plan-tip-row"><div class="plan-tip-label">Data livrare</div><div class="plan-tip-value">' + escapeHtml(livrareLabel) + '</div></div>'
+            + '<div class="plan-tip-row"><div class="plan-tip-label">Gata aici la</div><div class="plan-tip-value">' + escapeHtml(readyLabel + ((item && item.machine) ? (' • ' + item.machine) : '')) + '</div></div>'
+            + '<div class="plan-tip-row"><div class="plan-tip-label">Sursă închidere</div><div class="plan-tip-value">' + escapeHtml(sourceLabel) + '</div></div>'
+            + '<div class="plan-tip-row"><div class="plan-tip-label">Disponibile înainte</div><div class="plan-tip-value">' + escapeHtml(formatTooltipBuc(item && item.availableBeforeCell)) + '</div></div>'
+            + '<div class="plan-tip-row"><div class="plan-tip-label">Disponibile după</div><div class="plan-tip-value">' + escapeHtml(formatTooltipBuc(item && item.availableAfterCell)) + '</div></div>'
+            + '<div class="plan-tip-row"><div class="plan-tip-label">Folosite de aici</div><div class="plan-tip-value">' + escapeHtml(formatTooltipBuc(item && item.usedFromCell)) + '</div></div>'
+            + '<div class="plan-tip-row"><div class="plan-tip-label">Rămase după comandă</div><div class="plan-tip-value">' + escapeHtml(formatTooltipBuc(item && item.remainingAfterReady)) + '</div></div>'
+            + '<div class="plan-tip-row"><div class="plan-tip-label">Rămase la livrare</div><div class="plan-tip-value">' + escapeHtml(formatTooltipBuc(item && item.remainingByDelivery)) + '</div></div>'
+            + '<div class="plan-tip-row"><div class="plan-tip-label">Snapshot inventar</div><div class="plan-tip-value">' + escapeHtml(snapshotLabel) + '</div></div>'
+            + '<div class="plan-tip-row"><div class="plan-tip-label">Comenzi înainte</div><div class="plan-tip-value">' + escapeHtml(formatTooltipBuc(item && item.priorCommitted)) + '</div></div>'
+            + '<div class="plan-tip-row"><div class="plan-tip-label">Status lună</div><div class="plan-tip-value">' + escapeHtml(cycleStatusLabel) + '</div></div>'
+            + '<div class="plan-tip-row is-block"><div class="plan-tip-label">Detaliu</div><div class="plan-tip-value">' + escapeHtml(detailText) + '</div></div>'
+          + '</div>'
+        + '</div>';
+      });
+      html += '</div></div>';
+      return html;
+    }
+    function buildCombinedPlanTooltipHtml(stockHtml, deliveryItems){
+      const readyItems = Array.isArray(deliveryItems) ? deliveryItems.filter(Boolean) : [];
+      if(!stockHtml && !readyItems.length) return '';
+      if(!readyItems.length) return stockHtml || '';
+      const readyHtml = buildDeliveryReadySectionHtml(readyItems, { standalone: !stockHtml });
+      return (stockHtml || '') + readyHtml;
+    }
+    function getDeliveryContributionRows(){
+      const rows = sortRowsStable(state.rows).filter(row => !state.activeYear || String(row && row.an) === String(state.activeYear));
+      const items = [];
+      rows.forEach((row, index) => {
+        const rowIso = trimText(row && row.data);
+        if(!rowIso) return;
+        MACHINE_ORDER.forEach((machine, machineIndex) => {
+          const slot = row && row.slots ? (row.slots[machine] || normalizePlanSlot()) : normalizePlanSlot();
+          const reper = trimText(slot && slot.reper).toUpperCase();
+          if(!reper) return;
+          const realized = getRealizedForSlot(row, machine, slot);
+          const planValue = Math.max(0, Math.round(toNumber(slot && slot.planificat)));
+          const qty = realized && toNumber(realized.value) > 0 ? Math.max(0, Math.round(toNumber(realized.value))) : planValue;
+          if(qty <= 0) return;
+          const reperKey = getCanonicalDeliveryReperKey(reper);
+          if(!reperKey) return;
+          items.push({
+            rowId: row.id,
+            rowIso,
+            rowNo: Number(row && row.row_no || 0),
+            rowIndex: index,
+            machine,
+            machineIndex,
+            reper,
+            reperKey,
+            qty,
+            sourceType: realized && toNumber(realized.value) > 0 ? 'realizat' : 'planificat'
+          });
+        });
+      });
+      items.sort((a,b) => String(a.rowIso).localeCompare(String(b.rowIso), 'ro', { sensitivity:'base' }) || Number(a.rowNo || 0) - Number(b.rowNo || 0) || Number(a.machineIndex || 0) - Number(b.machineIndex || 0));
+      return items;
+    }
+    function rebuildDeliveryReadyMarkers(){
+      state.deliveryReadyByCell = Object.create(null);
+      try{
+        const sourceOrders = Array.isArray(state.deliverySupport && state.deliverySupport.orders) ? state.deliverySupport.orders : [];
+        if(!sourceOrders.length) return;
+        const scopedOrders = sourceOrders.filter(order => {
+          const deliveryIso = trimText(order && order.dataLivrare);
+          const reper = getCanonicalDeliveryReperKey(order && order.reper);
+          const cantitate = Math.max(0, Math.round(toNumber(order && order.cantitate)));
+          if(!deliveryIso || !reper || cantitate <= 0) return false;
+          return !state.activeYear || String(order.an || deliveryIso.slice(0,4)) === String(state.activeYear);
+        }).slice().sort(compareDeliveryOrders);
+        if(!scopedOrders.length) return;
+        const cycleCounters = Object.create(null);
+        scopedOrders.forEach(order => {
+          const cycleKey = getDeliveryOrderCycleKey(order) || [String(order && order.an || ''), String(getDeliveryOrderMonthNumber(order) || ''), getCanonicalDeliveryReperKey(order && order.reper)].join('|');
+          cycleCounters[cycleKey] = Number(cycleCounters[cycleKey] || 0) + 1;
+          order.__monthSeq = cycleCounters[cycleKey];
+        });
+        const contributionRows = getDeliveryContributionRows();
+        const byReper = Object.create(null);
+        contributionRows.forEach(item => {
+          (byReper[item.reperKey] = byReper[item.reperKey] || []).push(item);
+        });
+        scopedOrders.forEach(order => {
+          const reperKey = getCanonicalDeliveryReperKey(order && order.reper);
+          const deliveryIso = trimText(order && order.dataLivrare);
+          const requiredQty = Math.max(0, Math.round(toNumber(order && order.cantitate)));
+          if(!reperKey || !deliveryIso || requiredQty <= 0) return;
+          const snapshot = findInventarForjatSnapshot(order && order.reper, deliveryIso);
+          const snapshotQty = Math.max(0, Math.round(toNumber(snapshot && snapshot.qty)));
+          const priorCommitted = Math.max(0, Math.round(toNumber(getPreviousCommittedDeliveryQty(order, scopedOrders, snapshot && snapshot.endIso))));
+          const relevantItems = (byReper[reperKey] || []).filter(item => (!snapshot.endIso || item.rowIso > snapshot.endIso) && item.rowIso <= deliveryIso);
+          const totalByDeliveryRaw = snapshotQty - priorCommitted + relevantItems.reduce((sum, item) => sum + Math.max(0, Math.round(toNumber(item && item.qty))), 0);
+          const availableByDelivery = Math.max(0, Math.round(toNumber(totalByDeliveryRaw)));
+          if(availableByDelivery < requiredQty) return;
+          let rawRunning = snapshotQty - priorCommitted;
+          let markerItem = null;
+          let readyFromStock = false;
+          let availableBeforeCell = Math.max(0, Math.round(toNumber(rawRunning)));
+          let availableAfterCell = availableBeforeCell;
+          let usedFromCell = 0;
+          if(rawRunning >= requiredQty){
+            readyFromStock = true;
+            markerItem = relevantItems[0] || (byReper[reperKey] || []).find(item => item.rowIso <= deliveryIso) || (byReper[reperKey] || [])[0] || null;
+          }else{
+            for(const item of relevantItems){
+              const rawBefore = rawRunning;
+              rawRunning += Math.max(0, Math.round(toNumber(item && item.qty)));
+              if(rawRunning >= requiredQty){
+                markerItem = item;
+                availableBeforeCell = Math.max(0, Math.round(toNumber(rawBefore)));
+                availableAfterCell = Math.max(0, Math.round(toNumber(rawRunning)));
+                usedFromCell = Math.min(Math.max(0, Math.round(toNumber(item && item.qty))), Math.max(0, requiredQty - availableBeforeCell));
+                break;
+              }
+            }
+          }
+          if(!markerItem) return;
+          if(readyFromStock){
+            availableBeforeCell = Math.max(0, Math.round(toNumber(snapshotQty - priorCommitted)));
+            availableAfterCell = availableBeforeCell;
+            usedFromCell = 0;
+          }
+          const cellKey = cellCalcKey(markerItem.rowId, markerItem.machine);
+          const readyItem = {
+            orderId: trimText(order && order.id),
+            reper: trimText(order && order.reper).toUpperCase(),
+            transportLabel: trimText(order && order.nrTransport),
+            deliveryIso,
+            readyDateIso: markerItem.rowIso,
+            machine: markerItem.machine,
+            requiredQty,
+            priorCommitted,
+            snapshotQty,
+            snapshotEndIso: trimText(snapshot && snapshot.endIso),
+            sourceType: readyFromStock ? 'stoc' : markerItem.sourceType,
+            readyFromStock,
+            availableBeforeCell,
+            availableAfterCell,
+            usedFromCell,
+            remainingAfterReady: Math.max(0, availableAfterCell - requiredQty),
+            remainingByDelivery: Math.max(0, availableByDelivery - requiredQty),
+            monthSeq: Number(order && order.__monthSeq || 0),
+            cycleKey: getDeliveryOrderCycleKey(order) || ''
+          };
+          (state.deliveryReadyByCell[cellKey] = state.deliveryReadyByCell[cellKey] || []).push(readyItem);
+        });
+        const readyByCycle = Object.create(null);
+        Object.keys(state.deliveryReadyByCell).forEach(key => {
+          state.deliveryReadyByCell[key].sort((a,b) => String(a.deliveryIso).localeCompare(String(b.deliveryIso), 'ro', { sensitivity:'base' }) || Number(a.monthSeq || 0) - Number(b.monthSeq || 0) || String(a.transportLabel || '').localeCompare(String(b.transportLabel || ''), 'ro', { sensitivity:'base' }));
+          state.deliveryReadyByCell[key].forEach(item => {
+            const cycleKey = trimText(item && item.cycleKey);
+            if(!cycleKey) return;
+            (readyByCycle[cycleKey] = readyByCycle[cycleKey] || []).push(item);
+          });
+        });
+        Object.keys(readyByCycle).forEach(cycleKey => {
+          const list = readyByCycle[cycleKey].slice().sort((a,b) => String(a.deliveryIso).localeCompare(String(b.deliveryIso), 'ro', { sensitivity:'base' }) || Number(a.monthSeq || 0) - Number(b.monthSeq || 0) || String(a.transportLabel || '').localeCompare(String(b.transportLabel || ''), 'ro', { sensitivity:'base' }));
+          const last = list[list.length - 1];
+          list.forEach(item => {
+            item.cycleCount = list.length;
+            item.isCycleLast = !!(last && item === last);
+            item.finalTone = '';
+          });
+          if(last){
+            const readyMonthIso = trimText(last.readyDateIso).slice(0,7);
+            const deliveryMonthIso = trimText(last.deliveryIso).slice(0,7);
+            last.finalTone = readyMonthIso && deliveryMonthIso && readyMonthIso === deliveryMonthIso ? 'current' : 'next';
+          }
+        });
+      }catch(error){
+        console.error('rebuildDeliveryReadyMarkers', error);
+        state.deliveryReadyByCell = Object.create(null);
+      }
+    }
+    let planTooltipEl = null;
+    let activePlanTooltipCell = null;
+    function ensurePlanTooltip(){
+      if(planTooltipEl) return planTooltipEl;
+      planTooltipEl = document.createElement('div');
+      planTooltipEl.className = 'plan-floating-tooltip';
+      planTooltipEl.hidden = true;
+      document.body.appendChild(planTooltipEl);
+      return planTooltipEl;
+    }
+    function hidePlanTooltip(){
+      if(!planTooltipEl) return;
+      planTooltipEl.hidden = true;
+      planTooltipEl.style.left = '-9999px';
+      planTooltipEl.style.top = '-9999px';
+      activePlanTooltipCell = null;
+    }
+    function getPlanTooltipCellFromTarget(target){
+      return target && target.closest ? target.closest('td.slot-plan[data-tooltip-html],td.slot-reper[data-tooltip-html]') : null;
+    }
+    function positionPlanTooltip(cell){
+      if(!planTooltipEl || !cell || planTooltipEl.hidden) return;
+      const rect = cell.getBoundingClientRect();
+      const gap = 10;
+      const margin = 12;
+      const vw = window.innerWidth || document.documentElement.clientWidth || 0;
+      const vh = window.innerHeight || document.documentElement.clientHeight || 0;
+      const tipRect = planTooltipEl.getBoundingClientRect();
+      let left = rect.right + gap;
+      if(left + tipRect.width > vw - margin) left = rect.left - tipRect.width - gap;
+      if(left < margin){
+        left = Math.max(margin, Math.min(vw - tipRect.width - margin, rect.left + ((rect.width - tipRect.width) / 2)));
+      }
+      let top = rect.top + ((rect.height - tipRect.height) / 2);
+      if(top + tipRect.height > vh - margin) top = vh - tipRect.height - margin;
+      if(top < margin) top = margin;
+      planTooltipEl.style.left = Math.round(left) + 'px';
+      planTooltipEl.style.top = Math.round(top) + 'px';
+    }
+    function showPlanTooltip(cell){
+      if(!cell) return hidePlanTooltip();
+      const html = cell.getAttribute('data-tooltip-html');
+      if(!html) return hidePlanTooltip();
+      const tip = ensurePlanTooltip();
+      tip.innerHTML = html;
+      tip.className = 'plan-floating-tooltip' + ((cell.getAttribute('data-tooltip-tone') === 'alert') ? ' is-alert' : '');
+      tip.hidden = false;
+      activePlanTooltipCell = cell;
+      positionPlanTooltip(cell);
+    }
+    let deliveryTooltipEl = null;
+    let deliveryTooltipVisible = false;
+    function normalizeDeliveryOrderRow(row, index){
+      const obj = Array.isArray(row) ? {
+        an: arrayCell(row, 0, 0),
+        luna: arrayCell(row, 1, ''),
+        reper: arrayCell(row, 2, ''),
+        nrTransport: arrayCell(row, 3, ''),
+        dataLivrare: arrayCell(row, 4, ''),
+        cantitate: arrayCell(row, 5, 0),
+        observatii: arrayCell(row, 6, '')
+      } : (row || {});
+      const dataLivrare = displayToIso(pick(obj, ['dataLivrare','data_livrare','data livrarii','data_livrarii','Data Livrării','DATA LIVRARII','data'])) || trimText(pick(obj, ['dataLivrare','data_livrare','data livrarii','data_livrarii','data']));
+      const an = Number(pick(obj, ['an','AN','An','anul','year'])) || (dataLivrare ? Number(dataLivrare.slice(0,4)) : 0);
+      const luna = trimText(pick(obj, ['luna','LUNA','Luna','month'])) || (dataLivrare ? getMonthName(Number(dataLivrare.slice(5,7))) : '');
+      return {
+        id: trimText(pick(obj, ['id','_id'])) || ('delivery-' + index + '-' + Math.random().toString(36).slice(2)),
+        an,
+        luna,
+        reper: trimText(pick(obj, ['reper','REPER','Reper'])).toUpperCase(),
+        nrTransport: trimText(pick(obj, ['nrTransport','nr_transport','transport','nr transport','Nr transport'])),
+        dataLivrare,
+        cantitate: Math.max(0, Math.round(toNumber(pick(obj, ['cantitate','cant_ceruta','cantitate_ceruta','cantitatea ceruta','cant'])))),
+        observatii: trimText(pick(obj, ['observatii','observații','notes']))
+      };
+    }
+    function normalizeInventarForjatRow(row, index){
+      const obj = Array.isArray(row) ? {
+        an: arrayCell(row, 0, 0),
+        luna: arrayCell(row, 1, ''),
+        reper: arrayCell(row, 2, ''),
+        dimensiune: arrayCell(row, 3, ''),
+        calitate: arrayCell(row, 4, ''),
+        rebutAnaliza: arrayCell(row, 5, 0),
+        stocFinal: arrayCell(row, 6, 0),
+        data: ''
+      } : (row || {});
+      const an = Number(pick(obj, ['an','anul','AN','Anul','year'])) || 0;
+      const luna = trimText(pick(obj, ['luna','Luna','month'])) || '';
+      const lunaNum = monthNumberFromAny(luna);
+      return {
+        id: trimText(pick(obj, ['id','_id'])) || ('inventar-forjat-' + index),
+        an,
+        luna,
+        lunaNum,
+        reper: trimText(pick(obj, ['reper','REPER','Reper'])).toUpperCase(),
+        stocFinal: Math.max(0, Math.round(toNumber(pick(obj, ['stocFinal','stoc FINAL Piese Forjate (buc)','Stoc FINAL Piese Forjate (buc)','stoc final piese forjate (buc)']))))
+      };
+    }
+    function buildForjatInventarKeys(year){
+      const y = Number(trimText(year) || 0);
+      const years = [y - 1, y].filter(value => Number.isFinite(value) && value > 0);
+      const keys = [];
+      FORJAT_INV_BASE_KEYS.forEach(base => {
+        years.forEach(oneYear => keys.push(base + ':' + oneYear));
+        keys.push(base);
+      });
+      return Array.from(new Set(keys));
+    }
+    async function loadDeliveryOrders(){
+      if(!state.supabase) return { rows:[], source:'-', ok:false };
+      const docs = await queryDocsByKeys(DELIVERY_DOC_ALIASES);
+      const picked = (() => {
+        for(const key of DELIVERY_DOC_ALIASES){
+          const doc = docs.find(item => item.doc_key === key && extractRowsPayload(item.content || item.data).length);
+          if(doc) return doc;
+        }
+        return docs.find(item => extractRowsPayload(item.content || item.data).length) || docs[0] || null;
+      })();
+      if(!picked) return { rows:[], source:'comenzi-livrare lipsă', ok:false };
+      const rows = extractRowsPayload(picked.content || picked.data).map(normalizeDeliveryOrderRow).filter(row => row.reper && row.dataLivrare && row.cantitate > 0);
+      return { rows, source:picked.doc_key || DELIVERY_DOC_KEY, ok:rows.length > 0 };
+    }
+    async function loadInventarForjatRows(year){
+      if(!state.supabase) return { rows:[], source:'-', ok:false };
+      const keys = buildForjatInventarKeys(year);
+      const docs = await queryDocsByKeys(keys);
+      const picked = docs.find(item => extractRowsPayload(item.content || item.data).length) || null;
+      if(!picked) return { rows:[], source:'inventar-forjat lipsă', ok:false };
+      const rows = [];
+      docs.forEach(doc => {
+        const extracted = extractRowsPayload(doc.content || doc.data).map(normalizeInventarForjatRow).filter(row => row.reper && row.an && row.lunaNum);
+        rows.push.apply(rows, extracted);
+      });
+      return { rows, source:picked.doc_key || 'inventar-forjat', ok:rows.length > 0 };
+    }
+    function buildDeliveryRealizedKey(dataIso, machine, reper){
+      return [trimText(dataIso), normalizeMachineKey(machine), getCanonicalDeliveryReperKey(reper) || normalizeDeliveryReperLoose(reper)].join('|');
+    }
+    function getDeliveryTransportNumber(value){
+      const raw = trimText(value);
+      const match = raw.match(/(\d+)/);
+      return match ? Number(match[1]) || 0 : 0;
+    }
+    function compareDeliveryOrders(a, b){
+      const da = trimText(a && a.dataLivrare);
+      const db = trimText(b && b.dataLivrare);
+      if(da !== db){
+        if(!da) return 1;
+        if(!db) return -1;
+        return da.localeCompare(db);
+      }
+      const ta = getDeliveryTransportNumber(a && a.nrTransport);
+      const tb = getDeliveryTransportNumber(b && b.nrTransport);
+      if(ta !== tb) return ta - tb;
+      return trimText(a && a.id).localeCompare(trimText(b && b.id), 'ro', { sensitivity:'base' });
+    }
+    function getDeliveryOrderMonthNumber(order){
+      return monthNumberFromAny(order && order.luna) || (trimText(order && order.dataLivrare) ? Number(trimText(order.dataLivrare).slice(5,7)) : 0);
+    }
+    function getDeliveryOrderCycleKey(order){
+      const deliveryIso = trimText(order && order.dataLivrare);
+      const an = Number(order && order.an) || (deliveryIso ? Number(deliveryIso.slice(0,4)) : 0);
+      const lunaNum = getDeliveryOrderMonthNumber(order);
+      const reperKey = getCanonicalDeliveryReperKey(order && order.reper);
+      if(!an || !lunaNum || !reperKey) return '';
+      return [String(an), String(lunaNum), reperKey].join('|');
+    }
+    function getPreviousCommittedDeliveryQty(targetOrder, scopedOrders, afterExclusiveIso){
+      const reperKey = getCanonicalDeliveryReperKey(targetOrder && targetOrder.reper);
+      if(!reperKey) return 0;
+      const sorted = (Array.isArray(scopedOrders) ? scopedOrders : []).slice().sort(compareDeliveryOrders);
+      let total = 0;
+      for(const order of sorted){
+        if(String(order && order.id) === String(targetOrder && targetOrder.id)) break;
+        if(getCanonicalDeliveryReperKey(order && order.reper) !== reperKey) continue;
+        const orderIso = trimText(order && order.dataLivrare);
+        if(afterExclusiveIso && orderIso && orderIso <= afterExclusiveIso) continue;
+        total += Math.max(0, Math.round(toNumber(order && order.cantitate)));
+      }
+      return total;
+    }
+    function buildProjectedGoodByDate(){
+      const byDate = Object.create(null);
+      const actualSlotMap = Object.create(null);
+      const forjateRows = Array.isArray(state.stockSupport.forjateRows) ? state.stockSupport.forjateRows : [];
+      forjateRows.forEach(row => {
+        if(!row.data || !row.reper) return;
+        const reperKey = getCanonicalDeliveryReperKey(row.reper);
+        if(!reperKey) return;
+        if(row.machine) actualSlotMap[buildDeliveryRealizedKey(row.data, row.machine, row.reper)] = true;
+        const qty = Math.max(0, Math.round(toNumber(row.realizatBuc)));
+        if(qty <= 0) return;
+        byDate[row.data] = byDate[row.data] || Object.create(null);
+        byDate[row.data][reperKey] = Math.max(0, Math.round(toNumber(byDate[row.data][reperKey]) + qty));
+      });
+      (Array.isArray(state.rows) ? state.rows : []).forEach(row => {
+        const rowIso = trimText(row && row.data);
+        if(!rowIso || rowIso <= TODAY_ISO) return;
+        MACHINE_ORDER.forEach(machine => {
+          const slot = row && row.slots ? (row.slots[machine] || normalizePlanSlot()) : normalizePlanSlot();
+          const reper = trimText(slot.reper).toUpperCase();
+          const qty = Math.max(0, Math.round(toNumber(slot.planificat)));
+          if(!reper || qty <= 0) return;
+          if(actualSlotMap[buildDeliveryRealizedKey(rowIso, machine, reper)]) return;
+          const reperKey = getCanonicalDeliveryReperKey(reper);
+          if(!reperKey) return;
+          byDate[rowIso] = byDate[rowIso] || Object.create(null);
+          byDate[rowIso][reperKey] = Math.max(0, Math.round(toNumber(byDate[rowIso][reperKey]) + qty));
+        });
+      });
+      return byDate;
+    }
+    function findInventarForjatSnapshot(reper, deliveryIso){
+      const reperKey = getCanonicalDeliveryReperKey(reper);
+      let bestRow = null;
+      let bestIso = '';
+      (Array.isArray(state.deliverySupport.inventarRows) ? state.deliverySupport.inventarRows : []).forEach(row => {
+        if(getCanonicalDeliveryReperKey(row.reper) !== reperKey) return;
+        const eom = endOfMonthIso(row.an, row.lunaNum || monthNumberFromAny(row.luna));
+        if(!eom || (deliveryIso && eom >= deliveryIso)) return;
+        if(!bestIso || eom > bestIso){
+          bestIso = eom;
+          bestRow = row;
+        }
+      });
+      return { row:bestRow, endIso:bestIso, qty: bestRow ? Math.max(0, Math.round(toNumber(bestRow.stocFinal))) : 0 };
+    }
+    function sumProjectedGood(dailyByDate, reper, startExclusiveIso, endInclusiveIso){
+      const reperKey = getCanonicalDeliveryReperKey(reper);
+      if(!reperKey || !endInclusiveIso) return 0;
+      let total = 0;
+      Object.keys(dailyByDate || {}).forEach(dateIso => {
+        if((startExclusiveIso && dateIso <= startExclusiveIso) || dateIso > endInclusiveIso) return;
+        total += Math.max(0, Math.round(toNumber(dailyByDate[dateIso] && dailyByDate[dateIso][reperKey])));
+      });
+      return total;
+    }
+    function computeDeliveryAlertMetrics(order, dailyByDate, scopedOrders){
+      const snapshot = findInventarForjatSnapshot(order && order.reper, order && order.dataLivrare);
+      const priorCommitted = Math.max(0, Math.round(toNumber(getPreviousCommittedDeliveryQty(order, scopedOrders, snapshot && snapshot.endIso))));
+      const deliveryIso = trimText(order && order.dataLivrare);
+      const grossD4 = snapshot.qty + sumProjectedGood(dailyByDate, order && order.reper, snapshot.endIso, subtractDaysIso(deliveryIso, 4));
+      const grossD2 = snapshot.qty + sumProjectedGood(dailyByDate, order && order.reper, snapshot.endIso, subtractDaysIso(deliveryIso, 2));
+      const grossDelivery = snapshot.qty + sumProjectedGood(dailyByDate, order && order.reper, snapshot.endIso, deliveryIso);
+      const availBeforeCurrentD4 = Math.max(0, Math.round(toNumber(grossD4)) - priorCommitted);
+      const availBeforeCurrentD2 = Math.max(0, Math.round(toNumber(grossD2)) - priorCommitted);
+      const availBeforeCurrentDelivery = Math.max(0, Math.round(toNumber(grossDelivery)) - priorCommitted);
+      const required = Math.max(0, Math.round(toNumber(order && order.cantitate)));
+      return {
+        priorCommitted,
+        snapshotQty: Math.max(0, Math.round(toNumber(snapshot && snapshot.qty))),
+        availBeforeCurrentD4,
+        availBeforeCurrentD2,
+        availBeforeCurrentDelivery,
+        shortageDelivery: Math.max(0, required - availBeforeCurrentDelivery),
+        shortageD2: Math.max(0, required - availBeforeCurrentD2),
+        surplusD4: Math.max(0, availBeforeCurrentD4 - required),
+        required
+      };
+    }
+    function describeDeliveryOrder(order){
+      const transport = trimText(order && order.nrTransport);
+      return transport ? ('Transport ' + transport + ' • ' + trimText(order.reper)) : trimText(order.reper);
+    }
+    function collectMachinesForReper(reper, endIso){
+      const reperKey = getCanonicalDeliveryReperKey(reper);
+      if(!reperKey) return '-';
+      const seen = new Set();
+      const pushMachine = (machine) => {
+        const clean = trimText(machine);
+        if(clean) seen.add(clean);
+      };
+      (Array.isArray(state.rows) ? state.rows : []).forEach(row => {
+        const rowIso = trimText(row && row.data);
+        if(!rowIso || (endIso && rowIso > endIso)) return;
+        MACHINE_ORDER.forEach(machine => {
+          const slot = row && row.slots ? (row.slots[machine] || normalizePlanSlot()) : normalizePlanSlot();
+          if(getCanonicalDeliveryReperKey(slot.reper) !== reperKey) return;
+          const qty = Math.max(0, Math.round(toNumber(slot.planificat)));
+          if(qty > 0) pushMachine(machine);
+        });
+      });
+      (Array.isArray(state.stockSupport && state.stockSupport.forjateRows) ? state.stockSupport.forjateRows : []).forEach(row => {
+        const rowIso = trimText(row && row.data);
+        if(!rowIso || (endIso && rowIso > endIso)) return;
+        if(getCanonicalDeliveryReperKey(row.reper) !== reperKey) return;
+        const qty = Math.max(0, Math.round(toNumber(row.realizatBuc)));
+        if(qty > 0) pushMachine(row.machine);
+      });
+      const values = Array.from(seen);
+      return values.length ? values.join(', ') : '-';
+    }
+    function buildDeliveryAlertItemHtml(item, toneClass){
+      const secondLabel = trimText(item && item.alertLabel) || 'Alertă';
+      return '<div class="delivery-tip-item">'
+        + '<div class="delivery-tip-line1">' + escapeHtml(item.message || '-') + '</div>'
+        + '<div class="delivery-tip-line2">Livrare: ' + escapeHtml(isoToDisplay(item.deliveryIso)) + ' • ' + escapeHtml(secondLabel) + ': ' + escapeHtml(isoToDisplay(item.alertDate)) + '</div>'
+        + '<div class="delivery-tip-kv">'
+          + '<div class="delivery-tip-kv-row"><div class="delivery-tip-kv-label">Reper</div><div class="delivery-tip-kv-value">' + escapeHtml(item.reper || '-') + '</div></div>'
+          + '<div class="delivery-tip-kv-row"><div class="delivery-tip-kv-label">Transport</div><div class="delivery-tip-kv-value">' + escapeHtml(item.transportLabel || '-') + '</div></div>'
+          + '<div class="delivery-tip-kv-row"><div class="delivery-tip-kv-label">Cantitate</div><div class="delivery-tip-kv-value">' + escapeHtml(roMaybeNumber(Math.max(0, Math.round(toNumber(item.orderQty)))) + ' buc') + '</div></div>'
+          + '<div class="delivery-tip-kv-row"><div class="delivery-tip-kv-label">Diferență</div><div class="delivery-tip-kv-value">' + escapeHtml(roMaybeNumber(Math.max(0, Math.round(toNumber(item.qty)))) + ' buc') + '</div></div>'
+          + '<div class="delivery-tip-kv-row"><div class="delivery-tip-kv-label">Utilaj</div><div class="delivery-tip-kv-value">' + escapeHtml(item.machineLabel || '-') + '</div></div>'
+        + '</div>'
+        + '</div>';
+    }
+    function buildDeliveryIndicatorHtml(summary){
+      const overdue = Array.isArray(summary && summary.overdueLate) ? summary.overdueLate : [];
+      const risk = Array.isArray(summary && summary.futureRisk) ? summary.futureRisk : [];
+      const late = Array.isArray(summary && summary.futureLate) ? summary.futureLate : [];
+      const ahead = Array.isArray(summary && summary.futureAhead) ? summary.futureAhead : [];
+      if(!overdue.length && !risk.length && !late.length && !ahead.length){
+        return '<div class="delivery-tip-title">Alerte active livrare</div><div class="delivery-tip-empty">Nu există livrări restante, riscuri până la livrare, întârzieri D-2 sau avansuri D-4 active.</div>';
+      }
+      let html = '<div class="delivery-tip-title">Alerte active livrare</div>';
+      if(overdue.length){
+        html += '<div class="delivery-tip-section"><div class="delivery-tip-section-title late">Livrări în urmă • ' + escapeHtml(String(overdue.length)) + '</div><div class="delivery-tip-list">' + overdue.map(item => buildDeliveryAlertItemHtml(item, 'late')).join('') + '</div></div>';
+      }
+      if(risk.length){
+        html += '<div class="delivery-tip-section"><div class="delivery-tip-section-title late">Neacoperite până la livrare • ' + escapeHtml(String(risk.length)) + '</div><div class="delivery-tip-list">' + risk.map(item => buildDeliveryAlertItemHtml(item, 'late')).join('') + '</div></div>';
+      }
+      if(late.length){
+        html += '<div class="delivery-tip-section"><div class="delivery-tip-section-title late">Întârziere D-2 • ' + escapeHtml(String(late.length)) + '</div><div class="delivery-tip-list">' + late.map(item => buildDeliveryAlertItemHtml(item, 'late')).join('') + '</div></div>';
+      }
+      if(ahead.length){
+        html += '<div class="delivery-tip-section"><div class="delivery-tip-section-title ahead">Avans D-4 • ' + escapeHtml(String(ahead.length)) + '</div><div class="delivery-tip-list">' + ahead.map(item => buildDeliveryAlertItemHtml(item, 'ahead')).join('') + '</div></div>';
+      }
+      return html;
+    }
+    function updateDeliveryIndicator(){
+      if(!els.deliveryAlertButton || !els.deliveryAlertText) return;
+      const summary = state.deliverySupport && state.deliverySupport.alertSummary ? state.deliverySupport.alertSummary : { late:0, ahead:0, risk:0, tone:'neutral', overdueLate:[], futureRisk:[], futureLate:[], futureAhead:[] };
+      const overdueCount = Array.isArray(summary.overdueLate) ? summary.overdueLate.length : 0;
+      const riskCount = Array.isArray(summary.futureRisk) ? summary.futureRisk.length : 0;
+      const lateCount = Array.isArray(summary.futureLate) ? summary.futureLate.length : 0;
+      const aheadCount = Array.isArray(summary.futureAhead) ? summary.futureAhead.length : 0;
+      const tone = overdueCount > 0 || riskCount > 0 || lateCount > 0 ? 'late' : (aheadCount > 0 ? 'ahead' : 'neutral');
+      els.deliveryAlertButton.className = 'delivery-alert-button is-' + tone;
+      if(overdueCount > 0) els.deliveryAlertText.textContent = 'În urmă livrări: ' + overdueCount;
+      else if(riskCount > 0) els.deliveryAlertText.textContent = 'Risc livrare: ' + riskCount;
+      else if(lateCount > 0) els.deliveryAlertText.textContent = 'Întârzieri D-2: ' + lateCount;
+      else if(aheadCount > 0) els.deliveryAlertText.textContent = 'Avans D-4: ' + aheadCount;
+      else els.deliveryAlertText.textContent = 'Fără alerte active';
+      els.deliveryAlertButton.setAttribute('data-tooltip-html', buildDeliveryIndicatorHtml(summary));
+      els.deliveryAlertButton.setAttribute('data-tooltip-tone', tone);
+    }
+    function buildDeliveryFooterSummary(){
+      try{
+        const summary = state.deliverySupport && state.deliverySupport.alertSummary ? state.deliverySupport.alertSummary : { late:0, ahead:0, risk:0, overdueLate:[], futureRisk:[], futureLate:[], futureAhead:[] };
+        const sourceOrders = Array.isArray(state.deliverySupport && state.deliverySupport.orders) ? state.deliverySupport.orders : [];
+        const ordersCount = sourceOrders.filter(order => {
+          const deliveryIso = trimText(order && order.dataLivrare);
+          const reper = trimText(order && order.reper);
+          const cantitate = Math.max(0, Math.round(toNumber(order && order.cantitate)));
+          if(!deliveryIso || !reper || cantitate <= 0) return false;
+          return !state.activeYear || String(order.an || deliveryIso.slice(0,4)) === String(state.activeYear);
+        }).length;
+        if(!ordersCount) return ' Comenzi livrare: nu există comenzi active în anul selectat.';
+        const overdueCount = Array.isArray(summary.overdueLate) ? summary.overdueLate.length : 0;
+        const riskCount = Array.isArray(summary.futureRisk) ? summary.futureRisk.length : 0;
+        const lateCount = Array.isArray(summary.futureLate) ? summary.futureLate.length : 0;
+        const aheadCount = Array.isArray(summary.futureAhead) ? summary.futureAhead.length : 0;
+        return ' Comenzi livrare active: ' + String(ordersCount) + ' • în urmă = ' + String(overdueCount) + ' • risc până la livrare = ' + String(riskCount) + ' • întârzieri D-2 = ' + String(lateCount) + ' • avans D-4 = ' + String(aheadCount) + '.';
+      }catch(error){
+        console.warn('buildDeliveryFooterSummary', error);
+        return ' Comenzi livrare: sumar indisponibil momentan.';
+      }
+    }
+    function rebuildDeliveryAlerts(){
+      try{
+        const scopedOrders = (Array.isArray(state.deliverySupport.orders) ? state.deliverySupport.orders : []).filter(order => {
+          const deliveryIso = trimText(order && order.dataLivrare);
+          const reper = trimText(order && order.reper).toUpperCase();
+          const cantitate = Math.max(0, Math.round(toNumber(order && order.cantitate)));
+          if(!deliveryIso || !reper || cantitate <= 0) return false;
+          return !state.activeYear || String(order.an || deliveryIso.slice(0,4)) === String(state.activeYear);
+        }).slice().sort(compareDeliveryOrders);
+        const summary = { late:0, ahead:0, risk:0, tone:'neutral', overdueLate:[], futureRisk:[], futureLate:[], futureAhead:[] };
+        if(!scopedOrders.length){
+          state.deliverySupport.alertSummary = summary;
+          updateDeliveryIndicator();
+          return;
+        }
+        const dailyGoodByDate = buildProjectedGoodByDate();
+        scopedOrders.forEach(order => {
+          const deliveryIso = trimText(order && order.dataLivrare);
+          const reper = trimText(order && order.reper).toUpperCase();
+          const cantitate = Math.max(0, Math.round(toNumber(order && order.cantitate)));
+          if(!deliveryIso || !reper || cantitate <= 0) return;
+          const metrics = computeDeliveryAlertMetrics(order, dailyGoodByDate, scopedOrders);
+          const readyMinus4Iso = subtractDaysIso(deliveryIso, 4);
+          const readyMinus2Iso = subtractDaysIso(deliveryIso, 2);
+          const label = describeDeliveryOrder({ ...order, reper, cantitate });
+          const machineLabel = collectMachinesForReper(reper, deliveryIso);
+          if(deliveryIso <= TODAY_ISO){
+            if(metrics.shortageDelivery > 0){
+              summary.late += 1;
+              summary.overdueLate.push({
+                tone: 'late',
+                label,
+                reper,
+                machineLabel,
+                qty: metrics.shortageDelivery,
+                orderQty: cantitate,
+                transportLabel: trimText(order && order.nrTransport),
+                alertDate: deliveryIso,
+                alertLabel: deliveryIso === TODAY_ISO ? 'Astăzi' : 'Restanță',
+                deliveryIso,
+                message: (deliveryIso === TODAY_ISO ? 'Neacoperit la livrare ' : 'În urmă la livrare ') + label + ' = ' + roMaybeNumber(metrics.shortageDelivery) + ' buc lipsă'
+              });
+            }
+            return;
+          }
+          if(metrics.shortageDelivery > 0){
+            if(readyMinus2Iso && readyMinus2Iso <= TODAY_ISO){
+              summary.late += 1;
+              summary.futureLate.push({
+                tone: 'late',
+                label,
+                reper,
+                machineLabel,
+                qty: metrics.shortageDelivery,
+                orderQty: cantitate,
+                transportLabel: trimText(order && order.nrTransport),
+                alertDate: readyMinus2Iso,
+                alertLabel: 'D-2',
+                deliveryIso,
+                message: 'Întârziere ' + label + ' = ' + roMaybeNumber(metrics.shortageDelivery) + ' buc lipsă la livrare'
+              });
+              return;
+            }
+            summary.risk += 1;
+            summary.futureRisk.push({
+              tone: 'late',
+              label,
+              reper,
+              machineLabel,
+              qty: metrics.shortageDelivery,
+              orderQty: cantitate,
+              transportLabel: trimText(order && order.nrTransport),
+              alertDate: deliveryIso,
+              alertLabel: 'Livrare',
+              deliveryIso,
+              message: 'Risc ' + label + ' = ' + roMaybeNumber(metrics.shortageDelivery) + ' buc lipsă până la livrare'
+            });
+            return;
+          }
+          if(metrics.shortageD2 > 0 && readyMinus2Iso && readyMinus2Iso <= TODAY_ISO){
+            summary.late += 1;
+            summary.futureLate.push({
+              tone: 'late',
+              label,
+              reper,
+              machineLabel,
+              qty: metrics.shortageD2,
+              orderQty: cantitate,
+              transportLabel: trimText(order && order.nrTransport),
+              alertDate: readyMinus2Iso,
+              alertLabel: 'D-2',
+              deliveryIso,
+              message: 'Întârziere ' + label + ' = ' + roMaybeNumber(metrics.shortageD2) + ' buc lipsă'
+            });
+            return;
+          }
+          if(metrics.surplusD4 > 0 && readyMinus4Iso && readyMinus4Iso <= TODAY_ISO){
+            summary.ahead += 1;
+            summary.futureAhead.push({
+              tone: 'ahead',
+              label,
+              reper,
+              machineLabel,
+              qty: metrics.surplusD4,
+              orderQty: cantitate,
+              transportLabel: trimText(order && order.nrTransport),
+              alertDate: readyMinus4Iso,
+              alertLabel: 'D-4',
+              deliveryIso,
+              message: 'Avans ' + label + ' = +' + roMaybeNumber(metrics.surplusD4) + ' buc peste'
+            });
+          }
+        });
+        summary.overdueLate.sort((a,b) => String(a.deliveryIso).localeCompare(String(b.deliveryIso), 'ro', { sensitivity:'base' }) || String(a.label).localeCompare(String(b.label), 'ro', { sensitivity:'base' }));
+        summary.futureRisk.sort((a,b) => String(a.deliveryIso).localeCompare(String(b.deliveryIso), 'ro', { sensitivity:'base' }) || String(a.label).localeCompare(String(b.label), 'ro', { sensitivity:'base' }));
+        summary.futureLate.sort((a,b) => String(a.alertDate).localeCompare(String(b.alertDate), 'ro', { sensitivity:'base' }) || String(a.label).localeCompare(String(b.label), 'ro', { sensitivity:'base' }));
+        summary.futureAhead.sort((a,b) => String(a.alertDate).localeCompare(String(b.alertDate), 'ro', { sensitivity:'base' }) || String(a.label).localeCompare(String(b.label), 'ro', { sensitivity:'base' }));
+        summary.tone = summary.overdueLate.length > 0 || summary.futureRisk.length > 0 || summary.futureLate.length > 0 ? 'late' : (summary.futureAhead.length > 0 ? 'ahead' : 'neutral');
+        state.deliverySupport.alertSummary = summary;
+        updateDeliveryIndicator();
+      }catch(error){
+        console.error('rebuildDeliveryAlerts', error);
+        state.deliverySupport.alertSummary = { late:0, ahead:0, risk:0, tone:'neutral', overdueLate:[], futureRisk:[], futureLate:[], futureAhead:[] };
+        updateDeliveryIndicator();
+      }
+    }
+    function ensureDeliveryIndicatorTooltip(){
+      if(deliveryTooltipEl) return deliveryTooltipEl;
+      deliveryTooltipEl = document.createElement('div');
+      deliveryTooltipEl.className = 'delivery-floating-tooltip';
+      deliveryTooltipEl.hidden = true;
+      document.body.appendChild(deliveryTooltipEl);
+      return deliveryTooltipEl;
+    }
+    function hideDeliveryIndicatorTooltip(){
+      if(!deliveryTooltipEl) return;
+      deliveryTooltipVisible = false;
+      deliveryTooltipEl.hidden = true;
+      deliveryTooltipEl.style.left = '-9999px';
+      deliveryTooltipEl.style.top = '-9999px';
+    }
+    function positionDeliveryIndicatorTooltip(){
+      if(!deliveryTooltipVisible || !deliveryTooltipEl || !els.deliveryAlertButton) return;
+      const rect = els.deliveryAlertButton.getBoundingClientRect();
+      const gap = 10;
+      const margin = 12;
+      const vw = window.innerWidth || document.documentElement.clientWidth || 0;
+      const vh = window.innerHeight || document.documentElement.clientHeight || 0;
+      const tipRect = deliveryTooltipEl.getBoundingClientRect();
+      let left = rect.right - tipRect.width;
+      if(left < margin) left = margin;
+      if(left + tipRect.width > vw - margin) left = vw - tipRect.width - margin;
+      let top = rect.bottom + gap;
+      if(top + tipRect.height > vh - margin) top = rect.top - tipRect.height - gap;
+      if(top < margin) top = margin;
+      deliveryTooltipEl.style.left = Math.round(left) + 'px';
+      deliveryTooltipEl.style.top = Math.round(top) + 'px';
+    }
+    function showDeliveryIndicatorTooltip(){
+      if(!els.deliveryAlertButton) return;
+      const html = els.deliveryAlertButton.getAttribute('data-tooltip-html');
+      if(!html) return;
+      const tip = ensureDeliveryIndicatorTooltip();
+      const tone = trimText(els.deliveryAlertButton.getAttribute('data-tooltip-tone'));
+      tip.innerHTML = html;
+      tip.className = 'delivery-floating-tooltip' + (tone ? (' is-' + tone) : '');
+      tip.hidden = false;
+      deliveryTooltipVisible = true;
+      positionDeliveryIndicatorTooltip();
+    }
+    function rebuildStockCalculations(){
+      state.stockCalcByCell = Object.create(null);
+
+      const allPlanItems = [];
+      state.rows.forEach((row, index) => {
+        const rowIso = trimText(row && row.data);
+        if(!rowIso) return;
+        MACHINE_ORDER.forEach(machine => {
+          const slot = row.slots[machine] || normalizePlanSlot();
+          const reper = trimText(slot.reper).toUpperCase();
+          const planBuc = Math.max(0, Math.round(toNumber(slot.planificat)));
+          if(!reper || planBuc <= 0) return;
+          allPlanItems.push({ row, index, rowIso, machine, reper, planBuc });
+        });
+      });
+
+      if(!allPlanItems.length){
+        els.footerNote.textContent = 'REALIZAT este live din Forjate când există document cloud pentru anul selectat. Nu există poziții cu planificat > 0 de calculat.' + buildDeliveryFooterSummary();
+        return;
+      }
+
+      const calcYear = Number(state.activeYear || CURRENT_YEAR) || Number(CURRENT_YEAR);
+      let calcStartMonthNum = 0;
+      if(String(calcYear) === String(CURRENT_YEAR)){
+        calcStartMonthNum = TODAY.getMonth() + 1;
+      } else {
+        allPlanItems.forEach(item => {
+          if(String(item.rowIso || '').slice(0,4) !== String(calcYear)) return;
+          const m = Number(String(item.rowIso || '').slice(5,7)) || 0;
+          if(m > 0 && (!calcStartMonthNum || m < calcStartMonthNum)) calcStartMonthNum = m;
+        });
+      }
+
+      const planItems = allPlanItems.filter(item => {
+        if(String(item.rowIso || '').slice(0,4) !== String(calcYear)) return false;
+        if(calcStartMonthNum){
+          const rowMonth = Number(String(item.rowIso || '').slice(5,7)) || 0;
+          if(rowMonth < calcStartMonthNum) return false;
+        }
+        return true;
+      });
+
+      let minPlanIso = '';
+      let maxPlanIso = '';
+      planItems.forEach(item => {
+        const rowIso = item.rowIso;
+        if(!minPlanIso || rowIso < minPlanIso) minPlanIso = rowIso;
+        if(!maxPlanIso || rowIso > maxPlanIso) maxPlanIso = rowIso;
+      });
+
+      if(!planItems.length || !minPlanIso || !maxPlanIso){
+        const monthLabel = calcStartMonthNum ? getMonthName(calcStartMonthNum) : '-';
+        els.footerNote.textContent = 'REALIZAT este live din Forjate când există document cloud pentru anul selectat. Nu există poziții cu planificat > 0 din luna de calcul ' + monthLabel + ' ' + calcYear + ' până la sfârșitul anului.' + buildDeliveryFooterSummary();
+        return;
+      }
+
+      const steelRows = Array.isArray(state.stockSupport.steelRows) ? state.stockSupport.steelRows : [];
+      const debitatRows = Array.isArray(state.stockSupport.debitatRows) ? state.stockSupport.debitatRows : [];
+      const intrariRows = Array.isArray(state.stockSupport.intrariRows) ? state.stockSupport.intrariRows : [];
+      const debitariRows = Array.isArray(state.stockSupport.debitariRows) ? state.stockSupport.debitariRows : [];
+      const forjateRows = Array.isArray(state.stockSupport.forjateRows) ? state.stockSupport.forjateRows : [];
+
+      function findLatestSnapshotEnd(rows, firstPlanIso){
+        let best = '';
+        (rows || []).forEach(row => {
+          const eom = endOfMonthIso(row && row.an, row && row.lunaNum);
+          if(eom && eom < firstPlanIso && (!best || eom > best)) best = eom;
+        });
+        return best;
+      }
+
+      const snapEndSteel = findLatestSnapshotEnd(steelRows, minPlanIso);
+      const snapEndDeb = findLatestSnapshotEnd(debitatRows, minPlanIso);
+
+      if(!snapEndSteel || !snapEndDeb){
+        const missing = [];
+        if(!snapEndSteel) missing.push('oțel');
+        if(!snapEndDeb) missing.push('debitat');
+        els.footerNote.textContent = 'REALIZAT este live din Forjate când există document cloud pentru anul selectat. Nu pot determina snapshot-ul din inventar pentru ' + missing.join(' + ') + ' înainte de luna calculată.' + buildDeliveryFooterSummary();
+        return;
+      }
+
+      const steelStock = Object.create(null);
+      const debStock = Object.create(null);
+
+      steelRows.forEach(row => {
+        const eom = endOfMonthIso(row && row.an, row && row.lunaNum);
+        if(eom !== snapEndSteel) return;
+        if(!row.diametru || !row.calitate) return;
+        const specKey = buildSpecKey(row.diametru, row.calitate);
+        steelStock[specKey] = toNumber(steelStock[specKey]) + toNumber(row.cantitateKg);
+      });
+      debitatRows.forEach(row => {
+        const eom = endOfMonthIso(row && row.an, row && row.lunaNum);
+        if(eom !== snapEndDeb) return;
+        if(!row.reper) return;
+        const repKey = normalizeReperLoose(row.reper);
+        debStock[repKey] = toNumber(debStock[repKey]) + toNumber(row.cantitateBuc);
+      });
+
+      const fromIsoSteel = nextDayIso(snapEndSteel) || snapEndSteel;
+      const fromIsoDeb = nextDayIso(snapEndDeb) || snapEndDeb;
+      const steelDeltaByDate = Object.create(null);
+      const debDeltaByDate = Object.create(null);
+
+      function addDailyDelta(container, dateIso, key, delta){
+        const cleanDate = trimText(dateIso);
+        const cleanKey = trimText(key);
+        const value = toNumber(delta);
+        if(!cleanDate || !cleanKey || !value) return;
+        container[cleanDate] = container[cleanDate] || Object.create(null);
+        container[cleanDate][cleanKey] = toNumber(container[cleanDate][cleanKey]) + value;
+      }
+
+      intrariRows.forEach(row => {
+        if(!row.data || row.data < fromIsoSteel || row.data > maxPlanIso) return;
+        if(!row.diametru || !row.calitate || toNumber(row.cantitateKg) === 0) return;
+        addDailyDelta(steelDeltaByDate, row.data, buildSpecKey(row.diametru, row.calitate), toNumber(row.cantitateKg));
+      });
+
+      debitariRows.forEach(row => {
+        if(!row.data || row.data > maxPlanIso) return;
+        const repKey = normalizeReperLoose(row.reper);
+        if(row.data >= fromIsoDeb && repKey && toNumber(row.cantitateBuc) !== 0){
+          addDailyDelta(debDeltaByDate, row.data, repKey, toNumber(row.cantitateBuc));
+        }
+        if(row.data >= fromIsoSteel && row.diametru && row.calitate && toNumber(row.totalKgDebitat) !== 0){
+          addDailyDelta(steelDeltaByDate, row.data, buildSpecKey(row.diametru, row.calitate), -toNumber(row.totalKgDebitat));
+        }
+      });
+
+      const dictHasReal = Object.create(null);
+      const dictRealBuc = Object.create(null);
+      forjateRows.forEach(row => {
+        if(!row.data || row.data > maxPlanIso) return;
+        if(!row.machine || !row.reper) return;
+        const keyReal = buildRealizedKey(row.data, row.machine, row.reper);
+        if(toNumber(row.realizatBuc) > 0){
+          dictHasReal[keyReal] = true;
+          dictRealBuc[keyReal] = Math.max(0, Math.round(toNumber(dictRealBuc[keyReal]) + toNumber(row.realizatBuc)));
+        }
+        if(row.data < fromIsoDeb) return;
+        const cons = Math.max(0, Math.round(toNumber(row.realizatBuc) + toNumber(row.rebutBuc)));
+        if(cons > 0){
+          const helper = resolvePlanningHelper(row.reper);
+          const repDeb = helper.originReper || normalizeReperLoose(row.reper);
+          if(repDeb) addDailyDelta(debDeltaByDate, row.data, repDeb, -cons);
+        }
+      });
+
+      const planByDate = Object.create(null);
+      planItems.forEach(item => {
+        planByDate[item.rowIso] = planByDate[item.rowIso] || [];
+        planByDate[item.rowIso].push(item);
+      });
+      Object.keys(planByDate).forEach(dateIso => {
+        planByDate[dateIso].sort((a,b) => {
+          const ar = Number(a.row.row_no || 0);
+          const br = Number(b.row.row_no || 0);
+          if(ar !== br) return ar - br;
+          return a.index - b.index;
+        });
+      });
+
+      const allDates = Array.from(new Set([].concat(
+        Object.keys(planByDate),
+        Object.keys(steelDeltaByDate),
+        Object.keys(debDeltaByDate)
+      ))).filter(dateIso => dateIso >= minPlanIso && dateIso <= maxPlanIso).sort();
+
+      function applyDailyDeltas(dateIso){
+        const steel = steelDeltaByDate[dateIso] || null;
+        if(steel){
+          Object.keys(steel).forEach(specKey => {
+            steelStock[specKey] = toNumber(steelStock[specKey]) + toNumber(steel[specKey]);
+          });
+        }
+        const deb = debDeltaByDate[dateIso] || null;
+        if(deb){
+          Object.keys(deb).forEach(repKey => {
+            debStock[repKey] = toNumber(debStock[repKey]) + toNumber(deb[repKey]);
+          });
+        }
+      }
+
+      allDates.forEach(dateIso => {
+        applyDailyDeltas(dateIso);
+        const items = planByDate[dateIso] || [];
+        items.forEach(item => {
+          const row = item.row;
+          const machine = item.machine;
+          const reperForjat = item.reper;
+          const planBuc = item.planBuc;
+          const keyReal = buildRealizedKey(dateIso, machine, reperForjat);
+          const hasReal = !!dictHasReal[keyReal];
+          const realizatBuc = Math.max(0, Math.round(toNumber(dictRealBuc[keyReal])));
+          const bucDeSimulat = hasReal ? 0 : planBuc;
+
+          const helper = resolvePlanningHelper(reperForjat);
+          const reperDeb = helper.originReper || normalizeReperLoose(reperForjat);
+          const specKey = helper.diametru && helper.calitate ? buildSpecKey(helper.diametru, helper.calitate) : '';
+          const stOtelInainte = specKey ? toNumber(steelStock[specKey]) : 0;
+          const stDebInainte = reperDeb ? toNumber(debStock[reperDeb]) : 0;
+          const kgBuc = Math.max(0, toNumber(helper.kgBuc));
+          const coverageRatio = hasReal ? 1 : (planBuc > 0 ? Math.max(0, Math.min(1, ((Math.max(0, stDebInainte) + (kgBuc > 0 ? (Math.max(0, stOtelInainte) / kgBuc) : 0)) / planBuc))) : 0);
+
+          let mode = hasReal ? 'real' : 'simulated';
+          let note = hasReal ? 'Există realizări reale; nu se simulează planul.' : 'Nu există realizări reale; se simulează planul din VBA.';
+          let needSteelKg = 0;
+          let afterSteelKg = stOtelInainte;
+          let afterDebitat = stDebInainte;
+
+          if(!reperDeb){
+            mode = hasReal ? 'real' : 'error';
+            if(!hasReal) note = 'Reperul de debitare lipsește în helper.';
+          } else if(bucDeSimulat <= 0){
+            mode = hasReal ? 'real' : 'simulated';
+          } else if(kgBuc <= 0 || !specKey){
+            mode = 'error';
+            note = 'KG/BUC sau regula helper este invalidă pentru simulare.';
+          } else if(stDebInainte >= bucDeSimulat){
+            debStock[reperDeb] = stDebInainte - bucDeSimulat;
+            afterDebitat = toNumber(debStock[reperDeb]);
+          } else {
+            const deficitDeb = bucDeSimulat - stDebInainte;
+            needSteelKg = deficitDeb * kgBuc;
+            const otelRamas = stOtelInainte - needSteelKg;
+            if(otelRamas >= 0){
+              steelStock[specKey] = otelRamas;
+              debStock[reperDeb] = 0;
+              afterSteelKg = toNumber(steelStock[specKey]);
+              afterDebitat = 0;
+              note += ' Deficitul de debitat a fost acoperit din oțel: ' + roMaybeNumber(deficitDeb) + ' buc.';
+            } else {
+              steelStock[specKey] = otelRamas;
+              debStock[reperDeb] = stDebInainte - bucDeSimulat;
+              afterSteelKg = toNumber(steelStock[specKey]);
+              afterDebitat = toNumber(debStock[reperDeb]);
+              mode = 'lack';
+              note += ' Lipsă material: deficit debitat ' + roMaybeNumber(deficitDeb) + ' buc.';
+            }
+          }
+
+          const uiStatus = hasReal ? 'ok' : (coverageRatio >= 0.999 ? 'ok' : (coverageRatio > 0 ? 'partial' : 'empty'));
+          const beforeSteelPieces = kgBuc > 0 ? Math.max(0, stOtelInainte) / kgBuc : 0;
+          const afterSteelPieces = kgBuc > 0 ? Math.max(0, afterSteelKg) / kgBuc : 0;
+
+          state.stockCalcByCell[cellCalcKey(row.id, machine)] = {
+            status: uiStatus,
+            mode,
+            note,
+            reper: reperForjat,
+            originReper: reperDeb,
+            planValue: planBuc,
+            realizedValue: realizatBuc,
+            simulatedQty: bucDeSimulat,
+            beforeDebitat: stDebInainte,
+            beforeSteelKg: stOtelInainte,
+            beforeSteelPieces,
+            afterDebitat,
+            afterSteelKg,
+            afterSteelPieces,
+            needSteelKg,
+            coverageRatio,
+            usedSource: hasReal ? 'realizat' : 'planificat',
+            specLabel: specKey ? (helper.diametru + ' / ' + helper.calitate) : '',
+            tooltip: buildStockTooltip({
+              note,
+              mode,
+              reper: reperForjat,
+              originReper: reperDeb,
+              planValue: planBuc,
+              realizedValue: realizatBuc,
+              simulatedQty: bucDeSimulat,
+              beforeDebitat: stDebInainte,
+              beforeSteelKg: stOtelInainte,
+              beforeSteelPieces,
+              afterDebitat,
+              afterSteelKg,
+              afterSteelPieces,
+              needSteelKg,
+              coverageRatio,
+              usedSource: hasReal ? 'realizat' : 'planificat',
+              specLabel: specKey ? (helper.diametru + ' / ' + helper.calitate) : ''
+            })
+          };
+        });
+      });
+
+      const snapLabelSteel = snapEndSteel ? isoToDisplay(snapEndSteel) : '-';
+      const snapLabelDeb = snapEndDeb ? isoToDisplay(snapEndDeb) : '-';
+      const calcMonthLabel = calcStartMonthNum ? getMonthName(calcStartMonthNum) : '-';
+      els.footerNote.textContent = 'REALIZAT este live din Forjate când există document cloud pentru anul selectat. Calculul stocului pornește din luna ' + calcMonthLabel + ' ' + calcYear + ' și continuă până la sfârșitul anului: stoc oțel din snapshot-ul ' + snapLabelSteel + ', stoc debitat din snapshot-ul ' + snapLabelDeb + ', apoi pe fiecare zi se aplică INTRARI_OTEL, DEBITATE și FORJATE (realizat + rebut) pe tot intervalul rămas din an. Surse folosite: ' + state.stockSupport.notes.join(' • ') + '.' + buildDeliveryFooterSummary();
+    }
+
+    function computeOrthodoxEaster(year){
+      const a = year % 4;
+      const b = year % 7;
+      const c = year % 19;
+      const d = (19 * c + 15) % 30;
+      const e = (2 * a + 4 * b - d + 34) % 7;
+      const month = Math.floor((d + e + 114) / 31);
+      const day = ((d + e + 114) % 31) + 1;
+      const julian = new Date(Date.UTC(year, month - 1, day));
+      julian.setUTCDate(julian.getUTCDate() + 13);
+      return julian;
+    }
+    function fmtIsoFromDate(d){
+      return d.toISOString().slice(0,10);
+    }
+    function getHolidaysForYear(year){
+      const y = Number(year);
+      if(!Number.isFinite(y)) return {};
+      if(HOLIDAY_CACHE[y]) return HOLIDAY_CACHE[y];
+      const map = Object.create(null);
+      function add(iso, label){ map[iso] = label; }
+      add(y + '-01-01', 'Anul Nou');
+      add(y + '-01-02', 'A doua zi de Anul Nou');
+      add(y + '-01-06', 'Boboteaza');
+      add(y + '-01-07', 'Sfântul Ioan Botezătorul');
+      add(y + '-01-24', 'Ziua Unirii Principatelor Române');
+      const easter = computeOrthodoxEaster(y);
+      const goodFriday = new Date(easter.getTime()); goodFriday.setUTCDate(goodFriday.getUTCDate() - 2);
+      const easterMonday = new Date(easter.getTime()); easterMonday.setUTCDate(easterMonday.getUTCDate() + 1);
+      const pentecostSunday = new Date(easter.getTime()); pentecostSunday.setUTCDate(pentecostSunday.getUTCDate() + 49);
+      const pentecostMonday = new Date(easter.getTime()); pentecostMonday.setUTCDate(pentecostMonday.getUTCDate() + 50);
+      add(fmtIsoFromDate(goodFriday), 'Vinerea Mare');
+      add(fmtIsoFromDate(easter), 'Paștele ortodox');
+      add(fmtIsoFromDate(easterMonday), 'A doua zi de Paște');
+      add(y + '-05-01', 'Ziua Muncii');
+      add(y + '-06-01', 'Ziua Copilului');
+      add(fmtIsoFromDate(pentecostSunday), 'Rusalii');
+      add(fmtIsoFromDate(pentecostMonday), 'A doua zi de Rusalii');
+      add(y + '-08-15', 'Adormirea Maicii Domnului');
+      add(y + '-11-30', 'Sfântul Andrei');
+      add(y + '-12-01', 'Ziua Națională a României');
+      add(y + '-12-25', 'Crăciunul');
+      add(y + '-12-26', 'A doua zi de Crăciun');
+      HOLIDAY_CACHE[y] = map;
+      return map;
+    }
+    function getRowHighlight(row){
+      const cls = [];
+      const iso = trimText(row.data);
+      const holidays = getHolidaysForYear(row.an);
+      if(holidays[iso]) cls.push('row-holiday');
+      const wd = norm(row.zi || getWeekdayLabel(iso));
+      if(wd === norm('Sâmbătă')) cls.push('row-saturday');
+      if(wd === norm('Duminică')) cls.push('row-sunday');
+      if(iso === nowIso().slice(0,10)) cls.push('row-today');
+      return {
+        rowClass: cls.join(' '),
+        holiday: holidays[iso] || ''
+      };
+    }
+    function getDuplicateMask(rows, idx, machine){
+      if(idx <= 0) return { hideReper:false, hidePlan:false };
+      const prev = rows[idx - 1];
+      const curr = rows[idx];
+      if(!prev || !curr || prev.data !== curr.data) return { hideReper:false, hidePlan:false };
+      const prevSlot = prev.slots[machine] || normalizePlanSlot();
+      const currSlot = curr.slots[machine] || normalizePlanSlot();
+      const sameReper = trimText(prevSlot.reper) && trimText(prevSlot.reper) === trimText(currSlot.reper);
+      const samePlan = Math.round(toNumber(prevSlot.planificat)) === Math.round(toNumber(currSlot.planificat)) && Math.round(toNumber(currSlot.planificat)) > 0;
+      return { hideReper: sameReper, hidePlan: sameReper && samePlan };
+    }
+    function updateStatusCards(rows){
+      const totals = rows.reduce((acc, row) => {
+        MACHINE_ORDER.forEach(machine => {
+          const slot = row.slots[machine] || {};
+          acc.planificat += Math.max(0, Math.round(toNumber(slot.planificat)));
+          acc.realizat += getRealizedForSlot(row, machine, slot).value;
+        });
+        return acc;
+      }, { planificat:0, realizat:0 });
+
+      const liveMode = state.loadedForjateYears.has(trimText(state.activeYear));
+      els.modePill.textContent = liveMode ? 'Realizat live' : 'Model Excel';
+      els.filterValue.textContent = state.activeYear || '-';
+      els.filterSub.textContent = rows.length + ' rânduri afișate' + (String(state.activeYear) === CURRENT_YEAR ? ' • calcul stoc: ' + CURRENT_MONTH_NAME : '');
+      els.totalValue.textContent = roNumber(totals.planificat) + ' / ' + roNumber(totals.realizat);
+      els.totalSub.textContent = 'Planificat / Realizat';
+      els.cloudSub.textContent = state.updatedAt
+        ? ('Ultima sincronizare plan: ' + formatDateTime(state.updatedAt))
+        : 'Încă nu există document cloud pentru planificare.';
+    }
+    function renderTable(preserveUi){
+      const overrideUiState = state.pendingUiStateOverride ? normalizeUiStateSnap(state.pendingUiStateOverride) : null;
+      state.pendingUiStateOverride = null;
+      const uiState = overrideUiState || (preserveUi ? captureUiState() : null);
+      let rows = [];
+      try{
+        rows = getFilteredRows();
+      }catch(error){
+        console.error('renderTable.getFilteredRows', error);
+        rows = Array.isArray(state.rows) ? state.rows.slice() : [];
+      }
+      if(state.selectedRowId && !rows.some(row => String(row.id) === String(state.selectedRowId))){
+        state.selectedRowId = '';
+      }
+      try{
+        updateStatusCards(rows);
+      }catch(error){
+        console.error('renderTable.updateStatusCards', error);
+        try{
+          els.modePill.textContent = 'Model Excel';
+          els.filterValue.textContent = state.activeYear || '-';
+          els.filterSub.textContent = rows.length + ' rânduri afișate';
+          els.totalValue.textContent = '0 / 0';
+          els.totalSub.textContent = 'Planificat / Realizat';
+        }catch(_e){}
+      }
+      if(!rows.length){
+        state.selectedRowId = '';
+        els.planBody.innerHTML = '<tr><td colspan="21"><div class="empty">Nu există rânduri pentru filtrul curent.</div></td></tr>';
+        clearPlanSelection();
+        restoreUiState(uiState);
+        updateRowActionUi();
+        return;
+      }
+
+      const rowHtml = [];
+      rows.forEach((row, idx) => {
+        try{
+          const highlight = getRowHighlight(row);
+          const dateTitle = highlight.holiday ? (' title="' + escapeHtml(highlight.holiday) + '"') : '';
+          const hoverClass = trimText(state.hoveredRowId) === String(row.id) ? ' row-hover' : '';
+          const selectedClass = trimText(state.selectedRowId) === String(row.id) ? ' row-selected' : '';
+          const cellsHtml = MACHINE_ORDER.map(machine => {
+            const slot = row.slots[machine] || normalizePlanSlot();
+            const realized = getRealizedForSlot(row, machine, slot);
+            const readOnly = state.canEdit ? '' : ' disabled';
+            const planValue = Math.max(0, Math.round(toNumber(slot.planificat)));
+            const calc = state.stockCalcByCell[cellCalcKey(row.id, machine)] || null;
+            const readyItems = state.deliveryReadyByCell[cellCalcKey(row.id, machine)] || [];
+            const mask = getDuplicateMask(rows, idx, machine);
+            const tdPlanClass = calc && calc.status === 'partial' ? 'plan-stock-partial' : (calc && calc.status === 'empty' ? 'plan-stock-empty' : '');
+            const tdReperClass = calc && (calc.status === 'partial' || calc.status === 'empty') ? 'reper-stock-alert' : '';
+            const deliveryTooltip = readyItems.length ? buildDeliveryReadySectionHtml(readyItems, { standalone:true }) : '';
+            const reperTooltip = deliveryTooltip ? (' data-tooltip-html="' + escapeHtml(deliveryTooltip) + '" data-tooltip-tone="ok"') : '';
+            const planTooltip = (calc && calc.tooltip) ? (' data-tooltip-html="' + escapeHtml(calc.tooltip) + '" data-tooltip-tone="' + escapeHtml((calc && (calc.status === 'partial' || calc.status === 'empty')) ? 'alert' : 'ok') + '"') : '';
+            const planDisplay = planValue ? String(planValue) : '';
+            const realizedDisplay = (realized.value || planValue || trimText(slot.reper)) ? roMaybeNumber(realized.value) : '';
+            const realizedClass = (planValue > 0 && realized.value >= planValue) ? 'ok' : ((planValue > 0 && realized.value < planValue && realized.value > 0) ? 'warn' : '');
+            const reperReadyClass = readyItems.length ? ' delivery-ready-reper-marker' : '';
+            const reperFinalDarkClass = readyItems.some(item => item && item.isCycleLast && item.finalTone === 'current') ? ' delivery-ready-cycle-final-current' : '';
+            const reperFinalLightClass = !reperFinalDarkClass && readyItems.some(item => item && item.isCycleLast && item.finalTone === 'next') ? ' delivery-ready-cycle-final-next' : '';
+            const tdReperFinalClass = reperFinalDarkClass || reperFinalLightClass;
+            const hideReperDuplicate = !!(mask.hideReper && !readyItems.length);
+            const hidePlanDuplicate = !!mask.hidePlan;
+            return `
+              <td class="slot-reper ${tdReperClass}${tdReperFinalClass}"${reperTooltip}><input class="cell-input left${reperReadyClass}${reperFinalDarkClass}${reperFinalLightClass}${hideReperDuplicate ? ' dup-hidden' : ''}" list="repereList" data-row-id="${escapeHtml(row.id)}" data-machine="${escapeHtml(machine)}" data-field="reper" value="${escapeHtml(slot.reper)}"${readOnly}></td>
+              <td class="slot-plan ${tdPlanClass}"${planTooltip}><input class="cell-input${hidePlanDuplicate ? ' dup-hidden' : ''}" type="number" min="0" step="1" data-row-id="${escapeHtml(row.id)}" data-machine="${escapeHtml(machine)}" data-field="planificat" value="${escapeHtml(planDisplay)}"${readOnly}></td>
+              <td class="slot-real group-end"><div class="readonly ${realized.source === 'live' ? 'live' : 'seed'} ${realizedClass}">${escapeHtml(realizedDisplay)}</div></td>
+            `;
+          }).join('');
+          rowHtml.push(`<tr class="${escapeHtml(highlight.rowClass)}${hoverClass}${selectedClass}" data-row-id="${escapeHtml(row.id)}">
+            <td class="sticky1"><div class="cell-static">${escapeHtml(row.an)}</div></td>
+            <td class="sticky2${highlight.holiday ? ' date-holiday' : ''}"${dateTitle}><div class="cell-static muted"${dateTitle}>${escapeHtml(isoToDisplay(row.data))}</div></td>
+            <td class="sticky3"><div class="cell-static muted">${escapeHtml(row.zi)}</div></td>
+            ${cellsHtml}
+          </tr>`);
+        }catch(error){
+          console.error('renderTable.row', row && row.id, error);
+          rowHtml.push(`<tr data-row-id="${escapeHtml(row && row.id || ('row-fallback-' + idx))}">
+            <td class="sticky1"><div class="cell-static">${escapeHtml(row && row.an || '')}</div></td>
+            <td class="sticky2"><div class="cell-static muted">${escapeHtml(isoToDisplay(row && row.data || ''))}</div></td>
+            <td class="sticky3"><div class="cell-static muted">${escapeHtml(row && row.zi || '')}</div></td>
+            <td colspan="18"><div class="empty">Rând indisponibil momentan.</div></td>
+          </tr>`);
+        }
+      });
+      els.planBody.innerHTML = rowHtml.join('');
+      restoreUiState(uiState);
+      syncSelectedRowUi();
+      requestAnimationFrame(() => {
+        try{ applyCellLockUi(); }catch(error){ console.error('renderTable.applyCellLockUi', error); }
+        try{ applyPlanSelectionUi(); }catch(error){ console.error('renderTable.applyPlanSelectionUi', error); }
+      });
+    }
+
+    function buildPlanSelectionKey(rowId, machine){
+      return trimText(rowId) + '||' + trimText(machine);
+    }
+    function getPlanInputFromTarget(target){
+      if(!target || !target.closest) return null;
+      if(target.classList && target.classList.contains('cell-input') && trimText(target.dataset && target.dataset.field) === 'planificat') return target;
+      const td = target.closest('td.slot-plan');
+      if(!td) return null;
+      return td.querySelector('.cell-input[data-field="planificat"]');
+    }
+    function getVisiblePlanSelectionContext(){
+      const rows = Array.from(els.planBody ? els.planBody.querySelectorAll('tr[data-row-id]') : []);
+      const list = [];
+      const map = Object.create(null);
+      rows.forEach((tr, rowIndex) => {
+        const inputs = Array.from(tr.querySelectorAll('td.slot-plan .cell-input[data-field="planificat"]'));
+        inputs.forEach(input => {
+          if(!input || !input.dataset) return;
+          const rowId = trimText(input.dataset.rowId || tr.getAttribute('data-row-id'));
+          const machine = trimText(input.dataset.machine);
+          if(!rowId || !machine) return;
+          const colIndex = MACHINE_ORDER.indexOf(machine);
+          if(colIndex < 0) return;
+          const key = buildPlanSelectionKey(rowId, machine);
+          const meta = {
+            key,
+            rowId,
+            machine,
+            rowIndex,
+            colIndex,
+            input,
+            td: input.closest('td.slot-plan'),
+            value: Math.max(0, Math.round(toNumber(input.value)))
+          };
+          list.push(meta);
+          map[key] = meta;
+        });
+      });
+      return { list, map };
+    }
+    function updatePlanSelectionHint(){
+      if(!els.hintText) return;
+      const count = Math.max(0, Math.round(toNumber(state.planSelection && state.planSelection.count)));
+      const sum = Math.max(0, Math.round(toNumber(state.planSelection && state.planSelection.sum)));
+      if(count > 0){
+        const suffix = count === 1 ? 'celulă' : 'celule';
+        els.hintText.textContent = state.selectionHintBase + ' | Selecție: ' + count + ' ' + suffix + ' | Sumă: ' + roMaybeNumber(sum) + ' buc';
+      }else{
+        els.hintText.textContent = state.selectionHintBase;
+      }
+    }
+    function applyPlanSelectionUi(){
+      if(els.planBody){
+        els.planBody.querySelectorAll('td.slot-plan.sum-selection-cell').forEach(td => td.classList.remove('sum-selection-cell','sum-selection-anchor'));
+      }
+      const ctx = getVisiblePlanSelectionContext();
+      const keepKeys = [];
+      let sum = 0;
+      (Array.isArray(state.planSelection && state.planSelection.keys) ? state.planSelection.keys : []).forEach(key => {
+        const meta = ctx.map[key];
+        if(!meta || !meta.td) return;
+        keepKeys.push(key);
+        meta.td.classList.add('sum-selection-cell');
+        if(key === state.planSelection.anchorKey) meta.td.classList.add('sum-selection-anchor');
+        sum += Math.max(0, Math.round(toNumber(meta.value)));
+      });
+      state.planSelection.keys = keepKeys;
+      state.planSelection.count = keepKeys.length;
+      state.planSelection.sum = sum;
+      updatePlanSelectionHint();
+    }
+    function clearPlanSelection(options){
+      const opts = options || {};
+      state.planSelection.pending = false;
+      state.planSelection.dragging = false;
+      if(!opts.keepSuppress) state.planSelection.suppressClick = false;
+      if(!opts.keepAnchor){
+        state.planSelection.anchorKey = '';
+        state.planSelection.currentKey = '';
+      }
+      state.planSelection.keys = [];
+      state.planSelection.count = 0;
+      state.planSelection.sum = 0;
+      document.body.classList.remove('sum-selection-dragging');
+      applyPlanSelectionUi();
+    }
+    function updatePlanSelectionRange(anchorKey, currentKey){
+      const ctx = getVisiblePlanSelectionContext();
+      const anchor = ctx.map[anchorKey];
+      const current = ctx.map[currentKey];
+      if(!anchor || !current){
+        clearPlanSelection();
+        return;
+      }
+      const rowMin = Math.min(anchor.rowIndex, current.rowIndex);
+      const rowMax = Math.max(anchor.rowIndex, current.rowIndex);
+      const colMin = Math.min(anchor.colIndex, current.colIndex);
+      const colMax = Math.max(anchor.colIndex, current.colIndex);
+      state.planSelection.anchorKey = anchorKey;
+      state.planSelection.currentKey = currentKey;
+      state.planSelection.keys = ctx.list
+        .filter(meta => meta.rowIndex >= rowMin && meta.rowIndex <= rowMax && meta.colIndex >= colMin && meta.colIndex <= colMax)
+        .sort((a,b) => a.rowIndex - b.rowIndex || a.colIndex - b.colIndex)
+        .map(meta => meta.key);
+      applyPlanSelectionUi();
+    }
+    function beginPlanSelection(input, event){
+      if(!input || !input.dataset) return;
+      state.planSelection.pending = true;
+      state.planSelection.dragging = false;
+      state.planSelection.suppressClick = false;
+      state.planSelection.anchorKey = buildPlanSelectionKey(input.dataset.rowId, input.dataset.machine);
+      state.planSelection.currentKey = state.planSelection.anchorKey;
+      state.planSelection.startX = event && typeof event.clientX === 'number' ? event.clientX : 0;
+      state.planSelection.startY = event && typeof event.clientY === 'number' ? event.clientY : 0;
+    }
+    function extendPlanSelectionFromPoint(clientX, clientY){
+      if(!state.planSelection.pending) return;
+      const target = document.elementFromPoint(clientX, clientY);
+      const input = getPlanInputFromTarget(target);
+      if(!input || !input.dataset) return;
+      const nextKey = buildPlanSelectionKey(input.dataset.rowId, input.dataset.machine);
+      const movedEnough = Math.abs(clientX - state.planSelection.startX) > 3 || Math.abs(clientY - state.planSelection.startY) > 3 || nextKey !== state.planSelection.anchorKey;
+      if(!movedEnough) return;
+      if(!state.planSelection.dragging){
+        state.planSelection.dragging = true;
+        document.body.classList.add('sum-selection-dragging');
+        const active = document.activeElement;
+        if(active && typeof active.blur === 'function'){
+          try{ active.blur(); }catch(_blurErr){}
+        }
+      }
+      updatePlanSelectionRange(state.planSelection.anchorKey, nextKey);
+    }
+    function finishPlanSelection(){
+      if(!state.planSelection.pending && !state.planSelection.dragging) return;
+      const wasDragging = !!state.planSelection.dragging;
+      state.planSelection.pending = false;
+      state.planSelection.dragging = false;
+      document.body.classList.remove('sum-selection-dragging');
+      if(wasDragging){
+        const active = document.activeElement;
+        if(active && typeof active.blur === 'function'){
+          try{ active.blur(); }catch(_blurErr){}
+        }
+        state.planSelection.suppressClick = true;
+        if(state.planSelection.keys.length) applyPlanSelectionUi();
+      }else if(!state.planSelection.keys.length){
+        updatePlanSelectionHint();
+      }
+    }
+    function findRow(rowId){
+      return state.rows.find(row => String(row.id) === String(rowId)) || null;
+    }
+    function rebuildLocalDerived(preserveUi){
+      try{
+        rebuildStockCalculations();
+      }catch(error){
+        console.error('rebuildStockCalculations', error);
+      }
+      try{
+        rebuildDeliveryAlerts();
+      }catch(error){
+        console.error('rebuildDeliveryAlerts', error);
+      }
+      try{
+        rebuildDeliveryReadyMarkers();
+      }catch(error){
+        console.error('rebuildDeliveryReadyMarkers', error);
+      }
+      try{
+        updateRepereDatalist();
+      }catch(error){
+        console.error('updateRepereDatalist', error);
+      }
+      renderTable(preserveUi !== false);
+    }
+    function markEdit(rowId, machine, field, value, options){
+      const row = findRow(rowId);
+      if(!row) return;
+      const opts = options && typeof options === 'object' ? options : {};
+      const slot = row.slots[machine] || normalizePlanSlot();
+      if(field === 'reper'){
+        const nextValue = trimText(value).toUpperCase();
+        if(slot.reper !== nextValue){
+          slot.reper = nextValue;
+          slot.realizat_seed = 0;
+        }
+      }else if(field === 'planificat'){
+        slot.planificat = Math.max(0, Math.round(toNumber(value)));
+      }
+      row.slots[machine] = slot;
+      state.hasPendingLocalChanges = true;
+      if(opts.save !== false) queueSave();
+      if(opts.rebuild) rebuildLocalDerived(true);
+    }
+    function buildNewRowForYear(year){
+      const sameYearRows = state.rows.filter(row => String(row.an) === String(year));
+      const maxRowNo = sameYearRows.reduce((max, row) => Math.max(max, Number(row.row_no || 0)), 0);
+      const lastIso = sameYearRows.map(row => trimText(row.data)).filter(Boolean).sort().slice(-1)[0] || (String(year) + '-01-01');
+      const d = new Date(lastIso + 'T00:00:00');
+      d.setDate(d.getDate() + 1);
+      const iso = d.toISOString().slice(0,10);
+      return {
+        id: 'row-' + Date.now() + '-' + Math.random().toString(36).slice(2),
+        row_no: maxRowNo + 1,
+        an: Number(year),
+        luna: getMonthName(Number(iso.slice(5,7))),
+        data: iso,
+        zi: getWeekdayLabel(iso),
+        slots: MACHINE_ORDER.reduce((acc, machine) => {
+          acc[machine] = normalizePlanSlot({});
+          return acc;
+        }, {})
+      };
+    }
+    function buildBlankRowFromReference(referenceRow){
+      const ref = referenceRow || {};
+      const iso = trimText(ref.data) || (String(ref.an || state.activeYear || CURRENT_YEAR) + '-01-01');
+      return {
+        id: 'row-' + Date.now() + '-' + Math.random().toString(36).slice(2),
+        row_no: Number(ref.row_no || 0) + 1,
+        an: Number(ref.an || state.activeYear || CURRENT_YEAR),
+        luna: getMonthName(Number(iso.slice(5,7))),
+        data: iso,
+        zi: getWeekdayLabel(iso),
+        slots: MACHINE_ORDER.reduce((acc, machine) => {
+          acc[machine] = normalizePlanSlot({});
+          return acc;
+        }, {})
+      };
+    }
+    async function addRow(){
+      if(!state.canEdit) return;
+      const selectedRow = getSelectedVisibleRow();
+      if(!selectedRow){
+        window.alert('Selectează mai întâi rândul sub care vrei să adaugi.');
+        return;
+      }
+      const uiState = captureUiState();
+      const orderedRows = reindexRowsInDisplayOrder(sortRowsStable(state.rows));
+      const insertIndex = orderedRows.findIndex(row => String(row.id) === String(selectedRow.id));
+      const row = buildBlankRowFromReference(selectedRow);
+      orderedRows.splice(insertIndex + 1, 0, row);
+      state.rows = reindexRowsInDisplayOrder(orderedRows);
+      state.selectedRowId = row.id;
+      renderFilters();
+      state.hasPendingLocalChanges = true;
+      queueSave(250);
+      rebuildLocalDerived();
+      requestAnimationFrame(() => {
+        restoreUiState(uiState);
+        syncSelectedRowUi();
+        const rowEl = els.planBody.querySelector('tr[data-row-id="' + cssEscape(row.id) + '"]');
+        if(rowEl) rowEl.scrollIntoView({ block:'nearest' });
+      });
+    }
+    async function deleteSelectedRow(){
+      if(!state.canEdit) return;
+      const selectedRow = getSelectedVisibleRow();
+      if(!selectedRow){
+        window.alert('Selectează mai întâi rândul pe care vrei să-l ștergi.');
+        return;
+      }
+      const visibleRows = getFilteredRows();
+      const visibleIndex = visibleRows.findIndex(row => String(row.id) === String(selectedRow.id));
+      const nextSelected = visibleRows[visibleIndex + 1] || visibleRows[visibleIndex - 1] || null;
+      state.rows = reindexRowsInDisplayOrder(sortRowsStable(state.rows.filter(row => String(row.id) !== String(selectedRow.id))));
+      state.selectedRowId = nextSelected ? nextSelected.id : '';
+      renderFilters();
+      state.hasPendingLocalChanges = true;
+      queueSave(250);
+      rebuildLocalDerived();
+      requestAnimationFrame(() => { syncSelectedRowUi(); });
+    }
+
+    async function saveNow(){
+      if(!state.canEdit) return;
+      if(state.saveTimer){
+        clearTimeout(state.saveTimer);
+        state.saveTimer = null;
+      }
+      try{
+        state.updatedAt = nowIso();
+        const payload = buildPayload();
+        payload.updated_at = state.updatedAt;
+        await writeDocumentCompat(DOC_KEY, payload);
+        if(state.planBroadcastChannel && typeof state.planBroadcastChannel.send === 'function'){
+          try{
+            state.planBroadcastChannel.send({
+              type:'broadcast',
+              event:'plan-saved',
+              payload:{
+                doc_key: DOC_KEY,
+                updated_at: state.updatedAt,
+                session_id: state.sessionId
+              }
+            });
+          }catch(error){
+            console.error('broadcast plan save', error);
+          }
+        }
+        state.hasPendingLocalChanges = false;
+        els.cloudValue.textContent = 'Cloud salvat';
+        els.cloudSub.textContent = 'Ultima sincronizare plan: ' + formatDateTime(state.updatedAt);
+      }catch(error){
+        state.hasPendingLocalChanges = true;
+        console.error(error);
+        els.cloudValue.textContent = 'Eroare cloud';
+        els.cloudSub.textContent = trimText(error && error.message || 'Nu am putut salva documentul.');
+      }
+    }
+    function queueSave(delayMs){
+      if(!state.canEdit) return;
+      const delay = typeof delayMs === 'number' ? Math.max(0, delayMs) : 2200;
+      state.hasPendingLocalChanges = true;
+      els.cloudValue.textContent = 'Salvare...';
+      els.cloudSub.textContent = 'Pregătesc payload-ul pentru rf_documents.';
+      if(state.saveTimer) clearTimeout(state.saveTimer);
+      state.saveTimer = setTimeout(() => { saveNow(); }, delay);
+    }
+
+    async function loadPlanDocument(forceApply){
+      const doc = await readDocumentCompat(DOC_KEY);
+      const seedRows = cloneSeedRows();
+      if(doc && (doc.content || doc.data)){
+        const payload = doc.content || doc.data;
+        const rows = extractRowsPayload(payload);
+        const remoteUpdated = payload.updated_at || doc.updated_at || null;
+        const isFullSnapshot = !!(payload && (payload.full_snapshot === true || Number(payload.version || 0) >= 3));
+        const normalizedRows = rows.map((row, index) => normalizePlanRow(row, index));
+        const hydratedRowsBase = isFullSnapshot
+          ? reindexRowsInDisplayOrder(sortRowsStable(normalizedRows))
+          : mergeSeedWithCloud(seedRows, rows);
+        const hydratedRows = ensureRowsContinueToYearEnd(hydratedRowsBase);
+        const shouldApply = forceApply || !state.updatedAt || (remoteUpdated && state.updatedAt && String(remoteUpdated) > String(state.updatedAt));
+        if(rows.length && shouldApply){
+          state.rows = hydratedRows;
+          state.updatedAt = remoteUpdated || nowIso();
+          state.hasPendingLocalChanges = false;
+          els.cloudValue.textContent = 'Cloud încărcat';
+          els.cloudSub.textContent = 'Ultima sincronizare plan: ' + formatDateTime(state.updatedAt);
+          return;
+        }
+        if(rows.length){
+          els.cloudValue.textContent = 'Cloud încărcat';
+          els.cloudSub.textContent = 'Ultima sincronizare plan: ' + formatDateTime(remoteUpdated || state.updatedAt);
+          state.rows = state.rows.length ? state.rows : hydratedRows;
+          state.hasPendingLocalChanges = false;
+          return;
+        }
+      }
+      state.rows = seedRows;
+      state.updatedAt = null;
+      state.hasPendingLocalChanges = false;
+      els.cloudValue.textContent = 'Model local';
+      els.cloudSub.textContent = 'Încă nu există document cloud pentru planificare.';
+    }
+
+    async function refreshLiveAndSupport(force, uiState){
+      if(!state.activeYear) return;
+      const results = await Promise.allSettled([
+        ensureForjateYearLoaded(state.activeYear, !!force),
+        refreshSupportData(!!force)
+      ]);
+      results.forEach(result => {
+        if(result && result.status === 'rejected') console.error('refreshLiveAndSupport', result.reason);
+      });
+      try{
+        rebuildLocalDerived(uiState ? false : undefined);
+      }catch(error){
+        console.error('refreshLiveAndSupport.rebuildLocalDerived', error);
+        try{ renderTable(uiState ? false : true); }catch(inner){ console.error('refreshLiveAndSupport.renderTable', inner); }
+      }
+      if(uiState) restoreUiState(uiState);
+    }
+
+    function updateAccessUi(){
+      try{
+        els.lockLayer.style.display = state.canEdit ? 'none' : 'flex';
+        els.btnSave.disabled = !state.canEdit;
+        els.btnSave.style.opacity = state.canEdit ? '1' : '.55';
+        state.selectionHintBase = state.canEdit
+          ? 'Se salvează în rf_documents / planificare-forja.'
+          : 'Contul curent are doar drept de vizualizare.';
+        updatePlanSelectionHint();
+        const label = safeRoleLabel(state.role);
+        els.userSub.textContent = state.canEdit ? (label + ' • editare activă') : (label + ' • doar vizualizare');
+        updateRowActionUi();
+        if(els.planBody && els.planBody.children && els.planBody.children.length){
+          requestAnimationFrame(() => {
+            try{ applyCellLockUi(); }catch(error){ console.error('updateAccessUi.applyCellLockUi', error); }
+          });
+        }
+      }catch(error){
+        console.error('updateAccessUi', error);
+      }
+    }
+    async function initAuth(){
+      try{
+        if(!window.ERPAuth) throw new Error('auth-common.js nu s-a încărcat.');
+        const authState = await window.ERPAuth.requireAuth({ next:'planificare-forja.html', redirectToLogin:true });
+        state.supabase = window.ERPAuth.getSupabaseClient();
+        state.user = authState.user;
+        state.role = trimText(authState.role || 'viewer') || 'viewer';
+        await resolvePagePermissions();
+        const displayName = trimText(state.user && (state.user.email || state.user.id) || '-');
+        els.userValue.textContent = displayName;
+        updateAccessUi();
+      }catch(error){
+        console.error(error);
+        els.userValue.textContent = 'Neautentificat';
+        els.userSub.textContent = trimText(error && error.message || 'Nu am putut valida sesiunea.');
+      }
+    }
+    async function softRefresh(){
+      if(state.isEditing) return;
+      await loadPlanDocument(false);
+      ensureFilters();
+      renderFilters();
+      await refreshLiveAndSupport(true);
+      await refreshRemoteLocks(true);
+    }
+    function isEditableNavInput(input){
+      if(!input || !input.classList || !input.classList.contains('cell-input')) return false;
+      if(input.disabled) return false;
+      if(input.classList.contains('dup-hidden')) return false;
+      const style = window.getComputedStyle ? window.getComputedStyle(input) : null;
+      if(style && (style.display === 'none' || style.visibility === 'hidden')) return false;
+      return !!(input.dataset && input.dataset.rowId && input.dataset.machine && input.dataset.field);
+    }
+    function getEditableGridMatrix(){
+      if(!els.planBody) return [];
+      return Array.from(els.planBody.querySelectorAll('tr[data-row-id]')).map(row => {
+        return Array.from(row.querySelectorAll('.cell-input[data-row-id][data-machine][data-field]')).filter(isEditableNavInput);
+      }).filter(row => row.length);
+    }
+    function findEditableGridPosition(target){
+      const matrix = getEditableGridMatrix();
+      for(let rowIndex = 0; rowIndex < matrix.length; rowIndex += 1){
+        const colIndex = matrix[rowIndex].indexOf(target);
+        if(colIndex >= 0) return { matrix, rowIndex, colIndex };
+      }
+      return { matrix, rowIndex:-1, colIndex:-1 };
+    }
+    function focusGridInput(target, options){
+      const input = isEditableNavInput(target) ? target : null;
+      if(!input) return false;
+      const opts = options && typeof options === 'object' ? options : {};
+      if(opts.selectAll) input.dataset.navSelectAll = '1';
+      else delete input.dataset.navSelectAll;
+      requestAnimationFrame(() => {
+        try{ input.focus({ preventScroll:false }); }catch(_focusErr){ try{ input.focus(); }catch(__focusErr){} }
+      });
+      return true;
+    }
+    function getGridNeighborInput(target, direction){
+      const pos = findEditableGridPosition(target);
+      if(pos.rowIndex < 0 || pos.colIndex < 0) return null;
+      let next = null;
+      if(direction === 'down' || direction === 'enter'){
+        const row = pos.matrix[pos.rowIndex + 1];
+        next = row ? row[pos.colIndex] || null : null;
+      }else if(direction === 'up'){
+        const row = pos.matrix[pos.rowIndex - 1];
+        next = row ? row[pos.colIndex] || null : null;
+      }else if(direction === 'left'){
+        if(pos.colIndex > 0) next = pos.matrix[pos.rowIndex][pos.colIndex - 1] || null;
+      }else if(direction === 'right'){
+        next = pos.matrix[pos.rowIndex][pos.colIndex + 1] || null;
+      }
+      return isEditableNavInput(next) ? next : null;
+    }
+    function buildUiStateForInput(target, options){
+      const input = isEditableNavInput(target) ? target : null;
+      if(!input) return null;
+      const opts = options && typeof options === 'object' ? options : {};
+      const currentValue = String(input.value || '');
+      return normalizeUiStateSnap({
+        scrollTop: els.tableWrap ? els.tableWrap.scrollTop : 0,
+        scrollLeft: els.tableWrap ? els.tableWrap.scrollLeft : 0,
+        activeCell: {
+          rowId: trimText(input.dataset.rowId),
+          machine: trimText(input.dataset.machine),
+          field: trimText(input.dataset.field),
+          start: opts.selectAll ? 0 : (typeof input.selectionStart === 'number' ? input.selectionStart : null),
+          end: opts.selectAll ? currentValue.length : (typeof input.selectionEnd === 'number' ? input.selectionEnd : null),
+          selectAll: !!opts.selectAll
+        }
+      });
+    }
+    function moveGridFocusFrom(target, direction){
+      const next = getGridNeighborInput(target, direction);
+      if(!next) return false;
+      state.pendingUiStateOverride = buildUiStateForInput(next, { selectAll:true });
+      savePersistedUiState(state.pendingUiStateOverride);
+      requestAnimationFrame(() => {
+        try{ target.blur(); }catch(_blurErr){}
+      });
+      return true;
+    }
+    function bindEvents(){
+      if(els.tableWrap){
+        let scrollPersistFrame = 0;
+        els.tableWrap.addEventListener('scroll', function(){
+          hidePlanTooltip();
+          if(scrollPersistFrame) cancelAnimationFrame(scrollPersistFrame);
+          scrollPersistFrame = requestAnimationFrame(() => {
+            scrollPersistFrame = 0;
+            savePersistedUiState({
+              scrollTop: els.tableWrap ? els.tableWrap.scrollTop : 0,
+              scrollLeft: els.tableWrap ? els.tableWrap.scrollLeft : 0,
+              activeCell: null
+            });
+          });
+        }, { passive:true });
+      }
+      window.addEventListener('pagehide', function(){ savePersistedUiState(captureUiState()); stopCollaborativeSync().catch(()=>{}); });
+      window.addEventListener('beforeunload', function(){ savePersistedUiState(captureUiState()); stopCollaborativeSync().catch(()=>{}); });
+      window.addEventListener('resize', function(){
+        if(activePlanTooltipCell) positionPlanTooltip(activePlanTooltipCell);
+        if(deliveryTooltipVisible) positionDeliveryIndicatorTooltip();
+      });
+      document.addEventListener('visibilitychange', function(){
+        if(document.visibilityState === 'hidden') savePersistedUiState(captureUiState());
+      });
+      els.yearSelect.addEventListener('change', async function(){
+        state.activeYear = this.value;
+        renderFilters();
+        await refreshLiveAndSupport(true);
+      });
+      els.searchInput.addEventListener('input', function(){
+        state.searchTerm = this.value || '';
+        renderTable(true);
+      });
+      if(els.deliveryAlertButton){
+        els.deliveryAlertButton.addEventListener('mouseenter', showDeliveryIndicatorTooltip);
+        els.deliveryAlertButton.addEventListener('mouseleave', hideDeliveryIndicatorTooltip);
+        els.deliveryAlertButton.addEventListener('focus', showDeliveryIndicatorTooltip);
+        els.deliveryAlertButton.addEventListener('blur', hideDeliveryIndicatorTooltip);
+      }
+      els.planBody.addEventListener('click', function(event){
+        if(state.planSelection && state.planSelection.suppressClick){
+          state.planSelection.suppressClick = false;
+          event.preventDefault();
+          event.stopPropagation();
+          return;
+        }
+      }, true);
+      els.planBody.addEventListener('click', function(event){
+        const row = event.target && event.target.closest ? event.target.closest('tr[data-row-id]') : null;
+        if(row) setSelectedRow(row.getAttribute('data-row-id'));
+      });
+      els.planBody.addEventListener('mousedown', function(event){
+        if(event.button !== 0) return;
+        const input = getPlanInputFromTarget(event.target);
+        if(input){
+          beginPlanSelection(input, event);
+          return;
+        }
+        const insideTable = !!(event.target && event.target.closest && event.target.closest('#tableWrap'));
+        if(!insideTable) clearPlanSelection();
+      });
+      document.addEventListener('mousemove', function(event){
+        if(!state.planSelection || !state.planSelection.pending) return;
+        extendPlanSelectionFromPoint(event.clientX, event.clientY);
+      });
+      document.addEventListener('mouseup', function(){
+        if(!state.planSelection) return;
+        finishPlanSelection();
+      });
+      els.planBody.addEventListener('mouseover', function(event){
+        const row = event.target && event.target.closest ? event.target.closest('tr[data-row-id]') : null;
+        setHoveredRow(row ? row.getAttribute('data-row-id') : '');
+        const cell = getPlanTooltipCellFromTarget(event.target);
+        if(cell) showPlanTooltip(cell);
+      });
+      els.planBody.addEventListener('mousemove', function(event){
+        const cell = getPlanTooltipCellFromTarget(event.target);
+        if(cell){
+          if(activePlanTooltipCell !== cell) showPlanTooltip(cell);
+          else positionPlanTooltip(cell);
+        }
+      });
+      els.planBody.addEventListener('mouseout', function(event){
+        const fromCell = getPlanTooltipCellFromTarget(event.target);
+        const toCell = getPlanTooltipCellFromTarget(event.relatedTarget);
+        if(fromCell && fromCell !== toCell) hidePlanTooltip();
+      });
+      els.planBody.addEventListener('mouseleave', function(){
+        setHoveredRow('');
+        hidePlanTooltip();
+      });
+      els.planBody.addEventListener('focusin', async function(event){
+        const target = event.target;
+        const row = target && target.closest ? target.closest('tr[data-row-id]') : null;
+        if(row) setSelectedRow(row.getAttribute('data-row-id'));
+        if(state.planSelection && state.planSelection.dragging){
+          if(target && typeof target.blur === 'function'){
+            try{ target.blur(); }catch(_blurErr){}
+          }
+          return;
+        }
+        if(target && target.classList && target.classList.contains('cell-input')){
+          if(trimText(target.dataset && target.dataset.field) === 'planificat' && (!state.planSelection || !state.planSelection.dragging)){
+            clearPlanSelection({ keepSuppress:true });
+          }
+          target.readOnly = true;
+          const ok = await acquireCellLock(target.dataset.rowId, target.dataset.machine, target.dataset.field);
+          if(!ok){
+            target.readOnly = false;
+            target.blur();
+            return;
+          }
+          target.readOnly = false;
+          state.isEditing = true;
+          if(target.dataset && target.dataset.navSelectAll === '1'){
+            delete target.dataset.navSelectAll;
+            requestAnimationFrame(() => {
+              try{
+                if(typeof target.select === 'function') target.select();
+                else if(typeof target.setSelectionRange === 'function') target.setSelectionRange(0, String(target.value || '').length);
+              }catch(_selectErr){}
+            });
+          }
+        }
+        const cell = getPlanTooltipCellFromTarget(target);
+        if(cell) showPlanTooltip(cell);
+      });
+      els.planBody.addEventListener('input', function(event){
+        const target = event.target;
+        if(!target || !target.dataset) return;
+        const rowId = target.dataset.rowId;
+        const machine = target.dataset.machine;
+        const field = target.dataset.field;
+        if(!rowId || !machine || !field) return;
+        markEdit(rowId, machine, field, target.value, { rebuild:false, save:false });
+      });
+      els.planBody.addEventListener('change', function(event){
+        const target = event.target;
+        if(!target || !target.dataset) return;
+        const rowId = target.dataset.rowId;
+        const machine = target.dataset.machine;
+        const field = target.dataset.field;
+        if(!rowId || !machine || !field) return;
+        if(field === 'reper') target.value = trimText(target.value).toUpperCase();
+        markEdit(rowId, machine, field, target.value, { rebuild:true, save:false });
+      });
+      els.planBody.addEventListener('keydown', function(event){
+        const target = event.target;
+        if(event.key === 'Escape' && state.planSelection && state.planSelection.keys.length){
+          clearPlanSelection();
+          return;
+        }
+        if(!isEditableNavInput(target)) return;
+        if(state.planSelection && state.planSelection.dragging) return;
+        let direction = '';
+        if(event.key === 'Enter') direction = 'enter';
+        else if(event.key === 'ArrowUp') direction = 'up';
+        else if(event.key === 'ArrowDown') direction = 'down';
+        else if(event.key === 'ArrowLeft') direction = 'left';
+        else if(event.key === 'ArrowRight') direction = 'right';
+        if(!direction) return;
+        event.preventDefault();
+        event.stopPropagation();
+        if(direction === 'enter' && target.dataset && target.dataset.field === 'reper'){
+          target.value = trimText(target.value).toUpperCase();
+        }
+        const moved = moveGridFocusFrom(target, direction);
+        if(!moved){
+          state.pendingUiStateOverride = buildUiStateForInput(target, { selectAll:true });
+          savePersistedUiState(state.pendingUiStateOverride);
+          requestAnimationFrame(() => {
+            try{ target.blur(); }catch(_blurErr){}
+          });
+        }
+      });
+      els.planBody.addEventListener('focusout', function(event){
+        const target = event.target;
+        if(!target || !target.dataset) return;
+        if(target.classList && target.classList.contains('cell-input')){
+          state.isEditing = false;
+          const rowId = target.dataset.rowId;
+          const machine = target.dataset.machine;
+          const field = target.dataset.field;
+          if(rowId && machine && field){
+            if(field === 'reper') target.value = trimText(target.value).toUpperCase();
+            markEdit(rowId, machine, field, target.value, { rebuild:true, save:false });
+            queueSave(250);
+          }
+          releaseCurrentCellLock({ silent:true }).catch(error => console.error('release lock', error));
+        }
+        requestAnimationFrame(() => {
+          const active = document.activeElement;
+          const activeCell = getPlanTooltipCellFromTarget(active);
+          if(activeCell) showPlanTooltip(activeCell);
+          else hidePlanTooltip();
+        });
+      });
+      els.btnRefresh.addEventListener('click', async function(){
+        const uiState = captureUiState();
+        els.modePill.textContent = 'Refresh...';
+        await refreshLiveAndSupport(true, uiState);
+      });
+      els.btnSave.addEventListener('click', function(){ saveNow(); });
+      els.btnAddRow.addEventListener('click', function(){ addRow(); });
+      if(els.btnDeleteRow) els.btnDeleteRow.addEventListener('click', function(){ deleteSelectedRow(); });
+    }
+
+    async function boot(){
+      const initialUiState = readPersistedUiState();
+      buildHeader();
+      await initAuth();
+      await loadPlanDocument(true);
+      if(!Array.isArray(state.rows) || !state.rows.length) state.rows = cloneSeedRows();
+      ensureFilters();
+      renderFilters();
+      try{
+        updateRepereDatalist();
+      }catch(error){
+        console.error('boot.updateRepereDatalist', error);
+      }
+      try{
+        updatePlanSelectionHint();
+        renderTable(false);
+      }catch(error){
+        console.error('boot.initialRender', error);
+      }
+      bindEvents();
+      try{
+        await refreshLiveAndSupport(false);
+      }catch(error){
+        console.error('boot.refreshLiveAndSupport', error);
+      }
+      try{ await refreshRemoteLocks(true); }catch(error){ console.error('boot.refreshRemoteLocks', error); }
+      startCollaborativeSync();
+      restoreUiState(initialUiState);
+      updateRowActionUi();
+    }
+
+    boot().catch(error => {
+      console.error('boot', error);
+      try{ renderTable(false); }catch(inner){ console.error('boot.renderTable', inner); }
+    });
+  })();
