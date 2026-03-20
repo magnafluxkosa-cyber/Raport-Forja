@@ -165,6 +165,11 @@
     tbody tr td.slot-reper.delivery-ready-cycle-final-next .cell-input,
     tbody tr td.slot-reper.delivery-ready-cycle-final-next .cell-input:focus{background:transparent !important;font-weight:900}
     td.slot-plan{position:relative}
+    td.slot-plan.sum-selection-cell{box-shadow:inset 0 0 0 2px rgba(19,77,153,.55);background:rgba(217,233,255,.72) !important}
+    td.slot-plan.sum-selection-cell .cell-input{background:transparent !important;font-weight:800}
+    td.slot-plan.sum-selection-anchor{box-shadow:inset 0 0 0 2px rgba(11,31,70,.78), inset 0 0 0 4px rgba(217,233,255,.92);background:rgba(217,233,255,.9) !important}
+    body.sum-selection-dragging,
+    body.sum-selection-dragging *{cursor:crosshair !important;user-select:none}
     .plan-floating-tooltip{position:fixed;left:-9999px;top:-9999px;z-index:9999;width:232px;max-width:min(232px,calc(100vw - 24px));padding:10px 12px;border-radius:14px;background:linear-gradient(180deg,#12376b 0%,#0f2748 100%);color:#eff6ff;border:1px solid rgba(191,219,254,.34);box-shadow:0 18px 40px rgba(15,23,42,.34);pointer-events:none}
     .plan-floating-tooltip.is-alert{background:linear-gradient(180deg,#7f1d3a 0%,#581c32 100%);border-color:rgba(254,202,202,.32)}
     .plan-tip-badge{display:inline-flex;align-items:center;gap:6px;font-size:10px;font-weight:800;letter-spacing:.02em;text-transform:uppercase;padding:3px 8px;border-radius:999px;margin-bottom:8px;background:rgba(255,255,255,.12);color:#ffffff}
@@ -450,7 +455,20 @@
       hasPendingLocalChanges: false,
       planBroadcastChannel: null,
       remoteApplyTimer: null,
-      pendingUiStateOverride: null
+      pendingUiStateOverride: null,
+      selectionHintBase: trimText(els.hintText && els.hintText.textContent) || 'Se salvează în rf_documents / planificare-forja.',
+      planSelection: {
+        pending:false,
+        dragging:false,
+        suppressClick:false,
+        anchorKey:'',
+        currentKey:'',
+        startX:0,
+        startY:0,
+        keys:[],
+        sum:0,
+        count:0
+      }
     };
 
     function safeText(v){ return String(v == null ? '' : v); }
@@ -3297,6 +3315,7 @@
       if(!rows.length){
         state.selectedRowId = '';
         els.planBody.innerHTML = '<tr><td colspan="21"><div class="empty">Nu există rânduri pentru filtrul curent.</div></td></tr>';
+        clearPlanSelection();
         restoreUiState(uiState);
         updateRowActionUi();
         return;
@@ -3358,9 +3377,161 @@
       syncSelectedRowUi();
       requestAnimationFrame(() => {
         try{ applyCellLockUi(); }catch(error){ console.error('renderTable.applyCellLockUi', error); }
+        try{ applyPlanSelectionUi(); }catch(error){ console.error('renderTable.applyPlanSelectionUi', error); }
       });
     }
 
+    function buildPlanSelectionKey(rowId, machine){
+      return trimText(rowId) + '||' + trimText(machine);
+    }
+    function getPlanInputFromTarget(target){
+      if(!target || !target.closest) return null;
+      if(target.classList && target.classList.contains('cell-input') && trimText(target.dataset && target.dataset.field) === 'planificat') return target;
+      const td = target.closest('td.slot-plan');
+      if(!td) return null;
+      return td.querySelector('.cell-input[data-field="planificat"]');
+    }
+    function getVisiblePlanSelectionContext(){
+      const rows = Array.from(els.planBody ? els.planBody.querySelectorAll('tr[data-row-id]') : []);
+      const list = [];
+      const map = Object.create(null);
+      rows.forEach((tr, rowIndex) => {
+        const inputs = Array.from(tr.querySelectorAll('td.slot-plan .cell-input[data-field="planificat"]'));
+        inputs.forEach(input => {
+          if(!input || !input.dataset) return;
+          const rowId = trimText(input.dataset.rowId || tr.getAttribute('data-row-id'));
+          const machine = trimText(input.dataset.machine);
+          if(!rowId || !machine) return;
+          const colIndex = MACHINE_ORDER.indexOf(machine);
+          if(colIndex < 0) return;
+          const key = buildPlanSelectionKey(rowId, machine);
+          const meta = {
+            key,
+            rowId,
+            machine,
+            rowIndex,
+            colIndex,
+            input,
+            td: input.closest('td.slot-plan'),
+            value: Math.max(0, Math.round(toNumber(input.value)))
+          };
+          list.push(meta);
+          map[key] = meta;
+        });
+      });
+      return { list, map };
+    }
+    function updatePlanSelectionHint(){
+      if(!els.hintText) return;
+      const count = Math.max(0, Math.round(toNumber(state.planSelection && state.planSelection.count)));
+      const sum = Math.max(0, Math.round(toNumber(state.planSelection && state.planSelection.sum)));
+      if(count > 0){
+        const suffix = count === 1 ? 'celulă' : 'celule';
+        els.hintText.textContent = state.selectionHintBase + ' | Selecție: ' + count + ' ' + suffix + ' | Sumă: ' + roMaybeNumber(sum) + ' buc';
+      }else{
+        els.hintText.textContent = state.selectionHintBase;
+      }
+    }
+    function applyPlanSelectionUi(){
+      if(els.planBody){
+        els.planBody.querySelectorAll('td.slot-plan.sum-selection-cell').forEach(td => td.classList.remove('sum-selection-cell','sum-selection-anchor'));
+      }
+      const ctx = getVisiblePlanSelectionContext();
+      const keepKeys = [];
+      let sum = 0;
+      (Array.isArray(state.planSelection && state.planSelection.keys) ? state.planSelection.keys : []).forEach(key => {
+        const meta = ctx.map[key];
+        if(!meta || !meta.td) return;
+        keepKeys.push(key);
+        meta.td.classList.add('sum-selection-cell');
+        if(key === state.planSelection.anchorKey) meta.td.classList.add('sum-selection-anchor');
+        sum += Math.max(0, Math.round(toNumber(meta.value)));
+      });
+      state.planSelection.keys = keepKeys;
+      state.planSelection.count = keepKeys.length;
+      state.planSelection.sum = sum;
+      updatePlanSelectionHint();
+    }
+    function clearPlanSelection(options){
+      const opts = options || {};
+      state.planSelection.pending = false;
+      state.planSelection.dragging = false;
+      if(!opts.keepSuppress) state.planSelection.suppressClick = false;
+      if(!opts.keepAnchor){
+        state.planSelection.anchorKey = '';
+        state.planSelection.currentKey = '';
+      }
+      state.planSelection.keys = [];
+      state.planSelection.count = 0;
+      state.planSelection.sum = 0;
+      document.body.classList.remove('sum-selection-dragging');
+      applyPlanSelectionUi();
+    }
+    function updatePlanSelectionRange(anchorKey, currentKey){
+      const ctx = getVisiblePlanSelectionContext();
+      const anchor = ctx.map[anchorKey];
+      const current = ctx.map[currentKey];
+      if(!anchor || !current){
+        clearPlanSelection();
+        return;
+      }
+      const rowMin = Math.min(anchor.rowIndex, current.rowIndex);
+      const rowMax = Math.max(anchor.rowIndex, current.rowIndex);
+      const colMin = Math.min(anchor.colIndex, current.colIndex);
+      const colMax = Math.max(anchor.colIndex, current.colIndex);
+      state.planSelection.anchorKey = anchorKey;
+      state.planSelection.currentKey = currentKey;
+      state.planSelection.keys = ctx.list
+        .filter(meta => meta.rowIndex >= rowMin && meta.rowIndex <= rowMax && meta.colIndex >= colMin && meta.colIndex <= colMax)
+        .sort((a,b) => a.rowIndex - b.rowIndex || a.colIndex - b.colIndex)
+        .map(meta => meta.key);
+      applyPlanSelectionUi();
+    }
+    function beginPlanSelection(input, event){
+      if(!input || !input.dataset) return;
+      state.planSelection.pending = true;
+      state.planSelection.dragging = false;
+      state.planSelection.suppressClick = false;
+      state.planSelection.anchorKey = buildPlanSelectionKey(input.dataset.rowId, input.dataset.machine);
+      state.planSelection.currentKey = state.planSelection.anchorKey;
+      state.planSelection.startX = event && typeof event.clientX === 'number' ? event.clientX : 0;
+      state.planSelection.startY = event && typeof event.clientY === 'number' ? event.clientY : 0;
+    }
+    function extendPlanSelectionFromPoint(clientX, clientY){
+      if(!state.planSelection.pending) return;
+      const target = document.elementFromPoint(clientX, clientY);
+      const input = getPlanInputFromTarget(target);
+      if(!input || !input.dataset) return;
+      const nextKey = buildPlanSelectionKey(input.dataset.rowId, input.dataset.machine);
+      const movedEnough = Math.abs(clientX - state.planSelection.startX) > 3 || Math.abs(clientY - state.planSelection.startY) > 3 || nextKey !== state.planSelection.anchorKey;
+      if(!movedEnough) return;
+      if(!state.planSelection.dragging){
+        state.planSelection.dragging = true;
+        document.body.classList.add('sum-selection-dragging');
+        const active = document.activeElement;
+        if(active && typeof active.blur === 'function'){
+          try{ active.blur(); }catch(_blurErr){}
+        }
+      }
+      updatePlanSelectionRange(state.planSelection.anchorKey, nextKey);
+    }
+    function finishPlanSelection(){
+      if(!state.planSelection.pending && !state.planSelection.dragging) return;
+      const wasDragging = !!state.planSelection.dragging;
+      state.planSelection.pending = false;
+      state.planSelection.dragging = false;
+      document.body.classList.remove('sum-selection-dragging');
+      if(wasDragging){
+        const active = document.activeElement;
+        if(active && typeof active.blur === 'function'){
+          try{ active.blur(); }catch(_blurErr){}
+        }
+        state.planSelection.suppressClick = true;
+        if(state.planSelection.keys.length) applyPlanSelectionUi();
+      }else if(!state.planSelection.keys.length){
+        updatePlanSelectionHint();
+      }
+    }
     function findRow(rowId){
       return state.rows.find(row => String(row.id) === String(rowId)) || null;
     }
@@ -3592,9 +3763,10 @@
         els.lockLayer.style.display = state.canEdit ? 'none' : 'flex';
         els.btnSave.disabled = !state.canEdit;
         els.btnSave.style.opacity = state.canEdit ? '1' : '.55';
-        els.hintText.textContent = state.canEdit
+        state.selectionHintBase = state.canEdit
           ? 'Se salvează în rf_documents / planificare-forja.'
           : 'Contul curent are doar drept de vizualizare.';
+        updatePlanSelectionHint();
         const label = safeRoleLabel(state.role);
         els.userSub.textContent = state.canEdit ? (label + ' • editare activă') : (label + ' • doar vizualizare');
         updateRowActionUi();
@@ -3751,8 +3923,34 @@
         els.deliveryAlertButton.addEventListener('blur', hideDeliveryIndicatorTooltip);
       }
       els.planBody.addEventListener('click', function(event){
+        if(state.planSelection && state.planSelection.suppressClick){
+          state.planSelection.suppressClick = false;
+          event.preventDefault();
+          event.stopPropagation();
+          return;
+        }
+      }, true);
+      els.planBody.addEventListener('click', function(event){
         const row = event.target && event.target.closest ? event.target.closest('tr[data-row-id]') : null;
         if(row) setSelectedRow(row.getAttribute('data-row-id'));
+      });
+      els.planBody.addEventListener('mousedown', function(event){
+        if(event.button !== 0) return;
+        const input = getPlanInputFromTarget(event.target);
+        if(input){
+          beginPlanSelection(input, event);
+          return;
+        }
+        const insideTable = !!(event.target && event.target.closest && event.target.closest('#tableWrap'));
+        if(!insideTable) clearPlanSelection();
+      });
+      document.addEventListener('mousemove', function(event){
+        if(!state.planSelection || !state.planSelection.pending) return;
+        extendPlanSelectionFromPoint(event.clientX, event.clientY);
+      });
+      document.addEventListener('mouseup', function(){
+        if(!state.planSelection) return;
+        finishPlanSelection();
       });
       els.planBody.addEventListener('mouseover', function(event){
         const row = event.target && event.target.closest ? event.target.closest('tr[data-row-id]') : null;
@@ -3780,7 +3978,16 @@
         const target = event.target;
         const row = target && target.closest ? target.closest('tr[data-row-id]') : null;
         if(row) setSelectedRow(row.getAttribute('data-row-id'));
+        if(state.planSelection && state.planSelection.dragging){
+          if(target && typeof target.blur === 'function'){
+            try{ target.blur(); }catch(_blurErr){}
+          }
+          return;
+        }
         if(target && target.classList && target.classList.contains('cell-input')){
+          if(trimText(target.dataset && target.dataset.field) === 'planificat' && (!state.planSelection || !state.planSelection.dragging)){
+            clearPlanSelection({ keepSuppress:true });
+          }
           target.readOnly = true;
           const ok = await acquireCellLock(target.dataset.rowId, target.dataset.machine, target.dataset.field);
           if(!ok){
@@ -3824,7 +4031,12 @@
       });
       els.planBody.addEventListener('keydown', function(event){
         const target = event.target;
+        if(event.key === 'Escape' && state.planSelection && state.planSelection.keys.length){
+          clearPlanSelection();
+          return;
+        }
         if(!isEditableNavInput(target)) return;
+        if(state.planSelection && state.planSelection.dragging) return;
         let direction = '';
         if(event.key === 'Enter') direction = 'enter';
         else if(event.key === 'ArrowUp') direction = 'up';
@@ -3892,6 +4104,7 @@
         console.error('boot.updateRepereDatalist', error);
       }
       try{
+        updatePlanSelectionHint();
         renderTable(false);
       }catch(error){
         console.error('boot.initialRender', error);
@@ -3914,7 +4127,6 @@
     });
   })();
   </script>
-  <script src="./global-nav.js"></script>
   <script src="./mobile-erp.js"></script>
 </body>
 </html>
