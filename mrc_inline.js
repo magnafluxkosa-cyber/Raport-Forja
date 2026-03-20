@@ -6,9 +6,10 @@
   const PLAN_DOC_KEY = 'planificare-forja';
   const LEGACY_FORJATE_DOC_KEY = 'forjate';
   const FORJATE_DOC_PREFIX = 'forjate:';
-  const STEEL_DOC_KEYS = ['stoc-initial-otel', 'stoc_initial_otel'];
-    const INTRARI_OTEL_DOC_BASE_KEYS = ['intrari-otel'];
-  const DEBITARI_FLOW_DOC_BASE_KEYS = ['debitate'];
+  const STEEL_DOC_KEYS = ['stoc-initial-otel','stoc_initial_otel','inventar-otel','inventar_otel','inventar-otel-initial','inventar_otel_initial'];
+  const DEBITAT_DOC_BASE_KEYS = ['inventar-debitat','inventar_debitat','stoc-initial-debitat','stoc_initial_debitat'];
+  const INTRARI_OTEL_DOC_BASE_KEYS = ['intrari-otel','intrari_otel','intrari otel','INTRARI_OTEL','INTRARI OTEL'];
+  const DEBITARI_FLOW_DOC_BASE_KEYS = ['debitate','debitari','debitate_otel','debitari_otel','DEBITATE','DEBITARI'];
   const MONTHS = ['IANUARIE','FEBRUARIE','MARTIE','APRILIE','MAI','IUNIE','IULIE','AUGUST','SEPTEMBRIE','OCTOMBRIE','NOIEMBRIE','DECEMBRIE'];
   const MACHINE_ORDER = ['1,25 T','2,5 T','3 T BR','MP','5 T CHINA'];
 
@@ -146,6 +147,37 @@
   }
   function sameOrBefore(a,b){ return trimText(a) && trimText(b) && String(a) <= String(b); }
   function nextDayIso(iso){ const d = new Date(iso + 'T00:00:00'); if(Number.isNaN(d.getTime())) return ''; d.setDate(d.getDate()+1); return d.toISOString().slice(0,10); }
+  function endOfMonthIso(an, lunaNum){
+    const y = Number(an || 0);
+    const m = Number(lunaNum || 0);
+    if(!y || m < 1 || m > 12) return '';
+    return new Date(Date.UTC(y, m, 0)).toISOString().slice(0,10);
+  }
+  function findLatestSnapshotEnd(rows, firstPlanIso){
+    let best = '';
+    (rows || []).forEach(row => {
+      const eom = endOfMonthIso(row && row.an, row && row.lunaNum);
+      if(!eom) return;
+      if(firstPlanIso && eom >= firstPlanIso) return;
+      if(!best || eom > best) best = eom;
+    });
+    return best;
+  }
+  function findLatestCommonSnapshotEnd(steelRows, debitatRows, firstPlanIso){
+    const steelSet = new Set();
+    (steelRows || []).forEach(row => {
+      const eom = endOfMonthIso(row && row.an, row && row.lunaNum);
+      if(eom && (!firstPlanIso || eom < firstPlanIso)) steelSet.add(eom);
+    });
+    const common = new Set();
+    (debitatRows || []).forEach(row => {
+      const eom = endOfMonthIso(row && row.an, row && row.lunaNum);
+      if(eom && steelSet.has(eom)) common.add(eom);
+    });
+    const commonList = Array.from(common).sort();
+    if(commonList.length) return commonList[commonList.length - 1];
+    return findLatestSnapshotEnd(steelRows, firstPlanIso) || findLatestSnapshotEnd(debitatRows, firstPlanIso) || '';
+  }
   function queryKeys(keys){ return Array.from(new Set((keys || []).map(trimText).filter(Boolean))); }
   function buildFlowDocKeys(baseKeys, year){
     const y = trimText(year) || String(new Date().getFullYear());
@@ -239,6 +271,41 @@
       cantitateBuc: Math.max(0, Math.round(toNumber(Array.isArray(row) ? arrayCell(row, 8, '') : pick(row, ['cantitate','cantitate buc','cantitate_buc','buc','stoc initial','stoc_initial']))))
     };
   }
+
+  function normalizeDebitatRow(row, index){
+    const data = normalizeDateAny(
+      Array.isArray(row)
+        ? ''
+        : pick(row, ['data','date','DATA','Date','data intrare','Data intrare','DATA INTRARE'])
+    );
+    const an = trimText(
+      Array.isArray(row)
+        ? arrayCell(row, 1, '')
+        : pick(row, ['an','anul','year','AN','Year','Anul','an intrare','An intrare','AN INTRARE'])
+    ) || (data ? data.slice(0,4) : '');
+    const lunaRaw = Array.isArray(row)
+      ? arrayCell(row, 2, '')
+      : pick(row, ['luna','month','LUNA','Month','Luna','luna intrare','Luna intrare','LUNA INTRARE']);
+    const lunaNum = monthNumberFromAny(lunaRaw) || (data ? Number(data.slice(5,7)) : 0);
+    return {
+      id: trimText(Array.isArray(row) ? '' : pick(row, ['id','_id'])) || ('debitat-' + index),
+      an,
+      data,
+      luna: getMonthName(lunaNum || lunaRaw),
+      lunaNum,
+      reper: trimText(
+        Array.isArray(row)
+          ? arrayCell(row, 3, '')
+          : pick(row, ['reper','REPER','Reper','denumire reper debitare','Denumire reper debitare'])
+      ).toUpperCase(),
+      cantitateBuc: Math.max(0, Math.round(toNumber(
+        Array.isArray(row)
+          ? arrayCell(row, 6, 0)
+          : pick(row, ['cantitateBuc','STOC DEBITATE FINAL (buc)','Stoc debitate final (buc)','Stoc Debitat (Buc)','cantitate'])
+      )))
+    };
+  }
+
   function normalizeIntrariOtelRow(row, index){
     const data = normalizeDateAny(
       Array.isArray(row)
@@ -452,7 +519,16 @@
       if(!metaBySpec[key].codIntern && row.codIntern) metaBySpec[key].codIntern = row.codIntern;
       if(!metaBySpec[key].furnizor && row.furnizor) metaBySpec[key].furnizor = row.furnizor;
     });
-    return { map:bySpec, metaBySpec, source:picked.doc_key || 'stoc-initial-otel', period:latest.label };
+    return { map:bySpec, metaBySpec, rows, source:picked.doc_key || 'stoc-initial-otel', period:latest.label };
+  }
+
+
+  async function loadDebitatStock(year){
+    const docs = await queryDocsByKeys(buildFlowDocKeys(DEBITAT_DOC_BASE_KEYS, year));
+    const picked = docs.find(item => extractRowsPayload(item.content || item.data).length) || docs[0] || null;
+    if(!picked) return { rows:[], source:'inventar-debitat lipsă' };
+    const rows = extractRowsPayload(picked.content || picked.data).map(normalizeDebitatRow);
+    return { rows, source:picked.doc_key || 'inventar-debitat' };
   }
 
   async function loadIntrariOtelEntries(year){
@@ -578,75 +654,160 @@
     return Object.values(grouped).sort((a,b) => (a.start||'').localeCompare(b.start||'') || a.forged.localeCompare(b.forged));
   }
 
-  function applyStocksAndManual(demandRows, steelStock, steelMetaBySpec, intrariByWeekSpec, realizedWeekSpec){
-    const steelRunning = Object.assign(Object.create(null), steelStock || {});
-    const seenWeekSpec = new Set();
-    return (demandRows || []).map(row => {
-      const specKey = buildSpecKey(row.diameter, row.quality);
-      const weekSpecKey = `${row.start}|${specKey}`;
-      const firstWeekSpecRow = !seenWeekSpec.has(weekSpecKey);
-      seenWeekSpec.add(weekSpecKey);
-      const intrariMeta = intrariByWeekSpec[weekSpecKey] || { qty:0, codIntern:'', furnizor:'' };
-      const realizedMeta = realizedWeekSpec[weekSpecKey] || { bucRealizate:0, rebut:0, consumKg:0 };
-      const startStockKg = Math.max(0, toNumber(steelRunning[specKey]));
-      const plannedInKg = firstWeekSpecRow ? Math.max(0, toNumber(intrariMeta.qty)) : 0;
-      const bucRealizate = firstWeekSpecRow ? Math.max(0, Math.round(toNumber(realizedMeta.bucRealizate))) : 0;
-      const rebut = firstWeekSpecRow ? Math.max(0, Math.round(toNumber(realizedMeta.rebut))) : 0;
-      const consumRealizatKg = firstWeekSpecRow ? Math.max(0, toNumber(realizedMeta.consumKg)) : 0;
-      const stocDisponibilReal = startStockKg + plannedInKg - consumRealizatKg;
-      const consumPlanificatKg = Math.max(0, toNumber(row.planFuturePieces) * toNumber(row.kgPerPiece));
-      const stocTeoreticFinal = stocDisponibilReal - consumPlanificatKg;
-      const necesarKg = Math.max(0, -stocTeoreticFinal);
-      const coverage = consumPlanificatKg > 0 ? Math.max(0, Math.min(1, stocDisponibilReal / consumPlanificatKg)) : 1;
-      steelRunning[specKey] = Math.max(0, stocTeoreticFinal);
-      const rowKey = [row.start,row.forged,row.debited,row.diameter,row.quality].join('|');
-      const manual = state.manualMap[rowKey] || {};
-      const specMeta = steelMetaBySpec[specKey] || {};
-      const defaultStatus = necesarKg > 0 ? 'Lipsă material' : (coverage < 1 ? 'Aproape limită' : 'Acoperit');
-      return {
-        ...row,
-        rowKey,
-        consumPlanificatKg,
-        startStockKg,
-        plannedInKg,
-        bucRealizate,
-        rebut,
-        consumRealizatKg,
-        stocDisponibilReal,
-        stocTeoreticFinal,
-        needKg: necesarKg,
-        coverage,
-        internalCode: trimText(manual.internalCode || intrariMeta.codIntern || specMeta.codIntern || row.internalCode || ''),
-        proposedOrderKg: manual.proposedOrderKg != null ? toNumber(manual.proposedOrderKg) : necesarKg,
-        proposedSupplier: trimText(manual.proposedSupplier || intrariMeta.furnizor || specMeta.furnizor || ''),
-        needDate: trimText(manual.needDate || row.start || ''),
-        status: trimText(manual.status || defaultStatus),
-        notes: trimText(manual.notes || '')
-      };
+
+  function applyStocksAndManual(demandRows, steelData, debitatRows, intrariByWeekSpec, realizedWeekSpec){
+    const rows = Array.isArray(demandRows) ? demandRows.slice() : [];
+    if(!rows.length) return { rows:[], snapshotEnd:'' };
+
+    rows.sort((a,b) => (a.start || '').localeCompare(b.start || '') || (a.sourceDate || '').localeCompare(b.sourceDate || '') || a.forged.localeCompare(b.forged) || a.machine.localeCompare(b.machine));
+
+    const firstPlanIso = rows.reduce((acc, row) => {
+      const v = trimText(row.rowDate || row.sourceDate || row.start || '');
+      return !acc || (v && v < acc) ? v : acc;
+    }, '');
+    const snapshotEnd = findLatestCommonSnapshotEnd((steelData && steelData.rows) || [], debitatRows || [], firstPlanIso);
+
+    const running = Object.create(null);
+    const steelMetaBySpec = Object.assign(Object.create(null), (steelData && steelData.metaBySpec) || {});
+
+    ((steelData && steelData.rows) || []).forEach(row => {
+      if(endOfMonthIso(row && row.an, row && row.lunaNum) !== snapshotEnd) return;
+      if(!row.diametru || !row.calitate || row.cantitateKg <= 0) return;
+      const specKey = buildSpecKey(row.diametru, row.calitate);
+      running[specKey] = toNumber(running[specKey]) + toNumber(row.cantitateKg);
+      steelMetaBySpec[specKey] ||= { codIntern: row.codIntern || '', furnizor: row.furnizor || '' };
+      if(!steelMetaBySpec[specKey].codIntern && row.codIntern) steelMetaBySpec[specKey].codIntern = row.codIntern;
+      if(!steelMetaBySpec[specKey].furnizor && row.furnizor) steelMetaBySpec[specKey].furnizor = row.furnizor;
     });
+
+    (debitatRows || []).forEach(row => {
+      if(endOfMonthIso(row && row.an, row && row.lunaNum) !== snapshotEnd) return;
+      if(!row.reper || row.cantitateBuc <= 0) return;
+      const mat = resolveMaterialForDebitedReper(row.reper);
+      if(!mat.diameter || !mat.quality || mat.kgPerPiece <= 0) return;
+      const specKey = buildSpecKey(mat.diameter, mat.quality);
+      running[specKey] = toNumber(running[specKey]) + (toNumber(row.cantitateBuc) * toNumber(mat.kgPerPiece));
+      steelMetaBySpec[specKey] ||= { codIntern:'', furnizor:'' };
+    });
+
+    const weekMap = Object.create(null);
+    rows.forEach(row => {
+      weekMap[row.start] = weekMap[row.start] || [];
+      weekMap[row.start].push(row);
+    });
+
+    const timelineWeeks = new Set(Object.keys(weekMap));
+    Object.keys(intrariByWeekSpec || {}).forEach(key => {
+      const weekStart = key.split('|')[0];
+      if(!snapshotEnd || weekStart > snapshotEnd) timelineWeeks.add(weekStart);
+    });
+    Object.keys(realizedWeekSpec || {}).forEach(key => {
+      const weekStart = key.split('|')[0];
+      if(!snapshotEnd || weekStart > snapshotEnd) timelineWeeks.add(weekStart);
+    });
+    const weekOrder = Array.from(timelineWeeks).sort();
+
+    const out = [];
+    weekOrder.forEach(weekStart => {
+      const weekRows = (weekMap[weekStart] || []).slice().sort((a,b) => (a.sourceDate || '').localeCompare(b.sourceDate || '') || a.forged.localeCompare(b.forged) || a.machine.localeCompare(b.machine));
+      const specsInWeek = new Set();
+      weekRows.forEach(row => specsInWeek.add(buildSpecKey(row.diameter, row.quality)));
+      Object.keys(intrariByWeekSpec || {}).forEach(key => { if(key.startsWith(weekStart + '|')) specsInWeek.add(key.split('|').slice(1).join('|')); });
+      Object.keys(realizedWeekSpec || {}).forEach(key => { if(key.startsWith(weekStart + '|')) specsInWeek.add(key.split('|').slice(1).join('|')); });
+
+      const openingBySpec = Object.create(null);
+      specsInWeek.forEach(specKey => {
+        openingBySpec[specKey] = Math.max(0, toNumber(running[specKey]));
+      });
+
+      specsInWeek.forEach(specKey => {
+        const intrariMeta = (intrariByWeekSpec && intrariByWeekSpec[`${weekStart}|${specKey}`]) || { qty:0, codIntern:'', furnizor:'' };
+        const realizedMeta = (realizedWeekSpec && realizedWeekSpec[`${weekStart}|${specKey}`]) || { bucRealizate:0, rebut:0, consumKg:0 };
+        running[specKey] = Math.max(0, toNumber(openingBySpec[specKey]) + Math.max(0, toNumber(intrariMeta.qty)) - Math.max(0, toNumber(realizedMeta.consumKg)));
+        steelMetaBySpec[specKey] ||= { codIntern:'', furnizor:'' };
+        if(!steelMetaBySpec[specKey].codIntern && intrariMeta.codIntern) steelMetaBySpec[specKey].codIntern = intrariMeta.codIntern;
+        if(!steelMetaBySpec[specKey].furnizor && intrariMeta.furnizor) steelMetaBySpec[specKey].furnizor = intrariMeta.furnizor;
+      });
+
+      const seenWeekSpec = new Set();
+      weekRows.forEach(row => {
+        const specKey = buildSpecKey(row.diameter, row.quality);
+        const weekSpecKey = `${weekStart}|${specKey}`;
+        const firstWeekSpecRow = !seenWeekSpec.has(weekSpecKey);
+        seenWeekSpec.add(weekSpecKey);
+        const intrariMeta = (intrariByWeekSpec && intrariByWeekSpec[weekSpecKey]) || { qty:0, codIntern:'', furnizor:'' };
+        const realizedMeta = (realizedWeekSpec && realizedWeekSpec[weekSpecKey]) || { bucRealizate:0, rebut:0, consumKg:0 };
+        const stocDisponibilReal = Math.max(0, toNumber(running[specKey]));
+        const consumPlanificatKg = Math.max(0, toNumber(row.planFuturePieces) * toNumber(row.kgPerPiece));
+        const stocTeoreticFinal = stocDisponibilReal - consumPlanificatKg;
+        const necesarKg = Math.max(0, -stocTeoreticFinal);
+        const coverage = consumPlanificatKg > 0 ? Math.max(0, Math.min(1, stocDisponibilReal / consumPlanificatKg)) : 1;
+        running[specKey] = Math.max(0, stocTeoreticFinal);
+        const rowKey = [row.start,row.forged,row.debited,row.diameter,row.quality].join('|');
+        const manual = state.manualMap[rowKey] || {};
+        const specMeta = steelMetaBySpec[specKey] || {};
+        const defaultStatus = necesarKg > 0 ? 'Lipsă material' : (coverage < 1 ? 'Aproape limită' : 'Acoperit');
+
+        out.push({
+          ...row,
+          rowKey,
+          consumPlanificatKg,
+          startStockKg: firstWeekSpecRow ? Math.max(0, toNumber(openingBySpec[specKey])) : 0,
+          plannedInKg: firstWeekSpecRow ? Math.max(0, toNumber(intrariMeta.qty)) : 0,
+          bucRealizate: firstWeekSpecRow ? Math.max(0, Math.round(toNumber(realizedMeta.bucRealizate))) : 0,
+          rebut: firstWeekSpecRow ? Math.max(0, Math.round(toNumber(realizedMeta.rebut))) : 0,
+          consumRealizatKg: firstWeekSpecRow ? Math.max(0, toNumber(realizedMeta.consumKg)) : 0,
+          stocDisponibilReal,
+          stocTeoreticFinal,
+          needKg: necesarKg,
+          coverage,
+          internalCode: trimText(manual.internalCode || intrariMeta.codIntern || specMeta.codIntern || row.internalCode || ''),
+          proposedOrderKg: manual.proposedOrderKg != null ? toNumber(manual.proposedOrderKg) : necesarKg,
+          proposedSupplier: trimText(manual.proposedSupplier || intrariMeta.furnizor || specMeta.furnizor || ''),
+          needDate: trimText(manual.needDate || row.start || ''),
+          status: trimText(manual.status || defaultStatus),
+          notes: trimText(manual.notes || '')
+        });
+      });
+    });
+
+    return { rows: out, snapshotEnd };
   }
+
 
   async function loadProjectData(){
     const activeYear = String(new Date().getFullYear());
     await loadHelperMaps();
     await loadManualData();
-    const [steelRes, intrariRes, forjateRes, planRes] = await Promise.all([
+    const [steelRes, debitatRes, intrariRes, forjateRes, planRes] = await Promise.all([
       loadSteelStock(),
+      loadDebitatStock(activeYear),
       loadIntrariOtelEntries(activeYear),
       loadForjateRows(activeYear),
       loadPlanRows(activeYear)
     ]);
     const realizedMap = aggregateRealizedByDateAndReper(forjateRes.rows);
-    const intrariByWeekSpec = aggregateIntrariByWeekAndSpec(intrariRes.rows);
-    const realizedWeekSpec = aggregateForjateConsumptionByWeekAndSpec(forjateRes.rows);
     const demandRows = buildDemandRows(planRes.rows, realizedMap);
-    state.rows = applyStocksAndManual(demandRows, steelRes.map, steelRes.metaBySpec, intrariByWeekSpec, realizedWeekSpec);
+    const firstPlanIso = demandRows.reduce((acc, row) => {
+      const v = trimText(row.rowDate || row.sourceDate || row.start || '');
+      return !acc || (v && v < acc) ? v : acc;
+    }, '');
+    const snapshotEnd = findLatestCommonSnapshotEnd((steelRes.rows || []), (debitatRes.rows || []), firstPlanIso);
+    const intrariFiltered = (intrariRes.rows || []).filter(r => !snapshotEnd || trimText(r.data) > snapshotEnd);
+    const forjateFiltered = (forjateRes.rows || []).filter(r => !snapshotEnd || trimText(r.data) > snapshotEnd);
+    const intrariByWeekSpec = aggregateIntrariByWeekAndSpec(intrariFiltered);
+    const realizedWeekSpec = aggregateForjateConsumptionByWeekAndSpec(forjateFiltered);
+    const calc = applyStocksAndManual(demandRows, steelRes, debitatRes.rows || [], intrariByWeekSpec, realizedWeekSpec);
+    state.rows = calc.rows || [];
+    const snapshotLabel = calc.snapshotEnd ? isoToDisplay(calc.snapshotEnd) : '-';
     state.sourceNotes = [
       `Planificare: ${planRes.source}`,
       `Forjate: ${forjateRes.source}`,
-      `Stoc început oțel: ${steelRes.source}${steelRes.period ? ' • ' + steelRes.period : ''}`,
+      `Stoc oțel: ${steelRes.source}${steelRes.period ? ' • ' + steelRes.period : ''}`,
+      `Stoc debitat: ${debitatRes.source}`,
       `Intrări oțel: ${intrariRes.source}`,
-      `Helper: ${state.helperMaps.source}`
+      `Helper: ${state.helperMaps.source}`,
+      `Snapshot MRC comun: ${snapshotLabel}`
     ];
     state.lastLoadedAt = nowIso();
     if(!state.rows.length){
