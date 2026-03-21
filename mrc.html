@@ -327,6 +327,9 @@
   function getWeekList(){ return Array.isArray(SEED && SEED.weeks) ? SEED.weeks.slice() : Array.from({ length:52 }, (_,i) => i + 1); }
   function getGroups(){ return Array.isArray(SEED && SEED.groups) ? SEED.groups.slice() : []; }
   function getAvailableYears(){
+    if(Array.isArray(SEED && SEED.matrixYears) && SEED.matrixYears.length){
+      return SEED.matrixYears.map(Number).filter(Number.isFinite).sort((a,b)=>a-b);
+    }
     if(Array.isArray(SEED && SEED.years) && SEED.years.length){ return SEED.years.map(Number).filter(Number.isFinite).sort((a,b)=>a-b); }
     const set = new Set();
     getGroups().forEach(group => {
@@ -338,13 +341,47 @@
   }
   function isoWeekStart(year, week){ const simple = new Date(Date.UTC(year, 0, 4 + (week - 1) * 7)); const dow = simple.getUTCDay() || 7; simple.setUTCDate(simple.getUTCDate() - dow + 1); return simple; }
   function getMonthLabelForWeek(week){ const dt = isoWeekStart(Number(state.displayYear || new Date().getFullYear()), week); const month = MONTHS_RO[dt.getUTCMonth()] || ''; return String(dt.getUTCMonth() + 1).padStart(2,'0') + '.' + month + ' ' + dt.getUTCFullYear(); }
-  function buildMonthGroups(weeks){ const groups = []; weeks.forEach(week => { const label = getMonthLabelForWeek(week); const current = groups[groups.length - 1]; if(current && current.label === label){ current.weeks.push(week); current.count += 1; } else { groups.push({ label, weeks:[week], count:1 }); } }); return groups; }
+  function buildMonthGroups(weeks){
+    const yearKey = String(state.displayYear);
+    const exact = SEED && SEED.matrixMonthGroupsByYear && SEED.matrixMonthGroupsByYear[yearKey];
+    if(Array.isArray(exact) && exact.length){
+      return exact.map(group => ({ label: group.label, weeks: Array.from({ length: (group.endWeek - group.startWeek + 1) }, (_,i)=>group.startWeek + i), count: group.count }))
+                  .filter(group => group.weeks.some(week => weeks.includes(week)))
+                  .map(group => {
+                    const visibleWeeks = group.weeks.filter(week => weeks.includes(week));
+                    return { label: group.label, weeks: visibleWeeks, count: visibleWeeks.length };
+                  });
+    }
+    const groups = []; weeks.forEach(week => { const label = getMonthLabelForWeek(week); const current = groups[groups.length - 1]; if(current && current.label === label){ current.weeks.push(week); current.count += 1; } else { groups.push({ label, weeks:[week], count:1 }); } }); return groups;
+  }
+  function getExactYearData(group){
+    const yearKey = String(state.displayYear);
+    return group && group.exactMatrixByYear && group.exactMatrixByYear[yearKey] ? group.exactMatrixByYear[yearKey] : null;
+  }
   function getDemandArray(group){
     const weeks = getWeekList();
     const yearKey = String(state.displayYear);
+    const exact = getExactYearData(group);
+    if(exact && Array.isArray(exact.demandKgByWeek)) return exact.demandKgByWeek.slice(0, weeks.length);
     if(group && group.demandByYear && Array.isArray(group.demandByYear[yearKey])) return group.demandByYear[yearKey].slice(0, weeks.length);
     if(group && Array.isArray(group.demandKgByWeek)) return group.demandKgByWeek.slice(0, weeks.length);
     return Array.from({ length: weeks.length }, () => 0);
+  }
+  function getBaseIncomingArray(group){
+    const weeks = getWeekList();
+    const exact = getExactYearData(group);
+    if(exact && Array.isArray(exact.incomingKgByWeek)) return exact.incomingKgByWeek.slice(0, weeks.length);
+    return Array.from({ length: weeks.length }, () => 0);
+  }
+  function getOpeningStockKg(group, demandArr, incomingBaseArr){
+    const exact = getExactYearData(group);
+    if(exact && Array.isArray(exact.stockMaterialKgByWeek) && exact.stockMaterialKgByWeek.length){
+      const firstProjected = Number(exact.stockMaterialKgByWeek[0] || 0);
+      const firstIncoming = Number((incomingBaseArr || [])[0] || 0);
+      const firstDemand = Number((demandArr || [])[0] || 0);
+      return firstProjected - firstIncoming + firstDemand;
+    }
+    return Number(group.startStockKg || 0);
   }
   function buildIncomingMap(){
     const map = Object.create(null);
@@ -403,7 +440,7 @@
     const options = weeks.map(w => '<option value="' + w + '">WK ' + w + '</option>').join('');
     els.startWeek.innerHTML = options; els.endWeek.innerHTML = options; els.orderWeek.innerHTML = options;
     state.startWeek = weeks[0] || 1;
-    state.endWeek = Math.min((weeks[0] || 1) + 13, weeks[weeks.length - 1] || 52);
+    state.endWeek = weeks[weeks.length - 1] || 52;
     state.selectedWeek = state.startWeek;
     els.startWeek.value = String(state.startWeek); els.endWeek.value = String(state.endWeek); els.orderWeek.value = String(state.selectedWeek);
     const stats = SEED.sourceStats || {};
@@ -425,12 +462,41 @@
   }
   function queueSave(){ if(!state.canEdit) return; if(state.saveTimer) clearTimeout(state.saveTimer); els.cloudStatus.textContent = 'Salvare...'; els.cloudSub.textContent = 'Se pregătește payload-ul pentru rf_documents.'; state.saveTimer = setTimeout(async () => { try{ state.updatedAt = nowIso(); const payload = buildPayload(); payload.updated_at = state.updatedAt; await writeDocumentCompat(DOC_KEYS[0], payload); els.cloudStatus.textContent = 'Cloud salvat'; els.cloudSub.textContent = 'rf_documents / mrc'; }catch(error){ console.error(error); els.cloudStatus.textContent = 'Eroare cloud'; els.cloudSub.textContent = trimText(error && error.message || 'Nu am putut salva documentul.'); } }, 500); }
   function computeMetrics(group){
-    const weeks = getWeekList(); const incomingMap = buildIncomingMap(); const incomingByWeek = incomingMap[group.key] || Object.create(null); const demandArr = getDemandArray(group); const startStockKg = Number(group.startStockKg || 0);
-    let running = startStockKg; let firstCriticalWeek = null; let coverUntilWeek = weeks.length ? weeks[weeks.length - 1] : 0; const projections = [];
-    weeks.forEach((week, index) => { const demand = Number(demandArr[index] || 0); const incoming = Number(incomingByWeek[week] || 0); running += incoming - demand; if(firstCriticalWeek == null && running < 0){ firstCriticalWeek = week; coverUntilWeek = week - 1; } projections.push({ week, demandKg:demand, incomingKg:incoming, projectedKg:running, deficitKg: running < 0 ? running : 0, critical: running < 0 }); });
+    const weeks = getWeekList();
+    const manualIncomingMap = buildIncomingMap();
+    const manualIncomingByWeek = manualIncomingMap[group.key] || Object.create(null);
+    const demandArr = getDemandArray(group);
+    const baseIncomingArr = getBaseIncomingArray(group);
+    const exact = getExactYearData(group);
+    const hasManual = Object.keys(manualIncomingByWeek).some(week => Number(manualIncomingByWeek[week] || 0) > 0);
+    const exactProjectedArr = exact && Array.isArray(exact.stockMaterialKgByWeek) ? exact.stockMaterialKgByWeek.slice(0, weeks.length) : null;
+    const startStockKg = Number(group.startStockKg || 0);
+    let firstCriticalWeek = null;
+    let coverUntilWeek = weeks.length ? weeks[weeks.length - 1] : 0;
+    const projections = [];
+    if(exactProjectedArr && exactProjectedArr.length && !hasManual){
+      weeks.forEach((week, index) => {
+        const demand = Number(demandArr[index] || 0);
+        const incoming = Number(baseIncomingArr[index] || 0);
+        const projected = Number(exactProjectedArr[index] || 0);
+        if(firstCriticalWeek == null && projected < 0){ firstCriticalWeek = week; coverUntilWeek = week - 1; }
+        projections.push({ week, demandKg:demand, incomingKg:incoming, incomingBaseKg:incoming, incomingManualKg:0, projectedKg:projected, deficitKg: projected < 0 ? projected : 0, critical: projected < 0 });
+      });
+    } else {
+      let running = getOpeningStockKg(group, demandArr, baseIncomingArr);
+      weeks.forEach((week, index) => {
+        const demand = Number(demandArr[index] || 0);
+        const incomingBase = Number(baseIncomingArr[index] || 0);
+        const incomingManual = Number(manualIncomingByWeek[week] || 0);
+        const incoming = incomingBase + incomingManual;
+        running += incoming - demand;
+        if(firstCriticalWeek == null && running < 0){ firstCriticalWeek = week; coverUntilWeek = week - 1; }
+        projections.push({ week, demandKg:demand, incomingKg:incoming, incomingBaseKg:incomingBase, incomingManualKg:incomingManual, projectedKg:running, deficitKg: running < 0 ? running : 0, critical: running < 0 });
+      });
+    }
     const start = Math.min(state.startWeek, state.endWeek); const end = Math.max(state.startWeek, state.endWeek); const filtered = projections.filter(item => item.week >= start && item.week <= end);
     const horizonDemandKg = filtered.reduce((sum, item) => sum + item.demandKg, 0); const horizonIncomingKg = filtered.reduce((sum, item) => sum + item.incomingKg, 0); const horizonEndStockKg = filtered.length ? filtered[filtered.length - 1].projectedKg : startStockKg;
-    let statusText = 'Acoperit'; let statusClass = 'ok'; if(firstCriticalWeek != null){ statusText = 'Critic din WK ' + firstCriticalWeek; statusClass = 'bad'; } else if(horizonEndStockKg <= startStockKg * 0.15 && horizonDemandKg > 0){ statusText = 'La limită'; statusClass = 'warn'; }
+    let statusText = 'Acoperit'; let statusClass = 'ok'; if(firstCriticalWeek != null){ statusText = 'Critic din WK ' + firstCriticalWeek; statusClass = 'bad'; } else if(horizonEndStockKg <= Math.max(startStockKg, 1) * 0.15 && horizonDemandKg > 0){ statusText = 'La limită'; statusClass = 'warn'; }
     return { startStockKg, firstCriticalWeek, coverUntilWeek, horizonDemandKg, horizonIncomingKg, horizonEndStockKg, statusText, statusClass, projections };
   }
   function getVisibleGroups(){
@@ -438,7 +504,9 @@
     return getGroups().map(group => Object.assign({}, group, { metrics: computeMetrics(group) })).filter(group => {
       if(state.onlyCritical && !group.metrics.projections.some(item => item.week >= state.startWeek && item.week <= state.endWeek && item.critical)) return false;
       if(!query) return true;
-      const hay = [group.material, group.diametru].concat((group.mappedItems || []).map(item => (item.stockItem || '') + ' ' + (item.reper || ''))).concat((group.sourceOrders || []).slice(0,80).map(item => (item.itemId || '') + ' ' + (item.shipTo || ''))).join(' | ').toLowerCase();
+      const exact = getExactYearData(group);
+      const exactParts = exact && Array.isArray(exact.parts) ? exact.parts : [];
+      const hay = [group.material, group.diametru].concat(exactParts).concat((group.mappedItems || []).map(item => (item.stockItem || '') + ' ' + (item.reper || ''))).concat((group.sourceOrders || []).slice(0,80).map(item => (item.itemId || '') + ' ' + (item.shipTo || ''))).join(' | ').toLowerCase();
       return hay.includes(query);
     });
   }
@@ -467,7 +535,7 @@
       '<div class="summary-card"><div class="summary-title">An activ</div><div class="summary-value">' + escapeHtml(String(state.displayYear)) + '</div><div class="summary-note">Săpt. ' + state.startWeek + ' → ' + state.endWeek + ' • grupuri afișate: ' + formatNumber(groups.length) + '</div></div>',
       '<div class="summary-card"><div class="summary-title">Stoc start total</div><div class="summary-value">' + formatNumber(totalStart) + ' kg</div><div class="summary-note">Stoc piese convertit în kg + stoc oțel din STOCKS.</div></div>',
       '<div class="summary-card"><div class="summary-title">Necesar pe orizont</div><div class="summary-value">' + formatNumber(totalDemand) + ' kg</div><div class="summary-note">Cererea din excel, afișată săptămânal în matrice.</div></div>',
-      '<div class="summary-card"><div class="summary-title">Grupe critice</div><div class="summary-value" style="color:' + (critical ? 'var(--bad)' : '#0b1f46') + '">' + formatNumber(critical) + '</div><div class="summary-note">Comenzi viitoare introduse: ' + formatNumber(totalIncoming) + ' kg.</div></div>'
+      '<div class="summary-card"><div class="summary-title">Grupe critice</div><div class="summary-value" style="color:' + (critical ? 'var(--bad)' : '#0b1f46') + '">' + formatNumber(critical) + '</div><div class="summary-note">Comenzi oțel din excel + manuale: ' + formatNumber(totalIncoming) + ' kg.</div></div>'
     ].join('');
   }
   function renderMatrixHead(weeks){
@@ -479,7 +547,15 @@
     const row3 = '<tr>' + weeks.map(week => '<th class="head-week">WK' + week + '</th>').join('') + '</tr>';
     els.matrixHead.innerHTML = row1 + row2 + row3;
   }
-  function getRepereLabel(group){ const list = (group.mappedItems || []).map(item => trimText(item.reper || item.stockItem)).filter(Boolean); if(!list.length) return '<span class="minor">fără mapare</span>'; const first = list.slice(0, 3).map(item => escapeHtml(item)).join('<br>'); const extra = list.length > 3 ? '<br><span class="minor">+' + (list.length - 3) + ' repere</span>' : ''; return first + extra; }
+  function getRepereLabel(group){
+    const exact = getExactYearData(group);
+    const exactParts = exact && Array.isArray(exact.parts) ? exact.parts.map(trimText).filter(Boolean) : [];
+    const list = exactParts.length ? exactParts : (group.mappedItems || []).map(item => trimText(item.reper || item.stockItem)).filter(Boolean);
+    if(!list.length) return '<span class="minor">fără mapare</span>';
+    const first = list.slice(0, 3).map(item => escapeHtml(item)).join('<br>');
+    const extra = list.length > 3 ? '<br><span class="minor">+' + (list.length - 3) + ' repere</span>' : '';
+    return first + extra;
+  }
   function renderValueCell(value, type, group, week){
     const numeric = Number(value || 0); let cls = 'metric-cell'; let text = formatNumber(numeric); if(Math.abs(numeric) < 0.0001){ cls += ' zero'; text = '0'; }
     if(type === 'incoming' && numeric > 0) cls += ' incoming'; if(type === 'projected') cls += numeric < 0 ? ' projected-bad' : ' projected-good'; if(type === 'deficit') cls += numeric < 0 ? ' deficit-bad' : ' zero';
@@ -523,8 +599,10 @@
     els.detailTitle.textContent = group.material + ' • ' + group.diametru + ' • ' + state.displayYear + ' • WK ' + state.selectedWeek;
     els.detailPill.textContent = metrics.statusText; els.detailPill.className = 'pill ' + statusClass;
     const excelRows = getSourceRowsForWeek(group, state.selectedWeek); const excelQty = excelRows.reduce((sum, row) => sum + Number(row.qtyKg || 0), 0);
-    els.detailCards.innerHTML = [ ['Necesar WK', formatNumber(weekData.demandKg) + ' kg'], ['Comenzi WK', formatNumber(weekData.incomingKg) + ' kg'], ['Stoc proiectat', formatNumber(weekData.projectedKg) + ' kg'], ['Linii excel', formatNumber(excelRows.length) + ' / ' + formatNumber(excelQty) + ' kg'] ].map(item => '<div class="mini-card"><div class="k">' + item[0] + '</div><div class="v">' + item[1] + '</div></div>').join('');
-    els.ordersNote.textContent = 'Grup: ' + group.material + ' / ' + group.diametru + ' • anul ' + state.displayYear + ' • săptămâna selectată: WK ' + state.selectedWeek + '.';
+    els.detailCards.innerHTML = [ ['Necesar WK', formatNumber(weekData.demandKg) + ' kg'], ['Comenzi oțel WK', formatNumber(weekData.incomingKg) + ' kg'], ['Stoc proiectat', formatNumber(weekData.projectedKg) + ' kg'], ['Linii excel', formatNumber(excelRows.length) + ' / ' + formatNumber(excelQty) + ' kg'] ].map(item => '<div class="mini-card"><div class="k">' + item[0] + '</div><div class="v">' + item[1] + '</div></div>').join('');
+    const exact = getExactYearData(group);
+    const exactInfo = exact && Array.isArray(exact.parts) && exact.parts.length ? (' • import excel: ' + exact.parts.length + ' reper(e) în grup') : '';
+    els.ordersNote.textContent = 'Grup: ' + group.material + ' / ' + group.diametru + ' • anul ' + state.displayYear + ' • săptămâna selectată: WK ' + state.selectedWeek + exactInfo + '.';
     els.excelOrdersNote.textContent = 'Sunt afișate liniile din excel exact pentru WK ' + state.selectedWeek + ' din anul ' + state.displayYear + '.';
     els.orderWeek.value = String(state.selectedWeek);
 
