@@ -26,6 +26,7 @@
     { page_key: 'pivot-comenzi', page_name: 'Pivot comenzi piese' },
     { page_key: 'comenzi-livrare', page_name: 'Comenzi Livrare' },
     { page_key: 'mrc', page_name: 'Plan MRC' },
+    { page_key: 'stocks', page_name: 'STOCKS' },
     { page_key: 'zale-9k-6628-29', page_name: '9K-6628/29' },
     { page_key: 'zale-229-6909-10', page_name: '229-6909/10' },
     { page_key: 'zale-503-0761-62', page_name: '503-0761/62' },
