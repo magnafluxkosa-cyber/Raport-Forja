@@ -23,6 +23,7 @@
     { page_key: 'inventar-forjat', page_name: 'Inventar Forjat' },
     { page_key: 'planificare-forja', page_name: 'Planificare Forjă' },
     { page_key: 'comenzi-piese', page_name: 'Comenzi piese / Forecast clienți' },
+    { page_key: 'pivot-comenzi', page_name: 'Pivot comenzi piese' },
     { page_key: 'comenzi-livrare', page_name: 'Comenzi Livrare' },
     { page_key: 'mrc', page_name: 'Plan MRC' },
     { page_key: 'zale-9k-6628-29', page_name: '9K-6628/29' },
