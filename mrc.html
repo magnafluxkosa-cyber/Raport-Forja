@@ -178,6 +178,7 @@
             </div>
 
             <div id="orderFormWrap">
+              <div class="panel-note" id="editStateNote" style="margin-bottom:8px">Mod nou: completezi formularul și salvezi o comandă viitoare.</div>
               <div class="form-grid">
                 <div class="field"><label for="orderWeek">Săptămână</label><select id="orderWeek"></select></div>
                 <div class="field"><label for="orderQty">Cantitate kg</label><input id="orderQty" type="number" min="0" step="0.1" placeholder="0" /></div>
@@ -187,6 +188,7 @@
               </div>
               <div class="form-actions" style="margin-top:8px">
                 <button class="btn" id="btnAddOrder" type="button">Adaugă comandă viitoare</button>
+                <button class="btn secondary" id="btnCancelEdit" type="button" style="display:none">Renunță la editare</button>
               </div>
             </div>
 
@@ -236,6 +238,7 @@
     selectedKey: '',
     updatedAt: '',
     saveTimer: null,
+    editingOrderId: '',
     startWeek: 1,
     endWeek: 12,
     search: '',
@@ -269,6 +272,8 @@
     orderDoc: document.getElementById('orderDoc'),
     orderNote: document.getElementById('orderNote'),
     btnAddOrder: document.getElementById('btnAddOrder'),
+    btnCancelEdit: document.getElementById('btnCancelEdit'),
+    editStateNote: document.getElementById('editStateNote'),
     btnReload: document.getElementById('btnReload'),
     btnLogout: document.getElementById('btnLogout'),
     orderFormWrap: document.getElementById('orderFormWrap'),
@@ -444,6 +449,7 @@
 
     const groupOrders = state.orders.filter(order => order.key === group.key).slice().sort((a,b) => (a.week - b.week) || a.id.localeCompare(b.id));
     els.ordersList.innerHTML = groupOrders.length ? groupOrders.map(order => {
+      const editBtn = state.canEdit ? '<button class="icon-btn" type="button" data-action="edit-order" data-id="' + escapeHtml(order.id) + '">✎</button>' : '';
       const deleteBtn = state.canDelete ? '<button class="icon-btn danger" type="button" data-action="delete-order" data-id="' + escapeHtml(order.id) + '">✕</button>' : '';
       return '<div class="order-card">' +
         '<div class="order-main">' +
@@ -453,7 +459,7 @@
             (order.docRef ? ('PO / comandă: ' + escapeHtml(order.docRef) + '<br>') : '') +
             (order.note ? escapeHtml(order.note) : '<span class="muted">Fără notă</span>') +
           '</div>' +
-        '</div>' + deleteBtn +
+        '</div>' + '<div style="display:flex;gap:6px;align-items:center">' + editBtn + deleteBtn + '</div>' +
       '</div>';
     }).join('') : '<div class="empty">Nu există încă comenzi viitoare introduse pentru ' + escapeHtml(group.material + ' / ' + group.diametru) + '.</div>';
 
@@ -466,15 +472,52 @@
     renderSummary(groups);
     renderGroupsTable(groups);
     renderDetail();
+    applyOrderFormMode();
   }
-  function addOrder(){
+  function clearOrderForm(){
+    els.orderWeek.value = String(state.startWeek || 1);
+    els.orderQty.value = '';
+    els.orderSupplier.value = '';
+    els.orderDoc.value = '';
+    els.orderNote.value = '';
+  }
+  function applyOrderFormMode(){
+    const editing = !!state.editingOrderId;
+    if(els.btnAddOrder) els.btnAddOrder.textContent = editing ? 'Salvează modificările' : 'Adaugă comandă viitoare';
+    if(els.btnCancelEdit) els.btnCancelEdit.style.display = editing ? '' : 'none';
+    if(els.editStateNote) els.editStateNote.textContent = editing
+      ? 'Mod editare: modifici comanda selectată și apeși „Salvează modificările”.'
+      : 'Mod nou: completezi formularul și salvezi o comandă viitoare.';
+  }
+  function startEditOrder(id){
+    if(!state.canEdit) return;
+    const order = state.orders.find(item => String(item.id) === String(id));
+    if(!order) return;
+    const group = getSelectedGroup();
+    if(group && order.key !== group.key){
+      state.selectedKey = order.key;
+    }
+    state.editingOrderId = order.id;
+    els.orderWeek.value = String(order.week || 1);
+    els.orderQty.value = String(order.qtyKg || '');
+    els.orderSupplier.value = order.supplier || '';
+    els.orderDoc.value = order.docRef || '';
+    els.orderNote.value = order.note || '';
+    applyOrderFormMode();
+    try{ els.orderQty.focus(); }catch(_e){}
+  }
+  function cancelEdit(){
+    state.editingOrderId = '';
+    clearOrderForm();
+    applyOrderFormMode();
+  }
+  function saveOrderFromForm(){
     if(!state.canEdit) return;
     const group = getSelectedGroup();
     if(!group){ alert('Selectează mai întâi un grup.'); return; }
     const qtyKg = Math.max(0, Number(els.orderQty.value || 0) || 0);
     if(!(qtyKg > 0)){ alert('Introdu o cantitate în kg.'); return; }
-    const order = {
-      id: 'mrc-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2,7),
+    const payload = {
       key: group.key,
       material: group.material,
       diametru: group.diametru,
@@ -484,17 +527,21 @@
       docRef: trimText(els.orderDoc.value),
       note: trimText(els.orderNote.value)
     };
-    state.orders.push(order);
-    els.orderQty.value = '';
-    els.orderSupplier.value = '';
-    els.orderDoc.value = '';
-    els.orderNote.value = '';
+    if(state.editingOrderId){
+      state.orders = state.orders.map(order => String(order.id) === String(state.editingOrderId) ? Object.assign({}, order, payload) : order);
+    } else {
+      state.orders.push(Object.assign({
+        id: 'mrc-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2,7)
+      }, payload));
+    }
+    cancelEdit();
     queueSave();
     render();
   }
   function deleteOrder(id){
     if(!state.canDelete) return;
     state.orders = state.orders.filter(order => String(order.id) !== String(id));
+    if(String(state.editingOrderId) === String(id)){ cancelEdit(); }
     queueSave();
     render();
   }
@@ -505,9 +552,15 @@
     els.endWeek.addEventListener('change', () => { state.endWeek = Number(els.endWeek.value || 12) || 12; if(state.endWeek < state.startWeek){ state.startWeek = state.endWeek; els.startWeek.value = String(state.startWeek); } render(); });
     els.searchInput.addEventListener('input', () => { state.search = els.searchInput.value || ''; render(); });
     els.onlyCritical.addEventListener('change', () => { state.onlyCritical = !!els.onlyCritical.checked; render(); });
-    els.btnAddOrder.addEventListener('click', addOrder);
+    els.btnAddOrder.addEventListener('click', saveOrderFromForm);
+    if(els.btnCancelEdit) els.btnCancelEdit.addEventListener('click', cancelEdit);
     els.groupsBody.addEventListener('click', (event) => { const row = event.target.closest('[data-key]'); if(!row) return; state.selectedKey = row.getAttribute('data-key') || ''; render(); });
-    els.ordersList.addEventListener('click', (event) => { const btn = event.target.closest('[data-action="delete-order"]'); if(!btn) return; deleteOrder(btn.getAttribute('data-id')); });
+    els.ordersList.addEventListener('click', (event) => {
+      const editBtn = event.target.closest('[data-action="edit-order"]');
+      if(editBtn){ startEditOrder(editBtn.getAttribute('data-id')); return; }
+      const deleteBtn = event.target.closest('[data-action="delete-order"]');
+      if(deleteBtn){ deleteOrder(deleteBtn.getAttribute('data-id')); }
+    });
   }
 
   async function init(){
@@ -517,6 +570,7 @@
     await loadCloudDocument();
     const visible = getVisibleGroups();
     if(visible.length){ state.selectedKey = visible[0].key; }
+    clearOrderForm();
     render();
   }
 
