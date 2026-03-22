@@ -364,44 +364,109 @@
       state.intrariRows.filter(r => r.data && r.data >= fromIso && r.data <= toIso).forEach(r => { addSpecWeek(specEntriesByWeek, buildSpec(r.material, r.diametru), MRC.isoWeekKey(r.data), r.cantitate_kg); });
       state.steelOrders.forEach(r => { ensureSteelOrderWeek(r); const wk = r.eta_week_key || (r.eta_date ? MRC.isoWeekKey(r.eta_date) : ''); if(!wk) return; const spec = buildSpec(r.material, r.diametru); addSpecWeek(specPoByWeek, spec, wk, r.qty_kg); if(!String(r.notes || '').includes('[AUTO-TABLE]')) addSpecWeek(specPoManualByWeek, spec, wk, r.qty_kg); });
 
-      const rows = Object.values(itemMap).map(item => {
+      const itemRows = Object.values(itemMap).map(item => {
         const spec = buildSpec(item.material, item.diametru);
         item.start_pieces_kg = (Number(item.start_pieces_buc || 0) + Number(item.forged_buc || 0)) * Number(item.kg_per_buc || 0);
         item.start_total_kg = Number(item.start_pieces_kg || 0) + Number(item.start_steel_kg || 0);
+        item.total_customer_kg = Object.values(item.customer_kg_by_week || {}).reduce((s, v) => s + Number(v || 0), 0);
+        item.total_customer_buc = Object.values(item.customer_buc_by_week || {}).reduce((s, v) => s + Number(v || 0), 0);
+        item.raw_parts = Array.from(item.raw_parts).sort();
+        item.spec_key = spec;
+        return item;
+      }).filter(item => Number(item.total_customer_kg || 0) > 0);
+
+      const groupMap = Object.create(null);
+      function groupKeyForItem(item){
+        const groupLabel = MRC.trimText(item.reper_debitare_origine || '');
+        if(groupLabel) return 'origin:' + MRC.normalizeLoose(groupLabel);
+        return 'self:' + MRC.normalizeLoose(item.reper_intern || item.reper_key || '');
+      }
+      itemRows.forEach(item => {
+        const gk = groupKeyForItem(item);
+        if(!groupMap[gk]){
+          groupMap[gk] = {
+            group_key:gk,
+            group_label:MRC.trimText(item.reper_debitare_origine || item.reper_intern || '-').toUpperCase(),
+            members:[],
+            raw_parts:new Set(),
+            specs:new Set(),
+            start_pieces_kg:0,
+            start_steel_kg:0,
+            start_total_kg:0,
+            customer_kg_by_week:Object.create(null),
+            intrari_by_week:Object.create(null),
+            po_by_week:Object.create(null),
+            po_manual_by_week:Object.create(null),
+            sold_by_week:Object.create(null),
+            cover9_by_week:Object.create(null),
+            material:item.material || '-',
+            diametru:item.diametru || '-',
+            status:'OK',
+            statusTone:'value-ok'
+          };
+        }
+        const g = groupMap[gk];
+        g.members.push({
+          reper_intern:item.reper_intern,
+          kg_per_buc:item.kg_per_buc,
+          raw_parts:item.raw_parts || []
+        });
+        (item.raw_parts || []).forEach(v => g.raw_parts.add(v));
+        if(item.spec_key) g.specs.add(item.spec_key);
+        g.start_pieces_kg += Number(item.start_pieces_kg || 0);
+        g.start_steel_kg += Number(item.start_steel_kg || 0);
+        g.start_total_kg += Number(item.start_total_kg || 0);
+        weekKeys.forEach(week => {
+          g.customer_kg_by_week[week] = Number(g.customer_kg_by_week[week] || 0) + Number(item.customer_kg_by_week[week] || 0);
+        });
+      });
+
+      const rows = Object.values(groupMap).map(group => {
+        group.members.sort((a,b) => String(a.reper_intern).localeCompare(String(b.reper_intern), 'ro', { sensitivity:'base' }));
+        const memberKg = new Set(group.members.map(m => String(m.kg_per_buc || '')));
+        group.kg_per_buc = memberKg.size === 1 ? Number(group.members[0].kg_per_buc || 0) : null;
         let cumCustomer = 0, cumIntrari = 0, cumPo = 0;
         weekKeys.forEach((week, index) => {
-          const customerKg = Number(item.customer_kg_by_week[week] || 0);
-          const intrariKg = Number((specEntriesByWeek[spec] && specEntriesByWeek[spec][week]) || 0);
-          const poKg = Number((specPoByWeek[spec] && specPoByWeek[spec][week]) || 0);
-          item.intrari_by_week[week] = intrariKg;
-          item.po_by_week[week] = poKg;
-          item.po_manual_by_week = item.po_manual_by_week || Object.create(null);
-          item.po_manual_by_week[week] = Number((specPoManualByWeek[spec] && specPoManualByWeek[spec][week]) || 0);
-          item.spec_key = spec;
+          const customerKg = Number(group.customer_kg_by_week[week] || 0);
+          let intrariKg = 0, poKg = 0, poManualKg = 0;
+          group.specs.forEach(spec => {
+            intrariKg += Number((specEntriesByWeek[spec] && specEntriesByWeek[spec][week]) || 0);
+            poKg += Number((specPoByWeek[spec] && specPoByWeek[spec][week]) || 0);
+            poManualKg += Number((specPoManualByWeek[spec] && specPoManualByWeek[spec][week]) || 0);
+          });
+          group.intrari_by_week[week] = intrariKg;
+          group.po_by_week[week] = poKg;
+          group.po_manual_by_week[week] = poManualKg;
           cumCustomer += customerKg; cumIntrari += intrariKg; cumPo += poKg;
-          const sold = item.start_total_kg + cumIntrari + cumPo - cumCustomer;
-          item.sold_by_week[week] = sold;
+          const sold = group.start_total_kg + cumIntrari + cumPo - cumCustomer;
+          group.sold_by_week[week] = sold;
           let futureSupply = 0, futureDemand = 0;
           for(let j = index + 1; j < Math.min(index + coverWeeks, weekKeys.length); j += 1){
             const nextWeek = weekKeys[j];
-            futureSupply += Number((specEntriesByWeek[spec] && specEntriesByWeek[spec][nextWeek]) || 0);
-            futureSupply += Number((specPoByWeek[spec] && specPoByWeek[spec][nextWeek]) || 0);
-            futureDemand += Number(item.customer_kg_by_week[nextWeek] || 0);
+            group.specs.forEach(spec => {
+              futureSupply += Number((specEntriesByWeek[spec] && specEntriesByWeek[spec][nextWeek]) || 0);
+              futureSupply += Number((specPoByWeek[spec] && specPoByWeek[spec][nextWeek]) || 0);
+            });
+            futureDemand += Number(group.customer_kg_by_week[nextWeek] || 0);
           }
-          item.cover9_by_week[week] = sold + futureSupply - futureDemand;
+          group.cover9_by_week[week] = sold + futureSupply - futureDemand;
         });
         const lastWeek = weekKeys[weekKeys.length - 1] || '';
-        const lastSold = Number(item.sold_by_week[lastWeek] || item.start_total_kg || 0);
-        const lastCover = Number(item.cover9_by_week[lastWeek] || lastSold);
-        item.status = lastCover < 0 ? 'Lipsă' : (lastSold < 0 ? 'Risc' : 'OK');
-        item.statusTone = lastCover < 0 ? 'value-bad' : (lastSold < 0 ? 'value-warn' : 'value-ok');
-        item.raw_parts = Array.from(item.raw_parts).sort();
-        return item;
-      }).filter(item => {
-        if(materialFilter && MRC.trimText(item.material).toUpperCase() !== materialFilter) return false;
-        if(reperFilter){ const hay=[item.reper_intern, item.reper_debitare_origine, item.raw_parts.join(' ')].join(' '); if(!MRC.normalizeText(hay).includes(reperFilter)) return false; }
-        return true;
-      }).sort((a,b) => String(a.reper_intern).localeCompare(String(b.reper_intern), 'ro', { sensitivity:'base' }));
+        const lastSold = Number(group.sold_by_week[lastWeek] || group.start_total_kg || 0);
+        const lastCover = Number(group.cover9_by_week[lastWeek] || lastSold);
+        group.status = lastCover < 0 ? 'Lipsă' : (lastSold < 0 ? 'Risc' : 'OK');
+        group.statusTone = lastCover < 0 ? 'value-bad' : (lastSold < 0 ? 'value-warn' : 'value-ok');
+        group.raw_parts = Array.from(group.raw_parts).sort();
+        group.spec_key = Array.from(group.specs)[0] || '';
+        return group;
+      }).filter(group => {
+        if(materialFilter && MRC.trimText(group.material).toUpperCase() !== materialFilter) return false;
+        if(reperFilter){
+          const hay = [group.group_label, group.members.map(m => m.reper_intern).join(' '), group.raw_parts.join(' ')].join(' ');
+          if(!MRC.normalizeText(hay).includes(reperFilter)) return false;
+        }
+        return Object.values(group.customer_kg_by_week).some(v => Number(v || 0) > 0);
+      }).sort((a,b) => String(a.group_label || '').localeCompare(String(b.group_label || ''), 'ro', { sensitivity:'base' }));
 
       return { rows:rows, weekKeys:weekKeys, coverWeeks:coverWeeks };
     }
@@ -436,9 +501,11 @@
       const html=[];
       agg.rows.forEach(row => {
         const warnBase = Object.values(row.customer_kg_by_week)[0] || 0;
+        const memberNamesHtml = (row.members || []).map(m => '<div><strong>' + esc(m.reper_intern || '-') + '</strong></div>').join('');
+        const memberKgHtml = (row.members || []).map(m => '<div class="right mono">' + esc(fmtKg(m.kg_per_buc)) + '</div>').join('');
         const fixed = [
-          '<td class="left fixed" rowspan="5"><strong>' + esc(row.reper_intern || '-') + '</strong><div class="muted small">' + esc((row.raw_parts || []).slice(0,3).join(', ')) + '</div></td>',
-          '<td class="right mono fixed" rowspan="5">' + esc(fmtKg(row.kg_per_buc)) + '</td>',
+          '<td class="left fixed" rowspan="5">' + memberNamesHtml + '<div class="muted small">' + esc((row.raw_parts || []).slice(0,4).join(', ')) + '</div></td>',
+          '<td class="right mono fixed" rowspan="5">' + (memberKgHtml || esc(fmtKg(row.kg_per_buc))) + '</td>',
           '<td class="left fixed" rowspan="5">' + esc(row.material || '-') + '</td>',
           '<td class="fixed" rowspan="5">' + esc(row.diametru || '-') + '</td>',
           '<td class="right mono fixed" rowspan="5">' + esc(fmtKg(row.start_pieces_kg)) + '</td>',
