@@ -23,6 +23,8 @@
     { page_key: 'inventar-forjat', page_name: 'Inventar Forjat' },
     { page_key: 'planificare-forja', page_name: 'Planificare Forjă' },
     { page_key: 'comenzi-livrare', page_name: 'Comenzi Livrare' },
+    { page_key: 'mrc-necesar-otel', page_name: 'MRC / Necesar Oțel' },
+    { page_key: 'mrc-comenzi-saptamanale', page_name: 'MRC / Comenzi săptămânale' },
     { page_key: 'zale-9k-6628-29', page_name: '9K-6628/29' },
     { page_key: 'zale-229-6909-10', page_name: '229-6909/10' },
     { page_key: 'zale-503-0761-62', page_name: '503-0761/62' },
