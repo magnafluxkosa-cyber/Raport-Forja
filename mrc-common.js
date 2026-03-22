@@ -183,6 +183,54 @@
     if (!workbook || !workbook.Sheets || !sheetName || !workbook.Sheets[sheetName]) return [];
     return window.XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { defval:'', raw:true });
   }
+  function detectHeaderRowMatrix(matrix, expectedKeys){
+    if (!Array.isArray(matrix)) return -1;
+    let bestIndex = -1;
+    let bestScore = 0;
+    const wanted = Array.isArray(expectedKeys) ? expectedKeys.map(normalizeText) : [];
+    const mustHave = wanted.filter(key => ['CUSTOMERPARTNO','NEEDBY','REQUESTEDQUANTITY'].includes(key));
+    for (let rowIndex = 0; rowIndex < Math.min(matrix.length, 25); rowIndex += 1){
+      const row = Array.isArray(matrix[rowIndex]) ? matrix[rowIndex] : [];
+      const normalizedCells = row.map(cell => normalizeText(cell));
+      const score = wanted.reduce((sum, key) => sum + (normalizedCells.includes(key) ? 1 : 0), 0);
+      const hasMust = mustHave.every(key => normalizedCells.includes(key));
+      if (hasMust && score > bestScore){
+        bestScore = score;
+        bestIndex = rowIndex;
+      }
+    }
+    return bestIndex;
+  }
+  function rowsFromDetectedHeaderMatrix(matrix, headerIndex){
+    if (!Array.isArray(matrix) || headerIndex < 0 || headerIndex >= matrix.length) return [];
+    const headerRow = Array.isArray(matrix[headerIndex]) ? matrix[headerIndex] : [];
+    const headers = headerRow.map(value => trimText(value));
+    const rows = [];
+    for (let rowIndex = headerIndex + 1; rowIndex < matrix.length; rowIndex += 1){
+      const row = Array.isArray(matrix[rowIndex]) ? matrix[rowIndex] : [];
+      if (!row.some(cell => trimText(cell) !== '')) continue;
+      const obj = {};
+      headers.forEach((header, columnIndex) => {
+        if (!header) return;
+        obj[header] = row[columnIndex] == null ? '' : row[columnIndex];
+      });
+      rows.push(obj);
+    }
+    return rows;
+  }
+  function loadCustomerOrderRows(workbook, sheetName){
+    if (!workbook || !workbook.Sheets || !sheetName || !workbook.Sheets[sheetName]) return [];
+    const sheet = workbook.Sheets[sheetName];
+    const rows = loadSheetRows(workbook, sheetName);
+    const firstKeys = Object.keys(rows[0] || {}).map(normalizeText);
+    const expected = ['CUSTOMER','CUSTOMERPARTNO','ORDERNO','NEEDBY','COMMITMENTLEVEL','REQUESTEDQUANTITY'];
+    const alreadyGood = expected.filter(key => firstKeys.includes(key)).length >= 3 && firstKeys.includes('CUSTOMERPARTNO') && firstKeys.includes('REQUESTEDQUANTITY');
+    if (alreadyGood) return rows;
+    const matrix = window.XLSX.utils.sheet_to_json(sheet, { header:1, raw:true, defval:'' });
+    const headerIndex = detectHeaderRowMatrix(matrix, expected);
+    if (headerIndex >= 0) return rowsFromDetectedHeaderMatrix(matrix, headerIndex);
+    return rows;
+  }
   function listWorkbookSheetNames(workbook){ return workbook && Array.isArray(workbook.SheetNames) ? workbook.SheetNames.slice() : []; }
 
 
@@ -287,7 +335,7 @@
   function importPartMappingFromWorkbook(workbook){
     const rows = [];
     listWorkbookSheetNames(workbook).forEach(sheetName => {
-      const rawRows = loadSheetRows(workbook, sheetName);
+      const rawRows = loadCustomerOrderRows(workbook, sheetName);
       rawRows.forEach((raw, index) => {
         const row = normalizeMappingRow(Object.assign({ source_sheet: sheetName }, raw), rows.length + index);
         if (!row.raw_part && !row.part_norm && !row.reper_intern) return;
@@ -453,7 +501,7 @@
     const opts = options || {};
     const workbookName = trimText(opts.workbookName || opts.fileName || opts.source_file);
     listWorkbookSheetNames(workbook).forEach(sheetName => {
-      const rawRows = loadSheetRows(workbook, sheetName);
+      const rawRows = loadCustomerOrderRows(workbook, sheetName);
       rawRows.forEach((raw, index) => {
         const sourceLabel = workbookName ? (workbookName + ' / ' + sheetName) : sheetName;
         const normalized = normalizeCustomerOrderRow(Object.assign({ source_file: sourceLabel, source_workbook: workbookName, sheet_name: sheetName }, raw), index, maps);
@@ -899,5 +947,4 @@
   };
 
   window.MRCCommon = api;
-  window.MRC = api;
 })(window);
