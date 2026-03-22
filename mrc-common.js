@@ -460,22 +460,32 @@
       quantity_buc: arrayCell(row, 7, 0)
     } : (row || {});
     const sheetNameNorm = normalizeText(pick(obj, ['sheet_name','Sheet','sheet']));
-    const isDataDueQtyDeliveryFormat = sheetNameNorm === 'DATA'
-      && trimText(pick(obj, ['Part']))
-      && trimText(pick(obj, ['Due Qty','DueQty','DUE QTY'])) !== ''
-      && trimText(pick(obj, ['Delivery Date','delivery_date'])) !== '';
+    const isDataDueQtyDeliveryFormat =
+      !!trimText(pick(obj, ['Part'])) &&
+      trimText(pick(obj, ['Due Qty','DueQty','DUE QTY'])) !== '' &&
+      trimText(pick(obj, ['Delivery Date','delivery_date'])) !== '' &&
+      (sheetNameNorm === 'DATA' || sheetNameNorm.indexOf('DATA') === 0);
+
+    const isItemOrderedShipFormat =
+      !!trimText(pick(obj, ['Item ID','Item Id'])) &&
+      trimText(pick(obj, ['Ordered Qty'])) !== '' &&
+      trimText(pick(obj, ['Ship Date'])) !== '';
 
     let deliveryIso = '';
-    if (isDataDueQtyDeliveryFormat){
+    if (isItemOrderedShipFormat){
+      deliveryIso = displayToIso(pick(obj, ['Ship Date']));
+    } else if (isDataDueQtyDeliveryFormat){
       deliveryIso = displayToIso(pick(obj, ['Delivery Date']));
     } else {
       deliveryIso = displayToIso(pick(obj, ['delivery_date','Need By','Delivery Date','NeedBy','due date','Due Date','need_by','data_livrare','Ship Date']));
       if (!deliveryIso) deliveryIso = displayToIso(pick(obj, ['WeekDlvDate']));
     }
 
-    const rawPart = trimText(isDataDueQtyDeliveryFormat
-      ? pick(obj, ['Part'])
-      : pick(obj, ['raw_part','Customer Part No.','Customer Part No','customer_part_no','Part','Item ID','Item Id','Part No','Customer Part', 'pn', 'Pn'])
+    const rawPart = trimText(isItemOrderedShipFormat
+      ? pick(obj, ['Item ID','Item Id'])
+      : (isDataDueQtyDeliveryFormat
+        ? pick(obj, ['Part'])
+        : pick(obj, ['raw_part','Customer Part No.','Customer Part No','customer_part_no','Part','Item ID','Item Id','Part No','Customer Part', 'pn', 'Pn']))
     ).toUpperCase();
     const sourceFile = trimText(pick(obj, ['source_file','Source','Sheet','sheet_name'])) || '';
     const clientName = trimText(pick(obj, ['client_name','Customer','Supplier','Description','Ship To','Supplier Name','SUPPLIER NAME']));
@@ -494,11 +504,14 @@
       year: deliveryIso ? Number(deliveryIso.slice(0,4)) : Number(pick(obj, ['year','Ship Year','an'])) || 0,
       month: deliveryIso ? getMonthName(Number(deliveryIso.slice(5,7))) : trimText(pick(obj, ['month','Ship Month','luna'])).toUpperCase(),
       week_key: deliveryIso ? isoWeekKey(deliveryIso) : trimText(pick(obj, ['WeekDlvDate','YearWeek','yearweek','week_key'])).replace(/\s+/g,''),
-      quantity_buc: Math.max(0, Math.round(toNumber(isDataDueQtyDeliveryFormat
-        ? pick(obj, ['Due Qty'])
-        : pick(obj, ['quantity_buc','Requested Quantity','Due Qty','Ordered Qty','Balance','Demand','Cum Qty','qty','RequestedQuantity','cantitate'])
+      quantity_buc: Math.max(0, Math.round(toNumber(
+        isItemOrderedShipFormat
+          ? pick(obj, ['Ordered Qty'])
+          : (isDataDueQtyDeliveryFormat
+              ? pick(obj, ['Due Qty'])
+              : pick(obj, ['quantity_buc','Requested Quantity','Due Qty','Ordered Qty','Balance','Demand','Cum Qty','qty','RequestedQuantity','cantitate']))
       ))),
-      order_no: trimText(pick(obj, ['order_no','Order No.','PO Nbr','PO NUMBER ','Order Id','Reference'])),
+      order_no: trimText(pick(obj, ['order_no','Order No.','PO Nbr','PO NUMBER ','Order Id','Reference','BPO Line ID','Line ID'])),
       commitment_level: trimText(pick(obj, ['commitment_level','Commitment Level','Stato','Status'])),
       notes: trimText(pick(obj, ['notes','Descr1','Description','Item Description','observatii'])),
       imported_at: nowIso()
