@@ -308,6 +308,7 @@
       const todayIso = new Date().toISOString().slice(0,10);
       const capForjateTo = todayIso < toIso ? todayIso : toIso;
       const reperMap = Object.create(null);
+      const aliasToReperKey = Object.create(null);
       const specEntriesByWeek = Object.create(null);
       const specPoByWeek = Object.create(null);
       const specPoManualByWeek = Object.create(null);
@@ -360,46 +361,59 @@
           target[key] = Number(target[key] || 0) + Number(source[key] || 0);
         });
       }
-      function ensureReper(seed){
-        const reper = MRC.trimText(seed && (seed.reper_intern || seed.reper || seed.raw_reper || seed.raw_part)).toUpperCase();
-        const key = MRC.normalizeLoose(reper);
-        if(!key) return null;
-        if(!reperMap[key]){
-          reperMap[key] = {
-            reper_key:key,
-            reper_intern:reper,
-            reper_debitare_origine:MRC.trimText(seed.reper_debitare_origine).toUpperCase(),
-            material:MRC.trimText(seed.material).toUpperCase(),
-            diametru:MRC.trimText(seed.diametru),
-            kg_per_buc:Number(seed.kg_per_buc || 0),
-            raw_parts:new Set(),
-            month_start_pieces_kg:Object.create(null),
-            month_start_steel_kg:Object.create(null),
-            customer_kg_by_week:Object.create(null),
-            customer_buc_by_week:Object.create(null),
-            forjate_kg_by_week:Object.create(null)
-          };
-        }
-        const item = reperMap[key];
+      function createReperItem(seed, reper, key){
+        return {
+          reper_key:key,
+          reper_intern:reper,
+          reper_debitare_origine:MRC.trimText(seed.reper_debitare_origine).toUpperCase(),
+          material:MRC.trimText(seed.material).toUpperCase(),
+          diametru:MRC.trimText(seed.diametru),
+          kg_per_buc:Number(seed.kg_per_buc || 0),
+          raw_parts:new Set(),
+          month_start_pieces_kg:Object.create(null),
+          month_start_steel_kg:Object.create(null),
+          customer_kg_by_week:Object.create(null),
+          customer_buc_by_week:Object.create(null),
+          forjate_kg_by_week:Object.create(null)
+        };
+      }
+      function registerAliases(item){
+        if(!item) return;
+        aliasVariants(item.reper_intern).forEach(alias => { if(alias) aliasToReperKey[alias] = item.reper_key; });
+        Array.from(item.raw_parts || []).forEach(value => aliasVariants(value).forEach(alias => { if(alias && !aliasToReperKey[alias]) aliasToReperKey[alias] = item.reper_key; }));
+      }
+      function updateReperItem(item, seed){
+        if(!item || !seed) return item;
         if(!item.reper_debitare_origine && seed.reper_debitare_origine) item.reper_debitare_origine = MRC.trimText(seed.reper_debitare_origine).toUpperCase();
         if(!item.material && seed.material) item.material = MRC.trimText(seed.material).toUpperCase();
         if(!item.diametru && seed.diametru) item.diametru = MRC.trimText(seed.diametru);
         if(!(item.kg_per_buc > 0) && Number(seed.kg_per_buc || 0) > 0) item.kg_per_buc = Number(seed.kg_per_buc || 0);
         if(seed.raw_part) item.raw_parts.add(MRC.trimText(seed.raw_part).toUpperCase());
         if(seed.raw_reper) item.raw_parts.add(MRC.trimText(seed.raw_reper).toUpperCase());
+        registerAliases(item);
         return item;
       }
-
-      state.openingStocks.forEach(r => {
-        const item = ensureReper(r);
-        if(!item || !r.month_key) return;
-        const kgBuc = Number(item.kg_per_buc || r.kg_per_buc || 0);
-        item.month_start_pieces_kg[r.month_key] = Number(item.month_start_pieces_kg[r.month_key] || 0) + Number(r.total_piese || 0) * kgBuc;
-        item.month_start_steel_kg[r.month_key] = Number(item.month_start_steel_kg[r.month_key] || 0) + Number(r.stoc_otel_kg || 0);
-      });
+      function ensureOrderedReper(seed){
+        const reper = MRC.trimText(seed && (seed.reper_intern || seed.reper || seed.raw_reper || seed.raw_part)).toUpperCase();
+        const key = MRC.normalizeLoose(reper);
+        if(!key) return null;
+        if(!reperMap[key]) reperMap[key] = createReperItem(seed || {}, reper, key);
+        return updateReperItem(reperMap[key], seed || {});
+      }
+      function resolveOrderedReper(seed){
+        const candidates = [];
+        [seed && seed.reper_intern, seed && seed.reper, seed && seed.raw_reper, seed && seed.raw_part].forEach(value => {
+          aliasVariants(value).forEach(alias => candidates.push(alias));
+        });
+        for(const alias of candidates){
+          const key = aliasToReperKey[alias];
+          if(key && reperMap[key]) return updateReperItem(reperMap[key], seed || {});
+        }
+        return null;
+      }
 
       state.customerOrders.filter(r => r.delivery_date && r.delivery_date >= fromIso && r.delivery_date <= toIso).forEach(r => {
-        const item = ensureReper(r);
+        const item = ensureOrderedReper(r);
         if(!item) return;
         const week = r.week_key || MRC.isoWeekKey(r.delivery_date);
         const qtyBuc = Math.max(0, Math.round(Number(r.quantity_buc || 0)));
@@ -408,10 +422,19 @@
         item.customer_buc_by_week[week] = Number(item.customer_buc_by_week[week] || 0) + qtyBuc;
         item.customer_kg_by_week[week] = Number(item.customer_kg_by_week[week] || 0) + qtyKg;
         if(r.raw_part) item.raw_parts.add(MRC.trimText(r.raw_part).toUpperCase());
+        registerAliases(item);
+      });
+
+      state.openingStocks.forEach(r => {
+        const item = resolveOrderedReper(r);
+        if(!item || !r.month_key) return;
+        const kgBuc = Number(item.kg_per_buc || r.kg_per_buc || 0);
+        item.month_start_pieces_kg[r.month_key] = Number(item.month_start_pieces_kg[r.month_key] || 0) + Number(r.total_piese || 0) * kgBuc;
+        item.month_start_steel_kg[r.month_key] = Number(item.month_start_steel_kg[r.month_key] || 0) + Number(r.stoc_otel_kg || 0);
       });
 
       state.forjateRows.filter(r => r.data && r.data >= fromIso && r.data <= capForjateTo).forEach(r => {
-        const item = ensureReper({ reper_intern:r.reper });
+        const item = resolveOrderedReper({ reper_intern:r.reper, raw_reper:r.reper });
         if(!item) return;
         const goodBuc = Math.max(0, Number(r.buc_realizate || 0) - Number(r.rebut || 0));
         if(!goodBuc) return;
@@ -582,6 +605,8 @@
       });
 
       const rows = Object.values(grouped).filter(group => {
+        const demandSelected = weekKeys.reduce((sum, week) => sum + Number(group.customer_kg_by_week[week] || 0), 0);
+        if(!(demandSelected > 0)) return false;
         if(materialFilter && MRC.trimText(group.material).toUpperCase() !== materialFilter) return false;
         if(reperFilter){
           const hay = [group.reper_list.join(' / '), group.raw_parts.join(' '), group.material, group.diametru].join(' ');
