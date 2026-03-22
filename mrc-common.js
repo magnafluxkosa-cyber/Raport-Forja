@@ -899,4 +899,5 @@
   };
 
   window.MRCCommon = api;
+  window.MRC = api;
 })(window);
