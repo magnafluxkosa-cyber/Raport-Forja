@@ -56,6 +56,10 @@
     .value-bad{background:var(--badBg)!important;color:var(--bad);font-weight:800}
     .muted{color:var(--muted)}
     .small{font-size:11px}
+    .stack-list{display:flex;flex-direction:column;gap:6px}
+    .stack-item{display:flex;flex-direction:column;gap:1px;min-height:18px}
+    .stack-item + .stack-item{padding-top:4px;border-top:1px dashed rgba(29,29,29,.10)}
+    .stack-main{font-weight:700;line-height:1.2}
     .summary-strip{display:grid;grid-template-columns:repeat(4,minmax(180px,1fr));gap:10px}
     .empty{padding:18px;color:var(--muted)}
     .steel-editor table{min-width:980px}
@@ -72,7 +76,7 @@
     <header class="topbar">
       <div class="titlebox">
         <div class="title">MRC / NECESAR OȚEL</div>
-        <div class="subtitle">Varianta de lucru MRC: vederea se deschide pe întreaga comandă importată a clienților, gruparea se face numai unde există material și diametru complete; rândurile fără specificație completă nu se mai lipesc într-un singur bloc mare, iar calculul se resetează la începutul fiecărei luni din stocul inițial importat din tabelul STOCKS. Comanda de oțel poate fi introdusă direct în tabel, iar acoperirea se poate schimba din numărul de săptămâni ales sus.</div>
+        <div class="subtitle">Varianta de lucru MRC: vederea se deschide pe întreaga comandă importată a clienților, iar în același bloc de material fiecare reper se vede separat cu kg/buc propriu. Calculul de sold rămâne total pe grupul de material + diametru și se resetează la începutul fiecărei luni din stocul inițial importat din tabelul STOCKS. Comanda de oțel poate fi introdusă direct în tabel, iar acoperirea se poate schimba din numărul de săptămâni ales sus.</div>
       </div>
       <div class="actions">
         <a class="back-btn" href="index.html">Înapoi la Dashboard</a>
@@ -106,7 +110,7 @@
           <button class="btn secondary" id="btnExportOrders" type="button">Export comenzi</button>
           <button class="btn secondary" id="btnExportStock" type="button">Export stoc</button>
         </div>
-        <div class="hint" id="pageHint">Reperele se grupează numai când au material + diametru complete. Dacă lipsește una dintre ele, reperul rămâne separat ca să nu se mai adune tot MTX-ul într-un singur bloc. Soldul săptămânal se calculează separat în fiecare lună, din stocul inițial exact al lunii respective.</div>
+        <div class="hint" id="pageHint">În același grup de material fiecare reper apare separat, cu kg/buc propriu, dar soldul și acoperirea se calculează pe necesarul total al grupului. Dacă lipsește materialul sau diametrul, reperul rămâne separat până este completată maparea.</div>
       </div>
 
       <section class="summary-strip" id="summaryStrip"></section>
@@ -405,6 +409,7 @@
             reper_list:new Set(),
             raw_parts:new Set(),
             kg_values:new Set(),
+            detail_map:Object.create(null),
             month_start_pieces_kg:Object.create(null),
             month_start_steel_kg:Object.create(null),
             customer_kg_by_week:Object.create(null),
@@ -424,6 +429,17 @@
         group.reper_list.add(item.reper_intern);
         item.raw_parts.forEach(v => group.raw_parts.add(v));
         if(item.kg_per_buc > 0) group.kg_values.add(Number(item.kg_per_buc).toFixed(4));
+        const detailKey = item.reper_key || ('detail-' + String(item.reper_intern || ''));
+        if(!group.detail_map[detailKey]){
+          group.detail_map[detailKey] = {
+            reper_intern:item.reper_intern || '',
+            kg_per_buc:Number(item.kg_per_buc || 0),
+            raw_parts:new Set()
+          };
+        }
+        const detail = group.detail_map[detailKey];
+        if(!(detail.kg_per_buc > 0) && item.kg_per_buc > 0) detail.kg_per_buc = Number(item.kg_per_buc || 0);
+        item.raw_parts.forEach(v => detail.raw_parts.add(v));
         Object.keys(item.month_start_pieces_kg).forEach(monthKey => {
           group.month_start_pieces_kg[monthKey] = Number(group.month_start_pieces_kg[monthKey] || 0) + Number(item.month_start_pieces_kg[monthKey] || 0);
         });
@@ -490,6 +506,11 @@
         group.statusTone = minCoverOverall < 0 ? 'value-bad' : (minSoldOverall < 0 ? 'value-warn' : 'value-ok');
         group.reper_list = Array.from(group.reper_list).sort((a,b) => String(a).localeCompare(String(b), 'ro', { sensitivity:'base' }));
         group.raw_parts = Array.from(group.raw_parts).sort((a,b) => String(a).localeCompare(String(b), 'ro', { sensitivity:'base' }));
+        group.detail_rows = Object.values(group.detail_map || {}).map(detail => ({
+          reper_intern:detail.reper_intern || '',
+          kg_per_buc:Number(detail.kg_per_buc || 0),
+          raw_parts:Array.from(detail.raw_parts || []).sort((a,b) => String(a).localeCompare(String(b), 'ro', { sensitivity:'base' }))
+        })).sort((a,b) => String(a.reper_intern || '').localeCompare(String(b.reper_intern || ''), 'ro', { sensitivity:'base' }));
         const kgValues = Array.from(group.kg_values).map(Number).sort((a,b)=>a-b);
         group.kg_per_buc_display = kgValues.length === 1 ? fmtKg(kgValues[0]) : 'MIX';
       });
@@ -549,11 +570,12 @@
       agg.rows.forEach(row => {
         const warnBase = Math.max(0, ...(Object.values(row.customer_kg_by_week || {}).map(v => Number(v || 0))));
         const reperFull = (row.reper_list || []).join(' / ') || '-';
-        const reperShort = shortJoinedList(row.reper_list || [], 6) || '-';
-        const rawShort = (row.raw_parts || []).slice(0,4).join(', ');
+        const detailRows = (row.detail_rows && row.detail_rows.length ? row.detail_rows : [{ reper_intern:reperFull, kg_per_buc:0, raw_parts:(row.raw_parts || []) }]);
+        const reperStack = '<div class="stack-list">' + detailRows.map(detail => '<div class="stack-item"><div class="stack-main">' + esc(detail.reper_intern || '-') + '</div>' + (detail.raw_parts && detail.raw_parts.length ? ('<div class="muted small">' + esc(detail.raw_parts.join(', ')) + '</div>') : '') + '</div>').join('') + '</div>';
+        const kgStack = '<div class="stack-list">' + detailRows.map(detail => '<div class="stack-item right mono"><div class="stack-main">' + esc(detail.kg_per_buc > 0 ? fmtKg(detail.kg_per_buc) : '-') + '</div></div>').join('') + '</div>';
         const fixed = [
-          '<td class="left fixed" rowspan="5" title="' + esc(reperFull) + '"><strong>' + esc(reperShort) + '</strong><div class="muted small">' + esc(rawShort) + '</div></td>',
-          '<td class="right mono fixed" rowspan="5">' + esc(row.kg_per_buc_display || '-') + '</td>',
+          '<td class="left fixed" rowspan="5" title="' + esc(reperFull) + '">' + reperStack + '</td>',
+          '<td class="right mono fixed" rowspan="5">' + kgStack + '</td>',
           '<td class="left fixed" rowspan="5">' + esc(row.material || '-') + '</td>',
           '<td class="fixed" rowspan="5">' + esc(row.diametru || '-') + '</td>',
           '<td class="right mono fixed" rowspan="5">' + esc(fmtKg(row.first_month_pieces_kg)) + '<div class="muted small">prima lună</div></td>',
