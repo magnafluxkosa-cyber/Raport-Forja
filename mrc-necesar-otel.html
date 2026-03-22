@@ -324,6 +324,42 @@
         if(!dict[spec]) dict[spec] = Object.create(null);
         dict[spec][week] = Number(dict[spec][week] || 0) + num;
       }
+      function aliasVariants(value){
+        const variants = new Set();
+        const raw = MRC.trimText(value).toUpperCase();
+        if(!raw) return variants;
+        [
+          raw,
+          raw.replace(/^ZA\s+/i, ''),
+          raw.replace(/^PPAP\s+/i, ''),
+          raw.replace(/^MP\s+/i, ''),
+          raw.replace(/^REPER\s+/i, '')
+        ].forEach(seed => {
+          const txt = MRC.trimText(seed).toUpperCase();
+          if(!txt) return;
+          const full = MRC.normalizePart(txt);
+          if(full) variants.add(full);
+          const trimmed = txt.replace(/(?:[-_\/\s]+[A-Z0-9]{1,4})$/, '');
+          const base = MRC.normalizePart(trimmed);
+          if(base) variants.add(base);
+        });
+        return variants;
+      }
+      function buildGroupAliasSet(group){
+        const aliases = new Set();
+        Array.from(group.reper_list || []).forEach(value => aliasVariants(value).forEach(alias => aliases.add(alias)));
+        Array.from(group.raw_parts || []).forEach(value => aliasVariants(value).forEach(alias => aliases.add(alias)));
+        Object.values(group.detail_map || {}).forEach(detail => {
+          aliasVariants(detail.reper_intern).forEach(alias => aliases.add(alias));
+          Array.from(detail.raw_parts || []).forEach(value => aliasVariants(value).forEach(alias => aliases.add(alias)));
+        });
+        return aliases;
+      }
+      function mergeNumericMap(target, source){
+        Object.keys(source || {}).forEach(key => {
+          target[key] = Number(target[key] || 0) + Number(source[key] || 0);
+        });
+      }
       function ensureReper(seed){
         const reper = MRC.trimText(seed && (seed.reper_intern || seed.reper || seed.raw_reper || seed.raw_part)).toUpperCase();
         const key = MRC.normalizeLoose(reper);
@@ -456,6 +492,36 @@
           group.forjate_kg_by_week[week] = Number(group.forjate_kg_by_week[week] || 0) + Number(item.forjate_kg_by_week[week] || 0);
         });
       });
+
+      const groupedValues = Object.values(grouped);
+      const groupedTargets = groupedValues
+        .filter(group => group.spec_key || ((group.material || '') && (group.diametru || '')) || Object.keys(group.detail_map || {}).length > 1)
+        .map(group => ({ group, aliases: buildGroupAliasSet(group) }));
+      const groupedToDrop = new Set();
+      groupedValues.forEach(group => {
+        if(groupedToDrop.has(group.group_key)) return;
+        const detailCount = Object.keys(group.detail_map || {}).length;
+        if(group.spec_key || detailCount > 1) return;
+        const aliases = buildGroupAliasSet(group);
+        if(!aliases.size) return;
+        const targetMeta = groupedTargets.find(meta => {
+          if(meta.group.group_key === group.group_key) return false;
+          let overlap = false;
+          aliases.forEach(alias => { if(meta.aliases.has(alias)) overlap = true; });
+          return overlap;
+        });
+        if(!targetMeta) return;
+        const target = targetMeta.group;
+        mergeNumericMap(target.month_start_pieces_kg, group.month_start_pieces_kg);
+        mergeNumericMap(target.month_start_steel_kg, group.month_start_steel_kg);
+        mergeNumericMap(target.customer_kg_by_week, group.customer_kg_by_week);
+        mergeNumericMap(target.customer_buc_by_week, group.customer_buc_by_week);
+        mergeNumericMap(target.forjate_kg_by_week, group.forjate_kg_by_week);
+        Array.from(group.raw_parts || []).forEach(value => target.raw_parts.add(value));
+        Array.from(group.reper_list || []).forEach(value => target.raw_parts.add(value));
+        groupedToDrop.add(group.group_key);
+      });
+      groupedToDrop.forEach(groupKey => { delete grouped[groupKey]; });
 
       Object.values(grouped).forEach(group => {
         if(group.spec_key){
