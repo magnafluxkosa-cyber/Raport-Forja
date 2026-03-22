@@ -542,11 +542,13 @@
 
   function openingStockDedupKey(row){
     const item = row || {};
-    const month = monthKey(item.year, item.month_num) || trimText(item.month_key || '');
-    const rawKey = normalizePart(item.raw_reper || item.reper || '');
-    const internalKey = normalizeLoose(item.reper_intern || '');
-    const fallbackSpec = normalizeLoose(item.material || '') + '|' + trimText(item.diametru || '');
-    return [month, rawKey || internalKey || fallbackSpec].join('|');
+    return [
+      monthKey(item.year, item.month_num),
+      normalizeLoose(item.reper_intern || item.raw_reper || item.reper || ''),
+      normalizePart(item.raw_reper || ''),
+      normalizeLoose(item.material || ''),
+      trimText(item.diametru || '')
+    ].join('|');
   }
 
   function dedupeOpeningStocks(rows){
