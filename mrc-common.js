@@ -179,9 +179,38 @@
     return true;
   }
 
+  function detectHeaderRowIndex(sheet){
+    if (!sheet || !window.XLSX || !window.XLSX.utils) return 0;
+    const matrix = window.XLSX.utils.sheet_to_json(sheet, { header:1, raw:true, defval:'' });
+    const markers = [
+      ['customer', 'customer part no', 'need by', 'requested quantity'],
+      ['rawpart', 'part_norm', 'reper_intern'],
+      ['reper', 'stoc forja', 'stoc otel'],
+      ['customer part no.', 'order no.', 'need by']
+    ];
+    let bestIndex = 0;
+    let bestScore = 0;
+    for (let i = 0; i < Math.min(matrix.length, 15); i += 1){
+      const row = (matrix[i] || []).map(value => normalizeText(value));
+      const joined = row.join(' | ');
+      let score = 0;
+      markers.forEach(group => {
+        let hit = 0;
+        group.forEach(token => { if (joined.includes(normalizeText(token))) hit += 1; });
+        score = Math.max(score, hit);
+      });
+      if (score > bestScore){
+        bestScore = score;
+        bestIndex = i;
+      }
+    }
+    return bestScore >= 2 ? bestIndex : 0;
+  }
   function loadSheetRows(workbook, sheetName){
     if (!workbook || !workbook.Sheets || !sheetName || !workbook.Sheets[sheetName]) return [];
-    return window.XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { defval:'', raw:true });
+    const sheet = workbook.Sheets[sheetName];
+    const headerRowIndex = detectHeaderRowIndex(sheet);
+    return window.XLSX.utils.sheet_to_json(sheet, { defval:'', raw:true, range:headerRowIndex });
   }
   function listWorkbookSheetNames(workbook){ return workbook && Array.isArray(workbook.SheetNames) ? workbook.SheetNames.slice() : []; }
 
@@ -448,6 +477,59 @@
     return dedupeCustomerOrders([].concat(Array.isArray(existingRows) ? existingRows : [], Array.isArray(importedRows) ? importedRows : []));
   }
 
+
+  function customerOrderClientPeriod(rows){
+    const list = Array.isArray(rows) ? rows : [];
+    const clients = Array.from(new Set(list.map(row => normalizeLoose(row.client_name || row.customer_name || '')).filter(Boolean)));
+    const dates = list.map(row => displayToIso(row.delivery_date)).filter(Boolean).sort();
+    return { clients, fromIso: dates[0] || '', toIso: dates.length ? dates[dates.length - 1] : '' };
+  }
+
+  function replaceCustomerOrdersForClientPeriod(existingRows, importedRows){
+    const existing = Array.isArray(existingRows) ? existingRows : [];
+    const imported = dedupeCustomerOrders(importedRows || []);
+    if (!imported.length) return dedupeCustomerOrders(existing);
+    const period = customerOrderClientPeriod(imported);
+    const kept = existing.filter(row => {
+      const clientKey = normalizeLoose(row.client_name || row.customer_name || '');
+      const rowDate = displayToIso(row.delivery_date);
+      if (period.clients.length && !period.clients.includes(clientKey)) return true;
+      if (!period.fromIso || !period.toIso || !rowDate) return false;
+      return rowDate < period.fromIso || rowDate > period.toIso;
+    });
+    return dedupeCustomerOrders([].concat(kept, imported));
+  }
+
+  function openingStockDedupKey(row){
+    const item = row || {};
+    return [
+      monthKey(item.year, item.month_num),
+      normalizeLoose(item.reper_intern || item.raw_reper || item.reper || ''),
+      normalizePart(item.raw_reper || ''),
+      normalizeLoose(item.material || ''),
+      trimText(item.diametru || '')
+    ].join('|');
+  }
+
+  function dedupeOpeningStocks(rows){
+    const map = new Map();
+    (rows || []).forEach(row => {
+      const key = openingStockDedupKey(row);
+      if (!key.replace(/\|/g, '')) return;
+      map.set(key, row);
+    });
+    return Array.from(map.values());
+  }
+
+  function mergeOpeningStocks(existingRows, importedRows){
+    return dedupeOpeningStocks([].concat(Array.isArray(existingRows) ? existingRows : [], Array.isArray(importedRows) ? importedRows : []));
+  }
+
+  function hasFullMapping(row){
+    const item = row || {};
+    return !!(trimText(item.reper_intern) && trimText(item.material) && trimText(item.diametru) && toNumber(item.kg_per_buc) > 0);
+  }
+
   function importCustomerOrdersFromWorkbook(workbook, maps, options){
     const rows = [];
     const opts = options || {};
@@ -464,31 +546,6 @@
       });
     });
     return dedupeCustomerOrders(rows);
-  }
-
-  function openingStockDedupKey(row){
-    const obj = row || {};
-    const year = Number(obj.year) || 0;
-    const monthNum = Number(obj.month_num || obj.month) || 0;
-    const reper = normalizePart(obj.reper_intern || obj.raw_reper || obj.reper || '');
-    const material = normalizeLoose(obj.material || '');
-    const diametru = normalizeLoose(obj.diametru || '');
-    return [year, monthNum, reper, material, diametru].join('|');
-  }
-
-  function dedupeOpeningStocks(rows){
-    const map = new Map();
-    (Array.isArray(rows) ? rows : []).forEach((row, index) => {
-      const normalized = normalizeOpeningStockRow(row, index, null);
-      if (!normalized.year || !normalized.month_num) return;
-      if (!(normalized.raw_reper || normalized.reper_intern || normalized.material || normalized.diametru)) return;
-      map.set(openingStockDedupKey(normalized), normalized);
-    });
-    return Array.from(map.values());
-  }
-
-  function mergeOpeningStocks(existingRows, importedRows){
-    return dedupeOpeningStocks([].concat(Array.isArray(existingRows) ? existingRows : [], Array.isArray(importedRows) ? importedRows : []));
   }
 
   function normalizeOpeningStockRow(row, index, maps){
@@ -566,7 +623,7 @@
           }, rows.length, maps));
         });
       }
-      return dedupeOpeningStocks(rows.filter(row => row.year && row.month_num && (row.raw_reper || row.reper_intern)));
+      return rows.filter(row => row.year && row.month_num && (row.raw_reper || row.reper_intern));
     }
     listWorkbookSheetNames(workbook).forEach(sheetName => {
       loadSheetRows(workbook, sheetName).forEach((raw, index) => {
@@ -575,7 +632,7 @@
         rows.push(row);
       });
     });
-    return dedupeOpeningStocks(rows);
+    return rows;
   }
 
   function normalizeSteelPoRow(row, index){
@@ -909,11 +966,14 @@
     customerOrderDedupKey,
     dedupeCustomerOrders,
     mergeCustomerOrders,
+    customerOrderClientPeriod,
+    replaceCustomerOrdersForClientPeriod,
     importCustomerOrdersFromWorkbook,
     normalizeOpeningStockRow,
     openingStockDedupKey,
     dedupeOpeningStocks,
     mergeOpeningStocks,
+    hasFullMapping,
     importOpeningStockFromWorkbook,
     normalizeSteelPoRow,
     normalizeIntrariOtelRow,
@@ -927,5 +987,4 @@
   };
 
   window.MRCCommon = api;
-  window.MRC = api;
 })(window);
