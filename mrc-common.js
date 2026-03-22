@@ -393,10 +393,12 @@
     let deliveryIso = displayToIso(pick(obj, ['delivery_date','Need By','Delivery Date','NeedBy','due date','Due Date','need_by','data_livrare','Ship Date']));
     if (!deliveryIso) deliveryIso = displayToIso(pick(obj, ['WeekDlvDate']));
     const rawPart = trimText(pick(obj, ['raw_part','Customer Part No.','Customer Part No','customer_part_no','Part','Item ID','Item Id','Part No','Customer Part', 'pn', 'Pn'])).toUpperCase();
+    const sourceFile = trimText(pick(obj, ['source_file','Source','Sheet','sheet_name'])) || '';
+    const clientName = trimText(pick(obj, ['client_name','Customer','Supplier','Description','Ship To','Supplier Name','SUPPLIER NAME']));
     const normalized = applyPartMapping({
       id: trimText(pick(obj, ['id','_id'])) || ('ord-' + index + '-' + Math.random().toString(36).slice(2,8)),
-      source_file: trimText(pick(obj, ['source_file','Source','Sheet','sheet_name'])) || '',
-      client_name: trimText(pick(obj, ['client_name','Customer','Supplier','Description','Ship To','Supplier Name','SUPPLIER NAME'])),
+      source_file: sourceFile,
+      client_name: clientName,
       raw_part: rawPart,
       part_norm: trimText(pick(obj, ['part_norm','Part_Norm','Part Norm','part norm'])).toUpperCase() || normalizePart(rawPart),
       reper_intern: trimText(pick(obj, ['reper_intern','Reper_intern','reper'])).toUpperCase(),
@@ -420,22 +422,41 @@
     return normalized;
   }
 
+  function customerOrderDedupKey(row){
+    const item = row || {};
+    return [
+      normalizeLoose(item.client_name || item.customer_name || ''),
+      normalizePart(item.raw_part || item.part_norm || item.reper_intern || ''),
+      trimText(item.order_no).toUpperCase(),
+      displayToIso(item.delivery_date),
+      trimText(item.commitment_level).toUpperCase(),
+      Math.round(toNumber(item.quantity_buc || 0) * 1000) / 1000
+    ].join('|');
+  }
+
   function dedupeCustomerOrders(rows){
     const seen = new Set();
-    return rows.filter(row => {
-      const key = [normalizePart(row.raw_part), row.delivery_date, row.order_no, row.quantity_buc].join('|');
-      if (seen.has(key)) return false;
+    return (rows || []).filter(row => {
+      const key = customerOrderDedupKey(row);
+      if (!key || seen.has(key)) return false;
       seen.add(key);
       return true;
     });
   }
 
-  function importCustomerOrdersFromWorkbook(workbook, maps){
+  function mergeCustomerOrders(existingRows, importedRows){
+    return dedupeCustomerOrders([].concat(Array.isArray(existingRows) ? existingRows : [], Array.isArray(importedRows) ? importedRows : []));
+  }
+
+  function importCustomerOrdersFromWorkbook(workbook, maps, options){
     const rows = [];
+    const opts = options || {};
+    const workbookName = trimText(opts.workbookName || opts.fileName || opts.source_file);
     listWorkbookSheetNames(workbook).forEach(sheetName => {
       const rawRows = loadSheetRows(workbook, sheetName);
       rawRows.forEach((raw, index) => {
-        const normalized = normalizeCustomerOrderRow(Object.assign({ source_file: sheetName }, raw), index, maps);
+        const sourceLabel = workbookName ? (workbookName + ' / ' + sheetName) : sheetName;
+        const normalized = normalizeCustomerOrderRow(Object.assign({ source_file: sourceLabel, source_workbook: workbookName, sheet_name: sheetName }, raw), index, maps);
         if (!normalized.raw_part && !normalized.reper_intern) return;
         if (!normalized.delivery_date) return;
         if (!(normalized.quantity_buc > 0)) return;
@@ -860,6 +881,9 @@
     importPartMappingFromWorkbook,
     applyPartMapping,
     normalizeCustomerOrderRow,
+    customerOrderDedupKey,
+    dedupeCustomerOrders,
+    mergeCustomerOrders,
     importCustomerOrdersFromWorkbook,
     normalizeOpeningStockRow,
     importOpeningStockFromWorkbook,

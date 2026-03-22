@@ -160,7 +160,7 @@
   </div>
 
   <input id="fileMapping" type="file" accept=".xlsx,.xlsm,.xls" hidden />
-  <input id="fileOrders" type="file" accept=".xlsx,.xlsm,.xls" hidden />
+  <input id="fileOrders" type="file" accept=".xlsx,.xlsm,.xls" multiple hidden />
   <input id="fileStock" type="file" accept=".xlsx,.xlsm,.xls" hidden />
 
   <script>
@@ -262,7 +262,8 @@
       els.roleSub.textContent = state.canEdit ? 'Poți importa, edita și salva documentele MRC.' : 'Ai doar drept de vizualizare.';
       els.mapStatus.textContent = state.maps ? (String(state.mappingRows.length) + ' mapări') : '-';
       els.mapSub.textContent = state.maps ? ('Sursă: ' + (state.maps.source || '-')) : 'Nu s-a încărcat maparea.';
-      els.dataStatus.textContent = ['Comenzi: ' + state.customerOrders.length, 'Stoc: ' + state.openingStocks.length, 'Intrări: ' + state.intrariRows.length, 'Forjate: ' + state.forjateRows.length].join(' · ');
+      const clientCount = new Set(state.customerOrders.map(r => MRC.trimText(r.client_name)).filter(Boolean)).size;
+      els.dataStatus.textContent = ['Comenzi: ' + state.customerOrders.length, 'Clienți: ' + clientCount, 'Stoc: ' + state.openingStocks.length, 'Intrări: ' + state.intrariRows.length, 'Forjate: ' + state.forjateRows.length].join(' · ');
       const dirty = Object.keys(state.dirty).filter(k => state.dirty[k]);
       els.dataSub.textContent = dirty.length ? ('Nesalvat: ' + dirty.join(', ')) : 'Toate documentele sunt în sincron.';
       els.syncStatus.textContent = state.lastSyncAt ? (MRC.isoToDisplay(state.lastSyncAt) + ' ' + String(state.lastSyncAt).slice(11,16)) : '-';
@@ -275,7 +276,7 @@
       const mapDoc=docs[0], orderDoc=docs[1], stockDoc=docs[2], steelDoc=docs[3];
       state.mappingRows = (mapDoc ? MRC.extractRowsPayload(mapDoc.content || mapDoc.data) : []).map((row, index) => MRC.normalizeMappingRow(row, index)).filter(r => r.raw_part || r.part_norm || r.reper_intern);
       state.maps = await MRC.loadHelperMaps(state.supabase);
-      state.customerOrders = (orderDoc ? MRC.extractRowsPayload(orderDoc.content || orderDoc.data) : []).map((row, index) => MRC.normalizeCustomerOrderRow(row, index, state.maps)).filter(r => r.raw_part || r.reper_intern);
+      state.customerOrders = MRC.dedupeCustomerOrders((orderDoc ? MRC.extractRowsPayload(orderDoc.content || orderDoc.data) : []).map((row, index) => MRC.normalizeCustomerOrderRow(row, index, state.maps)).filter(r => r.raw_part || r.reper_intern));
       state.openingStocks = (stockDoc ? MRC.extractRowsPayload(stockDoc.content || stockDoc.data) : []).map((row, index) => MRC.normalizeOpeningStockRow(row, index, state.maps)).filter(r => r.year && r.month_num && (r.raw_reper || r.reper_intern));
       state.steelOrders = (steelDoc ? MRC.extractRowsPayload(steelDoc.content || steelDoc.data) : []).map((row, index) => MRC.normalizeSteelPoRow(row, index)).filter(r => r.po_number || r.material || r.qty_kg);
       state.lastSyncAt = [mapDoc, orderDoc, stockDoc, steelDoc].map(doc => doc && doc.updated_at || '').filter(Boolean).sort().pop() || '';
@@ -308,7 +309,6 @@
       const todayIso = new Date().toISOString().slice(0,10);
       const capForjateTo = todayIso < toIso ? todayIso : toIso;
       const reperMap = Object.create(null);
-      const aliasToReperKey = Object.create(null);
       const specEntriesByWeek = Object.create(null);
       const specPoByWeek = Object.create(null);
       const specPoManualByWeek = Object.create(null);
@@ -325,95 +325,46 @@
         if(!dict[spec]) dict[spec] = Object.create(null);
         dict[spec][week] = Number(dict[spec][week] || 0) + num;
       }
-      function aliasVariants(value){
-        const variants = new Set();
-        const raw = MRC.trimText(value).toUpperCase();
-        if(!raw) return variants;
-        [
-          raw,
-          raw.replace(/^ZA\s+/i, ''),
-          raw.replace(/^PPAP\s+/i, ''),
-          raw.replace(/^MP\s+/i, ''),
-          raw.replace(/^REPER\s+/i, '')
-        ].forEach(seed => {
-          const txt = MRC.trimText(seed).toUpperCase();
-          if(!txt) return;
-          const full = MRC.normalizePart(txt);
-          if(full) variants.add(full);
-          const trimmed = txt.replace(/(?:[-_\/\s]+[A-Z0-9]{1,4})$/, '');
-          const base = MRC.normalizePart(trimmed);
-          if(base) variants.add(base);
-        });
-        return variants;
-      }
-      function buildGroupAliasSet(group){
-        const aliases = new Set();
-        Array.from(group.reper_list || []).forEach(value => aliasVariants(value).forEach(alias => aliases.add(alias)));
-        Array.from(group.raw_parts || []).forEach(value => aliasVariants(value).forEach(alias => aliases.add(alias)));
-        Object.values(group.detail_map || {}).forEach(detail => {
-          aliasVariants(detail.reper_intern).forEach(alias => aliases.add(alias));
-          Array.from(detail.raw_parts || []).forEach(value => aliasVariants(value).forEach(alias => aliases.add(alias)));
-        });
-        return aliases;
-      }
-      function mergeNumericMap(target, source){
-        Object.keys(source || {}).forEach(key => {
-          target[key] = Number(target[key] || 0) + Number(source[key] || 0);
-        });
-      }
-      function createReperItem(seed, reper, key){
-        return {
-          reper_key:key,
-          reper_intern:reper,
-          reper_debitare_origine:MRC.trimText(seed.reper_debitare_origine).toUpperCase(),
-          material:MRC.trimText(seed.material).toUpperCase(),
-          diametru:MRC.trimText(seed.diametru),
-          kg_per_buc:Number(seed.kg_per_buc || 0),
-          raw_parts:new Set(),
-          month_start_pieces_kg:Object.create(null),
-          month_start_steel_kg:Object.create(null),
-          customer_kg_by_week:Object.create(null),
-          customer_buc_by_week:Object.create(null),
-          forjate_kg_by_week:Object.create(null)
-        };
-      }
-      function registerAliases(item){
-        if(!item) return;
-        aliasVariants(item.reper_intern).forEach(alias => { if(alias) aliasToReperKey[alias] = item.reper_key; });
-        Array.from(item.raw_parts || []).forEach(value => aliasVariants(value).forEach(alias => { if(alias && !aliasToReperKey[alias]) aliasToReperKey[alias] = item.reper_key; }));
-      }
-      function updateReperItem(item, seed){
-        if(!item || !seed) return item;
+      function ensureReper(seed){
+        const reper = MRC.trimText(seed && (seed.reper_intern || seed.reper || seed.raw_reper || seed.raw_part)).toUpperCase();
+        const key = MRC.normalizeLoose(reper);
+        if(!key) return null;
+        if(!reperMap[key]){
+          reperMap[key] = {
+            reper_key:key,
+            reper_intern:reper,
+            reper_debitare_origine:MRC.trimText(seed.reper_debitare_origine).toUpperCase(),
+            material:MRC.trimText(seed.material).toUpperCase(),
+            diametru:MRC.trimText(seed.diametru),
+            kg_per_buc:Number(seed.kg_per_buc || 0),
+            raw_parts:new Set(),
+            month_start_pieces_kg:Object.create(null),
+            month_start_steel_kg:Object.create(null),
+            customer_kg_by_week:Object.create(null),
+            customer_buc_by_week:Object.create(null),
+            forjate_kg_by_week:Object.create(null)
+          };
+        }
+        const item = reperMap[key];
         if(!item.reper_debitare_origine && seed.reper_debitare_origine) item.reper_debitare_origine = MRC.trimText(seed.reper_debitare_origine).toUpperCase();
         if(!item.material && seed.material) item.material = MRC.trimText(seed.material).toUpperCase();
         if(!item.diametru && seed.diametru) item.diametru = MRC.trimText(seed.diametru);
         if(!(item.kg_per_buc > 0) && Number(seed.kg_per_buc || 0) > 0) item.kg_per_buc = Number(seed.kg_per_buc || 0);
         if(seed.raw_part) item.raw_parts.add(MRC.trimText(seed.raw_part).toUpperCase());
         if(seed.raw_reper) item.raw_parts.add(MRC.trimText(seed.raw_reper).toUpperCase());
-        registerAliases(item);
         return item;
       }
-      function ensureOrderedReper(seed){
-        const reper = MRC.trimText(seed && (seed.reper_intern || seed.reper || seed.raw_reper || seed.raw_part)).toUpperCase();
-        const key = MRC.normalizeLoose(reper);
-        if(!key) return null;
-        if(!reperMap[key]) reperMap[key] = createReperItem(seed || {}, reper, key);
-        return updateReperItem(reperMap[key], seed || {});
-      }
-      function resolveOrderedReper(seed){
-        const candidates = [];
-        [seed && seed.reper_intern, seed && seed.reper, seed && seed.raw_reper, seed && seed.raw_part].forEach(value => {
-          aliasVariants(value).forEach(alias => candidates.push(alias));
-        });
-        for(const alias of candidates){
-          const key = aliasToReperKey[alias];
-          if(key && reperMap[key]) return updateReperItem(reperMap[key], seed || {});
-        }
-        return null;
-      }
+
+      state.openingStocks.forEach(r => {
+        const item = ensureReper(r);
+        if(!item || !r.month_key) return;
+        const kgBuc = Number(item.kg_per_buc || r.kg_per_buc || 0);
+        item.month_start_pieces_kg[r.month_key] = Number(item.month_start_pieces_kg[r.month_key] || 0) + Number(r.total_piese || 0) * kgBuc;
+        item.month_start_steel_kg[r.month_key] = Number(item.month_start_steel_kg[r.month_key] || 0) + Number(r.stoc_otel_kg || 0);
+      });
 
       state.customerOrders.filter(r => r.delivery_date && r.delivery_date >= fromIso && r.delivery_date <= toIso).forEach(r => {
-        const item = ensureOrderedReper(r);
+        const item = ensureReper(r);
         if(!item) return;
         const week = r.week_key || MRC.isoWeekKey(r.delivery_date);
         const qtyBuc = Math.max(0, Math.round(Number(r.quantity_buc || 0)));
@@ -422,19 +373,10 @@
         item.customer_buc_by_week[week] = Number(item.customer_buc_by_week[week] || 0) + qtyBuc;
         item.customer_kg_by_week[week] = Number(item.customer_kg_by_week[week] || 0) + qtyKg;
         if(r.raw_part) item.raw_parts.add(MRC.trimText(r.raw_part).toUpperCase());
-        registerAliases(item);
-      });
-
-      state.openingStocks.forEach(r => {
-        const item = resolveOrderedReper(r);
-        if(!item || !r.month_key) return;
-        const kgBuc = Number(item.kg_per_buc || r.kg_per_buc || 0);
-        item.month_start_pieces_kg[r.month_key] = Number(item.month_start_pieces_kg[r.month_key] || 0) + Number(r.total_piese || 0) * kgBuc;
-        item.month_start_steel_kg[r.month_key] = Number(item.month_start_steel_kg[r.month_key] || 0) + Number(r.stoc_otel_kg || 0);
       });
 
       state.forjateRows.filter(r => r.data && r.data >= fromIso && r.data <= capForjateTo).forEach(r => {
-        const item = resolveOrderedReper({ reper_intern:r.reper, raw_reper:r.reper });
+        const item = ensureReper({ reper_intern:r.reper });
         if(!item) return;
         const goodBuc = Math.max(0, Number(r.buc_realizate || 0) - Number(r.rebut || 0));
         if(!goodBuc) return;
@@ -516,36 +458,6 @@
         });
       });
 
-      const groupedValues = Object.values(grouped);
-      const groupedTargets = groupedValues
-        .filter(group => group.spec_key || ((group.material || '') && (group.diametru || '')) || Object.keys(group.detail_map || {}).length > 1)
-        .map(group => ({ group, aliases: buildGroupAliasSet(group) }));
-      const groupedToDrop = new Set();
-      groupedValues.forEach(group => {
-        if(groupedToDrop.has(group.group_key)) return;
-        const detailCount = Object.keys(group.detail_map || {}).length;
-        if(group.spec_key || detailCount > 1) return;
-        const aliases = buildGroupAliasSet(group);
-        if(!aliases.size) return;
-        const targetMeta = groupedTargets.find(meta => {
-          if(meta.group.group_key === group.group_key) return false;
-          let overlap = false;
-          aliases.forEach(alias => { if(meta.aliases.has(alias)) overlap = true; });
-          return overlap;
-        });
-        if(!targetMeta) return;
-        const target = targetMeta.group;
-        mergeNumericMap(target.month_start_pieces_kg, group.month_start_pieces_kg);
-        mergeNumericMap(target.month_start_steel_kg, group.month_start_steel_kg);
-        mergeNumericMap(target.customer_kg_by_week, group.customer_kg_by_week);
-        mergeNumericMap(target.customer_buc_by_week, group.customer_buc_by_week);
-        mergeNumericMap(target.forjate_kg_by_week, group.forjate_kg_by_week);
-        Array.from(group.raw_parts || []).forEach(value => target.raw_parts.add(value));
-        Array.from(group.reper_list || []).forEach(value => target.raw_parts.add(value));
-        groupedToDrop.add(group.group_key);
-      });
-      groupedToDrop.forEach(groupKey => { delete grouped[groupKey]; });
-
       Object.values(grouped).forEach(group => {
         if(group.spec_key){
           Object.keys(specEntriesByWeek[group.spec_key] || {}).forEach(week => group.intrari_by_week[week] = Number((specEntriesByWeek[group.spec_key] || {})[week] || 0));
@@ -605,8 +517,6 @@
       });
 
       const rows = Object.values(grouped).filter(group => {
-        const demandSelected = weekKeys.reduce((sum, week) => sum + Number(group.customer_kg_by_week[week] || 0), 0);
-        if(!(demandSelected > 0)) return false;
         if(materialFilter && MRC.trimText(group.material).toUpperCase() !== materialFilter) return false;
         if(reperFilter){
           const hay = [group.reper_list.join(' / '), group.raw_parts.join(' '), group.material, group.diametru].join(' ');
@@ -773,10 +683,14 @@
         await loadDocs(); await loadSupportDocs(); renderAll(); this.value='';
       });
       els.fileOrders.addEventListener('change', async function(){
-        const file = this.files && this.files[0]; if(!file || !state.canEdit) return;
-        const workbook = await readWorkbook(file);
-        const imported = MRC.importCustomerOrdersFromWorkbook(workbook, state.maps || {});
-        state.customerOrders = state.customerOrders.concat(imported); state.dirty.orders = true; renderAll(); this.value='';
+        const files = Array.from(this.files || []); if(!files.length || !state.canEdit) return;
+        let merged = Array.isArray(state.customerOrders) ? state.customerOrders.slice() : [];
+        for (const file of files){
+          const workbook = await readWorkbook(file);
+          const imported = MRC.importCustomerOrdersFromWorkbook(workbook, state.maps || {}, { workbookName:file.name });
+          merged = MRC.mergeCustomerOrders(merged, imported);
+        }
+        state.customerOrders = merged; state.dirty.orders = true; renderAll(); this.value='';
       });
       els.fileStock.addEventListener('change', async function(){
         const file = this.files && this.files[0]; if(!file || !state.canEdit) return;
