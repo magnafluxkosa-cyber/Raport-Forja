@@ -137,9 +137,29 @@
     return simple.toISOString().slice(0,10);
   }
   function isActive(value){ return !(value === false || String(value).toLowerCase() === 'false' || String(value) === '0'); }
+  function normalizeSpecMaterial(material){
+    return trimText(material)
+      .toUpperCase()
+      .replace(/[–—−]/g, '-')
+      .replace(/\s+/g, '')
+      .replace(/\|/g, '/');
+  }
+  function normalizeSpecDiam(diametru){
+    let diam = trimText(diametru).toUpperCase();
+    diam = diam
+      .replace(/[Ø⌀]/g, '')
+      .replace(/ROTUND/gi, '')
+      .replace(/DIAMETRU/gi, '')
+      .replace(/DIAM\.?/gi, '')
+      .replace(/MM/gi, '')
+      .replace(/\s+/g, '')
+      .replace(/,/g, '.');
+    const only = diam.replace(/[^0-9.\/-]/g, '');
+    return only || diam;
+  }
   function buildSpecKey(material, diametru){
-    const mat = trimText(material).toUpperCase();
-    const diam = trimText(diametru);
+    const mat = normalizeSpecMaterial(material);
+    const diam = normalizeSpecDiam(diametru);
     if (!mat && !diam) return '';
     return mat + '|' + diam;
   }
@@ -464,31 +484,6 @@
       });
     });
     return dedupeCustomerOrders(rows);
-  }
-
-
-
-  function openingStockDedupKey(row){
-    const item = row || {};
-    return [
-      trimText(item.month_key || monthKey(item.year, item.month_num)),
-      normalizePart(item.raw_reper || item.reper_intern || item.raw_part || ''),
-      normalizeLoose(item.reper_intern || '')
-    ].join('|');
-  }
-
-  function dedupeOpeningStocks(rows){
-    const seen = new Map();
-    (rows || []).forEach((row) => {
-      const key = openingStockDedupKey(row);
-      if (!key) return;
-      seen.set(key, row);
-    });
-    return Array.from(seen.values());
-  }
-
-  function mergeOpeningStocks(existingRows, importedRows){
-    return dedupeOpeningStocks([].concat(Array.isArray(existingRows) ? existingRows : [], Array.isArray(importedRows) ? importedRows : []));
   }
 
   function normalizeOpeningStockRow(row, index, maps){
@@ -896,6 +891,8 @@
     isoWeekParts,
     parseYearWeek,
     startOfIsoWeek,
+    normalizeSpecMaterial,
+    normalizeSpecDiam,
     buildSpecKey,
     extractRowsPayload,
     readDocumentCompat,
@@ -910,9 +907,6 @@
     dedupeCustomerOrders,
     mergeCustomerOrders,
     importCustomerOrdersFromWorkbook,
-    openingStockDedupKey,
-    dedupeOpeningStocks,
-    mergeOpeningStocks,
     normalizeOpeningStockRow,
     importOpeningStockFromWorkbook,
     normalizeSteelPoRow,
@@ -927,5 +921,4 @@
   };
 
   window.MRCCommon = api;
-  window.MRC = api;
 })(window);
