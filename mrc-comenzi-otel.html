@@ -70,17 +70,16 @@
     <main class="workspace">
       <div class="toolbar">
         <div class="field"><label for="filterMaterial">Material</label><select id="filterMaterial"><option value="">Toate</option></select></div>
-        <div class="field"><label for="filterSupplier">Furnizor</label><input id="filterSupplier" list="supplierList" placeholder="Toți furnizorii" /></div>
+        <div class="field"><label for="filterSupplier">Furnizor</label><select id="filterSupplier"><option value="">Toți furnizorii</option></select></div>
         <div class="field"><label for="filterStatus">Status</label><select id="filterStatus"><option value="">Toate</option></select></div>
         <div class="field"><label for="filterOpenOnly">Afișare</label><select id="filterOpenOnly"><option value="all">Toate</option><option value="open">Doar rămase</option></select></div>
         <div class="actions" style="margin-left:auto">
           <button class="btn secondary" id="btnAddRow" type="button">+ Rând nou</button>
           <button class="btn secondary" id="btnExport" type="button">Export Excel</button>
         </div>
-        <div class="hint">Listele de material și diametru se iau din Helper Data. În MRC intră <strong>doar Rămas kg</strong>. Dacă ETA este în trecut și comanda încă e deschisă, MRC o mută automat în prima săptămână vizibilă și o tratează ca restanță.</div>
+        <div class="hint">Listele de material și diametru se iau direct din <strong>Helper Data → MRC → Mapare repere client → MRC</strong>, din coloanele <strong>MATERIAL</strong> și <strong>DIAMETRU</strong>. Furnizorii se iau din <strong>Helper Data → Furnizori</strong>. În MRC intră <strong>doar Rămas kg</strong>.</div>
       </div>
 
-      <datalist id="supplierList"></datalist>
       <datalist id="materialList"></datalist>
       <datalist id="diametruListGlobal"></datalist>
       <datalist id="statusList"></datalist>
@@ -129,7 +128,7 @@
       dataStatus:document.getElementById('dataStatus'), dataSub:document.getElementById('dataSub'),
       syncStatus:document.getElementById('syncStatus'), syncSub:document.getElementById('syncSub'),
       filterMaterial:document.getElementById('filterMaterial'), filterSupplier:document.getElementById('filterSupplier'), filterStatus:document.getElementById('filterStatus'), filterOpenOnly:document.getElementById('filterOpenOnly'),
-      supplierList:document.getElementById('supplierList'), materialList:document.getElementById('materialList'), diametruListGlobal:document.getElementById('diametruListGlobal'), statusList:document.getElementById('statusList'),
+      materialList:document.getElementById('materialList'), diametruListGlobal:document.getElementById('diametruListGlobal'), statusList:document.getElementById('statusList'),
       btnReload:document.getElementById('btnReload'), btnSave:document.getElementById('btnSave'), btnAddRow:document.getElementById('btnAddRow'), btnExport:document.getElementById('btnExport'),
       ordersBody:document.getElementById('ordersBody')
     };
@@ -156,18 +155,18 @@
       return Array.from(new Set((list || []).map(v => MRC.trimText(v)).filter(Boolean))).sort((a,b)=>a.localeCompare(b,'ro',{sensitivity:'base'}));
     }
     function allMaterialOptions(){
-      const fromHelper = helperValues(state.helperMaterials).map(v => v.toUpperCase());
-      const fromMap = Object.keys(specOptions());
+      const fromMapping = helperValues((state.mappingRows || []).map(r => MRC.trimText(r.material).toUpperCase()).filter(Boolean));
       const fromOrders = (state.steelOrders || []).map(r => MRC.trimText(r.material).toUpperCase()).filter(Boolean);
-      return Array.from(new Set(fromHelper.concat(fromMap, fromOrders))).sort((a,b)=>a.localeCompare(b,'ro',{sensitivity:'base'}));
+      return Array.from(new Set(fromMapping.concat(fromOrders))).sort((a,b)=>a.localeCompare(b,'ro',{sensitivity:'base'}));
     }
     function allDiametruOptions(material){
-      const specMap = specOptions();
       const key = MRC.trimText(material).toUpperCase();
-      const fromHelper = helperValues(state.helperDiameters);
-      const fromMap = key ? Array.from(specMap[key] || []) : [];
+      const fromMapping = helperValues((state.mappingRows || [])
+        .filter(r => !key || MRC.trimText(r.material).toUpperCase() === key)
+        .map(r => MRC.trimText(r.diametru))
+        .filter(Boolean));
       const fromOrders = (state.steelOrders || []).filter(r => !key || MRC.trimText(r.material).toUpperCase() === key).map(r => MRC.trimText(r.diametru)).filter(Boolean);
-      return Array.from(new Set(fromHelper.concat(fromMap, fromOrders))).sort((a,b)=>String(a).localeCompare(String(b),'ro',{sensitivity:'base'}));
+      return Array.from(new Set(fromMapping.concat(fromOrders))).sort((a,b)=>String(a).localeCompare(String(b),'ro',{sensitivity:'base'}));
     }
     function allSupplierOptions(){
       const fromHelper = helperValues(state.helperSuppliers);
@@ -183,7 +182,9 @@
       const diameters = allDiametruOptions('');
       els.diametruListGlobal.innerHTML = diameters.map(v => '<option value="'+esc(v)+'"></option>').join('');
       const suppliers = allSupplierOptions();
-      els.supplierList.innerHTML = suppliers.map(v => '<option value="'+esc(v)+'"></option>').join('');
+      const currentSupplier = els.filterSupplier.value || '';
+      els.filterSupplier.innerHTML = '<option value="">Toți furnizorii</option>' + suppliers.map(v => '<option value="'+esc(v)+'">'+esc(v)+'</option>').join('');
+      if(suppliers.includes(currentSupplier)) els.filterSupplier.value = currentSupplier;
       const statuses = Array.from(new Set((state.steelOrders || []).map(r => MRC.trimText(r.status)).filter(Boolean).concat(['Planificat','Parțial intrat','Intrat complet','Întârziat','Anulat']))).sort((a,b)=>a.localeCompare(b,'ro',{sensitivity:'base'}));
       els.filterStatus.innerHTML = '<option value="">Toate</option>' + statuses.map(v => '<option value="'+esc(v)+'">'+esc(v)+'</option>').join('');
       els.statusList.innerHTML = statuses.map(v => '<option value="'+esc(v)+'"></option>').join('');
@@ -305,18 +306,22 @@
         .filter(Boolean);
     }
     async function loadDocs(){
-      const docs = await Promise.all([
-        MRC.readDocumentCompat(state.supabase, 'mrc-part-mapping'),
+      const [mappingRes, steelDoc, suppliers] = await Promise.all([
+        state.supabase.from('rf_helper_mrc_part_mapping').select('*').order('sort_order', { ascending:true }),
         MRC.readDocumentCompat(state.supabase, DOC_KEY),
-        loadHelperItems('global', 'furnizori').catch(() => []),
-        loadHelperItems('global', 'calitati').catch(() => []),
-        loadHelperItems('global', 'diametre').catch(() => [])
+        loadHelperItems('global', 'furnizori').catch(() => [])
       ]);
-      const mapDoc = docs[0], steelDoc = docs[1];
-      state.helperSuppliers = docs[2] || [];
-      state.helperMaterials = docs[3] || [];
-      state.helperDiameters = docs[4] || [];
-      state.mappingRows = (mapDoc ? MRC.extractRowsPayload(mapDoc.content || mapDoc.data) : []).map((row, index) => MRC.normalizeMappingRow(row, index)).filter(r => r.raw_part || r.part_norm || r.reper_intern);
+
+      state.helperSuppliers = suppliers || [];
+      state.mappingRows = [];
+      if(!mappingRes.error){
+        state.mappingRows = (mappingRes.data || [])
+          .filter(row => row.is_active !== false)
+          .map((row, index) => MRC.normalizeMappingRow(row, index))
+          .filter(r => r.raw_part || r.part_norm || r.reper_intern || r.material || r.diametru);
+      }
+      state.helperMaterials = helperValues(state.mappingRows.map(r => MRC.trimText(r.material).toUpperCase()).filter(Boolean));
+      state.helperDiameters = helperValues(state.mappingRows.map(r => MRC.trimText(r.diametru)).filter(Boolean));
       state.steelOrders = (steelDoc ? MRC.extractRowsPayload(steelDoc.content || steelDoc.data) : []).map((row, index) => ensureWeek(MRC.normalizeSteelPoRow(row, index))).filter(r => r.po_number || r.material || r.qty_kg || r.received_kg);
       state.lastSyncAt = steelDoc && steelDoc.updated_at || '';
       state.dirty = false;
@@ -335,8 +340,7 @@
       renderAll();
     }
     function bindEvents(){
-      [els.filterMaterial, els.filterSupplier, els.filterStatus, els.filterOpenOnly].forEach(el => el.addEventListener('input', renderAll));
-      [els.filterMaterial, els.filterStatus, els.filterOpenOnly].forEach(el => el.addEventListener('change', renderAll));
+      [els.filterMaterial, els.filterSupplier, els.filterStatus, els.filterOpenOnly].forEach(el => el.addEventListener('change', renderAll));
       els.btnReload.addEventListener('click', async () => { await loadDocs(); renderAll(); });
       els.btnSave.addEventListener('click', async () => { await saveDoc(); await loadDocs(); renderAll(); });
       els.btnAddRow.addEventListener('click', addRow);
