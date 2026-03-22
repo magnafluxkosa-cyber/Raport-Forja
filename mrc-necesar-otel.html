@@ -56,6 +56,10 @@
     .value-bad{background:var(--badBg)!important;color:var(--bad);font-weight:800}
     .muted{color:var(--muted)}
     .small{font-size:11px}
+    .stack-list{display:flex;flex-direction:column;gap:6px}
+    .stack-item{display:flex;flex-direction:column;gap:1px;min-height:18px}
+    .stack-item + .stack-item{padding-top:4px;border-top:1px dashed rgba(29,29,29,.10)}
+    .stack-main{font-weight:700;line-height:1.2}
     .summary-strip{display:grid;grid-template-columns:repeat(4,minmax(180px,1fr));gap:10px}
     .empty{padding:18px;color:var(--muted)}
     .steel-editor table{min-width:980px}
@@ -72,7 +76,7 @@
     <header class="topbar">
       <div class="titlebox">
         <div class="title">MRC / NECESAR OȚEL</div>
-        <div class="subtitle">Varianta de lucru MRC: vederea se deschide pe întreaga comandă importată a clienților, reperele care folosesc același material și același diametru sunt grupate în același bloc, iar calculul se resetează la începutul fiecărei luni din stocul inițial importat din tabelul STOCKS. Comanda de oțel poate fi introdusă direct în tabel, iar acoperirea se poate schimba din numărul de săptămâni ales sus.</div>
+        <div class="subtitle">Varianta de lucru MRC: vederea se deschide pe întreaga comandă importată a clienților, iar în același bloc de material fiecare reper se vede separat cu kg/buc propriu. Calculul de sold rămâne total pe grupul de material + diametru și se resetează la începutul fiecărei luni din stocul inițial importat din tabelul STOCKS. Comanda de oțel poate fi introdusă direct în tabel, iar acoperirea se poate schimba din numărul de săptămâni ales sus.</div>
       </div>
       <div class="actions">
         <a class="back-btn" href="index.html">Înapoi la Dashboard</a>
@@ -106,7 +110,7 @@
           <button class="btn secondary" id="btnExportOrders" type="button">Export comenzi</button>
           <button class="btn secondary" id="btnExportStock" type="button">Export stoc</button>
         </div>
-        <div class="hint" id="pageHint">Reperele sunt grupate pe material + diametru. Soldul săptămânal se calculează separat în fiecare lună, pornind din stocul inițial exact al lunii respective. Poți scrie direct în rândul „Comandă oțel (kg)”, iar acoperirea folosește numărul de săptămâni ales sus.</div>
+        <div class="hint" id="pageHint">În același grup de material fiecare reper apare separat, cu kg/buc propriu, dar soldul și acoperirea se calculează pe necesarul total al grupului. Dacă lipsește materialul sau diametrul, reperul rămâne separat până este completată maparea.</div>
       </div>
 
       <section class="summary-strip" id="summaryStrip"></section>
@@ -304,13 +308,16 @@
       const todayIso = new Date().toISOString().slice(0,10);
       const capForjateTo = todayIso < toIso ? todayIso : toIso;
       const reperMap = Object.create(null);
+      const aliasToReperKey = Object.create(null);
       const specEntriesByWeek = Object.create(null);
       const specPoByWeek = Object.create(null);
       const specPoManualByWeek = Object.create(null);
 
       function buildSpec(material, diam){
-        const spec = MRC.buildSpecKey(material, diam);
-        return spec || ('SPEC|' + MRC.normalizeLoose(material || diam || ''));
+        const mat = MRC.trimText(material).toUpperCase();
+        const dia = MRC.trimText(diam);
+        if(!mat || !dia) return '';
+        return MRC.buildSpecKey(mat, dia);
       }
       function addSpecWeek(dict, spec, week, value){
         const num = Number(value || 0);
@@ -318,46 +325,95 @@
         if(!dict[spec]) dict[spec] = Object.create(null);
         dict[spec][week] = Number(dict[spec][week] || 0) + num;
       }
-      function ensureReper(seed){
-        const reper = MRC.trimText(seed && (seed.reper_intern || seed.reper || seed.raw_reper || seed.raw_part)).toUpperCase();
-        const key = MRC.normalizeLoose(reper);
-        if(!key) return null;
-        if(!reperMap[key]){
-          reperMap[key] = {
-            reper_key:key,
-            reper_intern:reper,
-            reper_debitare_origine:MRC.trimText(seed.reper_debitare_origine).toUpperCase(),
-            material:MRC.trimText(seed.material).toUpperCase(),
-            diametru:MRC.trimText(seed.diametru),
-            kg_per_buc:Number(seed.kg_per_buc || 0),
-            raw_parts:new Set(),
-            month_start_pieces_kg:Object.create(null),
-            month_start_steel_kg:Object.create(null),
-            customer_kg_by_week:Object.create(null),
-            customer_buc_by_week:Object.create(null),
-            forjate_kg_by_week:Object.create(null)
-          };
-        }
-        const item = reperMap[key];
+      function aliasVariants(value){
+        const variants = new Set();
+        const raw = MRC.trimText(value).toUpperCase();
+        if(!raw) return variants;
+        [
+          raw,
+          raw.replace(/^ZA\s+/i, ''),
+          raw.replace(/^PPAP\s+/i, ''),
+          raw.replace(/^MP\s+/i, ''),
+          raw.replace(/^REPER\s+/i, '')
+        ].forEach(seed => {
+          const txt = MRC.trimText(seed).toUpperCase();
+          if(!txt) return;
+          const full = MRC.normalizePart(txt);
+          if(full) variants.add(full);
+          const trimmed = txt.replace(/(?:[-_\/\s]+[A-Z0-9]{1,4})$/, '');
+          const base = MRC.normalizePart(trimmed);
+          if(base) variants.add(base);
+        });
+        return variants;
+      }
+      function buildGroupAliasSet(group){
+        const aliases = new Set();
+        Array.from(group.reper_list || []).forEach(value => aliasVariants(value).forEach(alias => aliases.add(alias)));
+        Array.from(group.raw_parts || []).forEach(value => aliasVariants(value).forEach(alias => aliases.add(alias)));
+        Object.values(group.detail_map || {}).forEach(detail => {
+          aliasVariants(detail.reper_intern).forEach(alias => aliases.add(alias));
+          Array.from(detail.raw_parts || []).forEach(value => aliasVariants(value).forEach(alias => aliases.add(alias)));
+        });
+        return aliases;
+      }
+      function mergeNumericMap(target, source){
+        Object.keys(source || {}).forEach(key => {
+          target[key] = Number(target[key] || 0) + Number(source[key] || 0);
+        });
+      }
+      function createReperItem(seed, reper, key){
+        return {
+          reper_key:key,
+          reper_intern:reper,
+          reper_debitare_origine:MRC.trimText(seed.reper_debitare_origine).toUpperCase(),
+          material:MRC.trimText(seed.material).toUpperCase(),
+          diametru:MRC.trimText(seed.diametru),
+          kg_per_buc:Number(seed.kg_per_buc || 0),
+          raw_parts:new Set(),
+          month_start_pieces_kg:Object.create(null),
+          month_start_steel_kg:Object.create(null),
+          customer_kg_by_week:Object.create(null),
+          customer_buc_by_week:Object.create(null),
+          forjate_kg_by_week:Object.create(null)
+        };
+      }
+      function registerAliases(item){
+        if(!item) return;
+        aliasVariants(item.reper_intern).forEach(alias => { if(alias) aliasToReperKey[alias] = item.reper_key; });
+        Array.from(item.raw_parts || []).forEach(value => aliasVariants(value).forEach(alias => { if(alias && !aliasToReperKey[alias]) aliasToReperKey[alias] = item.reper_key; }));
+      }
+      function updateReperItem(item, seed){
+        if(!item || !seed) return item;
         if(!item.reper_debitare_origine && seed.reper_debitare_origine) item.reper_debitare_origine = MRC.trimText(seed.reper_debitare_origine).toUpperCase();
         if(!item.material && seed.material) item.material = MRC.trimText(seed.material).toUpperCase();
         if(!item.diametru && seed.diametru) item.diametru = MRC.trimText(seed.diametru);
         if(!(item.kg_per_buc > 0) && Number(seed.kg_per_buc || 0) > 0) item.kg_per_buc = Number(seed.kg_per_buc || 0);
         if(seed.raw_part) item.raw_parts.add(MRC.trimText(seed.raw_part).toUpperCase());
         if(seed.raw_reper) item.raw_parts.add(MRC.trimText(seed.raw_reper).toUpperCase());
+        registerAliases(item);
         return item;
       }
-
-      state.openingStocks.forEach(r => {
-        const item = ensureReper(r);
-        if(!item || !r.month_key) return;
-        const kgBuc = Number(item.kg_per_buc || r.kg_per_buc || 0);
-        item.month_start_pieces_kg[r.month_key] = Number(item.month_start_pieces_kg[r.month_key] || 0) + Number(r.total_piese || 0) * kgBuc;
-        item.month_start_steel_kg[r.month_key] = Number(item.month_start_steel_kg[r.month_key] || 0) + Number(r.stoc_otel_kg || 0);
-      });
+      function ensureOrderedReper(seed){
+        const reper = MRC.trimText(seed && (seed.reper_intern || seed.reper || seed.raw_reper || seed.raw_part)).toUpperCase();
+        const key = MRC.normalizeLoose(reper);
+        if(!key) return null;
+        if(!reperMap[key]) reperMap[key] = createReperItem(seed || {}, reper, key);
+        return updateReperItem(reperMap[key], seed || {});
+      }
+      function resolveOrderedReper(seed){
+        const candidates = [];
+        [seed && seed.reper_intern, seed && seed.reper, seed && seed.raw_reper, seed && seed.raw_part].forEach(value => {
+          aliasVariants(value).forEach(alias => candidates.push(alias));
+        });
+        for(const alias of candidates){
+          const key = aliasToReperKey[alias];
+          if(key && reperMap[key]) return updateReperItem(reperMap[key], seed || {});
+        }
+        return null;
+      }
 
       state.customerOrders.filter(r => r.delivery_date && r.delivery_date >= fromIso && r.delivery_date <= toIso).forEach(r => {
-        const item = ensureReper(r);
+        const item = ensureOrderedReper(r);
         if(!item) return;
         const week = r.week_key || MRC.isoWeekKey(r.delivery_date);
         const qtyBuc = Math.max(0, Math.round(Number(r.quantity_buc || 0)));
@@ -366,10 +422,19 @@
         item.customer_buc_by_week[week] = Number(item.customer_buc_by_week[week] || 0) + qtyBuc;
         item.customer_kg_by_week[week] = Number(item.customer_kg_by_week[week] || 0) + qtyKg;
         if(r.raw_part) item.raw_parts.add(MRC.trimText(r.raw_part).toUpperCase());
+        registerAliases(item);
+      });
+
+      state.openingStocks.forEach(r => {
+        const item = resolveOrderedReper(r);
+        if(!item || !r.month_key) return;
+        const kgBuc = Number(item.kg_per_buc || r.kg_per_buc || 0);
+        item.month_start_pieces_kg[r.month_key] = Number(item.month_start_pieces_kg[r.month_key] || 0) + Number(r.total_piese || 0) * kgBuc;
+        item.month_start_steel_kg[r.month_key] = Number(item.month_start_steel_kg[r.month_key] || 0) + Number(r.stoc_otel_kg || 0);
       });
 
       state.forjateRows.filter(r => r.data && r.data >= fromIso && r.data <= capForjateTo).forEach(r => {
-        const item = ensureReper({ reper_intern:r.reper });
+        const item = resolveOrderedReper({ reper_intern:r.reper, raw_reper:r.reper });
         if(!item) return;
         const goodBuc = Math.max(0, Number(r.buc_realizate || 0) - Number(r.rebut || 0));
         if(!goodBuc) return;
@@ -393,14 +458,17 @@
       const grouped = Object.create(null);
       Object.values(reperMap).forEach(item => {
         const spec = buildSpec(item.material, item.diametru);
-        if(!grouped[spec]){
-          grouped[spec] = {
+        const groupKey = spec || ('REPER|' + item.reper_key);
+        if(!grouped[groupKey]){
+          grouped[groupKey] = {
+            group_key:groupKey,
             spec_key:spec,
             material:item.material || '',
             diametru:item.diametru || '',
             reper_list:new Set(),
             raw_parts:new Set(),
             kg_values:new Set(),
+            detail_map:Object.create(null),
             month_start_pieces_kg:Object.create(null),
             month_start_steel_kg:Object.create(null),
             customer_kg_by_week:Object.create(null),
@@ -416,10 +484,21 @@
             first_month_total_kg:0
           };
         }
-        const group = grouped[spec];
+        const group = grouped[groupKey];
         group.reper_list.add(item.reper_intern);
         item.raw_parts.forEach(v => group.raw_parts.add(v));
         if(item.kg_per_buc > 0) group.kg_values.add(Number(item.kg_per_buc).toFixed(4));
+        const detailKey = item.reper_key || ('detail-' + String(item.reper_intern || ''));
+        if(!group.detail_map[detailKey]){
+          group.detail_map[detailKey] = {
+            reper_intern:item.reper_intern || '',
+            kg_per_buc:Number(item.kg_per_buc || 0),
+            raw_parts:new Set()
+          };
+        }
+        const detail = group.detail_map[detailKey];
+        if(!(detail.kg_per_buc > 0) && item.kg_per_buc > 0) detail.kg_per_buc = Number(item.kg_per_buc || 0);
+        item.raw_parts.forEach(v => detail.raw_parts.add(v));
         Object.keys(item.month_start_pieces_kg).forEach(monthKey => {
           group.month_start_pieces_kg[monthKey] = Number(group.month_start_pieces_kg[monthKey] || 0) + Number(item.month_start_pieces_kg[monthKey] || 0);
         });
@@ -437,10 +516,42 @@
         });
       });
 
+      const groupedValues = Object.values(grouped);
+      const groupedTargets = groupedValues
+        .filter(group => group.spec_key || ((group.material || '') && (group.diametru || '')) || Object.keys(group.detail_map || {}).length > 1)
+        .map(group => ({ group, aliases: buildGroupAliasSet(group) }));
+      const groupedToDrop = new Set();
+      groupedValues.forEach(group => {
+        if(groupedToDrop.has(group.group_key)) return;
+        const detailCount = Object.keys(group.detail_map || {}).length;
+        if(group.spec_key || detailCount > 1) return;
+        const aliases = buildGroupAliasSet(group);
+        if(!aliases.size) return;
+        const targetMeta = groupedTargets.find(meta => {
+          if(meta.group.group_key === group.group_key) return false;
+          let overlap = false;
+          aliases.forEach(alias => { if(meta.aliases.has(alias)) overlap = true; });
+          return overlap;
+        });
+        if(!targetMeta) return;
+        const target = targetMeta.group;
+        mergeNumericMap(target.month_start_pieces_kg, group.month_start_pieces_kg);
+        mergeNumericMap(target.month_start_steel_kg, group.month_start_steel_kg);
+        mergeNumericMap(target.customer_kg_by_week, group.customer_kg_by_week);
+        mergeNumericMap(target.customer_buc_by_week, group.customer_buc_by_week);
+        mergeNumericMap(target.forjate_kg_by_week, group.forjate_kg_by_week);
+        Array.from(group.raw_parts || []).forEach(value => target.raw_parts.add(value));
+        Array.from(group.reper_list || []).forEach(value => target.raw_parts.add(value));
+        groupedToDrop.add(group.group_key);
+      });
+      groupedToDrop.forEach(groupKey => { delete grouped[groupKey]; });
+
       Object.values(grouped).forEach(group => {
-        Object.keys(specEntriesByWeek[group.spec_key] || {}).forEach(week => group.intrari_by_week[week] = Number((specEntriesByWeek[group.spec_key] || {})[week] || 0));
-        Object.keys(specPoByWeek[group.spec_key] || {}).forEach(week => group.po_by_week[week] = Number((specPoByWeek[group.spec_key] || {})[week] || 0));
-        Object.keys(specPoManualByWeek[group.spec_key] || {}).forEach(week => group.po_manual_by_week[week] = Number((specPoManualByWeek[group.spec_key] || {})[week] || 0));
+        if(group.spec_key){
+          Object.keys(specEntriesByWeek[group.spec_key] || {}).forEach(week => group.intrari_by_week[week] = Number((specEntriesByWeek[group.spec_key] || {})[week] || 0));
+          Object.keys(specPoByWeek[group.spec_key] || {}).forEach(week => group.po_by_week[week] = Number((specPoByWeek[group.spec_key] || {})[week] || 0));
+          Object.keys(specPoManualByWeek[group.spec_key] || {}).forEach(week => group.po_manual_by_week[week] = Number((specPoManualByWeek[group.spec_key] || {})[week] || 0));
+        }
 
         let currentMonth = '';
         let monthStartTotal = 0;
@@ -484,11 +595,18 @@
         group.statusTone = minCoverOverall < 0 ? 'value-bad' : (minSoldOverall < 0 ? 'value-warn' : 'value-ok');
         group.reper_list = Array.from(group.reper_list).sort((a,b) => String(a).localeCompare(String(b), 'ro', { sensitivity:'base' }));
         group.raw_parts = Array.from(group.raw_parts).sort((a,b) => String(a).localeCompare(String(b), 'ro', { sensitivity:'base' }));
+        group.detail_rows = Object.values(group.detail_map || {}).map(detail => ({
+          reper_intern:detail.reper_intern || '',
+          kg_per_buc:Number(detail.kg_per_buc || 0),
+          raw_parts:Array.from(detail.raw_parts || []).sort((a,b) => String(a).localeCompare(String(b), 'ro', { sensitivity:'base' }))
+        })).sort((a,b) => String(a.reper_intern || '').localeCompare(String(b.reper_intern || ''), 'ro', { sensitivity:'base' }));
         const kgValues = Array.from(group.kg_values).map(Number).sort((a,b)=>a-b);
         group.kg_per_buc_display = kgValues.length === 1 ? fmtKg(kgValues[0]) : 'MIX';
       });
 
       const rows = Object.values(grouped).filter(group => {
+        const demandSelected = weekKeys.reduce((sum, week) => sum + Number(group.customer_kg_by_week[week] || 0), 0);
+        if(!(demandSelected > 0)) return false;
         if(materialFilter && MRC.trimText(group.material).toUpperCase() !== materialFilter) return false;
         if(reperFilter){
           const hay = [group.reper_list.join(' / '), group.raw_parts.join(' '), group.material, group.diametru].join(' ');
@@ -504,6 +622,12 @@
       return { rows:rows, weekKeys:weekKeys, coverWeeks:coverWeeks };
     }
 
+
+    function shortJoinedList(values, limit){
+      const arr = Array.isArray(values) ? values.filter(Boolean) : [];
+      if(arr.length <= limit) return arr.join(' / ');
+      return arr.slice(0, limit).join(' / ') + ' / … (+' + String(arr.length - limit) + ')';
+    }
 
     function renderSummary(agg){
       const rows = agg.rows || [];
@@ -536,9 +660,13 @@
       const html=[];
       agg.rows.forEach(row => {
         const warnBase = Math.max(0, ...(Object.values(row.customer_kg_by_week || {}).map(v => Number(v || 0))));
+        const reperFull = (row.reper_list || []).join(' / ') || '-';
+        const detailRows = (row.detail_rows && row.detail_rows.length ? row.detail_rows : [{ reper_intern:reperFull, kg_per_buc:0, raw_parts:(row.raw_parts || []) }]);
+        const reperStack = '<div class="stack-list">' + detailRows.map(detail => '<div class="stack-item"><div class="stack-main">' + esc(detail.reper_intern || '-') + '</div>' + (detail.raw_parts && detail.raw_parts.length ? ('<div class="muted small">' + esc(detail.raw_parts.join(', ')) + '</div>') : '') + '</div>').join('') + '</div>';
+        const kgStack = '<div class="stack-list">' + detailRows.map(detail => '<div class="stack-item right mono"><div class="stack-main">' + esc(detail.kg_per_buc > 0 ? fmtKg(detail.kg_per_buc) : '-') + '</div></div>').join('') + '</div>';
         const fixed = [
-          '<td class="left fixed" rowspan="5"><strong>' + esc((row.reper_list || []).join(' / ') || '-') + '</strong><div class="muted small">' + esc((row.raw_parts || []).slice(0,4).join(', ')) + '</div></td>',
-          '<td class="right mono fixed" rowspan="5">' + esc(row.kg_per_buc_display || '-') + '</td>',
+          '<td class="left fixed" rowspan="5" title="' + esc(reperFull) + '">' + reperStack + '</td>',
+          '<td class="right mono fixed" rowspan="5">' + kgStack + '</td>',
           '<td class="left fixed" rowspan="5">' + esc(row.material || '-') + '</td>',
           '<td class="fixed" rowspan="5">' + esc(row.diametru || '-') + '</td>',
           '<td class="right mono fixed" rowspan="5">' + esc(fmtKg(row.first_month_pieces_kg)) + '<div class="muted small">prima lună</div></td>',
@@ -568,8 +696,11 @@
             const value = Number((line.values && line.values[week]) || 0);
             if(line.kind === 'po'){
               const manualValue = Number((line.manual && line.manual[week]) || 0);
-              const title = manualValue ? ('Comenzi manuale salvate separat în editor: ' + fmtKg(manualValue) + ' kg') : '';
-              html.push('<td class="right mono"><input class="cell-input right mono inline-po-input" data-spec="' + esc(row.spec_key || '') + '" data-week="' + esc(week) + '" value="' + esc(fmtKg(value)) + '" title="' + esc(title) + '" ' + (state.canEdit ? '' : 'disabled') + '></td>');
+              const hasSpec = !!row.spec_key;
+              const title = hasSpec
+                ? (manualValue ? ('Comenzi manuale salvate separat în editor: ' + fmtKg(manualValue) + ' kg') : 'Scrie direct cantitatea de oțel pe săptămâna dorită.')
+                : 'Pentru acest rând lipsesc materialul și diametrul complete; completează maparea înainte să introduci comanda de oțel direct în tabel.';
+              html.push('<td class="right mono"><input class="cell-input right mono inline-po-input" data-spec="' + esc(row.spec_key || '') + '" data-week="' + esc(week) + '" value="' + esc(fmtKg(value)) + '" title="' + esc(title) + '" ' + (state.canEdit && hasSpec ? '' : 'disabled') + '></td>');
             } else {
               html.push('<td class="right mono">' + esc(fmtKg(value)) + '</td>');
             }
