@@ -542,13 +542,11 @@
 
   function openingStockDedupKey(row){
     const item = row || {};
-    return [
-      monthKey(item.year, item.month_num),
-      normalizeLoose(item.reper_intern || item.raw_reper || item.reper || ''),
-      normalizePart(item.raw_reper || ''),
-      normalizeLoose(item.material || ''),
-      trimText(item.diametru || '')
-    ].join('|');
+    const month = monthKey(item.year, item.month_num) || trimText(item.month_key || '');
+    const rawKey = normalizePart(item.raw_reper || item.reper || '');
+    const internalKey = normalizeLoose(item.reper_intern || '');
+    const fallbackSpec = normalizeLoose(item.material || '') + '|' + trimText(item.diametru || '');
+    return [month, rawKey || internalKey || fallbackSpec].join('|');
   }
 
   function dedupeOpeningStocks(rows){
@@ -615,8 +613,6 @@
     normalized.stoc_debitat = toRound(pick(obj, ['stoc_debitat','STOC DEBITAT (BUC)','debitat']));
     normalized.stoc_otel_kg = toNumber(pick(obj, ['stoc_otel_kg','STOC OTEL       (KG)','otel']));
     normalized.stoc_remaniere = toRound(pick(obj, ['stoc_remaniere','Stoc Remaniere/ptr tratare']));
-    // Primele 5 câmpuri din STOCKS sunt în bucăți și trebuie transformate ulterior în kg per reper.
-    // Oțel KG rămâne separat, deja în kilograme.
     normalized.total_piese = normalized.stoc_ambalat + normalized.stoc_finite + normalized.stoc_wip + normalized.stoc_forja + normalized.stoc_debitat;
     return normalized;
   }
