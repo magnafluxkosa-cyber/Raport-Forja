@@ -678,16 +678,22 @@
   function normalizeSteelPoRow(row, index){
     const obj = row || {};
     const etaIso = displayToIso(pick(obj, ['eta_date','ETA','data_livrare','delivery_date','Data','date']));
+    const qtyKg = toNumber(pick(obj, ['qty_kg','cantitate_kg','cantitate','Qty','KG']));
+    const receivedKg = toNumber(pick(obj, ['received_kg','intrat_din_comanda_kg','intrat_din_comanda','cantitate_intrata_kg','qty_received','received','Intrat din comandă (kg)']));
+    const remainingKg = Math.max(0, qtyKg - receivedKg);
+    const statusRaw = trimText(pick(obj, ['status','Status']));
     return {
       id: trimText(pick(obj, ['id','_id'])) || ('po-' + index + '-' + Math.random().toString(36).slice(2,8)),
       po_number: trimText(pick(obj, ['po_number','order_no','nr_comanda','numar comanda','PO'])),
       supplier: trimText(pick(obj, ['supplier','furnizor','Supplier'])),
       material: trimText(pick(obj, ['material','Material'])).toUpperCase(),
       diametru: trimText(pick(obj, ['diametru','Diametru'])),
-      qty_kg: toNumber(pick(obj, ['qty_kg','cantitate_kg','cantitate','Qty','KG'])),
+      qty_kg: qtyKg,
+      received_kg: receivedKg,
+      remaining_kg: remainingKg,
       eta_date: etaIso,
       eta_week_key: etaIso ? isoWeekKey(etaIso) : trimText(pick(obj, ['eta_week_key','week_key','YearWeek'])),
-      status: trimText(pick(obj, ['status','Status'])) || 'Planificat',
+      status: statusRaw || (remainingKg <= 0 && qtyKg > 0 ? 'Intrat complet' : (receivedKg > 0 ? 'Parțial intrat' : 'Planificat')),
       notes: trimText(pick(obj, ['notes','observatii']))
     };
   }
