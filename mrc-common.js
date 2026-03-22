@@ -245,12 +245,10 @@
     try {
       const doc = await readDocumentCompat(sb, 'mrc-part-mapping');
       const payloadRows = doc ? extractRowsPayload(doc.content || doc.data) : [];
-      if (!result.mappingRows.length && payloadRows.length) {
+      if (payloadRows.length) {
         result.mappingRows = payloadRows.map((row, index) => normalizeMappingRow(row, index)).filter(row => isActive(row.is_active));
         result.source = 'rf_documents / mrc-part-mapping';
         usedFallbackDoc = true;
-      } else if (result.mappingRows.length) {
-        result.source = 'rf_helper_mrc_part_mapping';
       }
     } catch (_) {}
 
@@ -461,7 +459,7 @@
       delivery_date: arrayCell(row, 5, ''),
       quantity_buc: arrayCell(row, 7, 0)
     } : (row || {});
-    let deliveryIso = displayToIso(pick(obj, ['delivery_date','Need By','Delivery Date','NeedBy','due date','Due Date','need_by','data_livrare','Ship Date']));
+    let deliveryIso = displayToIso(pick(obj, ['Ship Date','ship_date','ShipDate','data_ship','ship date','delivery_date','Need By','Delivery Date','NeedBy','due date','Due Date','need_by','data_livrare']));
     if (!deliveryIso) deliveryIso = displayToIso(pick(obj, ['WeekDlvDate']));
     const rawPart = trimText(pick(obj, ['raw_part','Customer Part No.','Customer Part No','customer_part_no','Part','Item ID','Item Id','Part No','Customer Part', 'pn', 'Pn'])).toUpperCase();
     const sourceFile = trimText(pick(obj, ['source_file','Source','Sheet','sheet_name'])) || '';
@@ -481,7 +479,7 @@
       year: deliveryIso ? Number(deliveryIso.slice(0,4)) : Number(pick(obj, ['year','Ship Year','an'])) || 0,
       month: deliveryIso ? getMonthName(Number(deliveryIso.slice(5,7))) : trimText(pick(obj, ['month','Ship Month','luna'])).toUpperCase(),
       week_key: deliveryIso ? isoWeekKey(deliveryIso) : trimText(pick(obj, ['WeekDlvDate','YearWeek','yearweek','week_key'])).replace(/\s+/g,''),
-      quantity_buc: Math.max(0, Math.round(toNumber(pick(obj, ['quantity_buc','Requested Quantity','Due Qty','Ordered Qty','Balance','Demand','Cum Qty','qty','RequestedQuantity','cantitate'])))),
+      quantity_buc: Math.max(0, Math.round(toNumber(pick(obj, ['Ordered Qty','ordered_qty','OrderedQty','quantity_buc','Requested Quantity','Due Qty','Balance','Demand','Cum Qty','qty','RequestedQuantity','cantitate'])))),
       order_no: trimText(pick(obj, ['order_no','Order No.','PO Nbr','PO NUMBER ','Order Id','Reference'])),
       commitment_level: trimText(pick(obj, ['commitment_level','Commitment Level','Stato','Status'])),
       notes: trimText(pick(obj, ['notes','Descr1','Description','Item Description','observatii'])),
@@ -680,16 +678,22 @@
   function normalizeSteelPoRow(row, index){
     const obj = row || {};
     const etaIso = displayToIso(pick(obj, ['eta_date','ETA','data_livrare','delivery_date','Data','date']));
+    const qtyKg = toNumber(pick(obj, ['qty_kg','cantitate_kg','cantitate','Qty','KG']));
+    const receivedKg = toNumber(pick(obj, ['received_kg','intrat_din_comanda_kg','intrat_din_comanda','cantitate_intrata_kg','qty_received','received','Intrat din comandă (kg)']));
+    const remainingKg = Math.max(0, qtyKg - receivedKg);
+    const statusRaw = trimText(pick(obj, ['status','Status']));
     return {
       id: trimText(pick(obj, ['id','_id'])) || ('po-' + index + '-' + Math.random().toString(36).slice(2,8)),
       po_number: trimText(pick(obj, ['po_number','order_no','nr_comanda','numar comanda','PO'])),
       supplier: trimText(pick(obj, ['supplier','furnizor','Supplier'])),
       material: trimText(pick(obj, ['material','Material'])).toUpperCase(),
       diametru: trimText(pick(obj, ['diametru','Diametru'])),
-      qty_kg: toNumber(pick(obj, ['qty_kg','cantitate_kg','cantitate','Qty','KG'])),
+      qty_kg: qtyKg,
+      received_kg: receivedKg,
+      remaining_kg: remainingKg,
       eta_date: etaIso,
       eta_week_key: etaIso ? isoWeekKey(etaIso) : trimText(pick(obj, ['eta_week_key','week_key','YearWeek'])),
-      status: trimText(pick(obj, ['status','Status'])) || 'Planificat',
+      status: statusRaw || (remainingKg <= 0 && qtyKg > 0 ? 'Intrat complet' : (receivedKg > 0 ? 'Parțial intrat' : 'Planificat')),
       notes: trimText(pick(obj, ['notes','observatii']))
     };
   }
