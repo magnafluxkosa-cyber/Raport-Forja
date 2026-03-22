@@ -56,10 +56,6 @@
     .value-bad{background:var(--badBg)!important;color:var(--bad);font-weight:800}
     .muted{color:var(--muted)}
     .small{font-size:11px}
-    .stack-list{display:flex;flex-direction:column;gap:6px}
-    .stack-item{display:flex;flex-direction:column;gap:1px;min-height:18px}
-    .stack-item + .stack-item{padding-top:4px;border-top:1px dashed rgba(29,29,29,.10)}
-    .stack-main{font-weight:700;line-height:1.2}
     .summary-strip{display:grid;grid-template-columns:repeat(4,minmax(180px,1fr));gap:10px}
     .empty{padding:18px;color:var(--muted)}
     .steel-editor table{min-width:980px}
@@ -76,11 +72,10 @@
     <header class="topbar">
       <div class="titlebox">
         <div class="title">MRC / NECESAR OȚEL</div>
-        <div class="subtitle">Varianta de lucru MRC: vederea se deschide pe întreaga comandă importată a clienților, iar în același bloc de material fiecare reper se vede separat cu kg/buc propriu. Calculul de sold rămâne total pe grupul de material + diametru și se resetează la începutul fiecărei luni din stocul inițial importat din tabelul STOCKS. Comanda de oțel poate fi introdusă direct în tabel, iar acoperirea se poate schimba din numărul de săptămâni ales sus.</div>
+        <div class="subtitle">Varianta simplă: pe fiecare reper vezi direct comenzile client în kg, intrările reale de oțel, comenzile tale de oțel, soldul săptămânal și acoperirea pe numărul de săptămâni ales de tine. Comanda de oțel poate fi introdusă direct în tabel, iar calculul se actualizează imediat. Stocul de piese include stoc început lună + piese deja forjate.</div>
       </div>
       <div class="actions">
         <a class="back-btn" href="index.html">Înapoi la Dashboard</a>
-        <a class="btn secondary" href="stoc-initial-otel.html">Stoc inițial</a>
         <a class="btn secondary" href="mrc-comenzi-saptamanale.html">Vedere săptămânală</a>
         <button class="btn secondary" id="btnReload" type="button">Reîncarcă</button>
         <button class="btn" id="btnSaveAll" type="button">Salvează tot</button>
@@ -110,7 +105,7 @@
           <button class="btn secondary" id="btnExportOrders" type="button">Export comenzi</button>
           <button class="btn secondary" id="btnExportStock" type="button">Export stoc</button>
         </div>
-        <div class="hint" id="pageHint">În același grup de material fiecare reper apare separat, cu kg/buc propriu, dar soldul și acoperirea se calculează pe necesarul total al grupului. Dacă lipsește materialul sau diametrul, reperul rămâne separat până este completată maparea.</div>
+        <div class="hint" id="pageHint">Primul rând din fiecare bloc = cerere client. Al doilea = intrări reale din INTRĂRI OȚEL. Al treilea = comenzi tale de oțel. Poți scrie direct în celulele acestui rând. Al patrulea = sold săptămânal. Al cincilea = acoperirea pe numărul de săptămâni ales sus.</div>
       </div>
 
       <section class="summary-strip" id="summaryStrip"></section>
@@ -120,7 +115,7 @@
           <div class="panel-head">
             <div>
               <div class="panel-title">Tabel simplu necesar oțel</div>
-              <div class="panel-sub">Formula sold se recalculează pe fiecare lună în parte: <strong>stoc inițial piese kg al lunii + stoc inițial material kg al lunii + forjate în lună + intrări reale în lună + comenzi oțel în lună − comenzi client în lună</strong>. Acoperirea verifică minimul din intervalul următor, pe numărul de săptămâni ales sus.</div>
+              <div class="panel-sub">Formula sold: <strong>stoc piese kg + stoc material kg + intrări reale cumulate + comenzi oțel cumulate − comenzi client cumulate</strong>. Acoperirea folosește numărul de săptămâni ales sus și verifică intervalul următor.</div>
             </div>
           </div>
           <div class="table-wrap">
@@ -161,7 +156,7 @@
 
   <input id="fileMapping" type="file" accept=".xlsx,.xlsm,.xls" hidden />
   <input id="fileOrders" type="file" accept=".xlsx,.xlsm,.xls" multiple hidden />
-  <input id="fileStock" type="file" accept=".xlsx,.xlsm,.xls" hidden />
+  <input id="fileStock" type="file" accept=".xlsx,.xlsm,.xls" multiple hidden />
 
   <script>
   (function(){
@@ -185,6 +180,7 @@
       fileMapping:document.getElementById('fileMapping'), fileOrders:document.getElementById('fileOrders'), fileStock:document.getElementById('fileStock')
     };
     const state = { supabase:null, user:null, role:'viewer', canEdit:false, mappingRows:[], maps:null, customerOrders:[], openingStocks:[], steelOrders:[], forjateRows:[], intrariRows:[], lastSyncAt:'', dirty:{mapping:false,orders:false,stock:false,steel:false}, aggregate:null, coverWeeks:9 };
+    const UI_PREF_KEY = 'erpforja:mrc-necesar-otel:filters';
 
     function esc(v){ return String(v == null ? '' : v).replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])); }
     function fmtKg(v){ const n = Number(v || 0); return n ? n.toLocaleString('ro-RO', { minimumFractionDigits:0, maximumFractionDigits:2 }) : ''; }
@@ -195,6 +191,33 @@
     function exportRowsToXlsx(rows, name){ const wb = XLSX.utils.book_new(); const ws = XLSX.utils.json_to_sheet(rows.map(r => JSON.parse(JSON.stringify(r)))); XLSX.utils.book_append_sheet(wb, ws, 'date'); XLSX.writeFile(wb, name); }
     async function readWorkbook(file){ const ab = await file.arrayBuffer(); return XLSX.read(ab, { type:'array', cellDates:true }); }
     function defaultRange(){ const now=new Date(); const from=String(now.getFullYear()) + '-' + String(now.getMonth()+1).padStart(2,'0'); const end=new Date(now.getFullYear(), now.getMonth()+4, 1); const to=String(end.getFullYear()) + '-' + String(end.getMonth()+1).padStart(2,'0'); if(!els.filterFromMonth.value) els.filterFromMonth.value=from; if(!els.filterToMonth.value) els.filterToMonth.value=to; }
+
+    function loadUiPrefs(){
+      try{
+        const raw = localStorage.getItem(UI_PREF_KEY);
+        if(!raw) return;
+        const saved = JSON.parse(raw);
+        if(saved && typeof saved === 'object'){
+          if(saved.fromMonth) els.filterFromMonth.value = saved.fromMonth;
+          if(saved.toMonth) els.filterToMonth.value = saved.toMonth;
+          if(saved.material != null) els.filterMaterial.value = saved.material;
+          if(saved.reper != null) els.filterReper.value = saved.reper;
+          if(saved.coverWeeks != null){ state.coverWeeks = Math.min(52, Math.max(1, Number(saved.coverWeeks) || 9)); if(els.coverWeeks) els.coverWeeks.value = String(state.coverWeeks); }
+        }
+      }catch(_e){}
+    }
+
+    function saveUiPrefs(){
+      try{
+        localStorage.setItem(UI_PREF_KEY, JSON.stringify({
+          fromMonth: els.filterFromMonth.value || '',
+          toMonth: els.filterToMonth.value || '',
+          material: els.filterMaterial.value || '',
+          reper: els.filterReper.value || '',
+          coverWeeks: getCoverWeeks()
+        }));
+      }catch(_e){}
+    }
 
     function setRangeFromCustomerOrders(force){
       const dates = state.customerOrders.map(r => MRC.displayToIso(r.delivery_date)).filter(Boolean).sort();
@@ -262,8 +285,7 @@
       els.roleSub.textContent = state.canEdit ? 'Poți importa, edita și salva documentele MRC.' : 'Ai doar drept de vizualizare.';
       els.mapStatus.textContent = state.maps ? (String(state.mappingRows.length) + ' mapări') : '-';
       els.mapSub.textContent = state.maps ? ('Sursă: ' + (state.maps.source || '-')) : 'Nu s-a încărcat maparea.';
-      const clientCount = new Set(state.customerOrders.map(r => MRC.trimText(r.client_name)).filter(Boolean)).size;
-      els.dataStatus.textContent = ['Comenzi: ' + state.customerOrders.length, 'Clienți: ' + clientCount, 'Stoc: ' + state.openingStocks.length, 'Intrări: ' + state.intrariRows.length, 'Forjate: ' + state.forjateRows.length].join(' · ');
+      els.dataStatus.textContent = ['Comenzi: ' + state.customerOrders.length, 'Stoc: ' + state.openingStocks.length, 'Intrări: ' + state.intrariRows.length, 'Forjate: ' + state.forjateRows.length].join(' · ');
       const dirty = Object.keys(state.dirty).filter(k => state.dirty[k]);
       els.dataSub.textContent = dirty.length ? ('Nesalvat: ' + dirty.join(', ')) : 'Toate documentele sunt în sincron.';
       els.syncStatus.textContent = state.lastSyncAt ? (MRC.isoToDisplay(state.lastSyncAt) + ' ' + String(state.lastSyncAt).slice(11,16)) : '-';
@@ -277,11 +299,11 @@
       state.mappingRows = (mapDoc ? MRC.extractRowsPayload(mapDoc.content || mapDoc.data) : []).map((row, index) => MRC.normalizeMappingRow(row, index)).filter(r => r.raw_part || r.part_norm || r.reper_intern);
       state.maps = await MRC.loadHelperMaps(state.supabase);
       state.customerOrders = MRC.dedupeCustomerOrders((orderDoc ? MRC.extractRowsPayload(orderDoc.content || orderDoc.data) : []).map((row, index) => MRC.normalizeCustomerOrderRow(row, index, state.maps)).filter(r => r.raw_part || r.reper_intern));
-      state.openingStocks = (stockDoc ? MRC.extractRowsPayload(stockDoc.content || stockDoc.data) : []).map((row, index) => MRC.normalizeOpeningStockRow(row, index, state.maps)).filter(r => r.year && r.month_num && (r.raw_reper || r.reper_intern));
+      state.openingStocks = MRC.dedupeOpeningStocks((stockDoc ? MRC.extractRowsPayload(stockDoc.content || stockDoc.data) : []).map((row, index) => MRC.normalizeOpeningStockRow(row, index, state.maps)).filter(r => r.year && r.month_num && (r.raw_reper || r.reper_intern)));
       state.steelOrders = (steelDoc ? MRC.extractRowsPayload(steelDoc.content || steelDoc.data) : []).map((row, index) => MRC.normalizeSteelPoRow(row, index)).filter(r => r.po_number || r.material || r.qty_kg);
       state.lastSyncAt = [mapDoc, orderDoc, stockDoc, steelDoc].map(doc => doc && doc.updated_at || '').filter(Boolean).sort().pop() || '';
       normalizeAutoSteelOrders();
-      setRangeFromCustomerOrders(true);
+      if(!els.filterFromMonth.value || !els.filterToMonth.value) setRangeFromCustomerOrders(true);
     }
 
     async function loadSupportDocs(){
@@ -298,7 +320,6 @@
 
     function ensureSteelOrderWeek(row){ const eta=MRC.displayToIso(row.eta_date); row.eta_date=eta; row.eta_week_key=eta ? MRC.isoWeekKey(eta) : ''; return row; }
 
-
     function aggregateSimple(){
       const fromIso = MRC.startOfMonthIsoFromInput(els.filterFromMonth.value);
       const toIso = MRC.endOfMonthIso(els.filterToMonth.value);
@@ -306,251 +327,83 @@
       const materialFilter = MRC.trimText(els.filterMaterial.value).toUpperCase();
       const reperFilter = MRC.normalizeText(els.filterReper.value);
       const weekKeys = MRC.computeHorizonWeeks(fromIso, toIso);
+      const startMonthKey = MRC.monthKey(Number(fromIso.slice(0,4)), Number(fromIso.slice(5,7)));
       const todayIso = new Date().toISOString().slice(0,10);
       const capForjateTo = todayIso < toIso ? todayIso : toIso;
-      const reperMap = Object.create(null);
-      const specEntriesByWeek = Object.create(null);
-      const specPoByWeek = Object.create(null);
-      const specPoManualByWeek = Object.create(null);
+      const itemMap = Object.create(null), specEntriesByWeek = Object.create(null), specPoByWeek = Object.create(null), specPoManualByWeek = Object.create(null);
 
-      function buildSpec(material, diam){
-        const mat = MRC.trimText(material).toUpperCase();
-        const dia = MRC.trimText(diam);
-        if(!mat || !dia) return '';
-        return MRC.buildSpecKey(mat, dia);
-      }
-      function addSpecWeek(dict, spec, week, value){
-        const num = Number(value || 0);
-        if(!spec || !week || !num) return;
-        if(!dict[spec]) dict[spec] = Object.create(null);
-        dict[spec][week] = Number(dict[spec][week] || 0) + num;
-      }
-      function getReperSeedValue(seed){
-        return MRC.trimText(seed && (seed.reper_intern || seed.reper || seed.raw_reper || seed.raw_part)).toUpperCase();
-      }
-      function getReperKeyFromSeed(seed){
-        return MRC.normalizeLoose(getReperSeedValue(seed));
-      }
-      function ensureReper(seed){
-        const reper = getReperSeedValue(seed);
-        const key = MRC.normalizeLoose(reper);
+      function buildSpec(material, diam){ return MRC.buildSpecKey(material, diam); }
+      function addSpecWeek(dict, spec, week, value){ if(!spec || !week || !value) return; if(!dict[spec]) dict[spec]=Object.create(null); dict[spec][week]=Number(dict[spec][week] || 0) + Number(value || 0); }
+      function ensureItem(seed){
+        const key = MRC.normalizeLoose(seed.reper_intern || seed.reper || seed.raw_part);
         if(!key) return null;
-        if(!reperMap[key]){
-          reperMap[key] = {
-            reper_key:key,
-            reper_intern:reper,
-            reper_debitare_origine:MRC.trimText(seed.reper_debitare_origine).toUpperCase(),
-            material:MRC.trimText(seed.material).toUpperCase(),
-            diametru:MRC.trimText(seed.diametru),
-            kg_per_buc:Number(seed.kg_per_buc || 0),
-            raw_parts:new Set(),
-            month_start_pieces_kg:Object.create(null),
-            month_start_steel_kg:Object.create(null),
-            customer_kg_by_week:Object.create(null),
-            customer_buc_by_week:Object.create(null),
-            forjate_kg_by_week:Object.create(null)
-          };
+        if(!itemMap[key]){
+          itemMap[key] = { reper_key:key, reper_intern:MRC.trimText(seed.reper_intern || seed.reper).toUpperCase(), reper_debitare_origine:MRC.trimText(seed.reper_debitare_origine).toUpperCase(), material:MRC.trimText(seed.material).toUpperCase(), diametru:MRC.trimText(seed.diametru), kg_per_buc:Number(seed.kg_per_buc || 0), raw_parts:new Set(), start_pieces_buc:0, forged_buc:0, start_steel_kg:0, customer_kg_by_week:Object.create(null), customer_buc_by_week:Object.create(null), status:'', sold_by_week:Object.create(null), cover9_by_week:Object.create(null), intrari_by_week:Object.create(null), po_by_week:Object.create(null) };
         }
-        const item = reperMap[key];
-        if(!item.reper_debitare_origine && seed.reper_debitare_origine) item.reper_debitare_origine = MRC.trimText(seed.reper_debitare_origine).toUpperCase();
-        if(!item.material && seed.material) item.material = MRC.trimText(seed.material).toUpperCase();
-        if(!item.diametru && seed.diametru) item.diametru = MRC.trimText(seed.diametru);
-        if(!(item.kg_per_buc > 0) && Number(seed.kg_per_buc || 0) > 0) item.kg_per_buc = Number(seed.kg_per_buc || 0);
-        if(seed.raw_part) item.raw_parts.add(MRC.trimText(seed.raw_part).toUpperCase());
-        if(seed.raw_reper) item.raw_parts.add(MRC.trimText(seed.raw_reper).toUpperCase());
+        const item = itemMap[key];
+        if(!item.reper_debitare_origine && seed.reper_debitare_origine) item.reper_debitare_origine=MRC.trimText(seed.reper_debitare_origine).toUpperCase();
+        if(!item.material && seed.material) item.material=MRC.trimText(seed.material).toUpperCase();
+        if(!item.diametru && seed.diametru) item.diametru=MRC.trimText(seed.diametru);
+        if(!(item.kg_per_buc > 0) && Number(seed.kg_per_buc || 0) > 0) item.kg_per_buc=Number(seed.kg_per_buc || 0);
+        if(seed.raw_part) item.raw_parts.add(seed.raw_part);
         return item;
       }
-      function getExistingReper(seed){
-        const key = getReperKeyFromSeed(seed);
-        return key && reperMap[key] ? reperMap[key] : null;
-      }
 
-      const selectedCustomerOrders = state.customerOrders.filter(r => r.delivery_date && r.delivery_date >= fromIso && r.delivery_date <= toIso);
-
-      selectedCustomerOrders.forEach(r => {
-        const item = ensureReper(r);
-        if(!item) return;
+      state.openingStocks.filter(r => r.month_key === startMonthKey).forEach(r => { const item = ensureItem(r); if(!item) return; item.start_pieces_buc += Number(r.total_piese || 0); item.start_steel_kg += Number(r.stoc_otel_kg || 0); });
+      state.forjateRows.filter(r => r.data && r.data >= fromIso && r.data <= capForjateTo).forEach(r => { const item = ensureItem({ reper_intern:r.reper }); if(!item) return; item.forged_buc += Math.max(0, Number(r.buc_realizate || 0) - Number(r.rebut || 0)); });
+      state.customerOrders.filter(r => r.delivery_date && r.delivery_date >= fromIso && r.delivery_date <= toIso).forEach(r => {
+        const item = ensureItem(r); if(!item) return;
         const week = r.week_key || MRC.isoWeekKey(r.delivery_date);
         const qtyBuc = Math.max(0, Math.round(Number(r.quantity_buc || 0)));
         const kgBuc = Number(item.kg_per_buc || r.kg_per_buc || 0);
         const qtyKg = qtyBuc * kgBuc;
         item.customer_buc_by_week[week] = Number(item.customer_buc_by_week[week] || 0) + qtyBuc;
         item.customer_kg_by_week[week] = Number(item.customer_kg_by_week[week] || 0) + qtyKg;
-        if(r.raw_part) item.raw_parts.add(MRC.trimText(r.raw_part).toUpperCase());
+        if(r.raw_part) item.raw_parts.add(r.raw_part);
       });
+      state.intrariRows.filter(r => r.data && r.data >= fromIso && r.data <= toIso).forEach(r => { addSpecWeek(specEntriesByWeek, buildSpec(r.material, r.diametru), MRC.isoWeekKey(r.data), r.cantitate_kg); });
+      state.steelOrders.forEach(r => { ensureSteelOrderWeek(r); const wk = r.eta_week_key || (r.eta_date ? MRC.isoWeekKey(r.eta_date) : ''); if(!wk) return; const spec = buildSpec(r.material, r.diametru); addSpecWeek(specPoByWeek, spec, wk, r.qty_kg); if(!String(r.notes || '').includes('[AUTO-TABLE]')) addSpecWeek(specPoManualByWeek, spec, wk, r.qty_kg); });
 
-      state.openingStocks.forEach(r => {
-        const item = getExistingReper(r);
-        if(!item || !r.month_key) return;
-        const kgBuc = Number(item.kg_per_buc || r.kg_per_buc || 0);
-        item.month_start_pieces_kg[r.month_key] = Number(item.month_start_pieces_kg[r.month_key] || 0) + Number(r.total_piese || 0) * kgBuc;
-        item.month_start_steel_kg[r.month_key] = Number(item.month_start_steel_kg[r.month_key] || 0) + Number(r.stoc_otel_kg || 0);
-      });
-
-      state.forjateRows.filter(r => r.data && r.data >= fromIso && r.data <= capForjateTo).forEach(r => {
-        const item = getExistingReper({ reper_intern:r.reper });
-        if(!item) return;
-        const goodBuc = Math.max(0, Number(r.buc_realizate || 0) - Number(r.rebut || 0));
-        if(!goodBuc) return;
-        const week = MRC.isoWeekKey(r.data);
-        item.forjate_kg_by_week[week] = Number(item.forjate_kg_by_week[week] || 0) + goodBuc * Number(item.kg_per_buc || 0);
-      });
-
-      state.intrariRows.filter(r => r.data && r.data >= fromIso && r.data <= toIso).forEach(r => {
-        addSpecWeek(specEntriesByWeek, buildSpec(r.material, r.diametru), MRC.isoWeekKey(r.data), r.cantitate_kg);
-      });
-
-      state.steelOrders.forEach(r => {
-        ensureSteelOrderWeek(r);
-        const wk = r.eta_week_key || (r.eta_date ? MRC.isoWeekKey(r.eta_date) : '');
-        if(!wk || wk < (weekKeys[0] || '') || wk > (weekKeys[weekKeys.length - 1] || 'ZZZZ')) return;
-        const spec = buildSpec(r.material, r.diametru);
-        addSpecWeek(specPoByWeek, spec, wk, r.qty_kg);
-        if(!String(r.notes || '').includes('[AUTO-TABLE]')) addSpecWeek(specPoManualByWeek, spec, wk, r.qty_kg);
-      });
-
-      const grouped = Object.create(null);
-      Object.values(reperMap).forEach(item => {
+      const rows = Object.values(itemMap).map(item => {
         const spec = buildSpec(item.material, item.diametru);
-        const groupKey = spec || ('REPER|' + item.reper_key);
-        if(!grouped[groupKey]){
-          grouped[groupKey] = {
-            group_key:groupKey,
-            spec_key:spec,
-            material:item.material || '',
-            diametru:item.diametru || '',
-            reper_list:new Set(),
-            raw_parts:new Set(),
-            kg_values:new Set(),
-            detail_map:Object.create(null),
-            month_start_pieces_kg:Object.create(null),
-            month_start_steel_kg:Object.create(null),
-            customer_kg_by_week:Object.create(null),
-            customer_buc_by_week:Object.create(null),
-            forjate_kg_by_week:Object.create(null),
-            intrari_by_week:Object.create(null),
-            po_by_week:Object.create(null),
-            po_manual_by_week:Object.create(null),
-            sold_by_week:Object.create(null),
-            cover9_by_week:Object.create(null),
-            first_month_pieces_kg:0,
-            first_month_steel_kg:0,
-            first_month_total_kg:0
-          };
-        }
-        const group = grouped[groupKey];
-        group.reper_list.add(item.reper_intern);
-        item.raw_parts.forEach(v => group.raw_parts.add(v));
-        if(item.kg_per_buc > 0) group.kg_values.add(Number(item.kg_per_buc).toFixed(4));
-        const detailKey = item.reper_key || ('detail-' + String(item.reper_intern || ''));
-        if(!group.detail_map[detailKey]){
-          group.detail_map[detailKey] = {
-            reper_intern:item.reper_intern || '',
-            kg_per_buc:Number(item.kg_per_buc || 0),
-            raw_parts:new Set()
-          };
-        }
-        const detail = group.detail_map[detailKey];
-        if(!(detail.kg_per_buc > 0) && item.kg_per_buc > 0) detail.kg_per_buc = Number(item.kg_per_buc || 0);
-        item.raw_parts.forEach(v => detail.raw_parts.add(v));
-        Object.keys(item.month_start_pieces_kg).forEach(monthKey => {
-          group.month_start_pieces_kg[monthKey] = Number(group.month_start_pieces_kg[monthKey] || 0) + Number(item.month_start_pieces_kg[monthKey] || 0);
-        });
-        Object.keys(item.month_start_steel_kg).forEach(monthKey => {
-          group.month_start_steel_kg[monthKey] = Number(group.month_start_steel_kg[monthKey] || 0) + Number(item.month_start_steel_kg[monthKey] || 0);
-        });
-        Object.keys(item.customer_kg_by_week).forEach(week => {
-          group.customer_kg_by_week[week] = Number(group.customer_kg_by_week[week] || 0) + Number(item.customer_kg_by_week[week] || 0);
-        });
-        Object.keys(item.customer_buc_by_week).forEach(week => {
-          group.customer_buc_by_week[week] = Number(group.customer_buc_by_week[week] || 0) + Number(item.customer_buc_by_week[week] || 0);
-        });
-        Object.keys(item.forjate_kg_by_week).forEach(week => {
-          group.forjate_kg_by_week[week] = Number(group.forjate_kg_by_week[week] || 0) + Number(item.forjate_kg_by_week[week] || 0);
-        });
-      });
-
-      Object.values(grouped).forEach(group => {
-        if(group.spec_key){
-          Object.keys(specEntriesByWeek[group.spec_key] || {}).forEach(week => group.intrari_by_week[week] = Number((specEntriesByWeek[group.spec_key] || {})[week] || 0));
-          Object.keys(specPoByWeek[group.spec_key] || {}).forEach(week => group.po_by_week[week] = Number((specPoByWeek[group.spec_key] || {})[week] || 0));
-          Object.keys(specPoManualByWeek[group.spec_key] || {}).forEach(week => group.po_manual_by_week[week] = Number((specPoManualByWeek[group.spec_key] || {})[week] || 0));
-        }
-
-        let currentMonth = '';
-        let monthStartTotal = 0;
-        let cumCustomer = 0, cumIntrari = 0, cumPo = 0, cumForjate = 0;
-
-        weekKeys.forEach(week => {
-          const weekStart = weekStartIso(week);
-          const monthKey = weekStart ? MRC.monthKey(Number(weekStart.slice(0,4)), Number(weekStart.slice(5,7))) : '';
-          if(monthKey !== currentMonth){
-            currentMonth = monthKey;
-            cumCustomer = 0; cumIntrari = 0; cumPo = 0; cumForjate = 0;
-            const startPieces = Number(group.month_start_pieces_kg[monthKey] || 0);
-            const startSteel = Number(group.month_start_steel_kg[monthKey] || 0);
-            monthStartTotal = startPieces + startSteel;
-            if(!group.first_month_total_kg){
-              group.first_month_pieces_kg = startPieces;
-              group.first_month_steel_kg = startSteel;
-              group.first_month_total_kg = monthStartTotal;
-            }
-          }
-          cumCustomer += Number(group.customer_kg_by_week[week] || 0);
-          cumIntrari += Number(group.intrari_by_week[week] || 0);
-          cumPo += Number(group.po_by_week[week] || 0);
-          cumForjate += Number(group.forjate_kg_by_week[week] || 0);
-          group.sold_by_week[week] = monthStartTotal + cumForjate + cumIntrari + cumPo - cumCustomer;
-        });
-
+        item.start_pieces_kg = (Number(item.start_pieces_buc || 0) + Number(item.forged_buc || 0)) * Number(item.kg_per_buc || 0);
+        item.start_total_kg = Number(item.start_pieces_kg || 0) + Number(item.start_steel_kg || 0);
+        let cumCustomer = 0, cumIntrari = 0, cumPo = 0;
         weekKeys.forEach((week, index) => {
-          let minSold = Number.POSITIVE_INFINITY;
-          for(let j = index; j < Math.min(index + coverWeeks, weekKeys.length); j += 1){
-            const sold = Number(group.sold_by_week[weekKeys[j]] || 0);
-            if(sold < minSold) minSold = sold;
+          const customerKg = Number(item.customer_kg_by_week[week] || 0);
+          const intrariKg = Number((specEntriesByWeek[spec] && specEntriesByWeek[spec][week]) || 0);
+          const poKg = Number((specPoByWeek[spec] && specPoByWeek[spec][week]) || 0);
+          item.intrari_by_week[week] = intrariKg;
+          item.po_by_week[week] = poKg;
+          item.po_manual_by_week = item.po_manual_by_week || Object.create(null);
+          item.po_manual_by_week[week] = Number((specPoManualByWeek[spec] && specPoManualByWeek[spec][week]) || 0);
+          item.spec_key = spec;
+          cumCustomer += customerKg; cumIntrari += intrariKg; cumPo += poKg;
+          const sold = item.start_total_kg + cumIntrari + cumPo - cumCustomer;
+          item.sold_by_week[week] = sold;
+          let futureSupply = 0, futureDemand = 0;
+          for(let j = index + 1; j < Math.min(index + coverWeeks, weekKeys.length); j += 1){
+            const nextWeek = weekKeys[j];
+            futureSupply += Number((specEntriesByWeek[spec] && specEntriesByWeek[spec][nextWeek]) || 0);
+            futureSupply += Number((specPoByWeek[spec] && specPoByWeek[spec][nextWeek]) || 0);
+            futureDemand += Number(item.customer_kg_by_week[nextWeek] || 0);
           }
-          group.cover9_by_week[week] = Number.isFinite(minSold) ? minSold : Number(group.sold_by_week[week] || 0);
+          item.cover9_by_week[week] = sold + futureSupply - futureDemand;
         });
-
         const lastWeek = weekKeys[weekKeys.length - 1] || '';
-        const minSoldOverall = weekKeys.reduce((minVal, week) => Math.min(minVal, Number(group.sold_by_week[week] || 0)), Number.POSITIVE_INFINITY);
-        const minCoverOverall = weekKeys.reduce((minVal, week) => Math.min(minVal, Number(group.cover9_by_week[week] || 0)), Number.POSITIVE_INFINITY);
-        group.status = minCoverOverall < 0 ? 'Lipsă' : (minSoldOverall < 0 ? 'Risc' : 'OK');
-        group.statusTone = minCoverOverall < 0 ? 'value-bad' : (minSoldOverall < 0 ? 'value-warn' : 'value-ok');
-        group.reper_list = Array.from(group.reper_list).sort((a,b) => String(a).localeCompare(String(b), 'ro', { sensitivity:'base' }));
-        group.raw_parts = Array.from(group.raw_parts).sort((a,b) => String(a).localeCompare(String(b), 'ro', { sensitivity:'base' }));
-        group.detail_rows = Object.values(group.detail_map || {}).map(detail => ({
-          reper_intern:detail.reper_intern || '',
-          kg_per_buc:Number(detail.kg_per_buc || 0),
-          raw_parts:Array.from(detail.raw_parts || []).sort((a,b) => String(a).localeCompare(String(b), 'ro', { sensitivity:'base' }))
-        })).sort((a,b) => String(a.reper_intern || '').localeCompare(String(b.reper_intern || ''), 'ro', { sensitivity:'base' }));
-        const kgValues = Array.from(group.kg_values).map(Number).sort((a,b)=>a-b);
-        group.kg_per_buc_display = kgValues.length === 1 ? fmtKg(kgValues[0]) : 'MIX';
-      });
-
-      const rows = Object.values(grouped).filter(group => {
-        const totalDemandKg = Object.values(group.customer_kg_by_week || {}).reduce((sum, v) => sum + Number(v || 0), 0);
-        if(totalDemandKg <= 0) return false;
-        if(materialFilter && MRC.trimText(group.material).toUpperCase() !== materialFilter) return false;
-        if(reperFilter){
-          const hay = [group.reper_list.join(' / '), group.raw_parts.join(' '), group.material, group.diametru].join(' ');
-          if(!MRC.normalizeText(hay).includes(reperFilter)) return false;
-        }
+        const lastSold = Number(item.sold_by_week[lastWeek] || item.start_total_kg || 0);
+        const lastCover = Number(item.cover9_by_week[lastWeek] || lastSold);
+        item.status = lastCover < 0 ? 'Lipsă' : (lastSold < 0 ? 'Risc' : 'OK');
+        item.statusTone = lastCover < 0 ? 'value-bad' : (lastSold < 0 ? 'value-warn' : 'value-ok');
+        item.raw_parts = Array.from(item.raw_parts).sort();
+        return item;
+      }).filter(item => {
+        if(materialFilter && MRC.trimText(item.material).toUpperCase() !== materialFilter) return false;
+        if(reperFilter){ const hay=[item.reper_intern, item.reper_debitare_origine, item.raw_parts.join(' ')].join(' '); if(!MRC.normalizeText(hay).includes(reperFilter)) return false; }
         return true;
-      }).sort((a,b) => {
-        const aKey = (a.material || '') + '|' + (a.diametru || '') + '|' + (a.reper_list[0] || '');
-        const bKey = (b.material || '') + '|' + (b.diametru || '') + '|' + (b.reper_list[0] || '');
-        return aKey.localeCompare(bKey, 'ro', { sensitivity:'base' });
-      });
+      }).sort((a,b) => String(a.reper_intern).localeCompare(String(b.reper_intern), 'ro', { sensitivity:'base' }));
 
       return { rows:rows, weekKeys:weekKeys, coverWeeks:coverWeeks };
-    }
-
-
-    function shortJoinedList(values, limit){
-      const arr = Array.isArray(values) ? values.filter(Boolean) : [];
-      if(arr.length <= limit) return arr.join(' / ');
-      return arr.slice(0, limit).join(' / ') + ' / … (+' + String(arr.length - limit) + ')';
     }
 
     function renderSummary(agg){
@@ -568,10 +421,9 @@
       ].join('');
     }
 
-
     function renderMainTable(agg){
       const weekGroups = computeWeekGroups(agg.weekKeys);
-      const fixedHeads = ['Repere grupate','kg/buc','Material','Ø / D','Stoc piese kg','Stoc material kg','Start total kg','Status','Rând'];
+      const fixedHeads = ['Reper / Part no.','kg/buc','Material','Ø / D','Stoc piese kg','Stoc material kg','Start total kg','Status','Rând'];
       const head1=['<tr class="month-row">'];
       fixedHeads.forEach(label => head1.push('<th rowspan="2">' + esc(label) + '</th>'));
       weekGroups.forEach(group => head1.push('<th colspan="' + group.weeks.length + '">' + esc(group.label) + '</th>'));
@@ -583,58 +435,39 @@
       if(!agg.rows.length){ els.mainBody.innerHTML = '<tr><td colspan="' + (fixedHeads.length + Math.max(1, agg.weekKeys.length)) + '" class="empty">Nu există date pentru filtrul actual. Importă maparea, comenzile și stocul inițial, apoi verifică să existe date și în INTRĂRI OȚEL / FORJATE.</td></tr>'; return; }
       const html=[];
       agg.rows.forEach(row => {
-        const warnBase = Math.max(0, ...(Object.values(row.customer_kg_by_week || {}).map(v => Number(v || 0))));
-        const reperFull = (row.reper_list || []).join(' / ') || '-';
-        const detailRows = (row.detail_rows && row.detail_rows.length ? row.detail_rows : [{ reper_intern:reperFull, kg_per_buc:0, raw_parts:(row.raw_parts || []) }]);
-        const reperStack = '<div class="stack-list">' + detailRows.map(detail => '<div class="stack-item"><div class="stack-main">' + esc(detail.reper_intern || '-') + '</div>' + (detail.raw_parts && detail.raw_parts.length ? ('<div class="muted small">' + esc(detail.raw_parts.join(', ')) + '</div>') : '') + '</div>').join('') + '</div>';
-        const kgStack = '<div class="stack-list">' + detailRows.map(detail => '<div class="stack-item right mono"><div class="stack-main">' + esc(detail.kg_per_buc > 0 ? fmtKg(detail.kg_per_buc) : '-') + '</div></div>').join('') + '</div>';
+        const warnBase = Object.values(row.customer_kg_by_week)[0] || 0;
         const fixed = [
-          '<td class="left fixed" rowspan="5" title="' + esc(reperFull) + '">' + reperStack + '</td>',
-          '<td class="right mono fixed" rowspan="5">' + kgStack + '</td>',
+          '<td class="left fixed" rowspan="5"><strong>' + esc(row.reper_intern || '-') + '</strong><div class="muted small">' + esc((row.raw_parts || []).slice(0,3).join(', ')) + '</div></td>',
+          '<td class="right mono fixed" rowspan="5">' + esc(fmtKg(row.kg_per_buc)) + '</td>',
           '<td class="left fixed" rowspan="5">' + esc(row.material || '-') + '</td>',
           '<td class="fixed" rowspan="5">' + esc(row.diametru || '-') + '</td>',
-          '<td class="right mono fixed" rowspan="5">' + esc(fmtKg(row.first_month_pieces_kg)) + '<div class="muted small">prima lună</div></td>',
-          '<td class="right mono fixed" rowspan="5">' + esc(fmtKg(row.first_month_steel_kg)) + '<div class="muted small">prima lună</div></td>',
-          '<td class="right mono fixed" rowspan="5"><strong>' + esc(fmtKg(row.first_month_total_kg)) + '</strong><div class="muted small">reset lunar</div></td>',
+          '<td class="right mono fixed" rowspan="5">' + esc(fmtKg(row.start_pieces_kg)) + '</td>',
+          '<td class="right mono fixed" rowspan="5">' + esc(fmtKg(row.start_steel_kg)) + '</td>',
+          '<td class="right mono fixed" rowspan="5"><strong>' + esc(fmtKg(row.start_total_kg)) + '</strong></td>',
           '<td class="fixed ' + esc(row.statusTone || '') + '" rowspan="5">' + esc(row.status) + '</td>'
         ];
         const lines = [
           { label:'Comenzi client (kg)', values:row.customer_kg_by_week, kind:'plain' },
-          { label:'Forjate (kg)', values:row.forjate_kg_by_week, kind:'plain' },
           { label:'Intrări oțel (kg)', values:row.intrari_by_week, kind:'plain' },
           { label:'Comandă oțel (kg)', values:row.po_by_week, kind:'po', manual:row.po_manual_by_week || {} },
-          { label:'Sold / Acoperire ' + agg.coverWeeks + ' săpt.', values:null, kind:'dual' }
+          { label:'Sold săpt.', values:row.sold_by_week, kind:'sold' },
+          { label:'Acoperire ' + agg.coverWeeks + ' săpt.', values:row.cover9_by_week, kind:'cover' }
         ];
         lines.forEach((line, idx) => {
           html.push('<tr>');
           if(idx === 0) html.push(fixed.join(''));
           html.push('<td class="left row-label">' + esc(line.label) + '</td>');
           agg.weekKeys.forEach(week => {
-            if(line.kind === 'dual'){
-              const sold = Number((row.sold_by_week && row.sold_by_week[week]) || 0);
-              const cover = Number((row.cover9_by_week && row.cover9_by_week[week]) || 0);
-              const cls = classByValue(Math.min(sold, cover), warnBase);
-              html.push('<td class="right mono ' + cls + '"><div>' + esc(fmtKg(sold)) + '</div><div class="muted small">' + esc(fmtKg(cover)) + '</div></td>');
-              return;
-            }
             const value = Number((line.values && line.values[week]) || 0);
-            if(line.kind === 'po'){
-              const manualValue = Number((line.manual && line.manual[week]) || 0);
-              const hasSpec = !!row.spec_key;
-              const title = hasSpec
-                ? (manualValue ? ('Comenzi manuale salvate separat în editor: ' + fmtKg(manualValue) + ' kg') : 'Scrie direct cantitatea de oțel pe săptămâna dorită.')
-                : 'Pentru acest rând lipsesc materialul și diametrul complete; completează maparea înainte să introduci comanda de oțel direct în tabel.';
-              html.push('<td class="right mono"><input class="cell-input right mono inline-po-input" data-spec="' + esc(row.spec_key || '') + '" data-week="' + esc(week) + '" value="' + esc(fmtKg(value)) + '" title="' + esc(title) + '" ' + (state.canEdit && hasSpec ? '' : 'disabled') + '></td>');
-            } else {
-              html.push('<td class="right mono">' + esc(fmtKg(value)) + '</td>');
-            }
+            if(line.kind === 'sold' || line.kind === 'cover') html.push('<td class="right mono ' + classByValue(value, warnBase) + '">' + esc(fmtKg(value)) + '</td>');
+            else if(line.kind === 'po'){ const manualValue = Number((line.manual && line.manual[week]) || 0); const title = manualValue ? ('Comenzi manuale salvate separat în editor: ' + fmtKg(manualValue) + ' kg') : ''; html.push('<td class="right mono"><input class="cell-input right mono inline-po-input" data-spec="' + esc(row.spec_key || '') + '" data-week="' + esc(week) + '" value="' + esc(fmtKg(value)) + '" title="' + esc(title) + '" ' + (state.canEdit ? '' : 'disabled') + '></td>'); }
+            else html.push('<td class="right mono">' + esc(fmtKg(value)) + '</td>');
           });
           html.push('</tr>');
         });
       });
       els.mainBody.innerHTML = html.join('');
     }
-
 
     function renderSteelEditor(){
       if(!state.steelOrders.length){ els.steelBody.innerHTML = '<tr><td colspan="10" class="empty">Nu există încă rânduri. Apasă „+ Rând nou” ca să introduci prima comandă de oțel.</td></tr>'; return; }
@@ -675,14 +508,14 @@
       if(state.dirty.orders) await saveDoc('orders', state.customerOrders);
       if(state.dirty.stock) await saveDoc('stock', state.openingStocks);
       if(state.dirty.steel) await saveDoc('steel', state.steelOrders.map(ensureSteelOrderWeek));
-      await loadDocs(); await loadSupportDocs(); renderAll();
+      await loadDocs(); await loadSupportDocs(); saveUiPrefs(); renderAll();
     }
 
     function bindEvents(){
-      [els.filterFromMonth, els.filterToMonth].forEach(el => el.addEventListener('change', async () => { await loadSupportDocs(); renderAll(); }));
-      [els.filterMaterial, els.filterReper].forEach(el => el.addEventListener('input', renderAll));
-      els.coverWeeks.addEventListener('input', function(){ state.coverWeeks = getCoverWeeks(); renderAll(); });
-      els.btnReload.addEventListener('click', async () => { await loadDocs(); await loadSupportDocs(); renderAll(); });
+      [els.filterFromMonth, els.filterToMonth].forEach(el => el.addEventListener('change', async () => { saveUiPrefs(); await loadSupportDocs(); renderAll(); }));
+      [els.filterMaterial, els.filterReper].forEach(el => el.addEventListener('input', function(){ saveUiPrefs(); renderAll(); }));
+      els.coverWeeks.addEventListener('input', function(){ state.coverWeeks = getCoverWeeks(); saveUiPrefs(); renderAll(); });
+      els.btnReload.addEventListener('click', async () => { saveUiPrefs(); await loadDocs(); await loadSupportDocs(); renderAll(); });
       els.btnSaveAll.addEventListener('click', saveAll);
       els.btnLogout.addEventListener('click', async () => { try{ await window.ERPAuth.signOut(); }catch(_e){} window.location.href='login.html'; });
       els.btnImportMapping.addEventListener('click', () => els.fileMapping.click());
@@ -698,19 +531,27 @@
       });
       els.fileOrders.addEventListener('change', async function(){
         const files = Array.from(this.files || []); if(!files.length || !state.canEdit) return;
-        let merged = Array.isArray(state.customerOrders) ? state.customerOrders.slice() : [];
+        const importedAll = [];
         for (const file of files){
           const workbook = await readWorkbook(file);
-          const imported = MRC.importCustomerOrdersFromWorkbook(workbook, state.maps || {}, { workbookName:file.name });
-          merged = MRC.mergeCustomerOrders(merged, imported);
+          importedAll.push(...MRC.importCustomerOrdersFromWorkbook(workbook, state.maps || {}, { workbookName:file.name }));
         }
-        state.customerOrders = merged; state.dirty.orders = true; renderAll(); this.value='';
+        state.customerOrders = MRC.mergeCustomerOrders(state.customerOrders, importedAll);
+        state.dirty.orders = true;
+        await saveDoc('orders', state.customerOrders);
+        await loadDocs(); await loadSupportDocs(); saveUiPrefs(); renderAll(); this.value='';
       });
       els.fileStock.addEventListener('change', async function(){
-        const file = this.files && this.files[0]; if(!file || !state.canEdit) return;
-        const workbook = await readWorkbook(file);
-        const imported = MRC.importOpeningStockFromWorkbook(workbook, state.maps || {});
-        state.openingStocks = state.openingStocks.concat(imported); state.dirty.stock = true; renderAll(); this.value='';
+        const files = Array.from(this.files || []); if(!files.length || !state.canEdit) return;
+        const importedAll = [];
+        for (const file of files){
+          const workbook = await readWorkbook(file);
+          importedAll.push(...MRC.importOpeningStockFromWorkbook(workbook, state.maps || {}));
+        }
+        state.openingStocks = MRC.mergeOpeningStocks(state.openingStocks, importedAll);
+        state.dirty.stock = true;
+        await saveDoc('stock', state.openingStocks);
+        await loadDocs(); await loadSupportDocs(); saveUiPrefs(); renderAll(); this.value='';
       });
       els.btnExportOrders.addEventListener('click', () => exportRowsToXlsx(state.customerOrders, 'mrc-customer-orders.xlsx'));
       els.btnExportStock.addEventListener('click', () => exportRowsToXlsx(state.openingStocks, 'mrc-opening-stock.xlsx'));
@@ -732,7 +573,7 @@
       });
     }
 
-    async function boot(){ defaultRange(); if(els.coverWeeks) els.coverWeeks.value = String(state.coverWeeks); await initAuth(); await loadDocs(); await loadSupportDocs(); bindEvents(); renderAll(); }
+    async function boot(){ loadUiPrefs(); defaultRange(); if(els.coverWeeks) els.coverWeeks.value = String(state.coverWeeks); await initAuth(); await loadDocs(); if(!els.filterFromMonth.value || !els.filterToMonth.value){ setRangeFromCustomerOrders(true); saveUiPrefs(); } await loadSupportDocs(); bindEvents(); renderAll(); }
     boot().catch(error => { console.error(error); els.authStatus.textContent='Eroare'; els.authSub.textContent=error && error.message ? error.message : 'Nu am putut porni pagina.'; });
   })();
   </script>
