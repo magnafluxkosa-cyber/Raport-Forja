@@ -459,24 +459,9 @@
       delivery_date: arrayCell(row, 5, ''),
       quantity_buc: arrayCell(row, 7, 0)
     } : (row || {});
-    const sheetNameNorm = normalizeText(pick(obj, ['sheet_name','Sheet','sheet']));
-    const isDataDueQtyDeliveryFormat = sheetNameNorm === 'DATA'
-      && trimText(pick(obj, ['Part']))
-      && trimText(pick(obj, ['Due Qty','DueQty','DUE QTY'])) !== ''
-      && trimText(pick(obj, ['Delivery Date','delivery_date'])) !== '';
-
-    let deliveryIso = '';
-    if (isDataDueQtyDeliveryFormat){
-      deliveryIso = displayToIso(pick(obj, ['Delivery Date']));
-    } else {
-      deliveryIso = displayToIso(pick(obj, ['delivery_date','Need By','Delivery Date','NeedBy','due date','Due Date','need_by','data_livrare','Ship Date']));
-      if (!deliveryIso) deliveryIso = displayToIso(pick(obj, ['WeekDlvDate']));
-    }
-
-    const rawPart = trimText(isDataDueQtyDeliveryFormat
-      ? pick(obj, ['Part'])
-      : pick(obj, ['raw_part','Customer Part No.','Customer Part No','customer_part_no','Part','Item ID','Item Id','Part No','Customer Part', 'pn', 'Pn'])
-    ).toUpperCase();
+    let deliveryIso = displayToIso(pick(obj, ['delivery_date','Need By','Delivery Date','NeedBy','due date','Due Date','need_by','data_livrare','Ship Date']));
+    if (!deliveryIso) deliveryIso = displayToIso(pick(obj, ['WeekDlvDate']));
+    const rawPart = trimText(pick(obj, ['raw_part','Customer Part No.','Customer Part No','customer_part_no','Part','Item ID','Item Id','Part No','Customer Part', 'pn', 'Pn'])).toUpperCase();
     const sourceFile = trimText(pick(obj, ['source_file','Source','Sheet','sheet_name'])) || '';
     const clientName = trimText(pick(obj, ['client_name','Customer','Supplier','Description','Ship To','Supplier Name','SUPPLIER NAME']));
     const normalized = applyPartMapping({
@@ -494,10 +479,7 @@
       year: deliveryIso ? Number(deliveryIso.slice(0,4)) : Number(pick(obj, ['year','Ship Year','an'])) || 0,
       month: deliveryIso ? getMonthName(Number(deliveryIso.slice(5,7))) : trimText(pick(obj, ['month','Ship Month','luna'])).toUpperCase(),
       week_key: deliveryIso ? isoWeekKey(deliveryIso) : trimText(pick(obj, ['WeekDlvDate','YearWeek','yearweek','week_key'])).replace(/\s+/g,''),
-      quantity_buc: Math.max(0, Math.round(toNumber(isDataDueQtyDeliveryFormat
-        ? pick(obj, ['Due Qty'])
-        : pick(obj, ['quantity_buc','Requested Quantity','Due Qty','Ordered Qty','Balance','Demand','Cum Qty','qty','RequestedQuantity','cantitate'])
-      ))),
+      quantity_buc: Math.max(0, Math.round(toNumber(pick(obj, ['quantity_buc','Requested Quantity','Due Qty','Ordered Qty','Balance','Demand','Cum Qty','qty','RequestedQuantity','cantitate'])))),
       order_no: trimText(pick(obj, ['order_no','Order No.','PO Nbr','PO NUMBER ','Order Id','Reference'])),
       commitment_level: trimText(pick(obj, ['commitment_level','Commitment Level','Stato','Status'])),
       notes: trimText(pick(obj, ['notes','Descr1','Description','Item Description','observatii'])),
@@ -592,19 +574,7 @@
     const rows = [];
     const opts = options || {};
     const workbookName = trimText(opts.workbookName || opts.fileName || opts.source_file);
-    const allSheetNames = listWorkbookSheetNames(workbook);
-    let sheetNames = allSheetNames.slice();
-
-    const dataSheetName = allSheetNames.find(name => normalizeText(name) === 'DATA');
-    if (dataSheetName){
-      const dataRows = loadSheetRows(workbook, dataSheetName);
-      const sample = dataRows.find(raw => raw && typeof raw === 'object' && !Array.isArray(raw) && trimText(pick(raw, ['Part'])));
-      if (sample && trimText(pick(sample, ['Due Qty','DueQty','DUE QTY'])) !== '' && trimText(pick(sample, ['Delivery Date','delivery_date'])) !== ''){
-        sheetNames = [dataSheetName];
-      }
-    }
-
-    sheetNames.forEach(sheetName => {
+    listWorkbookSheetNames(workbook).forEach(sheetName => {
       const rawRows = loadSheetRows(workbook, sheetName);
       rawRows.forEach((raw, index) => {
         const sourceLabel = workbookName ? (workbookName + ' / ' + sheetName) : sheetName;
@@ -708,22 +678,16 @@
   function normalizeSteelPoRow(row, index){
     const obj = row || {};
     const etaIso = displayToIso(pick(obj, ['eta_date','ETA','data_livrare','delivery_date','Data','date']));
-    const qtyKg = toNumber(pick(obj, ['qty_kg','cantitate_kg','cantitate','Qty','KG']));
-    const receivedKg = toNumber(pick(obj, ['received_kg','intrat_din_comanda_kg','intrat_din_comanda','cantitate_intrata_kg','qty_received','received','Intrat din comandă (kg)']));
-    const remainingKg = Math.max(0, qtyKg - receivedKg);
-    const statusRaw = trimText(pick(obj, ['status','Status']));
     return {
       id: trimText(pick(obj, ['id','_id'])) || ('po-' + index + '-' + Math.random().toString(36).slice(2,8)),
       po_number: trimText(pick(obj, ['po_number','order_no','nr_comanda','numar comanda','PO'])),
       supplier: trimText(pick(obj, ['supplier','furnizor','Supplier'])),
       material: trimText(pick(obj, ['material','Material'])).toUpperCase(),
       diametru: trimText(pick(obj, ['diametru','Diametru'])),
-      qty_kg: qtyKg,
-      received_kg: receivedKg,
-      remaining_kg: remainingKg,
+      qty_kg: toNumber(pick(obj, ['qty_kg','cantitate_kg','cantitate','Qty','KG'])),
       eta_date: etaIso,
       eta_week_key: etaIso ? isoWeekKey(etaIso) : trimText(pick(obj, ['eta_week_key','week_key','YearWeek'])),
-      status: statusRaw || (remainingKg <= 0 && qtyKg > 0 ? 'Intrat complet' : (receivedKg > 0 ? 'Parțial intrat' : 'Planificat')),
+      status: trimText(pick(obj, ['status','Status'])) || 'Planificat',
       notes: trimText(pick(obj, ['notes','observatii']))
     };
   }
