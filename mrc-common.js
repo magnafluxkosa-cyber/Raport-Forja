@@ -137,29 +137,9 @@
     return simple.toISOString().slice(0,10);
   }
   function isActive(value){ return !(value === false || String(value).toLowerCase() === 'false' || String(value) === '0'); }
-  function normalizeSpecMaterial(material){
-    return trimText(material)
-      .toUpperCase()
-      .replace(/[–—−]/g, '-')
-      .replace(/\s+/g, '')
-      .replace(/\|/g, '/');
-  }
-  function normalizeSpecDiam(diametru){
-    let diam = trimText(diametru).toUpperCase();
-    diam = diam
-      .replace(/[Ø⌀]/g, '')
-      .replace(/ROTUND/gi, '')
-      .replace(/DIAMETRU/gi, '')
-      .replace(/DIAM\.?/gi, '')
-      .replace(/MM/gi, '')
-      .replace(/\s+/g, '')
-      .replace(/,/g, '.');
-    const only = diam.replace(/[^0-9.\/-]/g, '');
-    return only || diam;
-  }
   function buildSpecKey(material, diametru){
-    const mat = normalizeSpecMaterial(material);
-    const diam = normalizeSpecDiam(diametru);
+    const mat = trimText(material).toUpperCase();
+    const diam = trimText(diametru);
     if (!mat && !diam) return '';
     return mat + '|' + diam;
   }
@@ -486,6 +466,31 @@
     return dedupeCustomerOrders(rows);
   }
 
+  function openingStockDedupKey(row){
+    const obj = row || {};
+    const year = Number(obj.year) || 0;
+    const monthNum = Number(obj.month_num || obj.month) || 0;
+    const reper = normalizePart(obj.reper_intern || obj.raw_reper || obj.reper || '');
+    const material = normalizeLoose(obj.material || '');
+    const diametru = normalizeLoose(obj.diametru || '');
+    return [year, monthNum, reper, material, diametru].join('|');
+  }
+
+  function dedupeOpeningStocks(rows){
+    const map = new Map();
+    (Array.isArray(rows) ? rows : []).forEach((row, index) => {
+      const normalized = normalizeOpeningStockRow(row, index, null);
+      if (!normalized.year || !normalized.month_num) return;
+      if (!(normalized.raw_reper || normalized.reper_intern || normalized.material || normalized.diametru)) return;
+      map.set(openingStockDedupKey(normalized), normalized);
+    });
+    return Array.from(map.values());
+  }
+
+  function mergeOpeningStocks(existingRows, importedRows){
+    return dedupeOpeningStocks([].concat(Array.isArray(existingRows) ? existingRows : [], Array.isArray(importedRows) ? importedRows : []));
+  }
+
   function normalizeOpeningStockRow(row, index, maps){
     const obj = row || {};
     const rawReper = trimText(pick(obj, ['raw_reper','Reper raw','reper_raw','reper','Part','RawPart'])).toUpperCase();
@@ -561,7 +566,7 @@
           }, rows.length, maps));
         });
       }
-      return rows.filter(row => row.year && row.month_num && (row.raw_reper || row.reper_intern));
+      return dedupeOpeningStocks(rows.filter(row => row.year && row.month_num && (row.raw_reper || row.reper_intern)));
     }
     listWorkbookSheetNames(workbook).forEach(sheetName => {
       loadSheetRows(workbook, sheetName).forEach((raw, index) => {
@@ -570,7 +575,7 @@
         rows.push(row);
       });
     });
-    return rows;
+    return dedupeOpeningStocks(rows);
   }
 
   function normalizeSteelPoRow(row, index){
@@ -891,8 +896,6 @@
     isoWeekParts,
     parseYearWeek,
     startOfIsoWeek,
-    normalizeSpecMaterial,
-    normalizeSpecDiam,
     buildSpecKey,
     extractRowsPayload,
     readDocumentCompat,
@@ -908,6 +911,9 @@
     mergeCustomerOrders,
     importCustomerOrdersFromWorkbook,
     normalizeOpeningStockRow,
+    openingStockDedupKey,
+    dedupeOpeningStocks,
+    mergeOpeningStocks,
     importOpeningStockFromWorkbook,
     normalizeSteelPoRow,
     normalizeIntrariOtelRow,
@@ -921,4 +927,5 @@
   };
 
   window.MRCCommon = api;
+  window.MRC = api;
 })(window);
