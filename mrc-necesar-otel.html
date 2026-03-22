@@ -72,7 +72,7 @@
     <header class="topbar">
       <div class="titlebox">
         <div class="title">MRC / NECESAR OȚEL</div>
-        <div class="subtitle">Varianta de lucru MRC: vederea se deschide pe întreaga comandă importată a clienților, reperele care folosesc același material și același diametru sunt grupate în același bloc, iar calculul se resetează la începutul fiecărei luni din stocul inițial importat din tabelul STOCKS. Comanda de oțel poate fi introdusă direct în tabel, iar acoperirea se poate schimba din numărul de săptămâni ales sus.</div>
+        <div class="subtitle">Varianta de lucru MRC: vederea se deschide pe întreaga comandă importată a clienților, gruparea se face numai unde există material și diametru complete; rândurile fără specificație completă nu se mai lipesc într-un singur bloc mare, iar calculul se resetează la începutul fiecărei luni din stocul inițial importat din tabelul STOCKS. Comanda de oțel poate fi introdusă direct în tabel, iar acoperirea se poate schimba din numărul de săptămâni ales sus.</div>
       </div>
       <div class="actions">
         <a class="back-btn" href="index.html">Înapoi la Dashboard</a>
@@ -106,7 +106,7 @@
           <button class="btn secondary" id="btnExportOrders" type="button">Export comenzi</button>
           <button class="btn secondary" id="btnExportStock" type="button">Export stoc</button>
         </div>
-        <div class="hint" id="pageHint">Reperele sunt grupate pe material + diametru. Soldul săptămânal se calculează separat în fiecare lună, pornind din stocul inițial exact al lunii respective. Poți scrie direct în rândul „Comandă oțel (kg)”, iar acoperirea folosește numărul de săptămâni ales sus.</div>
+        <div class="hint" id="pageHint">Reperele se grupează numai când au material + diametru complete. Dacă lipsește una dintre ele, reperul rămâne separat ca să nu se mai adune tot MTX-ul într-un singur bloc. Soldul săptămânal se calculează separat în fiecare lună, din stocul inițial exact al lunii respective.</div>
       </div>
 
       <section class="summary-strip" id="summaryStrip"></section>
@@ -309,8 +309,10 @@
       const specPoManualByWeek = Object.create(null);
 
       function buildSpec(material, diam){
-        const spec = MRC.buildSpecKey(material, diam);
-        return spec || ('SPEC|' + MRC.normalizeLoose(material || diam || ''));
+        const mat = MRC.trimText(material).toUpperCase();
+        const dia = MRC.trimText(diam);
+        if(!mat || !dia) return '';
+        return MRC.buildSpecKey(mat, dia);
       }
       function addSpecWeek(dict, spec, week, value){
         const num = Number(value || 0);
@@ -393,8 +395,10 @@
       const grouped = Object.create(null);
       Object.values(reperMap).forEach(item => {
         const spec = buildSpec(item.material, item.diametru);
-        if(!grouped[spec]){
-          grouped[spec] = {
+        const groupKey = spec || ('REPER|' + item.reper_key);
+        if(!grouped[groupKey]){
+          grouped[groupKey] = {
+            group_key:groupKey,
             spec_key:spec,
             material:item.material || '',
             diametru:item.diametru || '',
@@ -416,7 +420,7 @@
             first_month_total_kg:0
           };
         }
-        const group = grouped[spec];
+        const group = grouped[groupKey];
         group.reper_list.add(item.reper_intern);
         item.raw_parts.forEach(v => group.raw_parts.add(v));
         if(item.kg_per_buc > 0) group.kg_values.add(Number(item.kg_per_buc).toFixed(4));
@@ -438,9 +442,11 @@
       });
 
       Object.values(grouped).forEach(group => {
-        Object.keys(specEntriesByWeek[group.spec_key] || {}).forEach(week => group.intrari_by_week[week] = Number((specEntriesByWeek[group.spec_key] || {})[week] || 0));
-        Object.keys(specPoByWeek[group.spec_key] || {}).forEach(week => group.po_by_week[week] = Number((specPoByWeek[group.spec_key] || {})[week] || 0));
-        Object.keys(specPoManualByWeek[group.spec_key] || {}).forEach(week => group.po_manual_by_week[week] = Number((specPoManualByWeek[group.spec_key] || {})[week] || 0));
+        if(group.spec_key){
+          Object.keys(specEntriesByWeek[group.spec_key] || {}).forEach(week => group.intrari_by_week[week] = Number((specEntriesByWeek[group.spec_key] || {})[week] || 0));
+          Object.keys(specPoByWeek[group.spec_key] || {}).forEach(week => group.po_by_week[week] = Number((specPoByWeek[group.spec_key] || {})[week] || 0));
+          Object.keys(specPoManualByWeek[group.spec_key] || {}).forEach(week => group.po_manual_by_week[week] = Number((specPoManualByWeek[group.spec_key] || {})[week] || 0));
+        }
 
         let currentMonth = '';
         let monthStartTotal = 0;
@@ -505,6 +511,12 @@
     }
 
 
+    function shortJoinedList(values, limit){
+      const arr = Array.isArray(values) ? values.filter(Boolean) : [];
+      if(arr.length <= limit) return arr.join(' / ');
+      return arr.slice(0, limit).join(' / ') + ' / … (+' + String(arr.length - limit) + ')';
+    }
+
     function renderSummary(agg){
       const rows = agg.rows || [];
       const totalDemandKg = rows.reduce((sum, row) => sum + Object.values(row.customer_kg_by_week).reduce((s, v) => s + Number(v || 0), 0), 0);
@@ -536,8 +548,11 @@
       const html=[];
       agg.rows.forEach(row => {
         const warnBase = Math.max(0, ...(Object.values(row.customer_kg_by_week || {}).map(v => Number(v || 0))));
+        const reperFull = (row.reper_list || []).join(' / ') || '-';
+        const reperShort = shortJoinedList(row.reper_list || [], 6) || '-';
+        const rawShort = (row.raw_parts || []).slice(0,4).join(', ');
         const fixed = [
-          '<td class="left fixed" rowspan="5"><strong>' + esc((row.reper_list || []).join(' / ') || '-') + '</strong><div class="muted small">' + esc((row.raw_parts || []).slice(0,4).join(', ')) + '</div></td>',
+          '<td class="left fixed" rowspan="5" title="' + esc(reperFull) + '"><strong>' + esc(reperShort) + '</strong><div class="muted small">' + esc(rawShort) + '</div></td>',
           '<td class="right mono fixed" rowspan="5">' + esc(row.kg_per_buc_display || '-') + '</td>',
           '<td class="left fixed" rowspan="5">' + esc(row.material || '-') + '</td>',
           '<td class="fixed" rowspan="5">' + esc(row.diametru || '-') + '</td>',
@@ -568,8 +583,11 @@
             const value = Number((line.values && line.values[week]) || 0);
             if(line.kind === 'po'){
               const manualValue = Number((line.manual && line.manual[week]) || 0);
-              const title = manualValue ? ('Comenzi manuale salvate separat în editor: ' + fmtKg(manualValue) + ' kg') : '';
-              html.push('<td class="right mono"><input class="cell-input right mono inline-po-input" data-spec="' + esc(row.spec_key || '') + '" data-week="' + esc(week) + '" value="' + esc(fmtKg(value)) + '" title="' + esc(title) + '" ' + (state.canEdit ? '' : 'disabled') + '></td>');
+              const hasSpec = !!row.spec_key;
+              const title = hasSpec
+                ? (manualValue ? ('Comenzi manuale salvate separat în editor: ' + fmtKg(manualValue) + ' kg') : 'Scrie direct cantitatea de oțel pe săptămâna dorită.')
+                : 'Pentru acest rând lipsesc materialul și diametrul complete; completează maparea înainte să introduci comanda de oțel direct în tabel.';
+              html.push('<td class="right mono"><input class="cell-input right mono inline-po-input" data-spec="' + esc(row.spec_key || '') + '" data-week="' + esc(week) + '" value="' + esc(fmtKg(value)) + '" title="' + esc(title) + '" ' + (state.canEdit && hasSpec ? '' : 'disabled') + '></td>');
             } else {
               html.push('<td class="right mono">' + esc(fmtKg(value)) + '</td>');
             }
