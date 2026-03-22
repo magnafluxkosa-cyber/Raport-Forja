@@ -75,7 +75,6 @@
         <div class="field"><label for="filterOpenOnly">Afișare</label><select id="filterOpenOnly"><option value="all">Toate</option><option value="open">Doar rămase</option></select></div>
         <div class="actions" style="margin-left:auto">
           <button class="btn secondary" id="btnAddRow" type="button">+ Rând nou</button>
-          <button class="btn secondary" id="btnImport" type="button">Import Excel</button>
           <button class="btn secondary" id="btnExport" type="button">Export Excel</button>
         </div>
         <div class="hint">Listele de material și diametru se iau din Helper Data. În MRC intră <strong>doar Rămas kg</strong>. Dacă ETA este în trecut și comanda încă e deschisă, MRC o mută automat în prima săptămână vizibilă și o tratează ca restanță.</div>
@@ -83,7 +82,6 @@
 
       <datalist id="supplierList"></datalist>
       <datalist id="statusList"></datalist>
-      <input id="fileImport" type="file" accept=".xlsx,.xls,.csv" multiple hidden />
 
       <section class="panel">
         <div class="panel-head">
@@ -130,11 +128,10 @@
       syncStatus:document.getElementById('syncStatus'), syncSub:document.getElementById('syncSub'),
       filterMaterial:document.getElementById('filterMaterial'), filterSupplier:document.getElementById('filterSupplier'), filterStatus:document.getElementById('filterStatus'), filterOpenOnly:document.getElementById('filterOpenOnly'),
       supplierList:document.getElementById('supplierList'), statusList:document.getElementById('statusList'),
-      btnReload:document.getElementById('btnReload'), btnSave:document.getElementById('btnSave'), btnAddRow:document.getElementById('btnAddRow'), btnImport:document.getElementById('btnImport'), btnExport:document.getElementById('btnExport'),
-      fileImport:document.getElementById('fileImport'),
+      btnReload:document.getElementById('btnReload'), btnSave:document.getElementById('btnSave'), btnAddRow:document.getElementById('btnAddRow'), btnExport:document.getElementById('btnExport'),
       ordersBody:document.getElementById('ordersBody')
     };
-    const state = { supabase:null, user:null, role:'viewer', canEdit:false, maps:null, mappingRows:[], steelOrders:[], lastSyncAt:'', dirty:false };
+    const state = { supabase:null, user:null, role:'viewer', canEdit:false, maps:null, mappingRows:[], steelOrders:[], helperLists:{ suppliers:[], materials:[], diameters:[] }, lastSyncAt:'', dirty:false };
 
     function esc(v){ return String(v == null ? '' : v).replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])); }
     function fmtKg(v){ const n = Number(v || 0); return n ? n.toLocaleString('ro-RO', { minimumFractionDigits:0, maximumFractionDigits:2 }) : ''; }
@@ -153,112 +150,63 @@
       });
       return map;
     }
-    function fillFiltersAndLists(){
+    function normalizeHelperLabel(value){ return MRC.trimText(value).replace(/\s+/g,' ').trim(); }
+    function sortRo(values){ return values.sort((a,b)=>String(a).localeCompare(String(b),'ro',{sensitivity:'base'})); }
+    async function loadHelperLists(){
+      state.helperLists = { suppliers:[], materials:[], diameters:[] };
+      if(!state.supabase) return;
+      try{
+        const { data, error } = await state.supabase
+          .from('rf_helper_items')
+          .select('module_key, category_key, label, code, sort_order, is_active')
+          .eq('module_key','global')
+          .in('category_key',['furnizori','calitati','diametre'])
+          .order('sort_order',{ ascending:true, nullsFirst:false });
+        if(error) throw error;
+        const rows = (data || []).filter(row => row && row.is_active !== false);
+        const grouped = { furnizori:new Set(), calitati:new Set(), diametre:new Set() };
+        rows.forEach(row => {
+          const key = MRC.trimText(row.category_key).toLowerCase();
+          const label = normalizeHelperLabel(row.label || row.code || '');
+          if(!label || !grouped[key]) return;
+          grouped[key].add(key === 'calitati' ? label.toUpperCase() : label);
+        });
+        state.helperLists.suppliers = sortRo(Array.from(grouped.furnizori));
+        state.helperLists.materials = sortRo(Array.from(grouped.calitati));
+        state.helperLists.diameters = sortRo(Array.from(grouped.diametre));
+      }catch(err){
+        console.warn('Nu am putut încărca listele din Helper Data.', err);
+      }
+    }
+    function allSupplierOptions(){
+      const helper = Array.isArray(state.helperLists.suppliers) ? state.helperLists.suppliers : [];
+      const fromOrders = (state.steelOrders || []).map(r => normalizeHelperLabel(r.supplier)).filter(Boolean);
+      return sortRo(Array.from(new Set([].concat(helper, fromOrders))));
+    }
+    function allMaterialOptions(){
+      const helper = Array.isArray(state.helperLists.materials) ? state.helperLists.materials : [];
+      const fromMaps = (state.mappingRows || []).map(r => MRC.trimText(r.material).toUpperCase()).filter(Boolean);
+      const fromOrders = (state.steelOrders || []).map(r => MRC.trimText(r.material).toUpperCase()).filter(Boolean);
+      return sortRo(Array.from(new Set([].concat(helper, fromMaps, fromOrders))));
+    }
+    function allDiametruOptions(material){
+      const key = MRC.trimText(material).toUpperCase();
+      const helper = Array.isArray(state.helperLists.diameters) ? state.helperLists.diameters : [];
       const specMap = specOptions();
-      const materials = Object.keys(specMap).sort((a,b)=>a.localeCompare(b,'ro',{sensitivity:'base'}));
+      const fromMaps = key ? Array.from(specMap[key] || []) : (state.mappingRows || []).map(r => MRC.trimText(r.diametru)).filter(Boolean);
+      const fromOrders = (state.steelOrders || []).filter(r => !key || MRC.trimText(r.material).toUpperCase() === key).map(r => MRC.trimText(r.diametru)).filter(Boolean);
+      return sortRo(Array.from(new Set([].concat(helper, fromMaps, fromOrders))));
+    }
+    function fillFiltersAndLists(){
+      const materials = allMaterialOptions();
       const currentMaterial = els.filterMaterial.value || '';
       els.filterMaterial.innerHTML = '<option value="">Toate</option>' + materials.map(v => '<option value="'+esc(v)+'">'+esc(v)+'</option>').join('');
       if(materials.includes(currentMaterial)) els.filterMaterial.value = currentMaterial;
-      const suppliers = Array.from(new Set((state.steelOrders || []).map(r => MRC.trimText(r.supplier)).filter(Boolean))).sort((a,b)=>a.localeCompare(b,'ro',{sensitivity:'base'}));
+      const suppliers = allSupplierOptions();
       els.supplierList.innerHTML = suppliers.map(v => '<option value="'+esc(v)+'"></option>').join('');
       const statuses = Array.from(new Set((state.steelOrders || []).map(r => MRC.trimText(r.status)).filter(Boolean).concat(['Planificat','Parțial intrat','Intrat complet','Întârziat','Anulat']))).sort((a,b)=>a.localeCompare(b,'ro',{sensitivity:'base'}));
       els.filterStatus.innerHTML = '<option value="">Toate</option>' + statuses.map(v => '<option value="'+esc(v)+'">'+esc(v)+'</option>').join('');
       els.statusList.innerHTML = statuses.map(v => '<option value="'+esc(v)+'"></option>').join('');
-    }
-
-    function steelImportKey(row){
-      return [
-        MRC.normalizeText(row.po_number),
-        MRC.normalizeText(row.supplier),
-        MRC.normalizeText(row.material),
-        MRC.normalizeText(row.diametru),
-        MRC.normalizeText(row.eta_date),
-        Number(row.qty_kg || 0),
-        Number(row.received_kg || 0)
-      ].join('|');
-    }
-    function detectSteelHeaderRow(rows){
-      const wanted = ['material','diametru','furnizor','supplier','po','comanda','eta','kg','intrat','status'];
-      let bestIdx = 0, bestScore = -1;
-      rows.slice(0, 15).forEach((row, idx) => {
-        const joined = (row || []).map(cell => MRC.normalizeText(cell)).join(' ');
-        let score = 0;
-        wanted.forEach(term => { if(joined.includes(term)) score += 1; });
-        if(joined.includes('material') && joined.includes('diametru')) score += 2;
-        if((joined.includes('comandat') || joined.includes('qty')) && (joined.includes('eta') || joined.includes('data'))) score += 2;
-        if(score > bestScore){ bestScore = score; bestIdx = idx; }
-      });
-      return bestIdx;
-    }
-    function parseSteelFile(file){
-      return new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onerror = () => reject(new Error('Nu am putut citi fișierul ' + file.name));
-        reader.onload = function(ev){
-          try{
-            const data = ev.target.result;
-            const workbook = XLSX.read(data, { type:'array' });
-            const parsed = [];
-            (workbook.SheetNames || []).forEach(sheetName => {
-              const ws = workbook.Sheets[sheetName];
-              if(!ws) return;
-              const rows = XLSX.utils.sheet_to_json(ws, { header:1, defval:'' });
-              if(!rows || !rows.length) return;
-              const headerRow = detectSteelHeaderRow(rows);
-              const jsonRows = XLSX.utils.sheet_to_json(ws, { range: headerRow, defval:'', raw:false });
-              jsonRows.forEach((raw, idx) => {
-                const row = ensureWeek(MRC.normalizeSteelPoRow(raw, idx));
-                if(!(row.po_number || row.supplier || row.material || row.diametru || row.qty_kg || row.received_kg || row.eta_date || row.notes)) return;
-                parsed.push(row);
-              });
-            });
-            resolve(parsed);
-          }catch(err){ reject(err); }
-        };
-        reader.readAsArrayBuffer(file);
-      });
-    }
-    async function handleImport(files){
-      const list = Array.from(files || []);
-      if(!list.length) return;
-      if(!state.canEdit) return;
-      const imported = [];
-      for(const file of list){
-        const rows = await parseSteelFile(file);
-        rows.forEach(r => imported.push(r));
-      }
-      if(!imported.length){
-        alert('Nu am găsit comenzi valide în fișierele selectate.');
-        return;
-      }
-      const existingByKey = new Map((state.steelOrders || []).map(row => [steelImportKey(row), row]));
-      imported.forEach(row => {
-        const key = steelImportKey(row);
-        const existing = existingByKey.get(key);
-        if(existing){
-          existing.po_number = row.po_number;
-          existing.supplier = row.supplier;
-          existing.material = row.material;
-          existing.diametru = row.diametru;
-          existing.qty_kg = row.qty_kg;
-          existing.received_kg = row.received_kg;
-          existing.eta_date = row.eta_date;
-          existing.eta_week_key = row.eta_week_key;
-          existing.status = row.status;
-          existing.notes = row.notes;
-          ensureWeek(existing);
-        } else {
-          const newRow = ensureWeek(MRC.normalizeSteelPoRow(row, state.steelOrders.length + imported.length));
-          state.steelOrders.push(newRow);
-          existingByKey.set(key, newRow);
-        }
-      });
-      state.steelOrders = state.steelOrders.map((row, idx) => ensureWeek(MRC.normalizeSteelPoRow(Object.assign({}, row, { id: row.id || ('po-' + idx) }), idx)));
-      state.dirty = true;
-      await saveDoc();
-      await loadDocs();
-      renderAll();
-      alert('Import finalizat: ' + imported.length + ' rânduri procesate.');
     }
     function renderStatus(){
       els.authStatus.textContent = state.user ? (state.user.email || 'Autentificat') : 'Neautentificat';
@@ -289,14 +237,11 @@
       });
     }
     function materialSelect(row){
-      const specMap = specOptions();
-      const materials = Object.keys(specMap).sort((a,b)=>a.localeCompare(b,'ro',{sensitivity:'base'}));
+      const materials = allMaterialOptions();
       return '<select class="cell-select" data-field="material">' + ['<option value=""></option>'].concat(materials.map(v => '<option value="'+esc(v)+'" ' + (v === row.material ? 'selected' : '') + '>'+esc(v)+'</option>')).join('') + '</select>';
     }
     function diamSelect(row){
-      const specMap = specOptions();
-      const opts = Array.from(specMap[MRC.trimText(row.material).toUpperCase()] || []).sort((a,b)=>String(a).localeCompare(String(b),'ro',{sensitivity:'base'}));
-      const values = opts.length ? opts : Array.from(new Set((state.mappingRows || []).map(r => MRC.trimText(r.diametru)).filter(Boolean))).sort((a,b)=>String(a).localeCompare(String(b),'ro',{sensitivity:'base'}));
+      const values = allDiametruOptions(row.material);
       return '<select class="cell-select" data-field="diametru">' + ['<option value=""></option>'].concat(values.map(v => '<option value="'+esc(v)+'" ' + (String(v) === String(row.diametru || '') ? 'selected' : '') + '>'+esc(v)+'</option>')).join('') + '</select>';
     }
     function renderRows(){
@@ -309,21 +254,13 @@
         '<td>' + diamSelect(row) + '</td>' +
         '<td><input class="cell-input right mono" data-field="qty_kg" value="' + esc(fmtKg(row.qty_kg)) + '"></td>' +
         '<td><input class="cell-input right mono" data-field="received_kg" value="' + esc(fmtKg(row.received_kg)) + '"></td>' +
-        '<td class="right mono readonly" data-col="remaining"><strong>' + esc(fmtKg(row.remaining_kg)) + '</strong></td>' +
+        '<td class="right mono readonly"><strong>' + esc(fmtKg(row.remaining_kg)) + '</strong></td>' +
         '<td><input class="cell-input" data-field="eta_date" value="' + esc(row.eta_date || '') + '" placeholder="yyyy-mm-dd"></td>' +
-        '<td class="center mono readonly" data-col="week">' + esc(row.eta_week_key || '') + '</td>' +
+        '<td class="center mono readonly">' + esc(row.eta_week_key || '') + '</td>' +
         '<td><input class="cell-input" data-field="status" list="statusList" value="' + esc(row.status || '') + '"></td>' +
         '<td><input class="cell-input" data-field="notes" value="' + esc(row.notes || '') + '"></td>' +
         '<td class="center"><button class="delete-btn" data-action="delete">Șterge</button></td>' +
       '</tr>').join('');
-    }
-    function updateRowView(tr, row){
-      const remainingCell = tr.querySelector('[data-col="remaining"]');
-      const weekCell = tr.querySelector('[data-col="week"]');
-      const statusInput = tr.querySelector('[data-field="status"]');
-      if(remainingCell) remainingCell.innerHTML = '<strong>' + esc(fmtKg(row.remaining_kg)) + '</strong>';
-      if(weekCell) weekCell.textContent = row.eta_week_key || '';
-      if(statusInput && document.activeElement !== statusInput) statusInput.value = row.status || '';
     }
     function renderAll(){ fillFiltersAndLists(); renderStatus(); renderRows(); }
     async function initAuth(){
@@ -335,7 +272,7 @@
       state.canEdit = ['admin','editor'].includes(state.role);
     }
     async function loadDocs(){
-      const docs = await Promise.all([MRC.readDocumentCompat(state.supabase, 'mrc-part-mapping'), MRC.readDocumentCompat(state.supabase, DOC_KEY)]);
+      const docs = await Promise.all([MRC.readDocumentCompat(state.supabase, 'mrc-part-mapping'), MRC.readDocumentCompat(state.supabase, DOC_KEY), loadHelperLists()]);
       const mapDoc = docs[0], steelDoc = docs[1];
       state.mappingRows = (mapDoc ? MRC.extractRowsPayload(mapDoc.content || mapDoc.data) : []).map((row, index) => MRC.normalizeMappingRow(row, index)).filter(r => r.raw_part || r.part_norm || r.reper_intern);
       state.steelOrders = (steelDoc ? MRC.extractRowsPayload(steelDoc.content || steelDoc.data) : []).map((row, index) => ensureWeek(MRC.normalizeSteelPoRow(row, index))).filter(r => r.po_number || r.material || r.qty_kg || r.received_kg);
@@ -361,17 +298,6 @@
       els.btnReload.addEventListener('click', async () => { await loadDocs(); renderAll(); });
       els.btnSave.addEventListener('click', async () => { await saveDoc(); await loadDocs(); renderAll(); });
       els.btnAddRow.addEventListener('click', addRow);
-      els.btnImport.addEventListener('click', () => els.fileImport.click());
-      els.fileImport.addEventListener('change', async function(){
-        try{
-          await handleImport(this.files);
-        }catch(error){
-          console.error(error);
-          alert(error && error.message ? error.message : 'Importul a eșuat.');
-        } finally {
-          this.value = '';
-        }
-      });
       els.btnExport.addEventListener('click', () => exportRowsToXlsx(state.steelOrders, 'mrc-steel-purchase-orders.xlsx'));
       els.ordersBody.addEventListener('input', function(event){
         const tr = event.target.closest('tr[data-id]'); if(!tr || !state.canEdit) return;
@@ -381,8 +307,7 @@
         if(field === 'material') row.material = MRC.trimText(row.material).toUpperCase();
         ensureWeek(row);
         state.dirty = true;
-        updateRowView(tr, row);
-        renderStatus();
+        renderAll();
       });
       els.ordersBody.addEventListener('change', function(event){
         const tr = event.target.closest('tr[data-id]'); if(!tr || !state.canEdit) return;
