@@ -185,6 +185,7 @@
   }
   function listWorkbookSheetNames(workbook){ return workbook && Array.isArray(workbook.SheetNames) ? workbook.SheetNames.slice() : []; }
 
+
   async function loadHelperMaps(sb){
     const result = {
       mappingRows: [],
@@ -196,6 +197,9 @@
       byDebitare: Object.create(null),
       source: 'helper-data'
     };
+
+    let usedFallbackDoc = false;
+
     try {
       const [mapRes, forjaRes, debitRes] = await Promise.all([
         sb.from(MAPPING_TABLE).select('*').order('sort_order', { ascending:true }),
@@ -209,12 +213,22 @@
       result.source = 'helper-data error';
     }
 
+    try {
+      const doc = await readDocumentCompat(sb, 'mrc-part-mapping');
+      const payloadRows = doc ? extractRowsPayload(doc.content || doc.data) : [];
+      if (payloadRows.length) {
+        result.mappingRows = payloadRows.map((row, index) => normalizeMappingRow(row, index)).filter(row => isActive(row.is_active));
+        result.source = 'rf_documents / mrc-part-mapping';
+        usedFallbackDoc = true;
+      }
+    } catch (_) {}
+
     result.mappingRows.forEach(row => {
       const rawKey = normalizePart(row.raw_part);
       const normKey = normalizePart(row.part_norm);
+      const internalKey = normalizeLoose(row.reper_intern);
       if (rawKey && !result.byRawPart[rawKey]) result.byRawPart[rawKey] = row;
       if (normKey && !result.byNormPart[normKey]) result.byNormPart[normKey] = row;
-      const internalKey = normalizeLoose(row.reper_intern);
       if (internalKey && !result.byInternalReper[internalKey]) result.byInternalReper[internalKey] = row;
     });
 
@@ -247,8 +261,10 @@
       };
     });
 
+    if (usedFallbackDoc && !result.mappingRows.length) result.source = 'fără mapare';
     return result;
   }
+
 
   function normalizeMappingRow(row, index){
     return {
@@ -265,6 +281,68 @@
       sort_order: Number(row.sort_order || index + 1) || (index + 1),
       is_active: isActive(row.is_active)
     };
+  }
+
+
+  function importPartMappingFromWorkbook(workbook){
+    const rows = [];
+    listWorkbookSheetNames(workbook).forEach(sheetName => {
+      const rawRows = loadSheetRows(workbook, sheetName);
+      rawRows.forEach((raw, index) => {
+        const row = normalizeMappingRow(Object.assign({ source_sheet: sheetName }, raw), rows.length + index);
+        if (!row.raw_part && !row.part_norm && !row.reper_intern) return;
+        rows.push(row);
+      });
+    });
+    const seen = new Set();
+    return rows.filter(row => {
+      const key = [normalizePart(row.raw_part), normalizePart(row.part_norm), normalizeLoose(row.reper_intern)].join('|');
+      if (!key.replace(/\|/g,'')) return false;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }
+
+  function normalizeIntrariOtelRow(row, index){
+    const obj = Array.isArray(row) ? {
+      an: arrayCell(row, 0, 0),
+      luna: arrayCell(row, 1, ''),
+      data: arrayCell(row, 2, ''),
+      diametru: arrayCell(row, 3, ''),
+      calitate: arrayCell(row, 4, ''),
+      cantitate_kg: arrayCell(row, 7, 0)
+    } : (row || {});
+    const dataIso = displayToIso(pick(obj, ['data','DATA','date','Date','Data Intrare','data intrare','Delivery Date']));
+    return {
+      id: trimText(pick(obj, ['id','_id'])) || ('intrari-flow-' + index),
+      an: Number(pick(obj, ['an','AN','Anul','year'])) || (dataIso ? Number(dataIso.slice(0,4)) : 0),
+      data: dataIso,
+      material: trimText(pick(obj, ['calitate','calitate_otel','Calitate otel','Calitate Oțel','material','Material'])).toUpperCase(),
+      diametru: trimText(pick(obj, ['diametru','diametru_otel','Diametru otel','Dimensiune Otel','Dimensiune Oțel'])),
+      cantitate_kg: Math.max(0, toNumber(pick(obj, ['cantitate_kg','cantitateKg','cantitate','Cantitate in KG','Cantitate KG','kg'])))
+    };
+  }
+
+  async function loadIntrariRowsForYears(sb, years){
+    const uniqueYears = Array.from(new Set((years || []).map(v => Number(v)).filter(v => v > 0)));
+    const rows = [];
+    const sourceParts = [];
+    if (!uniqueYears.length) return { rows, source:'', ok:true };
+    const keys = uniqueYears.map(year => 'intrari-otel:' + year).concat(['intrari-otel']);
+    const docs = await queryDocsByKeys(sb, keys);
+    uniqueYears.forEach(year => {
+      const specific = docs.find(doc => doc.doc_key === ('intrari-otel:' + year) && extractRowsPayload(doc.content || doc.data).length);
+      const fallback = docs.find(doc => doc.doc_key === 'intrari-otel' && extractRowsPayload(doc.content || doc.data).length);
+      const picked = specific || fallback;
+      if (!picked) return;
+      sourceParts.push(picked.doc_key || 'intrari-otel');
+      extractRowsPayload(picked.content || picked.data).forEach((raw, index) => {
+        const row = normalizeIntrariOtelRow(raw, index);
+        if (row.data && row.material && row.diametru && row.cantitate_kg > 0 && row.an) rows.push(row);
+      });
+    });
+    return { rows, source: Array.from(new Set(sourceParts)).join(', '), ok:true };
   }
 
   function applyPartMapping(row, maps){
@@ -779,14 +857,17 @@
     writeDocumentCompat,
     loadHelperMaps,
     normalizeMappingRow,
+    importPartMappingFromWorkbook,
     applyPartMapping,
     normalizeCustomerOrderRow,
     importCustomerOrdersFromWorkbook,
     normalizeOpeningStockRow,
     importOpeningStockFromWorkbook,
     normalizeSteelPoRow,
+    normalizeIntrariOtelRow,
     normalizeForjateFlowRow,
     loadForjateRowsForYears,
+    loadIntrariRowsForYears,
     normalizePlanRow,
     loadPlanRows,
     computeHorizonWeeks,
