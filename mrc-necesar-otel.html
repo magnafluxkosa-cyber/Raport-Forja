@@ -61,6 +61,9 @@
     .steel-editor table{min-width:980px}
     .cell-input{width:100%;height:30px;border:1px solid rgba(29,29,29,.18);border-radius:8px;padding:0 8px;font-size:12px;color:#0b1f46;background:#fff;outline:none}
     .cell-input:focus{border-color:#3f78b7;box-shadow:0 0 0 2px rgba(95,143,190,.18)}
+    .po-inline-input{width:100%;min-width:86px;height:28px;border:1px solid rgba(29,29,29,.18);border-radius:8px;padding:0 6px;background:#fff;color:#0b1f46;text-align:right;font:inherit;font-family:Consolas,"Courier New",monospace;outline:none}
+    .po-inline-input:focus{border-color:#3f78b7;box-shadow:0 0 0 2px rgba(95,143,190,.18)}
+    .po-inline-readonly{display:block;width:100%}
     .delete-btn{height:28px;border:1px solid #7e1d13;border-radius:8px;background:#b42318;color:#fff;font-size:11px;font-weight:700;padding:0 10px;cursor:pointer}
     .footer-note{font-size:12px;color:var(--muted)}
     @media (max-width:1200px){.statusbar,.summary-strip{grid-template-columns:repeat(2,minmax(180px,1fr))}}
@@ -196,6 +199,84 @@
         if(item.carried_over) parts.push('Restanță din săptămână anterioară');
         return parts.join(' | ');
       }).join('\n');
+    }
+    function parseSpecKey(specKey){
+      const txt = MRC.trimText(specKey || '');
+      const idx = txt.indexOf('|');
+      return idx >= 0 ? { material:txt.slice(0, idx), diametru:txt.slice(idx + 1) } : { material:'', diametru:'' };
+    }
+    function isInlineManagedSteelOrder(row){
+      return MRC.trimText(row && row.notes || '').includes('[MRC-EDIT]') || MRC.trimText(row && row.po_number || '').toUpperCase().startsWith('MRC-EDIT ');
+    }
+    function makeInlineSteelPoNumber(specKey, weekKey){
+      const spec = parseSpecKey(specKey);
+      return ['MRC-EDIT', weekKey || '', spec.material || '', spec.diametru || ''].filter(Boolean).join(' | ');
+    }
+    function buildInlineSteelOrder(specKey, weekKey, qtyKg){
+      const spec = parseSpecKey(specKey);
+      const eta = weekStartIso(weekKey) || '';
+      const row = MRC.normalizeSteelPoRow({
+        po_number:makeInlineSteelPoNumber(specKey, weekKey),
+        supplier:'EDITARE MRC',
+        material:spec.material || '',
+        diametru:spec.diametru || '',
+        qty_kg:Math.max(0, Number(qtyKg || 0)),
+        received_kg:0,
+        eta_date:eta,
+        status:'Planificat',
+        notes:'[MRC-EDIT] Creat din MRC'
+      }, state.steelOrders.length);
+      return ensureSteelOrderWeek(row);
+    }
+    async function applyInlinePoTotal(specKey, weekKey, rawValue){
+      if(!state.canEdit) return;
+      const desired = Math.max(0, MRC.toNumber(rawValue));
+      normalizeAutoSteelOrders();
+      const matches = state.steelOrders.filter(function(row){
+        return MRC.buildSpecKey(row.material, row.diametru) === specKey && ensureSteelOrderWeek(row).eta_week_key === weekKey;
+      });
+      const managed = matches.filter(isInlineManagedSteelOrder);
+      const normal = matches.filter(row => !isInlineManagedSteelOrder(row));
+      let remainingTarget = desired;
+
+      managed.forEach(function(row){
+        row.qty_kg = Number(row.received_kg || 0);
+        row.remaining_kg = 0;
+        ensureSteelOrderWeek(row);
+      });
+
+      normal.forEach(function(row){
+        const received = Number(row.received_kg || 0);
+        const currentRemaining = Math.max(0, Number((row.remaining_kg != null ? row.remaining_kg : (Number(row.qty_kg || 0) - received)) || 0));
+        const nextRemaining = Math.min(currentRemaining, remainingTarget);
+        row.qty_kg = received + nextRemaining;
+        row.remaining_kg = nextRemaining;
+        remainingTarget -= nextRemaining;
+        ensureSteelOrderWeek(row);
+      });
+
+      if(remainingTarget > 0){
+        const managedRow = managed[0] || buildInlineSteelOrder(specKey, weekKey, remainingTarget);
+        const spec = parseSpecKey(specKey);
+        managedRow.material = spec.material;
+        managedRow.diametru = spec.diametru;
+        managedRow.po_number = makeInlineSteelPoNumber(specKey, weekKey);
+        managedRow.supplier = managedRow.supplier || 'EDITARE MRC';
+        managedRow.notes = managedRow.notes && managedRow.notes.includes('[MRC-EDIT]') ? managedRow.notes : '[MRC-EDIT] Creat din MRC';
+        managedRow.eta_date = weekStartIso(weekKey) || managedRow.eta_date || '';
+        managedRow.qty_kg = Number(managedRow.received_kg || 0) + remainingTarget;
+        managedRow.remaining_kg = remainingTarget;
+        ensureSteelOrderWeek(managedRow);
+        if(!state.steelOrders.some(row => row.id === managedRow.id)) state.steelOrders.push(managedRow);
+      }
+
+      state.steelOrders = state.steelOrders.filter(function(row){
+        return !(isInlineManagedSteelOrder(row) && Number(row.qty_kg || 0) <= 0 && Number(row.received_kg || 0) <= 0);
+      }).map(function(row, index){ return ensureSteelOrderWeek(MRC.normalizeSteelPoRow(row, index)); });
+
+      state.dirty.steel = true;
+      await saveDoc('steel', state.steelOrders.map(ensureSteelOrderWeek));
+      renderAll();
     }
     function classByValue(v, warnValue){ const num = Number(v || 0); if(num < 0) return 'value-bad'; if(num <= Number(warnValue || 0)) return 'value-warn'; return 'value-ok'; }
     function weekStartIso(weekKey){ const p = MRC.parseYearWeek(weekKey); return p ? MRC.startOfIsoWeek(p.year, p.week) : ''; }
@@ -624,7 +705,11 @@
             }
             if(line.kind === 'po'){
               const title = formatPoTooltip((line.details && line.details[week]) || []);
-              html.push('<td class="right mono" title="' + esc(title) + '">' + esc(fmtKg(value)) + '</td>');
+              if(state.canEdit){
+                html.push('<td class="right mono" title="' + esc(title) + '"><input class="po-inline-input" data-field="po-inline" data-spec="' + esc(row.spec_key) + '" data-week="' + esc(week) + '" value="' + esc(fmtKg(value)) + '" title="' + esc(title) + '"></td>');
+              } else {
+                html.push('<td class="right mono" title="' + esc(title) + '"><span class="po-inline-readonly">' + esc(fmtKg(value)) + '</span></td>');
+              }
             } else {
               html.push('<td class="right mono">' + esc(fmtKg(value)) + '</td>');
             }
@@ -674,6 +759,19 @@
       els.btnImportMapping.addEventListener('click', () => els.fileMapping.click());
       els.btnImportOrders.addEventListener('click', () => els.fileOrders.click());
       els.btnImportStock.addEventListener('click', () => els.fileStock.click());
+      els.mainBody.addEventListener('keydown', function(event){
+        const input = event.target.closest('input[data-field="po-inline"]'); if(!input || !state.canEdit) return;
+        if(event.key === 'Enter'){ event.preventDefault(); input.blur(); }
+      });
+      els.mainBody.addEventListener('change', async function(event){
+        const input = event.target.closest('input[data-field="po-inline"]'); if(!input || !state.canEdit) return;
+        input.disabled = true;
+        try{
+          await applyInlinePoTotal(input.getAttribute('data-spec') || '', input.getAttribute('data-week') || '', input.value || '0');
+        } finally {
+          input.disabled = false;
+        }
+      });
       els.fileMapping.addEventListener('change', async function(){
         const file = this.files && this.files[0]; if(!file || !state.canEdit) return;
         const workbook = await readWorkbook(file);
