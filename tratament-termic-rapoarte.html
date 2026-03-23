@@ -245,6 +245,12 @@
       cursor: not-allowed;
     }
 
+    .field input[readonly] {
+      background: #f2f7fb;
+      font-weight: 700;
+      color: var(--text);
+    }
+
     .form-actions {
       display: flex;
       gap: 8px;
@@ -398,7 +404,7 @@
       <div class="header">
         <div>
           <h1>Rapoarte — Tratament Termic</h1>
-          <div class="subtitle">Foaie dedicată pentru: An / Lună / Dată / Schimbul / Operator / Reper / Sarjă / Cantitate / Ore / Opriri Neplanificate / Mentenanță / Încălzire / Golire</div>
+          <div class="subtitle">Adăugare rapidă cu dată din calendar, An/Lună completate automat, listă de repere din Repere Forjate, operatori din Helper Data Magnaflux și Ore calculate automat după regulile din excel.</div>
         </div>
         <div class="toolbar">
           <a class="btn secondary" href="index.html">Înapoi la Dashboard</a>
@@ -457,11 +463,13 @@
         </div>
         <div class="field">
           <label for="fldOperator">Operator</label>
-          <input id="fldOperator" type="text" autocomplete="off" />
+          <input id="fldOperator" type="text" list="operatorList" autocomplete="off" />
+          <datalist id="operatorList"></datalist>
         </div>
         <div class="field">
           <label for="fldReper">Reper</label>
-          <input id="fldReper" type="text" autocomplete="off" />
+          <input id="fldReper" type="text" list="reperList" autocomplete="off" />
+          <datalist id="reperList"></datalist>
         </div>
         <div class="field">
           <label for="fldSarja">Sarjă</label>
@@ -473,7 +481,7 @@
         </div>
         <div class="field">
           <label for="fldOre">Ore</label>
-          <input id="fldOre" type="number" min="0" step="0.01" inputmode="decimal" />
+          <input id="fldOre" type="number" min="0" step="0.01" inputmode="decimal" readonly />
         </div>
         <div class="field">
           <label for="fldOpriri">Opriri Neplanificate<span class="sub-label">Minute</span></label>
@@ -541,12 +549,14 @@
       'use strict';
 
       const DOC_KEY = 'tratament-termic-rapoarte';
-      const LOCAL_KEY = 'kad_tratament_termic_rapoarte_v1';
+      const LOCAL_KEY = 'kad_tratament_termic_rapoarte_v2';
+      const LEGACY_LOCAL_KEY = 'kad_tratament_termic_rapoarte_v1';
       const SAVE_DEBOUNCE_MS = 250;
       const MONTHS = [
         'Ianuarie', 'Februarie', 'Martie', 'Aprilie', 'Mai', 'Iunie',
         'Iulie', 'August', 'Septembrie', 'Octombrie', 'Noiembrie', 'Decembrie'
       ];
+      const TREATMENT_RULES = [{"reper":"106-1625","kg_piesa":4.6,"tact_sec":540,"cant_cos":34},{"reper":"106-1626","kg_piesa":4.6,"tact_sec":540,"cant_cos":34},{"reper":"229-6909","kg_piesa":4.419,"tact_sec":540,"cant_cos":34},{"reper":"229-6910","kg_piesa":4.419,"tact_sec":540,"cant_cos":34},{"reper":"378-8241","kg_piesa":6.25,"tact_sec":540,"cant_cos":30},{"reper":"378-8242","kg_piesa":6.25,"tact_sec":540,"cant_cos":30},{"reper":"248-2307","kg_piesa":6.25,"tact_sec":540,"cant_cos":30},{"reper":"248-2308","kg_piesa":6.25,"tact_sec":540,"cant_cos":30},{"reper":"503-0761","kg_piesa":8.19,"tact_sec":540,"cant_cos":22},{"reper":"503-0762","kg_piesa":8.19,"tact_sec":540,"cant_cos":22},{"reper":"9K-6628","kg_piesa":2.8075,"tact_sec":540,"cant_cos":48},{"reper":"9K-6629","kg_piesa":2.8075,"tact_sec":540,"cant_cos":48},{"reper":"9P-9664/65","kg_piesa":2.95,"tact_sec":540,"cant_cos":45},{"reper":"7G-0521/22","kg_piesa":1.51,"tact_sec":540,"cant_cos":65},{"reper":"7G-2532/34","kg_piesa":1.77,"tact_sec":540,"cant_cos":60},{"reper":"358-5253/55","kg_piesa":2.38,"tact_sec":540,"cant_cos":55},{"reper":"SK-203034","kg_piesa":24.3,"tact_sec":660,"cant_cos":5},{"reper":"418-2091","kg_piesa":6.25,"tact_sec":540,"cant_cos":30},{"reper":"418-2092","kg_piesa":6.25,"tact_sec":540,"cant_cos":30},{"reper":"417-3595","kg_piesa":4.6,"tact_sec":540,"cant_cos":34},{"reper":"417-3596","kg_piesa":4.6,"tact_sec":540,"cant_cos":34}];
 
       const els = {
         authChip: document.getElementById('authChip'),
@@ -576,7 +586,9 @@
         fldOpriri: document.getElementById('fldOpriri'),
         fldMentenanta: document.getElementById('fldMentenanta'),
         fldIncalzire: document.getElementById('fldIncalzire'),
-        fldGolire: document.getElementById('fldGolire')
+        fldGolire: document.getElementById('fldGolire'),
+        operatorList: document.getElementById('operatorList'),
+        reperList: document.getElementById('reperList')
       };
 
       const state = {
@@ -584,7 +596,11 @@
         rows: [],
         selectedId: null,
         updatedAt: null,
-        saveTimer: null
+        saveTimer: null,
+        helpersLoaded: false,
+        operators: [],
+        repere: [],
+        ttRuleMap: new Map()
       };
 
       function toStr(value) {
@@ -592,9 +608,26 @@
       }
 
       function toNumber(value) {
-        const clean = String(value == null ? '' : value).replace(',', '.').trim();
+        if (typeof value === 'number') return Number.isFinite(value) ? value : 0;
+        const clean = String(value == null ? '' : value).replace(/\s+/g, '').replace(',', '.').trim();
         const num = Number(clean);
         return Number.isFinite(num) ? num : 0;
+      }
+
+      function round2(value) {
+        return Math.round((Number(value || 0) + Number.EPSILON) * 100) / 100;
+      }
+
+      function normalizeText(value) {
+        return toStr(value)
+          .normalize('NFD')
+          .replace(/[̀-ͯ]/g, '')
+          .replace(/\s+/g, ' ')
+          .toUpperCase();
+      }
+
+      function normalizeCode(value) {
+        return normalizeText(value).replace(/\s+/g, '');
       }
 
       function uid() {
@@ -613,12 +646,6 @@
         return ['admin', 'editor', 'operator'].includes(currentRole());
       }
 
-      function setChip(el, text, kind) {
-        if (!el) return;
-        const dotClass = kind === 'ok' ? 'success' : kind === 'bad' ? 'danger' : 'warning';
-        el.innerHTML = '<span class="dot ' + dotClass + '"></span><span>' + escapeHtml(text) + '</span>';
-      }
-
       function escapeHtml(value) {
         return String(value == null ? '' : value).replace(/[&<>"']/g, (ch) => ({
           '&': '&amp;',
@@ -629,9 +656,19 @@
         }[ch]));
       }
 
-      function formatNumber(value) {
-        const num = toNumber(value);
-        return new Intl.NumberFormat('ro-RO', { maximumFractionDigits: 0 }).format(num);
+      function setChip(el, text, kind) {
+        if (!el) return;
+        const dotClass = kind === 'ok' ? 'success' : kind === 'bad' ? 'danger' : 'warning';
+        el.innerHTML = '<span class="dot ' + dotClass + '"></span><span>' + escapeHtml(text) + '</span>';
+      }
+
+      function formatNumber(value, digits) {
+        const num = Number(value || 0);
+        const useDigits = Number.isFinite(digits) ? digits : 0;
+        return new Intl.NumberFormat('ro-RO', {
+          minimumFractionDigits: useDigits,
+          maximumFractionDigits: useDigits
+        }).format(num);
       }
 
       function formatDateDisplay(value) {
@@ -675,8 +712,67 @@
         return clean;
       }
 
-      function normalizeRow(row) {
+      function isActiveRow(value) {
+        return !(value === false || value === 0 || String(value).toLowerCase() === 'false');
+      }
+
+      function buildTreatmentRuleMap() {
+        const map = new Map();
+        TREATMENT_RULES.forEach((rule) => {
+          const reper = toStr(rule.reper);
+          if (!reper) return;
+          map.set(normalizeCode(reper), {
+            reper,
+            kg_piesa: toNumber(rule.kg_piesa),
+            tact_sec: toNumber(rule.tact_sec),
+            tact_min: round2(toNumber(rule.tact_sec) / 60),
+            cant_cos: toNumber(rule.cant_cos),
+            buc_ora: round2((60 / (toNumber(rule.tact_sec) / 60)) * toNumber(rule.cant_cos))
+          });
+        });
+        state.ttRuleMap = map;
+      }
+
+      function getTreatmentRule(reper) {
+        return state.ttRuleMap.get(normalizeCode(reper)) || null;
+      }
+
+      function getMonthNameFromDateInput(value) {
+        const clean = toStr(value);
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(clean)) return '';
+        const monthIndex = Number(clean.slice(5, 7)) - 1;
+        return MONTHS[monthIndex] || '';
+      }
+
+      function syncYearMonthFromDate() {
+        const clean = toStr(els.fldData.value);
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(clean)) return;
+        els.fldAn.value = clean.slice(0, 4);
+        els.fldLuna.value = getMonthNameFromDateInput(clean);
+      }
+
+      function calculateOreDetails(source) {
+        const row = source || {};
+        const cantitate = toNumber(row.cantitate);
+        const opriri = toNumber(row.opriri_neplanificate);
+        const incalzire = toNumber(row.incalzire);
+        const golire = toNumber(row.golire);
+        const rule = getTreatmentRule(row.reper);
+        let procesMinute = 0;
+        if (rule && rule.cant_cos > 0 && rule.tact_sec > 0 && cantitate > 0) {
+          procesMinute = (cantitate / rule.cant_cos) * (rule.tact_sec / 60);
+        }
+        const minuteConsumate = procesMinute + opriri + incalzire + golire;
         return {
+          rule,
+          procesMinute: round2(procesMinute),
+          minuteConsumate: round2(minuteConsumate),
+          ore: round2(minuteConsumate / 60)
+        };
+      }
+
+      function normalizeRow(row) {
+        const base = {
           id: row && row.id ? String(row.id) : uid(),
           an: toStr(row && row.an),
           luna: toStr(row && row.luna),
@@ -692,6 +788,11 @@
           incalzire: toNumber(row && row.incalzire),
           golire: toNumber(row && row.golire)
         };
+        const calc = calculateOreDetails(base);
+        if (calc.rule || base.cantitate || base.opriri_neplanificate || base.incalzire || base.golire) {
+          base.ore = calc.ore;
+        }
+        return base;
       }
 
       function sortRows(rows) {
@@ -710,23 +811,85 @@
       }
 
       function payloadFromRows(rows) {
-        return { rows: rows.map(normalizeRow), updated_at: nowIso() };
-      }
-
-      function setDefaults() {
-        const now = new Date();
-        if (!els.fldAn.value) els.fldAn.value = String(now.getFullYear());
-        if (!els.fldLuna.value) els.fldLuna.value = MONTHS[now.getMonth()];
-        if (!els.fldData.value) els.fldData.value = now.toISOString().slice(0, 10);
-        if (!els.fldSchimbul.value) els.fldSchimbul.value = '1';
+        const normalizedRows = rows.map(normalizeRow);
+        return { rows: normalizedRows, updated_at: nowIso() };
       }
 
       function fillMonths() {
         els.fldLuna.innerHTML = '<option value=""></option>' + MONTHS.map((month) => '<option value="' + escapeHtml(month) + '">' + escapeHtml(month) + '</option>').join('');
       }
 
+      function setDefaults() {
+        const now = new Date();
+        if (!els.fldData.value) els.fldData.value = now.toISOString().slice(0, 10);
+        syncYearMonthFromDate();
+        if (!els.fldSchimbul.value) els.fldSchimbul.value = '1';
+      }
+
+      function renderLookupLists() {
+        const operatorValues = Array.from(new Set((state.operators || []).concat(state.rows.map((row) => row.operator)).map(toStr).filter(Boolean)))
+          .sort((a, b) => a.localeCompare(b, 'ro'));
+        const reperValues = Array.from(new Set((state.repere || []).concat(TREATMENT_RULES.map((rule) => rule.reper)).concat(state.rows.map((row) => row.reper)).map(toStr).filter(Boolean)))
+          .sort((a, b) => a.localeCompare(b, 'ro'));
+
+        els.operatorList.innerHTML = operatorValues.map((value) => '<option value="' + escapeHtml(value) + '"></option>').join('');
+        els.reperList.innerHTML = reperValues.map((value) => '<option value="' + escapeHtml(value) + '"></option>').join('');
+      }
+
+      async function createSupabase() {
+        if (window.ERPAuth && typeof window.ERPAuth.getSupabaseClient === 'function') {
+          try { return window.ERPAuth.getSupabaseClient(); } catch (_) { return null; }
+        }
+        return null;
+      }
+
+      async function loadHelperSources() {
+        buildTreatmentRuleMap();
+        state.operators = [];
+        state.repere = TREATMENT_RULES.map((rule) => rule.reper);
+        const sb = await createSupabase();
+        if (!(sb && state.auth && state.auth.user)) {
+          renderLookupLists();
+          return;
+        }
+
+        try {
+          const [operatorsRes, repereRes] = await Promise.all([
+            sb.from('rf_helper_items')
+              .select('label,code,sort_order,is_active,module_key,category_key')
+              .eq('module_key', 'magnaflux')
+              .eq('category_key', 'operatori')
+              .order('sort_order', { ascending: true }),
+            sb.from('rf_helper_repere_forjate')
+              .select('reper_forjat,sort_order,is_active')
+              .order('sort_order', { ascending: true })
+          ]);
+
+          if (operatorsRes.error) throw operatorsRes.error;
+          if (repereRes.error) throw repereRes.error;
+
+          state.operators = (operatorsRes.data || [])
+            .filter((row) => isActiveRow(row.is_active))
+            .map((row) => toStr(row.label || row.code))
+            .filter(Boolean);
+
+          const helperRepere = (repereRes.data || [])
+            .filter((row) => isActiveRow(row.is_active))
+            .map((row) => toStr(row.reper_forjat))
+            .filter(Boolean);
+
+          state.repere = Array.from(new Set(state.repere.concat(helperRepere)));
+          state.helpersLoaded = true;
+        } catch (error) {
+          console.error('Nu am putut încărca listele helper pentru tratament termic:', error);
+        }
+
+        renderLookupLists();
+      }
+
       function readForm() {
-        return normalizeRow({
+        syncYearMonthFromDate();
+        const base = {
           id: state.selectedId || uid(),
           an: els.fldAn.value,
           luna: els.fldLuna.value,
@@ -736,18 +899,18 @@
           reper: els.fldReper.value,
           sarja: els.fldSarja.value,
           cantitate: els.fldCantitate.value,
-          ore: els.fldOre.value,
           opriri_neplanificate: els.fldOpriri.value,
           mentenanta: els.fldMentenanta.value,
           incalzire: els.fldIncalzire.value,
           golire: els.fldGolire.value
-        });
+        };
+        return normalizeRow(base);
       }
 
       function validateRow(row) {
+        if (!toStr(row.data)) return 'Completează câmpul Data.';
         if (!toStr(row.an)) return 'Completează câmpul An.';
         if (!toStr(row.luna)) return 'Completează câmpul Lună.';
-        if (!toStr(row.data)) return 'Completează câmpul Data.';
         if (!toStr(row.schimbul)) return 'Completează câmpul Schimbul.';
         if (!toStr(row.operator)) return 'Completează câmpul Operator.';
         if (!toStr(row.reper)) return 'Completează câmpul Reper.';
@@ -766,17 +929,18 @@
         els.fldReper.value = source.reper;
         els.fldSarja.value = source.sarja;
         els.fldCantitate.value = source.cantitate ? String(source.cantitate) : '';
-        els.fldOre.value = source.ore ? String(source.ore) : '';
         els.fldOpriri.value = source.opriri_neplanificate ? String(source.opriri_neplanificate) : '';
         els.fldMentenanta.value = source.mentenanta ? String(source.mentenanta) : '';
         els.fldIncalzire.value = source.incalzire ? String(source.incalzire) : '';
         els.fldGolire.value = source.golire ? String(source.golire) : '';
+        applyComputedOreToForm();
       }
 
       function clearForm() {
         state.selectedId = null;
         fillForm({});
         setDefaults();
+        applyComputedOreToForm();
         updateSelectionUi();
       }
 
@@ -784,27 +948,66 @@
         const row = state.rows.find((item) => item.id === state.selectedId) || null;
         if (row) {
           setChip(els.selectChip, 'Rând selectat: ' + [row.data ? formatDateDisplay(row.data) : '', row.reper].filter(Boolean).join(' • '), 'ok');
-          els.formNote.textContent = 'Mod editare: actualizare rând selectat';
         } else {
           setChip(els.selectChip, 'Rând selectat: niciunul', 'warn');
-          els.formNote.textContent = 'Mod editare: rând nou';
         }
         els.btnDelete.disabled = !row || !canEdit();
+        updateFormNote();
+      }
+
+      function updateFormNote() {
+        const calc = calculateOreDetails({
+          reper: els.fldReper.value,
+          cantitate: els.fldCantitate.value,
+          opriri_neplanificate: els.fldOpriri.value,
+          mentenanta: els.fldMentenanta.value,
+          incalzire: els.fldIncalzire.value,
+          golire: els.fldGolire.value
+        });
+        const modeText = state.selectedId ? 'Mod editare: actualizare rând selectat' : 'Mod editare: rând nou';
+
+        if (!toStr(els.fldReper.value) || toNumber(els.fldCantitate.value) <= 0) {
+          els.formNote.textContent = modeText + ' • Orele se calculează automat după reper + cantitate + opriri + încălzire + golire';
+          return;
+        }
+
+        if (!calc.rule) {
+          els.formNote.textContent = modeText + ' • Reperul nu are regulă de tratament termic în excelul de bază, deci orele rămân 0';
+          return;
+        }
+
+        els.formNote.textContent = modeText + ' • Ore auto: ' + formatNumber(calc.ore, 2) +
+          ' h (tact ' + formatNumber(calc.rule.tact_min, 2) + ' min, ' +
+          formatNumber(calc.rule.cant_cos, 0) + ' buc/cos; mentenanța nu intră în consum)';
+      }
+
+      function applyComputedOreToForm() {
+        const calc = calculateOreDetails({
+          reper: els.fldReper.value,
+          cantitate: els.fldCantitate.value,
+          opriri_neplanificate: els.fldOpriri.value,
+          mentenanta: els.fldMentenanta.value,
+          incalzire: els.fldIncalzire.value,
+          golire: els.fldGolire.value
+        });
+        els.fldOre.value = calc.ore > 0 ? String(calc.ore.toFixed(2)) : '';
+        updateFormNote();
       }
 
       function renderStats() {
         els.statRows.textContent = String(state.rows.length);
         const totalQty = state.rows.reduce((sum, row) => sum + toNumber(row.cantitate), 0);
-        els.statQty.textContent = formatNumber(totalQty);
+        els.statQty.textContent = formatNumber(totalQty, 0);
         els.statUpdated.textContent = formatDateTimeDisplay(state.updatedAt);
       }
 
       function renderTable() {
-        const rows = sortRows(state.rows);
+        const rows = sortRows(state.rows.map(normalizeRow));
         if (!rows.length) {
           els.tbodyRows.innerHTML = '<tr><td colspan="13" class="empty">Nu există rânduri salvate.</td></tr>';
           renderStats();
           updateSelectionUi();
+          renderLookupLists();
           return;
         }
 
@@ -818,17 +1021,18 @@
             '<td>' + escapeHtml(row.operator) + '</td>' +
             '<td>' + escapeHtml(row.reper) + '</td>' +
             '<td>' + escapeHtml(row.sarja) + '</td>' +
-            '<td class="right">' + escapeHtml(formatNumber(row.cantitate)) + '</td>' +
-            '<td class="right">' + escapeHtml(String(toNumber(row.ore))) + '</td>' +
-            '<td class="right">' + escapeHtml(formatNumber(row.opriri_neplanificate)) + '</td>' +
-            '<td class="right">' + escapeHtml(formatNumber(row.mentenanta)) + '</td>' +
-            '<td class="right">' + escapeHtml(formatNumber(row.incalzire)) + '</td>' +
-            '<td class="right">' + escapeHtml(formatNumber(row.golire)) + '</td>' +
+            '<td class="right">' + escapeHtml(formatNumber(row.cantitate, 0)) + '</td>' +
+            '<td class="right">' + escapeHtml(formatNumber(row.ore, 2)) + '</td>' +
+            '<td class="right">' + escapeHtml(formatNumber(row.opriri_neplanificate, 0)) + '</td>' +
+            '<td class="right">' + escapeHtml(formatNumber(row.mentenanta, 0)) + '</td>' +
+            '<td class="right">' + escapeHtml(formatNumber(row.incalzire, 0)) + '</td>' +
+            '<td class="right">' + escapeHtml(formatNumber(row.golire, 0)) + '</td>' +
           '</tr>';
         }).join('');
 
         renderStats();
         updateSelectionUi();
+        renderLookupLists();
       }
 
       function bindRowClicks() {
@@ -846,26 +1050,21 @@
         [
           els.fldAn, els.fldLuna, els.fldData, els.fldSchimbul,
           els.fldOperator, els.fldReper, els.fldSarja, els.fldCantitate,
-          els.fldOre, els.fldOpriri, els.fldMentenanta, els.fldIncalzire, els.fldGolire
+          els.fldOpriri, els.fldMentenanta, els.fldIncalzire, els.fldGolire
         ].forEach((el) => { el.disabled = readonly; });
+        els.fldOre.disabled = readonly;
         els.btnSaveRow.disabled = readonly;
         els.btnNew.disabled = readonly;
         els.btnDelete.disabled = readonly || !state.selectedId;
         els.readonlyBanner.classList.toggle('show', readonly);
       }
 
-      async function createSupabase() {
-        if (window.ERPAuth && typeof window.ERPAuth.getSupabaseClient === 'function') {
-          try { return window.ERPAuth.getSupabaseClient(); } catch (_) { return null; }
-        }
-        return null;
-      }
-
       async function loadFromCloudOrLocal() {
         let localRows = [];
         let localUpdatedAt = null;
+
         try {
-          const raw = localStorage.getItem(LOCAL_KEY);
+          const raw = localStorage.getItem(LOCAL_KEY) || localStorage.getItem(LEGACY_LOCAL_KEY);
           if (raw) {
             const parsed = JSON.parse(raw);
             const sourceRows = Array.isArray(parsed && parsed.rows) ? parsed.rows : [];
@@ -911,6 +1110,7 @@
 
       async function saveToCloud(showSuccessChip = true) {
         const payload = payloadFromRows(state.rows);
+        state.rows = payload.rows.map(normalizeRow);
         state.updatedAt = payload.updated_at;
         try {
           localStorage.setItem(LOCAL_KEY, JSON.stringify(payload));
@@ -1009,14 +1209,21 @@
         els.btnSaveRow.addEventListener('click', upsertRow);
         els.btnNew.addEventListener('click', clearForm);
         els.btnDelete.addEventListener('click', deleteSelected);
+        els.fldData.addEventListener('input', () => {
+          syncYearMonthFromDate();
+          updateFormNote();
+        });
+        [els.fldReper, els.fldCantitate, els.fldOpriri, els.fldMentenanta, els.fldIncalzire, els.fldGolire].forEach((el) => {
+          el.addEventListener('input', applyComputedOreToForm);
+          el.addEventListener('change', applyComputedOreToForm);
+        });
         bindRowClicks();
       }
 
       function bindKeyboardFlow() {
         const ordered = [
-          els.fldAn, els.fldLuna, els.fldData, els.fldSchimbul,
-          els.fldOperator, els.fldReper, els.fldSarja, els.fldCantitate,
-          els.fldOre, els.fldOpriri, els.fldMentenanta, els.fldIncalzire, els.fldGolire
+          els.fldData, els.fldSchimbul, els.fldOperator, els.fldReper,
+          els.fldSarja, els.fldCantitate, els.fldOpriri, els.fldMentenanta, els.fldIncalzire, els.fldGolire
         ];
         ordered.forEach((el, index) => {
           el.addEventListener('keydown', (event) => {
@@ -1039,12 +1246,14 @@
         bindKeyboardFlow();
         const ok = await initAuth();
         if (!ok) return;
+        await loadHelperSources();
         await loadFromCloudOrLocal();
         clearForm();
       }
 
       init();
     })();
+  </script>
   </script>
 </body>
 </html>
