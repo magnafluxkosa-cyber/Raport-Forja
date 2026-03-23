@@ -205,6 +205,11 @@
         els.fldLuna.value = getMonthNameFromDateInput(clean);
       }
 
+      function isFullShiftWithoutProduction(row) {
+        const coverage = getIssueCoverageDetails(row);
+        return coverage.fullShiftCovered;
+      }
+
       function calculateOreDetails(source) {
         const row = source || {};
         const cantitate = toNumber(row.cantitate);
@@ -242,8 +247,13 @@
           incalzire: toNumber(row && row.incalzire),
           golire: toNumber(row && row.golire)
         };
+        if (isFullShiftWithoutProduction(base)) {
+          base.reper = '';
+          base.sarja = '';
+          base.cantitate = 0;
+        }
         const calc = calculateOreDetails(base);
-        if (calc.rule || base.cantitate || base.opriri_neplanificate || base.incalzire || base.golire) {
+        if (calc.rule || base.cantitate || base.opriri_neplanificate || base.mentenanta || base.incalzire || base.golire) {
           base.ore = calc.ore;
         }
         return base;
@@ -343,6 +353,13 @@
 
       function readForm() {
         syncYearMonthFromDate();
+        const coveragePreview = getIssueCoverageDetails({
+          opriri_neplanificate: els.fldOpriri.value,
+          mentenanta: els.fldMentenanta.value,
+          incalzire: els.fldIncalzire.value,
+          golire: els.fldGolire.value
+        });
+        const fullShiftCovered = coveragePreview.fullShiftCovered;
         const base = {
           id: state.selectedId || uid(),
           an: els.fldAn.value,
@@ -350,9 +367,9 @@
           data: els.fldData.value,
           schimbul: els.fldSchimbul.value,
           operator: els.fldOperator.value,
-          reper: els.fldReper.value,
-          sarja: els.fldSarja.value,
-          cantitate: els.fldCantitate.value,
+          reper: fullShiftCovered ? '' : els.fldReper.value,
+          sarja: fullShiftCovered ? '' : els.fldSarja.value,
+          cantitate: fullShiftCovered ? 0 : els.fldCantitate.value,
           opriri_neplanificate: els.fldOpriri.value,
           mentenanta: els.fldMentenanta.value,
           incalzire: els.fldIncalzire.value,
@@ -367,9 +384,19 @@
         if (!toStr(row.luna)) return 'Completează câmpul Lună.';
         if (!toStr(row.schimbul)) return 'Completează câmpul Schimbul.';
         if (!toStr(row.operator)) return 'Completează câmpul Operator.';
+
+        if (isFullShiftWithoutProduction(row)) return '';
+
+        const hasProductionData = !!toStr(row.reper) || !!toStr(row.sarja) || toNumber(row.cantitate) > 0;
+
         if (!toStr(row.reper)) return 'Completează câmpul Reper.';
         if (!toStr(row.sarja)) return 'Completează câmpul Sarjă.';
-        if (toNumber(row.cantitate) <= 0) return 'Cantitatea trebuie să fie mai mare decât 0.';
+        if (toNumber(row.cantitate) <= 0) {
+          if (!hasProductionData) {
+            return 'Dacă nu introduci reper, sarjă și cantitate, minutele din opriri neplanificate + mentenanță + încălzire + golire trebuie să acopere tot schimbul de 8 ore (480 minute).';
+          }
+          return 'Cantitatea trebuie să fie mai mare decât 0.';
+        }
         return '';
       }
 
@@ -600,13 +627,21 @@
         state.saveTimer = setTimeout(() => { saveToCloud(false); }, SAVE_DEBOUNCE_MS);
       }
 
-      function upsertRow() {
-        if (!canEdit()) return;
-        const row = readForm();
+      function upsertRow(event) {
+        if (event) {
+          if (typeof event.preventDefault === 'function') event.preventDefault();
+          if (typeof event.stopPropagation === 'function') event.stopPropagation();
+          if (typeof event.stopImmediatePropagation === 'function') event.stopImmediatePropagation();
+        }
+        if (!canEdit()) return false;
+        let row = readForm();
+        if (isFullShiftWithoutProduction(row)) {
+          row = normalizeRow(Object.assign({}, row, { reper: '', sarja: '', cantitate: 0 }));
+        }
         const validationMessage = validateRow(row);
         if (validationMessage) {
           alert(validationMessage);
-          return;
+          return false;
         }
 
         const existingIndex = state.rows.findIndex((item) => item.id === state.selectedId);
@@ -619,6 +654,7 @@
 
         renderTable();
         queueSave();
+        return false;
       }
 
       function deleteSelected() {
@@ -660,8 +696,6 @@
       function bindActions() {
         els.btnReload.addEventListener('click', () => { window.location.reload(); });
         els.btnCloudSave.addEventListener('click', () => { saveToCloud(true); });
-        els.btnSaveRow.addEventListener('click', upsertRow);
-        els.btnNew.addEventListener('click', clearForm);
         els.btnDelete.addEventListener('click', deleteSelected);
         els.fldData.addEventListener('input', () => {
           syncYearMonthFromDate();

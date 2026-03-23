@@ -382,13 +382,21 @@
         state.saveTimer = setTimeout(() => { saveToCloud(false); }, SAVE_DEBOUNCE_MS);
       }
 
-      function upsertRow() {
-        if (!canEdit()) return;
-        const row = readForm();
+      function upsertRow(event) {
+        if (event) {
+          if (typeof event.preventDefault === 'function') event.preventDefault();
+          if (typeof event.stopPropagation === 'function') event.stopPropagation();
+          if (typeof event.stopImmediatePropagation === 'function') event.stopImmediatePropagation();
+        }
+        if (!canEdit()) return false;
+        let row = readForm();
+        if (isFullShiftWithoutProduction(row)) {
+          row = normalizeRow(Object.assign({}, row, { reper: '', sarja: '', cantitate: 0 }));
+        }
         const validationMessage = validateRow(row);
         if (validationMessage) {
           alert(validationMessage);
-          return;
+          return false;
         }
 
         const existingIndex = state.rows.findIndex((item) => item.id === state.selectedId);
@@ -401,6 +409,7 @@
 
         renderTable();
         queueSave();
+        return false;
       }
 
       function deleteSelected() {
@@ -442,8 +451,6 @@
       function bindActions() {
         els.btnReload.addEventListener('click', () => { window.location.reload(); });
         els.btnCloudSave.addEventListener('click', () => { saveToCloud(true); });
-        els.btnSaveRow.addEventListener('click', upsertRow);
-        els.btnNew.addEventListener('click', clearForm);
         els.btnDelete.addEventListener('click', deleteSelected);
         bindRowClicks();
       }
