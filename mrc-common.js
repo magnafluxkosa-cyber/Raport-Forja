@@ -184,6 +184,8 @@
     const matrix = window.XLSX.utils.sheet_to_json(sheet, { header:1, raw:true, defval:'' });
     const markers = [
       ['customer', 'customer part no', 'need by', 'requested quantity'],
+      ['item id', 'ordered qty', 'ship date'],
+      ['part', 'due qty', 'delivery date'],
       ['rawpart', 'part_norm', 'reper_intern'],
       ['reper', 'stoc forja', 'stoc otel'],
       ['customer part no.', 'order no.', 'need by']
@@ -459,36 +461,66 @@
       delivery_date: arrayCell(row, 5, ''),
       quantity_buc: arrayCell(row, 7, 0)
     } : (row || {});
+    const sourceFormat = trimText(pick(obj, ['source_format','sourceFormat'])).toUpperCase();
     const sheetNameNorm = normalizeText(pick(obj, ['sheet_name','Sheet','sheet']));
-    const isDataDueQtyDeliveryFormat =
-      !!trimText(pick(obj, ['Part'])) &&
-      trimText(pick(obj, ['Due Qty','DueQty','DUE QTY'])) !== '' &&
-      trimText(pick(obj, ['Delivery Date','delivery_date'])) !== '' &&
-      (sheetNameNorm === 'DATA' || sheetNameNorm.indexOf('DATA') === 0);
 
-    const isItemOrderedShipFormat =
+    const isResultsFormat = sourceFormat === 'RESULTS' || (
+      (sheetNameNorm === 'RESULTS' || sheetNameNorm.indexOf('RESULTS') === 0) &&
+      !!trimText(pick(obj, ['Customer Part No.','Customer Part No','customer_part_no'])) &&
+      trimText(pick(obj, ['Requested Quantity','RequestedQuantity'])) !== '' &&
+      trimText(pick(obj, ['Need By','NeedBy'])) !== ''
+    );
+
+    const isDataExportFormat = sourceFormat === 'DATA_EXPORT' || (
       !!trimText(pick(obj, ['Item ID','Item Id'])) &&
       trimText(pick(obj, ['Ordered Qty'])) !== '' &&
-      trimText(pick(obj, ['Ship Date'])) !== '';
+      trimText(pick(obj, ['Ship Date'])) !== ''
+    );
+
+    const isDataDueQtyDeliveryFormat = sourceFormat === 'DATA' || (
+      (sheetNameNorm === 'DATA' || sheetNameNorm.indexOf('DATA') === 0) &&
+      !!trimText(pick(obj, ['Part'])) &&
+      trimText(pick(obj, ['Due Qty','DueQty','DUE QTY'])) !== '' &&
+      trimText(pick(obj, ['Delivery Date','delivery_date'])) !== ''
+    );
 
     let deliveryIso = '';
-    if (isItemOrderedShipFormat){
+    if (isResultsFormat){
+      deliveryIso = displayToIso(pick(obj, ['Need By','NeedBy']));
+    } else if (isDataExportFormat){
       deliveryIso = displayToIso(pick(obj, ['Ship Date']));
     } else if (isDataDueQtyDeliveryFormat){
-      deliveryIso = displayToIso(pick(obj, ['Delivery Date']));
+      deliveryIso = displayToIso(pick(obj, ['Delivery Date','delivery_date']));
     } else {
       deliveryIso = displayToIso(pick(obj, ['delivery_date','Need By','Delivery Date','NeedBy','due date','Due Date','need_by','data_livrare','Ship Date']));
       if (!deliveryIso) deliveryIso = displayToIso(pick(obj, ['WeekDlvDate']));
     }
 
-    const rawPart = trimText(isItemOrderedShipFormat
-      ? pick(obj, ['Item ID','Item Id'])
-      : (isDataDueQtyDeliveryFormat
-        ? pick(obj, ['Part'])
-        : pick(obj, ['raw_part','Customer Part No.','Customer Part No','customer_part_no','Part','Item ID','Item Id','Part No','Customer Part', 'pn', 'Pn']))
+    const rawPart = trimText(isResultsFormat
+      ? pick(obj, ['Customer Part No.','Customer Part No','customer_part_no'])
+      : (isDataExportFormat
+        ? pick(obj, ['Item ID','Item Id'])
+        : (isDataDueQtyDeliveryFormat
+          ? pick(obj, ['Part'])
+          : pick(obj, ['raw_part','Customer Part No.','Customer Part No','customer_part_no','Part','Item ID','Item Id','Part No','Customer Part', 'pn', 'Pn'])))
     ).toUpperCase();
+
     const sourceFile = trimText(pick(obj, ['source_file','Source','Sheet','sheet_name'])) || '';
-    const clientName = trimText(pick(obj, ['client_name','Customer','Supplier','Description','Ship To','Supplier Name','SUPPLIER NAME']));
+    const clientName = trimText(
+      isResultsFormat
+        ? pick(obj, ['Customer'])
+        : pick(obj, ['client_name','Customer','Supplier','Description','Ship To','Supplier Name','SUPPLIER NAME'])
+    );
+
+    const quantityValue = isResultsFormat
+      ? pick(obj, ['Requested Quantity','RequestedQuantity'])
+      : (isDataExportFormat
+        ? pick(obj, ['Ordered Qty'])
+        : (isDataDueQtyDeliveryFormat
+          ? pick(obj, ['Due Qty','DueQty','DUE QTY'])
+          : pick(obj, ['quantity_buc','Requested Quantity','Due Qty','Ordered Qty','Balance','Demand','Cum Qty','qty','RequestedQuantity','cantitate']))
+      );
+
     const normalized = applyPartMapping({
       id: trimText(pick(obj, ['id','_id'])) || ('ord-' + index + '-' + Math.random().toString(36).slice(2,8)),
       source_file: sourceFile,
@@ -504,13 +536,7 @@
       year: deliveryIso ? Number(deliveryIso.slice(0,4)) : Number(pick(obj, ['year','Ship Year','an'])) || 0,
       month: deliveryIso ? getMonthName(Number(deliveryIso.slice(5,7))) : trimText(pick(obj, ['month','Ship Month','luna'])).toUpperCase(),
       week_key: deliveryIso ? isoWeekKey(deliveryIso) : trimText(pick(obj, ['WeekDlvDate','YearWeek','yearweek','week_key'])).replace(/\s+/g,''),
-      quantity_buc: Math.max(0, Math.round(toNumber(
-        isItemOrderedShipFormat
-          ? pick(obj, ['Ordered Qty'])
-          : (isDataDueQtyDeliveryFormat
-              ? pick(obj, ['Due Qty'])
-              : pick(obj, ['quantity_buc','Requested Quantity','Due Qty','Ordered Qty','Balance','Demand','Cum Qty','qty','RequestedQuantity','cantitate']))
-      ))),
+      quantity_buc: Math.max(0, Math.round(toNumber(quantityValue))),
       order_no: trimText(pick(obj, ['order_no','Order No.','PO Nbr','PO NUMBER ','Order Id','Reference','BPO Line ID','Line ID'])),
       commitment_level: trimText(pick(obj, ['commitment_level','Commitment Level','Stato','Status'])),
       notes: trimText(pick(obj, ['notes','Descr1','Description','Item Description','observatii'])),
@@ -606,22 +632,49 @@
     const opts = options || {};
     const workbookName = trimText(opts.workbookName || opts.fileName || opts.source_file);
     const allSheetNames = listWorkbookSheetNames(workbook);
-    let sheetNames = allSheetNames.slice();
+    let sheetConfigs = allSheetNames.map(name => ({ name, sourceFormat:'' }));
 
-    const dataSheetName = allSheetNames.find(name => normalizeText(name) === 'DATA');
-    if (dataSheetName){
-      const dataRows = loadSheetRows(workbook, dataSheetName);
-      const sample = dataRows.find(raw => raw && typeof raw === 'object' && !Array.isArray(raw) && trimText(pick(raw, ['Part'])));
-      if (sample && trimText(pick(sample, ['Due Qty','DueQty','DUE QTY'])) !== '' && trimText(pick(sample, ['Delivery Date','delivery_date'])) !== ''){
-        sheetNames = [dataSheetName];
+    const resultsSheetName = allSheetNames.find(name => normalizeText(name) === 'RESULTS');
+    if (resultsSheetName){
+      const resultsRows = loadSheetRows(workbook, resultsSheetName);
+      const sample = resultsRows.find(raw => raw && typeof raw === 'object' && !Array.isArray(raw) && trimText(pick(raw, ['Customer Part No.','Customer Part No'])));
+      if (sample && trimText(pick(sample, ['Requested Quantity','RequestedQuantity'])) !== '' && trimText(pick(sample, ['Need By','NeedBy'])) !== ''){
+        sheetConfigs = [{ name: resultsSheetName, sourceFormat:'RESULTS' }];
       }
     }
 
-    sheetNames.forEach(sheetName => {
-      const rawRows = loadSheetRows(workbook, sheetName);
+    if (sheetConfigs.length === allSheetNames.length){
+      const dataExportSheetName = allSheetNames.find(name => normalizeText(name).indexOf('DATA_EXPORT') === 0);
+      if (dataExportSheetName){
+        const exportRows = loadSheetRows(workbook, dataExportSheetName);
+        const sample = exportRows.find(raw => raw && typeof raw === 'object' && !Array.isArray(raw) && trimText(pick(raw, ['Item ID','Item Id'])));
+        if (sample && trimText(pick(sample, ['Ordered Qty'])) !== '' && trimText(pick(sample, ['Ship Date'])) !== ''){
+          sheetConfigs = [{ name: dataExportSheetName, sourceFormat:'DATA_EXPORT' }];
+        }
+      }
+    }
+
+    if (sheetConfigs.length === allSheetNames.length){
+      const dataSheetName = allSheetNames.find(name => normalizeText(name) === 'DATA');
+      if (dataSheetName){
+        const dataRows = loadSheetRows(workbook, dataSheetName);
+        const sample = dataRows.find(raw => raw && typeof raw === 'object' && !Array.isArray(raw) && trimText(pick(raw, ['Part'])));
+        if (sample && trimText(pick(sample, ['Due Qty','DueQty','DUE QTY'])) !== '' && trimText(pick(sample, ['Delivery Date','delivery_date'])) !== ''){
+          sheetConfigs = [{ name: dataSheetName, sourceFormat:'DATA' }];
+        }
+      }
+    }
+
+    sheetConfigs.forEach(cfg => {
+      const rawRows = loadSheetRows(workbook, cfg.name);
       rawRows.forEach((raw, index) => {
-        const sourceLabel = workbookName ? (workbookName + ' / ' + sheetName) : sheetName;
-        const normalized = normalizeCustomerOrderRow(Object.assign({ source_file: sourceLabel, source_workbook: workbookName, sheet_name: sheetName }, raw), index, maps);
+        const sourceLabel = workbookName ? (workbookName + ' / ' + cfg.name) : cfg.name;
+        const normalized = normalizeCustomerOrderRow(Object.assign({
+          source_file: sourceLabel,
+          source_workbook: workbookName,
+          sheet_name: cfg.name,
+          source_format: cfg.sourceFormat
+        }, raw), index, maps);
         if (!normalized.raw_part && !normalized.reper_intern) return;
         if (!normalized.delivery_date) return;
         if (!(normalized.quantity_buc > 0)) return;
