@@ -3,18 +3,32 @@
   const LOGO_CLASS = 'kad-inline-logo';
   const LOGO_SRC = './kad-forge-logo.jpeg';
 
-  function makeLogo(){
+  function hostAlreadyBranded(host){
+    const text = (host && host.textContent ? host.textContent : '').replace(/\s+/g, ' ').trim().toUpperCase();
+    return text.includes('K.A.D') || text.includes('KAD');
+  }
+
+  function makeLogo(iconOnly){
     const box = document.createElement('div');
-    box.className = LOGO_CLASS;
+    box.className = LOGO_CLASS + (iconOnly ? ' is-icon-only' : '');
     box.setAttribute('aria-hidden', 'true');
+
+    const badge = document.createElement('div');
+    badge.className = 'kad-inline-badge';
 
     const img = document.createElement('img');
     img.src = LOGO_SRC;
-    img.alt = 'K.A.D Forge';
+    img.alt = 'K.A.D';
     img.decoding = 'async';
     img.loading = 'eager';
+    badge.appendChild(img);
 
-    box.appendChild(img);
+    const word = document.createElement('div');
+    word.className = 'kad-inline-wordmark';
+    word.textContent = 'K.A.D';
+
+    box.appendChild(badge);
+    box.appendChild(word);
     return box;
   }
 
@@ -25,21 +39,53 @@
     style.id = STYLE_ID;
     style.textContent = `
       .${LOGO_CLASS}{
-        width:68px;
-        height:68px;
         flex:0 0 auto;
+        min-width:0;
+        display:inline-flex;
+        align-items:center;
+        gap:12px;
+        padding:8px 14px 8px 10px;
+        border-radius:999px;
+        border:1px solid rgba(255,255,255,.28);
+        background:linear-gradient(180deg, rgba(255,255,255,.18), rgba(255,255,255,.08));
+        box-shadow:0 10px 24px rgba(0,0,0,.12), inset 0 1px 0 rgba(255,255,255,.16);
+        backdrop-filter:blur(12px) saturate(135%);
+        -webkit-backdrop-filter:blur(12px) saturate(135%);
+        pointer-events:none;
+        user-select:none;
+      }
+      .${LOGO_CLASS}.is-icon-only{
+        padding:8px;
+      }
+      .${LOGO_CLASS}.is-icon-only .kad-inline-wordmark{
+        display:none;
+      }
+      .${LOGO_CLASS} .kad-inline-badge{
+        width:52px;
+        height:52px;
+        flex:0 0 52px;
         display:flex;
         align-items:center;
         justify-content:center;
-        pointer-events:none;
-        user-select:none;
+        border-radius:50%;
+        background:radial-gradient(circle at 30% 30%, rgba(255,255,255,.32), rgba(255,255,255,.10));
+        overflow:hidden;
+        box-shadow:inset 0 1px 0 rgba(255,255,255,.18), 0 6px 14px rgba(0,0,0,.16);
       }
       .${LOGO_CLASS} img{
         width:100%;
         height:100%;
-        object-fit:contain;
+        object-fit:cover;
         display:block;
-        filter:drop-shadow(0 6px 14px rgba(0,0,0,.22));
+      }
+      .${LOGO_CLASS} .kad-inline-wordmark{
+        font-size:24px;
+        line-height:1;
+        font-weight:900;
+        letter-spacing:.18em;
+        color:inherit;
+        text-shadow:0 2px 10px rgba(0,0,0,.12);
+        white-space:nowrap;
       }
 
       .kad-logo-titlehost{
@@ -77,8 +123,17 @@
 
       @media (max-width: 900px){
         .${LOGO_CLASS}{
-          width:56px;
-          height:56px;
+          gap:10px;
+          padding:7px 12px 7px 8px;
+        }
+        .${LOGO_CLASS} .kad-inline-badge{
+          width:46px;
+          height:46px;
+          flex-basis:46px;
+        }
+        .${LOGO_CLASS} .kad-inline-wordmark{
+          font-size:20px;
+          letter-spacing:.15em;
         }
         .kad-logo-titlehost{
           gap:10px !important;
@@ -94,8 +149,17 @@
 
       @media (max-width: 640px){
         .${LOGO_CLASS}{
-          width:48px;
-          height:48px;
+          gap:8px;
+          padding:6px 10px 6px 7px;
+        }
+        .${LOGO_CLASS} .kad-inline-badge{
+          width:40px;
+          height:40px;
+          flex-basis:40px;
+        }
+        .${LOGO_CLASS} .kad-inline-wordmark{
+          font-size:17px;
+          letter-spacing:.12em;
         }
       }
 
@@ -179,7 +243,7 @@
   function injectTitleHost(host){
     if (!host || host.dataset.kadLogoDone === '1') return;
 
-    const logo = makeLogo();
+    const logo = makeLogo(hostAlreadyBranded(host));
     const textWrap = document.createElement('div');
     textWrap.className = 'kad-logo-titletext';
 
@@ -196,7 +260,7 @@
   function injectStripHost(host){
     if (!host || host.dataset.kadLogoDone === '1') return;
 
-    const logo = makeLogo();
+    const logo = makeLogo(hostAlreadyBranded(host));
     host.insertBefore(logo, host.firstChild);
     host.classList.add('kad-logo-striphost');
     host.dataset.kadLogoDone = '1';
@@ -205,7 +269,7 @@
   function injectBarHost(host){
     if (!host || host.dataset.kadLogoDone === '1') return;
 
-    const logo = makeLogo();
+    const logo = makeLogo(hostAlreadyBranded(host));
     const pack = document.createElement('div');
     pack.className = 'kad-logo-actionpack';
 
