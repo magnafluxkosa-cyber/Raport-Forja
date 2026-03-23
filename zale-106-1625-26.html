@@ -795,12 +795,34 @@
       const buc = pickValue(src, ['piese_bune_forjate','PIESE_BUNE_FORJATE','piese_bune','Piese Bune forjate']);
       const bucReal = pickValue(src, ['buc_realizate','BUC_REALIZATE','buc','Buc realizate']);
       return {
+        id: toStr(pickValue(src, ['id','ID','row_id','rowId'])),
         an: normalizeYear(pickValue(src, ['an','AN'])) || yearFromDate(data),
         luna: normalizeMonthName(pickValue(src, ['luna','LUNA'])) || monthFromDate(data),
         data,
         reper: normalizeReper248(pickValue(src, ['reper','REPER','REPER_FORJAT','REPER_FORJATE'])),
-        piese_bune: bucReal !== '' ? toInt(bucReal) : toInt(buc)
+        piese_bune: bucReal !== '' ? toInt(bucReal) : toInt(buc),
+        schimbul: toStr(pickValue(src, ['schimbul','SCHIMBUL','Schimbul'])),
+        utilaj: toStr(pickValue(src, ['linie de forjare','Linie de forjare','utilaj','UTILAJ','ciocan','CIOCAN'])),
+        operator: toStr(pickValue(src, ['operator','OPERATOR','Operator'])),
+        cod_matrita: toStr(pickValue(src, ['marcaj matrita','Marcaj matriță','Marcaj matrita','cod_matrita','cod matrita'])),
+        cod_cat: toStr(pickValue(src, ['cod cat','Cod CAT','cod_cat','COD_CAT']))
       };
+    }
+    function getForjateRowKey(row) {
+      const stableId = toStr(row && row.id);
+      if(stableId) return `id:${stableId}`;
+      return [
+        normalizeYear(row && row.an),
+        normalizeMonthName(row && row.luna),
+        normalizeDate(row && row.data),
+        normalizeReper248(row && row.reper),
+        toInt(row && row.piese_bune),
+        toStr(row && row.schimbul),
+        toStr(row && row.utilaj),
+        toStr(row && row.operator),
+        toStr(row && row.cod_matrita),
+        toStr(row && row.cod_cat)
+      ].join('|');
     }
     function transportSort(a, b) {
       const ta = toInt(a.nr_transport), tb = toInt(b.nr_transport);
@@ -979,7 +1001,10 @@
         const legacy = await readDocByKeys(FORJATE_DOC_KEYS);
         if(legacy && legacy.payload) rows.push(...resolveRowsPayload(legacy.payload));
       }
-      return dedupeRows(rows.map(normalizeForjateRow).filter(r => r.reper && r.an && r.luna), row => [row.an,row.luna,row.reper,row.data,row.piese_bune].join('|'));
+      return dedupeRows(
+        rows.map(normalizeForjateRow).filter(r => r.reper && r.an && r.luna),
+        row => getForjateRowKey(row)
+      );
     }
     function getMonthlyTotals(forjateRows) {
       const map = new Map();
@@ -1032,6 +1057,7 @@
         'stoc final piese forjate'
       ]);
       return {
+        id: toStr(src.id || src._id || ''),
         an: normalizeYear(pickValue(src, ['an','AN','anul','Anul'])) || yearFromDate(data),
         luna: normalizeMonthName(pickValue(src, ['luna','LUNA','Luna'])) || monthFromDate(data),
         data,
@@ -1056,7 +1082,10 @@
         const legacy = await readDocByKeys(INVENTAR_DOC_KEYS);
         if(legacy && legacy.payload) rows.push(...resolveRowsPayload(legacy.payload));
       }
-      return dedupeRows(rows.map(normalizeInventarRow).filter(r => r.reper && r.an && r.luna), row => [row.an,row.luna,row.reper,row.data,row.stoc_final].join('|'));
+      return dedupeRows(
+        rows.map(normalizeInventarRow).filter(r => r.reper && r.an && r.luna),
+        (row, idx) => row.id ? `id:${row.id}` : [row.an,row.luna,row.reper,row.data,row.stoc_final,idx].join('|')
+      );
     }
     function mfCategoryFromString(value) {
       const raw = stripDiacritics(value).toUpperCase().replace(/\s+/g, '');
@@ -1159,12 +1188,19 @@
       const prev = previousMonthPeriod(year, month);
       const totals = { p2307:0, p2308:0 };
       if(!prev.year || !prev.month) return totals;
-      (inventarRows || []).forEach(row => {
+      const latest = { '106-1625': null, '106-1626': null };
+      (inventarRows || []).forEach((row, idx) => {
         if(normalizeYear(row.an) !== prev.year) return;
         if(normalizeMonthName(row.luna) !== prev.month) return;
-        if(row.reper === '106-1625') totals.p2307 += toInt(row.stoc_final);
-        if(row.reper === '106-1626') totals.p2308 += toInt(row.stoc_final);
+        const reper = normalizeReper248(row.reper);
+        if(reper !== '106-1625' && reper !== '106-1626') return;
+        const currentSort = `${dateSortValue(row.data) || '9999-99-99'}|${String(idx).padStart(6,'0')}`;
+        const prevRow = latest[reper];
+        const prevSort = prevRow ? `${dateSortValue(prevRow.data) || '0000-00-00'}|${String(prevRow._idx || 0).padStart(6,'0')}` : '';
+        if(!prevRow || currentSort >= prevSort) latest[reper] = { ...row, _idx: idx };
       });
+      totals.p2307 = toInt(latest['106-1625'] && latest['106-1625'].stoc_final);
+      totals.p2308 = toInt(latest['106-1626'] && latest['106-1626'].stoc_final);
       return totals;
     }
     function productionValue(monthTotal, positionInMonth) {
@@ -1204,8 +1240,8 @@
         const previousStock = getInventarPreviousMonthTotals(state.inventarRows, year, month);
         const externalRebut2307 = toInt(externalRebutTotals.get(key2307));
         const externalRebut2308 = toInt(externalRebutTotals.get(key2308));
-        let remaining2307 = toInt(monthlyTotals.get(key2307)) + toInt(previousStock.p2307) - externalRebut2307;
-        let remaining2308 = toInt(monthlyTotals.get(key2308)) + toInt(previousStock.p2308) - externalRebut2308;
+        let remaining2307 = Math.max(0, toInt(monthlyTotals.get(key2307)) + toInt(previousStock.p2307));
+        let remaining2308 = Math.max(0, toInt(monthlyTotals.get(key2308)) + toInt(previousStock.p2308));
         monthRows.forEach((base, idx) => {
           const pack = packTotals.get(normalizeTransportKey(base.nr_transport));
           const hasPack = !!pack;
