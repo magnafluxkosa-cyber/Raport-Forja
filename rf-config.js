@@ -1328,10 +1328,9 @@
     var userPermissionMap = await loadUserPermissionMap(client, user);
     var permissionMap = await loadPagePermissionMap(client, role);
     var mirror = await readDashboardAclMirror(client);
-    var decisions = collectAclDecisions({ pageKey:key, href:href, role:role, email:email, userPermissionMap:userPermissionMap, permissionMap:permissionMap, mirror:mirror });
-
-    var mirrorHasUserAcl = mirrorHasUserAclForEmail(mirror, email);
     var userAclMode = !!(userPermissionMap && userPermissionMap.size) || mirrorHasAnyUserAcl(mirror);
+    var decisions = collectAclDecisions({ pageKey:key, href:href, role:role, email:email, userPermissionMap:userPermissionMap, permissionMap:permissionMap, mirror:mirror });
+    var userOnlyDecisions = collectAclDecisions({ pageKey:key, href:href, role:'', email:email, userPermissionMap:userPermissionMap, permissionMap:null, mirror:{ user_permissions: mirror && mirror.user_permissions, user_grants: mirror && mirror.user_grants } });
 
     var permissions = userAclMode
       ? { can_view:false, can_add:false, can_edit:false, can_delete:false, can_export:false, can_import:false }
@@ -1339,7 +1338,7 @@
 
     var explicitTrue = false;
     var explicitFalse = false;
-    decisions.forEach(function (entry) {
+    (userAclMode ? userOnlyDecisions : decisions).forEach(function (entry) {
       var permissionEntry = permissionValueToEntry(entry);
       permissions = mergePermissions(permissions, permissionEntry);
       if (permissionEntry.can_view === true) explicitTrue = true;

@@ -784,6 +784,8 @@
       let currentUser = null;
       let currentRole = 'viewer';
       let currentPermissions = null;
+      let currentUserPermissions = null;
+      let currentRolePermissions = null;
       let currentDashAcl = null;
       let currentPanel = null;
       const currentInnerPanels = { subForja:null };
@@ -931,12 +933,18 @@
         return { role:'viewer', source:'fallback viewer' };
       }
 
-      async function loadPermissionMap(role, user){
-        if (!sb) return null;
-        if (window.RF_ACL && typeof window.RF_ACL.loadUserPermissionMap === 'function' && user) {
+      async function loadUserPermissionMap(user){
+        if (!sb || !user || !(window.RF_ACL && typeof window.RF_ACL.loadUserPermissionMap === 'function')) return null;
+        try {
           const userMap = await window.RF_ACL.loadUserPermissionMap(sb, user);
-          if (userMap && userMap.size) return userMap;
+          return userMap && userMap.size ? userMap : null;
+        } catch(_){
+          return null;
         }
+      }
+
+      async function loadRolePermissionMap(role){
+        if (!sb) return null;
         try {
           const res = await sb.from('page_permissions').select('page_key,can_view,can_add,can_edit,can_delete,can_export,can_import').eq('role', role);
           if (res.error || !Array.isArray(res.data)) return null;
@@ -1016,12 +1024,38 @@
         };
       }
 
+      function getUserExplicitAclDecision(pageKey, href){
+        const decisions = [];
+        const normalizedHref = normalizeHref(href);
+
+        if (currentUserPermissions instanceof Map && currentUserPermissions.has(pageKey)) {
+          decisions.push(permissionEntryCanView(currentUserPermissions.get(pageKey)));
+        }
+
+        const mirror = getMirrorRoleData();
+        if (mirror.userPermissions && Object.prototype.hasOwnProperty.call(mirror.userPermissions, pageKey)) {
+          decisions.push(permissionEntryCanView(mirror.userPermissions[pageKey]));
+        }
+        if (mirror.userGrants) {
+          if (Object.prototype.hasOwnProperty.call(mirror.userGrants, pageKey)) {
+            decisions.push(permissionEntryCanView(mirror.userGrants[pageKey]));
+          }
+          if (normalizedHref && Object.prototype.hasOwnProperty.call(mirror.userGrants, normalizedHref)) {
+            decisions.push(permissionEntryCanView(mirror.userGrants[normalizedHref]));
+          }
+        }
+
+        if (decisions.includes(false)) return false;
+        if (decisions.includes(true)) return true;
+        return null;
+      }
+
       function getExplicitAclDecision(pageKey, href){
         const decisions = [];
         const normalizedHref = normalizeHref(href);
 
-        if (currentPermissions instanceof Map && currentPermissions.has(pageKey)) {
-          decisions.push(permissionEntryCanView(currentPermissions.get(pageKey)));
+        if (currentRolePermissions instanceof Map && currentRolePermissions.has(pageKey)) {
+          decisions.push(permissionEntryCanView(currentRolePermissions.get(pageKey)));
         }
 
         const mirror = getMirrorRoleData();
@@ -1070,7 +1104,7 @@
       }
 
       function hasUserSpecificAcl(){
-        if (currentPermissions instanceof Map && currentPermissions.size) return true;
+        if (currentUserPermissions instanceof Map && currentUserPermissions.size) return true;
         if (dashboardHasAnyUserAcl()) return true;
         const mirror = getMirrorRoleData();
         const hasUserPermissions = !!(mirror && mirror.userPermissions && Object.keys(mirror.userPermissions).length);
@@ -1092,10 +1126,12 @@
           return true;
         }
 
-        const explicit = getExplicitAclDecision(pageKey, href);
+        const userExplicit = getUserExplicitAclDecision(pageKey, href);
         if (hasUserSpecificAcl()) {
-          return explicit === true;
+          return userExplicit === true;
         }
+
+        const explicit = getExplicitAclDecision(pageKey, href);
         if (explicit === false) return false;
         if (explicit === true) return true;
         return true;
@@ -1377,6 +1413,8 @@
           currentUser = null;
           currentRole = 'viewer';
           currentPermissions = null;
+          currentUserPermissions = null;
+          currentRolePermissions = null;
           applyLayout();
           return;
         }
@@ -1395,7 +1433,9 @@
           }
         } catch (_) {}
 
-        currentPermissions = await loadPermissionMap(currentRole, currentUser);
+        currentUserPermissions = await loadUserPermissionMap(currentUser);
+        currentRolePermissions = await loadRolePermissionMap(currentRole);
+        currentPermissions = currentUserPermissions || currentRolePermissions;
         await loadDashboardAcl();
         applyLayout();
       }
@@ -1567,6 +1607,8 @@
         if (!currentUser) {
           currentRole = 'viewer';
           currentPermissions = null;
+          currentUserPermissions = null;
+          currentRolePermissions = null;
           applyLayout();
           const logoutFlag = sessionStorage.getItem('rf_force_stay_on_login') === '1' || localStorage.getItem('rf_force_stay_on_login') === '1';
           if (logoutFlag) {
@@ -1589,7 +1631,9 @@
             sessionStorage.setItem('rf_display_id', displayId);
           }
         } catch (_) {}
-        currentPermissions = await loadPermissionMap(currentRole, currentUser);
+        currentUserPermissions = await loadUserPermissionMap(currentUser);
+        currentRolePermissions = await loadRolePermissionMap(currentRole);
+        currentPermissions = currentUserPermissions || currentRolePermissions;
         await loadDashboardAcl();
         applyLayout();
       });
