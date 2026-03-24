@@ -1318,9 +1318,7 @@
           const panel = panelId ? qs('#' + panelId) : null;
           const totalPageButtons = panel ? Number(panel.dataset.totalPageButtons || '0') : 0;
           const panelHasVisibleChild = !!(panel && panel.dataset.hasVisibleChild === '1');
-          const explicitGroupAllowed = currentUser ? elementAllowed(item, groupKey) : true;
-          const isPlaceholderGroup = totalPageButtons === 0;
-          const on = explicitGroupAllowed && (panelHasVisibleChild || isPlaceholderGroup);
+          const on = totalPageButtons > 0 && panelHasVisibleChild;
           setVisible(item, on);
           applyAccessState(item, on, getDeniedMessage(groupKey, ''));
         });
@@ -1367,34 +1365,24 @@
         return null;
       }
 
-      async function boot(){
-        if (!sb) {
-          chipAuth.textContent = 'Config lipsă';
-          chipAuth.className = 'chip bad';
-          return;
-        }
+      let bootRecoveryTimer = null;
+      let bootRecoveryAttempts = 0;
 
-        const cachedUser = parseSupabaseUserFromStorage();
-        const cachedRole = getStoredRole();
-        if (cachedUser || cachedRole) {
-          setStatusChips(true, cachedUser, cachedRole || 'viewer');
+      function stopBootRecovery(){
+        if (bootRecoveryTimer) {
+          try { window.clearTimeout(bootRecoveryTimer); } catch (_) {}
+          bootRecoveryTimer = null;
         }
+        bootRecoveryAttempts = 0;
+      }
 
-        const activeSession = await getActiveSession();
-        if (!activeSession?.user) {
-          currentUser = null;
-          currentRole = 'viewer';
-          currentPermissions = null;
-          currentUserPermissions = null;
-          currentRolePermissions = null;
-          applyLayout();
-          return;
-        }
+      async function applyRecoveredAuthState(user, fallbackRole){
+        if (!user) return false;
 
         clearLogoutFlags();
-        currentUser = activeSession.user;
+        currentUser = user;
         const resolved = await resolveRole(currentUser);
-        currentRole = resolved.role || cachedRole || 'viewer';
+        currentRole = resolved.role || fallbackRole || getStoredRole() || 'viewer';
 
         try { localStorage.setItem('rf_cached_role', currentRole); } catch (_) {}
         try { sessionStorage.setItem('rf_cached_role', currentRole); } catch (_) {}
@@ -1411,6 +1399,67 @@
         currentPermissions = currentUserPermissions || currentRolePermissions;
         await loadDashboardAcl();
         applyLayout();
+        return true;
+      }
+
+      function scheduleBootRecovery(cachedUser, cachedRole){
+        if (!cachedUser || bootRecoveryTimer) return;
+        const tryRecover = async () => {
+          bootRecoveryAttempts += 1;
+          const recovered = await getActiveSession();
+          if (recovered?.user) {
+            stopBootRecovery();
+            await applyRecoveredAuthState(recovered.user, cachedRole);
+            return;
+          }
+          if (bootRecoveryAttempts >= 20) {
+            stopBootRecovery();
+            return;
+          }
+          bootRecoveryTimer = window.setTimeout(tryRecover, 400);
+        };
+        bootRecoveryTimer = window.setTimeout(tryRecover, 400);
+      }
+
+      async function boot(){
+        if (!sb) {
+          chipAuth.textContent = 'Config lipsă';
+          chipAuth.className = 'chip bad';
+          return;
+        }
+
+        const cachedUser = parseSupabaseUserFromStorage();
+        const cachedRole = getStoredRole();
+        const logoutFlag = (sessionStorage.getItem('rf_force_stay_on_login') === '1') || (localStorage.getItem('rf_force_stay_on_login') === '1');
+        if (cachedUser || cachedRole) {
+          setStatusChips(true, cachedUser, cachedRole || 'viewer');
+        }
+
+        const activeSession = await getActiveSession();
+        if (!activeSession?.user) {
+          if (cachedUser && !logoutFlag) {
+            currentUser = cachedUser;
+            currentRole = cachedRole || 'viewer';
+            currentUserPermissions = null;
+            currentRolePermissions = await loadRolePermissionMap(currentRole);
+            currentPermissions = currentRolePermissions;
+            await loadDashboardAcl();
+            applyLayout();
+            scheduleBootRecovery(cachedUser, cachedRole);
+            return;
+          }
+
+          currentUser = null;
+          currentRole = 'viewer';
+          currentPermissions = null;
+          currentUserPermissions = null;
+          currentRolePermissions = null;
+          applyLayout();
+          return;
+        }
+
+        stopBootRecovery();
+        await applyRecoveredAuthState(activeSession.user, cachedRole);
       }
 
       btnRefresh.addEventListener('click', () => window.location.reload());
@@ -1577,6 +1626,7 @@
 
       sb?.auth.onAuthStateChange(async (event, session) => {
         if (session?.user) {
+          stopBootRecovery();
           clearLogoutFlags();
           currentUser = session.user;
           const resolved = await resolveRole(currentUser);
@@ -1605,6 +1655,7 @@
 
         const recovered = await getActiveSession();
         if (recovered?.user) {
+          stopBootRecovery();
           clearLogoutFlags();
           currentUser = recovered.user;
           const resolved = await resolveRole(currentUser);
