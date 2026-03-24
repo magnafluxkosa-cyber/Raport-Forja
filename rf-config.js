@@ -20,6 +20,8 @@
     { page_key: 'tratament-termic-probleme', page_name: 'Tratament Termic - Probleme T.T' },
     { page_key: 'tratament-termic-fise-tehnologice', page_name: 'Tratament Termic - Fișe tehnologice' },
     { page_key: 'rebut', page_name: 'Rebut' },
+    { page_key: 'rebut-pm', page_name: 'Rebut PM' },
+    { page_key: 'rebut-pm-helper', page_name: 'Helper Rebut PM' },
     { page_key: 'kpi', page_name: 'KPI' },
     { page_key: 'inventar-otel', page_name: 'Inventar Oțel' },
     { page_key: 'inventar-debitat', page_name: 'Inventar Debitat' },
@@ -1254,6 +1256,10 @@
       return { allowed:true, role:'viewer', source:'login open', permissions:defaultPageAccessFromRole('viewer', key) };
     }
 
+    if (key === 'index') {
+      return { allowed:true, role:'viewer', source:'index open', permissions:defaultPageAccessFromRole('viewer', key) };
+    }
+
     if (!user) {
       try {
         var sessionRes = await client.auth.getSession();
@@ -1279,7 +1285,20 @@
     var mirror = await readDashboardAclMirror(client);
     var decisions = collectAclDecisions({ pageKey:key, href:href, role:role, email:email, userPermissionMap:userPermissionMap, permissionMap:permissionMap, mirror:mirror });
 
-    var permissions = defaultPageAccessFromRole(role, key);
+    var mirrorHasUserAcl = false;
+    if (mirror && email) {
+      var mirrorUserPermissionsRoot = mirror.user_permissions && typeof mirror.user_permissions === 'object' ? mirror.user_permissions : null;
+      var mirrorUserGrantsRoot = mirror.user_grants && typeof mirror.user_grants === 'object' ? mirror.user_grants : null;
+      var mirrorUserPermissions = mirrorUserPermissionsRoot && mirrorUserPermissionsRoot[email] && typeof mirrorUserPermissionsRoot[email] === 'object' ? mirrorUserPermissionsRoot[email] : null;
+      var mirrorUserGrants = mirrorUserGrantsRoot && mirrorUserGrantsRoot[email] && typeof mirrorUserGrantsRoot[email] === 'object' ? mirrorUserGrantsRoot[email] : null;
+      mirrorHasUserAcl = !!((mirrorUserPermissions && Object.keys(mirrorUserPermissions).length) || (mirrorUserGrants && Object.keys(mirrorUserGrants).length));
+    }
+
+    var hasUserAcl = !!(userPermissionMap && userPermissionMap.size) || mirrorHasUserAcl;
+    var permissions = hasUserAcl
+      ? { can_view:false, can_add:false, can_edit:false, can_delete:false, can_export:false, can_import:false }
+      : defaultPageAccessFromRole(role, key);
+
     var explicitTrue = false;
     var explicitFalse = false;
     decisions.forEach(function (entry) {
@@ -1289,14 +1308,22 @@
       if (permissionEntry.can_view === false) explicitFalse = true;
     });
 
-    var allowed = permissions.can_view !== false;
-    if (explicitFalse) allowed = false;
-    else if (explicitTrue) allowed = true;
+    var allowed;
+    var source;
+    if (hasUserAcl) {
+      allowed = explicitTrue && !explicitFalse;
+      source = allowed ? 'user acl explicit true' : 'user acl default deny';
+    } else {
+      allowed = permissions.can_view !== false;
+      if (explicitFalse) allowed = false;
+      else if (explicitTrue) allowed = true;
+      source = explicitFalse ? 'acl explicit false' : (explicitTrue ? 'acl explicit true' : 'acl fallback allow');
+    }
 
     return {
       allowed: allowed,
       role: role,
-      source: explicitFalse ? 'acl explicit false' : (explicitTrue ? 'acl explicit true' : 'acl fallback allow'),
+      source: source,
       message: allowed ? '' : 'Nu ai acces în această foaie. Cere acces de la admin.',
       permissions: permissions,
       email: email
