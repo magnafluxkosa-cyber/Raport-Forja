@@ -1346,15 +1346,20 @@
         try { localStorage.removeItem('rf_force_stay_on_login'); } catch (_) {}
       }
 
-      async function getActiveSession(){
+      async function getActiveSession(options){
         if (!sb) return null;
 
-        for (let i = 0; i < 6; i += 1) {
+        const attempts = Math.max(1, Number(options?.attempts || 6));
+        const waitMs = Math.max(0, Number(options?.waitMs || 120));
+
+        for (let i = 0; i < attempts; i += 1) {
           try {
             const { data, error } = await sb.auth.getSession();
             if (!error && data?.session?.user) return data.session;
           } catch (_) {}
-          await new Promise(resolve => window.setTimeout(resolve, 120));
+          if (i < attempts - 1) {
+            await new Promise(resolve => window.setTimeout(resolve, waitMs));
+          }
         }
 
         try {
@@ -1601,10 +1606,28 @@
           return;
         }
 
-        const recovered = await getActiveSession();
+        const recovered = await getActiveSession({ attempts: 20, waitMs: 250 });
         if (recovered?.user) {
           clearLogoutFlags();
           currentUser = recovered.user;
+          const resolved = await resolveRole(currentUser);
+          currentRole = resolved.role || getStoredRole() || 'viewer';
+          try { localStorage.setItem('rf_cached_role', currentRole); } catch (_) {}
+          try { sessionStorage.setItem('rf_cached_role', currentRole); } catch (_) {}
+          currentUserPermissions = await loadUserPermissionMap(currentUser);
+          currentRolePermissions = await loadRolePermissionMap(currentRole);
+          currentPermissions = currentUserPermissions || currentRolePermissions;
+          await loadDashboardAcl();
+          applyLayout();
+          return;
+        }
+
+        await new Promise(resolve => window.setTimeout(resolve, 1800));
+
+        const recoveredAgain = await getActiveSession({ attempts: 12, waitMs: 250 });
+        if (recoveredAgain?.user) {
+          clearLogoutFlags();
+          currentUser = recoveredAgain.user;
           const resolved = await resolveRole(currentUser);
           currentRole = resolved.role || getStoredRole() || 'viewer';
           try { localStorage.setItem('rf_cached_role', currentRole); } catch (_) {}
@@ -1624,7 +1647,7 @@
         currentRolePermissions = null;
         applyLayout();
 
-        const target = `./login.html?logout=1&t=${Date.now()}`;
+        const target = `./login.html?t=${Date.now()}`;
         window.setTimeout(() => {
           try { window.location.replace(target); }
           catch (_) { window.location.href = target; }
