@@ -2155,3 +2155,438 @@ async function applyDomPermissions(pageKey, root, options) {
     ensureStyle();
   }
 })(window);
+
+
+/* --- RF ACL auto binding / every page --- */
+(function (window) {
+  'use strict';
+  if (!window || !window.RF_ACL) return;
+
+  var RF = window.RF_ACL;
+  var originalGetCatalog = typeof RF.getControlCatalogForPage === 'function' ? RF.getControlCatalogForPage.bind(RF) : function () { return []; };
+  var originalResolvePageAccess = typeof RF.resolvePageAccess === 'function' ? RF.resolvePageAccess.bind(RF) : null;
+  var originalResolveControlAccess = typeof RF.resolveControlAccess === 'function' ? RF.resolveControlAccess.bind(RF) : null;
+
+  var COMMON_EXTRA_FIELDS = [
+    ['field.an','Câmp An'],
+    ['field.luna','Câmp Lună'],
+    ['field.data','Câmp Dată'],
+    ['field.schimb','Câmp Schimbul'],
+    ['field.operator','Câmp Operator'],
+    ['field.utilaj','Câmp Utilaj'],
+    ['field.echipament','Câmp Echipament'],
+    ['field.reper','Câmp Reper'],
+    ['field.sarja','Câmp Sarjă'],
+    ['field.cantitate','Câmp Cantitate'],
+    ['field.ore','Câmp Ore'],
+    ['field.minute','Câmp Minute'],
+    ['field.observatii','Câmp Observații'],
+    ['field.probleme','Câmp Probleme'],
+    ['field.calitate','Câmp Calitate'],
+    ['field.diametru','Câmp Diametru'],
+    ['field.kg','Câmp KG'],
+    ['field.lungime','Câmp Lungime'],
+    ['field.transport','Câmp Transport'],
+    ['field.data-livrare','Câmp Data livrării'],
+    ['field.cod','Câmp Cod'],
+    ['field.cod-defect','Câmp Cod defect'],
+    ['field.cauza','Câmp Cauză'],
+    ['field.actiuni-corective','Câmp Acțiuni corective'],
+    ['field.material','Câmp Material'],
+    ['field.tact','Câmp Tact'],
+    ['field.planificat','Câmp Planificat'],
+    ['field.realizat','Câmp Realizat'],
+    ['field.rebut','Câmp Rebut'],
+    ['field.client','Câmp Client'],
+    ['field.furnizor','Câmp Furnizor'],
+    ['field.pdf','Fișier PDF'],
+    ['field.revizie','Câmp Revizie']
+  ].map(function (row) { return Object.freeze({ control_key: row[0], control_label: row[1], control_type: 'field' }); });
+
+  var PAGE_EXTRA_FIELDS = {
+    'planificare-forja': [
+      { control_key:'field.debitat', control_label:'Câmp Debitat disponibil', control_type:'field' },
+      { control_key:'field.comanda', control_label:'Câmp Comandă', control_type:'field' }
+    ],
+    'mrc-necesar-otel': [
+      { control_key:'field.necesar', control_label:'Câmp Necesar', control_type:'field' },
+      { control_key:'field.stoc', control_label:'Câmp Stoc', control_type:'field' }
+    ],
+    'mrc-comenzi-otel': [
+      { control_key:'field.comandat', control_label:'Câmp Cantitate comandată', control_type:'field' }
+    ],
+    'numeralkod': [
+      { control_key:'field.cod-intern', control_label:'Câmp Cod intern', control_type:'field' }
+    ],
+    'forjate': [
+      { control_key:'field.operator-forja', control_label:'Câmp Operator Forjă', control_type:'field' }
+    ],
+    'magnaflux': [
+      { control_key:'field.acceptate', control_label:'Câmp Acceptate', control_type:'field' }
+    ],
+    'probleme-raportate': [
+      { control_key:'field.timp-minute', control_label:'Câmp Timp minute', control_type:'field' }
+    ],
+    'tratament-termic-fise-tehnologice': [
+      { control_key:'field.actualizat-de', control_label:'Câmp Actualizat de', control_type:'field' }
+    ]
+  };
+
+  function normalizeText(value) {
+    return String(value == null ? '' : value)
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^a-zA-Z0-9]+/g, ' ')
+      .trim()
+      .toLowerCase();
+  }
+
+  function slugKey(value) {
+    return normalizeText(value).replace(/\s+/g, '-').replace(/^-+|-+$/g, '');
+  }
+
+  function uniqueCatalog(list) {
+    var seen = Object.create(null);
+    var out = [];
+    (Array.isArray(list) ? list : []).forEach(function (row) {
+      var key = String(row && row.control_key || '').trim();
+      if (!key || seen[key]) return;
+      seen[key] = true;
+      out.push(Object.freeze({
+        control_key: key,
+        control_label: String(row && row.control_label || key).trim() || key,
+        control_type: String(row && row.control_type || 'action').trim() || 'action'
+      }));
+    });
+    return out;
+  }
+
+  RF.getControlCatalogForPage = function (pageKey) {
+    var key = String(pageKey || '').trim();
+    return uniqueCatalog([].concat(originalGetCatalog(key) || [], COMMON_EXTRA_FIELDS, PAGE_EXTRA_FIELDS[key] || []));
+  };
+
+  function getElementText(el) {
+    if (!el) return '';
+    var raw = [
+      el.getAttribute && el.getAttribute('data-rf-label'),
+      el.getAttribute && el.getAttribute('aria-label'),
+      el.getAttribute && el.getAttribute('title'),
+      el.value,
+      el.innerText,
+      el.textContent,
+      el.placeholder,
+      el.name,
+      el.id,
+      el.className
+    ].filter(Boolean).join(' ');
+    return normalizeText(raw);
+  }
+
+  function findFieldLabel(el) {
+    if (!el) return '';
+    var id = el.id ? String(el.id) : '';
+    if (id) {
+      try {
+        var lbl = document.querySelector('label[for="' + CSS.escape(id) + '"]');
+        if (lbl && lbl.textContent) return lbl.textContent;
+      } catch (_) {}
+    }
+    var field = el.closest && el.closest('.field, .fltGroup, .formRow, .form-field, .editorRow, .inputWrap, .control-group');
+    if (field) {
+      var label = field.querySelector('label');
+      if (label && label.textContent) return label.textContent;
+    }
+    var prev = el.previousElementSibling;
+    if (prev && prev.tagName === 'LABEL' && prev.textContent) return prev.textContent;
+    return '';
+  }
+
+  function classifyActionElement(el, pageKey) {
+    if (!el) return '';
+    var page = String(pageKey || '').trim();
+    var text = getElementText(el);
+    var href = normalizeText(el.getAttribute && el.getAttribute('href'));
+    if (!text && !href) return '';
+
+    if (page === 'helper-acl') {
+      if (text.indexOf('salveaza') >= 0 && text.indexOf('control') >= 0) return 'controls.save';
+      if (text.indexOf('salveaza') >= 0 && (text.indexOf('permisi') >= 0 || text.indexOf('acl') >= 0)) return 'permissions.save';
+      if (text.indexOf('utilizator') >= 0 || text.indexOf('preset') >= 0) return 'users.manage';
+    }
+    if (page === 'helper-data' && text.indexOf('salveaza') >= 0) return 'masterdata.edit';
+    if (page === 'index') {
+      if (text.indexOf('paleta') >= 0 || text.indexOf('tema') >= 0) return 'dashboard.palette';
+      if (text.indexOf('refresh') >= 0 || text.indexOf('reincarca') >= 0 || text.indexOf('actualizeaza') >= 0) return 'dashboard.refresh';
+    }
+    if (text.indexOf('probleme t t') >= 0 || href.indexOf('tratament termic probleme') >= 0 || href.indexOf('tratament-termic-probleme') >= 0) return 'problems.link';
+    if ((text.indexOf('pdf') >= 0 || text.indexOf('fisa') >= 0 || text.indexOf('fise') >= 0) && (text.indexOf('incarca') >= 0 || text.indexOf('upload') >= 0 || text.indexOf('adauga') >= 0)) return 'pdf.upload';
+    if ((text.indexOf('pdf') >= 0 || text.indexOf('fisa') >= 0 || text.indexOf('fise') >= 0) && (text.indexOf('descarca') >= 0 || text.indexOf('export') >= 0 || text.indexOf('download') >= 0)) return 'pdf.download';
+    if ((text.indexOf('pdf') >= 0 || text.indexOf('fisa') >= 0 || text.indexOf('fise') >= 0) && (text.indexOf('sterge') >= 0 || text.indexOf('elimina') >= 0)) return 'pdf.delete';
+    if ((text.indexOf('pdf') >= 0 || text.indexOf('fisa') >= 0 || text.indexOf('fise') >= 0) && (text.indexOf('deschide') >= 0 || text.indexOf('vizual') >= 0 || text.indexOf('open') >= 0)) return 'pdf.open';
+    if (text.indexOf('import') >= 0 || text.indexOf('incarca excel') >= 0 || text.indexOf('upload excel') >= 0) return 'data.import';
+    if (text.indexOf('export') >= 0 || text.indexOf('descarca') >= 0 || text.indexOf('excel') >= 0 || text.indexOf('pdf') >= 0) return 'data.export';
+    if (text.indexOf('sterge') >= 0 || text.indexOf('elimina') >= 0 || text.indexOf('delete') >= 0) return 'rows.delete';
+    if (text.indexOf('edit') >= 0 || text.indexOf('modifica') >= 0) return 'rows.edit';
+    if (text.indexOf('filtr') >= 0 || text.indexOf('cauta') >= 0 || text.indexOf('search') >= 0) return 'rows.filter';
+    if (text.indexOf('refresh') >= 0 || text.indexOf('sincron') >= 0 || text.indexOf('reincarca') >= 0 || text.indexOf('reintra') >= 0 || text.indexOf('actualizeaza') >= 0) return 'cloud.refresh';
+    if (text.indexOf('salveaza') >= 0 || text.indexOf('save') >= 0) return 'cloud.save';
+    if (text.indexOf('rand nou') >= 0 || text.indexOf('rind nou') >= 0 || text.indexOf('adauga') >= 0 || text.indexOf('nou') >= 0 || text.indexOf('plus') >= 0) return 'rows.add';
+    return '';
+  }
+
+  function isFilterField(el) {
+    if (!el) return false;
+    var text = getElementText(el);
+    if (text.indexOf('filtr') >= 0 || text.indexOf('cauta') >= 0 || text.indexOf('search') >= 0) return true;
+    return !!(el.closest && el.closest('thead .filters, thead tr.filters, thead tr.colFilters, .filtersBar, .filters, .filterBar, .toolbarFilters, .toolbar-search, .searchBox, .tableFilters, .fltGroup'));
+  }
+
+  function inferFieldControlKey(el) {
+    if (!el) return '';
+    var label = findFieldLabel(el);
+    var raw = label || el.getAttribute('data-field-label') || el.name || el.id || el.placeholder || el.getAttribute('data-field') || el.className || '';
+    var slug = slugKey(raw);
+    if (!slug) return '';
+    slug = slug
+      .replace(/^txt-?/, '')
+      .replace(/^cbo-?/, '')
+      .replace(/^inp-?/, '')
+      .replace(/^input-?/, '')
+      .replace(/^field-?/, '')
+      .replace(/^btn-?/, '');
+    return 'field.' + slug;
+  }
+
+  function markAclNodes(scope, pageKey) {
+    var root = scope && scope.querySelectorAll ? scope : document;
+    var nodes = root.querySelectorAll('button, a, [role="button"], input, select, textarea, [contenteditable], form');
+    for (var i = 0; i < nodes.length; i += 1) {
+      var el = nodes[i];
+      if (el.hasAttribute('data-rf-skip')) continue;
+      if (!el.hasAttribute('data-rf-control') && !el.hasAttribute('data-rf-field')) {
+        if (el.matches('button, a, [role="button"], input[type="button"], input[type="submit"], input[type="file"]')) {
+          var actionKey = classifyActionElement(el, pageKey);
+          if (actionKey) {
+            el.setAttribute('data-rf-control', actionKey);
+          }
+        }
+        if (!el.hasAttribute('data-rf-control') && el.matches('input, select, textarea, [contenteditable]')) {
+          if (isFilterField(el)) {
+            el.setAttribute('data-rf-control', 'rows.filter');
+          } else {
+            var fieldKey = inferFieldControlKey(el);
+            if (fieldKey) el.setAttribute('data-rf-field', fieldKey);
+          }
+        }
+      }
+    }
+    return root;
+  }
+
+  function stricterDefaultForControl(controlKey, pagePermissions) {
+    var perms = pagePermissions || {};
+    var key = String(controlKey || '').trim();
+    var view = perms.can_view === true;
+    if (!key) return { can_view: view, can_use: view, can_edit: perms.can_edit === true };
+    if (key === 'rows.add') return { can_view: perms.can_add === true, can_use: perms.can_add === true, can_edit: false };
+    if (key === 'modal.open') return { can_view: perms.can_add === true || perms.can_edit === true, can_use: perms.can_add === true || perms.can_edit === true, can_edit: false };
+    if (key === 'rows.edit') return { can_view: view, can_use: perms.can_edit === true, can_edit: perms.can_edit === true };
+    if (key === 'rows.delete' || key === 'pdf.delete') return { can_view: perms.can_delete === true, can_use: perms.can_delete === true, can_edit: false };
+    if (key === 'data.export' || key === 'pdf.download') return { can_view: perms.can_export === true, can_use: perms.can_export === true, can_edit: false };
+    if (key === 'data.import' || key === 'pdf.upload') return { can_view: perms.can_import === true || perms.can_add === true, can_use: perms.can_import === true || perms.can_add === true, can_edit: false };
+    if (key === 'cloud.save') return { can_view: perms.can_add === true || perms.can_edit === true, can_use: perms.can_add === true || perms.can_edit === true, can_edit: false };
+    if (key === 'cloud.refresh' || key === 'rows.filter' || key === 'pdf.open' || key === 'problems.link' || key === 'dashboard.palette' || key === 'dashboard.refresh' || key === 'users.manage') return { can_view: view, can_use: view, can_edit: false };
+    if (key.indexOf('field.') === 0 || key.indexOf('pdf.revision.') === 0) return { can_view: view, can_use: perms.can_edit === true, can_edit: perms.can_edit === true };
+    if (key === 'permissions.save' || key === 'controls.save' || key === 'masterdata.edit') return { can_view: perms.can_edit === true, can_use: perms.can_edit === true, can_edit: false };
+    return { can_view: view, can_use: view, can_edit: perms.can_edit === true };
+  }
+
+  RF.resolveControlAccess = async function (pageKey, controlKey, options) {
+    var pageAccess = options && options.pageAccess ? options.pageAccess : (originalResolvePageAccess ? await originalResolvePageAccess(pageKey, options) : { permissions:{} });
+    var res = originalResolveControlAccess
+      ? await originalResolveControlAccess(pageKey, controlKey, Object.assign({}, options || {}, { pageAccess: pageAccess }))
+      : { control_key: controlKey, can_view: true, can_use: true, can_edit: true, source: 'fallback' };
+    var source = String(res && res.source || '');
+    var explicitUser = /user control permissions|admin/i.test(source);
+    if (!explicitUser) {
+      var stricter = stricterDefaultForControl(controlKey, pageAccess && pageAccess.permissions ? pageAccess.permissions : {});
+      res = Object.assign({}, res || {}, stricter);
+      if (!source) res.source = 'page permissions';
+    }
+    res.allowed = res.can_view === true;
+    return res;
+  };
+
+  RF.canUseControl = async function (pageKey, controlKey, options) {
+    var res = await RF.resolveControlAccess(pageKey, controlKey, options);
+    return { allowed: res.can_use === true && res.can_view === true, visible: res.can_view === true, editable: res.can_edit === true, source: res.source || '' };
+  };
+
+  function setReadonlyState(el, editable) {
+    if (!el) return;
+    if (el.matches('input, textarea')) {
+      if (editable) {
+        el.removeAttribute('readonly');
+        if (el.type !== 'file') el.disabled = false;
+      } else {
+        el.setAttribute('readonly', 'readonly');
+        if (el.type === 'file') el.disabled = true;
+      }
+      return;
+    }
+    if (el.matches('select')) {
+      el.disabled = !editable;
+      return;
+    }
+    if (el.hasAttribute('contenteditable')) {
+      el.setAttribute('contenteditable', editable ? 'true' : 'false');
+    }
+  }
+
+  RF.applyDomPermissions = async function (pageKey, root, options) {
+    var scope = markAclNodes(root && root.querySelectorAll ? root : document, pageKey);
+    var pageAccess = options && options.pageAccess ? options.pageAccess : (originalResolvePageAccess ? await originalResolvePageAccess(pageKey, options) : { permissions:{} });
+    var nodes = scope.querySelectorAll('[data-rf-permission],[data-rf-control],[data-rf-field]');
+    for (var i = 0; i < nodes.length; i += 1) {
+      var el = nodes[i];
+      var permKey = String(el.getAttribute('data-rf-permission') || '').trim();
+      if (permKey) {
+        var allowByPage = pageAccess && pageAccess.permissions ? pageAccess.permissions[permKey] === true : false;
+        if (!allowByPage) {
+          el.style.display = 'none';
+          el.setAttribute('aria-hidden', 'true');
+          if ('disabled' in el) el.disabled = true;
+          continue;
+        }
+      }
+      var controlKey = String(el.getAttribute('data-rf-control') || el.getAttribute('data-rf-field') || '').trim();
+      if (!controlKey) continue;
+      var controlAccess = await RF.resolveControlAccess(pageKey, controlKey, Object.assign({}, options || {}, { pageAccess: pageAccess }));
+      if (controlAccess.can_view !== true) {
+        el.style.display = 'none';
+        el.setAttribute('aria-hidden', 'true');
+        if ('disabled' in el) el.disabled = true;
+        setReadonlyState(el, false);
+        continue;
+      }
+      if (el.matches('button, a, [role="button"], input[type="button"], input[type="submit"], input[type="file"]')) {
+        if ('disabled' in el) el.disabled = controlAccess.can_use !== true;
+      }
+      if (el.matches('input, select, textarea, [contenteditable]')) {
+        setReadonlyState(el, controlAccess.can_edit === true || controlKey === 'rows.filter');
+      }
+    }
+    return pageAccess;
+  };
+
+  function currentPageKey() {
+    if (window.__RF_ACL_PAGE_BOOT__) return window.__RF_ACL_PAGE_BOOT__.pageKey;
+    return RF.inferPageKey ? RF.inferPageKey(window.location.pathname || '') : '';
+  }
+
+  function currentPageFlags() {
+    return window.__RF_ACL_PAGE_BOOT__ || { pageKey: currentPageKey(), controls: {} };
+  }
+
+  function elementInEditableGrid(el) {
+    return !!(el && el.closest && el.closest('table tbody tr, .tableWrap tbody tr, .table-wrap tbody tr, .grid-card tbody tr, .tableContainer tbody tr, .editableCell, td.editable, .lvRow, .listViewRow'));
+  }
+
+  function elementInEditorForm(el) {
+    return !!(el && el.closest && el.closest('form, .modal, .modalCard, .editor, .editorPanel, .sheetModal, .dialog, .popup, .drawer, .panelEditor, .formCard'));
+  }
+
+  function elementInFilterZone(el) {
+    return !!(el && el.closest && el.closest('thead .filters, thead tr.filters, thead tr.colFilters, .filtersBar, .filters, .filterBar, .toolbarFilters, .toolbar-search, .searchBox, .tableFilters, .fltGroup'));
+  }
+
+  function installEventGuards() {
+    if (window.__RF_ACL_EVENT_GUARDS__) return;
+    window.__RF_ACL_EVENT_GUARDS__ = true;
+
+    document.addEventListener('dblclick', function (ev) {
+      var state = currentPageFlags();
+      var edit = state.controls && state.controls['rows.edit'];
+      if (edit && edit.can_use === false && elementInEditableGrid(ev.target)) {
+        ev.preventDefault();
+        ev.stopImmediatePropagation();
+      }
+    }, true);
+
+    document.addEventListener('submit', function (ev) {
+      var form = ev.target;
+      if (!form || elementInFilterZone(form)) return;
+      var state = currentPageFlags();
+      var save = state.controls && state.controls['cloud.save'];
+      if (save && save.can_use === false && elementInEditorForm(form)) {
+        ev.preventDefault();
+        ev.stopImmediatePropagation();
+      }
+    }, true);
+
+    document.addEventListener('beforeinput', function (ev) {
+      var target = ev.target;
+      var state = currentPageFlags();
+      var edit = state.controls && state.controls['rows.edit'];
+      if (edit && edit.can_use === false && target && target.hasAttribute && target.hasAttribute('contenteditable')) {
+        ev.preventDefault();
+        ev.stopImmediatePropagation();
+      }
+    }, true);
+  }
+
+  async function collectControlSnapshot(pageKey, pageAccess, client) {
+    var keys = ['rows.filter','rows.add','rows.edit','rows.delete','data.export','data.import','cloud.refresh','cloud.save','modal.open','pdf.open','pdf.upload','pdf.download','pdf.delete','problems.link'];
+    var snapshot = {};
+    for (var i = 0; i < keys.length; i += 1) {
+      var key = keys[i];
+      snapshot[key] = await RF.resolveControlAccess(pageKey, key, { client: client, pageAccess: pageAccess });
+    }
+    return snapshot;
+  }
+
+  function observeAclMutations(pageKey, client, pageAccess) {
+    if (window.__RF_ACL_MUTATION_OBSERVER__) return;
+    var pending = false;
+    var observer = new MutationObserver(function () {
+      if (pending) return;
+      pending = true;
+      window.requestAnimationFrame(async function () {
+        pending = false;
+        try {
+          await RF.applyDomPermissions(pageKey, document, { client: client, pageAccess: pageAccess });
+        } catch (_) {}
+      });
+    });
+    observer.observe(document.documentElement, { childList: true, subtree: true });
+    window.__RF_ACL_MUTATION_OBSERVER__ = observer;
+  }
+
+  async function bootstrapPageAcl() {
+    if (!window.supabase || typeof window.supabase.createClient !== 'function') return;
+    var pageKey = currentPageKey();
+    if (!pageKey || !originalResolvePageAccess) return;
+    var client = window.createRfSupabaseClient ? window.createRfSupabaseClient() : null;
+    if (!client) return;
+    var pageAccess = await originalResolvePageAccess(pageKey, { client: client });
+    if (!pageAccess || pageAccess.allowed !== true) return;
+    await RF.applyDomPermissions(pageKey, document, { client: client, pageAccess: pageAccess });
+    installEventGuards();
+    window.__RF_ACL_PAGE_BOOT__ = {
+      pageKey: pageKey,
+      pageAccess: pageAccess,
+      controls: await collectControlSnapshot(pageKey, pageAccess, client)
+    };
+    observeAclMutations(pageKey, client, pageAccess);
+  }
+
+  if (!window.__RF_ACL_AUTO_BIND__) {
+    window.__RF_ACL_AUTO_BIND__ = true;
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', function () { bootstrapPageAcl().catch(function () {}); }, { once: true });
+    } else {
+      bootstrapPageAcl().catch(function () {});
+    }
+  }
+})(window);
