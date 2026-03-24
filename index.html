@@ -786,6 +786,7 @@
       let currentPermissions = null;
       let currentUserPermissions = null;
       let currentRolePermissions = null;
+      let transientAuthNullTimer = null;
       let currentDashAcl = null;
       let currentPanel = null;
       const currentInnerPanels = { subForja:null };
@@ -1346,6 +1347,35 @@
         try { localStorage.removeItem('rf_force_stay_on_login'); } catch (_) {}
       }
 
+      function clearTransientAuthNullTimer(){
+        if (!transientAuthNullTimer) return;
+        try { window.clearTimeout(transientAuthNullTimer); } catch (_) {}
+        transientAuthNullTimer = null;
+      }
+
+      async function hydrateAuthenticatedState(user){
+        if (!user) return;
+        clearLogoutFlags();
+        clearTransientAuthNullTimer();
+        currentUser = user;
+        const resolved = await resolveRole(currentUser);
+        currentRole = resolved.role || getStoredRole() || 'viewer';
+        try { localStorage.setItem('rf_cached_role', currentRole); } catch (_) {}
+        try { sessionStorage.setItem('rf_cached_role', currentRole); } catch (_) {}
+        try {
+          const displayId = getStoredDisplayId() || safeIdFromEmail(currentUser.email);
+          if (displayId) {
+            localStorage.setItem('rf_display_id', displayId);
+            sessionStorage.setItem('rf_display_id', displayId);
+          }
+        } catch (_) {}
+        currentUserPermissions = await loadUserPermissionMap(currentUser);
+        currentRolePermissions = await loadRolePermissionMap(currentRole);
+        currentPermissions = currentUserPermissions || currentRolePermissions;
+        await loadDashboardAcl();
+        applyLayout();
+      }
+
       async function getActiveSession(){
         if (!sb) return null;
 
@@ -1390,25 +1420,7 @@
         }
 
         clearLogoutFlags();
-        currentUser = activeSession.user;
-        const resolved = await resolveRole(currentUser);
-        currentRole = resolved.role || cachedRole || 'viewer';
-
-        try { localStorage.setItem('rf_cached_role', currentRole); } catch (_) {}
-        try { sessionStorage.setItem('rf_cached_role', currentRole); } catch (_) {}
-        try {
-          const displayId = getStoredDisplayId() || safeIdFromEmail(currentUser.email);
-          if (displayId) {
-            localStorage.setItem('rf_display_id', displayId);
-            sessionStorage.setItem('rf_display_id', displayId);
-          }
-        } catch (_) {}
-
-        currentUserPermissions = await loadUserPermissionMap(currentUser);
-        currentRolePermissions = await loadRolePermissionMap(currentRole);
-        currentPermissions = currentUserPermissions || currentRolePermissions;
-        await loadDashboardAcl();
-        applyLayout();
+        await hydrateAuthenticatedState(activeSession.user);
       }
 
       btnRefresh.addEventListener('click', () => window.location.reload());
@@ -1575,58 +1587,47 @@
 
       sb?.auth.onAuthStateChange(async (event, session) => {
         if (session?.user) {
-          clearLogoutFlags();
-          currentUser = session.user;
-          const resolved = await resolveRole(currentUser);
-          currentRole = resolved.role || getStoredRole() || 'viewer';
-          try { localStorage.setItem('rf_cached_role', currentRole); } catch (_) {}
-          try { sessionStorage.setItem('rf_cached_role', currentRole); } catch (_) {}
-          try {
-            const displayId = getStoredDisplayId() || safeIdFromEmail(currentUser.email);
-            if (displayId) {
-              localStorage.setItem('rf_display_id', displayId);
-              sessionStorage.setItem('rf_display_id', displayId);
-            }
-          } catch (_) {}
-          currentUserPermissions = await loadUserPermissionMap(currentUser);
-          currentRolePermissions = await loadRolePermissionMap(currentRole);
-          currentPermissions = currentUserPermissions || currentRolePermissions;
-          await loadDashboardAcl();
-          applyLayout();
+          await hydrateAuthenticatedState(session.user);
           return;
         }
-
-        const recovered = await getActiveSession();
-        if (recovered?.user) {
-          clearLogoutFlags();
-          currentUser = recovered.user;
-          const resolved = await resolveRole(currentUser);
-          currentRole = resolved.role || getStoredRole() || 'viewer';
-          try { localStorage.setItem('rf_cached_role', currentRole); } catch (_) {}
-          try { sessionStorage.setItem('rf_cached_role', currentRole); } catch (_) {}
-          currentUserPermissions = await loadUserPermissionMap(currentUser);
-          currentRolePermissions = await loadRolePermissionMap(currentRole);
-          currentPermissions = currentUserPermissions || currentRolePermissions;
-          await loadDashboardAcl();
-          applyLayout();
-          return;
-        }
-
-        currentUser = null;
-        currentRole = 'viewer';
-        currentPermissions = null;
-        currentUserPermissions = null;
-        currentRolePermissions = null;
-        applyLayout();
 
         const logoutFlag = sessionStorage.getItem('rf_force_stay_on_login') === '1' || localStorage.getItem('rf_force_stay_on_login') === '1';
         if (event === 'SIGNED_OUT' || logoutFlag) {
+          clearTransientAuthNullTimer();
+          currentUser = null;
+          currentRole = 'viewer';
+          currentPermissions = null;
+          currentUserPermissions = null;
+          currentRolePermissions = null;
+          applyLayout();
           const target = `./login.html?logout=1&t=${Date.now()}`;
           window.setTimeout(() => {
             try { window.location.replace(target); }
             catch (_) { window.location.href = target; }
           }, 10);
+          return;
         }
+
+        clearTransientAuthNullTimer();
+        transientAuthNullTimer = window.setTimeout(async () => {
+          const recovered = await getActiveSession();
+          if (recovered?.user) {
+            await hydrateAuthenticatedState(recovered.user);
+            return;
+          }
+
+          if (currentUser) {
+            applyLayout();
+            return;
+          }
+
+          currentUser = null;
+          currentRole = getStoredRole() || 'viewer';
+          currentPermissions = null;
+          currentUserPermissions = null;
+          currentRolePermissions = null;
+          applyLayout();
+        }, 2000);
       });
 
       if (document.readyState === 'loading') window.addEventListener('DOMContentLoaded', boot);
