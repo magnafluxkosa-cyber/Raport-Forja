@@ -1326,36 +1326,25 @@
 
     var email = normalizeAclEmail(user.email);
     var userPermissionMap = await loadUserPermissionMap(client, user);
-    var permissionMap = await loadPagePermissionMap(client, role);
-    var mirror = await readDashboardAclMirror(client);
-    var userAclMode = !!(userPermissionMap && userPermissionMap.size) || mirrorHasAnyUserAcl(mirror);
-    var decisions = collectAclDecisions({ pageKey:key, href:href, role:role, email:email, userPermissionMap:userPermissionMap, permissionMap:permissionMap, mirror:mirror });
-    var userOnlyDecisions = collectAclDecisions({ pageKey:key, href:href, role:'', email:email, userPermissionMap:userPermissionMap, permissionMap:null, mirror:{ user_permissions: mirror && mirror.user_permissions, user_grants: mirror && mirror.user_grants } });
 
-    var permissions = userAclMode
-      ? { can_view:false, can_add:false, can_edit:false, can_delete:false, can_export:false, can_import:false }
-      : defaultPageAccessFromRole(role, key);
-
+    var permissions = { can_view:false, can_add:false, can_edit:false, can_delete:false, can_export:false, can_import:false };
     var explicitTrue = false;
     var explicitFalse = false;
-    (userAclMode ? userOnlyDecisions : decisions).forEach(function (entry) {
-      var permissionEntry = permissionValueToEntry(entry);
-      permissions = mergePermissions(permissions, permissionEntry);
-      if (permissionEntry.can_view === true) explicitTrue = true;
-      if (permissionEntry.can_view === false) explicitFalse = true;
-    });
 
-    var allowed;
-    var source;
-    if (userAclMode) {
-      allowed = explicitTrue && !explicitFalse;
-      source = allowed ? 'user acl explicit true' : 'user acl default deny';
-    } else {
-      allowed = permissions.can_view !== false;
-      if (explicitFalse) allowed = false;
-      else if (explicitTrue) allowed = true;
-      source = explicitFalse ? 'acl explicit false' : (explicitTrue ? 'acl explicit true' : 'acl fallback allow');
+    if (userPermissionMap instanceof Map) {
+      var directByKey = key && userPermissionMap.has(key) ? userPermissionMap.get(key) : null;
+      var directByHref = href && userPermissionMap.has(href) ? userPermissionMap.get(href) : null;
+      [directByKey, directByHref].forEach(function (entry) {
+        if (!entry) return;
+        var permissionEntry = permissionValueToEntry(entry);
+        permissions = mergePermissions(permissions, permissionEntry);
+        if (permissionEntry.can_view === true) explicitTrue = true;
+        if (permissionEntry.can_view === false) explicitFalse = true;
+      });
     }
+
+    var allowed = explicitTrue && !explicitFalse;
+    var source = allowed ? 'user_page_permissions explicit true' : 'user_page_permissions default deny';
 
     return {
       allowed: allowed,
