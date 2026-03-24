@@ -52,6 +52,90 @@
   var PAGE_MAP = Object.create(null);
   PAGE_LIST.forEach(function (page) { PAGE_MAP[page.page_key] = page.page_name; });
 
+
+var COMMON_CONTROL_CATALOG = Object.freeze([
+  Object.freeze({ control_key:'rows.filter', control_label:'Filtrare tabel', control_type:'filter' }),
+  Object.freeze({ control_key:'rows.add', control_label:'Adăugare rând', control_type:'action' }),
+  Object.freeze({ control_key:'rows.edit', control_label:'Editare rând', control_type:'action' }),
+  Object.freeze({ control_key:'rows.delete', control_label:'Ștergere rând', control_type:'action' }),
+  Object.freeze({ control_key:'data.export', control_label:'Export', control_type:'action' }),
+  Object.freeze({ control_key:'data.import', control_label:'Import', control_type:'action' }),
+  Object.freeze({ control_key:'cloud.refresh', control_label:'Refresh cloud', control_type:'action' }),
+  Object.freeze({ control_key:'cloud.save', control_label:'Salvare în cloud', control_type:'action' }),
+  Object.freeze({ control_key:'modal.open', control_label:'Deschidere formular', control_type:'action' })
+]);
+
+var PAGE_CONTROL_OVERRIDES = Object.freeze({
+  'index': Object.freeze([
+    Object.freeze({ control_key:'dashboard.palette', control_label:'Paletă temă', control_type:'action' }),
+    Object.freeze({ control_key:'dashboard.refresh', control_label:'Refresh dashboard', control_type:'action' })
+  ]),
+  'helper-acl': Object.freeze([
+    Object.freeze({ control_key:'users.manage', control_label:'Administrare utilizatori', control_type:'action' }),
+    Object.freeze({ control_key:'permissions.save', control_label:'Salvare ACL pagini', control_type:'action' }),
+    Object.freeze({ control_key:'controls.save', control_label:'Salvare ACL controale', control_type:'action' })
+  ]),
+  'helper-data': Object.freeze([
+    Object.freeze({ control_key:'masterdata.edit', control_label:'Editare helper data', control_type:'action' })
+  ]),
+  'tratament-termic-fise-tehnologice': Object.freeze([
+    Object.freeze({ control_key:'pdf.open', control_label:'Deschidere PDF', control_type:'action' }),
+    Object.freeze({ control_key:'pdf.upload', control_label:'Încărcare PDF', control_type:'action' }),
+    Object.freeze({ control_key:'pdf.download', control_label:'Export / Download PDF', control_type:'action' }),
+    Object.freeze({ control_key:'pdf.delete', control_label:'Ștergere PDF', control_type:'action' }),
+    Object.freeze({ control_key:'pdf.revision.edit', control_label:'Editare revizie PDF', control_type:'field' })
+  ]),
+  'tratament-termic-rapoarte': Object.freeze([
+    Object.freeze({ control_key:'problems.link', control_label:'Buton Probleme T.T', control_type:'action' }),
+    Object.freeze({ control_key:'field.ore', control_label:'Câmp Ore', control_type:'field' }),
+    Object.freeze({ control_key:'field.cantitate', control_label:'Câmp Cantitate', control_type:'field' })
+  ]),
+  'tratament-termic-probleme': Object.freeze([
+    Object.freeze({ control_key:'field.minute', control_label:'Câmp Minute', control_type:'field' }),
+    Object.freeze({ control_key:'field.descriere', control_label:'Câmp Problemă în schimb', control_type:'field' })
+  ]),
+  'rebut-pm': Object.freeze([
+    Object.freeze({ control_key:'field.cod-defect', control_label:'Selector Cod defect', control_type:'field' }),
+    Object.freeze({ control_key:'field.cauza', control_label:'Câmp Cauză', control_type:'field' }),
+    Object.freeze({ control_key:'field.actiuni-corective', control_label:'Câmp Acțiuni corective', control_type:'field' })
+  ]),
+  'forjate': Object.freeze([
+    Object.freeze({ control_key:'field.reper', control_label:'Câmp Reper', control_type:'field' }),
+    Object.freeze({ control_key:'field.buc-realizate', control_label:'Câmp Buc realizate', control_type:'field' }),
+    Object.freeze({ control_key:'field.rebut', control_label:'Câmp Rebut', control_type:'field' })
+  ])
+});
+
+function cloneControlEntries(rows) {
+  return (Array.isArray(rows) ? rows : []).map(function (row) {
+    return Object.freeze({
+      control_key: String(row && row.control_key || '').trim(),
+      control_label: String(row && row.control_label || '').trim(),
+      control_type: String(row && row.control_type || 'action').trim() || 'action'
+    });
+  }).filter(function (row) { return row.control_key; });
+}
+
+function getControlCatalogForPage(pageKey) {
+  var key = String(pageKey || '').trim();
+  var map = Object.create(null);
+  var items = [];
+  function push(row) {
+    if (!row || !row.control_key) return;
+    var cleanKey = String(row.control_key || '').trim();
+    if (!cleanKey || map[cleanKey]) return;
+    map[cleanKey] = true;
+    items.push(Object.freeze({
+      control_key: cleanKey,
+      control_label: String(row.control_label || cleanKey).trim() || cleanKey,
+      control_type: String(row.control_type || 'action').trim() || 'action'
+    }));
+  }
+  cloneControlEntries(COMMON_CONTROL_CATALOG).forEach(push);
+  cloneControlEntries(PAGE_CONTROL_OVERRIDES[key] || []).forEach(push);
+  return items;
+}
+
   function clonePages() {
     return PAGE_LIST.map(function (page) {
       return Object.freeze({ page_key: page.page_key, page_name: page.page_name });
@@ -1094,6 +1178,190 @@
     };
   }
 
+
+function buildControlPermissionEntry(row) {
+  return {
+    control_key: String(row && row.control_key || '').trim(),
+    control_label: String(row && (row.control_label || row.control_key) || '').trim(),
+    control_type: String(row && row.control_type || 'action').trim() || 'action',
+    can_view: row && row.can_view === true,
+    can_use: row && row.can_use === true,
+    can_edit: row && row.can_edit === true
+  };
+}
+
+function mergeControlAccess(base, incoming) {
+  var result = Object.assign({}, base || {});
+  var next = incoming && typeof incoming === 'object' ? incoming : {};
+  ['can_view','can_use','can_edit'].forEach(function (key) {
+    if (Object.prototype.hasOwnProperty.call(next, key)) {
+      result[key] = next[key] === true;
+    }
+  });
+  if (next.control_label) result.control_label = next.control_label;
+  if (next.control_type) result.control_type = next.control_type;
+  return result;
+}
+
+function defaultControlAccessFromPagePermissions(pagePermissions, controlKey) {
+  var perms = pagePermissions && typeof pagePermissions === 'object' ? pagePermissions : defaultPageAccessFromRole('viewer', '');
+  var key = String(controlKey || '').trim();
+  var base = { can_view: perms.can_view === true, can_use: perms.can_view === true, can_edit: perms.can_edit === true };
+  if (!key) return base;
+  if (key === 'rows.add' || key === 'modal.open' || key === 'pdf.upload' || key === 'masterdata.edit' || key === 'permissions.save' || key === 'controls.save') {
+    return { can_view: perms.can_add === true || perms.can_edit === true, can_use: perms.can_add === true || perms.can_edit === true, can_edit: false };
+  }
+  if (key === 'rows.edit' || key.indexOf('field.') === 0 || key.indexOf('pdf.revision.') === 0) {
+    return { can_view: perms.can_view === true, can_use: perms.can_edit === true, can_edit: perms.can_edit === true };
+  }
+  if (key === 'rows.delete' || key === 'pdf.delete') {
+    return { can_view: perms.can_delete === true, can_use: perms.can_delete === true, can_edit: false };
+  }
+  if (key === 'data.export' || key === 'pdf.download') {
+    return { can_view: perms.can_export === true || perms.can_view === true, can_use: perms.can_export === true || perms.can_view === true, can_edit: false };
+  }
+  if (key === 'data.import') {
+    return { can_view: perms.can_import === true, can_use: perms.can_import === true, can_edit: false };
+  }
+  if (key === 'rows.filter' || key === 'cloud.refresh' || key === 'pdf.open' || key === 'problems.link' || key === 'dashboard.palette' || key === 'dashboard.refresh' || key === 'users.manage') {
+    return { can_view: perms.can_view === true, can_use: perms.can_view === true, can_edit: false };
+  }
+  if (key === 'cloud.save') {
+    return { can_view: perms.can_add === true || perms.can_edit === true, can_use: perms.can_add === true || perms.can_edit === true, can_edit: false };
+  }
+  return base;
+}
+
+async function loadUserControlPermissionMap(client, user, pageKey) {
+  if (!client || !user) return null;
+  var email = normalizeAclEmail(user.email);
+  var userId = user && user.id ? String(user.id).trim() : '';
+  if (!email && !userId) return null;
+  var map = new Map();
+
+  function appendRows(rows) {
+    (Array.isArray(rows) ? rows : []).forEach(function (row) {
+      var pg = String(row && row.page_key || '').trim();
+      var ck = String(row && row.control_key || '').trim();
+      if (!pg || !ck) return;
+      map.set(pg + '::' + ck, buildControlPermissionEntry(row));
+    });
+  }
+
+  var queryColumns = 'page_key,control_key,control_label,control_type,can_view,can_use,can_edit';
+  if (userId) {
+    try {
+      var byUserId = client.from('user_control_permissions').select(queryColumns).eq('user_id', userId);
+      if (pageKey) byUserId = byUserId.eq('page_key', pageKey);
+      byUserId = await byUserId;
+      if (!byUserId.error) appendRows(byUserId.data);
+    } catch (_) {}
+  }
+  if (email) {
+    try {
+      var byEmail = client.from('user_control_permissions').select(queryColumns).ilike('email', email);
+      if (pageKey) byEmail = byEmail.eq('page_key', pageKey);
+      byEmail = await byEmail;
+      if (!byEmail.error) appendRows(byEmail.data);
+    } catch (_) {}
+  }
+
+  return map.size ? map : null;
+}
+
+async function loadRoleFieldPermissionMap(client, role, pageKey) {
+  if (!client) return null;
+  try {
+    var query = client.from('field_permissions').select('page_key,field_key,can_edit').eq('role', normalizeRole(role));
+    if (pageKey) query = query.eq('page_key', pageKey);
+    var res = await query;
+    if (res.error || !Array.isArray(res.data)) return null;
+    var map = new Map();
+    res.data.forEach(function (row) {
+      var pg = String(row && row.page_key || '').trim();
+      var ck = String(row && row.field_key || '').trim();
+      if (!pg || !ck) return;
+      map.set(pg + '::' + ck, { can_view:true, can_use: row.can_edit === true, can_edit: row.can_edit === true, control_key: ck, control_type:'field', control_label: ck });
+    });
+    return map.size ? map : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+async function resolveControlAccess(pageKey, controlKey, options) {
+  var key = String(pageKey || '').trim();
+  var cKey = String(controlKey || '').trim();
+  var client = options && options.client ? options.client : createRfSupabaseClient();
+  var pageAccess = options && options.pageAccess ? options.pageAccess : await resolvePageAccess(key, options);
+  var user = options && options.user ? options.user : null;
+  if (!user && client) {
+    try {
+      var sessionRes = await client.auth.getSession();
+      user = sessionRes && sessionRes.data && sessionRes.data.session ? sessionRes.data.session.user : null;
+    } catch (_) { user = null; }
+  }
+  var base = defaultControlAccessFromPagePermissions(pageAccess && pageAccess.permissions, cKey);
+  var role = normalizeRole(pageAccess && pageAccess.role || 'viewer');
+  var merged = Object.assign({ control_key:cKey, control_label:cKey, control_type:'action' }, base);
+  var source = 'page permissions';
+  if (role !== 'admin' && client && user) {
+    var userMap = await loadUserControlPermissionMap(client, user, key);
+    var roleFieldMap = await loadRoleFieldPermissionMap(client, role, key);
+    var fullKey = key + '::' + cKey;
+    if (roleFieldMap && roleFieldMap.has(fullKey)) {
+      merged = mergeControlAccess(merged, roleFieldMap.get(fullKey));
+      source = 'role field permissions';
+    }
+    if (userMap && userMap.has(fullKey)) {
+      merged = mergeControlAccess(merged, userMap.get(fullKey));
+      source = 'user control permissions';
+    }
+  } else if (role === 'admin') {
+    merged = { control_key:cKey, control_label:cKey, control_type:'action', can_view:true, can_use:true, can_edit:true };
+    source = 'admin';
+  }
+  merged.allowed = merged.can_view === true;
+  return merged;
+}
+
+async function canUseControl(pageKey, controlKey, options) {
+  var res = await resolveControlAccess(pageKey, controlKey, options);
+  return { allowed: res.can_use === true && res.can_view === true, visible: res.can_view === true, editable: res.can_edit === true, source: res.source || '' };
+}
+
+async function applyDomPermissions(pageKey, root, options) {
+  var pageAccess = options && options.pageAccess ? options.pageAccess : await resolvePageAccess(pageKey, options);
+  var scope = root && root.querySelectorAll ? root : document;
+  var nodes = scope.querySelectorAll('[data-rf-permission],[data-rf-control],[data-rf-field]');
+  for (var i = 0; i < nodes.length; i += 1) {
+    var el = nodes[i];
+    var permKey = String(el.getAttribute('data-rf-permission') || '').trim();
+    if (permKey) {
+      var allowByPage = pageAccess && pageAccess.permissions ? pageAccess.permissions[permKey] === true : false;
+      if (!allowByPage) {
+        el.style.display = 'none';
+        el.setAttribute('aria-hidden', 'true');
+        if ('disabled' in el) el.disabled = true;
+        continue;
+      }
+    }
+    var controlKey = String(el.getAttribute('data-rf-control') || el.getAttribute('data-rf-field') || '').trim();
+    if (!controlKey) continue;
+    var controlAccess = await resolveControlAccess(pageKey, controlKey, Object.assign({}, options || {}, { pageAccess: pageAccess }));
+    if (controlAccess.can_view !== true) {
+      el.style.display = 'none';
+      el.setAttribute('aria-hidden', 'true');
+    } else if (('disabled' in el) && (controlAccess.can_use !== true || (el.matches('input,select,textarea') && controlAccess.can_edit !== true))) {
+      el.disabled = true;
+    }
+    if (el.matches('input,select,textarea') && controlAccess.can_edit !== true) {
+      el.setAttribute('readonly', 'readonly');
+    }
+  }
+  return pageAccess;
+}
+
   async function loadUserPermissionMap(client, user) {
     if (!client || !user) return null;
     var email = normalizeAclEmail(user.email);
@@ -1416,6 +1684,8 @@
   window.RF_ACL = window.RF_ACL || {};
   window.RF_ACL.PAGE_LIST = clonePages();
   window.RF_ACL.PAGE_MAP = PAGE_MAP;
+  window.RF_ACL.CONTROL_CATALOG = { common: cloneControlEntries(COMMON_CONTROL_CATALOG), overrides: PAGE_CONTROL_OVERRIDES };
+  window.RF_ACL.getControlCatalogForPage = getControlCatalogForPage;
   window.RF_ACL.safeLower = safeLower;
   window.RF_ACL.normalizeRole = normalizeRole;
   window.RF_ACL.normalizeHref = normalizeHref;
@@ -1424,6 +1694,11 @@
   window.RF_ACL.resolveRole = resolveRole;
   window.RF_ACL.loadUserPermissionMap = loadUserPermissionMap;
   window.RF_ACL.loadPagePermissionMap = loadPagePermissionMap;
+  window.RF_ACL.loadUserControlPermissionMap = loadUserControlPermissionMap;
+  window.RF_ACL.loadRoleFieldPermissionMap = loadRoleFieldPermissionMap;
+  window.RF_ACL.resolveControlAccess = resolveControlAccess;
+  window.RF_ACL.canUseControl = canUseControl;
+  window.RF_ACL.applyDomPermissions = applyDomPermissions;
   window.RF_ACL.readDashboardAclMirror = readDashboardAclMirror;
   window.RF_ACL.collectAclDecisions = collectAclDecisions;
   window.RF_ACL.defaultPageAccessFromRole = defaultPageAccessFromRole;
