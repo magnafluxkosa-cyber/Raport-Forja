@@ -18,6 +18,7 @@
     { page_key: 'investitii', page_name: 'Investiții' },
     { page_key: 'tratament-termic-rapoarte', page_name: 'Tratament Termic - Rapoarte' },
     { page_key: 'tratament-termic-probleme', page_name: 'Tratament Termic - Probleme T.T' },
+    { page_key: 'tratament-termic-fise-tehnologice', page_name: 'Tratament Termic - Fișe tehnologice' },
     { page_key: 'rebut', page_name: 'Rebut' },
     { page_key: 'kpi', page_name: 'KPI' },
     { page_key: 'inventar-otel', page_name: 'Inventar Oțel' },
