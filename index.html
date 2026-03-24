@@ -1077,15 +1077,6 @@
         return null;
       }
 
-      function hasAnyExplicitUserAcl(){
-        if (currentUserPermissions instanceof Map && currentUserPermissions.size > 0) {
-          return true;
-        }
-        const mirror = getMirrorRoleData();
-        const hasEntries = obj => !!(obj && typeof obj === 'object' && Object.keys(obj).length);
-        return hasEntries(mirror.userPermissions) || hasEntries(mirror.userGrants);
-      }
-
       function elementAllowed(el, pageKey){
         if (!currentUser) return false;
         const link = el?.matches?.('a[href]') ? el : el?.querySelector?.('a[href]');
@@ -1103,10 +1094,6 @@
         const userExplicit = getUserExplicitAclDecision(pageKey, href);
         if (userExplicit !== null) {
           return userExplicit === true;
-        }
-
-        if (hasAnyExplicitUserAcl()) {
-          return false;
         }
 
         const explicit = getExplicitAclDecision(pageKey, href);
@@ -1331,9 +1318,7 @@
           const panel = panelId ? qs('#' + panelId) : null;
           const totalPageButtons = panel ? Number(panel.dataset.totalPageButtons || '0') : 0;
           const panelHasVisibleChild = !!(panel && panel.dataset.hasVisibleChild === '1');
-          const explicitGroupAllowed = currentUser ? elementAllowed(item, groupKey) : true;
-          const isPlaceholderGroup = totalPageButtons === 0;
-          const on = explicitGroupAllowed && (panelHasVisibleChild || isPlaceholderGroup);
+          const on = totalPageButtons > 0 && panelHasVisibleChild;
           setVisible(item, on);
           applyAccessState(item, on, getDeniedMessage(groupKey, ''));
         });
@@ -1380,24 +1365,34 @@
         return null;
       }
 
-      let bootRecoveryTimer = null;
-      let bootRecoveryAttempts = 0;
-
-      function stopBootRecovery(){
-        if (bootRecoveryTimer) {
-          try { window.clearTimeout(bootRecoveryTimer); } catch (_) {}
-          bootRecoveryTimer = null;
+      async function boot(){
+        if (!sb) {
+          chipAuth.textContent = 'Config lipsă';
+          chipAuth.className = 'chip bad';
+          return;
         }
-        bootRecoveryAttempts = 0;
-      }
 
-      async function applyRecoveredAuthState(user, fallbackRole){
-        if (!user) return false;
+        const cachedUser = parseSupabaseUserFromStorage();
+        const cachedRole = getStoredRole();
+        if (cachedUser || cachedRole) {
+          setStatusChips(true, cachedUser, cachedRole || 'viewer');
+        }
+
+        const activeSession = await getActiveSession();
+        if (!activeSession?.user) {
+          currentUser = null;
+          currentRole = 'viewer';
+          currentPermissions = null;
+          currentUserPermissions = null;
+          currentRolePermissions = null;
+          applyLayout();
+          return;
+        }
 
         clearLogoutFlags();
-        currentUser = user;
+        currentUser = activeSession.user;
         const resolved = await resolveRole(currentUser);
-        currentRole = resolved.role || fallbackRole || getStoredRole() || 'viewer';
+        currentRole = resolved.role || cachedRole || 'viewer';
 
         try { localStorage.setItem('rf_cached_role', currentRole); } catch (_) {}
         try { sessionStorage.setItem('rf_cached_role', currentRole); } catch (_) {}
@@ -1414,67 +1409,6 @@
         currentPermissions = currentUserPermissions || currentRolePermissions;
         await loadDashboardAcl();
         applyLayout();
-        return true;
-      }
-
-      function scheduleBootRecovery(cachedUser, cachedRole){
-        if (!cachedUser || bootRecoveryTimer) return;
-        const tryRecover = async () => {
-          bootRecoveryAttempts += 1;
-          const recovered = await getActiveSession();
-          if (recovered?.user) {
-            stopBootRecovery();
-            await applyRecoveredAuthState(recovered.user, cachedRole);
-            return;
-          }
-          if (bootRecoveryAttempts >= 20) {
-            stopBootRecovery();
-            return;
-          }
-          bootRecoveryTimer = window.setTimeout(tryRecover, 400);
-        };
-        bootRecoveryTimer = window.setTimeout(tryRecover, 400);
-      }
-
-      async function boot(){
-        if (!sb) {
-          chipAuth.textContent = 'Config lipsă';
-          chipAuth.className = 'chip bad';
-          return;
-        }
-
-        const cachedUser = parseSupabaseUserFromStorage();
-        const cachedRole = getStoredRole();
-        const logoutFlag = (sessionStorage.getItem('rf_force_stay_on_login') === '1') || (localStorage.getItem('rf_force_stay_on_login') === '1');
-        if (cachedUser || cachedRole) {
-          setStatusChips(true, cachedUser, cachedRole || 'viewer');
-        }
-
-        const activeSession = await getActiveSession();
-        if (!activeSession?.user) {
-          if (cachedUser && !logoutFlag) {
-            currentUser = cachedUser;
-            currentRole = cachedRole || 'viewer';
-            currentUserPermissions = null;
-            currentRolePermissions = await loadRolePermissionMap(currentRole);
-            currentPermissions = currentRolePermissions;
-            await loadDashboardAcl();
-            applyLayout();
-            scheduleBootRecovery(cachedUser, cachedRole);
-            return;
-          }
-
-          currentUser = null;
-          currentRole = 'viewer';
-          currentPermissions = null;
-          currentUserPermissions = null;
-          currentRolePermissions = null;
-          applyLayout();
-          return;
-        }
-
-        stopBootRecovery();
-        await applyRecoveredAuthState(activeSession.user, cachedRole);
       }
 
       btnRefresh.addEventListener('click', () => window.location.reload());

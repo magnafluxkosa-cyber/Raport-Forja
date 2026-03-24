@@ -4,18 +4,8 @@
   var PAGE_LIST = [
     { page_key: 'index', page_name: 'Dashboard / Index' },
     { page_key: 'login', page_name: 'Login' },
-    { page_key: 'helper', page_name: 'Helper' },
     { page_key: 'helper-data', page_name: 'Helper Data' },
     { page_key: 'helper-acl', page_name: 'Helper ACL' },
-    { page_key: 'group-forja', page_name: 'Buton categorie - Forjă' },
-    { page_key: 'group-prelucrari', page_name: 'Buton categorie - Prelucrări mecanice' },
-    { page_key: 'group-tratament-termic', page_name: 'Buton categorie - Tratament Termic' },
-    { page_key: 'group-calitate', page_name: 'Buton categorie - Calitate' },
-    { page_key: 'group-probleme-imbunatatire', page_name: 'Buton categorie - Probleme, Îmbunătățiri și Investiții' },
-    { page_key: 'group-planificari', page_name: 'Buton categorie - Planificări' },
-    { page_key: 'group-rapoarte', page_name: 'Buton subcategorie - Rapoarte' },
-    { page_key: 'group-zale', page_name: 'Buton subcategorie - Urmărire Zale' },
-    { page_key: 'group-inventar', page_name: 'Buton subcategorie - Inventar' },
     { page_key: 'numeralkod', page_name: 'Numeral KOD' },
     { page_key: 'intrari-otel', page_name: 'Intrări Oțel' },
     { page_key: 'debitate', page_name: 'Debitate' },
@@ -1630,15 +1620,11 @@ async function applyDomPermissions(pageKey, root, options) {
     });
 
     var hasUserExplicit = userExplicitTrue || userExplicitFalse;
-    var hasAnyUserAcl = !!(userPermissionMap && userPermissionMap.size) || mirrorHasAnyUserAcl(mirror);
     var allowed;
     var source;
     if (hasUserExplicit) {
       allowed = userExplicitTrue && !userExplicitFalse;
       source = allowed ? 'user acl explicit true' : 'user acl explicit false';
-    } else if (hasAnyUserAcl) {
-      allowed = false;
-      source = 'user acl strict default deny';
     } else {
       allowed = rolePermissions.can_view !== false;
       if (roleExplicitFalse) allowed = false;
@@ -2181,82 +2167,19 @@ async function applyDomPermissions(pageKey, root, options) {
   var originalResolvePageAccess = typeof RF.resolvePageAccess === 'function' ? RF.resolvePageAccess.bind(RF) : null;
   var originalResolveControlAccess = typeof RF.resolveControlAccess === 'function' ? RF.resolveControlAccess.bind(RF) : null;
 
-  var COMMON_EXTRA_FIELDS = [
-    ['field.an','Câmp An'],
-    ['field.luna','Câmp Lună'],
-    ['field.data','Câmp Dată'],
-    ['field.schimb','Câmp Schimbul'],
-    ['field.operator','Câmp Operator'],
-    ['field.utilaj','Câmp Utilaj'],
-    ['field.echipament','Câmp Echipament'],
-    ['field.reper','Câmp Reper'],
-    ['field.sarja','Câmp Sarjă'],
-    ['field.cantitate','Câmp Cantitate'],
-    ['field.ore','Câmp Ore'],
-    ['field.minute','Câmp Minute'],
-    ['field.observatii','Câmp Observații'],
-    ['field.probleme','Câmp Probleme'],
-    ['field.calitate','Câmp Calitate'],
-    ['field.diametru','Câmp Diametru'],
-    ['field.kg','Câmp KG'],
-    ['field.lungime','Câmp Lungime'],
-    ['field.transport','Câmp Transport'],
-    ['field.data-livrare','Câmp Data livrării'],
-    ['field.cod','Câmp Cod'],
-    ['field.cod-defect','Câmp Cod defect'],
-    ['field.cauza','Câmp Cauză'],
-    ['field.actiuni-corective','Câmp Acțiuni corective'],
-    ['field.material','Câmp Material'],
-    ['field.tact','Câmp Tact'],
-    ['field.planificat','Câmp Planificat'],
-    ['field.realizat','Câmp Realizat'],
-    ['field.rebut','Câmp Rebut'],
-    ['field.client','Câmp Client'],
-    ['field.furnizor','Câmp Furnizor'],
-    ['field.pdf','Fișier PDF'],
-    ['field.revizie','Câmp Revizie']
-  ].map(function (row) { return Object.freeze({ control_key: row[0], control_label: row[1], control_type: 'field' }); });
-
-  var PAGE_EXTRA_FIELDS = {
-    'planificare-forja': [
-      { control_key:'field.debitat', control_label:'Câmp Debitat disponibil', control_type:'field' },
-      { control_key:'field.comanda', control_label:'Câmp Comandă', control_type:'field' }
-    ],
-    'mrc-necesar-otel': [
-      { control_key:'field.necesar', control_label:'Câmp Necesar', control_type:'field' },
-      { control_key:'field.stoc', control_label:'Câmp Stoc', control_type:'field' }
-    ],
-    'mrc-comenzi-otel': [
-      { control_key:'field.comandat', control_label:'Câmp Cantitate comandată', control_type:'field' }
-    ],
-    'numeralkod': [
-      { control_key:'field.cod-intern', control_label:'Câmp Cod intern', control_type:'field' }
-    ],
-    'forjate': [
-      { control_key:'field.operator-forja', control_label:'Câmp Operator Forjă', control_type:'field' }
-    ],
-    'magnaflux': [
-      { control_key:'field.acceptate', control_label:'Câmp Acceptate', control_type:'field' }
-    ],
-    'probleme-raportate': [
-      { control_key:'field.timp-minute', control_label:'Câmp Timp minute', control_type:'field' }
-    ],
-    'tratament-termic-fise-tehnologice': [
-      { control_key:'field.actualizat-de', control_label:'Câmp Actualizat de', control_type:'field' }
-    ]
-  };
-
-  function normalizeText(value) {
-    return String(value == null ? '' : value)
-      .normalize('NFD')
-      .replace(/[\u0300-\u036f]/g, '')
-      .replace(/[^a-zA-Z0-9]+/g, ' ')
-      .trim()
-      .toLowerCase();
+  function entry(controlKey, controlLabel, controlType) {
+    return Object.freeze({
+      control_key: String(controlKey || '').trim(),
+      control_label: String(controlLabel || controlKey || '').trim() || String(controlKey || '').trim(),
+      control_type: String(controlType || 'action').trim() || 'action'
+    });
   }
 
-  function slugKey(value) {
-    return normalizeText(value).replace(/\s+/g, '-').replace(/^-+|-+$/g, '');
+  function entries(defs, defaultType) {
+    return (Array.isArray(defs) ? defs : []).map(function (row) {
+      if (Array.isArray(row)) return entry(row[0], row[1], row[2] || defaultType || 'action');
+      return entry(row && row.control_key, row && row.control_label, row && row.control_type || defaultType || 'action');
+    }).filter(function (row) { return row.control_key; });
   }
 
   function uniqueCatalog(list) {
@@ -2275,9 +2198,591 @@ async function applyDomPermissions(pageKey, root, options) {
     return out;
   }
 
-  RF.getControlCatalogForPage = function (pageKey) {
+  function makeCrudCatalog(fieldDefs, extraDefs) {
+    return uniqueCatalog([].concat(
+      entries([
+        ['rows.filter','Filtrare / căutare'],
+        ['rows.add','Adăugare rând'],
+        ['modal.open','Deschidere formular'],
+        ['rows.edit','Editare rând'],
+        ['rows.delete','Ștergere rând'],
+        ['data.import','Import date'],
+        ['data.export','Export date'],
+        ['cloud.refresh','Refresh cloud'],
+        ['cloud.save','Salvare în cloud']
+      ], 'action'),
+      entries(fieldDefs || [], 'field'),
+      entries(extraDefs || [], 'section')
+    ));
+  }
+
+  var PAGE_CONTROL_MANIFESTS = Object.freeze({
+    'index': Object.freeze({
+      hint: 'Pe index, butoanele mari din stânga se setează sus în tabelul de pagini, pe rândurile group-*. Aici vezi doar elementele din interiorul indexului.',
+      items: uniqueCatalog([].concat(
+        entries([
+          ['dashboard.palette','Buton Paletă'],
+          ['dashboard.refresh','Buton Refresh'],
+          ['auth.login','Buton Login'],
+          ['auth.logout','Buton Logout']
+        ], 'action'),
+        entries([
+          ['section.status-bar','Zona status autentificare'],
+          ['section.preview-panel','Panoul din dreapta / preview']
+        ], 'section')
+      ))
+    }),
+    'login': Object.freeze({
+      hint: 'Pe login controlezi doar câmpurile de autentificare și butonul de intrare. Loginul nu trebuie blocat din ACL.',
+      items: uniqueCatalog([].concat(
+        entries([
+          ['auth.login','Buton Intrare']
+        ], 'action'),
+        entries([
+          ['field.id','Câmp ID / email'],
+          ['field.password','Câmp Parolă']
+        ], 'field')
+      ))
+    }),
+    'helper': Object.freeze({
+      hint: 'Helper este pagina de navigare administrativă. Aici setezi doar butoanele reale din helper.',
+      items: uniqueCatalog([].concat(
+        entries([
+          ['dashboard.refresh','Buton Refresh']
+        ], 'action'),
+        entries([
+          ['section.nav-rapoarte','Buton / zonă Rapoarte'],
+          ['section.nav-helper-data','Buton / zonă Helper Data'],
+          ['section.nav-helper-acl','Buton / zonă Helper ACL']
+        ], 'section')
+      ))
+    }),
+    'helper-acl': Object.freeze({
+      hint: 'În helper ACL de sus setezi accesul la pagini. Jos vezi doar elementele reale ale paginii selectate.',
+      items: uniqueCatalog([].concat(
+        entries([
+          ['users.reload','Reîncarcă utilizatorii'],
+          ['pages.reload','Reîncarcă paginile'],
+          ['pages.sync','Introdu / refresh pagini'],
+          ['permissions.save','Salvează permisiunile paginii'],
+          ['controls.reload','Reîncarcă elementele paginii'],
+          ['controls.seed','Încarcă elementele standard ale paginii'],
+          ['controls.save','Salvează elementele paginii'],
+          ['custom.add','Adaugă element personalizat'],
+          ['users.manage','Selectare utilizator / preset rapid']
+        ], 'action'),
+        entries([
+          ['section.users-list','Lista utilizatori'],
+          ['section.page-permissions','Tabel permisiuni pe pagini'],
+          ['section.control-permissions','Tabel elemente din pagină']
+        ], 'section')
+      ))
+    }),
+    'helper-data': Object.freeze({
+      hint: 'Pe Helper Data apar doar câmpurile și acțiunile din foaia de date master.',
+      items: makeCrudCatalog([
+        ['field.reper','Câmp Reper'],
+        ['field.material','Câmp Material'],
+        ['field.diametru','Câmp Diametru'],
+        ['field.calitate','Câmp Calitate'],
+        ['field.kg','Câmp KG / buc'],
+        ['field.lungime','Câmp Lungime'],
+        ['field.tact','Câmp Tact'],
+        ['field.operator','Câmp Operator']
+      ], [
+        ['section.table-main','Tabel principal Helper Data']
+      ])
+    }),
+    'numeralkod': Object.freeze({
+      hint: 'Pentru Numeral KOD controlezi doar tabelele și câmpurile reale din pagină.',
+      items: makeCrudCatalog([
+        ['field.cod-intern','Câmp Cod intern'],
+        ['field.reper','Câmp Reper'],
+        ['field.diametru','Câmp Diametru'],
+        ['field.calitate','Câmp Calitate'],
+        ['field.material','Câmp Material'],
+        ['field.sarja','Câmp Sarjă']
+      ], [
+        ['section.table-main','Tabel Numeral KOD']
+      ])
+    }),
+    'program-utilaje': Object.freeze({
+      hint: 'Aici vezi doar programul utilajelor: formularul, filtrarea și tabelul.',
+      items: makeCrudCatalog([
+        ['field.data','Câmp Dată'],
+        ['field.utilaj','Câmp Utilaj'],
+        ['field.ore','Câmp Ore'],
+        ['field.schimb','Câmp Schimb'],
+        ['field.observatii','Câmp Observații']
+      ], [
+        ['section.table-main','Tabel program utilaje']
+      ])
+    }),
+    'magnaflux-calendar': Object.freeze({
+      hint: 'Calendarul Magnaflux are doar filtrele și zona calendarului / listei.',
+      items: uniqueCatalog([].concat(
+        entries([
+          ['rows.filter','Filtrare / căutare'],
+          ['cloud.refresh','Refresh cloud'],
+          ['data.export','Export date']
+        ], 'action'),
+        entries([
+          ['field.data','Câmp Dată'],
+          ['field.operator','Câmp Operator'],
+          ['field.schimb','Câmp Schimb']
+        ], 'field'),
+        entries([
+          ['section.calendar','Calendar Magnaflux'],
+          ['section.table-main','Lista programări']
+        ], 'section')
+      ))
+    }),
+    'calendar-operatori': Object.freeze({
+      hint: 'Calendar operatori: doar calendarul, filtrele și câmpurile reale.',
+      items: uniqueCatalog([].concat(
+        entries([
+          ['rows.filter','Filtrare / căutare'],
+          ['cloud.refresh','Refresh cloud'],
+          ['data.export','Export date']
+        ], 'action'),
+        entries([
+          ['field.data','Câmp Dată'],
+          ['field.operator','Câmp Operator'],
+          ['field.schimb','Câmp Schimb']
+        ], 'field'),
+        entries([
+          ['section.calendar','Calendar operatori'],
+          ['section.table-main','Lista programări']
+        ], 'section')
+      ))
+    }),
+    'intrari-otel': Object.freeze({
+      hint: 'Pe Intrări Oțel apar doar formularul de intrare, filtrele și tabelul principal.',
+      items: makeCrudCatalog([
+        ['field.an','Câmp An'],
+        ['field.luna','Câmp Lună'],
+        ['field.data','Câmp Dată'],
+        ['field.diametru','Câmp Diametru'],
+        ['field.calitate','Câmp Calitate'],
+        ['field.cod','Câmp Cod intern oțel'],
+        ['field.sarja','Câmp Sarjă'],
+        ['field.cantitate','Câmp Cantitate'],
+        ['field.furnizor','Câmp Furnizor'],
+        ['field.observatii','Câmp Observații / pretest']
+      ], [
+        ['section.table-main','Tabel Intrări Oțel']
+      ])
+    }),
+    'debitate': Object.freeze({
+      hint: 'Pe Debitate controlezi formularul, filtrele, tabelul principal și sumarul.',
+      items: makeCrudCatalog([
+        ['field.an','Câmp An'],
+        ['field.luna','Câmp Lună'],
+        ['field.data','Câmp Dată'],
+        ['field.echipament','Câmp Echipament'],
+        ['field.reper','Câmp Reper'],
+        ['field.diametru','Câmp Diametru'],
+        ['field.calitate','Câmp Calitate'],
+        ['field.kg','Câmp KG / buc'],
+        ['field.lungime','Câmp Lungime'],
+        ['field.cod','Câmp Cod intern'],
+        ['field.cantitate','Câmp Cantitate'],
+        ['field.schimb','Câmp Schimb'],
+        ['field.operator','Câmp Operator']
+      ], [
+        ['section.table-main','Tabel Debitate'],
+        ['section.table-summary','Tabel sumar Debitate']
+      ])
+    }),
+    'forjate': Object.freeze({
+      hint: 'Pe Forjate controlezi doar câmpurile reale din formular, tabelul principal și sumarul.',
+      items: makeCrudCatalog([
+        ['field.an','Câmp An'],
+        ['field.luna','Câmp Lună'],
+        ['field.data','Câmp Dată'],
+        ['field.schimb','Câmp Schimb'],
+        ['field.utilaj','Câmp Linie / utilaj'],
+        ['field.operator','Câmp Operator'],
+        ['field.reper','Câmp Reper'],
+        ['field.diametru','Câmp Dimensiune oțel'],
+        ['field.calitate','Câmp Calitate oțel'],
+        ['field.tact','Câmp Tact'],
+        ['field.planificat','Câmp Planificat'],
+        ['field.realizat','Câmp Buc realizate'],
+        ['field.rebut','Câmp Rebut']
+      ], [
+        ['section.table-main','Tabel Forjate'],
+        ['section.table-summary','Tabel sumar Forjate']
+      ])
+    }),
+    'magnaflux': Object.freeze({
+      hint: 'Pe Magnaflux vezi doar formularul de control, filtrele și tabelul paginii.',
+      items: makeCrudCatalog([
+        ['field.an','Câmp An'],
+        ['field.luna','Câmp Lună'],
+        ['field.data','Câmp Dată'],
+        ['field.schimb','Câmp Schimb'],
+        ['field.operator','Câmp Operator'],
+        ['field.reper','Câmp Reper'],
+        ['field.cod-defect','Selector Cod defect'],
+        ['field.cauza','Câmp Cauză'],
+        ['field.observatii','Câmp Observații'],
+        ['field.realizat','Câmp Piese controlate'],
+        ['field.acceptate','Câmp Acceptate'],
+        ['field.rebut','Câmp Rebut']
+      ], [
+        ['section.table-main','Tabel Magnaflux']
+      ])
+    }),
+    'probleme-raportate': Object.freeze({
+      hint: 'Probleme raportate: formular, filtre, tabel principal și sumar minute pierdute.',
+      items: makeCrudCatalog([
+        ['field.an','Câmp An'],
+        ['field.luna','Câmp Lună'],
+        ['field.data','Câmp Dată'],
+        ['field.schimb','Câmp Schimb'],
+        ['field.utilaj','Câmp Utilaj'],
+        ['field.reper','Câmp Reper'],
+        ['field.minute','Câmp Timp minute'],
+        ['field.observatii','Câmp Observații'],
+        ['field.probleme','Câmp Problemă / operațiune']
+      ], [
+        ['section.table-main','Tabel Probleme raportate'],
+        ['section.table-summary','Tabel total minute']
+      ])
+    }),
+    'urmarire-actiuni-progres': Object.freeze({
+      hint: 'Urmărire acțiuni și progres: tabelul de acțiuni, formularul și filtrele reale.',
+      items: makeCrudCatalog([
+        ['field.data','Câmp Dată'],
+        ['field.reper','Câmp Reper / temă'],
+        ['field.probleme','Câmp Acțiune / problemă'],
+        ['field.observatii','Câmp Observații'],
+        ['field.operator','Câmp Responsabil']
+      ], [
+        ['section.table-main','Tabel acțiuni și progres']
+      ])
+    }),
+    'imbunatatire-continua': Object.freeze({
+      hint: 'Îmbunătățire continuă: doar elementele reale din tabel și formular.',
+      items: makeCrudCatalog([
+        ['field.data','Câmp Dată'],
+        ['field.reper','Câmp Titlu / subiect'],
+        ['field.observatii','Câmp Descriere'],
+        ['field.operator','Câmp Responsabil']
+      ], [
+        ['section.table-main','Tabel îmbunătățire continuă']
+      ])
+    }),
+    'investitii': Object.freeze({
+      hint: 'Investiții: formular, filtre și tabelul de investiții.',
+      items: makeCrudCatalog([
+        ['field.data','Câmp Dată'],
+        ['field.reper','Câmp Titlu investiție'],
+        ['field.cantitate','Câmp Valoare / cantitate'],
+        ['field.observatii','Câmp Observații'],
+        ['field.operator','Câmp Responsabil']
+      ], [
+        ['section.table-main','Tabel investiții']
+      ])
+    }),
+    'tratament-termic-rapoarte': Object.freeze({
+      hint: 'Pe Rapoarte T.T vezi doar câmpurile reale din raport și butonul spre Probleme T.T.',
+      items: uniqueCatalog([].concat(
+        makeCrudCatalog([
+          ['field.an','Câmp An'],
+          ['field.luna','Câmp Lună'],
+          ['field.data','Câmp Dată'],
+          ['field.schimb','Câmp Schimb'],
+          ['field.operator','Câmp Operator'],
+          ['field.reper','Câmp Reper'],
+          ['field.sarja','Câmp Sarjă'],
+          ['field.cantitate','Câmp Cantitate'],
+          ['field.ore','Câmp Ore'],
+          ['field.opriri-neplanificate','Câmp Opriri neplanificate'],
+          ['field.mentenanta','Câmp Mentenanță'],
+          ['field.incalzire','Câmp Încălzire'],
+          ['field.golire','Câmp Golire']
+        ], [
+          ['section.table-main','Tabel Rapoarte T.T']
+        ]),
+        entries([
+          ['problems.link','Buton Probleme T.T']
+        ], 'action')
+      ))
+    }),
+    'tratament-termic-probleme': Object.freeze({
+      hint: 'Pe Probleme T.T vezi doar formularul și tabelul de probleme din schimb.',
+      items: makeCrudCatalog([
+        ['field.an','Câmp An'],
+        ['field.luna','Câmp Lună'],
+        ['field.data','Câmp Dată'],
+        ['field.schimb','Câmp Schimb'],
+        ['field.operator','Câmp Operator'],
+        ['field.minute','Câmp Minute'],
+        ['field.probleme','Câmp Problemă în schimb'],
+        ['field.reper','Câmp Reper'],
+        ['field.sarja','Câmp Sarjă'],
+        ['field.observatii','Câmp Observații']
+      ], [
+        ['section.table-main','Tabel Probleme T.T']
+      ])
+    }),
+    'tratament-termic-fise-tehnologice': Object.freeze({
+      hint: 'Fișe tehnologice: doar PDF-ul, revizia, persoana și acțiunile pe PDF.',
+      items: uniqueCatalog([].concat(
+        entries([
+          ['rows.filter','Filtrare / căutare'],
+          ['cloud.refresh','Refresh cloud'],
+          ['pdf.open','Deschidere PDF'],
+          ['pdf.upload','Încărcare PDF'],
+          ['pdf.download','Export / download PDF'],
+          ['pdf.delete','Ștergere PDF']
+        ], 'action'),
+        entries([
+          ['field.reper','Câmp Reper'],
+          ['field.revizie','Câmp Revizie'],
+          ['field.pdf','Fișier PDF'],
+          ['field.actualizat-de','Câmp Actualizat de']
+        ], 'field'),
+        entries([
+          ['section.table-main','Tabel fișe tehnologice']
+        ], 'section')
+      ))
+    }),
+    'rebut': Object.freeze({
+      hint: 'Rebut: elementele reale ale paginii de rebut.',
+      items: makeCrudCatalog([
+        ['field.data','Câmp Dată'],
+        ['field.schimb','Câmp Schimb'],
+        ['field.operator','Câmp Operator'],
+        ['field.reper','Câmp Reper'],
+        ['field.rebut','Câmp Rebut'],
+        ['field.cod-defect','Selector Cod defect'],
+        ['field.cauza','Câmp Cauză'],
+        ['field.observatii','Câmp Observații']
+      ], [
+        ['section.table-main','Tabel rebut']
+      ])
+    }),
+    'rebut-pm': Object.freeze({
+      hint: 'Rebut PM: vezi doar câmpurile reale din formularul de neconformități și tabel.',
+      items: makeCrudCatalog([
+        ['field.data','Câmp Data înregistrării'],
+        ['field.nr-reper','Câmp Nr. reper'],
+        ['field.reper','Câmp Denumire reper'],
+        ['field.cod-defect','Selector Cod defect'],
+        ['field.loc-depistare','Câmp Loc depistare'],
+        ['field.operator','Câmp Operator'],
+        ['field.piese-neconforme','Câmp Piese neconforme'],
+        ['field.piese-remaniabile','Câmp Piese remaniabile'],
+        ['field.cauza','Câmp Cauză'],
+        ['field.actiuni-corective','Câmp Acțiuni corective'],
+        ['field.observatii','Câmp Observații']
+      ], [
+        ['section.table-main','Tabel Rebut PM']
+      ])
+    }),
+    'rebut-pm-helper': Object.freeze({
+      hint: 'Helper Rebut PM: coduri defect și liste auxiliare.',
+      items: makeCrudCatalog([
+        ['field.cod-defect','Câmp Cod defect'],
+        ['field.reper','Câmp Reper / categorie'],
+        ['field.observatii','Câmp Descriere']
+      ], [
+        ['section.table-main','Tabel helper rebut PM']
+      ])
+    }),
+    'kpi': Object.freeze({
+      hint: 'KPI are în principal filtrele, butoanele de export și zona de tabel / grafic.',
+      items: uniqueCatalog([].concat(
+        entries([
+          ['rows.filter','Filtrare / căutare'],
+          ['cloud.refresh','Refresh cloud'],
+          ['data.export','Export / PDF']
+        ], 'action'),
+        entries([
+          ['field.data','Câmp Dată'],
+          ['field.utilaj','Câmp Utilaj'],
+          ['field.operator','Câmp Operator'],
+          ['field.reper','Câmp Reper']
+        ], 'field'),
+        entries([
+          ['section.table-main','Tabel KPI'],
+          ['section.chart-main','Grafic KPI']
+        ], 'section')
+      ))
+    }),
+    'planificare-forja': Object.freeze({
+      hint: 'Planificare Forjă: grila mare de planificare, selecția și totalurile.',
+      items: uniqueCatalog([].concat(
+        entries([
+          ['rows.filter','Filtrare / căutare'],
+          ['cloud.refresh','Refresh cloud'],
+          ['cloud.save','Salvare în cloud'],
+          ['data.export','Export date']
+        ], 'action'),
+        entries([
+          ['field.data','Câmp Dată'],
+          ['field.reper','Câmp Reper'],
+          ['field.debitat','Câmp Debitat disponibil'],
+          ['field.comanda','Câmp Comandă'],
+          ['field.planificat','Câmp Planificat'],
+          ['field.realizat','Câmp Realizat']
+        ], 'field'),
+        entries([
+          ['section.grid-planificare','Grilă planificare'],
+          ['section.sum-selectie','Suma selecției'],
+          ['section.alert-livrari','Avertizări livrări']
+        ], 'section')
+      ))
+    }),
+    'comenzi-livrare': Object.freeze({
+      hint: 'Comenzi livrare: tabelul, filtrele și câmpurile de livrare.',
+      items: makeCrudCatalog([
+        ['field.data-livrare','Câmp Data livrării'],
+        ['field.client','Câmp Client'],
+        ['field.reper','Câmp Reper'],
+        ['field.cantitate','Câmp Cantitate'],
+        ['field.transport','Câmp Transport'],
+        ['field.observatii','Câmp Observații']
+      ], [
+        ['section.table-main','Tabel comenzi livrare']
+      ])
+    }),
+    'mrc-necesar-otel': Object.freeze({
+      hint: 'MRC / Necesar Oțel: doar tabelul principal și filtrele reale.',
+      items: makeCrudCatalog([
+        ['field.an','Câmp An'],
+        ['field.luna','Câmp Lună'],
+        ['field.reper','Câmp Reper'],
+        ['field.diametru','Câmp Diametru'],
+        ['field.calitate','Câmp Calitate'],
+        ['field.necesar','Câmp Necesar'],
+        ['field.stoc','Câmp Stoc']
+      ], [
+        ['section.table-main','Tabel MRC necesar oțel']
+      ])
+    }),
+    'mrc-comenzi-otel': Object.freeze({
+      hint: 'MRC / Comenzi oțel: tabelul de comenzi, filtrarea și câmpurile de comandă.',
+      items: makeCrudCatalog([
+        ['field.an','Câmp An'],
+        ['field.luna','Câmp Lună'],
+        ['field.reper','Câmp Reper'],
+        ['field.diametru','Câmp Diametru'],
+        ['field.calitate','Câmp Calitate'],
+        ['field.comandat','Câmp Cantitate comandată'],
+        ['field.stoc','Câmp Stoc']
+      ], [
+        ['section.table-main','Tabel MRC comenzi oțel']
+      ])
+    }),
+    'mrc-comenzi-saptamanale': Object.freeze({
+      hint: 'MRC / Comenzi săptămânale: tabelul săptămânal și câmpurile de planificare.',
+      items: makeCrudCatalog([
+        ['field.an','Câmp An'],
+        ['field.luna','Câmp Lună'],
+        ['field.reper','Câmp Reper'],
+        ['field.cantitate','Câmp Cantitate'],
+        ['field.client','Câmp Client'],
+        ['field.observatii','Câmp Observații']
+      ], [
+        ['section.table-main','Tabel MRC comenzi săptămânale']
+      ])
+    })
+  });
+
+  function buildPatternManifest(pageKey) {
     var key = String(pageKey || '').trim();
-    return uniqueCatalog([].concat(originalGetCatalog(key) || [], COMMON_EXTRA_FIELDS, PAGE_EXTRA_FIELDS[key] || []));
+    if (!key) return { hint:'', items:[] };
+    if (/^inventar-/.test(key)) {
+      return {
+        hint: 'Pagina de inventar are formularul, filtrele, tabelul principal și eventual sumarul.',
+        items: makeCrudCatalog([
+          ['field.an','Câmp An'],
+          ['field.luna','Câmp Lună'],
+          ['field.data','Câmp Dată'],
+          ['field.reper','Câmp Reper'],
+          ['field.diametru','Câmp Diametru'],
+          ['field.calitate','Câmp Calitate'],
+          ['field.sarja','Câmp Sarjă'],
+          ['field.cantitate','Câmp Cantitate'],
+          ['field.kg','Câmp KG'],
+          ['field.observatii','Câmp Observații']
+        ], [
+          ['section.table-main','Tabel inventar'],
+          ['section.table-summary','Tabel sumar inventar']
+        ])
+      };
+    }
+    if (/^zale-/.test(key)) {
+      return {
+        hint: 'Paginile Zale au tabelul principal, filtrele și câmpurile de transport / livrare.',
+        items: makeCrudCatalog([
+          ['field.an','Câmp An'],
+          ['field.luna','Câmp Lună'],
+          ['field.data-livrare','Câmp Data livrării'],
+          ['field.transport','Câmp Nr. transport'],
+          ['field.reper','Câmp Reper'],
+          ['field.cantitate','Câmp Cantitate'],
+          ['field.realizat','Câmp Forjat / realizat'],
+          ['field.rebut','Câmp Rebut'],
+          ['field.observatii','Câmp Observații']
+        ], [
+          ['section.table-main','Tabel Urmărire zale']
+        ])
+      };
+    }
+    if (/^ambalare-/.test(key)) {
+      return {
+        hint: 'Paginile de ambalare au tabelul principal și câmpurile de transport / cantitate.',
+        items: makeCrudCatalog([
+          ['field.an','Câmp An'],
+          ['field.luna','Câmp Lună'],
+          ['field.data','Câmp Dată'],
+          ['field.transport','Câmp Nr. transport'],
+          ['field.reper','Câmp Reper'],
+          ['field.cantitate','Câmp Cantitate'],
+          ['field.operator','Câmp Operator'],
+          ['field.observatii','Câmp Observații']
+        ], [
+          ['section.table-main','Tabel ambalare']
+        ])
+      };
+    }
+    return { hint:'Pentru pagina selectată vezi doar elementele reale ale paginii. Dacă lipsește ceva special, îl poți adăuga ca element personalizat.', items: uniqueCatalog(originalGetCatalog(key) || []) };
+  }
+
+  function getManifestForPage(pageKey) {
+    var key = String(pageKey || '').trim();
+    return PAGE_CONTROL_MANIFESTS[key] || buildPatternManifest(key);
+  }
+
+  function normalizeText(value) {
+    return String(value == null ? '' : value)
+      .normalize('NFD')
+      .replace(/[̀-ͯ]/g, '')
+      .replace(/[^a-zA-Z0-9]+/g, ' ')
+      .trim()
+      .toLowerCase();
+  }
+
+  function slugKey(value) {
+    return normalizeText(value).replace(/\s+/g, '-').replace(/^-+|-+$/g, '');
+  }
+
+  RF.getControlCatalogForPage = function (pageKey) {
+    return uniqueCatalog((getManifestForPage(pageKey) || {}).items || []);
+  };
+
+  RF.getControlManifestInfo = function (pageKey) {
+    var manifest = getManifestForPage(pageKey) || { hint:'', items:[] };
+    return {
+      page_key: String(pageKey || '').trim(),
+      hint: String(manifest.hint || '').trim(),
+      count: Array.isArray(manifest.items) ? manifest.items.length : 0
+    };
   };
 
   function getElementText(el) {
