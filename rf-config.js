@@ -1609,8 +1609,6 @@ async function applyDomPermissions(pageKey, root, options) {
     var roleDecisions = collectAclDecisions({ pageKey:key, href:href, role:role, email:'', userPermissionMap:null, permissionMap:permissionMap, mirror:{ page_permissions: mirror && mirror.page_permissions, grants: mirror && mirror.grants } });
     var userDecisions = collectAclDecisions({ pageKey:key, href:href, role:'', email:email, userPermissionMap:userPermissionMap, permissionMap:null, mirror:{ user_permissions: mirror && mirror.user_permissions, user_grants: mirror && mirror.user_grants } });
 
-    var hasAnyUserAcl = !!((userPermissionMap && userPermissionMap.size) || mirrorHasUserAclForEmail(mirror, email));
-
     var rolePermissions = defaultPageAccessFromRole(role, key);
     var roleExplicitTrue = false;
     var roleExplicitFalse = false;
@@ -1632,17 +1630,15 @@ async function applyDomPermissions(pageKey, root, options) {
     });
 
     var hasUserExplicit = userExplicitTrue || userExplicitFalse;
+    var hasAnyUserAcl = !!(userPermissionMap && userPermissionMap.size) || mirrorHasAnyUserAcl(mirror);
     var allowed;
     var source;
-    if (hasAnyUserAcl) {
-      if (hasUserExplicit) {
-        allowed = userExplicitTrue && !userExplicitFalse;
-        source = allowed ? 'user acl explicit true' : 'user acl explicit false';
-      } else {
-        allowed = false;
-        source = 'user acl strict deny';
-        permissions = mergePermissions(permissions, { can_view:false, can_add:false, can_edit:false, can_delete:false, can_export:false, can_import:false });
-      }
+    if (hasUserExplicit) {
+      allowed = userExplicitTrue && !userExplicitFalse;
+      source = allowed ? 'user acl explicit true' : 'user acl explicit false';
+    } else if (hasAnyUserAcl) {
+      allowed = false;
+      source = 'user acl strict default deny';
     } else {
       allowed = rolePermissions.can_view !== false;
       if (roleExplicitFalse) allowed = false;
