@@ -2360,6 +2360,7 @@ async function applyDomPermissions(pageKey, root, options) {
 
   function markAclNodes(scope, pageKey) {
     var root = scope && scope.querySelectorAll ? scope : document;
+    if (String(pageKey || '').trim() === 'login') return root;
     var nodes = root.querySelectorAll('button, a, [role="button"], input, select, textarea, [contenteditable], form');
     for (var i = 0; i < nodes.length; i += 1) {
       var el = nodes[i];
@@ -2445,6 +2446,9 @@ async function applyDomPermissions(pageKey, root, options) {
   }
 
   RF.applyDomPermissions = async function (pageKey, root, options) {
+    if (String(pageKey || '').trim() === 'login') {
+      return options && options.pageAccess ? options.pageAccess : { allowed:true, permissions:{} };
+    }
     var scope = markAclNodes(root && root.querySelectorAll ? root : document, pageKey);
     var pageAccess = options && options.pageAccess ? options.pageAccess : (originalResolvePageAccess ? await originalResolvePageAccess(pageKey, options) : { permissions:{} });
     var nodes = scope.querySelectorAll('[data-rf-permission],[data-rf-control],[data-rf-field]');
@@ -2566,6 +2570,7 @@ async function applyDomPermissions(pageKey, root, options) {
   async function bootstrapPageAcl() {
     if (!window.supabase || typeof window.supabase.createClient !== 'function') return;
     var pageKey = currentPageKey();
+    if (pageKey === 'login') return;
     if (!pageKey || !originalResolvePageAccess) return;
     var client = window.createRfSupabaseClient ? window.createRfSupabaseClient() : null;
     if (!client) return;
