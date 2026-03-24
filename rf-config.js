@@ -1629,10 +1629,20 @@ async function applyDomPermissions(pageKey, root, options) {
       if (permissionEntry.can_view === false) userExplicitFalse = true;
     });
 
+    var userScopedAclActive = !!(
+      (userPermissionMap instanceof Map && userPermissionMap.size > 0) ||
+      mirrorHasUserAclForEmail(mirror, email)
+    );
     var hasUserExplicit = userExplicitTrue || userExplicitFalse;
     var allowed;
     var source;
-    if (hasUserExplicit) {
+    if (userScopedAclActive) {
+      allowed = userExplicitTrue && !userExplicitFalse;
+      source = allowed ? 'user acl strict allow' : 'user acl strict deny';
+      if (!hasUserExplicit) {
+        permissions = mergePermissions(defaultPageAccessFromRole('viewer', key), { can_view:false, can_add:false, can_edit:false, can_delete:false, can_export:false, can_import:false });
+      }
+    } else if (hasUserExplicit) {
       allowed = userExplicitTrue && !userExplicitFalse;
       source = allowed ? 'user acl explicit true' : 'user acl explicit false';
     } else {
