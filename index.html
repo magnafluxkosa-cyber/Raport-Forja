@@ -784,6 +784,8 @@
       let currentUser = null;
       let currentRole = 'viewer';
       let currentPermissions = null;
+      let currentUserPermissions = null;
+      let currentRolePermissions = null;
       let currentDashAcl = null;
       let currentPanel = null;
       const currentInnerPanels = { subForja:null };
@@ -931,13 +933,30 @@
         return { role:'viewer', source:'fallback viewer' };
       }
 
-      async function loadPermissionMap(role){
+      async function loadUserPermissionMap(user){
+        if (!sb || !user || !(window.RF_ACL && typeof window.RF_ACL.loadUserPermissionMap === 'function')) return null;
+        try {
+          const userMap = await window.RF_ACL.loadUserPermissionMap(sb, user);
+          return userMap && userMap.size ? userMap : null;
+        } catch(_){
+          return null;
+        }
+      }
+
+      async function loadRolePermissionMap(role){
         if (!sb) return null;
         try {
-          const res = await sb.from('page_permissions').select('page_key,can_view').eq('role', role);
+          const res = await sb.from('page_permissions').select('page_key,can_view,can_add,can_edit,can_delete,can_export,can_import').eq('role', role);
           if (res.error || !Array.isArray(res.data)) return null;
           const map = new Map();
-          res.data.forEach(r => map.set(String(r.page_key), r.can_view === true));
+          res.data.forEach(r => map.set(String(r.page_key), {
+            can_view: r.can_view === true,
+            can_add: r.can_add === true,
+            can_edit: r.can_edit === true,
+            can_delete: r.can_delete === true,
+            can_export: r.can_export === true,
+            can_import: r.can_import === true
+          }));
           return map;
         } catch(_){
           return null;
@@ -979,40 +998,77 @@
         return String(href || '').split('#')[0].split('?')[0];
       }
 
+      function currentUserEmail(){
+        return String(currentUser?.email || '').trim().toLowerCase();
+      }
+
+      function permissionEntryCanView(value){
+        if (value && typeof value === 'object' && Object.prototype.hasOwnProperty.call(value, 'can_view')) {
+          return value.can_view === true;
+        }
+        return value === true;
+      }
+
       function getMirrorRoleData(){
         const doc = currentDashAcl && typeof currentDashAcl === 'object' ? currentDashAcl : null;
         const grants = doc && doc.grants && typeof doc.grants === 'object' ? doc.grants : null;
         const pagePermissions = doc && doc.page_permissions && typeof doc.page_permissions === 'object' ? doc.page_permissions : null;
+        const userGrantsRoot = doc && doc.user_grants && typeof doc.user_grants === 'object' ? doc.user_grants : null;
+        const userPermissionsRoot = doc && doc.user_permissions && typeof doc.user_permissions === 'object' ? doc.user_permissions : null;
+        const email = currentUserEmail();
         return {
           grants: grants && grants[currentRole] && typeof grants[currentRole] === 'object' ? grants[currentRole] : null,
-          pagePermissions: pagePermissions && pagePermissions[currentRole] && typeof pagePermissions[currentRole] === 'object' ? pagePermissions[currentRole] : null
+          pagePermissions: pagePermissions && pagePermissions[currentRole] && typeof pagePermissions[currentRole] === 'object' ? pagePermissions[currentRole] : null,
+          userGrants: userGrantsRoot && email && userGrantsRoot[email] && typeof userGrantsRoot[email] === 'object' ? userGrantsRoot[email] : null,
+          userPermissions: userPermissionsRoot && email && userPermissionsRoot[email] && typeof userPermissionsRoot[email] === 'object' ? userPermissionsRoot[email] : null
         };
+      }
+
+      function getUserExplicitAclDecision(pageKey, href){
+        const decisions = [];
+        const normalizedHref = normalizeHref(href);
+
+        if (currentUserPermissions instanceof Map && currentUserPermissions.has(pageKey)) {
+          decisions.push(permissionEntryCanView(currentUserPermissions.get(pageKey)));
+        }
+
+        const mirror = getMirrorRoleData();
+        if (mirror.userPermissions && Object.prototype.hasOwnProperty.call(mirror.userPermissions, pageKey)) {
+          decisions.push(permissionEntryCanView(mirror.userPermissions[pageKey]));
+        }
+        if (mirror.userGrants) {
+          if (Object.prototype.hasOwnProperty.call(mirror.userGrants, pageKey)) {
+            decisions.push(permissionEntryCanView(mirror.userGrants[pageKey]));
+          }
+          if (normalizedHref && Object.prototype.hasOwnProperty.call(mirror.userGrants, normalizedHref)) {
+            decisions.push(permissionEntryCanView(mirror.userGrants[normalizedHref]));
+          }
+        }
+
+        if (decisions.includes(false)) return false;
+        if (decisions.includes(true)) return true;
+        return null;
       }
 
       function getExplicitAclDecision(pageKey, href){
         const decisions = [];
         const normalizedHref = normalizeHref(href);
 
-        if (currentPermissions instanceof Map && currentPermissions.has(pageKey)) {
-          decisions.push(currentPermissions.get(pageKey) === true);
+        if (currentRolePermissions instanceof Map && currentRolePermissions.has(pageKey)) {
+          decisions.push(permissionEntryCanView(currentRolePermissions.get(pageKey)));
         }
 
         const mirror = getMirrorRoleData();
         if (mirror.pagePermissions && Object.prototype.hasOwnProperty.call(mirror.pagePermissions, pageKey)) {
-          const value = mirror.pagePermissions[pageKey];
-          if (value && typeof value === 'object' && Object.prototype.hasOwnProperty.call(value, 'can_view')) {
-            decisions.push(value.can_view === true);
-          } else {
-            decisions.push(value === true);
-          }
+          decisions.push(permissionEntryCanView(mirror.pagePermissions[pageKey]));
         }
 
         if (mirror.grants) {
           if (Object.prototype.hasOwnProperty.call(mirror.grants, pageKey)) {
-            decisions.push(mirror.grants[pageKey] === true);
+            decisions.push(permissionEntryCanView(mirror.grants[pageKey]));
           }
           if (normalizedHref && Object.prototype.hasOwnProperty.call(mirror.grants, normalizedHref)) {
-            decisions.push(mirror.grants[normalizedHref] === true);
+            decisions.push(permissionEntryCanView(mirror.grants[normalizedHref]));
           }
         }
 
@@ -1033,6 +1089,11 @@
 
         if (currentRole === 'admin') {
           return true;
+        }
+
+        const userExplicit = getUserExplicitAclDecision(pageKey, href);
+        if (userExplicit !== null) {
+          return userExplicit === true;
         }
 
         const explicit = getExplicitAclDecision(pageKey, href);
@@ -1208,16 +1269,14 @@
           const link = item.matches('a[href]') ? item : item.querySelector('a[href]');
           const adminOnly = pageKey === 'helper-data' || pageKey === 'helper-acl';
           const on = adminOnly ? isCurrentAdmin() : (currentUser ? elementAllowed(item, pageKey) : true);
-          if (!adminOnly) {
-            setVisible(item, true);
-            item.style.display = '';
-          }
+          setVisible(item, on);
+          if (on) item.style.display = '';
           applyAccessState(item, on, getDeniedMessage(pageKey, link ? link.getAttribute('href') : ''));
         });
 
         qsa('.subpanel [data-page-key]').forEach(a => {
           const on = currentUser ? elementAllowed(a, a.dataset.pageKey) : true;
-          setVisible(a, true);
+          setVisible(a, on);
           applyAccessState(a, on, getDeniedMessage(a.dataset.pageKey, a.getAttribute('href')));
         });
 
@@ -1234,10 +1293,33 @@
           applyAccessState(itemAcl, aclAllowed, getDeniedMessage('helper-acl', aclLink ? aclLink.getAttribute('href') : 'helper-acl.html'));
         }
 
+        qsa('.subpanel').forEach(panel => {
+          const pageButtons = qsa('#' + panel.id + ' [data-page-key]');
+          let hasVisibleChild = pageButtons.some(node => !node.classList.contains('hidden'));
+
+          qsa('#' + panel.id + ' .innerSection').forEach(section => {
+            const sectionButtons = qsa('#' + section.id + ' [data-page-key]');
+            const sectionVisible = sectionButtons.some(node => !node.classList.contains('hidden'));
+            setVisible(section, sectionVisible);
+            const trigger = panel.querySelector('.innerTrigger[data-inner-target="' + section.id + '"]');
+            if (trigger) setVisible(trigger, sectionVisible);
+          });
+
+          const hasVisibleDirectLink = qsa('#' + panel.id + ' > a[data-page-key], #' + panel.id + ' > .subgrid > a[data-page-key], #' + panel.id + ' > .zaleGrid a[data-page-key]').some(node => !node.classList.contains('hidden'));
+          hasVisibleChild = hasVisibleChild || hasVisibleDirectLink;
+
+          panel.dataset.hasVisibleChild = hasVisibleChild ? '1' : '0';
+          panel.dataset.totalPageButtons = String(pageButtons.length);
+        });
+
         qsa('.group-item[data-target]').forEach(item => {
           const groupKey = item.dataset.pageKey || '';
-          const on = currentUser ? elementAllowed(item, groupKey) : true;
-          setVisible(item, true);
+          const panelId = item.dataset.target || '';
+          const panel = panelId ? qs('#' + panelId) : null;
+          const totalPageButtons = panel ? Number(panel.dataset.totalPageButtons || '0') : 0;
+          const panelHasVisibleChild = !!(panel && panel.dataset.hasVisibleChild === '1');
+          const on = totalPageButtons > 0 && panelHasVisibleChild;
+          setVisible(item, on);
           applyAccessState(item, on, getDeniedMessage(groupKey, ''));
         });
 
@@ -1257,6 +1339,11 @@
         const target = `./login.html?t=${Date.now()}`;
         try { window.location.replace(target); }
         catch (_) { window.location.href = target; }
+      }
+
+      function clearLogoutFlags(){
+        try { sessionStorage.removeItem('rf_force_stay_on_login'); } catch (_) {}
+        try { localStorage.removeItem('rf_force_stay_on_login'); } catch (_) {}
       }
 
       async function getActiveSession(){
@@ -1296,10 +1383,13 @@
           currentUser = null;
           currentRole = 'viewer';
           currentPermissions = null;
+          currentUserPermissions = null;
+          currentRolePermissions = null;
           applyLayout();
           return;
         }
 
+        clearLogoutFlags();
         currentUser = activeSession.user;
         const resolved = await resolveRole(currentUser);
         currentRole = resolved.role || cachedRole || 'viewer';
@@ -1314,7 +1404,9 @@
           }
         } catch (_) {}
 
-        currentPermissions = await loadPermissionMap(currentRole);
+        currentUserPermissions = await loadUserPermissionMap(currentUser);
+        currentRolePermissions = await loadRolePermissionMap(currentRole);
+        currentPermissions = currentUserPermissions || currentRolePermissions;
         await loadDashboardAcl();
         applyLayout();
       }
@@ -1481,36 +1573,62 @@
 
       window.setInterval(enforceAdminOnlyButtons, 800);
 
-      sb?.auth.onAuthStateChange(async (_event, session) => {
-        currentUser = session?.user || null;
-        if (!currentUser) {
-          currentRole = 'viewer';
-          currentPermissions = null;
+      sb?.auth.onAuthStateChange(async (event, session) => {
+        if (session?.user) {
+          clearLogoutFlags();
+          currentUser = session.user;
+          const resolved = await resolveRole(currentUser);
+          currentRole = resolved.role || getStoredRole() || 'viewer';
+          try { localStorage.setItem('rf_cached_role', currentRole); } catch (_) {}
+          try { sessionStorage.setItem('rf_cached_role', currentRole); } catch (_) {}
+          try {
+            const displayId = getStoredDisplayId() || safeIdFromEmail(currentUser.email);
+            if (displayId) {
+              localStorage.setItem('rf_display_id', displayId);
+              sessionStorage.setItem('rf_display_id', displayId);
+            }
+          } catch (_) {}
+          currentUserPermissions = await loadUserPermissionMap(currentUser);
+          currentRolePermissions = await loadRolePermissionMap(currentRole);
+          currentPermissions = currentUserPermissions || currentRolePermissions;
+          await loadDashboardAcl();
           applyLayout();
-          const logoutFlag = sessionStorage.getItem('rf_force_stay_on_login') === '1' || localStorage.getItem('rf_force_stay_on_login') === '1';
-          if (logoutFlag) {
-            const target = `./login.html?logout=1&t=${Date.now()}`;
-            window.setTimeout(() => {
-              try { window.location.replace(target); }
-              catch (_) { window.location.href = target; }
-            }, 10);
-          }
           return;
         }
-        const resolved = await resolveRole(currentUser);
-        currentRole = resolved.role || getStoredRole() || 'viewer';
-        try { localStorage.setItem('rf_cached_role', currentRole); } catch (_) {}
-        try { sessionStorage.setItem('rf_cached_role', currentRole); } catch (_) {}
-        try {
-          const displayId = getStoredDisplayId() || safeIdFromEmail(currentUser.email);
-          if (displayId) {
-            localStorage.setItem('rf_display_id', displayId);
-            sessionStorage.setItem('rf_display_id', displayId);
-          }
-        } catch (_) {}
-        currentPermissions = await loadPermissionMap(currentRole);
-        await loadDashboardAcl();
+
+        const logoutFlag = sessionStorage.getItem('rf_force_stay_on_login') === '1' || localStorage.getItem('rf_force_stay_on_login') === '1';
+        if (event !== 'SIGNED_OUT' && !logoutFlag) {
+          return;
+        }
+
+        const recovered = await getActiveSession();
+        if (recovered?.user) {
+          clearLogoutFlags();
+          currentUser = recovered.user;
+          const resolved = await resolveRole(currentUser);
+          currentRole = resolved.role || getStoredRole() || 'viewer';
+          try { localStorage.setItem('rf_cached_role', currentRole); } catch (_) {}
+          try { sessionStorage.setItem('rf_cached_role', currentRole); } catch (_) {}
+          currentUserPermissions = await loadUserPermissionMap(currentUser);
+          currentRolePermissions = await loadRolePermissionMap(currentRole);
+          currentPermissions = currentUserPermissions || currentRolePermissions;
+          await loadDashboardAcl();
+          applyLayout();
+          return;
+        }
+
+        currentUser = null;
+        currentRole = 'viewer';
+        currentPermissions = null;
+        currentUserPermissions = null;
+        currentRolePermissions = null;
         applyLayout();
+
+        const target = `./login.html?logout=1&t=${Date.now()}`;
+        window.setTimeout(() => {
+          try { window.location.replace(target); }
+          catch (_) { window.location.href = target; }
+        }, 10);
       });
 
       if (document.readyState === 'loading') window.addEventListener('DOMContentLoaded', boot);
