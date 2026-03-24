@@ -1077,16 +1077,54 @@
     return { role: 'viewer', source: 'fallback viewer' };
   }
 
-  async function loadPagePermissionMap(client, role) {
-    if (!client) return null;
+  function normalizeAclEmail(value) {
+    return safeLower(value);
+  }
+
+  function buildPermissionEntry(row) {
+    return {
+      can_view: row && row.can_view === true,
+      can_add: row && row.can_add === true,
+      can_edit: row && row.can_edit === true,
+      can_delete: row && row.can_delete === true,
+      can_export: row && row.can_export === true,
+      can_import: row && row.can_import === true
+    };
+  }
+
+  async function loadUserPermissionMap(client, user) {
+    if (!client || !user) return null;
+    var email = normalizeAclEmail(user.email);
+    if (!email) return null;
     try {
-      var res = await client.from('page_permissions').select('page_key,can_view').eq('role', normalizeRole(role));
+      var res = await client.from('user_page_permissions')
+        .select('page_key,can_view,can_add,can_edit,can_delete,can_export,can_import')
+        .eq('email', email);
       if (res.error || !Array.isArray(res.data)) return null;
       var map = new Map();
       res.data.forEach(function (row) {
         var key = String(row.page_key || '').trim();
         if (!key) return;
-        map.set(key, row.can_view === true);
+        map.set(key, buildPermissionEntry(row));
+      });
+      return map;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  async function loadPagePermissionMap(client, role) {
+    if (!client) return null;
+    try {
+      var res = await client.from('page_permissions')
+        .select('page_key,can_view,can_add,can_edit,can_delete,can_export,can_import')
+        .eq('role', normalizeRole(role));
+      if (res.error || !Array.isArray(res.data)) return null;
+      var map = new Map();
+      res.data.forEach(function (row) {
+        var key = String(row.page_key || '').trim();
+        if (!key) return;
+        map.set(key, buildPermissionEntry(row));
       });
       return map;
     } catch (_) {
@@ -1107,38 +1145,87 @@
     return null;
   }
 
+  function permissionValueToEntry(value) {
+    if (value && typeof value === 'object') {
+      return buildPermissionEntry(value);
+    }
+    return {
+      can_view: value === true,
+      can_add: false,
+      can_edit: false,
+      can_delete: false,
+      can_export: false,
+      can_import: false
+    };
+  }
+
+  function defaultPageAccessFromRole(role, pageKey) {
+    var cleanRole = normalizeRole(role);
+    var isLogin = String(pageKey || '').trim() === 'login';
+    if (cleanRole === 'admin') {
+      return { can_view:true, can_add:true, can_edit:true, can_delete:true, can_export:true, can_import:true };
+    }
+    if (cleanRole === 'editor') {
+      return { can_view:true, can_add:!isLogin, can_edit:!isLogin, can_delete:false, can_export:true, can_import:!isLogin };
+    }
+    if (cleanRole === 'operator') {
+      return { can_view:true, can_add:!isLogin, can_edit:false, can_delete:false, can_export:true, can_import:false };
+    }
+    return { can_view:true, can_add:false, can_edit:false, can_delete:false, can_export:false, can_import:false };
+  }
+
   function collectAclDecisions(opts) {
     var decisions = [];
     var pageKey = String(opts.pageKey || '').trim();
     var href = normalizeHref(opts.href);
     var role = normalizeRole(opts.role);
-    var map = opts.permissionMap instanceof Map ? opts.permissionMap : null;
+    var email = normalizeAclEmail(opts.email);
+    var userMap = opts.userPermissionMap instanceof Map ? opts.userPermissionMap : null;
+    var roleMap = opts.permissionMap instanceof Map ? opts.permissionMap : null;
     var mirror = opts.mirror && typeof opts.mirror === 'object' ? opts.mirror : null;
 
-    if (map && pageKey && map.has(pageKey)) {
-      decisions.push(map.get(pageKey) === true);
+    if (userMap && pageKey && userMap.has(pageKey)) {
+      decisions.push(userMap.get(pageKey));
+    }
+
+    if (mirror) {
+      var userPermissionsRoot = mirror.user_permissions && typeof mirror.user_permissions === 'object' ? mirror.user_permissions : null;
+      var userPermissions = userPermissionsRoot && email && userPermissionsRoot[email] && typeof userPermissionsRoot[email] === 'object' ? userPermissionsRoot[email] : null;
+      if (userPermissions && pageKey && Object.prototype.hasOwnProperty.call(userPermissions, pageKey)) {
+        decisions.push(permissionValueToEntry(userPermissions[pageKey]));
+      }
+
+      var userGrantsRoot = mirror.user_grants && typeof mirror.user_grants === 'object' ? mirror.user_grants : null;
+      var userGrants = userGrantsRoot && email && userGrantsRoot[email] && typeof userGrantsRoot[email] === 'object' ? userGrantsRoot[email] : null;
+      if (userGrants) {
+        if (pageKey && Object.prototype.hasOwnProperty.call(userGrants, pageKey)) {
+          decisions.push(permissionValueToEntry(userGrants[pageKey]));
+        }
+        if (href && Object.prototype.hasOwnProperty.call(userGrants, href)) {
+          decisions.push(permissionValueToEntry(userGrants[href]));
+        }
+      }
+    }
+
+    if (roleMap && pageKey && roleMap.has(pageKey)) {
+      decisions.push(roleMap.get(pageKey));
     }
 
     if (mirror) {
       var pagePermissions = mirror.page_permissions && typeof mirror.page_permissions === 'object' ? mirror.page_permissions : null;
       var rolePermissions = pagePermissions && pagePermissions[role] && typeof pagePermissions[role] === 'object' ? pagePermissions[role] : null;
       if (rolePermissions && pageKey && Object.prototype.hasOwnProperty.call(rolePermissions, pageKey)) {
-        var permValue = rolePermissions[pageKey];
-        if (permValue && typeof permValue === 'object' && Object.prototype.hasOwnProperty.call(permValue, 'can_view')) {
-          decisions.push(permValue.can_view === true);
-        } else {
-          decisions.push(permValue === true);
-        }
+        decisions.push(permissionValueToEntry(rolePermissions[pageKey]));
       }
 
       var grants = mirror.grants && typeof mirror.grants === 'object' ? mirror.grants : null;
       var roleGrants = grants && grants[role] && typeof grants[role] === 'object' ? grants[role] : null;
       if (roleGrants) {
         if (pageKey && Object.prototype.hasOwnProperty.call(roleGrants, pageKey)) {
-          decisions.push(roleGrants[pageKey] === true);
+          decisions.push(permissionValueToEntry(roleGrants[pageKey]));
         }
         if (href && Object.prototype.hasOwnProperty.call(roleGrants, href)) {
-          decisions.push(roleGrants[href] === true);
+          decisions.push(permissionValueToEntry(roleGrants[href]));
         }
       }
     }
@@ -1146,14 +1233,25 @@
     return decisions;
   }
 
-  async function canViewPage(pageKey, options) {
+  function mergePermissions(base, incoming) {
+    var result = Object.assign({}, base || {});
+    var next = incoming && typeof incoming === 'object' ? incoming : {};
+    ['can_view','can_add','can_edit','can_delete','can_export','can_import'].forEach(function (key) {
+      if (Object.prototype.hasOwnProperty.call(next, key)) {
+        result[key] = next[key] === true;
+      }
+    });
+    return result;
+  }
+
+  async function resolvePageAccess(pageKey, options) {
     var key = String(pageKey || '').trim();
     var href = pageKeyToHref(key);
     var client = options && options.client ? options.client : createRfSupabaseClient();
     var user = options && options.user ? options.user : null;
 
     if (key === 'login') {
-      return { allowed: true, role: 'viewer', source: 'login open' };
+      return { allowed:true, role:'viewer', source:'login open', permissions:defaultPageAccessFromRole('viewer', key) };
     }
 
     if (!user) {
@@ -1166,27 +1264,55 @@
     }
 
     if (!user) {
-      return { allowed: true, role: 'viewer', source: 'no session fallback' };
+      return { allowed:true, role:'viewer', source:'no session fallback', permissions:defaultPageAccessFromRole('viewer', key) };
     }
 
     var resolved = await resolveRole(client, user);
-    var role = normalizeRole(resolved.role);
+    var role = normalizeRole((options && options.role) || resolved.role);
     if (role === 'admin') {
-      return { allowed: true, role: role, source: resolved.source };
+      return { allowed:true, role:role, source:resolved.source, permissions:defaultPageAccessFromRole(role, key) };
     }
 
+    var email = normalizeAclEmail(user.email);
+    var userPermissionMap = await loadUserPermissionMap(client, user);
     var permissionMap = await loadPagePermissionMap(client, role);
     var mirror = await readDashboardAclMirror(client);
-    var decisions = collectAclDecisions({ pageKey: key, href: href, role: role, permissionMap: permissionMap, mirror: mirror });
+    var decisions = collectAclDecisions({ pageKey:key, href:href, role:role, email:email, userPermissionMap:userPermissionMap, permissionMap:permissionMap, mirror:mirror });
 
-    if (decisions.indexOf(false) !== -1) {
-      return { allowed: false, role: role, source: 'acl explicit false', message: 'Nu ai acces în această foaie. Cere acces de la admin.' };
-    }
-    if (decisions.indexOf(true) !== -1) {
-      return { allowed: true, role: role, source: 'acl explicit true' };
-    }
+    var permissions = defaultPageAccessFromRole(role, key);
+    var explicitTrue = false;
+    var explicitFalse = false;
+    decisions.forEach(function (entry) {
+      var permissionEntry = permissionValueToEntry(entry);
+      permissions = mergePermissions(permissions, permissionEntry);
+      if (permissionEntry.can_view === true) explicitTrue = true;
+      if (permissionEntry.can_view === false) explicitFalse = true;
+    });
 
-    return { allowed: true, role: role, source: 'acl fallback allow' };
+    var allowed = permissions.can_view !== false;
+    if (explicitFalse) allowed = false;
+    else if (explicitTrue) allowed = true;
+
+    return {
+      allowed: allowed,
+      role: role,
+      source: explicitFalse ? 'acl explicit false' : (explicitTrue ? 'acl explicit true' : 'acl fallback allow'),
+      message: allowed ? '' : 'Nu ai acces în această foaie. Cere acces de la admin.',
+      permissions: permissions,
+      email: email
+    };
+  }
+
+  async function canViewPage(pageKey, options) {
+    var result = await resolvePageAccess(pageKey, options);
+    return {
+      allowed: result.allowed,
+      role: result.role,
+      source: result.source,
+      message: result.message,
+      permissions: result.permissions,
+      email: result.email
+    };
   }
 
   window.RF_CONFIG = CONFIG;
@@ -1225,9 +1351,12 @@
   window.RF_ACL.pageKeyToHref = pageKeyToHref;
   window.RF_ACL.inferPageKey = inferPageKey;
   window.RF_ACL.resolveRole = resolveRole;
+  window.RF_ACL.loadUserPermissionMap = loadUserPermissionMap;
   window.RF_ACL.loadPagePermissionMap = loadPagePermissionMap;
   window.RF_ACL.readDashboardAclMirror = readDashboardAclMirror;
   window.RF_ACL.collectAclDecisions = collectAclDecisions;
+  window.RF_ACL.defaultPageAccessFromRole = defaultPageAccessFromRole;
+  window.RF_ACL.resolvePageAccess = resolvePageAccess;
   window.RF_ACL.canViewPage = canViewPage;
 
   if (!window.__RF_AUTO_ACL_GUARD__) {

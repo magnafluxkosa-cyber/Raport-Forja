@@ -339,6 +339,43 @@
     return allowedRoles.includes(String(role || '').toLowerCase());
   }
 
+  async function getPageAccess(pageKey, options){
+    const settings = Object.assign({ pageKey: pageKey || getCurrentPageName().replace(/\.html$/i, '') }, options || {});
+    let user = settings.user || null;
+    let role = settings.role || '';
+
+    if(!user){
+      const authState = await getCurrentUserWithRole();
+      user = authState && authState.user ? authState.user : null;
+      role = role || (authState && authState.role ? authState.role : 'viewer');
+    }
+
+    if(user && !role){
+      role = await resolveUserRole(user);
+    }
+
+    if(window.RF_ACL && typeof window.RF_ACL.resolvePageAccess === 'function'){
+      const access = await window.RF_ACL.resolvePageAccess(settings.pageKey, {
+        client: getSupabaseClient(),
+        user,
+        role
+      });
+      return Object.assign({ user, role: access && access.role ? access.role : (role || 'viewer') }, access || {});
+    }
+
+    const cleanRole = String(role || 'viewer').toLowerCase();
+    const canWrite = ['admin','editor','operator'].includes(cleanRole);
+    const permissions = {
+      can_view: true,
+      can_add: canWrite,
+      can_edit: canWrite,
+      can_delete: cleanRole === 'admin' || cleanRole === 'editor',
+      can_export: true,
+      can_import: canWrite
+    };
+    return { allowed:true, user, role:cleanRole, permissions, source:'role fallback' };
+  }
+
   window.ERPAuth = {
     ADMIN_EMAIL,
     normalizeEmail,
@@ -355,6 +392,7 @@
     roleLabel,
     roleClass,
     canAccess,
+    getPageAccess,
     buildLoginUrl
   };
 })();

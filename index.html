@@ -931,13 +931,24 @@
         return { role:'viewer', source:'fallback viewer' };
       }
 
-      async function loadPermissionMap(role){
+      async function loadPermissionMap(role, user){
         if (!sb) return null;
+        if (window.RF_ACL && typeof window.RF_ACL.loadUserPermissionMap === 'function' && user) {
+          const userMap = await window.RF_ACL.loadUserPermissionMap(sb, user);
+          if (userMap && userMap.size) return userMap;
+        }
         try {
-          const res = await sb.from('page_permissions').select('page_key,can_view').eq('role', role);
+          const res = await sb.from('page_permissions').select('page_key,can_view,can_add,can_edit,can_delete,can_export,can_import').eq('role', role);
           if (res.error || !Array.isArray(res.data)) return null;
           const map = new Map();
-          res.data.forEach(r => map.set(String(r.page_key), r.can_view === true));
+          res.data.forEach(r => map.set(String(r.page_key), {
+            can_view: r.can_view === true,
+            can_add: r.can_add === true,
+            can_edit: r.can_edit === true,
+            can_delete: r.can_delete === true,
+            can_export: r.can_export === true,
+            can_import: r.can_import === true
+          }));
           return map;
         } catch(_){
           return null;
@@ -979,13 +990,29 @@
         return String(href || '').split('#')[0].split('?')[0];
       }
 
+      function currentUserEmail(){
+        return String(currentUser?.email || '').trim().toLowerCase();
+      }
+
+      function permissionEntryCanView(value){
+        if (value && typeof value === 'object' && Object.prototype.hasOwnProperty.call(value, 'can_view')) {
+          return value.can_view === true;
+        }
+        return value === true;
+      }
+
       function getMirrorRoleData(){
         const doc = currentDashAcl && typeof currentDashAcl === 'object' ? currentDashAcl : null;
         const grants = doc && doc.grants && typeof doc.grants === 'object' ? doc.grants : null;
         const pagePermissions = doc && doc.page_permissions && typeof doc.page_permissions === 'object' ? doc.page_permissions : null;
+        const userGrantsRoot = doc && doc.user_grants && typeof doc.user_grants === 'object' ? doc.user_grants : null;
+        const userPermissionsRoot = doc && doc.user_permissions && typeof doc.user_permissions === 'object' ? doc.user_permissions : null;
+        const email = currentUserEmail();
         return {
           grants: grants && grants[currentRole] && typeof grants[currentRole] === 'object' ? grants[currentRole] : null,
-          pagePermissions: pagePermissions && pagePermissions[currentRole] && typeof pagePermissions[currentRole] === 'object' ? pagePermissions[currentRole] : null
+          pagePermissions: pagePermissions && pagePermissions[currentRole] && typeof pagePermissions[currentRole] === 'object' ? pagePermissions[currentRole] : null,
+          userGrants: userGrantsRoot && email && userGrantsRoot[email] && typeof userGrantsRoot[email] === 'object' ? userGrantsRoot[email] : null,
+          userPermissions: userPermissionsRoot && email && userPermissionsRoot[email] && typeof userPermissionsRoot[email] === 'object' ? userPermissionsRoot[email] : null
         };
       }
 
@@ -994,25 +1021,32 @@
         const normalizedHref = normalizeHref(href);
 
         if (currentPermissions instanceof Map && currentPermissions.has(pageKey)) {
-          decisions.push(currentPermissions.get(pageKey) === true);
+          decisions.push(permissionEntryCanView(currentPermissions.get(pageKey)));
         }
 
         const mirror = getMirrorRoleData();
-        if (mirror.pagePermissions && Object.prototype.hasOwnProperty.call(mirror.pagePermissions, pageKey)) {
-          const value = mirror.pagePermissions[pageKey];
-          if (value && typeof value === 'object' && Object.prototype.hasOwnProperty.call(value, 'can_view')) {
-            decisions.push(value.can_view === true);
-          } else {
-            decisions.push(value === true);
+        if (mirror.userPermissions && Object.prototype.hasOwnProperty.call(mirror.userPermissions, pageKey)) {
+          decisions.push(permissionEntryCanView(mirror.userPermissions[pageKey]));
+        }
+        if (mirror.userGrants) {
+          if (Object.prototype.hasOwnProperty.call(mirror.userGrants, pageKey)) {
+            decisions.push(permissionEntryCanView(mirror.userGrants[pageKey]));
           }
+          if (normalizedHref && Object.prototype.hasOwnProperty.call(mirror.userGrants, normalizedHref)) {
+            decisions.push(permissionEntryCanView(mirror.userGrants[normalizedHref]));
+          }
+        }
+
+        if (mirror.pagePermissions && Object.prototype.hasOwnProperty.call(mirror.pagePermissions, pageKey)) {
+          decisions.push(permissionEntryCanView(mirror.pagePermissions[pageKey]));
         }
 
         if (mirror.grants) {
           if (Object.prototype.hasOwnProperty.call(mirror.grants, pageKey)) {
-            decisions.push(mirror.grants[pageKey] === true);
+            decisions.push(permissionEntryCanView(mirror.grants[pageKey]));
           }
           if (normalizedHref && Object.prototype.hasOwnProperty.call(mirror.grants, normalizedHref)) {
-            decisions.push(mirror.grants[normalizedHref] === true);
+            decisions.push(permissionEntryCanView(mirror.grants[normalizedHref]));
           }
         }
 
@@ -1314,7 +1348,7 @@
           }
         } catch (_) {}
 
-        currentPermissions = await loadPermissionMap(currentRole);
+        currentPermissions = await loadPermissionMap(currentRole, currentUser);
         await loadDashboardAcl();
         applyLayout();
       }
@@ -1508,7 +1542,7 @@
             sessionStorage.setItem('rf_display_id', displayId);
           }
         } catch (_) {}
-        currentPermissions = await loadPermissionMap(currentRole);
+        currentPermissions = await loadPermissionMap(currentRole, currentUser);
         await loadDashboardAcl();
         applyLayout();
       });
