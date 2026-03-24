@@ -1097,22 +1097,38 @@
   async function loadUserPermissionMap(client, user) {
     if (!client || !user) return null;
     var email = normalizeAclEmail(user.email);
-    if (!email) return null;
-    try {
-      var res = await client.from('user_page_permissions')
-        .select('page_key,can_view,can_add,can_edit,can_delete,can_export,can_import')
-        .eq('email', email);
-      if (res.error || !Array.isArray(res.data)) return null;
-      var map = new Map();
-      res.data.forEach(function (row) {
-        var key = String(row.page_key || '').trim();
+    var userId = user && user.id ? String(user.id).trim() : '';
+    if (!email && !userId) return null;
+
+    function appendRows(map, rows) {
+      (Array.isArray(rows) ? rows : []).forEach(function (row) {
+        var key = String(row && row.page_key || '').trim();
         if (!key) return;
         map.set(key, buildPermissionEntry(row));
       });
-      return map;
-    } catch (_) {
-      return null;
     }
+
+    var map = new Map();
+
+    if (userId) {
+      try {
+        var byUserId = await client.from('user_page_permissions')
+          .select('page_key,can_view,can_add,can_edit,can_delete,can_export,can_import')
+          .eq('user_id', userId);
+        if (!byUserId.error) appendRows(map, byUserId.data);
+      } catch (_) {}
+    }
+
+    if (email) {
+      try {
+        var byEmail = await client.from('user_page_permissions')
+          .select('page_key,can_view,can_add,can_edit,can_delete,can_export,can_import')
+          .ilike('email', email);
+        if (!byEmail.error) appendRows(map, byEmail.data);
+      } catch (_) {}
+    }
+
+    return map.size ? map : null;
   }
 
   async function loadPagePermissionMap(client, role) {
