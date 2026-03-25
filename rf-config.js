@@ -83,8 +83,46 @@ var PAGE_CONTROL_OVERRIDES = Object.freeze({
     Object.freeze({ control_key:'nav.group-probleme-imbunatatire', control_label:'Buton PROBLEME / ÎMBUNĂTĂȚIRI / INVESTIȚII', control_type:'action' }),
     Object.freeze({ control_key:'nav.kpi', control_label:'Buton KPI', control_type:'action' }),
     Object.freeze({ control_key:'nav.group-planificari', control_label:'Buton PLANIFICĂRI', control_type:'action' }),
-    Object.freeze({ control_key:'nav.helper-data', control_label:'Buton HELPER DATA', control_type:'action' }),
+    Object.freeze({ control_key:'nav.helper-data', control_label:'Buton HELPER-DATA', control_type:'action' }),
     Object.freeze({ control_key:'nav.helper-acl', control_label:'Buton PERMISIUNI (ACL)', control_type:'action' }),
+    Object.freeze({ control_key:'nav.numeralkod', control_label:'Buton NUMERALKOD', control_type:'action' }),
+    Object.freeze({ control_key:'nav.intrari-otel', control_label:'Buton INTRĂRI OȚEL', control_type:'action' }),
+    Object.freeze({ control_key:'nav.debitate', control_label:'Buton DEBITATE', control_type:'action' }),
+    Object.freeze({ control_key:'nav.forjate', control_label:'Buton FORJATE', control_type:'action' }),
+    Object.freeze({ control_key:'nav.program-utilaje', control_label:'Buton PROGRAM UTILAJE', control_type:'action' }),
+    Object.freeze({ control_key:'nav.zale-9k-6628-29', control_label:'Buton 9K-6628/29', control_type:'action' }),
+    Object.freeze({ control_key:'nav.zale-229-6909-10', control_label:'Buton 229-6909/10', control_type:'action' }),
+    Object.freeze({ control_key:'nav.zale-503-0761-62', control_label:'Buton 503-0761/62', control_type:'action' }),
+    Object.freeze({ control_key:'nav.zale-106-1625-26', control_label:'Buton 106-1625/26', control_type:'action' }),
+    Object.freeze({ control_key:'nav.zale-378-8241-42', control_label:'Buton 378-8241/42', control_type:'action' }),
+    Object.freeze({ control_key:'nav.zale-248-2307-08', control_label:'Buton 248-2307/08', control_type:'action' }),
+    Object.freeze({ control_key:'nav.zale-417-3595-96', control_label:'Buton 417-3595/96', control_type:'action' }),
+    Object.freeze({ control_key:'nav.zale-418-2091-92', control_label:'Buton 418-2091/92', control_type:'action' }),
+    Object.freeze({ control_key:'nav.ambalare-9k-6628-29', control_label:'Buton AMBALARE 9K-6628/29', control_type:'action' }),
+    Object.freeze({ control_key:'nav.ambalare-229-6909-10', control_label:'Buton AMBALARE 229-6909/10', control_type:'action' }),
+    Object.freeze({ control_key:'nav.ambalare-503-0761-62', control_label:'Buton AMBALARE 503-0761/62', control_type:'action' }),
+    Object.freeze({ control_key:'nav.ambalare-106-1625-26', control_label:'Buton AMBALARE 106-1625/26', control_type:'action' }),
+    Object.freeze({ control_key:'nav.ambalare-378-8241-42', control_label:'Buton AMBALARE 378-8241/42', control_type:'action' }),
+    Object.freeze({ control_key:'nav.ambalare-248-2307-08', control_label:'Buton AMBALARE 248-2307/08', control_type:'action' }),
+    Object.freeze({ control_key:'nav.ambalare-417-3595-96', control_label:'Buton AMBALARE 417-3595/96', control_type:'action' }),
+    Object.freeze({ control_key:'nav.ambalare-418-2091-92', control_label:'Buton AMBALARE 418-2091/92', control_type:'action' }),
+    Object.freeze({ control_key:'nav.inventar-otel', control_label:'Buton INVENTAR OȚEL', control_type:'action' }),
+    Object.freeze({ control_key:'nav.inventar-debitat', control_label:'Buton INVENTAR DEBITAT', control_type:'action' }),
+    Object.freeze({ control_key:'nav.inventar-forjat', control_label:'Buton INVENTAR FORJAT', control_type:'action' }),
+    Object.freeze({ control_key:'nav.tratament-termic-rapoarte', control_label:'Buton T.T RAPOARTE', control_type:'action' }),
+    Object.freeze({ control_key:'nav.tratament-termic-probleme', control_label:'Buton T.T PROBLEME', control_type:'action' }),
+    Object.freeze({ control_key:'nav.tratament-termic-fise-tehnologice', control_label:'Buton T.T FIȘE TEHNOLOGICE', control_type:'action' }),
+    Object.freeze({ control_key:'nav.magnaflux', control_label:'Buton MAGNAFLUX', control_type:'action' }),
+    Object.freeze({ control_key:'nav.rebut', control_label:'Buton REBUT', control_type:'action' }),
+    Object.freeze({ control_key:'nav.probleme-raportate', control_label:'Buton PROBLEME RAPORTATE', control_type:'action' }),
+    Object.freeze({ control_key:'nav.urmarire-actiuni-progres', control_label:'Buton URMĂRIRE ACȚIUNI ȘI PROGRES', control_type:'action' }),
+    Object.freeze({ control_key:'nav.imbunatatire-continua', control_label:'Buton ÎMBUNĂTĂȚIRE CONTINUĂ', control_type:'action' }),
+    Object.freeze({ control_key:'nav.investitii', control_label:'Buton INVESTIȚII', control_type:'action' }),
+    Object.freeze({ control_key:'nav.planificare-forja', control_label:'Buton PLANIFICARE FORJĂ', control_type:'action' }),
+    Object.freeze({ control_key:'nav.comenzi-livrare', control_label:'Buton COMENZI LIVRARE', control_type:'action' }),
+    Object.freeze({ control_key:'nav.mrc-necesar-otel', control_label:'Buton MRC / NECESAR OȚEL', control_type:'action' }),
+    Object.freeze({ control_key:'nav.mrc-comenzi-otel', control_label:'Buton COMENZI OȚEL', control_type:'action' }),
+    Object.freeze({ control_key:'nav.mrc-comenzi-saptamanale', control_label:'Buton COMENZI SĂPTĂMÂNALE', control_type:'action' }),
     Object.freeze({ control_key:'nav.login', control_label:'Buton Login', control_type:'action' }),
     Object.freeze({ control_key:'nav.logout', control_label:'Buton Logout', control_type:'action' }),
     Object.freeze({ control_key:'dashboard.palette', control_label:'Paletă temă', control_type:'action' }),
@@ -1219,9 +1257,9 @@ function buildControlPermissionEntry(row) {
     control_key: String(row && row.control_key || '').trim(),
     control_label: String(row && (row.control_label || row.control_key) || '').trim(),
     control_type: String(row && row.control_type || 'action').trim() || 'action',
-    can_view: !!(row && (row.can_view === true || row.is_visible === true)),
-    can_use: !!(row && (row.can_use === true || row.is_enabled === true)),
-    can_edit: !!(row && (row.can_edit === true || row.is_editable === true))
+    can_view: row && (row.can_view === true || row.is_visible === true),
+    can_use: row && (row.can_use === true || row.is_enabled === true),
+    can_edit: row && (row.can_edit === true || row.is_editable === true)
   };
 }
 
@@ -1258,7 +1296,7 @@ function defaultControlAccessFromPagePermissions(pagePermissions, controlKey) {
   if (key === 'data.import') {
     return { can_view: perms.can_import === true, can_use: perms.can_import === true, can_edit: false };
   }
-  if (key === 'rows.filter' || key === 'cloud.refresh' || key === 'pdf.open' || key === 'problems.link' || key === 'dashboard.palette' || key === 'dashboard.refresh' || key === 'users.manage' || key === 'nav.group-forja' || key === 'nav.group-prelucrari' || key === 'nav.group-tratament-termic' || key === 'nav.group-calitate' || key === 'nav.group-probleme-imbunatatire' || key === 'nav.kpi' || key === 'nav.group-planificari' || key === 'nav.helper-data' || key === 'nav.helper-acl' || key === 'nav.login' || key === 'nav.logout') {
+  if (key === 'rows.filter' || key === 'cloud.refresh' || key === 'pdf.open' || key === 'problems.link' || key === 'dashboard.palette' || key === 'dashboard.refresh' || key === 'users.manage' || key.indexOf('nav.') === 0) {
     return { can_view: perms.can_view === true, can_use: perms.can_view === true, can_edit: false };
   }
   if (key === 'cloud.save') {
@@ -1627,11 +1665,12 @@ async function applyDomPermissions(pageKey, root, options) {
 
   async function resolvePageAccess(pageKey, options) {
     var key = String(pageKey || '').trim();
+    var href = pageKeyToHref(key);
     var client = options && options.client ? options.client : createRfSupabaseClient();
     var user = options && options.user ? options.user : null;
 
     if (key === 'login') {
-      return { allowed:true, role:'viewer', source:'login open', permissions:{ can_view:true, can_add:false, can_edit:false, can_delete:false, can_export:false, can_import:false } };
+      return { allowed:true, role:'viewer', source:'login open', permissions:defaultPageAccessFromRole('viewer', key) };
     }
 
     if (!user) {
@@ -1645,9 +1684,9 @@ async function applyDomPermissions(pageKey, root, options) {
 
     if (!user) {
       if (key === 'index') {
-        return { allowed:true, role:'viewer', source:'guest index', permissions:{ can_view:true, can_add:false, can_edit:false, can_delete:false, can_export:false, can_import:false }, strictUserAcl:true };
+        return { allowed:true, role:'viewer', source:'guest index', permissions:{ can_view:true, can_add:false, can_edit:false, can_delete:false, can_export:false, can_import:false } };
       }
-      return { allowed:false, role:'viewer', source:'no session', message:'Autentifică-te pentru a intra în această foaie.', permissions:{ can_view:false, can_add:false, can_edit:false, can_delete:false, can_export:false, can_import:false }, strictUserAcl:true };
+      return { allowed:false, role:'viewer', source:'no session', message:'Autentifică-te pentru a intra în această foaie.', permissions:{ can_view:false, can_add:false, can_edit:false, can_delete:false, can_export:false, can_import:false } };
     }
 
     var resolved = await resolveRole(client, user);
@@ -1658,43 +1697,74 @@ async function applyDomPermissions(pageKey, root, options) {
         allowed:false,
         role:role,
         source:'account blocked',
-        message: accountStatus.note || accountStatus.ban_reason || 'Cont blocat.',
+        message: accountStatus.note || 'Cont blocat.',
         permissions:{ can_view:false, can_add:false, can_edit:false, can_delete:false, can_export:false, can_import:false },
         email: normalizeAclEmail(user.email),
-        accountStatus: accountStatus,
-        strictUserAcl: true
+        accountStatus: accountStatus
       };
     }
 
     if (role === 'admin') {
-      return { allowed:true, role:role, source:'admin', permissions:defaultPageAccessFromRole(role, key), email: normalizeAclEmail(user.email), accountStatus: accountStatus, strictUserAcl:true };
+      return { allowed:true, role:role, source:'admin', permissions:defaultPageAccessFromRole(role, key), email: normalizeAclEmail(user.email), accountStatus: accountStatus };
     }
 
     var email = normalizeAclEmail(user.email);
     var userPermissionMap = await loadUserPermissionMap(client, user);
-    var permissions = userPermissionMap && userPermissionMap.get(key) ? buildPermissionEntry(userPermissionMap.get(key)) : { can_view:false, can_add:false, can_edit:false, can_delete:false, can_export:false, can_import:false };
+    var hasUserAcl = !!(userPermissionMap && userPermissionMap.size);
 
     if (key === 'index') {
       return {
         allowed:true,
         role:role,
-        source:'strict user index',
-        permissions:{ can_view:true, can_add:false, can_edit:false, can_delete:false, can_export:false, can_import:false },
+        source: hasUserAcl ? 'user acl strict index' : 'index by role',
+        permissions: { can_view:true, can_add:false, can_edit:false, can_delete:false, can_export:false, can_import:false },
+        email: email,
+        accountStatus: accountStatus,
+        strictUserAcl: hasUserAcl
+      };
+    }
+
+    if (hasUserAcl) {
+      var userPerm = userPermissionMap.get(key) || { can_view:false, can_add:false, can_edit:false, can_delete:false, can_export:false, can_import:false };
+      return {
+        allowed: userPerm.can_view === true,
+        role: role,
+        source: 'user acl strict',
+        message: userPerm.can_view === true ? '' : 'Nu ai acces în această foaie. Cere acces de la admin.',
+        permissions: buildPermissionEntry(userPerm),
         email: email,
         accountStatus: accountStatus,
         strictUserAcl: true
       };
     }
 
+    var permissionMap = await loadPagePermissionMap(client, role);
+    var mirror = await readDashboardAclMirror(client);
+    var roleDecisions = collectAclDecisions({ pageKey:key, href:href, role:role, email:'', userPermissionMap:null, permissionMap:permissionMap, mirror:{ page_permissions: mirror && mirror.page_permissions, grants: mirror && mirror.grants } });
+
+    var rolePermissions = defaultPageAccessFromRole(role, key);
+    var roleExplicitTrue = false;
+    var roleExplicitFalse = false;
+    roleDecisions.forEach(function (entry) {
+      var permissionEntry = permissionValueToEntry(entry);
+      rolePermissions = mergePermissions(rolePermissions, permissionEntry);
+      if (permissionEntry.can_view === true) roleExplicitTrue = true;
+      if (permissionEntry.can_view === false) roleExplicitFalse = true;
+    });
+
+    var allowed = rolePermissions.can_view !== false;
+    if (roleExplicitFalse) allowed = false;
+    else if (roleExplicitTrue) allowed = true;
+
     return {
-      allowed: permissions.can_view === true,
+      allowed: allowed,
       role: role,
-      source: 'strict user acl',
-      message: permissions.can_view === true ? '' : 'Nu ai acces în această foaie. Cere acces de la admin.',
-      permissions: permissions,
+      source: roleExplicitFalse ? 'role acl explicit false' : (roleExplicitTrue ? 'role acl explicit true' : 'role fallback'),
+      message: allowed ? '' : 'Nu ai acces în această foaie. Cere acces de la admin.',
+      permissions: rolePermissions,
       email: email,
       accountStatus: accountStatus,
-      strictUserAcl: true
+      strictUserAcl: false
     };
   }
 
