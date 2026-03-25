@@ -397,7 +397,6 @@
 
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="./rf-config.js"></script>
-  <script src="./auth-common.js"></script>
   <link rel="stylesheet" href="./mobile-erp.css" />
 </head>
 <body class="rf-login-page">
@@ -518,13 +517,6 @@
         try { localStorage.setItem(key, value); } catch(_) {}
       }
 
-      function clearLogoutFlags(){
-        try { localStorage.removeItem('rf_force_stay_on_login'); } catch(_) {}
-        try { sessionStorage.removeItem('rf_force_stay_on_login'); } catch(_) {}
-        try { localStorage.removeItem('rf_acl_denied_message'); } catch(_) {}
-        try { sessionStorage.removeItem('rf_acl_denied_message'); } catch(_) {}
-      }
-
       function getThemeKey(){
         return window.RF_THEME?.getThemeKey?.() || window.RF_THEME?.getPaletteKey?.() || 'blue';
       }
@@ -629,56 +621,12 @@
         return './index.html';
       }
 
-      async function waitForStableAuthState(){
-        if(!window.ERPAuth || typeof window.ERPAuth.getCurrentUserWithRole !== 'function'){
-          return null;
-        }
-        for(let i = 0; i < 8; i += 1){
-          const state = await window.ERPAuth.getCurrentUserWithRole().catch(() => null);
-          if(state && state.user){
-            return state;
-          }
-          await new Promise(resolve => setTimeout(resolve, 180));
-        }
-        return null;
-      }
-
-      async function bootstrapExistingSession(){
-        if(!window.ERPAuth || typeof window.ERPAuth.getSession !== 'function'){
-          return;
-        }
-        const existingSession = await window.ERPAuth.getSession().catch(() => null);
-        if(!existingSession || !existingSession.user){
-          return;
-        }
-
-        setLoading(true, 'Se verifică sesiunea existentă...');
-        const state = await waitForStableAuthState();
-        setLoading(false);
-
-        if(state && state.user){
-          setStatus('Sesiune activă detectată. Redirecționare...', 'ok');
-          setMeta('Rol detectat: ' + (state.role || 'viewer'));
-          window.location.replace(buildRedirectUrl());
-          return;
-        }
-
-        try {
-          const blockedMsg = sessionStorage.getItem('rf_login_error') || '';
-          if (blockedMsg) {
-            setStatus(blockedMsg, 'error');
-            sessionStorage.removeItem('rf_login_error');
-          }
-        } catch (_) {}
-      }
-
       function getFriendlyError(error){
         const msg = String(error?.message || error || '').trim();
         if(!msg) return 'Autentificarea a eșuat.';
         if(msg.includes('Invalid login credentials')) return 'ID sau parolă greșită.';
         if(msg.includes('Email not confirmed')) return 'Emailul nu este confirmat.';
         if(msg.includes('Failed to fetch')) return 'Nu se poate contacta serverul Supabase.';
-        if(msg.includes('Cont blocat')) return msg;
         if(msg.includes('depășit timpul')) return 'Serverul nu a răspuns la timp. Verifică conexiunea și încearcă din nou.';
         return msg;
       }
@@ -706,15 +654,6 @@
         passwordInput.type = isPassword ? 'text' : 'password';
         togglePasswordBtn.textContent = isPassword ? 'Ascunde' : 'Arată';
       });
-
-      clearLogoutFlags();
-      try {
-        const blockedMsg = sessionStorage.getItem('rf_login_error') || '';
-        if (blockedMsg) {
-          setStatus(blockedMsg, 'error');
-          sessionStorage.removeItem('rf_login_error');
-        }
-      } catch (_) {}
 
       renderThemeSwatches();
       window.addEventListener('rf-theme-change', syncThemeUi);
@@ -752,36 +691,17 @@
             throw new Error('Autentificare nereușită: utilizatorul nu a fost returnat de server.');
           }
 
-          let resolved = await withTimeout(resolveRole(user), 12000, 'Citirea rolului');
-
-          if (window.ERPAuth && typeof window.ERPAuth.getCurrentUserWithRole === 'function') {
-            const stableState = await withTimeout(waitForStableAuthState(), 12000, 'Verificarea contului');
-            if (!stableState || !stableState.user) {
-              const blockedMsg = (() => {
-                try { return sessionStorage.getItem('rf_login_error') || ''; } catch (_) { return ''; }
-              })();
-              throw new Error(blockedMsg || 'Cont blocat.');
-            }
-            resolved = { role: stableState.role || resolved.role || 'viewer', email: normalizeEmail(stableState.user.email || resolved.email || email) };
-          } else if (window.ERPAuth && typeof window.ERPAuth.getAccountStatus === 'function') {
-            const status = await withTimeout(window.ERPAuth.getAccountStatus(user), 12000, 'Verificarea contului');
-            if (status && (status.is_banned || status.is_active === false)) {
-              try { await supabase.auth.signOut(); } catch (_) {}
-              throw new Error(status.note || 'Cont blocat.');
-            }
-          }
+          const resolved = await withTimeout(resolveRole(user), 12000, 'Citirea rolului');
 
           safeSetLocal('rf_uid', user.id || '');
           safeSetLocal('rf_email', resolved.email || email);
           safeSetLocal('rf_role', resolved.role || 'viewer');
           safeSetLocal('rf_login_ts', String(Date.now()));
 
-          clearLogoutFlags();
-
           setStatus('Autentificare reușită. Redirecționare...', 'ok');
           setMeta('Rol detectat: ' + (resolved.role || 'viewer'));
 
-          window.location.replace(buildRedirectUrl());
+          window.location.href = buildRedirectUrl();
         } catch (error) {
           console.error('Login error:', error);
           setStatus(getFriendlyError(error), 'error');
@@ -794,9 +714,6 @@
       try {
         supabase = initClient();
         setMeta('Conexiune pregătită.');
-        bootstrapExistingSession().catch(function(error){
-          console.error('Login bootstrap error:', error);
-        });
       } catch (error) {
         console.error('Supabase init error:', error);
         setStatus(getFriendlyError(error), 'error');
