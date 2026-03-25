@@ -3247,11 +3247,11 @@ async function applyDomPermissions(pageKey, root, options) {
 })(window);
 
 
-/* RF OPEN ACCESS UNIVERSAL PATCH */
+/* FULL OPEN ACCESS RUNTIME PATCH */
 (function (window) {
   'use strict';
-  if (!window || window.__RF_OPEN_ACCESS_UNIVERSAL_PATCH__) return;
-  window.__RF_OPEN_ACCESS_UNIVERSAL_PATCH__ = true;
+  if (window.__RF_FULL_OPEN_ACCESS_PATCH__) return;
+  window.__RF_FULL_OPEN_ACCESS_PATCH__ = true;
 
   var ALL_PERMS = {
     can_view:true,
@@ -3260,357 +3260,272 @@ async function applyDomPermissions(pageKey, root, options) {
     can_delete:true,
     can_export:true,
     can_import:true,
-    can_filter:true,
-    can_use:true,
-    is_visible:true,
-    is_enabled:true,
-    is_editable:true
+    can_filter:true
   };
 
-  function ok(data) {
-    return { data:data, error:null, count:Array.isArray(data) ? data.length : (data ? 1 : 0), status:200, statusText:'OK' };
+  function safeGet(storage, key){
+    try { return storage && storage.getItem ? storage.getItem(key) : ''; } catch (_) { return ''; }
   }
 
-  function ensureArray(value) {
-    if (Array.isArray(value)) return value.slice();
-    if (value === undefined || value === null || value === '') return [];
-    return [value];
+  function currentEmail(){
+    return String(
+      safeGet(window.localStorage, 'rf_user_email') ||
+      safeGet(window.localStorage, 'rf_login_email') ||
+      safeGet(window.sessionStorage, 'rf_user_email') ||
+      safeGet(window.sessionStorage, 'rf_login_email') ||
+      ''
+    ).trim().toLowerCase();
   }
 
-  function clean(value) {
-    return String(value || '').trim();
+  function currentUserId(){
+    return String(
+      safeGet(window.localStorage, 'rf_user_id') ||
+      safeGet(window.sessionStorage, 'rf_user_id') ||
+      ''
+    ).trim();
   }
 
-  function normalize(value) {
-    return clean(value).toLowerCase();
-  }
-
-  function unique(list) {
-    var seen = Object.create(null);
-    var out = [];
-    ensureArray(list).forEach(function (item) {
-      var key = clean(item);
-      if (!key || seen[key]) return;
-      seen[key] = true;
-      out.push(key);
-    });
-    return out;
-  }
-
-  function pageKeysFromState(state) {
-    var keys = [];
-    if (state.filtersIn.page_key) keys = keys.concat(ensureArray(state.filtersIn.page_key));
-    if (state.filtersEq.page_key) keys.push(state.filtersEq.page_key);
-    if (!keys.length && window.RF_CONFIG && Array.isArray(window.RF_CONFIG.DEFAULT_PAGES)) keys = keys.concat(window.RF_CONFIG.DEFAULT_PAGES);
-    if (!keys.length && window.RF_ACL && Array.isArray(window.RF_ACL.PAGE_LIST)) {
-      keys = keys.concat(window.RF_ACL.PAGE_LIST.map(function (row) { return row && row.page_key ? row.page_key : ''; }));
-    }
-    return unique(keys);
-  }
-
-  function controlKeysFromState(state) {
-    var keys = [];
-    if (state.filtersIn.control_key) keys = keys.concat(ensureArray(state.filtersIn.control_key));
-    if (state.filtersEq.control_key) keys.push(state.filtersEq.control_key);
-    if (state.filtersEq.field_key) keys.push(state.filtersEq.field_key);
-    if (!keys.length) keys.push('*');
-    return unique(keys);
-  }
-
-  function docKeyFromState(state) {
-    return clean(state.filtersEq.doc_key || '');
-  }
-
-  function buildRoleRow(state) {
-    var email = clean(state.filtersEq.email || state.filtersIlike.email || '');
-    var userId = clean(state.filtersEq.user_id || state.filtersEq.id || '');
+  function openAccessAclDoc(){
+    var email = currentEmail();
+    var roles = {};
+    if (email) roles[email] = 'admin';
     return {
-      role: 'admin',
-      email: email,
-      user_id: userId,
-      id: userId,
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString()
+      roles: roles,
+      page_permissions: {},
+      grants: {},
+      user_permissions: {},
+      user_grants: {}
     };
   }
 
-  function buildPagePermissionRows(state) {
-    var role = clean(state.filtersEq.role || 'admin') || 'admin';
-    var keys = pageKeysFromState(state);
-    if (!keys.length) keys = ['*'];
-    return keys.map(function (pageKey) {
-      return {
-        role: role,
-        page_key: pageKey,
-        can_view: true,
-        can_add: true,
-        can_edit: true,
-        can_delete: true,
-        can_export: true,
-        can_import: true,
-        can_filter: true
-      };
-    });
+  function docForKey(docKey){
+    var key = String(docKey || '').trim();
+    if (key === 'acl_roles_v1' || key === 'dashboard_acl_v1') return openAccessAclDoc();
+    return null;
   }
 
-  function buildUserPagePermissionRows(state) {
-    var email = clean(state.filtersEq.email || state.filtersIlike.email || '');
-    var userId = clean(state.filtersEq.user_id || '');
-    return pageKeysFromState(state).map(function (pageKey) {
-      return {
-        email: email,
-        user_id: userId,
-        page_key: pageKey,
-        can_view: true,
-        can_add: true,
-        can_edit: true,
-        can_delete: true,
-        can_export: true,
-        can_import: true
-      };
-    });
-  }
+  function buildRows(table, meta){
+    var email = currentEmail();
+    var userId = currentUserId();
+    var now = new Date().toISOString();
+    var eq = meta && meta.eq ? meta.eq : {};
+    var inMap = meta && meta.in ? meta.in : {};
 
-  function buildFieldPermissionRows(state) {
-    var role = clean(state.filtersEq.role || 'admin') || 'admin';
-    var pageKeys = pageKeysFromState(state);
-    var fieldKeys = unique((state.filtersIn.field_key || []).concat(state.filtersEq.field_key ? [state.filtersEq.field_key] : []));
-    if (!pageKeys.length) pageKeys = ['*'];
-    if (!fieldKeys.length) fieldKeys = ['*'];
-    var rows = [];
-    pageKeys.forEach(function (pageKey) {
-      fieldKeys.forEach(function (fieldKey) {
-        rows.push({ role: role, page_key: pageKey, field_key: fieldKey, can_edit: true });
-      });
-    });
-    return rows;
-  }
-
-  function buildUserControlRows(state) {
-    var email = clean(state.filtersEq.email || state.filtersIlike.email || '');
-    var userId = clean(state.filtersEq.user_id || '');
-    var pageKeys = pageKeysFromState(state);
-    var controlKeys = controlKeysFromState(state);
-    if (!pageKeys.length) pageKeys = ['*'];
-    var rows = [];
-    pageKeys.forEach(function (pageKey) {
-      controlKeys.forEach(function (controlKey) {
-        rows.push({
-          email: email,
-          user_id: userId,
-          page_key: pageKey,
-          control_key: controlKey,
-          control_label: controlKey,
-          control_type: controlKey === '*' ? 'action' : 'action',
-          can_view: true,
-          can_use: true,
-          can_edit: true,
-          is_visible: true,
-          is_enabled: true,
-          is_editable: true
-        });
-      });
-    });
-    return rows;
-  }
-
-  function buildAclDocument(state) {
-    var docKey = docKeyFromState(state);
-    if (docKey === 'acl_roles_v1') {
-      return { doc_key: docKey, updated_at: new Date().toISOString(), content: { roles:{} }, data: { roles:{} } };
+    if (table === 'profiles') {
+      return [{ role:'admin', email: email || '', user_id: userId || '', id: userId || '' }];
     }
-    if (docKey === 'dashboard_acl_v1') {
-      return { doc_key: docKey, updated_at: new Date().toISOString(), content: {}, data: {} };
+    if (table === 'rf_acl') {
+      return [{ role:'admin', email: email || '' }];
+    }
+    if (table === 'page_permissions' || table === 'user_page_permissions') {
+      var keys = [];
+      if (Array.isArray(inMap.page_key) && inMap.page_key.length) keys = inMap.page_key.slice();
+      else if (eq.page_key) keys = [eq.page_key];
+      else keys = ['index'];
+      return keys.map(function (k) {
+        return {
+          page_key: String(k || '').trim() || 'index',
+          can_view:true,
+          can_add:true,
+          can_edit:true,
+          can_delete:true,
+          can_export:true,
+          can_import:true
+        };
+      });
+    }
+    if (table === 'field_permissions') {
+      return [];
+    }
+    if (table === 'user_control_permissions') {
+      return [];
+    }
+    if (table === 'user_account_access') {
+      return [{ user_id:userId || '', email:email || '', is_active:true, is_banned:false, note:'' }];
+    }
+    if (table === 'rf_documents') {
+      var docKey = eq.doc_key || '';
+      var payload = docForKey(docKey);
+      if (!payload) return null;
+      return [{ doc_key:docKey, content:payload, data:payload, updated_at:now }];
     }
     return null;
   }
 
-  function isSyntheticTable(table) {
-    return ['profiles','rf_acl','page_permissions','user_page_permissions','field_permissions','user_control_permissions','rf_documents'].indexOf(String(table || '')) >= 0;
-  }
+  function makeMockQuery(table) {
+    var meta = { eq:Object.create(null), ilike:Object.create(null), in:Object.create(null), table:table };
+    var proxy = null;
 
-  function shouldReturnSynthetic(state) {
-    var table = String(state.table || '');
-    if (table === 'rf_documents') {
-      return !!buildAclDocument(state);
-    }
-    return isSyntheticTable(table);
-  }
+    function rows(){ return buildRows(table, meta); }
+    function one(){ var r = rows(); return Array.isArray(r) ? (r[0] || null) : null; }
+    function resolved(single){ return Promise.resolve({ data: single ? one() : (rows() || []), error: null }); }
 
-  function buildSyntheticResult(state) {
-    var table = String(state.table || '');
-    if (table === 'profiles' || table === 'rf_acl') return [buildRoleRow(state)];
-    if (table === 'page_permissions') return buildPagePermissionRows(state);
-    if (table === 'user_page_permissions') return buildUserPagePermissionRows(state);
-    if (table === 'field_permissions') return buildFieldPermissionRows(state);
-    if (table === 'user_control_permissions') return buildUserControlRows(state);
-    if (table === 'rf_documents') {
-      var doc = buildAclDocument(state);
-      return doc ? [doc] : [];
-    }
-    return [];
-  }
-
-  function finalizeSynthetic(state) {
-    var rows = buildSyntheticResult(state);
-    if (state.mode === 'maybeSingle' || state.mode === 'single') return ok(rows.length ? rows[0] : null);
-    return ok(rows);
-  }
-
-  function passthroughReal(real) {
-    if (real && typeof real.then === 'function') return real;
-    return ok(null);
-  }
-
-  function buildInterceptedQuery(table, realBuilder) {
-    var state = {
-      table: String(table || ''),
-      filtersEq: Object.create(null),
-      filtersIn: Object.create(null),
-      filtersIlike: Object.create(null),
-      mode: 'many'
+    var target = {
+      select: function(){ return proxy; },
+      eq: function(col, val){ meta.eq[String(col || '').trim()] = val; return proxy; },
+      ilike: function(col, val){ meta.ilike[String(col || '').trim()] = val; return proxy; },
+      in: function(col, vals){ meta.in[String(col || '').trim()] = Array.isArray(vals) ? vals.slice() : []; return proxy; },
+      limit: function(){ return proxy; },
+      order: function(){ return proxy; },
+      maybeSingle: function(){ return resolved(true); },
+      single: function(){ return resolved(true); },
+      upsert: function(){ return Promise.resolve({ data:null, error:null }); },
+      insert: function(){ return Promise.resolve({ data:null, error:null }); },
+      update: function(){ return Promise.resolve({ data:null, error:null }); },
+      delete: function(){ return Promise.resolve({ data:null, error:null }); },
+      then: function(resolve, reject){ return resolved(false).then(resolve, reject); },
+      catch: function(reject){ return resolved(false).catch(reject); },
+      finally: function(handler){ return resolved(false).finally(handler); }
     };
-    var real = realBuilder;
-    var api = {};
-
-    function callReal(method, args) {
-      if (real && typeof real[method] === 'function') {
-        real = real[method].apply(real, args);
+    proxy = new Proxy(target, {
+      get: function(obj, prop){
+        if (prop in obj) return obj[prop];
+        return undefined;
       }
-    }
+    });
+    return proxy;
+  }
 
-    function chain(method, capture) {
-      api[method] = function () {
-        var args = Array.prototype.slice.call(arguments);
-        if (capture) capture.apply(null, args);
-        callReal(method, args);
-        return api;
+  function shouldMockTable(table){
+    var t = String(table || '').trim();
+    return [
+      'profiles',
+      'rf_acl',
+      'page_permissions',
+      'user_page_permissions',
+      'field_permissions',
+      'user_control_permissions',
+      'user_account_access',
+      'rf_documents'
+    ].indexOf(t) >= 0;
+  }
+
+  function patchClient(client){
+    if (!client || client.__rfFullOpenAccessPatched) return client;
+    client.__rfFullOpenAccessPatched = true;
+
+    try {
+      var originalFrom = client.from.bind(client);
+      client.from = function(table){
+        var t = String(table || '').trim();
+        if (shouldMockTable(t)) return makeMockQuery(t);
+        return originalFrom(table);
       };
-    }
+    } catch (_) {}
 
-    chain('select');
-    chain('eq', function (column, value) { state.filtersEq[String(column || '')] = value; });
-    chain('ilike', function (column, value) { state.filtersIlike[String(column || '')] = value; });
-    chain('in', function (column, value) { state.filtersIn[String(column || '')] = ensureArray(value); });
-    chain('limit');
-    chain('order');
-    chain('match', function (obj) {
-      obj = obj || {};
-      Object.keys(obj).forEach(function (key) { state.filtersEq[key] = obj[key]; });
-    });
-    ['neq','gt','gte','lt','lte','contains','containedBy','overlaps','textSearch','or','not','filter'].forEach(function (method) {
-      chain(method);
-    });
-
-    ['insert','update','upsert','delete'].forEach(function (method) {
-      api[method] = function () {
-        if (real && typeof real[method] === 'function') return real[method].apply(real, arguments);
-        return Promise.resolve(ok(null));
+    try {
+      var originalRpc = client.rpc ? client.rpc.bind(client) : null;
+      client.rpc = function(fn){
+        var name = String(fn || '').trim();
+        if (name === 'rf_current_role') return Promise.resolve({ data:'admin', error:null });
+        if (originalRpc) return originalRpc.apply(null, arguments);
+        return Promise.resolve({ data:null, error:null });
       };
-    });
+    } catch (_) {}
 
-    api.maybeSingle = function () {
-      state.mode = 'maybeSingle';
-      callReal('maybeSingle', []);
-      return Promise.resolve(shouldReturnSynthetic(state) ? finalizeSynthetic(state) : passthroughReal(real));
-    };
+    return client;
+  }
 
-    api.single = function () {
-      state.mode = 'single';
-      callReal('single', []);
-      return Promise.resolve(shouldReturnSynthetic(state) ? finalizeSynthetic(state) : passthroughReal(real));
+  function patchSupabaseApi(api){
+    if (!api || api.__rfFullOpenAccessPatchedApi) return api;
+    if (typeof api.createClient !== 'function') return api;
+    var originalCreateClient = api.createClient.bind(api);
+    api.createClient = function(){
+      return patchClient(originalCreateClient.apply(this, arguments));
     };
-
-    api.then = function (resolve, reject) {
-      return Promise.resolve(shouldReturnSynthetic(state) ? finalizeSynthetic(state) : passthroughReal(real)).then(resolve, reject);
-    };
-    api.catch = function (reject) {
-      return Promise.resolve(shouldReturnSynthetic(state) ? finalizeSynthetic(state) : passthroughReal(real)).catch(reject);
-    };
-    api.finally = function (callback) {
-      return Promise.resolve(shouldReturnSynthetic(state) ? finalizeSynthetic(state) : passthroughReal(real)).finally(callback);
-    };
+    api.__rfFullOpenAccessPatchedApi = true;
     return api;
   }
 
-  function unhideAll(root) {
-    var scope = root && root.querySelectorAll ? root : document;
+  function installSupabaseHook(){
     try {
-      var nodes = scope.querySelectorAll('[data-rf-permission],[data-rf-control],[data-rf-field],.hidden,[hidden],[aria-hidden="true"],[style*="display:none" i]');
-      for (var i = 0; i < nodes.length; i += 1) {
-        var el = nodes[i];
-        if (!el) continue;
-        el.hidden = false;
-        el.removeAttribute('hidden');
-        el.removeAttribute('aria-hidden');
-        if (el.style) {
-          el.style.display = '';
-          el.style.visibility = '';
-          el.style.opacity = '';
-          el.style.pointerEvents = '';
-        }
-        if ('disabled' in el) el.disabled = false;
-        if (el.matches && el.matches('input,textarea,select')) el.removeAttribute('readonly');
+      if (window.supabase && typeof window.supabase.createClient === 'function') {
+        patchSupabaseApi(window.supabase);
+        return;
+      }
+      var value = window.supabase;
+      Object.defineProperty(window, 'supabase', {
+        configurable:true,
+        enumerable:true,
+        get:function(){ return value; },
+        set:function(v){ value = patchSupabaseApi(v); }
+      });
+      if (value && typeof value.createClient === 'function') {
+        window.supabase = value;
       }
     } catch (_) {}
   }
 
-  function patchClient(client) {
-    if (!client || client.__rfOpenAccessClientPatched) return client;
-    if (typeof client.from === 'function') {
-      var originalFrom = client.from.bind(client);
-      client.from = function (table) {
-        var real = originalFrom(table);
-        if (!isSyntheticTable(table)) return real;
-        return buildInterceptedQuery(table, real);
+  function unhideEverything(root){
+    var scope = root && root.querySelectorAll ? root : document;
+    try {
+      scope.querySelectorAll('.hidden,[hidden],[aria-hidden="true"],[style*="display:none"]').forEach(function(el){
+        el.classList.remove('hidden');
+        el.hidden = false;
+        el.removeAttribute('hidden');
+        el.removeAttribute('aria-hidden');
+        if (el.style && String(el.style.display || '').toLowerCase() === 'none') el.style.display = '';
+        if (el.style && String(el.style.visibility || '').toLowerCase() === 'hidden') el.style.visibility = '';
+      });
+    } catch (_) {}
+  }
+
+  function patchGlobals(){
+    installSupabaseHook();
+    window.RF_ACL = window.RF_ACL || {};
+    window.RF_ACL.resolveRole = async function(){ return { role:'admin', source:'forced open access' }; };
+    window.RF_ACL.resolvePageAccess = async function(pageKey){
+      return { allowed:true, role:'admin', source:'forced open access', permissions:Object.assign({}, ALL_PERMS), page_key:String(pageKey || '').trim() };
+    };
+    window.RF_ACL.requirePageAccess = async function(pageKey){
+      return { allowed:true, role:'admin', source:'forced open access', permissions:Object.assign({}, ALL_PERMS), page_key:String(pageKey || '').trim() };
+    };
+    window.RF_ACL.resolveControlAccess = async function(pageKey, controlKey){
+      return { allowed:true, control_key:String(controlKey || '').trim(), can_view:true, can_use:true, can_edit:true, source:'forced open access' };
+    };
+    window.RF_ACL.canUseControl = async function(){ return { allowed:true, visible:true, editable:true, source:'forced open access' }; };
+    window.RF_ACL.applyDomPermissions = async function(pageKey, root){ unhideEverything(root); return { allowed:true, role:'admin', permissions:Object.assign({}, ALL_PERMS), source:'forced open access' }; };
+    window.RF_ACL.resolveUserBanState = async function(){ return { is_active:true, is_banned:false, ban_reason:null, note:null }; };
+
+    if (window.ERPAuth) {
+      var authApi = window.ERPAuth;
+      authApi.resolveUserRole = async function(){ return 'admin'; };
+      authApi.getAccountStatus = async function(){ return { is_active:true, is_banned:false, ban_reason:null, note:null }; };
+      authApi.roleLabel = function(){ return 'Admin'; };
+      authApi.roleClass = function(){ return 'admin'; };
+      authApi.canAccess = function(){ return true; };
+      authApi.getPageAccess = async function(pageKey, options){
+        var user = options && options.user ? options.user : null;
+        if (!user && authApi.getSession) {
+          try {
+            var session = await authApi.getSession();
+            user = session && session.user ? session.user : null;
+          } catch (_) { user = null; }
+        }
+        return { allowed: !!user, user:user, role:'admin', permissions:Object.assign({}, ALL_PERMS), source:'forced open access' };
+      };
+      authApi.getCurrentUserWithRole = async function(){
+        if (!authApi.getSession) return null;
+        var session = await authApi.getSession();
+        if (!session || !session.user) return null;
+        try {
+          authApi.persistUserState && authApi.persistUserState(session.user, 'admin');
+        } catch (_) {}
+        return { session:session, user:session.user, role:'admin', accountStatus:{ is_active:true, is_banned:false, note:'', ban_reason:'' } };
       };
     }
-    client.__rfOpenAccessClientPatched = true;
-    return client;
+
+    unhideEverything(document);
   }
 
-  if (window.supabase && typeof window.supabase.createClient === 'function' && !window.supabase.__rfOpenAccessCreateClientPatched) {
-    var originalCreateClient = window.supabase.createClient.bind(window.supabase);
-    window.supabase.createClient = function () {
-      return patchClient(originalCreateClient.apply(this, arguments));
-    };
-    window.supabase.__rfOpenAccessCreateClientPatched = true;
-  }
-
-  if (typeof window.createRfSupabaseClient === 'function' && !window.__rfOpenAccessRfCreateClientPatched) {
-    var originalRfCreateClient = window.createRfSupabaseClient;
-    window.createRfSupabaseClient = function () {
-      return patchClient(originalRfCreateClient.apply(this, arguments));
-    };
-    window.__rfOpenAccessRfCreateClientPatched = true;
-  }
-
-  try {
-    if (window.__RF_SUPABASE_SINGLETON__ && window.__RF_SUPABASE_SINGLETON__.client) {
-      patchClient(window.__RF_SUPABASE_SINGLETON__.client);
-    }
-  } catch (_) {}
-
-  var RF = window.RF_ACL = window.RF_ACL || {};
-  RF.resolveRole = async function(){ return 'admin'; };
-  RF.resolvePageAccess = async function(){ return { allowed:true, role:'admin', source:'open access', permissions:Object.assign({}, ALL_PERMS) }; };
-  RF.requirePageAccess = async function(){ return { allowed:true, role:'admin', source:'open access', permissions:Object.assign({}, ALL_PERMS) }; };
-  RF.resolveControlAccess = async function(pageKey, controlKey){
-    return { allowed:true, control_key:String(controlKey || ''), can_view:true, can_use:true, can_edit:true, is_visible:true, is_enabled:true, is_editable:true, source:'open access' };
-  };
-  RF.canUseControl = async function(){ return { allowed:true, visible:true, editable:true, source:'open access' }; };
-  RF.resolveUserBanState = async function(){ return { is_active:true, is_banned:false, ban_reason:null, note:null }; };
-  RF.readDashboardAclMirror = async function(){ return {}; };
-  RF.applyDomPermissions = async function(pageKey, root){ unhideAll(root); return { allowed:true, role:'admin', source:'open access', permissions:Object.assign({}, ALL_PERMS) }; };
-
-  window.__RF_ACL_AUTO_BIND__ = true;
+  patchGlobals();
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', function(){ unhideAll(document); }, { once:true });
+    document.addEventListener('DOMContentLoaded', function(){ patchGlobals(); unhideEverything(document); }, { once:true });
   } else {
-    unhideAll(document);
+    unhideEverything(document);
   }
   try {
-    var observer = new MutationObserver(function(){ unhideAll(document); });
-    observer.observe(document.documentElement, { childList:true, subtree:true, attributes:true });
+    var mo = new MutationObserver(function(){ unhideEverything(document); });
+    mo.observe(document.documentElement || document.body, { childList:true, subtree:true, attributes:true, attributeFilter:['hidden','style','class','aria-hidden'] });
   } catch (_) {}
 })(window);

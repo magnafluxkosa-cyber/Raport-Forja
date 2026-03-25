@@ -133,8 +133,8 @@
       let currentPanel = null;
       const currentInnerPanels = { subForja:null };
 
-      const ADMIN_ONLY_KEYS = new Set([]);
-      const ADMIN_ONLY_HREFS = new Set([]);
+      const ADMIN_ONLY_KEYS = new Set(['helper-data','helper-acl']);
+      const ADMIN_ONLY_HREFS = new Set(['helper-data.html','helper-acl.html']);
       const ID_STORAGE_KEYS = ['rf_display_id','rf_login_id','rf_user_id','rf_user_email','rf_email'];
       const ROLE_STORAGE_KEYS = ['rf_login_role','rf_role','rf_user_role','rf_cached_role'];
 
@@ -602,7 +602,7 @@
       }
 
       function enforceAdminOnlyButtons(){
-        const show = !!currentUser;
+        const show = !!currentUser && isCurrentAdmin();
         [itemHelperData, itemAcl].forEach(item => {
           if (!item) return;
           item.classList.toggle('hidden', !show);
@@ -1042,33 +1042,3 @@
       else boot();
     })();
   
-
-/* INDEX OPEN ACCESS OVERRIDE */
-(function(){
-  'use strict';
-  function unhide(){
-    try {
-      document.querySelectorAll('.page-item,.group-item,.subbtn,.miniLink,.directLink,.menuBtn,.subpanel,.item,.innerTrigger').forEach(function(el){
-        el.classList.remove('hidden');
-        el.classList.remove('disabled');
-        if (el.style) {
-          if (el.id === 'itemAcl') {
-            el.style.display = '';
-          } else if (el.classList.contains('page-item') || el.classList.contains('group-item') || el.classList.contains('subpanel') || el.classList.contains('item')) {
-            el.style.display = '';
-          }
-          el.style.pointerEvents = '';
-          el.style.visibility = '';
-          el.style.opacity = '';
-        }
-        el.removeAttribute('aria-disabled');
-      });
-    } catch(_) {}
-  }
-  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', unhide, { once:true });
-  else unhide();
-  try {
-    var mo = new MutationObserver(unhide);
-    mo.observe(document.documentElement, { childList:true, subtree:true, attributes:true });
-  } catch(_) {}
-})();

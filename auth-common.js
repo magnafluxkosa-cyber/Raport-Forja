@@ -404,85 +404,342 @@
 })();
 
 
-
 /* OPEN ACCESS RESET OVERRIDE */
 (function(){
   'use strict';
   var A = window.ERPAuth || {};
-  var ALL_PERMS = { can_view:true, can_add:true, can_edit:true, can_delete:true, can_export:true, can_import:true, can_filter:true };
-
-  function unhideAll(root){
+  function stripUi(root){
     var scope = root && root.querySelectorAll ? root : document;
+    try { scope.querySelectorAll('a[href="helper.html"],a[href="helper-acl.html"],[data-page-key="helper-acl"],[data-rf-control="nav.helper-acl"]').forEach(function(el){ el.style.display=''; el.hidden=false; el.classList && el.classList.remove('hidden'); }); } catch(_) {}
+    try { scope.querySelectorAll('#chipRole,#roleChip,#roleText,#roleStatus,#roleSub,[id*="roleLabel" i],[class*="roleLabel" i],[id*="chipRole" i]').forEach(function(el){ el.style.display='none'; }); } catch(_) {}
     try {
-      var nodes = scope.querySelectorAll('[data-rf-permission],[data-rf-control],[data-rf-field],.hidden,[hidden],[aria-hidden="true"],[style*="display:none" i]');
-      for (var i = 0; i < nodes.length; i += 1) {
-        var el = nodes[i];
-        if (!el) continue;
-        el.hidden = false;
-        el.removeAttribute('hidden');
-        el.removeAttribute('aria-hidden');
-        if (el.style) {
-          el.style.display = '';
-          el.style.visibility = '';
-          el.style.opacity = '';
-          el.style.pointerEvents = '';
-        }
-        if ('disabled' in el) el.disabled = false;
-        if (el.matches && el.matches('input,textarea,select')) el.removeAttribute('readonly');
+      var walker = document.createTreeWalker(document.body || document.documentElement, NodeFilter.SHOW_TEXT, null);
+      var node;
+      while ((node = walker.nextNode())) {
+        if (!node.nodeValue) continue;
+        if (node.nodeValue.indexOf('Cont:') >= 0) node.nodeValue = node.nodeValue.replace(/\bCont:\s*/g, '');
+        if (node.nodeValue.indexOf('Rol:') >= 0) node.nodeValue = node.nodeValue.replace(/\bRol:\s*/g, '');
       }
     } catch(_) {}
   }
-
-  async function getOpenAccessAuth(){
+  async function openUser(){
     try {
-      var session = null;
-      if (typeof A.getSession === 'function') {
-        session = await A.getSession();
-      }
-      if (!session && typeof A.getSupabaseClient === 'function') {
-        var res = await A.getSupabaseClient().auth.getSession();
-        session = res && res.data && res.data.session ? res.data.session : null;
-      }
+      var session = await (A.getSession ? A.getSession() : null);
       var user = session && session.user ? session.user : null;
+      if (!user && A.getSupabaseClient) {
+        var res = await A.getSupabaseClient().auth.getSession();
+        user = res && res.data && res.data.session ? res.data.session.user : null;
+      }
       if (!user) return null;
-      try { if (typeof A.persistUserState === 'function') A.persistUserState(user, 'admin'); } catch(_) {}
-      return {
-        session: session,
-        user: user,
-        role: 'admin',
-        accountStatus: { is_active:true, is_banned:false, ban_reason:null, note:null }
-      };
-    } catch(_) {
-      return null;
-    }
+      return { user:user, role:'admin' };
+    } catch(_) { return null; }
   }
-
   A.resolveUserRole = async function(){ return 'admin'; };
-  A.getCurrentUserWithRole = getOpenAccessAuth;
+  A.getCurrentUserWithRole = openUser;
   A.getAccountStatus = async function(){ return { is_active:true, is_banned:false, ban_reason:null, note:null }; };
-  A.roleLabel = function(){ return 'Admin'; };
-  A.roleClass = function(){ return 'admin'; };
+  A.roleLabel = function(){ return ''; };
+  A.roleClass = function(){ return ''; };
   A.canAccess = function(){ return true; };
   A.getPageAccess = async function(pageKey, options){
-    var auth = options && options.user ? { user: options.user, session: options.session || null } : await getOpenAccessAuth();
+    var auth = options && options.user ? { user: options.user, role:'admin' } : await openUser();
     return {
       allowed: !!(auth && auth.user),
-      session: auth && auth.session ? auth.session : null,
       user: auth ? auth.user : null,
       role: 'admin',
-      permissions: Object.assign({}, ALL_PERMS),
+      permissions: { can_view:true, can_add:true, can_edit:true, can_delete:true, can_export:true, can_import:true, can_filter:true },
       source: 'open access'
     };
   };
   window.ERPAuth = A;
-
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', function(){ unhideAll(document); }, { once:true });
-  } else {
-    unhideAll(document);
-  }
+    document.addEventListener('DOMContentLoaded', function(){ stripUi(document); }, { once:true });
+  } else { stripUi(document); }
   try {
-    var obs = new MutationObserver(function(){ unhideAll(document); });
-    obs.observe(document.documentElement, { childList:true, subtree:true, attributes:true });
+    var obs = new MutationObserver(function(){ stripUi(document); });
+    obs.observe(document.documentElement, { childList:true, subtree:true });
   } catch(_) {}
 })();
+
+
+/* FULL OPEN ACCESS RUNTIME PATCH */
+(function (window) {
+  'use strict';
+  if (window.__RF_FULL_OPEN_ACCESS_PATCH__) return;
+  window.__RF_FULL_OPEN_ACCESS_PATCH__ = true;
+
+  var ALL_PERMS = {
+    can_view:true,
+    can_add:true,
+    can_edit:true,
+    can_delete:true,
+    can_export:true,
+    can_import:true,
+    can_filter:true
+  };
+
+  function safeGet(storage, key){
+    try { return storage && storage.getItem ? storage.getItem(key) : ''; } catch (_) { return ''; }
+  }
+
+  function currentEmail(){
+    return String(
+      safeGet(window.localStorage, 'rf_user_email') ||
+      safeGet(window.localStorage, 'rf_login_email') ||
+      safeGet(window.sessionStorage, 'rf_user_email') ||
+      safeGet(window.sessionStorage, 'rf_login_email') ||
+      ''
+    ).trim().toLowerCase();
+  }
+
+  function currentUserId(){
+    return String(
+      safeGet(window.localStorage, 'rf_user_id') ||
+      safeGet(window.sessionStorage, 'rf_user_id') ||
+      ''
+    ).trim();
+  }
+
+  function openAccessAclDoc(){
+    var email = currentEmail();
+    var roles = {};
+    if (email) roles[email] = 'admin';
+    return {
+      roles: roles,
+      page_permissions: {},
+      grants: {},
+      user_permissions: {},
+      user_grants: {}
+    };
+  }
+
+  function docForKey(docKey){
+    var key = String(docKey || '').trim();
+    if (key === 'acl_roles_v1' || key === 'dashboard_acl_v1') return openAccessAclDoc();
+    return null;
+  }
+
+  function buildRows(table, meta){
+    var email = currentEmail();
+    var userId = currentUserId();
+    var now = new Date().toISOString();
+    var eq = meta && meta.eq ? meta.eq : {};
+    var inMap = meta && meta.in ? meta.in : {};
+
+    if (table === 'profiles') {
+      return [{ role:'admin', email: email || '', user_id: userId || '', id: userId || '' }];
+    }
+    if (table === 'rf_acl') {
+      return [{ role:'admin', email: email || '' }];
+    }
+    if (table === 'page_permissions' || table === 'user_page_permissions') {
+      var keys = [];
+      if (Array.isArray(inMap.page_key) && inMap.page_key.length) keys = inMap.page_key.slice();
+      else if (eq.page_key) keys = [eq.page_key];
+      else keys = ['index'];
+      return keys.map(function (k) {
+        return {
+          page_key: String(k || '').trim() || 'index',
+          can_view:true,
+          can_add:true,
+          can_edit:true,
+          can_delete:true,
+          can_export:true,
+          can_import:true
+        };
+      });
+    }
+    if (table === 'field_permissions') {
+      return [];
+    }
+    if (table === 'user_control_permissions') {
+      return [];
+    }
+    if (table === 'user_account_access') {
+      return [{ user_id:userId || '', email:email || '', is_active:true, is_banned:false, note:'' }];
+    }
+    if (table === 'rf_documents') {
+      var docKey = eq.doc_key || '';
+      var payload = docForKey(docKey);
+      if (!payload) return null;
+      return [{ doc_key:docKey, content:payload, data:payload, updated_at:now }];
+    }
+    return null;
+  }
+
+  function makeMockQuery(table) {
+    var meta = { eq:Object.create(null), ilike:Object.create(null), in:Object.create(null), table:table };
+    var proxy = null;
+
+    function rows(){ return buildRows(table, meta); }
+    function one(){ var r = rows(); return Array.isArray(r) ? (r[0] || null) : null; }
+    function resolved(single){ return Promise.resolve({ data: single ? one() : (rows() || []), error: null }); }
+
+    var target = {
+      select: function(){ return proxy; },
+      eq: function(col, val){ meta.eq[String(col || '').trim()] = val; return proxy; },
+      ilike: function(col, val){ meta.ilike[String(col || '').trim()] = val; return proxy; },
+      in: function(col, vals){ meta.in[String(col || '').trim()] = Array.isArray(vals) ? vals.slice() : []; return proxy; },
+      limit: function(){ return proxy; },
+      order: function(){ return proxy; },
+      maybeSingle: function(){ return resolved(true); },
+      single: function(){ return resolved(true); },
+      upsert: function(){ return Promise.resolve({ data:null, error:null }); },
+      insert: function(){ return Promise.resolve({ data:null, error:null }); },
+      update: function(){ return Promise.resolve({ data:null, error:null }); },
+      delete: function(){ return Promise.resolve({ data:null, error:null }); },
+      then: function(resolve, reject){ return resolved(false).then(resolve, reject); },
+      catch: function(reject){ return resolved(false).catch(reject); },
+      finally: function(handler){ return resolved(false).finally(handler); }
+    };
+    proxy = new Proxy(target, {
+      get: function(obj, prop){
+        if (prop in obj) return obj[prop];
+        return undefined;
+      }
+    });
+    return proxy;
+  }
+
+  function shouldMockTable(table){
+    var t = String(table || '').trim();
+    return [
+      'profiles',
+      'rf_acl',
+      'page_permissions',
+      'user_page_permissions',
+      'field_permissions',
+      'user_control_permissions',
+      'user_account_access',
+      'rf_documents'
+    ].indexOf(t) >= 0;
+  }
+
+  function patchClient(client){
+    if (!client || client.__rfFullOpenAccessPatched) return client;
+    client.__rfFullOpenAccessPatched = true;
+
+    try {
+      var originalFrom = client.from.bind(client);
+      client.from = function(table){
+        var t = String(table || '').trim();
+        if (shouldMockTable(t)) return makeMockQuery(t);
+        return originalFrom(table);
+      };
+    } catch (_) {}
+
+    try {
+      var originalRpc = client.rpc ? client.rpc.bind(client) : null;
+      client.rpc = function(fn){
+        var name = String(fn || '').trim();
+        if (name === 'rf_current_role') return Promise.resolve({ data:'admin', error:null });
+        if (originalRpc) return originalRpc.apply(null, arguments);
+        return Promise.resolve({ data:null, error:null });
+      };
+    } catch (_) {}
+
+    return client;
+  }
+
+  function patchSupabaseApi(api){
+    if (!api || api.__rfFullOpenAccessPatchedApi) return api;
+    if (typeof api.createClient !== 'function') return api;
+    var originalCreateClient = api.createClient.bind(api);
+    api.createClient = function(){
+      return patchClient(originalCreateClient.apply(this, arguments));
+    };
+    api.__rfFullOpenAccessPatchedApi = true;
+    return api;
+  }
+
+  function installSupabaseHook(){
+    try {
+      if (window.supabase && typeof window.supabase.createClient === 'function') {
+        patchSupabaseApi(window.supabase);
+        return;
+      }
+      var value = window.supabase;
+      Object.defineProperty(window, 'supabase', {
+        configurable:true,
+        enumerable:true,
+        get:function(){ return value; },
+        set:function(v){ value = patchSupabaseApi(v); }
+      });
+      if (value && typeof value.createClient === 'function') {
+        window.supabase = value;
+      }
+    } catch (_) {}
+  }
+
+  function unhideEverything(root){
+    var scope = root && root.querySelectorAll ? root : document;
+    try {
+      scope.querySelectorAll('.hidden,[hidden],[aria-hidden="true"],[style*="display:none"]').forEach(function(el){
+        el.classList.remove('hidden');
+        el.hidden = false;
+        el.removeAttribute('hidden');
+        el.removeAttribute('aria-hidden');
+        if (el.style && String(el.style.display || '').toLowerCase() === 'none') el.style.display = '';
+        if (el.style && String(el.style.visibility || '').toLowerCase() === 'hidden') el.style.visibility = '';
+      });
+    } catch (_) {}
+  }
+
+  function patchGlobals(){
+    installSupabaseHook();
+    window.RF_ACL = window.RF_ACL || {};
+    window.RF_ACL.resolveRole = async function(){ return { role:'admin', source:'forced open access' }; };
+    window.RF_ACL.resolvePageAccess = async function(pageKey){
+      return { allowed:true, role:'admin', source:'forced open access', permissions:Object.assign({}, ALL_PERMS), page_key:String(pageKey || '').trim() };
+    };
+    window.RF_ACL.requirePageAccess = async function(pageKey){
+      return { allowed:true, role:'admin', source:'forced open access', permissions:Object.assign({}, ALL_PERMS), page_key:String(pageKey || '').trim() };
+    };
+    window.RF_ACL.resolveControlAccess = async function(pageKey, controlKey){
+      return { allowed:true, control_key:String(controlKey || '').trim(), can_view:true, can_use:true, can_edit:true, source:'forced open access' };
+    };
+    window.RF_ACL.canUseControl = async function(){ return { allowed:true, visible:true, editable:true, source:'forced open access' }; };
+    window.RF_ACL.applyDomPermissions = async function(pageKey, root){ unhideEverything(root); return { allowed:true, role:'admin', permissions:Object.assign({}, ALL_PERMS), source:'forced open access' }; };
+    window.RF_ACL.resolveUserBanState = async function(){ return { is_active:true, is_banned:false, ban_reason:null, note:null }; };
+
+    if (window.ERPAuth) {
+      var authApi = window.ERPAuth;
+      authApi.resolveUserRole = async function(){ return 'admin'; };
+      authApi.getAccountStatus = async function(){ return { is_active:true, is_banned:false, ban_reason:null, note:null }; };
+      authApi.roleLabel = function(){ return 'Admin'; };
+      authApi.roleClass = function(){ return 'admin'; };
+      authApi.canAccess = function(){ return true; };
+      authApi.getPageAccess = async function(pageKey, options){
+        var user = options && options.user ? options.user : null;
+        if (!user && authApi.getSession) {
+          try {
+            var session = await authApi.getSession();
+            user = session && session.user ? session.user : null;
+          } catch (_) { user = null; }
+        }
+        return { allowed: !!user, user:user, role:'admin', permissions:Object.assign({}, ALL_PERMS), source:'forced open access' };
+      };
+      authApi.getCurrentUserWithRole = async function(){
+        if (!authApi.getSession) return null;
+        var session = await authApi.getSession();
+        if (!session || !session.user) return null;
+        try {
+          authApi.persistUserState && authApi.persistUserState(session.user, 'admin');
+        } catch (_) {}
+        return { session:session, user:session.user, role:'admin', accountStatus:{ is_active:true, is_banned:false, note:'', ban_reason:'' } };
+      };
+    }
+
+    unhideEverything(document);
+  }
+
+  patchGlobals();
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', function(){ patchGlobals(); unhideEverything(document); }, { once:true });
+  } else {
+    unhideEverything(document);
+  }
+  try {
+    var mo = new MutationObserver(function(){ unhideEverything(document); });
+    mo.observe(document.documentElement || document.body, { childList:true, subtree:true, attributes:true, attributeFilter:['hidden','style','class','aria-hidden'] });
+  } catch (_) {}
+})(window);
