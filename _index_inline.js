@@ -222,59 +222,8 @@
       }
 
       async function resolveRole(user){
-        const email = (user?.email || '').toLowerCase();
-        if (email && email === cfg.adminEmail) {
-          return { role:'admin', source:'admin hardcoded' };
-        }
-
-        const metadataRole = normalizeRoleName(
-          user?.app_metadata?.role ||
-          user?.user_metadata?.role ||
-          user?.role || ''
-        );
-        if (metadataRole) {
-          return { role:metadataRole, source:'user metadata' };
-        }
-
-        if (sb && user?.id) {
-          try {
-            const a = await sb.from('profiles').select('role').eq('user_id', user.id).maybeSingle();
-            if (!a.error && a.data?.role) return { role:normalizeRoleName(a.data.role), source:'profiles.user_id' };
-          } catch(_){ }
-
-          try {
-            const b = await sb.from('profiles').select('role').eq('id', user.id).maybeSingle();
-            if (!b.error && b.data?.role) return { role:normalizeRoleName(b.data.role), source:'profiles.id' };
-          } catch(_){ }
-
-          if (email) {
-            try {
-              const c = await sb.from('profiles').select('role').eq('email', email).maybeSingle();
-              if (!c.error && c.data?.role) return { role:normalizeRoleName(c.data.role), source:'profiles.email' };
-            } catch(_){ }
-
-            try {
-              const d = await sb.from('rf_acl').select('role').eq('email', email).maybeSingle();
-              if (!d.error && d.data?.role) return { role:normalizeRoleName(d.data.role), source:'rf_acl' };
-            } catch(_){ }
-          }
-        }
-
-        try {
-          const mirror = await readRoleMirror();
-          const roles = mirror && mirror.roles && typeof mirror.roles === 'object' ? mirror.roles : null;
-          if (roles && email && roles[email]) {
-            return { role:normalizeRoleName(roles[email]), source:'acl_roles_v1' };
-          }
-        } catch (_) {}
-
-        const storedRole = getStoredRole();
-        if (storedRole) {
-          return { role:storedRole, source:'stored role' };
-        }
-
-        return { role:'viewer', source:'fallback viewer' };
-      }
+      return user ? 'admin' : 'viewer';
+    }
 
       async function loadUserPermissionMap(user){
         if (!sb || !user || !(window.RF_ACL && typeof window.RF_ACL.loadUserPermissionMap === 'function')) return null;
