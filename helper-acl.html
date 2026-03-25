@@ -77,20 +77,32 @@
                 <div class="row"><span class="chip" id="chipSelected">Niciun cont selectat</span><span class="chip" id="chipRole">Rol: —</span></div>
                 <div class="grid2">
                   <div>
+                    <label for="baseRole">Rol bază</label>
+                    <select id="baseRole">
+                      <option value="viewer">Viewer</option>
+                      <option value="operator">Operator</option>
+                      <option value="editor">Editor</option>
+                      <option value="admin">Admin</option>
+                    </select>
+                  </div>
+                  <div>
                     <label>Status activ</label>
                     <label class="switch"><input id="accActive" type="checkbox" checked> Cont activ</label>
                   </div>
+                </div>
+                <div class="grid2">
                   <div>
                     <label>Blocare completă</label>
                     <label class="switch"><input id="accBanned" type="checkbox"> Cont blocat (ban)</label>
                   </div>
+                  <div class="hint" id="roleHint" style="min-height:42px;display:flex;align-items:center">Rolul se salvează compatibil în profiles și rf_acl.</div>
                 </div>
                 <div>
                   <label for="accNote">Observație</label>
                   <textarea id="accNote" placeholder="Mesaj afișat dacă blochezi contul"></textarea>
                 </div>
                 <div class="row">
-                  <button id="btnSaveAccount" class="btn" type="button">Salvează status cont</button>
+                  <button id="btnSaveAccount" class="btn" type="button">Salvează cont</button>
                   <button id="btnAllowAll" class="btn warn" type="button">Acces total</button>
                   <button id="btnDenyAll" class="btn secondary" type="button">Fără acces</button>
                 </div>
@@ -158,16 +170,22 @@
   <script>
   (function(){
     'use strict';
+
     const $ = (s,r=document)=>r.querySelector(s);
     const $$ = (s,r=document)=>Array.from(r.querySelectorAll(s));
     const client = window.ERPAuth.getSupabaseClient();
-    const PAGE_LIST = (window.RF_ACL && Array.isArray(window.RF_ACL.PAGE_LIST) ? window.RF_ACL.PAGE_LIST : []).map(x => ({ page_key:String(x.page_key||'').trim(), page_name:String(x.page_name||x.page_key||'').trim() })).filter(x => x.page_key);
+    const PAGE_LIST = (window.RF_ACL && Array.isArray(window.RF_ACL.PAGE_LIST) ? window.RF_ACL.PAGE_LIST : [])
+      .map(x => ({ page_key:String(x.page_key||'').trim(), page_name:String(x.page_name||x.page_key||'').trim() }))
+      .filter(x => x.page_key);
+    const ADMIN_EMAIL = String(window.RF_CONFIG?.ADMIN_EMAIL || 'forja.editor@gmail.com').trim().toLowerCase();
     const state = { auth:null, users:[], filteredUsers:[], selected:null, pagePerms:new Map(), controlPerms:new Map() };
 
     const userList = $('#userList');
     const statusBox = $('#statusBox');
     const chipSelected = $('#chipSelected');
     const chipRole = $('#chipRole');
+    const baseRole = $('#baseRole');
+    const roleHint = $('#roleHint');
     const accActive = $('#accActive');
     const accBanned = $('#accBanned');
     const accNote = $('#accNote');
@@ -181,11 +199,37 @@
     function showStatus(msg, ok){ statusBox.textContent = msg; statusBox.className = 'status show ' + (ok ? 'ok' : 'err'); }
     function clearStatus(){ statusBox.className='status'; statusBox.textContent=''; }
     function normalizeEmail(v){ return String(v||'').trim().toLowerCase(); }
-    function esc(v){ return String(v||'').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])); }
+    function normalizeRole(v){
+      const clean = String(v||'').trim().toLowerCase();
+      return ['admin','editor','operator','viewer'].includes(clean) ? clean : 'viewer';
+    }
+    function esc(v){ return String(v==null?'':v).replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])); }
     function isAdmin(){ return state.auth && String(state.auth.role||'').toLowerCase()==='admin'; }
     function selectedUserId(){ return state.selected && String(state.selected.user_id||state.selected.id||'').trim(); }
     function selectedEmail(){ return normalizeEmail(state.selected && state.selected.email); }
-    function pageLabel(key){ const row = PAGE_LIST.find(x => x.page_key===key); return row ? row.page_name : key; }
+    function selectedKey(){
+      const uid = selectedUserId();
+      const email = selectedEmail();
+      return email || (uid ? ('uid:' + uid) : '');
+    }
+    function displayUserText(user){
+      if (!user) return 'Niciun cont selectat';
+      return user.email || user.user_id || 'Cont fără identificator';
+    }
+    function isProtectedAdminEmail(email){ return normalizeEmail(email) === ADMIN_EMAIL; }
+
+    function updateRoleUi(){
+      const email = selectedEmail();
+      const locked = isProtectedAdminEmail(email);
+      if (locked) {
+        baseRole.value = 'admin';
+        baseRole.disabled = true;
+        roleHint.textContent = 'Contul admin principal rămâne admin și nu poate fi coborât din panou.';
+      } else {
+        baseRole.disabled = false;
+        roleHint.textContent = 'Rolul se salvează compatibil în profiles și rf_acl.';
+      }
+    }
 
     async function requireAdmin(){
       const auth = await window.ERPAuth.requireAuth({ redirectToLogin:true, next:'helper-acl.html' });
@@ -199,51 +243,120 @@
       return true;
     }
 
+    function userIdentityKey(row){
+      const email = normalizeEmail(row && row.email);
+      const uid = String(row && (row.user_id || row.id) || '').trim();
+      return email || (uid ? ('uid:' + uid) : '');
+    }
+
+    function mergeUser(map, raw, source){
+      const email = normalizeEmail(raw && raw.email);
+      const user_id = String(raw && (raw.user_id || raw.id) || '').trim();
+      const key = email || (user_id ? ('uid:' + user_id) : '');
+      if (!key) return;
+      const current = map.get(key) || { email:'', user_id:'', role:'viewer', sources:[] };
+      if (email && !current.email) current.email = email;
+      if (user_id && !current.user_id) current.user_id = user_id;
+      const role = normalizeRole(raw && raw.role);
+      const rank = { viewer:1, operator:2, editor:3, admin:4 };
+      if (role && rank[role] >= rank[normalizeRole(current.role)]) current.role = role;
+      if (source && !current.sources.includes(source)) current.sources.push(source);
+      if (current.email && isProtectedAdminEmail(current.email)) current.role = 'admin';
+      map.set(key, current);
+    }
+
     async function loadUsers(){
       const map = new Map();
-      try {
-        const p = await client.from('profiles').select('user_id,email,role').order('email');
-        if (!p.error && Array.isArray(p.data)) {
-          p.data.forEach(row => {
-            const email = normalizeEmail(row.email); if (!email) return;
-            map.set(email, { user_id: row.user_id, email, role: row.role || 'viewer' });
-          });
+      const readers = [
+        async () => {
+          const r = await client.from('profiles').select('user_id,email,role').order('email');
+          if (!r.error && Array.isArray(r.data)) r.data.forEach(row => mergeUser(map, row, 'profiles'));
+        },
+        async () => {
+          const r = await client.from('rf_acl').select('email,role').order('email');
+          if (!r.error && Array.isArray(r.data)) r.data.forEach(row => mergeUser(map, row, 'rf_acl'));
+        },
+        async () => {
+          const r = await client.from('user_account_access').select('user_id,email').order('email');
+          if (!r.error && Array.isArray(r.data)) r.data.forEach(row => mergeUser(map, row, 'user_account_access'));
+        },
+        async () => {
+          const r = await client.from('user_page_permissions').select('user_id,email').order('email');
+          if (!r.error && Array.isArray(r.data)) r.data.forEach(row => mergeUser(map, row, 'user_page_permissions'));
+        },
+        async () => {
+          const r = await client.from('user_control_permissions').select('user_id,email').order('email');
+          if (!r.error && Array.isArray(r.data)) r.data.forEach(row => mergeUser(map, row, 'user_control_permissions'));
         }
-      } catch(_) {}
-      try {
-        const a = await client.from('rf_acl').select('email,role').order('email');
-        if (!a.error && Array.isArray(a.data)) {
-          a.data.forEach(row => {
-            const email = normalizeEmail(row.email); if (!email) return;
-            const prev = map.get(email) || { user_id:'', email, role:'viewer' };
-            if (!prev.role || prev.role === 'viewer') prev.role = row.role || prev.role;
-            map.set(email, prev);
-          });
-        }
-      } catch(_) {}
-      state.users = Array.from(map.values()).sort((a,b)=>a.email.localeCompare(b.email,'ro'));
+      ];
+      for (const read of readers) {
+        try { await read(); } catch(_) {}
+      }
+      state.users = Array.from(map.values()).sort((a,b) => displayUserText(a).localeCompare(displayUserText(b), 'ro'));
       state.filteredUsers = state.users.slice();
       renderUsers();
-      if (!state.selected && state.filteredUsers.length) { await selectUser(state.filteredUsers[0].email); }
+      if (!state.selected && state.filteredUsers.length) {
+        await selectUserByKey(userIdentityKey(state.filteredUsers[0]));
+      } else if (state.selected) {
+        const refreshed = state.users.find(u => userIdentityKey(u) === selectedKey());
+        if (refreshed) state.selected = refreshed;
+        renderUsers();
+      }
     }
 
     function renderUsers(){
       const q = normalizeEmail(userSearch.value);
-      state.filteredUsers = state.users.filter(u => !q || u.email.includes(q));
-      userList.innerHTML = state.filteredUsers.map(u => `
-        <div class="user ${state.selected && normalizeEmail(state.selected.email)===u.email ? 'active':''}" data-email="${esc(u.email)}">
-          <div class="e">${esc(u.email)}</div>
-          <div class="m">Rol bază: ${esc(u.role||'viewer')}</div>
-        </div>`).join('') || '<div class="muted">Nu există utilizatori.</div>';
-      $$('.user', userList).forEach(el => el.addEventListener('click', ()=> selectUser(el.dataset.email)));
+      state.filteredUsers = state.users.filter(u => {
+        const searchBase = [u.email, u.user_id, u.role, (u.sources||[]).join(' ')].filter(Boolean).join(' ').toLowerCase();
+        return !q || searchBase.includes(q);
+      });
+      userList.innerHTML = state.filteredUsers.map(u => {
+        const active = state.selected && userIdentityKey(state.selected) === userIdentityKey(u);
+        const secondary = [];
+        secondary.push('Rol bază: ' + (u.role || 'viewer'));
+        if (u.user_id) secondary.push('user_id ok');
+        if (u.sources && u.sources.length) secondary.push(u.sources.join(' • '));
+        return `
+          <div class="user ${active ? 'active' : ''}" data-key="${esc(userIdentityKey(u))}">
+            <div class="e">${esc(displayUserText(u))}</div>
+            <div class="m">${esc(secondary.join(' | '))}</div>
+          </div>`;
+      }).join('') || '<div class="muted">Nu există utilizatori vizibili în tabelele ACL.</div>';
+      $$('.user', userList).forEach(el => el.addEventListener('click', ()=> selectUserByKey(el.dataset.key)));
+    }
+
+    async function loadResolvedRole(){
+      const uid = selectedUserId();
+      const email = selectedEmail();
+      let role = normalizeRole(state.selected && state.selected.role);
+      if (email && isProtectedAdminEmail(email)) role = 'admin';
+      try {
+        if (uid) {
+          const p = await client.from('profiles').select('role').eq('user_id', uid).maybeSingle();
+          if (!p.error && p.data && p.data.role) role = normalizeRole(p.data.role);
+        }
+      } catch(_) {}
+      try {
+        if (email && role === 'viewer') {
+          const a = await client.from('rf_acl').select('role').ilike('email', email).maybeSingle();
+          if (!a.error && a.data && a.data.role) role = normalizeRole(a.data.role);
+        }
+      } catch(_) {}
+      state.selected.role = role || 'viewer';
+      baseRole.value = state.selected.role;
+      chipRole.textContent = 'Rol bază: ' + state.selected.role;
+      updateRoleUi();
     }
 
     async function loadAccountAccess(){
-      accActive.checked = true; accBanned.checked = false; accNote.value = '';
-      const uid = selectedUserId(), email = selectedEmail(); if (!uid && !email) return;
+      accActive.checked = true;
+      accBanned.checked = false;
+      accNote.value = '';
+      const uid = selectedUserId(), email = selectedEmail();
+      if (!uid && !email) return;
       try {
         let q = client.from('user_account_access').select('is_active,is_banned,note,user_id,email');
-        if (uid) q = q.eq('user_id', uid); else q = q.eq('email', email);
+        if (uid) q = q.eq('user_id', uid); else q = q.ilike('email', email);
         const r = await q.maybeSingle();
         if (!r.error && r.data) {
           accActive.checked = r.data.is_active !== false;
@@ -255,14 +368,13 @@
 
     async function loadPagePerms(){
       state.pagePerms = new Map();
-      const uid = selectedUserId(), email = selectedEmail(); if (!uid && !email) return;
+      const uid = selectedUserId(), email = selectedEmail();
+      if (!uid && !email) return;
       try {
         let q = client.from('user_page_permissions').select('page_key,can_view,can_add,can_edit,can_delete,can_export,can_import');
-        if (uid) q = q.eq('user_id', uid); else q = q.eq('email', email);
+        if (uid) q = q.eq('user_id', uid); else q = q.ilike('email', email);
         const r = await q;
-        if (!r.error && Array.isArray(r.data)) {
-          r.data.forEach(row => state.pagePerms.set(String(row.page_key||'').trim(), row));
-        }
+        if (!r.error && Array.isArray(r.data)) r.data.forEach(row => state.pagePerms.set(String(row.page_key||'').trim(), row));
       } catch(_) {}
       renderPagePerms();
     }
@@ -277,14 +389,35 @@
       }).join('');
     }
 
+    async function deleteScoped(tableName, uid, email, extraEq){
+      const applyExtra = (q) => {
+        const extras = extraEq || {};
+        Object.keys(extras).forEach(key => { q = q.eq(key, extras[key]); });
+        return q;
+      };
+      if (uid) {
+        try {
+          let q = client.from(tableName).delete().eq('user_id', uid);
+          q = applyExtra(q);
+          await q;
+        } catch(_) {}
+      }
+      if (email) {
+        try {
+          let q = client.from(tableName).delete().ilike('email', email);
+          q = applyExtra(q);
+          await q;
+        } catch(_) {}
+      }
+    }
+
     async function savePagePerms(mode){
       if (!state.selected) return;
       const uid = selectedUserId(), email = selectedEmail();
-      if (!uid) { showStatus('Utilizatorul selectat nu are user_id în profiles.', false); return; }
+      if (!uid && !email) { showStatus('Utilizatorul selectat nu are user_id sau email.', false); return; }
       const perms = PAGE_LIST.map(p => {
         const current = state.pagePerms.get(p.page_key) || {};
-        return {
-          user_id: uid,
+        const row = {
           email,
           page_key: p.page_key,
           can_view: current.can_view===true,
@@ -294,17 +427,23 @@
           can_export: current.can_export===true,
           can_import: current.can_import===true
         };
+        if (uid) row.user_id = uid;
+        return row;
       });
       if (mode==='allow-all') perms.forEach(r => { if (r.page_key!=='login') { r.can_view=true; r.can_add=true; r.can_edit=true; r.can_delete=true; r.can_export=true; r.can_import=true; } });
       if (mode==='deny-all') perms.forEach(r => { r.can_view = (r.page_key==='index'); r.can_add=false; r.can_edit=false; r.can_delete=false; r.can_export=false; r.can_import=false; });
       try {
-        await client.from('user_page_permissions').delete().eq('user_id', uid);
-        const ins = await client.from('user_page_permissions').insert(perms);
-        if (ins.error) throw ins.error;
+        await deleteScoped('user_page_permissions', uid, email);
+        if (perms.length) {
+          const ins = await client.from('user_page_permissions').insert(perms);
+          if (ins.error) throw ins.error;
+        }
         await loadPagePerms();
         await renderIndexPreview();
         showStatus('Permisiunile pe pagini au fost salvate.', true);
-      } catch (e) { showStatus('Nu am putut salva paginile: ' + (e.message || e), false); }
+      } catch (e) {
+        showStatus('Nu am putut salva paginile: ' + (e.message || e), false);
+      }
     }
 
     async function loadControlsForPage(pageKey){
@@ -314,7 +453,7 @@
       if (!uid && !email) return;
       try {
         let q = client.from('user_control_permissions').select('page_key,control_key,can_view,can_use,can_edit,control_label,control_type').eq('page_key', key);
-        if (uid) q = q.eq('user_id', uid); else q = q.eq('email', email);
+        if (uid) q = q.eq('user_id', uid); else q = q.ilike('email', email);
         const r = await q;
         if (!r.error && Array.isArray(r.data)) r.data.forEach(row => state.controlPerms.set(String(row.control_key||'').trim(), row));
       } catch(_) {}
@@ -334,17 +473,19 @@
     async function saveControls(){
       if (!state.selected) return;
       const uid = selectedUserId(), email = selectedEmail(), pageKey = controlPageSelect.value;
-      if (!uid || !pageKey) { showStatus('Lipsește utilizatorul sau pagina.', false); return; }
+      if ((!uid && !email) || !pageKey) { showStatus('Lipsește utilizatorul sau pagina.', false); return; }
       const catalog = window.RF_ACL.getControlCatalogForPage(pageKey) || [];
       const rows = catalog.map(c => {
         const get = key => {
           const el = controlPermBody.querySelector(`input[data-ctrl="${CSS.escape(c.control_key)}"][data-key="${key}"]`);
           return !!(el && el.checked);
         };
-        return { user_id: uid, email, page_key: pageKey, control_key: c.control_key, control_label: c.control_label, control_type: c.control_type || 'action', can_view:get('can_view'), can_use:get('can_use'), can_edit:get('can_edit') };
+        const row = { email, page_key: pageKey, control_key: c.control_key, control_label: c.control_label, control_type: c.control_type || 'action', can_view:get('can_view'), can_use:get('can_use'), can_edit:get('can_edit') };
+        if (uid) row.user_id = uid;
+        return row;
       });
       try {
-        await client.from('user_control_permissions').delete().eq('user_id', uid).eq('page_key', pageKey);
+        await deleteScoped('user_control_permissions', uid, email, { page_key: pageKey });
         if (rows.length) {
           const ins = await client.from('user_control_permissions').insert(rows);
           if (ins.error) throw ins.error;
@@ -352,48 +493,111 @@
         await loadControlsForPage(pageKey);
         await renderIndexPreview();
         showStatus('Permisiunile pe controale au fost salvate.', true);
-      } catch (e) { showStatus('Nu am putut salva controalele: ' + (e.message || e), false); }
+      } catch (e) {
+        showStatus('Nu am putut salva controalele: ' + (e.message || e), false);
+      }
+    }
+
+    async function saveBaseRole(){
+      if (!state.selected) return;
+      const uid = selectedUserId(), email = selectedEmail();
+      const role = normalizeRole(baseRole.value || state.selected.role || 'viewer');
+      if (!uid && !email) throw new Error('Contul selectat nu are user_id sau email.');
+      if (isProtectedAdminEmail(email)) {
+        state.selected.role = 'admin';
+        baseRole.value = 'admin';
+        chipRole.textContent = 'Rol bază: admin';
+        return;
+      }
+      let saved = false;
+      let lastError = null;
+      if (uid) {
+        try {
+          const payload = { user_id: uid, email, role };
+          const r = await client.from('profiles').upsert([payload], { onConflict: 'user_id' });
+          if (r.error) throw r.error;
+          saved = true;
+        } catch (e) { lastError = e; }
+      }
+      if (email) {
+        try {
+          const payload = { email, role, updated_at: new Date().toISOString() };
+          const r = await client.from('rf_acl').upsert([payload], { onConflict: 'email' });
+          if (r.error) throw r.error;
+          saved = true;
+        } catch (e) { lastError = e; }
+      }
+      if (!saved && lastError) throw lastError;
+      state.selected.role = role;
+      chipRole.textContent = 'Rol bază: ' + role;
+      const key = selectedKey();
+      const found = state.users.find(u => userIdentityKey(u) === key);
+      if (found) found.role = role;
+      renderUsers();
+      updateRoleUi();
     }
 
     async function saveAccount(){
       if (!state.selected) return;
       const uid = selectedUserId(), email = selectedEmail();
-      if (!uid) { showStatus('Utilizatorul selectat nu are user_id în profiles.', false); return; }
+      if (!uid && !email) { showStatus('Utilizatorul selectat nu are user_id sau email.', false); return; }
       try {
-        await client.from('user_account_access').delete().eq('user_id', uid);
-        const ins = await client.from('user_account_access').insert([{ user_id: uid, email, is_active: accActive.checked, is_banned: accBanned.checked, note: String(accNote.value||'').trim() }]);
+        await saveBaseRole();
+        await deleteScoped('user_account_access', uid, email);
+        const row = { email, is_active: accActive.checked, is_banned: accBanned.checked, note: String(accNote.value||'').trim() };
+        if (uid) row.user_id = uid;
+        const ins = await client.from('user_account_access').insert([row]);
         if (ins.error) throw ins.error;
-        showStatus('Statusul contului a fost salvat.', true);
-      } catch (e) { showStatus('Nu am putut salva statusul contului: ' + (e.message || e), false); }
+        await loadAccountAccess();
+        showStatus('Contul a fost salvat: rol + status + ban.', true);
+      } catch (e) {
+        showStatus('Nu am putut salva contul: ' + (e.message || e), false);
+      }
     }
 
     async function renderIndexPreview(){
-      const catalog = window.RF_ACL.getControlCatalogForPage('index') || [];
       const uid = selectedUserId(), email = selectedEmail();
+      const rows = [];
+      const pageKeys = PAGE_LIST.filter(p => p.page_key.startsWith('group-') || ['helper-data','helper-acl','kpi'].includes(p.page_key));
+      pageKeys.forEach(p => {
+        const row = state.pagePerms.get(p.page_key) || {};
+        rows.push({ label: p.page_name, key: p.page_key, visible: row.can_view === true, source: 'Pagină / grup' });
+      });
+
       let map = new Map();
-      if (uid) {
+      if (uid || email) {
         try {
-          const r = await client.from('user_control_permissions').select('control_key,can_view').eq('user_id', uid).eq('page_key','index');
+          let q = client.from('user_control_permissions').select('control_key,can_view').eq('page_key','index');
+          if (uid) q = q.eq('user_id', uid); else q = q.ilike('email', email);
+          const r = await q;
           if (!r.error && Array.isArray(r.data)) r.data.forEach(x => map.set(String(x.control_key||'').trim(), x));
         } catch(_) {}
       }
-      const html = ['<table><thead><tr><th>Buton</th><th class="center">Vizibil</th></tr></thead><tbody>'];
+      const catalog = (window.RF_ACL.getControlCatalogForPage('index') || []).filter(c => String(c.control_key||'').startsWith('nav.') || String(c.control_key||'').startsWith('auth.'));
       catalog.forEach(c => {
         const row = map.get(c.control_key) || {};
-        html.push(`<tr><td>${esc(c.control_label)}<div class="small muted">${esc(c.control_key)}</div></td><td class="center">${row.can_view===true?'DA':'NU'}</td></tr>`);
+        rows.push({ label: c.control_label, key: c.control_key, visible: row.can_view===true, source: 'Control index' });
+      });
+
+      const html = ['<table><thead><tr><th>Buton</th><th>Tip</th><th class="center">Vizibil</th></tr></thead><tbody>'];
+      rows.forEach(r => {
+        html.push(`<tr><td>${esc(r.label)}<div class="small muted">${esc(r.key)}</div></td><td>${esc(r.source)}</td><td class="center">${r.visible?'DA':'NU'}</td></tr>`);
       });
       html.push('</tbody></table>');
       indexControlsPreview.innerHTML = html.join('');
     }
 
-    async function selectUser(email){
-      const user = state.users.find(u => u.email===normalizeEmail(email));
+    async function selectUserByKey(key){
+      const user = state.users.find(u => userIdentityKey(u) === String(key||''));
       if (!user) return;
       state.selected = user;
-      chipSelected.textContent = user.email;
+      chipSelected.textContent = displayUserText(user);
       chipRole.textContent = 'Rol bază: ' + (user.role || 'viewer');
+      baseRole.value = normalizeRole(user.role);
+      updateRoleUi();
       renderUsers();
       clearStatus();
+      await loadResolvedRole();
       await loadAccountAccess();
       await loadPagePerms();
       await loadControlsForPage(controlPageSelect.value || 'index');
@@ -416,10 +620,16 @@
       $('#btnSaveAccount').addEventListener('click', ()=> saveAccount());
       $('#btnAllowAll').addEventListener('click', ()=> savePagePerms('allow-all'));
       $('#btnDenyAll').addEventListener('click', ()=> savePagePerms('deny-all'));
+      baseRole.addEventListener('change', ()=> {
+        if (!state.selected) return;
+        state.selected.role = normalizeRole(baseRole.value);
+        chipRole.textContent = 'Rol bază: ' + state.selected.role;
+      });
       pagePermBody.addEventListener('change', (e)=>{
         const t=e.target; if(!t.matches('input[type="checkbox"][data-page][data-key]')) return;
         const page=t.dataset.page, key=t.dataset.key;
         const row=state.pagePerms.get(page)||{page_key:page}; row[key]=t.checked; state.pagePerms.set(page,row);
+        renderIndexPreview();
       });
       controlPermBody.addEventListener('change', (e)=>{
         const t=e.target; if(!t.matches('input[type="checkbox"][data-ctrl][data-key]')) return;
@@ -429,12 +639,14 @@
     }
 
     (async function init(){
-      const ok = await requireAdmin(); if (!ok) return;
+      const ok = await requireAdmin();
+      if (!ok) return;
       buildPageSelect();
       await bind();
       await loadUsers();
     })();
   })();
+  </script>
   </script>
 </body>
 </html>
