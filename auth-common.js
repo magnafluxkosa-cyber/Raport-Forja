@@ -232,6 +232,34 @@
     return safeGetItem(STORAGE.userRole) || 'viewer';
   }
 
+
+  async function getAccountStatus(user){
+    if(!user){ return { is_active:true, is_banned:false, note:'' }; }
+    const sb = getSupabaseClient();
+    const email = normalizeEmail(user.email || '');
+    const userId = String(user.id || '').trim();
+    function norm(row){
+      return {
+        is_active: row && row.is_active !== false,
+        is_banned: !!(row && row.is_banned === true),
+        note: String(row && row.note || '').trim()
+      };
+    }
+    try {
+      if(userId){
+        const byId = await maybeSelect(sb.from('user_account_access').select('is_active,is_banned,note,user_id,email').eq('user_id', userId).maybeSingle());
+        if(byId){ return norm(byId); }
+      }
+    } catch(_) {}
+    try {
+      if(email){
+        const byEmail = await maybeSelect(sb.from('user_account_access').select('is_active,is_banned,note,user_id,email').eq('email', email).maybeSingle());
+        if(byEmail){ return norm(byEmail); }
+      }
+    } catch(_) {}
+    return { is_active:true, is_banned:false, note:'' };
+  }
+
   async function getSession(){
     const sb = getSupabaseClient();
     const { data, error } = await sb.auth.getSession();
@@ -248,13 +276,25 @@
       return null;
     }
 
+    const status = await getAccountStatus(session.user);
+    if(status && (status.is_banned || status.is_active === false)){
+      try {
+        const sb = getSupabaseClient();
+        await sb.auth.signOut();
+      } catch(_) {}
+      clearUserState();
+      try { sessionStorage.setItem('rf_login_error', status.note || 'Cont blocat.'); } catch(_) {}
+      return null;
+    }
+
     const role = await resolveUserRole(session.user);
     persistUserState(session.user, role);
 
     return {
       session,
       user: session.user,
-      role
+      role,
+      accountStatus: status
     };
   }
 
@@ -384,6 +424,7 @@
     getSession,
     getCurrentUserWithRole,
     resolveUserRole,
+    getAccountStatus,
     persistUserState,
     clearUserState,
     requireAuth,
