@@ -1219,9 +1219,9 @@ function buildControlPermissionEntry(row) {
     control_key: String(row && row.control_key || '').trim(),
     control_label: String(row && (row.control_label || row.control_key) || '').trim(),
     control_type: String(row && row.control_type || 'action').trim() || 'action',
-    can_view: row && row.can_view === true,
-    can_use: row && row.can_use === true,
-    can_edit: row && row.can_edit === true
+    can_view: !!(row && (row.can_view === true || row.is_visible === true)),
+    can_use: !!(row && (row.can_use === true || row.is_enabled === true)),
+    can_edit: !!(row && (row.can_edit === true || row.is_editable === true))
   };
 }
 
@@ -1283,7 +1283,7 @@ async function loadUserControlPermissionMap(client, user, pageKey) {
     });
   }
 
-  var queryColumns = 'page_key,control_key,control_label,control_type,can_view,can_use,can_edit';
+  var queryColumns = 'page_key,control_key,control_label,control_type,can_view,can_use,can_edit,is_visible,is_enabled,is_editable';
   if (userId) {
     try {
       var byUserId = client.from('user_control_permissions').select(queryColumns).eq('user_id', userId);
@@ -1627,12 +1627,11 @@ async function applyDomPermissions(pageKey, root, options) {
 
   async function resolvePageAccess(pageKey, options) {
     var key = String(pageKey || '').trim();
-    var href = pageKeyToHref(key);
     var client = options && options.client ? options.client : createRfSupabaseClient();
     var user = options && options.user ? options.user : null;
 
     if (key === 'login') {
-      return { allowed:true, role:'viewer', source:'login open', permissions:defaultPageAccessFromRole('viewer', key) };
+      return { allowed:true, role:'viewer', source:'login open', permissions:{ can_view:true, can_add:false, can_edit:false, can_delete:false, can_export:false, can_import:false } };
     }
 
     if (!user) {
@@ -1646,9 +1645,9 @@ async function applyDomPermissions(pageKey, root, options) {
 
     if (!user) {
       if (key === 'index') {
-        return { allowed:true, role:'viewer', source:'guest index', permissions:{ can_view:true, can_add:false, can_edit:false, can_delete:false, can_export:false, can_import:false } };
+        return { allowed:true, role:'viewer', source:'guest index', permissions:{ can_view:true, can_add:false, can_edit:false, can_delete:false, can_export:false, can_import:false }, strictUserAcl:true };
       }
-      return { allowed:false, role:'viewer', source:'no session', message:'Autentifică-te pentru a intra în această foaie.', permissions:{ can_view:false, can_add:false, can_edit:false, can_delete:false, can_export:false, can_import:false } };
+      return { allowed:false, role:'viewer', source:'no session', message:'Autentifică-te pentru a intra în această foaie.', permissions:{ can_view:false, can_add:false, can_edit:false, can_delete:false, can_export:false, can_import:false }, strictUserAcl:true };
     }
 
     var resolved = await resolveRole(client, user);
@@ -1659,74 +1658,43 @@ async function applyDomPermissions(pageKey, root, options) {
         allowed:false,
         role:role,
         source:'account blocked',
-        message: accountStatus.note || 'Cont blocat.',
+        message: accountStatus.note || accountStatus.ban_reason || 'Cont blocat.',
         permissions:{ can_view:false, can_add:false, can_edit:false, can_delete:false, can_export:false, can_import:false },
         email: normalizeAclEmail(user.email),
-        accountStatus: accountStatus
+        accountStatus: accountStatus,
+        strictUserAcl: true
       };
     }
 
     if (role === 'admin') {
-      return { allowed:true, role:role, source:'admin', permissions:defaultPageAccessFromRole(role, key), email: normalizeAclEmail(user.email), accountStatus: accountStatus };
+      return { allowed:true, role:role, source:'admin', permissions:defaultPageAccessFromRole(role, key), email: normalizeAclEmail(user.email), accountStatus: accountStatus, strictUserAcl:true };
     }
 
     var email = normalizeAclEmail(user.email);
     var userPermissionMap = await loadUserPermissionMap(client, user);
-    var hasUserAcl = !!(userPermissionMap && userPermissionMap.size);
+    var permissions = userPermissionMap && userPermissionMap.get(key) ? buildPermissionEntry(userPermissionMap.get(key)) : { can_view:false, can_add:false, can_edit:false, can_delete:false, can_export:false, can_import:false };
 
     if (key === 'index') {
       return {
         allowed:true,
         role:role,
-        source: hasUserAcl ? 'user acl strict index' : 'index by role',
-        permissions: { can_view:true, can_add:false, can_edit:false, can_delete:false, can_export:false, can_import:false },
-        email: email,
-        accountStatus: accountStatus,
-        strictUserAcl: hasUserAcl
-      };
-    }
-
-    if (hasUserAcl) {
-      var userPerm = userPermissionMap.get(key) || { can_view:false, can_add:false, can_edit:false, can_delete:false, can_export:false, can_import:false };
-      return {
-        allowed: userPerm.can_view === true,
-        role: role,
-        source: 'user acl strict',
-        message: userPerm.can_view === true ? '' : 'Nu ai acces în această foaie. Cere acces de la admin.',
-        permissions: buildPermissionEntry(userPerm),
+        source:'strict user index',
+        permissions:{ can_view:true, can_add:false, can_edit:false, can_delete:false, can_export:false, can_import:false },
         email: email,
         accountStatus: accountStatus,
         strictUserAcl: true
       };
     }
 
-    var permissionMap = await loadPagePermissionMap(client, role);
-    var mirror = await readDashboardAclMirror(client);
-    var roleDecisions = collectAclDecisions({ pageKey:key, href:href, role:role, email:'', userPermissionMap:null, permissionMap:permissionMap, mirror:{ page_permissions: mirror && mirror.page_permissions, grants: mirror && mirror.grants } });
-
-    var rolePermissions = defaultPageAccessFromRole(role, key);
-    var roleExplicitTrue = false;
-    var roleExplicitFalse = false;
-    roleDecisions.forEach(function (entry) {
-      var permissionEntry = permissionValueToEntry(entry);
-      rolePermissions = mergePermissions(rolePermissions, permissionEntry);
-      if (permissionEntry.can_view === true) roleExplicitTrue = true;
-      if (permissionEntry.can_view === false) roleExplicitFalse = true;
-    });
-
-    var allowed = rolePermissions.can_view !== false;
-    if (roleExplicitFalse) allowed = false;
-    else if (roleExplicitTrue) allowed = true;
-
     return {
-      allowed: allowed,
+      allowed: permissions.can_view === true,
       role: role,
-      source: roleExplicitFalse ? 'role acl explicit false' : (roleExplicitTrue ? 'role acl explicit true' : 'role fallback'),
-      message: allowed ? '' : 'Nu ai acces în această foaie. Cere acces de la admin.',
-      permissions: rolePermissions,
+      source: 'strict user acl',
+      message: permissions.can_view === true ? '' : 'Nu ai acces în această foaie. Cere acces de la admin.',
+      permissions: permissions,
       email: email,
       accountStatus: accountStatus,
-      strictUserAcl: false
+      strictUserAcl: true
     };
   }
 
