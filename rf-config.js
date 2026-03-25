@@ -3208,89 +3208,49 @@ async function applyDomPermissions(pageKey, root, options) {
 })(window);
 
 
-/* OPEN ACCESS RESET OVERRIDE */
+/* OPEN ACCESS RESET OVERRIDE — KEEP UI */
 (function (window) {
   'use strict';
+
   var RF = window.RF_ACL = window.RF_ACL || {};
   var allPerms = {
-    can_view:true, can_add:true, can_edit:true, can_delete:true,
-    can_export:true, can_import:true, can_filter:true
+    can_view: true,
+    can_add: true,
+    can_edit: true,
+    can_delete: true,
+    can_export: true,
+    can_import: true,
+    can_filter: true
   };
+  var OPEN_DOC_KEYS = { 'acl_roles_v1': true, 'dashboard_acl_v1': true };
+
   function unhideAll(root){
     var scope = root && root.querySelectorAll ? root : document;
     var nodes = scope.querySelectorAll('[data-rf-permission],[data-rf-control],[data-rf-field],.hidden,[hidden],[aria-hidden="true"]');
-    for (var i=0;i<nodes.length;i+=1){
-      var el=nodes[i];
-      el.style.display='';
-      el.style.visibility='';
-      el.hidden=false;
+    for (var i = 0; i < nodes.length; i += 1){
+      var el = nodes[i];
+      if (!el) continue;
+      if (el.classList && el.classList.contains('hidden')) el.classList.remove('hidden');
+      el.style.display = '';
+      el.style.visibility = '';
+      el.hidden = false;
       el.removeAttribute('hidden');
       el.removeAttribute('aria-hidden');
-      if ('disabled' in el) el.disabled=false;
+      if ('disabled' in el) el.disabled = false;
       if (el.matches && el.matches('input,textarea,select')) el.removeAttribute('readonly');
     }
   }
-  RF.resolvePageAccess = async function(){
-    return { allowed:true, role:'admin', source:'open access', permissions:Object.assign({}, allPerms) };
-  };
-  RF.requirePageAccess = async function(){ return { allowed:true, role:'admin', source:'open access', permissions:Object.assign({}, allPerms) }; };
-  RF.resolveControlAccess = async function(pageKey, controlKey){
-    return { allowed:true, control_key:String(controlKey||''), can_view:true, can_use:true, can_edit:true, source:'open access' };
-  };
-  RF.canUseControl = async function(){ return { allowed:true, visible:true, editable:true, source:'open access' }; };
-  RF.applyDomPermissions = async function(pageKey, root){ unhideAll(root); return { allowed:true, role:'admin', source:'open access', permissions:Object.assign({}, allPerms) }; };
-  RF.resolveUserBanState = async function(){ return { is_active:true, is_banned:false, ban_reason:null, note:null }; };
-  window.__RF_ACL_AUTO_BIND__ = true;
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', function(){ unhideAll(document); }, { once:true });
-  } else { unhideAll(document); }
-})(window);
 
-
-/* FULL OPEN ACCESS RUNTIME PATCH */
-(function (window) {
-  'use strict';
-  if (window.__RF_FULL_OPEN_ACCESS_PATCH__) return;
-  window.__RF_FULL_OPEN_ACCESS_PATCH__ = true;
-
-  var ALL_PERMS = {
-    can_view:true,
-    can_add:true,
-    can_edit:true,
-    can_delete:true,
-    can_export:true,
-    can_import:true,
-    can_filter:true
-  };
-
-  function safeGet(storage, key){
-    try { return storage && storage.getItem ? storage.getItem(key) : ''; } catch (_) { return ''; }
+  function firstFilterValue(filters, column){
+    for (var i = 0; i < filters.length; i += 1){
+      if (filters[i] && filters[i].column === column) return filters[i].value;
+    }
+    return null;
   }
 
-  function currentEmail(){
-    return String(
-      safeGet(window.localStorage, 'rf_user_email') ||
-      safeGet(window.localStorage, 'rf_login_email') ||
-      safeGet(window.sessionStorage, 'rf_user_email') ||
-      safeGet(window.sessionStorage, 'rf_login_email') ||
-      ''
-    ).trim().toLowerCase();
-  }
-
-  function currentUserId(){
-    return String(
-      safeGet(window.localStorage, 'rf_user_id') ||
-      safeGet(window.sessionStorage, 'rf_user_id') ||
-      ''
-    ).trim();
-  }
-
-  function openAccessAclDoc(){
-    var email = currentEmail();
-    var roles = {};
-    if (email) roles[email] = 'admin';
+  function makeOpenAclDoc(){
     return {
-      roles: roles,
+      roles: {},
       page_permissions: {},
       grants: {},
       user_permissions: {},
@@ -3298,234 +3258,183 @@ async function applyDomPermissions(pageKey, root, options) {
     };
   }
 
-  function docForKey(docKey){
-    var key = String(docKey || '').trim();
-    if (key === 'acl_roles_v1' || key === 'dashboard_acl_v1') return openAccessAclDoc();
-    return null;
-  }
-
-  function buildRows(table, meta){
-    var email = currentEmail();
-    var userId = currentUserId();
-    var now = new Date().toISOString();
-    var eq = meta && meta.eq ? meta.eq : {};
-    var inMap = meta && meta.in ? meta.in : {};
-
+  function resolveAclData(table, state){
+    var filters = state.filters || [];
     if (table === 'profiles') {
-      return [{ role:'admin', email: email || '', user_id: userId || '', id: userId || '' }];
+      return {
+        role: 'admin',
+        user_id: firstFilterValue(filters, 'user_id') || null,
+        id: firstFilterValue(filters, 'id') || firstFilterValue(filters, 'user_id') || null,
+        email: firstFilterValue(filters, 'email') || '',
+        created_at: new Date().toISOString()
+      };
     }
+
     if (table === 'rf_acl') {
-      return [{ role:'admin', email: email || '' }];
+      return {
+        email: firstFilterValue(filters, 'email') || '',
+        role: 'admin',
+        updated_at: new Date().toISOString()
+      };
     }
-    if (table === 'page_permissions' || table === 'user_page_permissions') {
-      var keys = [];
-      if (Array.isArray(inMap.page_key) && inMap.page_key.length) keys = inMap.page_key.slice();
-      else if (eq.page_key) keys = [eq.page_key];
-      else keys = ['index'];
-      return keys.map(function (k) {
-        return {
-          page_key: String(k || '').trim() || 'index',
-          can_view:true,
-          can_add:true,
-          can_edit:true,
-          can_delete:true,
-          can_export:true,
-          can_import:true
-        };
-      });
-    }
-    if (table === 'field_permissions') {
-      return [];
-    }
-    if (table === 'user_control_permissions') {
-      return [];
-    }
+
     if (table === 'user_account_access') {
-      return [{ user_id:userId || '', email:email || '', is_active:true, is_banned:false, note:'' }];
+      return {
+        user_id: firstFilterValue(filters, 'user_id') || null,
+        email: firstFilterValue(filters, 'email') || '',
+        is_active: true,
+        is_banned: false,
+        note: null,
+        ban_reason: null
+      };
     }
+
+    if (table === 'page_permissions' || table === 'user_page_permissions') {
+      return {
+        page_key: firstFilterValue(filters, 'page_key') || '',
+        role: firstFilterValue(filters, 'role') || 'admin',
+        user_id: firstFilterValue(filters, 'user_id') || null,
+        email: firstFilterValue(filters, 'email') || '',
+        can_view: true,
+        can_add: true,
+        can_edit: true,
+        can_delete: true,
+        can_export: true,
+        can_import: true
+      };
+    }
+
+    if (table === 'field_permissions') {
+      return {
+        page_key: firstFilterValue(filters, 'page_key') || '',
+        field_key: firstFilterValue(filters, 'field_key') || '',
+        role: firstFilterValue(filters, 'role') || 'admin',
+        can_edit: true
+      };
+    }
+
+    if (table === 'user_control_permissions') {
+      return {
+        page_key: firstFilterValue(filters, 'page_key') || '',
+        control_key: firstFilterValue(filters, 'control_key') || '',
+        role: firstFilterValue(filters, 'role') || 'admin',
+        user_id: firstFilterValue(filters, 'user_id') || null,
+        email: firstFilterValue(filters, 'email') || '',
+        can_view: true,
+        can_use: true,
+        can_edit: true,
+        is_visible: true,
+        is_enabled: true,
+        is_editable: true
+      };
+    }
+
     if (table === 'rf_documents') {
-      var docKey = eq.doc_key || '';
-      var payload = docForKey(docKey);
-      if (!payload) return null;
-      return [{ doc_key:docKey, content:payload, data:payload, updated_at:now }];
+      var docKey = firstFilterValue(filters, 'doc_key') || '';
+      if (OPEN_DOC_KEYS[docKey]) {
+        return {
+          doc_key: docKey,
+          content: makeOpenAclDoc(),
+          data: makeOpenAclDoc(),
+          updated_at: new Date().toISOString()
+        };
+      }
     }
+
     return null;
   }
 
-  function makeMockQuery(table) {
-    var meta = { eq:Object.create(null), ilike:Object.create(null), in:Object.create(null), table:table };
-    var proxy = null;
+  function makeResponse(table, state){
+    var row = resolveAclData(table, state);
+    if (row == null) return { data: state.single ? null : [], error: null };
+    return { data: state.single ? row : [row], error: null };
+  }
 
-    function rows(){ return buildRows(table, meta); }
-    function one(){ var r = rows(); return Array.isArray(r) ? (r[0] || null) : null; }
-    function resolved(single){ return Promise.resolve({ data: single ? one() : (rows() || []), error: null }); }
-
-    var target = {
-      select: function(){ return proxy; },
-      eq: function(col, val){ meta.eq[String(col || '').trim()] = val; return proxy; },
-      ilike: function(col, val){ meta.ilike[String(col || '').trim()] = val; return proxy; },
-      in: function(col, vals){ meta.in[String(col || '').trim()] = Array.isArray(vals) ? vals.slice() : []; return proxy; },
-      limit: function(){ return proxy; },
-      order: function(){ return proxy; },
-      maybeSingle: function(){ return resolved(true); },
-      single: function(){ return resolved(true); },
-      upsert: function(){ return Promise.resolve({ data:null, error:null }); },
-      insert: function(){ return Promise.resolve({ data:null, error:null }); },
-      update: function(){ return Promise.resolve({ data:null, error:null }); },
-      delete: function(){ return Promise.resolve({ data:null, error:null }); },
-      then: function(resolve, reject){ return resolved(false).then(resolve, reject); },
-      catch: function(reject){ return resolved(false).catch(reject); },
-      finally: function(handler){ return resolved(false).finally(handler); }
+  function makeAclQuery(table){
+    var state = { filters: [], single: false };
+    var api = {
+      select: function(){ return api; },
+      eq: function(column, value){ state.filters.push({ type: 'eq', column: String(column || ''), value: value }); return api; },
+      ilike: function(column, value){ state.filters.push({ type: 'ilike', column: String(column || ''), value: value }); return api; },
+      in: function(column, value){ state.filters.push({ type: 'in', column: String(column || ''), value: Array.isArray(value) ? value : [value] }); return api; },
+      order: function(){ return api; },
+      limit: function(){ return api; },
+      maybeSingle: function(){ state.single = true; return Promise.resolve(makeResponse(table, state)); },
+      single: function(){ state.single = true; return Promise.resolve(makeResponse(table, state)); },
+      insert: function(){ return Promise.resolve({ data: null, error: null }); },
+      update: function(){ return api; },
+      upsert: function(){ return Promise.resolve({ data: null, error: null }); },
+      delete: function(){ return api; },
+      then: function(resolve, reject){ return Promise.resolve(makeResponse(table, state)).then(resolve, reject); },
+      catch: function(reject){ return Promise.resolve(makeResponse(table, state)).catch(reject); },
+      finally: function(handler){ return Promise.resolve(makeResponse(table, state)).finally(handler); }
     };
-    proxy = new Proxy(target, {
-      get: function(obj, prop){
-        if (prop in obj) return obj[prop];
-        return undefined;
-      }
-    });
-    return proxy;
-  }
-
-  function shouldMockTable(table){
-    var t = String(table || '').trim();
-    return [
-      'profiles',
-      'rf_acl',
-      'page_permissions',
-      'user_page_permissions',
-      'field_permissions',
-      'user_control_permissions',
-      'user_account_access',
-      'rf_documents'
-    ].indexOf(t) >= 0;
-  }
-
-  function patchClient(client){
-    if (!client || client.__rfFullOpenAccessPatched) return client;
-    client.__rfFullOpenAccessPatched = true;
-
-    try {
-      var originalFrom = client.from.bind(client);
-      client.from = function(table){
-        var t = String(table || '').trim();
-        if (shouldMockTable(t)) return makeMockQuery(t);
-        return originalFrom(table);
-      };
-    } catch (_) {}
-
-    try {
-      var originalRpc = client.rpc ? client.rpc.bind(client) : null;
-      client.rpc = function(fn){
-        var name = String(fn || '').trim();
-        if (name === 'rf_current_role') return Promise.resolve({ data:'admin', error:null });
-        if (originalRpc) return originalRpc.apply(null, arguments);
-        return Promise.resolve({ data:null, error:null });
-      };
-    } catch (_) {}
-
-    return client;
-  }
-
-  function patchSupabaseApi(api){
-    if (!api || api.__rfFullOpenAccessPatchedApi) return api;
-    if (typeof api.createClient !== 'function') return api;
-    var originalCreateClient = api.createClient.bind(api);
-    api.createClient = function(){
-      return patchClient(originalCreateClient.apply(this, arguments));
-    };
-    api.__rfFullOpenAccessPatchedApi = true;
     return api;
   }
 
-  function installSupabaseHook(){
-    try {
-      if (window.supabase && typeof window.supabase.createClient === 'function') {
-        patchSupabaseApi(window.supabase);
-        return;
+  function wrapClient(client){
+    if (!client || client.__rfOpenAccessWrapped) return client;
+    var originalFrom = typeof client.from === 'function' ? client.from.bind(client) : null;
+    if (!originalFrom) return client;
+    client.from = function(table){
+      var tableName = String(table || '');
+      if (tableName === 'profiles' || tableName === 'rf_acl' || tableName === 'page_permissions' || tableName === 'user_page_permissions' || tableName === 'field_permissions' || tableName === 'user_control_permissions' || tableName === 'user_account_access') {
+        return makeAclQuery(tableName);
       }
-      var value = window.supabase;
-      Object.defineProperty(window, 'supabase', {
-        configurable:true,
-        enumerable:true,
-        get:function(){ return value; },
-        set:function(v){ value = patchSupabaseApi(v); }
-      });
-      if (value && typeof value.createClient === 'function') {
-        window.supabase = value;
-      }
-    } catch (_) {}
+      return originalFrom(table);
+    };
+    client.__rfOpenAccessWrapped = true;
+    return client;
   }
 
-  function unhideEverything(root){
-    var scope = root && root.querySelectorAll ? root : document;
-    try {
-      scope.querySelectorAll('.hidden,[hidden],[aria-hidden="true"],[style*="display:none"]').forEach(function(el){
-        el.classList.remove('hidden');
-        el.hidden = false;
-        el.removeAttribute('hidden');
-        el.removeAttribute('aria-hidden');
-        if (el.style && String(el.style.display || '').toLowerCase() === 'none') el.style.display = '';
-        if (el.style && String(el.style.visibility || '').toLowerCase() === 'hidden') el.style.visibility = '';
-      });
-    } catch (_) {}
+  function patchCreateClientFactory(){
+    if (!window.supabase || typeof window.supabase.createClient !== 'function' || window.supabase.__rfOpenAccessPatched) return;
+    var originalCreateClient = window.supabase.createClient.bind(window.supabase);
+    window.supabase.createClient = function(){
+      return wrapClient(originalCreateClient.apply(window.supabase, arguments));
+    };
+    window.supabase.__rfOpenAccessPatched = true;
   }
 
-  function patchGlobals(){
-    installSupabaseHook();
-    window.RF_ACL = window.RF_ACL || {};
-    window.RF_ACL.resolveRole = async function(){ return { role:'admin', source:'forced open access' }; };
-    window.RF_ACL.resolvePageAccess = async function(pageKey){
-      return { allowed:true, role:'admin', source:'forced open access', permissions:Object.assign({}, ALL_PERMS), page_key:String(pageKey || '').trim() };
-    };
-    window.RF_ACL.requirePageAccess = async function(pageKey){
-      return { allowed:true, role:'admin', source:'forced open access', permissions:Object.assign({}, ALL_PERMS), page_key:String(pageKey || '').trim() };
-    };
-    window.RF_ACL.resolveControlAccess = async function(pageKey, controlKey){
-      return { allowed:true, control_key:String(controlKey || '').trim(), can_view:true, can_use:true, can_edit:true, source:'forced open access' };
-    };
-    window.RF_ACL.canUseControl = async function(){ return { allowed:true, visible:true, editable:true, source:'forced open access' }; };
-    window.RF_ACL.applyDomPermissions = async function(pageKey, root){ unhideEverything(root); return { allowed:true, role:'admin', permissions:Object.assign({}, ALL_PERMS), source:'forced open access' }; };
-    window.RF_ACL.resolveUserBanState = async function(){ return { is_active:true, is_banned:false, ban_reason:null, note:null }; };
+  patchCreateClientFactory();
 
-    if (window.ERPAuth) {
-      var authApi = window.ERPAuth;
-      authApi.resolveUserRole = async function(){ return 'admin'; };
-      authApi.getAccountStatus = async function(){ return { is_active:true, is_banned:false, ban_reason:null, note:null }; };
-      authApi.roleLabel = function(){ return 'Admin'; };
-      authApi.roleClass = function(){ return 'admin'; };
-      authApi.canAccess = function(){ return true; };
-      authApi.getPageAccess = async function(pageKey, options){
-        var user = options && options.user ? options.user : null;
-        if (!user && authApi.getSession) {
-          try {
-            var session = await authApi.getSession();
-            user = session && session.user ? session.user : null;
-          } catch (_) { user = null; }
-        }
-        return { allowed: !!user, user:user, role:'admin', permissions:Object.assign({}, ALL_PERMS), source:'forced open access' };
-      };
-      authApi.getCurrentUserWithRole = async function(){
-        if (!authApi.getSession) return null;
-        var session = await authApi.getSession();
-        if (!session || !session.user) return null;
-        try {
-          authApi.persistUserState && authApi.persistUserState(session.user, 'admin');
-        } catch (_) {}
-        return { session:session, user:session.user, role:'admin', accountStatus:{ is_active:true, is_banned:false, note:'', ban_reason:'' } };
-      };
-    }
-
-    unhideEverything(document);
+  if (typeof window.createRfSupabaseClient === 'function') {
+    var originalCreateRfSupabaseClient = window.createRfSupabaseClient;
+    window.createRfSupabaseClient = function(options){
+      return wrapClient(originalCreateRfSupabaseClient(options));
+    };
   }
 
-  patchGlobals();
+  if (window.__RF_SUPABASE_SINGLETON__ && window.__RF_SUPABASE_SINGLETON__.client) {
+    wrapClient(window.__RF_SUPABASE_SINGLETON__.client);
+  }
+
+  RF.resolvePageAccess = async function(pageKey){
+    return { allowed: true, role: 'admin', source: 'open access', permissions: Object.assign({}, allPerms), page_key: String(pageKey || '') };
+  };
+  RF.requirePageAccess = async function(pageKey){
+    return { allowed: true, role: 'admin', source: 'open access', permissions: Object.assign({}, allPerms), page_key: String(pageKey || '') };
+  };
+  RF.resolveControlAccess = async function(pageKey, controlKey){
+    return { allowed: true, control_key: String(controlKey || ''), can_view: true, can_use: true, can_edit: true, is_visible: true, is_enabled: true, is_editable: true, source: 'open access', page_key: String(pageKey || '') };
+  };
+  RF.canUseControl = async function(){
+    return { allowed: true, visible: true, editable: true, source: 'open access' };
+  };
+  RF.applyDomPermissions = async function(pageKey, root){
+    unhideAll(root);
+    return { allowed: true, role: 'admin', source: 'open access', permissions: Object.assign({}, allPerms), page_key: String(pageKey || '') };
+  };
+  RF.resolveUserBanState = async function(){
+    return { is_active: true, is_banned: false, ban_reason: null, note: null };
+  };
+
+  window.__RF_ACL_AUTO_BIND__ = true;
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', function(){ patchGlobals(); unhideEverything(document); }, { once:true });
+    document.addEventListener('DOMContentLoaded', function(){ unhideAll(document); patchCreateClientFactory(); }, { once: true });
   } else {
-    unhideEverything(document);
+    unhideAll(document);
+    patchCreateClientFactory();
   }
-  try {
-    var mo = new MutationObserver(function(){ unhideEverything(document); });
-    mo.observe(document.documentElement || document.body, { childList:true, subtree:true, attributes:true, attributeFilter:['hidden','style','class','aria-hidden'] });
-  } catch (_) {}
 })(window);
+
