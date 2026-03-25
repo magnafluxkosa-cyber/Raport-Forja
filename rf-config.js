@@ -2233,22 +2233,13 @@ async function applyDomPermissions(pageKey, root, options) {
 
   var PAGE_CONTROL_MANIFESTS = Object.freeze({
     'index': Object.freeze({
-      hint: 'Pe index poți ascunde direct fiecare buton important. Pentru butoanele mari din stânga folosește elementele btn.group-..., iar pentru butoanele de sus folosește auth./dashboard..',
+      hint: 'Pe index, butoanele mari din stânga se setează sus în tabelul de pagini, pe rândurile group-*. Aici vezi doar elementele din interiorul indexului.',
       items: uniqueCatalog([].concat(
         entries([
           ['dashboard.palette','Buton Paletă'],
           ['dashboard.refresh','Buton Refresh'],
           ['auth.login','Buton Login'],
-          ['auth.logout','Buton Logout'],
-          ['btn.group-forja','Buton mare FORJĂ'],
-          ['btn.group-prelucrari','Buton mare PRELUCRĂRI MECANICE'],
-          ['btn.group-tratament-termic','Buton mare TRATAMENT TERMIC'],
-          ['btn.group-calitate','Buton mare CALITATE'],
-          ['btn.group-probleme-imbunatatire','Buton mare PROBLEME / ÎMBUNĂTĂȚIRI / INVESTIȚII'],
-          ['btn.page-kpi','Buton mare KPI'],
-          ['btn.group-planificari','Buton mare PLANIFICĂRI'],
-          ['btn.helper-data','Buton mare HELPER-DATA'],
-          ['btn.helper-acl','Buton mare PERMISIUNI (ACL)']
+          ['auth.logout','Buton Logout']
         ], 'action'),
         entries([
           ['section.status-bar','Zona status autentificare'],
