@@ -1086,7 +1086,6 @@
       }
 
       async function controlAllowed(controlKey){
-        if (currentRole === 'admin') return true;
         if (!currentUser) return controlKey === 'nav.login';
         try {
           if (window.RF_ACL && typeof window.RF_ACL.resolveControlAccess === 'function') {
@@ -1094,7 +1093,51 @@
             return !!(res && res.can_view === true);
           }
         } catch (_) {}
-        return true;
+        return currentRole === 'admin';
+      }
+
+      async function pageAllowed(pageKey){
+        if (!pageKey) return false;
+        if (!currentUser) return false;
+        try {
+          if (window.RF_ACL && typeof window.RF_ACL.resolvePageAccess === 'function') {
+            const res = await window.RF_ACL.resolvePageAccess(pageKey, { client: sb, user: currentUser, role: currentRole });
+            return !!(res && res.allowed === true);
+          }
+        } catch (_) {}
+        return isCurrentAdmin();
+      }
+
+      async function getCurrentAccountStatus(){
+        if (!currentUser) return null;
+        try {
+          if (window.RF_ACL && typeof window.RF_ACL.loadUserAccountStatus === 'function') {
+            return await window.RF_ACL.loadUserAccountStatus(sb, currentUser);
+          }
+        } catch (_) {}
+        try {
+          if (window.ERPAuth && typeof window.ERPAuth.getAccountStatus === 'function') {
+            return await window.ERPAuth.getAccountStatus(currentUser);
+          }
+        } catch (_) {}
+        return null;
+      }
+
+      async function enforceBlockedAccount(){
+        const status = await getCurrentAccountStatus();
+        if (status && (status.is_banned === true || status.is_active === false)) {
+          try { sessionStorage.setItem('rf_login_error', status.note || 'Cont blocat.'); } catch (_) {}
+          try { await sb.auth.signOut({ scope: 'local' }); } catch (_) {}
+          currentUser = null;
+          currentRole = 'viewer';
+          currentPermissions = null;
+          currentUserPermissions = null;
+          currentRolePermissions = null;
+          await applyLayout();
+          goToLogin();
+          return true;
+        }
+        return false;
       }
 
       function hasStrictUserAcl(){
@@ -1313,40 +1356,38 @@
         for (const item of pageItems) {
           const pageKey = item.dataset.pageKey;
           const link = item.matches('a[href]') ? item : item.querySelector('a[href]');
-          const adminOnly = pageKey === 'helper-data' || pageKey === 'helper-acl';
           const navControl = navControlByPage[pageKey] || '';
+          const allowedByPage = await pageAllowed(pageKey);
           const controlOk = navControl ? await controlAllowed(navControl) : true;
-          const on = adminOnly ? (isCurrentAdmin() && controlOk) : (!!currentUser && elementAllowed(item, pageKey) && controlOk);
+          const on = !!currentUser && allowedByPage && controlOk;
           setVisible(item, on);
-          if (on) item.style.display = '';
+          item.style.display = on ? '' : 'none';
           applyAccessState(item, on, getDeniedMessage(pageKey, link ? link.getAttribute('href') : ''));
         }
 
         const subLinks = qsa('.subpanel [data-page-key]');
         for (const a of subLinks) {
-          const on = !!currentUser && elementAllowed(a, a.dataset.pageKey);
+          const pageKey = a.dataset.pageKey;
+          const on = !!currentUser && await pageAllowed(pageKey);
           setVisible(a, on);
-          applyAccessState(a, on, getDeniedMessage(a.dataset.pageKey, a.getAttribute('href')));
+          a.style.display = on ? '' : 'none';
+          applyAccessState(a, on, getDeniedMessage(pageKey, a.getAttribute('href')));
         }
 
         if (helperDataLink) {
-          const helperDataAllowed = !!currentUser && (
-            isCurrentAdmin() ||
-            (elementAllowed(itemHelperData || helperDataLink, 'helper-data') && await controlAllowed('nav.helper-data'))
-          );
-          if (itemHelperData) setVisible(itemHelperData, helperDataAllowed);
+          const helperDataAllowed = !!currentUser && await pageAllowed('helper-data') && await controlAllowed('nav.helper-data');
+          if (itemHelperData) { setVisible(itemHelperData, helperDataAllowed); itemHelperData.style.display = helperDataAllowed ? '' : 'none'; }
           setVisible(helperDataLink, helperDataAllowed);
+          helperDataLink.style.display = helperDataAllowed ? '' : 'none';
           applyAccessState(helperDataLink, helperDataAllowed, getDeniedMessage('helper-data', helperDataLink.getAttribute('href')));
         }
 
         if (itemAcl) {
           const aclLink = itemAcl.querySelector('a[href]');
-          const aclAllowed = !!currentUser && (
-            isCurrentAdmin() ||
-            (elementAllowed(itemAcl, 'helper-acl') && await controlAllowed('nav.helper-acl'))
-          );
+          const aclAllowed = !!currentUser && await pageAllowed('helper-acl') && await controlAllowed('nav.helper-acl');
           setVisible(itemAcl, aclAllowed);
-          if (aclLink) setVisible(aclLink, aclAllowed);
+          itemAcl.style.display = aclAllowed ? '' : 'none';
+          if (aclLink) { setVisible(aclLink, aclAllowed); aclLink.style.display = aclAllowed ? '' : 'none'; }
           applyAccessState(itemAcl, aclAllowed, getDeniedMessage('helper-acl', aclLink ? aclLink.getAttribute('href') : 'helper-acl.html'));
         }
 
@@ -1377,13 +1418,12 @@
           const totalPageButtons = panel ? Number(panel.dataset.totalPageButtons || '0') : 0;
           const panelHasVisibleChild = !!(panel && panel.dataset.hasVisibleChild === '1');
           const controlOk = await controlAllowed(navControlByGroup[groupKey] || '');
-          const groupAllowed = !!currentUser && elementAllowed(item, groupKey) && controlOk;
-          const on = groupAllowed && totalPageButtons > 0 && panelHasVisibleChild;
+          const allowedByGroup = await pageAllowed(groupKey);
+          const on = !!currentUser && allowedByGroup && controlOk && totalPageButtons > 0 && panelHasVisibleChild;
           setVisible(item, on);
+          item.style.display = on ? '' : 'none';
           applyAccessState(item, on, getDeniedMessage(groupKey, ''));
         }
-
-        enforceAdminOnlyButtons();
 
         if (!currentUser) {
           showPanel(null);
@@ -1464,6 +1504,8 @@
           }
         } catch (_) {}
 
+        if (await enforceBlockedAccount()) return;
+        if (await enforceBlockedAccount()) return;
         currentUserPermissions = await loadUserPermissionMap(currentUser);
         currentRolePermissions = await loadRolePermissionMap(currentRole);
         currentPermissions = currentUserPermissions || currentRolePermissions;
