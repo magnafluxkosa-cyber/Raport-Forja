@@ -1643,20 +1643,20 @@ async function applyDomPermissions(pageKey, root, options) {
       return {
         is_active: row.is_active !== false,
         is_banned: row.is_banned === true,
-        note: String(row.note || '').trim(),
+        note: String((row.note || row.ban_reason || '')).trim(),
         email: normalizeAclEmail(row.email || email),
         user_id: String(row.user_id || userId || '').trim()
       };
     }
     try {
       if (userId) {
-        var byUserId = await client.from('user_account_access').select('user_id,email,is_active,is_banned,note').eq('user_id', userId).maybeSingle();
+        var byUserId = await client.from('user_account_access').select('user_id,email,is_active,is_banned,note,ban_reason').eq('user_id', userId).maybeSingle();
         if (!byUserId.error && byUserId.data) return normalizeRow(byUserId.data);
       }
     } catch (_) {}
     try {
       if (email) {
-        var byEmail = await client.from('user_account_access').select('user_id,email,is_active,is_banned,note').ilike('email', email).maybeSingle();
+        var byEmail = await client.from('user_account_access').select('user_id,email,is_active,is_banned,note,ban_reason').ilike('email', email).maybeSingle();
         if (!byEmail.error && byEmail.data) return normalizeRow(byEmail.data);
       }
     } catch (_) {}
