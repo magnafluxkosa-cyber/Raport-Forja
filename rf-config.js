@@ -1039,9 +1039,24 @@ function getControlCatalogForPage(pageKey) {
     if (!window.supabase || typeof window.supabase.createClient !== 'function') {
       throw new Error('Supabase library is not loaded.');
     }
-    return window.supabase.createClient(CONFIG.SUPABASE_URL, CONFIG.SUPABASE_ANON_KEY, {
-      auth: getAuthOptions(options && options.auth)
+    var authOptions = getAuthOptions(options && options.auth);
+    var singleton = window.__RF_SUPABASE_SINGLETON__;
+    var canReuse = singleton && singleton.client && singleton.url === CONFIG.SUPABASE_URL && singleton.key === CONFIG.SUPABASE_ANON_KEY;
+    var wantsDefaultAuth = (!options || !options.auth || JSON.stringify(authOptions) === JSON.stringify(getAuthOptions()));
+    if (canReuse && wantsDefaultAuth) {
+      return singleton.client;
+    }
+    var client = window.supabase.createClient(CONFIG.SUPABASE_URL, CONFIG.SUPABASE_ANON_KEY, {
+      auth: authOptions
     });
+    if (wantsDefaultAuth) {
+      window.__RF_SUPABASE_SINGLETON__ = {
+        url: CONFIG.SUPABASE_URL,
+        key: CONFIG.SUPABASE_ANON_KEY,
+        client: client
+      };
+    }
+    return client;
   }
 
   function safeLower(value) {

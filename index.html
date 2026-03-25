@@ -776,9 +776,11 @@
 
       const cfg = getConfig();
       const sb = (cfg.url && cfg.key && window.supabase)
-        ? window.supabase.createClient(cfg.url, cfg.key, {
-            auth: { persistSession:true, autoRefreshToken:true, detectSessionInUrl:true }
-          })
+        ? ((window.createRfSupabaseClient && typeof window.createRfSupabaseClient === 'function')
+            ? window.createRfSupabaseClient()
+            : window.supabase.createClient(cfg.url, cfg.key, {
+                auth: { persistSession:true, autoRefreshToken:true, detectSessionInUrl:true }
+              }))
         : null;
 
       let currentUser = null;
@@ -1002,6 +1004,12 @@
         return String(currentUser?.email || '').trim().toLowerCase();
       }
 
+      function hasAnyExplicitUserAcl(){
+        if (currentUserPermissions instanceof Map && currentUserPermissions.size > 0) return true;
+        const mirror = getMirrorRoleData();
+        return !!((mirror.userPermissions && Object.keys(mirror.userPermissions).length) || (mirror.userGrants && Object.keys(mirror.userGrants).length));
+      }
+
       function permissionEntryCanView(value){
         if (value && typeof value === 'object' && Object.prototype.hasOwnProperty.call(value, 'can_view')) {
           return value.can_view === true;
@@ -1096,10 +1104,14 @@
           return userExplicit === true;
         }
 
+        if (hasAnyExplicitUserAcl()) {
+          return false;
+        }
+
         const explicit = getExplicitAclDecision(pageKey, href);
         if (explicit === false) return false;
         if (explicit === true) return true;
-        return true;
+        return false;
       }
 
       function getDeniedMessage(pageKey, href){
@@ -1268,14 +1280,14 @@
           const pageKey = item.dataset.pageKey;
           const link = item.matches('a[href]') ? item : item.querySelector('a[href]');
           const adminOnly = pageKey === 'helper-data' || pageKey === 'helper-acl';
-          const on = adminOnly ? isCurrentAdmin() : (currentUser ? elementAllowed(item, pageKey) : true);
+          const on = adminOnly ? isCurrentAdmin() : (currentUser ? elementAllowed(item, pageKey) : false);
           setVisible(item, on);
           if (on) item.style.display = '';
           applyAccessState(item, on, getDeniedMessage(pageKey, link ? link.getAttribute('href') : ''));
         });
 
         qsa('.subpanel [data-page-key]').forEach(a => {
-          const on = currentUser ? elementAllowed(a, a.dataset.pageKey) : true;
+          const on = currentUser ? elementAllowed(a, a.dataset.pageKey) : false;
           setVisible(a, on);
           applyAccessState(a, on, getDeniedMessage(a.dataset.pageKey, a.getAttribute('href')));
         });
@@ -1598,6 +1610,20 @@
 
         const logoutFlag = sessionStorage.getItem('rf_force_stay_on_login') === '1' || localStorage.getItem('rf_force_stay_on_login') === '1';
         if (event !== 'SIGNED_OUT' && !logoutFlag) {
+          const recoveredSilent = await getActiveSession();
+          if (recoveredSilent?.user) {
+            clearLogoutFlags();
+            currentUser = recoveredSilent.user;
+            const resolvedSilent = await resolveRole(currentUser);
+            currentRole = resolvedSilent.role || getStoredRole() || 'viewer';
+            try { localStorage.setItem('rf_cached_role', currentRole); } catch (_) {}
+            try { sessionStorage.setItem('rf_cached_role', currentRole); } catch (_) {}
+            currentUserPermissions = await loadUserPermissionMap(currentUser);
+            currentRolePermissions = await loadRolePermissionMap(currentRole);
+            currentPermissions = currentUserPermissions || currentRolePermissions;
+            await loadDashboardAcl();
+            applyLayout();
+          }
           return;
         }
 
