@@ -1094,25 +1094,12 @@
             return !!(res && res.can_view === true);
           }
         } catch (_) {}
-        return false;
+        return true;
       }
 
       function hasStrictUserAcl(){
         return currentUserPermissions instanceof Map && currentUserPermissions.size > 0;
       }
-
-      async function pageAllowedStrict(pageKey){
-        if (!currentUser) return false;
-        if (currentRole === 'admin') return true;
-        try {
-          if (window.RF_ACL && typeof window.RF_ACL.resolvePageAccess === 'function') {
-            const res = await window.RF_ACL.resolvePageAccess(pageKey, { client: sb, user: currentUser, role: currentRole });
-            return !!(res && res.allowed === true && res.permissions && res.permissions.can_view === true);
-          }
-        } catch (_) {}
-        return false;
-      }
-
 
       function elementAllowed(el, pageKey){
         if (!currentUser) return false;
@@ -1287,7 +1274,6 @@
         });
       }
 
-
       async function applyLayout(){
         const loginVisible = !currentUser && await controlAllowed('nav.login');
         const logoutVisible = !!currentUser && await controlAllowed('nav.logout');
@@ -1307,6 +1293,12 @@
         } else {
           setStatusChips(false, null, '');
           if (aclDeniedBanner) { aclDeniedBanner.classList.add('hidden'); aclDeniedBanner.textContent = ''; }
+          qsa('.page-item, .group-item, .subpanel [data-page-key], .innerTrigger').forEach(function(el){
+            setVisible(el, false);
+            applyAccessState(el, false, 'Trebuie să te autentifici.');
+          });
+          showPanel(null);
+          return;
         }
 
         const navControlByPage = {
@@ -1327,10 +1319,10 @@
         for (const item of pageItems) {
           const pageKey = item.dataset.pageKey;
           const link = item.matches('a[href]') ? item : item.querySelector('a[href]');
+          const adminOnly = pageKey === 'helper-data' || pageKey === 'helper-acl';
           const navControl = navControlByPage[pageKey] || '';
-          const pageOk = await pageAllowedStrict(pageKey);
           const controlOk = navControl ? await controlAllowed(navControl) : true;
-          const on = !!currentUser && pageOk && controlOk;
+          const on = adminOnly ? (isCurrentAdmin() && controlOk) : (!!currentUser && elementAllowed(item, pageKey) && controlOk);
           setVisible(item, on);
           if (on) item.style.display = '';
           applyAccessState(item, on, getDeniedMessage(pageKey, link ? link.getAttribute('href') : ''));
@@ -1338,14 +1330,16 @@
 
         const subLinks = qsa('.subpanel [data-page-key]');
         for (const a of subLinks) {
-          const pageOk = await pageAllowedStrict(a.dataset.pageKey);
-          const on = !!currentUser && pageOk;
+          const on = !!currentUser && elementAllowed(a, a.dataset.pageKey);
           setVisible(a, on);
           applyAccessState(a, on, getDeniedMessage(a.dataset.pageKey, a.getAttribute('href')));
         }
 
         if (helperDataLink) {
-          const helperDataAllowed = !!currentUser && await pageAllowedStrict('helper-data') && await controlAllowed('nav.helper-data');
+          const helperDataAllowed = !!currentUser && (
+            isCurrentAdmin() ||
+            (elementAllowed(itemHelperData || helperDataLink, 'helper-data') && await controlAllowed('nav.helper-data'))
+          );
           if (itemHelperData) setVisible(itemHelperData, helperDataAllowed);
           setVisible(helperDataLink, helperDataAllowed);
           applyAccessState(helperDataLink, helperDataAllowed, getDeniedMessage('helper-data', helperDataLink.getAttribute('href')));
@@ -1353,7 +1347,10 @@
 
         if (itemAcl) {
           const aclLink = itemAcl.querySelector('a[href]');
-          const aclAllowed = !!currentUser && await pageAllowedStrict('helper-acl') && await controlAllowed('nav.helper-acl');
+          const aclAllowed = !!currentUser && (
+            isCurrentAdmin() ||
+            (elementAllowed(itemAcl, 'helper-acl') && await controlAllowed('nav.helper-acl'))
+          );
           setVisible(itemAcl, aclAllowed);
           if (aclLink) setVisible(aclLink, aclAllowed);
           applyAccessState(itemAcl, aclAllowed, getDeniedMessage('helper-acl', aclLink ? aclLink.getAttribute('href') : 'helper-acl.html'));
@@ -1385,32 +1382,340 @@
           const panel = panelId ? qs('#' + panelId) : null;
           const totalPageButtons = panel ? Number(panel.dataset.totalPageButtons || '0') : 0;
           const panelHasVisibleChild = !!(panel && panel.dataset.hasVisibleChild === '1');
-          const controlKey = navControlByGroup[groupKey] || '';
-          const groupOk = await pageAllowedStrict(groupKey);
-          const controlOk = controlKey ? await controlAllowed(controlKey) : true;
-          const on = !!currentUser && groupOk && controlOk && totalPageButtons > 0 && panelHasVisibleChild;
+          const controlOk = await controlAllowed(navControlByGroup[groupKey] || '');
+          const groupAllowed = !!currentUser && elementAllowed(item, groupKey) && controlOk;
+          const on = groupAllowed && totalPageButtons > 0 && panelHasVisibleChild;
           setVisible(item, on);
-          applyAccessState(item, on, getDeniedMessage(groupKey, panelId));
+          applyAccessState(item, on, getDeniedMessage(groupKey, ''));
         }
 
-        const standaloneItems = qsa('.group-item[data-page-key]:not([data-target])');
-        for (const item of standaloneItems) {
-          const pageKey = item.dataset.pageKey || '';
-          const link = item.matches('a[href]') ? item : item.querySelector('a[href]');
-          const navControl = navControlByPage[pageKey] || '';
-          const pageOk = await pageAllowedStrict(pageKey);
-          const controlOk = navControl ? await controlAllowed(navControl) : true;
-          const on = !!currentUser && pageOk && controlOk;
-          setVisible(item, on);
-          applyAccessState(item, on, getDeniedMessage(pageKey, link ? link.getAttribute('href') : ''));
+        enforceAdminOnlyButtons();
+
+        if (!currentUser) {
+          showPanel(null);
+          return;
         }
 
-        const anyVisibleGroup = qsa('.group-item').some(node => !node.classList.contains('hidden'));
-        if (!anyVisibleGroup) {
-          const openPanels = qsa('.subpanel:not(.hidden)');
-          openPanels.forEach(panel => panel.classList.add('hidden'));
-          if (emptyState) emptyState.classList.remove('hidden');
-        }
+        const activeItem = currentPanel ? qs(`.group-item[data-target="${currentPanel}"]`) : null;
+        const activeStillVisible = !!(activeItem && !activeItem.classList.contains('hidden') && !activeItem.classList.contains('disabled'));
+        showPanel(activeStillVisible ? currentPanel : firstVisiblePanel());
       }
 
+      function goToLogin(){
+        const target = `./login.html?t=${Date.now()}`;
+        try { window.location.replace(target); }
+        catch (_) { window.location.href = target; }
+      }
 
+      function clearLogoutFlags(){
+        try { sessionStorage.removeItem('rf_force_stay_on_login'); } catch (_) {}
+        try { localStorage.removeItem('rf_force_stay_on_login'); } catch (_) {}
+      }
+
+      async function getActiveSession(){
+        if (!sb) return null;
+
+        for (let i = 0; i < 6; i += 1) {
+          try {
+            const { data, error } = await sb.auth.getSession();
+            if (!error && data?.session?.user) return data.session;
+          } catch (_) {}
+          await new Promise(resolve => window.setTimeout(resolve, 120));
+        }
+
+        try {
+          const { data, error } = await sb.auth.getUser();
+          if (!error && data?.user) return { user:data.user };
+        } catch (_) {}
+
+        return null;
+      }
+
+      async function boot(){
+        if (!sb) {
+          chipAuth.textContent = 'Config lipsă';
+          chipAuth.className = 'chip bad';
+          return;
+        }
+
+        const cachedUser = parseSupabaseUserFromStorage();
+        const cachedRole = getStoredRole();
+        if (cachedUser || cachedRole) {
+          setStatusChips(true, cachedUser, cachedRole || 'viewer');
+        }
+
+        const activeSession = await getActiveSession();
+        if (!activeSession?.user) {
+          currentUser = null;
+          currentRole = 'viewer';
+          currentPermissions = null;
+          currentUserPermissions = null;
+          currentRolePermissions = null;
+          await applyLayout();
+          return;
+        }
+
+        clearLogoutFlags();
+        currentUser = activeSession.user;
+        const resolved = await resolveRole(currentUser);
+        currentRole = resolved.role || cachedRole || 'viewer';
+
+        try { localStorage.setItem('rf_cached_role', currentRole); } catch (_) {}
+        try { sessionStorage.setItem('rf_cached_role', currentRole); } catch (_) {}
+        try {
+          const displayId = getStoredDisplayId() || safeIdFromEmail(currentUser.email);
+          if (displayId) {
+            localStorage.setItem('rf_display_id', displayId);
+            sessionStorage.setItem('rf_display_id', displayId);
+          }
+        } catch (_) {}
+
+        currentUserPermissions = await loadUserPermissionMap(currentUser);
+        currentRolePermissions = await loadRolePermissionMap(currentRole);
+        currentPermissions = currentUserPermissions || currentRolePermissions;
+        await loadDashboardAcl();
+        await applyLayout();
+      }
+
+      btnRefresh.addEventListener('click', () => window.location.reload());
+
+      function clearAuthStorage(){
+        const stores = [window.localStorage, window.sessionStorage];
+        const keysToRemove = [];
+        stores.forEach(store => {
+          try {
+            for (let i = 0; i < store.length; i += 1) {
+              const key = store.key(i);
+              if (!key) continue;
+              if (
+                key.startsWith('sb-') ||
+                key.includes('-auth-token') ||
+                key.includes('supabase.auth.token') ||
+                key.startsWith('rf_')
+              ) {
+                keysToRemove.push([store, key]);
+              }
+            }
+          } catch (_) {}
+        });
+
+        keysToRemove.forEach(([store, key]) => {
+          try { store.removeItem(key); } catch (_) {}
+        });
+      }
+
+      async function handleLogout(){
+        const target = `./login.html?logout=1&t=${Date.now()}`;
+
+        btnLogout.disabled = true;
+        btnRefresh.disabled = true;
+
+        try { sessionStorage.setItem('rf_force_stay_on_login', '1'); } catch (_) {}
+        try { localStorage.setItem('rf_force_stay_on_login', '1'); } catch (_) {}
+
+        clearAuthStorage();
+        currentUser = null;
+        currentRole = 'viewer';
+        currentPermissions = null;
+        await applyLayout();
+
+        try {
+          if (sb) {
+            sb.auth.signOut({ scope: 'local' }).catch(() => {});
+            sb.auth.signOut({ scope: 'global' }).catch(() => {});
+          }
+        } catch (_) {}
+
+        window.setTimeout(() => {
+          try { window.location.replace(target); }
+          catch (_) { window.location.href = target; }
+        }, 10);
+      }
+
+      btnLogout.addEventListener('click', handleLogout);
+
+      qsa('.innerTrigger[data-inner-target]').forEach(btn => {
+        btn.addEventListener('click', () => {
+          if (!currentUser) { goToLogin(); return; }
+          const scopeId = btn.dataset.innerScope;
+          const targetId = btn.dataset.innerTarget;
+          if (!scopeId || !targetId) return;
+          showInnerPanel(scopeId, currentInnerPanels[scopeId] === targetId ? null : targetId);
+        });
+      });
+
+      qsa('.group-item').forEach(item => {
+        const target = item.dataset.target;
+        const trigger = item.querySelector('.menuBtn');
+        if (!trigger) return;
+
+        item.addEventListener('mouseenter', () => {
+          if (!currentUser || item.classList.contains('hidden')) return;
+          if (item.classList.contains('disabled')) { showPanel(null); return; }
+          showPanel(target);
+        });
+
+        trigger.addEventListener('click', () => {
+          if (!currentUser) { goToLogin(); return; }
+          if (item.classList.contains('hidden') || item.classList.contains('disabled')) return;
+          showPanel(currentPanel === target ? null : target);
+        });
+
+        trigger.setAttribute('tabindex', '0');
+        trigger.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            trigger.click();
+          }
+        });
+      });
+
+      qsa('.page-item').forEach(item => {
+        item.addEventListener('mouseenter', () => {
+          if (!currentUser || item.classList.contains('hidden')) return;
+          showPanel(null);
+        });
+
+        item.addEventListener('focusin', () => {
+          if (!currentUser || item.classList.contains('hidden')) return;
+          showPanel(null);
+        });
+      });
+
+      document.addEventListener('mouseover', (e) => {
+        const target = e.target.closest('[data-denied-message]');
+        if (!target) {
+          hideDeniedTooltip();
+          return;
+        }
+        showDeniedTooltip(target.dataset.deniedMessage || '', e.clientX, e.clientY);
+      });
+
+      document.addEventListener('mousemove', (e) => {
+        const target = e.target.closest('[data-denied-message]');
+        if (!target || !aclTooltip || aclTooltip.classList.contains('hidden')) return;
+        positionTooltip(e.clientX, e.clientY);
+      });
+
+      document.addEventListener('mouseout', (e) => {
+        const from = e.target.closest('[data-denied-message]');
+        if (!from) return;
+        const to = e.relatedTarget && e.relatedTarget.closest ? e.relatedTarget.closest('[data-denied-message]') : null;
+        if (from === to) return;
+        hideDeniedTooltip();
+      });
+
+      document.addEventListener('focusin', (e) => {
+        const target = e.target.closest('[data-denied-message]');
+        if (!target) return;
+        const r = target.getBoundingClientRect();
+        showDeniedTooltip(target.dataset.deniedMessage || '', r.right, r.bottom);
+      });
+
+      document.addEventListener('focusout', (e) => {
+        const target = e.target.closest('[data-denied-message]');
+        if (!target) return;
+        hideDeniedTooltip();
+      });
+
+      window.addEventListener('scroll', hideDeniedTooltip, true);
+      window.addEventListener('resize', hideDeniedTooltip);
+
+      document.addEventListener('click', (e) => {
+        const link = e.target.closest('a');
+        if (!link) return;
+        if (!currentUser) {
+          e.preventDefault();
+          goToLogin();
+          return;
+        }
+
+        const controlled = link.closest('[data-page-key]');
+        if (controlled && !elementAllowed(controlled, controlled.dataset.pageKey)) {
+          e.preventDefault();
+          return;
+        }
+      }, true);
+
+      window.setInterval(enforceAdminOnlyButtons, 800);
+
+      sb?.auth.onAuthStateChange(async (event, session) => {
+        if (session?.user) {
+          clearLogoutFlags();
+          currentUser = session.user;
+          const resolved = await resolveRole(currentUser);
+          currentRole = resolved.role || getStoredRole() || 'viewer';
+          try { localStorage.setItem('rf_cached_role', currentRole); } catch (_) {}
+          try { sessionStorage.setItem('rf_cached_role', currentRole); } catch (_) {}
+          try {
+            const displayId = getStoredDisplayId() || safeIdFromEmail(currentUser.email);
+            if (displayId) {
+              localStorage.setItem('rf_display_id', displayId);
+              sessionStorage.setItem('rf_display_id', displayId);
+            }
+          } catch (_) {}
+          currentUserPermissions = await loadUserPermissionMap(currentUser);
+          currentRolePermissions = await loadRolePermissionMap(currentRole);
+          currentPermissions = currentUserPermissions || currentRolePermissions;
+          await loadDashboardAcl();
+          await applyLayout();
+          return;
+        }
+
+        const logoutFlag = sessionStorage.getItem('rf_force_stay_on_login') === '1' || localStorage.getItem('rf_force_stay_on_login') === '1';
+        if (event !== 'SIGNED_OUT' && !logoutFlag) {
+          const recoveredSilent = await getActiveSession();
+          if (recoveredSilent?.user) {
+            clearLogoutFlags();
+            currentUser = recoveredSilent.user;
+            const resolvedSilent = await resolveRole(currentUser);
+            currentRole = resolvedSilent.role || getStoredRole() || 'viewer';
+            try { localStorage.setItem('rf_cached_role', currentRole); } catch (_) {}
+            try { sessionStorage.setItem('rf_cached_role', currentRole); } catch (_) {}
+            currentUserPermissions = await loadUserPermissionMap(currentUser);
+            currentRolePermissions = await loadRolePermissionMap(currentRole);
+            currentPermissions = currentUserPermissions || currentRolePermissions;
+            await loadDashboardAcl();
+            await applyLayout();
+          }
+          return;
+        }
+
+        const recovered = await getActiveSession();
+        if (recovered?.user) {
+          clearLogoutFlags();
+          currentUser = recovered.user;
+          const resolved = await resolveRole(currentUser);
+          currentRole = resolved.role || getStoredRole() || 'viewer';
+          try { localStorage.setItem('rf_cached_role', currentRole); } catch (_) {}
+          try { sessionStorage.setItem('rf_cached_role', currentRole); } catch (_) {}
+          currentUserPermissions = await loadUserPermissionMap(currentUser);
+          currentRolePermissions = await loadRolePermissionMap(currentRole);
+          currentPermissions = currentUserPermissions || currentRolePermissions;
+          await loadDashboardAcl();
+          await applyLayout();
+          return;
+        }
+
+        currentUser = null;
+        currentRole = 'viewer';
+        currentPermissions = null;
+        currentUserPermissions = null;
+        currentRolePermissions = null;
+        await applyLayout();
+
+        const target = `./login.html?logout=1&t=${Date.now()}`;
+        window.setTimeout(() => {
+          try { window.location.replace(target); }
+          catch (_) { window.location.href = target; }
+        }, 10);
+      });
+
+      if (document.readyState === 'loading') window.addEventListener('DOMContentLoaded', boot);
+      else boot();
+    })();
+  </script>
+  <script src="./mobile-erp.js"></script>
+  <script src="./kad-logo.js"></script>
+</body>
+</html>

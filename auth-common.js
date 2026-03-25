@@ -242,18 +242,18 @@
       return {
         is_active: row && row.is_active !== false,
         is_banned: !!(row && row.is_banned === true),
-        note: String((row && (row.note || row.ban_reason)) || '').trim()
+        note: String(row && row.note || '').trim()
       };
     }
     try {
       if(userId){
-        const byId = await maybeSelect(sb.from('user_account_access').select('is_active,is_banned,note,ban_reason,user_id,email').eq('user_id', userId).maybeSingle());
+        const byId = await maybeSelect(sb.from('user_account_access').select('is_active,is_banned,note,user_id,email').eq('user_id', userId).maybeSingle());
         if(byId){ return norm(byId); }
       }
     } catch(_) {}
     try {
       if(email){
-        const byEmail = await maybeSelect(sb.from('user_account_access').select('is_active,is_banned,note,ban_reason,user_id,email').eq('email', email).maybeSingle());
+        const byEmail = await maybeSelect(sb.from('user_account_access').select('is_active,is_banned,note,user_id,email').eq('email', email).maybeSingle());
         if(byEmail){ return norm(byEmail); }
       }
     } catch(_) {}
@@ -283,7 +283,14 @@
         await sb.auth.signOut();
       } catch(_) {}
       clearUserState();
-      try { sessionStorage.setItem('rf_login_error', status.note || 'Cont blocat.'); } catch(_) {}
+      try { sessionStorage.setItem('rf_login_error', status.note || 'Cont blocat de administrator.'); } catch(_) {}
+      try {
+        const currentPage = getCurrentPageName();
+        if (currentPage && currentPage.toLowerCase() !== 'login.html' && typeof window !== 'undefined' && window.location) {
+          const loginUrl = buildLoginUrl(currentPage);
+          window.location.replace(loginUrl);
+        }
+      } catch(_) {}
       return null;
     }
 

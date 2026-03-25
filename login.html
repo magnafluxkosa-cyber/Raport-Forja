@@ -626,14 +626,50 @@
       }
 
       function buildRedirectUrl(){
-        try {
-          const params = new URLSearchParams(window.location.search || '');
-          const next = String(params.get('next') || '').trim();
-          if(next && !/^https?:/i.test(next) && !next.startsWith('//')){
-            return next;
-          }
-        } catch(_) {}
         return './index.html';
+      }
+
+      async function waitForStableAuthState(){
+        if(!window.ERPAuth || typeof window.ERPAuth.getCurrentUserWithRole !== 'function'){
+          return null;
+        }
+        for(let i = 0; i < 8; i += 1){
+          const state = await window.ERPAuth.getCurrentUserWithRole().catch(() => null);
+          if(state && state.user){
+            return state;
+          }
+          await new Promise(resolve => setTimeout(resolve, 180));
+        }
+        return null;
+      }
+
+      async function bootstrapExistingSession(){
+        if(!window.ERPAuth || typeof window.ERPAuth.getSession !== 'function'){
+          return;
+        }
+        const existingSession = await window.ERPAuth.getSession().catch(() => null);
+        if(!existingSession || !existingSession.user){
+          return;
+        }
+
+        setLoading(true, 'Se verifică sesiunea existentă...');
+        const state = await waitForStableAuthState();
+        setLoading(false);
+
+        if(state && state.user){
+          setStatus('Sesiune activă detectată. Redirecționare...', 'ok');
+          setMeta('Rol detectat: ' + (state.role || 'viewer'));
+          window.location.replace(buildRedirectUrl());
+          return;
+        }
+
+        try {
+          const blockedMsg = sessionStorage.getItem('rf_login_error') || '';
+          if (blockedMsg) {
+            setStatus(blockedMsg, 'error');
+            sessionStorage.removeItem('rf_login_error');
+          }
+        } catch (_) {}
       }
 
       function getFriendlyError(error){
@@ -701,10 +737,6 @@
 
           supabase = supabase || initClient();
 
-          try {
-            await supabase.auth.signOut({ scope: 'local' });
-          } catch(_) {}
-
           const authResult = await withTimeout(
             supabase.auth.signInWithPassword({ email, password }),
             15000,
@@ -720,8 +752,18 @@
             throw new Error('Autentificare nereușită: utilizatorul nu a fost returnat de server.');
           }
 
-          const resolved = await withTimeout(resolveRole(user), 12000, 'Citirea rolului');
-          if (window.ERPAuth && typeof window.ERPAuth.getAccountStatus === 'function') {
+          let resolved = await withTimeout(resolveRole(user), 12000, 'Citirea rolului');
+
+          if (window.ERPAuth && typeof window.ERPAuth.getCurrentUserWithRole === 'function') {
+            const stableState = await withTimeout(waitForStableAuthState(), 12000, 'Verificarea contului');
+            if (!stableState || !stableState.user) {
+              const blockedMsg = (() => {
+                try { return sessionStorage.getItem('rf_login_error') || ''; } catch (_) { return ''; }
+              })();
+              throw new Error(blockedMsg || 'Cont blocat.');
+            }
+            resolved = { role: stableState.role || resolved.role || 'viewer', email: normalizeEmail(stableState.user.email || resolved.email || email) };
+          } else if (window.ERPAuth && typeof window.ERPAuth.getAccountStatus === 'function') {
             const status = await withTimeout(window.ERPAuth.getAccountStatus(user), 12000, 'Verificarea contului');
             if (status && (status.is_banned || status.is_active === false)) {
               try { await supabase.auth.signOut(); } catch (_) {}
@@ -733,14 +775,13 @@
           safeSetLocal('rf_email', resolved.email || email);
           safeSetLocal('rf_role', resolved.role || 'viewer');
           safeSetLocal('rf_login_ts', String(Date.now()));
-          try { window.ERPAuth?.persistUserState?.(user, resolved.role || 'viewer'); } catch(_) {}
 
           clearLogoutFlags();
 
           setStatus('Autentificare reușită. Redirecționare...', 'ok');
           setMeta('Rol detectat: ' + (resolved.role || 'viewer'));
 
-          window.location.href = buildRedirectUrl();
+          window.location.replace(buildRedirectUrl());
         } catch (error) {
           console.error('Login error:', error);
           setStatus(getFriendlyError(error), 'error');
@@ -753,6 +794,9 @@
       try {
         supabase = initClient();
         setMeta('Conexiune pregătită.');
+        bootstrapExistingSession().catch(function(error){
+          console.error('Login bootstrap error:', error);
+        });
       } catch (error) {
         console.error('Supabase init error:', error);
         setStatus(getFriendlyError(error), 'error');
