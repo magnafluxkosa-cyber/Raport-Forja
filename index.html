@@ -835,13 +835,6 @@
         return normalizeRoleName(readStoredValue(ROLE_STORAGE_KEYS));
       }
 
-      function isEffectiveAdminUser(user, role){
-        const userEmail = String(user && user.email || '').trim().toLowerCase();
-        const roleName = normalizeRoleName(role);
-        const storedRole = getStoredRole();
-        return roleName === 'admin' || storedRole === 'admin' || (!!userEmail && userEmail === cfg.adminEmail);
-      }
-
       function parseSupabaseUserFromStorage(){
         const stores = [window.localStorage, window.sessionStorage];
         for (const store of stores) {
@@ -1093,7 +1086,7 @@
       }
 
       async function controlAllowed(controlKey){
-        if (isEffectiveAdminUser(currentUser, currentRole)) return true;
+        if (currentRole === 'admin') return true;
         if (!currentUser) return controlKey === 'nav.login';
         try {
           if (window.RF_ACL && typeof window.RF_ACL.resolveControlAccess === 'function') {
@@ -1115,10 +1108,10 @@
         const normalizedHref = normalizeHref(href);
 
         if (ADMIN_ONLY_KEYS.has(pageKey) || ADMIN_ONLY_HREFS.has(normalizedHref)) {
-          return isEffectiveAdminUser(currentUser, currentRole);
+          return currentRole === 'admin';
         }
 
-        if (isEffectiveAdminUser(currentUser, currentRole)) {
+        if (currentRole === 'admin') {
           return true;
         }
 
@@ -1268,7 +1261,17 @@
       }
 
       function enforceAdminOnlyButtons(){
-        // vizibilitatea butoanelor din index este controlată direct din ACL.
+        const show = !!currentUser && isCurrentAdmin();
+        [itemHelperData, itemAcl].forEach(item => {
+          if (!item) return;
+          item.classList.toggle('hidden', !show);
+          item.classList.toggle('disabled', !show);
+          item.style.display = show ? '' : 'none';
+          if (show) {
+            item.removeAttribute('aria-disabled');
+            setDeniedHint(item, '');
+          }
+        });
       }
 
       async function applyLayout(){
@@ -1292,26 +1295,28 @@
           if (aclDeniedBanner) { aclDeniedBanner.classList.add('hidden'); aclDeniedBanner.textContent = ''; }
         }
 
-        function navControlKey(pageKey){
-          const key = String(pageKey || '').trim();
-          return key ? `nav.${key}` : '';
-        }
+        const navControlByPage = {
+          'helper-data': 'nav.helper-data',
+          'helper-acl': 'nav.helper-acl',
+          'kpi': 'nav.kpi'
+        };
+        const navControlByGroup = {
+          'group-forja': 'nav.group-forja',
+          'group-prelucrari': 'nav.group-prelucrari',
+          'group-tratament-termic': 'nav.group-tratament-termic',
+          'group-calitate': 'nav.group-calitate',
+          'group-probleme-imbunatatire': 'nav.group-probleme-imbunatatire',
+          'group-planificari': 'nav.group-planificari'
+        };
 
         const pageItems = qsa('.page-item[data-page-key]');
         for (const item of pageItems) {
           const pageKey = item.dataset.pageKey;
           const link = item.matches('a[href]') ? item : item.querySelector('a[href]');
-          const navControl = navControlKey(pageKey);
-          const isAdminNow = isEffectiveAdminUser(currentUser, currentRole);
-          let on = false;
-
-          if (isAdminNow && (pageKey === 'helper-data' || pageKey === 'helper-acl')) {
-            on = true;
-          } else {
-            const controlOk = navControl ? await controlAllowed(navControl) : true;
-            on = !!currentUser && elementAllowed(item, pageKey) && controlOk;
-          }
-
+          const adminOnly = pageKey === 'helper-data' || pageKey === 'helper-acl';
+          const navControl = navControlByPage[pageKey] || '';
+          const controlOk = navControl ? await controlAllowed(navControl) : true;
+          const on = adminOnly ? (isCurrentAdmin() && controlOk) : (!!currentUser && elementAllowed(item, pageKey) && controlOk);
           setVisible(item, on);
           if (on) item.style.display = '';
           applyAccessState(item, on, getDeniedMessage(pageKey, link ? link.getAttribute('href') : ''));
@@ -1319,11 +1324,31 @@
 
         const subLinks = qsa('.subpanel [data-page-key]');
         for (const a of subLinks) {
-          const on = !!currentUser && elementAllowed(a, a.dataset.pageKey) && await controlAllowed(navControlKey(a.dataset.pageKey));
+          const on = !!currentUser && elementAllowed(a, a.dataset.pageKey);
           setVisible(a, on);
           applyAccessState(a, on, getDeniedMessage(a.dataset.pageKey, a.getAttribute('href')));
         }
 
+        if (helperDataLink) {
+          const helperDataAllowed = !!currentUser && (
+            isCurrentAdmin() ||
+            (elementAllowed(itemHelperData || helperDataLink, 'helper-data') && await controlAllowed('nav.helper-data'))
+          );
+          if (itemHelperData) setVisible(itemHelperData, helperDataAllowed);
+          setVisible(helperDataLink, helperDataAllowed);
+          applyAccessState(helperDataLink, helperDataAllowed, getDeniedMessage('helper-data', helperDataLink.getAttribute('href')));
+        }
+
+        if (itemAcl) {
+          const aclLink = itemAcl.querySelector('a[href]');
+          const aclAllowed = !!currentUser && (
+            isCurrentAdmin() ||
+            (elementAllowed(itemAcl, 'helper-acl') && await controlAllowed('nav.helper-acl'))
+          );
+          setVisible(itemAcl, aclAllowed);
+          if (aclLink) setVisible(aclLink, aclAllowed);
+          applyAccessState(itemAcl, aclAllowed, getDeniedMessage('helper-acl', aclLink ? aclLink.getAttribute('href') : 'helper-acl.html'));
+        }
 
         qsa('.subpanel').forEach(panel => {
           const pageButtons = qsa('#' + panel.id + ' [data-page-key]');
@@ -1351,7 +1376,7 @@
           const panel = panelId ? qs('#' + panelId) : null;
           const totalPageButtons = panel ? Number(panel.dataset.totalPageButtons || '0') : 0;
           const panelHasVisibleChild = !!(panel && panel.dataset.hasVisibleChild === '1');
-          const controlOk = await controlAllowed(navControlKey(groupKey));
+          const controlOk = await controlAllowed(navControlByGroup[groupKey] || '');
           const groupAllowed = !!currentUser && elementAllowed(item, groupKey) && controlOk;
           const on = groupAllowed && totalPageButtons > 0 && panelHasVisibleChild;
           setVisible(item, on);
