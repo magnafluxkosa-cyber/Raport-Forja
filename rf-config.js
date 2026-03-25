@@ -4,8 +4,16 @@
   var PAGE_LIST = [
     { page_key: 'index', page_name: 'Dashboard / Index' },
     { page_key: 'login', page_name: 'Login' },
+    { page_key: 'group-forja', page_name: 'Grup / Forjă' },
+    { page_key: 'group-prelucrari', page_name: 'Grup / Prelucrări mecanice' },
+    { page_key: 'group-tratament-termic', page_name: 'Grup / Tratament termic' },
+    { page_key: 'group-calitate', page_name: 'Grup / Calitate' },
+    { page_key: 'group-probleme-imbunatatire', page_name: 'Grup / Probleme, îmbunătățiri și investiții' },
+    { page_key: 'group-planificari', page_name: 'Grup / Planificări' },
+    { page_key: 'group-zale', page_name: 'Grup / Urmărire zale' },
+    { page_key: 'group-rapoarte', page_name: 'Grup / Rapoarte' },
+    { page_key: 'group-inventar', page_name: 'Grup / Inventar' },
     { page_key: 'helper-data', page_name: 'Helper Data' },
-    { page_key: 'helper-acl', page_name: 'Helper ACL' },
     { page_key: 'numeralkod', page_name: 'Numeral KOD' },
     { page_key: 'intrari-otel', page_name: 'Intrări Oțel' },
     { page_key: 'debitate', page_name: 'Debitate' },
@@ -16,7 +24,12 @@
     { page_key: 'urmarire-actiuni-progres', page_name: 'Urmărire acțiuni și progres' },
     { page_key: 'imbunatatire-continua', page_name: 'Îmbunătățire continuă' },
     { page_key: 'investitii', page_name: 'Investiții' },
+    { page_key: 'tratament-termic-rapoarte', page_name: 'Tratament Termic - Rapoarte' },
+    { page_key: 'tratament-termic-probleme', page_name: 'Tratament Termic - Probleme T.T' },
+    { page_key: 'tratament-termic-fise-tehnologice', page_name: 'Tratament Termic - Fișe tehnologice' },
     { page_key: 'rebut', page_name: 'Rebut' },
+    { page_key: 'rebut-pm', page_name: 'Rebut PM' },
+    { page_key: 'rebut-pm-helper', page_name: 'Helper Rebut PM' },
     { page_key: 'kpi', page_name: 'KPI' },
     { page_key: 'inventar-otel', page_name: 'Inventar Oțel' },
     { page_key: 'inventar-debitat', page_name: 'Inventar Debitat' },
@@ -46,6 +59,133 @@
 
   var PAGE_MAP = Object.create(null);
   PAGE_LIST.forEach(function (page) { PAGE_MAP[page.page_key] = page.page_name; });
+
+
+var COMMON_CONTROL_CATALOG = Object.freeze([
+  Object.freeze({ control_key:'rows.filter', control_label:'Filtrare tabel', control_type:'filter' }),
+  Object.freeze({ control_key:'rows.add', control_label:'Adăugare rând', control_type:'action' }),
+  Object.freeze({ control_key:'rows.edit', control_label:'Editare rând', control_type:'action' }),
+  Object.freeze({ control_key:'rows.delete', control_label:'Ștergere rând', control_type:'action' }),
+  Object.freeze({ control_key:'data.export', control_label:'Export', control_type:'action' }),
+  Object.freeze({ control_key:'data.import', control_label:'Import', control_type:'action' }),
+  Object.freeze({ control_key:'cloud.refresh', control_label:'Refresh cloud', control_type:'action' }),
+  Object.freeze({ control_key:'cloud.save', control_label:'Salvare în cloud', control_type:'action' }),
+  Object.freeze({ control_key:'modal.open', control_label:'Deschidere formular', control_type:'action' })
+]);
+
+var PAGE_CONTROL_OVERRIDES = Object.freeze({
+  'index': Object.freeze([
+    Object.freeze({ control_key:'nav.group-forja', control_label:'Buton FORJĂ', control_type:'action' }),
+    Object.freeze({ control_key:'nav.group-prelucrari', control_label:'Buton PRELUCRĂRI MECANICE', control_type:'action' }),
+    Object.freeze({ control_key:'nav.group-tratament-termic', control_label:'Buton TRATAMENT TERMIC', control_type:'action' }),
+    Object.freeze({ control_key:'nav.group-calitate', control_label:'Buton CALITATE', control_type:'action' }),
+    Object.freeze({ control_key:'nav.group-probleme-imbunatatire', control_label:'Buton PROBLEME / ÎMBUNĂTĂȚIRI / INVESTIȚII', control_type:'action' }),
+    Object.freeze({ control_key:'nav.kpi', control_label:'Buton KPI', control_type:'action' }),
+    Object.freeze({ control_key:'nav.group-planificari', control_label:'Buton PLANIFICĂRI', control_type:'action' }),
+    Object.freeze({ control_key:'nav.helper-data', control_label:'Buton HELPER-DATA', control_type:'action' }),
+        Object.freeze({ control_key:'nav.numeralkod', control_label:'Buton NUMERALKOD', control_type:'action' }),
+    Object.freeze({ control_key:'nav.intrari-otel', control_label:'Buton INTRĂRI OȚEL', control_type:'action' }),
+    Object.freeze({ control_key:'nav.debitate', control_label:'Buton DEBITATE', control_type:'action' }),
+    Object.freeze({ control_key:'nav.forjate', control_label:'Buton FORJATE', control_type:'action' }),
+    Object.freeze({ control_key:'nav.program-utilaje', control_label:'Buton PROGRAM UTILAJE', control_type:'action' }),
+    Object.freeze({ control_key:'nav.zale-9k-6628-29', control_label:'Buton 9K-6628/29', control_type:'action' }),
+    Object.freeze({ control_key:'nav.zale-229-6909-10', control_label:'Buton 229-6909/10', control_type:'action' }),
+    Object.freeze({ control_key:'nav.zale-503-0761-62', control_label:'Buton 503-0761/62', control_type:'action' }),
+    Object.freeze({ control_key:'nav.zale-106-1625-26', control_label:'Buton 106-1625/26', control_type:'action' }),
+    Object.freeze({ control_key:'nav.zale-378-8241-42', control_label:'Buton 378-8241/42', control_type:'action' }),
+    Object.freeze({ control_key:'nav.zale-248-2307-08', control_label:'Buton 248-2307/08', control_type:'action' }),
+    Object.freeze({ control_key:'nav.zale-417-3595-96', control_label:'Buton 417-3595/96', control_type:'action' }),
+    Object.freeze({ control_key:'nav.zale-418-2091-92', control_label:'Buton 418-2091/92', control_type:'action' }),
+    Object.freeze({ control_key:'nav.ambalare-9k-6628-29', control_label:'Buton AMBALARE 9K-6628/29', control_type:'action' }),
+    Object.freeze({ control_key:'nav.ambalare-229-6909-10', control_label:'Buton AMBALARE 229-6909/10', control_type:'action' }),
+    Object.freeze({ control_key:'nav.ambalare-503-0761-62', control_label:'Buton AMBALARE 503-0761/62', control_type:'action' }),
+    Object.freeze({ control_key:'nav.ambalare-106-1625-26', control_label:'Buton AMBALARE 106-1625/26', control_type:'action' }),
+    Object.freeze({ control_key:'nav.ambalare-378-8241-42', control_label:'Buton AMBALARE 378-8241/42', control_type:'action' }),
+    Object.freeze({ control_key:'nav.ambalare-248-2307-08', control_label:'Buton AMBALARE 248-2307/08', control_type:'action' }),
+    Object.freeze({ control_key:'nav.ambalare-417-3595-96', control_label:'Buton AMBALARE 417-3595/96', control_type:'action' }),
+    Object.freeze({ control_key:'nav.ambalare-418-2091-92', control_label:'Buton AMBALARE 418-2091/92', control_type:'action' }),
+    Object.freeze({ control_key:'nav.inventar-otel', control_label:'Buton INVENTAR OȚEL', control_type:'action' }),
+    Object.freeze({ control_key:'nav.inventar-debitat', control_label:'Buton INVENTAR DEBITAT', control_type:'action' }),
+    Object.freeze({ control_key:'nav.inventar-forjat', control_label:'Buton INVENTAR FORJAT', control_type:'action' }),
+    Object.freeze({ control_key:'nav.tratament-termic-rapoarte', control_label:'Buton T.T RAPOARTE', control_type:'action' }),
+    Object.freeze({ control_key:'nav.tratament-termic-probleme', control_label:'Buton T.T PROBLEME', control_type:'action' }),
+    Object.freeze({ control_key:'nav.tratament-termic-fise-tehnologice', control_label:'Buton T.T FIȘE TEHNOLOGICE', control_type:'action' }),
+    Object.freeze({ control_key:'nav.magnaflux', control_label:'Buton MAGNAFLUX', control_type:'action' }),
+    Object.freeze({ control_key:'nav.rebut', control_label:'Buton REBUT', control_type:'action' }),
+    Object.freeze({ control_key:'nav.probleme-raportate', control_label:'Buton PROBLEME RAPORTATE', control_type:'action' }),
+    Object.freeze({ control_key:'nav.urmarire-actiuni-progres', control_label:'Buton URMĂRIRE ACȚIUNI ȘI PROGRES', control_type:'action' }),
+    Object.freeze({ control_key:'nav.imbunatatire-continua', control_label:'Buton ÎMBUNĂTĂȚIRE CONTINUĂ', control_type:'action' }),
+    Object.freeze({ control_key:'nav.investitii', control_label:'Buton INVESTIȚII', control_type:'action' }),
+    Object.freeze({ control_key:'nav.planificare-forja', control_label:'Buton PLANIFICARE FORJĂ', control_type:'action' }),
+    Object.freeze({ control_key:'nav.comenzi-livrare', control_label:'Buton COMENZI LIVRARE', control_type:'action' }),
+    Object.freeze({ control_key:'nav.mrc-necesar-otel', control_label:'Buton MRC / NECESAR OȚEL', control_type:'action' }),
+    Object.freeze({ control_key:'nav.mrc-comenzi-otel', control_label:'Buton COMENZI OȚEL', control_type:'action' }),
+    Object.freeze({ control_key:'nav.mrc-comenzi-saptamanale', control_label:'Buton COMENZI SĂPTĂMÂNALE', control_type:'action' }),
+    Object.freeze({ control_key:'nav.login', control_label:'Buton Login', control_type:'action' }),
+    Object.freeze({ control_key:'nav.logout', control_label:'Buton Logout', control_type:'action' }),
+    Object.freeze({ control_key:'dashboard.palette', control_label:'Paletă temă', control_type:'action' }),
+    Object.freeze({ control_key:'dashboard.refresh', control_label:'Refresh dashboard', control_type:'action' })
+  ]),
+  'helper-data': Object.freeze([
+    Object.freeze({ control_key:'masterdata.edit', control_label:'Editare helper data', control_type:'action' })
+  ]),
+  'tratament-termic-fise-tehnologice': Object.freeze([
+    Object.freeze({ control_key:'pdf.open', control_label:'Deschidere PDF', control_type:'action' }),
+    Object.freeze({ control_key:'pdf.upload', control_label:'Încărcare PDF', control_type:'action' }),
+    Object.freeze({ control_key:'pdf.download', control_label:'Export / Download PDF', control_type:'action' }),
+    Object.freeze({ control_key:'pdf.delete', control_label:'Ștergere PDF', control_type:'action' }),
+    Object.freeze({ control_key:'pdf.revision.edit', control_label:'Editare revizie PDF', control_type:'field' })
+  ]),
+  'tratament-termic-rapoarte': Object.freeze([
+    Object.freeze({ control_key:'problems.link', control_label:'Buton Probleme T.T', control_type:'action' }),
+    Object.freeze({ control_key:'field.ore', control_label:'Câmp Ore', control_type:'field' }),
+    Object.freeze({ control_key:'field.cantitate', control_label:'Câmp Cantitate', control_type:'field' })
+  ]),
+  'tratament-termic-probleme': Object.freeze([
+    Object.freeze({ control_key:'field.minute', control_label:'Câmp Minute', control_type:'field' }),
+    Object.freeze({ control_key:'field.descriere', control_label:'Câmp Problemă în schimb', control_type:'field' })
+  ]),
+  'rebut-pm': Object.freeze([
+    Object.freeze({ control_key:'field.cod-defect', control_label:'Selector Cod defect', control_type:'field' }),
+    Object.freeze({ control_key:'field.cauza', control_label:'Câmp Cauză', control_type:'field' }),
+    Object.freeze({ control_key:'field.actiuni-corective', control_label:'Câmp Acțiuni corective', control_type:'field' })
+  ]),
+  'forjate': Object.freeze([
+    Object.freeze({ control_key:'field.reper', control_label:'Câmp Reper', control_type:'field' }),
+    Object.freeze({ control_key:'field.buc-realizate', control_label:'Câmp Buc realizate', control_type:'field' }),
+    Object.freeze({ control_key:'field.rebut', control_label:'Câmp Rebut', control_type:'field' })
+  ])
+});
+
+function cloneControlEntries(rows) {
+  return (Array.isArray(rows) ? rows : []).map(function (row) {
+    return Object.freeze({
+      control_key: String(row && row.control_key || '').trim(),
+      control_label: String(row && row.control_label || '').trim(),
+      control_type: String(row && row.control_type || 'action').trim() || 'action'
+    });
+  }).filter(function (row) { return row.control_key; });
+}
+
+function getControlCatalogForPage(pageKey) {
+  var key = String(pageKey || '').trim();
+  var map = Object.create(null);
+  var items = [];
+  function push(row) {
+    if (!row || !row.control_key) return;
+    var cleanKey = String(row.control_key || '').trim();
+    if (!cleanKey || map[cleanKey]) return;
+    map[cleanKey] = true;
+    items.push(Object.freeze({
+      control_key: cleanKey,
+      control_label: String(row.control_label || cleanKey).trim() || cleanKey,
+      control_type: String(row.control_type || 'action').trim() || 'action'
+    }));
+  }
+  cloneControlEntries(COMMON_CONTROL_CATALOG).forEach(push);
+  cloneControlEntries(PAGE_CONTROL_OVERRIDES[key] || []).forEach(push);
+  return items;
+}
 
   function clonePages() {
     return PAGE_LIST.map(function (page) {
@@ -950,9 +1090,24 @@
     if (!window.supabase || typeof window.supabase.createClient !== 'function') {
       throw new Error('Supabase library is not loaded.');
     }
-    return window.supabase.createClient(CONFIG.SUPABASE_URL, CONFIG.SUPABASE_ANON_KEY, {
-      auth: getAuthOptions(options && options.auth)
+    var authOptions = getAuthOptions(options && options.auth);
+    var singleton = window.__RF_SUPABASE_SINGLETON__;
+    var canReuse = singleton && singleton.client && singleton.url === CONFIG.SUPABASE_URL && singleton.key === CONFIG.SUPABASE_ANON_KEY;
+    var wantsDefaultAuth = (!options || !options.auth || JSON.stringify(authOptions) === JSON.stringify(getAuthOptions()));
+    if (canReuse && wantsDefaultAuth) {
+      return singleton.client;
+    }
+    var client = window.supabase.createClient(CONFIG.SUPABASE_URL, CONFIG.SUPABASE_ANON_KEY, {
+      auth: authOptions
     });
+    if (wantsDefaultAuth) {
+      window.__RF_SUPABASE_SINGLETON__ = {
+        url: CONFIG.SUPABASE_URL,
+        key: CONFIG.SUPABASE_ANON_KEY,
+        client: client
+      };
+    }
+    return client;
   }
 
   function safeLower(value) {
@@ -1074,16 +1229,254 @@
     return { role: 'viewer', source: 'fallback viewer' };
   }
 
+  function normalizeAclEmail(value) {
+    return safeLower(value);
+  }
+
+  function buildPermissionEntry(row) {
+    return {
+      can_view: row && row.can_view === true,
+      can_add: row && row.can_add === true,
+      can_edit: row && row.can_edit === true,
+      can_delete: row && row.can_delete === true,
+      can_export: row && row.can_export === true,
+      can_import: row && row.can_import === true
+    };
+  }
+
+
+function buildControlPermissionEntry(row) {
+  return {
+    control_key: String(row && row.control_key || '').trim(),
+    control_label: String(row && (row.control_label || row.control_key) || '').trim(),
+    control_type: String(row && row.control_type || 'action').trim() || 'action',
+    can_view: row && (row.can_view === true || row.is_visible === true),
+    can_use: row && (row.can_use === true || row.is_enabled === true),
+    can_edit: row && (row.can_edit === true || row.is_editable === true)
+  };
+}
+
+function mergeControlAccess(base, incoming) {
+  var result = Object.assign({}, base || {});
+  var next = incoming && typeof incoming === 'object' ? incoming : {};
+  ['can_view','can_use','can_edit'].forEach(function (key) {
+    if (Object.prototype.hasOwnProperty.call(next, key)) {
+      result[key] = next[key] === true;
+    }
+  });
+  if (next.control_label) result.control_label = next.control_label;
+  if (next.control_type) result.control_type = next.control_type;
+  return result;
+}
+
+function defaultControlAccessFromPagePermissions(pagePermissions, controlKey) {
+  var perms = pagePermissions && typeof pagePermissions === 'object' ? pagePermissions : defaultPageAccessFromRole('viewer', '');
+  var key = String(controlKey || '').trim();
+  var base = { can_view: perms.can_view === true, can_use: perms.can_view === true, can_edit: perms.can_edit === true };
+  if (!key) return base;
+  if (key === 'rows.add' || key === 'modal.open' || key === 'pdf.upload' || key === 'masterdata.edit' || key === 'permissions.save' || key === 'controls.save') {
+    return { can_view: perms.can_add === true || perms.can_edit === true, can_use: perms.can_add === true || perms.can_edit === true, can_edit: false };
+  }
+  if (key === 'rows.edit' || key.indexOf('field.') === 0 || key.indexOf('pdf.revision.') === 0) {
+    return { can_view: perms.can_view === true, can_use: perms.can_edit === true, can_edit: perms.can_edit === true };
+  }
+  if (key === 'rows.delete' || key === 'pdf.delete') {
+    return { can_view: perms.can_delete === true, can_use: perms.can_delete === true, can_edit: false };
+  }
+  if (key === 'data.export' || key === 'pdf.download') {
+    return { can_view: perms.can_export === true || perms.can_view === true, can_use: perms.can_export === true || perms.can_view === true, can_edit: false };
+  }
+  if (key === 'data.import') {
+    return { can_view: perms.can_import === true, can_use: perms.can_import === true, can_edit: false };
+  }
+  if (key === 'rows.filter' || key === 'cloud.refresh' || key === 'pdf.open' || key === 'problems.link' || key === 'dashboard.palette' || key === 'dashboard.refresh' || key === 'users.manage' || key.indexOf('nav.') === 0) {
+    return { can_view: perms.can_view === true, can_use: perms.can_view === true, can_edit: false };
+  }
+  if (key === 'cloud.save') {
+    return { can_view: perms.can_add === true || perms.can_edit === true, can_use: perms.can_add === true || perms.can_edit === true, can_edit: false };
+  }
+  return base;
+}
+
+async function loadUserControlPermissionMap(client, user, pageKey) {
+  if (!client || !user) return null;
+  var email = normalizeAclEmail(user.email);
+  var userId = user && user.id ? String(user.id).trim() : '';
+  if (!email && !userId) return null;
+  var map = new Map();
+
+  function appendRows(rows) {
+    (Array.isArray(rows) ? rows : []).forEach(function (row) {
+      var pg = String(row && row.page_key || '').trim();
+      var ck = String(row && row.control_key || '').trim();
+      if (!pg || !ck) return;
+      map.set(pg + '::' + ck, buildControlPermissionEntry(row));
+    });
+  }
+
+  var queryColumns = 'page_key,control_key,control_label,control_type,can_view,can_use,can_edit,is_visible,is_enabled,is_editable';
+  if (userId) {
+    try {
+      var byUserId = client.from('user_control_permissions').select(queryColumns).eq('user_id', userId);
+      if (pageKey) byUserId = byUserId.eq('page_key', pageKey);
+      byUserId = await byUserId;
+      if (!byUserId.error) appendRows(byUserId.data);
+    } catch (_) {}
+  }
+  if (email) {
+    try {
+      var byEmail = client.from('user_control_permissions').select(queryColumns).ilike('email', email);
+      if (pageKey) byEmail = byEmail.eq('page_key', pageKey);
+      byEmail = await byEmail;
+      if (!byEmail.error) appendRows(byEmail.data);
+    } catch (_) {}
+  }
+
+  return map.size ? map : null;
+}
+
+async function loadRoleFieldPermissionMap(client, role, pageKey) {
+  if (!client) return null;
+  try {
+    var query = client.from('field_permissions').select('page_key,field_key,can_edit').eq('role', normalizeRole(role));
+    if (pageKey) query = query.eq('page_key', pageKey);
+    var res = await query;
+    if (res.error || !Array.isArray(res.data)) return null;
+    var map = new Map();
+    res.data.forEach(function (row) {
+      var pg = String(row && row.page_key || '').trim();
+      var ck = String(row && row.field_key || '').trim();
+      if (!pg || !ck) return;
+      map.set(pg + '::' + ck, { can_view:true, can_use: row.can_edit === true, can_edit: row.can_edit === true, control_key: ck, control_type:'field', control_label: ck });
+    });
+    return map.size ? map : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+async function resolveControlAccess(pageKey, controlKey, options) {
+  var key = String(pageKey || '').trim();
+  var cKey = String(controlKey || '').trim();
+  var client = options && options.client ? options.client : createRfSupabaseClient();
+  var pageAccess = options && options.pageAccess ? options.pageAccess : await resolvePageAccess(key, options);
+  var user = options && options.user ? options.user : null;
+  if (!user && client) {
+    try {
+      var sessionRes = await client.auth.getSession();
+      user = sessionRes && sessionRes.data && sessionRes.data.session ? sessionRes.data.session.user : null;
+    } catch (_) { user = null; }
+  }
+  var base = defaultControlAccessFromPagePermissions(pageAccess && pageAccess.permissions, cKey);
+  var role = normalizeRole(pageAccess && pageAccess.role || 'viewer');
+  var merged = Object.assign({ control_key:cKey, control_label:cKey, control_type:'action' }, base);
+  var source = 'page permissions';
+  if (role !== 'admin' && client && user) {
+    var userMap = await loadUserControlPermissionMap(client, user, key);
+    var roleFieldMap = await loadRoleFieldPermissionMap(client, role, key);
+    var fullKey = key + '::' + cKey;
+    if (roleFieldMap && roleFieldMap.has(fullKey)) {
+      merged = mergeControlAccess(merged, roleFieldMap.get(fullKey));
+      source = 'role field permissions';
+    }
+    if (userMap && userMap.has(fullKey)) {
+      merged = mergeControlAccess(merged, userMap.get(fullKey));
+      source = 'user control permissions';
+    }
+  } else if (role === 'admin') {
+    merged = { control_key:cKey, control_label:cKey, control_type:'action', can_view:true, can_use:true, can_edit:true };
+    source = 'admin';
+  }
+  merged.allowed = merged.can_view === true;
+  return merged;
+}
+
+async function canUseControl(pageKey, controlKey, options) {
+  var res = await resolveControlAccess(pageKey, controlKey, options);
+  return { allowed: res.can_use === true && res.can_view === true, visible: res.can_view === true, editable: res.can_edit === true, source: res.source || '' };
+}
+
+async function applyDomPermissions(pageKey, root, options) {
+  var pageAccess = options && options.pageAccess ? options.pageAccess : await resolvePageAccess(pageKey, options);
+  var scope = root && root.querySelectorAll ? root : document;
+  var nodes = scope.querySelectorAll('[data-rf-permission],[data-rf-control],[data-rf-field]');
+  for (var i = 0; i < nodes.length; i += 1) {
+    var el = nodes[i];
+    var permKey = String(el.getAttribute('data-rf-permission') || '').trim();
+    if (permKey) {
+      var allowByPage = pageAccess && pageAccess.permissions ? pageAccess.permissions[permKey] === true : false;
+      if (!allowByPage) {
+        el.style.display = 'none';
+        el.setAttribute('aria-hidden', 'true');
+        if ('disabled' in el) el.disabled = true;
+        continue;
+      }
+    }
+    var controlKey = String(el.getAttribute('data-rf-control') || el.getAttribute('data-rf-field') || '').trim();
+    if (!controlKey) continue;
+    var controlAccess = await resolveControlAccess(pageKey, controlKey, Object.assign({}, options || {}, { pageAccess: pageAccess }));
+    if (controlAccess.can_view !== true) {
+      el.style.display = 'none';
+      el.setAttribute('aria-hidden', 'true');
+    } else if (('disabled' in el) && (controlAccess.can_use !== true || (el.matches('input,select,textarea') && controlAccess.can_edit !== true))) {
+      el.disabled = true;
+    }
+    if (el.matches('input,select,textarea') && controlAccess.can_edit !== true) {
+      el.setAttribute('readonly', 'readonly');
+    }
+  }
+  return pageAccess;
+}
+
+  async function loadUserPermissionMap(client, user) {
+    if (!client || !user) return null;
+    var email = normalizeAclEmail(user.email);
+    var userId = user && user.id ? String(user.id).trim() : '';
+    if (!email && !userId) return null;
+
+    function appendRows(map, rows) {
+      (Array.isArray(rows) ? rows : []).forEach(function (row) {
+        var key = String(row && row.page_key || '').trim();
+        if (!key) return;
+        map.set(key, buildPermissionEntry(row));
+      });
+    }
+
+    var map = new Map();
+
+    if (userId) {
+      try {
+        var byUserId = await client.from('user_page_permissions')
+          .select('page_key,can_view,can_add,can_edit,can_delete,can_export,can_import')
+          .eq('user_id', userId);
+        if (!byUserId.error) appendRows(map, byUserId.data);
+      } catch (_) {}
+    }
+
+    if (email) {
+      try {
+        var byEmail = await client.from('user_page_permissions')
+          .select('page_key,can_view,can_add,can_edit,can_delete,can_export,can_import')
+          .ilike('email', email);
+        if (!byEmail.error) appendRows(map, byEmail.data);
+      } catch (_) {}
+    }
+
+    return map.size ? map : null;
+  }
+
   async function loadPagePermissionMap(client, role) {
     if (!client) return null;
     try {
-      var res = await client.from('page_permissions').select('page_key,can_view').eq('role', normalizeRole(role));
+      var res = await client.from('page_permissions')
+        .select('page_key,can_view,can_add,can_edit,can_delete,can_export,can_import')
+        .eq('role', normalizeRole(role));
       if (res.error || !Array.isArray(res.data)) return null;
       var map = new Map();
       res.data.forEach(function (row) {
         var key = String(row.page_key || '').trim();
         if (!key) return;
-        map.set(key, row.can_view === true);
+        map.set(key, buildPermissionEntry(row));
       });
       return map;
     } catch (_) {
@@ -1104,38 +1497,116 @@
     return null;
   }
 
+  function mirrorHasAnyUserAcl(mirror) {
+    if (!mirror || typeof mirror !== 'object') return false;
+    var roots = ['user_permissions', 'user_grants'];
+    for (var i = 0; i < roots.length; i += 1) {
+      var root = mirror[roots[i]];
+      if (!root || typeof root !== 'object') continue;
+      var emails = Object.keys(root);
+      for (var j = 0; j < emails.length; j += 1) {
+        var emailKey = emails[j];
+        var entry = root[emailKey];
+        if (entry && typeof entry === 'object' && Object.keys(entry).length) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  function mirrorHasUserAclForEmail(mirror, email) {
+    if (!mirror || typeof mirror !== 'object' || !email) return false;
+    var normalized = normalizeAclEmail(email);
+    if (!normalized) return false;
+    var userPermissionsRoot = mirror.user_permissions && typeof mirror.user_permissions === 'object' ? mirror.user_permissions : null;
+    var userGrantsRoot = mirror.user_grants && typeof mirror.user_grants === 'object' ? mirror.user_grants : null;
+    var userPermissions = userPermissionsRoot && userPermissionsRoot[normalized] && typeof userPermissionsRoot[normalized] === 'object' ? userPermissionsRoot[normalized] : null;
+    var userGrants = userGrantsRoot && userGrantsRoot[normalized] && typeof userGrantsRoot[normalized] === 'object' ? userGrantsRoot[normalized] : null;
+    return !!((userPermissions && Object.keys(userPermissions).length) || (userGrants && Object.keys(userGrants).length));
+  }
+
+  function permissionValueToEntry(value) {
+    if (value && typeof value === 'object') {
+      return buildPermissionEntry(value);
+    }
+    return {
+      can_view: value === true,
+      can_add: false,
+      can_edit: false,
+      can_delete: false,
+      can_export: false,
+      can_import: false
+    };
+  }
+
+  function defaultPageAccessFromRole(role, pageKey) {
+    var cleanRole = normalizeRole(role);
+    var isLogin = String(pageKey || '').trim() === 'login';
+    if (cleanRole === 'admin') {
+      return { can_view:true, can_add:true, can_edit:true, can_delete:true, can_export:true, can_import:true };
+    }
+    if (cleanRole === 'editor') {
+      return { can_view:true, can_add:!isLogin, can_edit:!isLogin, can_delete:false, can_export:true, can_import:!isLogin };
+    }
+    if (cleanRole === 'operator') {
+      return { can_view:true, can_add:!isLogin, can_edit:false, can_delete:false, can_export:true, can_import:false };
+    }
+    return { can_view:true, can_add:false, can_edit:false, can_delete:false, can_export:false, can_import:false };
+  }
+
   function collectAclDecisions(opts) {
     var decisions = [];
     var pageKey = String(opts.pageKey || '').trim();
     var href = normalizeHref(opts.href);
     var role = normalizeRole(opts.role);
-    var map = opts.permissionMap instanceof Map ? opts.permissionMap : null;
+    var email = normalizeAclEmail(opts.email);
+    var userMap = opts.userPermissionMap instanceof Map ? opts.userPermissionMap : null;
+    var roleMap = opts.permissionMap instanceof Map ? opts.permissionMap : null;
     var mirror = opts.mirror && typeof opts.mirror === 'object' ? opts.mirror : null;
 
-    if (map && pageKey && map.has(pageKey)) {
-      decisions.push(map.get(pageKey) === true);
+    if (userMap && pageKey && userMap.has(pageKey)) {
+      decisions.push(userMap.get(pageKey));
+    }
+
+    if (mirror) {
+      var userPermissionsRoot = mirror.user_permissions && typeof mirror.user_permissions === 'object' ? mirror.user_permissions : null;
+      var userPermissions = userPermissionsRoot && email && userPermissionsRoot[email] && typeof userPermissionsRoot[email] === 'object' ? userPermissionsRoot[email] : null;
+      if (userPermissions && pageKey && Object.prototype.hasOwnProperty.call(userPermissions, pageKey)) {
+        decisions.push(permissionValueToEntry(userPermissions[pageKey]));
+      }
+
+      var userGrantsRoot = mirror.user_grants && typeof mirror.user_grants === 'object' ? mirror.user_grants : null;
+      var userGrants = userGrantsRoot && email && userGrantsRoot[email] && typeof userGrantsRoot[email] === 'object' ? userGrantsRoot[email] : null;
+      if (userGrants) {
+        if (pageKey && Object.prototype.hasOwnProperty.call(userGrants, pageKey)) {
+          decisions.push(permissionValueToEntry(userGrants[pageKey]));
+        }
+        if (href && Object.prototype.hasOwnProperty.call(userGrants, href)) {
+          decisions.push(permissionValueToEntry(userGrants[href]));
+        }
+      }
+    }
+
+    if (roleMap && pageKey && roleMap.has(pageKey)) {
+      decisions.push(roleMap.get(pageKey));
     }
 
     if (mirror) {
       var pagePermissions = mirror.page_permissions && typeof mirror.page_permissions === 'object' ? mirror.page_permissions : null;
       var rolePermissions = pagePermissions && pagePermissions[role] && typeof pagePermissions[role] === 'object' ? pagePermissions[role] : null;
       if (rolePermissions && pageKey && Object.prototype.hasOwnProperty.call(rolePermissions, pageKey)) {
-        var permValue = rolePermissions[pageKey];
-        if (permValue && typeof permValue === 'object' && Object.prototype.hasOwnProperty.call(permValue, 'can_view')) {
-          decisions.push(permValue.can_view === true);
-        } else {
-          decisions.push(permValue === true);
-        }
+        decisions.push(permissionValueToEntry(rolePermissions[pageKey]));
       }
 
       var grants = mirror.grants && typeof mirror.grants === 'object' ? mirror.grants : null;
       var roleGrants = grants && grants[role] && typeof grants[role] === 'object' ? grants[role] : null;
       if (roleGrants) {
         if (pageKey && Object.prototype.hasOwnProperty.call(roleGrants, pageKey)) {
-          decisions.push(roleGrants[pageKey] === true);
+          decisions.push(permissionValueToEntry(roleGrants[pageKey]));
         }
         if (href && Object.prototype.hasOwnProperty.call(roleGrants, href)) {
-          decisions.push(roleGrants[href] === true);
+          decisions.push(permissionValueToEntry(roleGrants[href]));
         }
       }
     }
@@ -1143,14 +1614,56 @@
     return decisions;
   }
 
-  async function canViewPage(pageKey, options) {
+  function mergePermissions(base, incoming) {
+    var result = Object.assign({}, base || {});
+    var next = incoming && typeof incoming === 'object' ? incoming : {};
+    ['can_view','can_add','can_edit','can_delete','can_export','can_import'].forEach(function (key) {
+      if (Object.prototype.hasOwnProperty.call(next, key)) {
+        result[key] = next[key] === true;
+      }
+    });
+    return result;
+  }
+
+
+
+  async function loadUserAccountStatus(client, user) {
+    if (!client || !user) return null;
+    var email = normalizeAclEmail(user.email);
+    var userId = user && user.id ? String(user.id).trim() : '';
+    function normalizeRow(row) {
+      if (!row || typeof row !== 'object') return null;
+      return {
+        is_active: row.is_active !== false,
+        is_banned: row.is_banned === true,
+        note: String(row.note || '').trim(),
+        email: normalizeAclEmail(row.email || email),
+        user_id: String(row.user_id || userId || '').trim()
+      };
+    }
+    try {
+      if (userId) {
+        var byUserId = await client.from('user_account_access').select('user_id,email,is_active,is_banned,note').eq('user_id', userId).maybeSingle();
+        if (!byUserId.error && byUserId.data) return normalizeRow(byUserId.data);
+      }
+    } catch (_) {}
+    try {
+      if (email) {
+        var byEmail = await client.from('user_account_access').select('user_id,email,is_active,is_banned,note').ilike('email', email).maybeSingle();
+        if (!byEmail.error && byEmail.data) return normalizeRow(byEmail.data);
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  async function resolvePageAccess(pageKey, options) {
     var key = String(pageKey || '').trim();
     var href = pageKeyToHref(key);
     var client = options && options.client ? options.client : createRfSupabaseClient();
     var user = options && options.user ? options.user : null;
 
     if (key === 'login') {
-      return { allowed: true, role: 'viewer', source: 'login open' };
+      return { allowed:true, role:'viewer', source:'login open', permissions:defaultPageAccessFromRole('viewer', key) };
     }
 
     if (!user) {
@@ -1163,27 +1676,101 @@
     }
 
     if (!user) {
-      return { allowed: true, role: 'viewer', source: 'no session fallback' };
+      if (key === 'index') {
+        return { allowed:true, role:'viewer', source:'guest index', permissions:{ can_view:true, can_add:false, can_edit:false, can_delete:false, can_export:false, can_import:false } };
+      }
+      return { allowed:false, role:'viewer', source:'no session', message:'Autentifică-te pentru a intra în această foaie.', permissions:{ can_view:false, can_add:false, can_edit:false, can_delete:false, can_export:false, can_import:false } };
     }
 
     var resolved = await resolveRole(client, user);
-    var role = normalizeRole(resolved.role);
+    var role = normalizeRole((options && options.role) || resolved.role);
+    var accountStatus = await loadUserAccountStatus(client, user);
+    if (accountStatus && (accountStatus.is_banned === true || accountStatus.is_active === false)) {
+      return {
+        allowed:false,
+        role:role,
+        source:'account blocked',
+        message: accountStatus.note || 'Cont blocat.',
+        permissions:{ can_view:false, can_add:false, can_edit:false, can_delete:false, can_export:false, can_import:false },
+        email: normalizeAclEmail(user.email),
+        accountStatus: accountStatus
+      };
+    }
+
     if (role === 'admin') {
-      return { allowed: true, role: role, source: resolved.source };
+      return { allowed:true, role:role, source:'admin', permissions:defaultPageAccessFromRole(role, key), email: normalizeAclEmail(user.email), accountStatus: accountStatus };
+    }
+
+    var email = normalizeAclEmail(user.email);
+    var userPermissionMap = await loadUserPermissionMap(client, user);
+    var hasUserAcl = !!(userPermissionMap && userPermissionMap.size);
+
+    if (key === 'index') {
+      return {
+        allowed:true,
+        role:role,
+        source: hasUserAcl ? 'user acl strict index' : 'index by role',
+        permissions: { can_view:true, can_add:false, can_edit:false, can_delete:false, can_export:false, can_import:false },
+        email: email,
+        accountStatus: accountStatus,
+        strictUserAcl: hasUserAcl
+      };
+    }
+
+    if (hasUserAcl) {
+      var userPerm = userPermissionMap.get(key) || { can_view:false, can_add:false, can_edit:false, can_delete:false, can_export:false, can_import:false };
+      return {
+        allowed: userPerm.can_view === true,
+        role: role,
+        source: 'user acl strict',
+        message: userPerm.can_view === true ? '' : 'Nu ai acces în această foaie. Cere acces de la admin.',
+        permissions: buildPermissionEntry(userPerm),
+        email: email,
+        accountStatus: accountStatus,
+        strictUserAcl: true
+      };
     }
 
     var permissionMap = await loadPagePermissionMap(client, role);
     var mirror = await readDashboardAclMirror(client);
-    var decisions = collectAclDecisions({ pageKey: key, href: href, role: role, permissionMap: permissionMap, mirror: mirror });
+    var roleDecisions = collectAclDecisions({ pageKey:key, href:href, role:role, email:'', userPermissionMap:null, permissionMap:permissionMap, mirror:{ page_permissions: mirror && mirror.page_permissions, grants: mirror && mirror.grants } });
 
-    if (decisions.indexOf(false) !== -1) {
-      return { allowed: false, role: role, source: 'acl explicit false', message: 'Nu ai acces în această foaie. Cere acces de la admin.' };
-    }
-    if (decisions.indexOf(true) !== -1) {
-      return { allowed: true, role: role, source: 'acl explicit true' };
-    }
+    var rolePermissions = defaultPageAccessFromRole(role, key);
+    var roleExplicitTrue = false;
+    var roleExplicitFalse = false;
+    roleDecisions.forEach(function (entry) {
+      var permissionEntry = permissionValueToEntry(entry);
+      rolePermissions = mergePermissions(rolePermissions, permissionEntry);
+      if (permissionEntry.can_view === true) roleExplicitTrue = true;
+      if (permissionEntry.can_view === false) roleExplicitFalse = true;
+    });
 
-    return { allowed: true, role: role, source: 'acl fallback allow' };
+    var allowed = rolePermissions.can_view !== false;
+    if (roleExplicitFalse) allowed = false;
+    else if (roleExplicitTrue) allowed = true;
+
+    return {
+      allowed: allowed,
+      role: role,
+      source: roleExplicitFalse ? 'role acl explicit false' : (roleExplicitTrue ? 'role acl explicit true' : 'role fallback'),
+      message: allowed ? '' : 'Nu ai acces în această foaie. Cere acces de la admin.',
+      permissions: rolePermissions,
+      email: email,
+      accountStatus: accountStatus,
+      strictUserAcl: false
+    };
+  }
+
+  async function canViewPage(pageKey, options) {
+    var result = await resolvePageAccess(pageKey, options);
+    return {
+      allowed: result.allowed,
+      role: result.role,
+      source: result.source,
+      message: result.message,
+      permissions: result.permissions,
+      email: result.email
+    };
   }
 
   window.RF_CONFIG = CONFIG;
@@ -1216,15 +1803,25 @@
   window.RF_ACL = window.RF_ACL || {};
   window.RF_ACL.PAGE_LIST = clonePages();
   window.RF_ACL.PAGE_MAP = PAGE_MAP;
+  window.RF_ACL.CONTROL_CATALOG = { common: cloneControlEntries(COMMON_CONTROL_CATALOG), overrides: PAGE_CONTROL_OVERRIDES };
+  window.RF_ACL.getControlCatalogForPage = getControlCatalogForPage;
   window.RF_ACL.safeLower = safeLower;
   window.RF_ACL.normalizeRole = normalizeRole;
   window.RF_ACL.normalizeHref = normalizeHref;
   window.RF_ACL.pageKeyToHref = pageKeyToHref;
   window.RF_ACL.inferPageKey = inferPageKey;
   window.RF_ACL.resolveRole = resolveRole;
+  window.RF_ACL.loadUserPermissionMap = loadUserPermissionMap;
   window.RF_ACL.loadPagePermissionMap = loadPagePermissionMap;
+  window.RF_ACL.loadUserControlPermissionMap = loadUserControlPermissionMap;
+  window.RF_ACL.loadRoleFieldPermissionMap = loadRoleFieldPermissionMap;
+  window.RF_ACL.resolveControlAccess = resolveControlAccess;
+  window.RF_ACL.canUseControl = canUseControl;
+  window.RF_ACL.applyDomPermissions = applyDomPermissions;
   window.RF_ACL.readDashboardAclMirror = readDashboardAclMirror;
   window.RF_ACL.collectAclDecisions = collectAclDecisions;
+  window.RF_ACL.defaultPageAccessFromRole = defaultPageAccessFromRole;
+  window.RF_ACL.resolvePageAccess = resolvePageAccess;
   window.RF_ACL.canViewPage = canViewPage;
 
   if (!window.__RF_AUTO_ACL_GUARD__) {
@@ -1675,5 +2272,937 @@
     document.addEventListener('DOMContentLoaded', ensureStyle, { once: true });
   } else {
     ensureStyle();
+  }
+})(window);
+
+
+/* --- RF ACL auto binding / every page --- */
+(function (window) {
+  'use strict';
+  if (!window || !window.RF_ACL) return;
+
+  var RF = window.RF_ACL;
+  var originalGetCatalog = typeof RF.getControlCatalogForPage === 'function' ? RF.getControlCatalogForPage.bind(RF) : function () { return []; };
+  var originalResolvePageAccess = typeof RF.resolvePageAccess === 'function' ? RF.resolvePageAccess.bind(RF) : null;
+  var originalResolveControlAccess = typeof RF.resolveControlAccess === 'function' ? RF.resolveControlAccess.bind(RF) : null;
+
+  function entry(controlKey, controlLabel, controlType) {
+    return Object.freeze({
+      control_key: String(controlKey || '').trim(),
+      control_label: String(controlLabel || controlKey || '').trim() || String(controlKey || '').trim(),
+      control_type: String(controlType || 'action').trim() || 'action'
+    });
+  }
+
+  function entries(defs, defaultType) {
+    return (Array.isArray(defs) ? defs : []).map(function (row) {
+      if (Array.isArray(row)) return entry(row[0], row[1], row[2] || defaultType || 'action');
+      return entry(row && row.control_key, row && row.control_label, row && row.control_type || defaultType || 'action');
+    }).filter(function (row) { return row.control_key; });
+  }
+
+  function uniqueCatalog(list) {
+    var seen = Object.create(null);
+    var out = [];
+    (Array.isArray(list) ? list : []).forEach(function (row) {
+      var key = String(row && row.control_key || '').trim();
+      if (!key || seen[key]) return;
+      seen[key] = true;
+      out.push(Object.freeze({
+        control_key: key,
+        control_label: String(row && row.control_label || key).trim() || key,
+        control_type: String(row && row.control_type || 'action').trim() || 'action'
+      }));
+    });
+    return out;
+  }
+
+  function makeCrudCatalog(fieldDefs, extraDefs) {
+    return uniqueCatalog([].concat(
+      entries([
+        ['rows.filter','Filtrare / căutare'],
+        ['rows.add','Adăugare rând'],
+        ['modal.open','Deschidere formular'],
+        ['rows.edit','Editare rând'],
+        ['rows.delete','Ștergere rând'],
+        ['data.import','Import date'],
+        ['data.export','Export date'],
+        ['cloud.refresh','Refresh cloud'],
+        ['cloud.save','Salvare în cloud']
+      ], 'action'),
+      entries(fieldDefs || [], 'field'),
+      entries(extraDefs || [], 'section')
+    ));
+  }
+
+  var PAGE_CONTROL_MANIFESTS = Object.freeze({
+    'index': Object.freeze({
+      hint: 'Pe index, butoanele mari din stânga se setează sus în tabelul de pagini, pe rândurile group-*. Aici vezi doar elementele din interiorul indexului.',
+      items: uniqueCatalog([].concat(
+        entries([
+          ['dashboard.palette','Buton Paletă'],
+          ['dashboard.refresh','Buton Refresh'],
+          ['auth.login','Buton Login'],
+          ['auth.logout','Buton Logout']
+        ], 'action'),
+        entries([
+          ['section.status-bar','Zona status autentificare'],
+          ['section.preview-panel','Panoul din dreapta / preview']
+        ], 'section')
+      ))
+    }),
+    'login': Object.freeze({
+      hint: 'Pe login controlezi doar câmpurile de autentificare și butonul de intrare. Loginul nu trebuie blocat din ACL.',
+      items: uniqueCatalog([].concat(
+        entries([
+          ['auth.login','Buton Intrare']
+        ], 'action'),
+        entries([
+          ['field.id','Câmp ID / email'],
+          ['field.password','Câmp Parolă']
+        ], 'field')
+      ))
+    }),
+    'helper': Object.freeze({
+      hint: 'Helper este pagina de navigare administrativă. Aici setezi doar butoanele reale din helper.',
+      items: uniqueCatalog([].concat(
+        entries([
+          ['dashboard.refresh','Buton Refresh']
+        ], 'action'),
+        entries([
+          ['section.nav-rapoarte','Buton / zonă Rapoarte'],
+          ['section.nav-helper-data','Buton / zonă Helper Data'],
+        ], 'section')
+      ))
+    }),
+    'helper-data': Object.freeze({
+      hint: 'Pe Helper Data apar doar câmpurile și acțiunile din foaia de date master.',
+      items: makeCrudCatalog([
+        ['field.reper','Câmp Reper'],
+        ['field.material','Câmp Material'],
+        ['field.diametru','Câmp Diametru'],
+        ['field.calitate','Câmp Calitate'],
+        ['field.kg','Câmp KG / buc'],
+        ['field.lungime','Câmp Lungime'],
+        ['field.tact','Câmp Tact'],
+        ['field.operator','Câmp Operator']
+      ], [
+        ['section.table-main','Tabel principal Helper Data']
+      ])
+    }),
+    'numeralkod': Object.freeze({
+      hint: 'Pentru Numeral KOD controlezi doar tabelele și câmpurile reale din pagină.',
+      items: makeCrudCatalog([
+        ['field.cod-intern','Câmp Cod intern'],
+        ['field.reper','Câmp Reper'],
+        ['field.diametru','Câmp Diametru'],
+        ['field.calitate','Câmp Calitate'],
+        ['field.material','Câmp Material'],
+        ['field.sarja','Câmp Sarjă']
+      ], [
+        ['section.table-main','Tabel Numeral KOD']
+      ])
+    }),
+    'program-utilaje': Object.freeze({
+      hint: 'Aici vezi doar programul utilajelor: formularul, filtrarea și tabelul.',
+      items: makeCrudCatalog([
+        ['field.data','Câmp Dată'],
+        ['field.utilaj','Câmp Utilaj'],
+        ['field.ore','Câmp Ore'],
+        ['field.schimb','Câmp Schimb'],
+        ['field.observatii','Câmp Observații']
+      ], [
+        ['section.table-main','Tabel program utilaje']
+      ])
+    }),
+    'magnaflux-calendar': Object.freeze({
+      hint: 'Calendarul Magnaflux are doar filtrele și zona calendarului / listei.',
+      items: uniqueCatalog([].concat(
+        entries([
+          ['rows.filter','Filtrare / căutare'],
+          ['cloud.refresh','Refresh cloud'],
+          ['data.export','Export date']
+        ], 'action'),
+        entries([
+          ['field.data','Câmp Dată'],
+          ['field.operator','Câmp Operator'],
+          ['field.schimb','Câmp Schimb']
+        ], 'field'),
+        entries([
+          ['section.calendar','Calendar Magnaflux'],
+          ['section.table-main','Lista programări']
+        ], 'section')
+      ))
+    }),
+    'calendar-operatori': Object.freeze({
+      hint: 'Calendar operatori: doar calendarul, filtrele și câmpurile reale.',
+      items: uniqueCatalog([].concat(
+        entries([
+          ['rows.filter','Filtrare / căutare'],
+          ['cloud.refresh','Refresh cloud'],
+          ['data.export','Export date']
+        ], 'action'),
+        entries([
+          ['field.data','Câmp Dată'],
+          ['field.operator','Câmp Operator'],
+          ['field.schimb','Câmp Schimb']
+        ], 'field'),
+        entries([
+          ['section.calendar','Calendar operatori'],
+          ['section.table-main','Lista programări']
+        ], 'section')
+      ))
+    }),
+    'intrari-otel': Object.freeze({
+      hint: 'Pe Intrări Oțel apar doar formularul de intrare, filtrele și tabelul principal.',
+      items: makeCrudCatalog([
+        ['field.an','Câmp An'],
+        ['field.luna','Câmp Lună'],
+        ['field.data','Câmp Dată'],
+        ['field.diametru','Câmp Diametru'],
+        ['field.calitate','Câmp Calitate'],
+        ['field.cod','Câmp Cod intern oțel'],
+        ['field.sarja','Câmp Sarjă'],
+        ['field.cantitate','Câmp Cantitate'],
+        ['field.furnizor','Câmp Furnizor'],
+        ['field.observatii','Câmp Observații / pretest']
+      ], [
+        ['section.table-main','Tabel Intrări Oțel']
+      ])
+    }),
+    'debitate': Object.freeze({
+      hint: 'Pe Debitate controlezi formularul, filtrele, tabelul principal și sumarul.',
+      items: makeCrudCatalog([
+        ['field.an','Câmp An'],
+        ['field.luna','Câmp Lună'],
+        ['field.data','Câmp Dată'],
+        ['field.echipament','Câmp Echipament'],
+        ['field.reper','Câmp Reper'],
+        ['field.diametru','Câmp Diametru'],
+        ['field.calitate','Câmp Calitate'],
+        ['field.kg','Câmp KG / buc'],
+        ['field.lungime','Câmp Lungime'],
+        ['field.cod','Câmp Cod intern'],
+        ['field.cantitate','Câmp Cantitate'],
+        ['field.schimb','Câmp Schimb'],
+        ['field.operator','Câmp Operator']
+      ], [
+        ['section.table-main','Tabel Debitate'],
+        ['section.table-summary','Tabel sumar Debitate']
+      ])
+    }),
+    'forjate': Object.freeze({
+      hint: 'Pe Forjate controlezi doar câmpurile reale din formular, tabelul principal și sumarul.',
+      items: makeCrudCatalog([
+        ['field.an','Câmp An'],
+        ['field.luna','Câmp Lună'],
+        ['field.data','Câmp Dată'],
+        ['field.schimb','Câmp Schimb'],
+        ['field.utilaj','Câmp Linie / utilaj'],
+        ['field.operator','Câmp Operator'],
+        ['field.reper','Câmp Reper'],
+        ['field.diametru','Câmp Dimensiune oțel'],
+        ['field.calitate','Câmp Calitate oțel'],
+        ['field.tact','Câmp Tact'],
+        ['field.planificat','Câmp Planificat'],
+        ['field.realizat','Câmp Buc realizate'],
+        ['field.rebut','Câmp Rebut']
+      ], [
+        ['section.table-main','Tabel Forjate'],
+        ['section.table-summary','Tabel sumar Forjate']
+      ])
+    }),
+    'magnaflux': Object.freeze({
+      hint: 'Pe Magnaflux vezi doar formularul de control, filtrele și tabelul paginii.',
+      items: makeCrudCatalog([
+        ['field.an','Câmp An'],
+        ['field.luna','Câmp Lună'],
+        ['field.data','Câmp Dată'],
+        ['field.schimb','Câmp Schimb'],
+        ['field.operator','Câmp Operator'],
+        ['field.reper','Câmp Reper'],
+        ['field.cod-defect','Selector Cod defect'],
+        ['field.cauza','Câmp Cauză'],
+        ['field.observatii','Câmp Observații'],
+        ['field.realizat','Câmp Piese controlate'],
+        ['field.acceptate','Câmp Acceptate'],
+        ['field.rebut','Câmp Rebut']
+      ], [
+        ['section.table-main','Tabel Magnaflux']
+      ])
+    }),
+    'probleme-raportate': Object.freeze({
+      hint: 'Probleme raportate: formular, filtre, tabel principal și sumar minute pierdute.',
+      items: makeCrudCatalog([
+        ['field.an','Câmp An'],
+        ['field.luna','Câmp Lună'],
+        ['field.data','Câmp Dată'],
+        ['field.schimb','Câmp Schimb'],
+        ['field.utilaj','Câmp Utilaj'],
+        ['field.reper','Câmp Reper'],
+        ['field.minute','Câmp Timp minute'],
+        ['field.observatii','Câmp Observații'],
+        ['field.probleme','Câmp Problemă / operațiune']
+      ], [
+        ['section.table-main','Tabel Probleme raportate'],
+        ['section.table-summary','Tabel total minute']
+      ])
+    }),
+    'urmarire-actiuni-progres': Object.freeze({
+      hint: 'Urmărire acțiuni și progres: tabelul de acțiuni, formularul și filtrele reale.',
+      items: makeCrudCatalog([
+        ['field.data','Câmp Dată'],
+        ['field.reper','Câmp Reper / temă'],
+        ['field.probleme','Câmp Acțiune / problemă'],
+        ['field.observatii','Câmp Observații'],
+        ['field.operator','Câmp Responsabil']
+      ], [
+        ['section.table-main','Tabel acțiuni și progres']
+      ])
+    }),
+    'imbunatatire-continua': Object.freeze({
+      hint: 'Îmbunătățire continuă: doar elementele reale din tabel și formular.',
+      items: makeCrudCatalog([
+        ['field.data','Câmp Dată'],
+        ['field.reper','Câmp Titlu / subiect'],
+        ['field.observatii','Câmp Descriere'],
+        ['field.operator','Câmp Responsabil']
+      ], [
+        ['section.table-main','Tabel îmbunătățire continuă']
+      ])
+    }),
+    'investitii': Object.freeze({
+      hint: 'Investiții: formular, filtre și tabelul de investiții.',
+      items: makeCrudCatalog([
+        ['field.data','Câmp Dată'],
+        ['field.reper','Câmp Titlu investiție'],
+        ['field.cantitate','Câmp Valoare / cantitate'],
+        ['field.observatii','Câmp Observații'],
+        ['field.operator','Câmp Responsabil']
+      ], [
+        ['section.table-main','Tabel investiții']
+      ])
+    }),
+    'tratament-termic-rapoarte': Object.freeze({
+      hint: 'Pe Rapoarte T.T vezi doar câmpurile reale din raport și butonul spre Probleme T.T.',
+      items: uniqueCatalog([].concat(
+        makeCrudCatalog([
+          ['field.an','Câmp An'],
+          ['field.luna','Câmp Lună'],
+          ['field.data','Câmp Dată'],
+          ['field.schimb','Câmp Schimb'],
+          ['field.operator','Câmp Operator'],
+          ['field.reper','Câmp Reper'],
+          ['field.sarja','Câmp Sarjă'],
+          ['field.cantitate','Câmp Cantitate'],
+          ['field.ore','Câmp Ore'],
+          ['field.opriri-neplanificate','Câmp Opriri neplanificate'],
+          ['field.mentenanta','Câmp Mentenanță'],
+          ['field.incalzire','Câmp Încălzire'],
+          ['field.golire','Câmp Golire']
+        ], [
+          ['section.table-main','Tabel Rapoarte T.T']
+        ]),
+        entries([
+          ['problems.link','Buton Probleme T.T']
+        ], 'action')
+      ))
+    }),
+    'tratament-termic-probleme': Object.freeze({
+      hint: 'Pe Probleme T.T vezi doar formularul și tabelul de probleme din schimb.',
+      items: makeCrudCatalog([
+        ['field.an','Câmp An'],
+        ['field.luna','Câmp Lună'],
+        ['field.data','Câmp Dată'],
+        ['field.schimb','Câmp Schimb'],
+        ['field.operator','Câmp Operator'],
+        ['field.minute','Câmp Minute'],
+        ['field.probleme','Câmp Problemă în schimb'],
+        ['field.reper','Câmp Reper'],
+        ['field.sarja','Câmp Sarjă'],
+        ['field.observatii','Câmp Observații']
+      ], [
+        ['section.table-main','Tabel Probleme T.T']
+      ])
+    }),
+    'tratament-termic-fise-tehnologice': Object.freeze({
+      hint: 'Fișe tehnologice: doar PDF-ul, revizia, persoana și acțiunile pe PDF.',
+      items: uniqueCatalog([].concat(
+        entries([
+          ['rows.filter','Filtrare / căutare'],
+          ['cloud.refresh','Refresh cloud'],
+          ['pdf.open','Deschidere PDF'],
+          ['pdf.upload','Încărcare PDF'],
+          ['pdf.download','Export / download PDF'],
+          ['pdf.delete','Ștergere PDF']
+        ], 'action'),
+        entries([
+          ['field.reper','Câmp Reper'],
+          ['field.revizie','Câmp Revizie'],
+          ['field.pdf','Fișier PDF'],
+          ['field.actualizat-de','Câmp Actualizat de']
+        ], 'field'),
+        entries([
+          ['section.table-main','Tabel fișe tehnologice']
+        ], 'section')
+      ))
+    }),
+    'rebut': Object.freeze({
+      hint: 'Rebut: elementele reale ale paginii de rebut.',
+      items: makeCrudCatalog([
+        ['field.data','Câmp Dată'],
+        ['field.schimb','Câmp Schimb'],
+        ['field.operator','Câmp Operator'],
+        ['field.reper','Câmp Reper'],
+        ['field.rebut','Câmp Rebut'],
+        ['field.cod-defect','Selector Cod defect'],
+        ['field.cauza','Câmp Cauză'],
+        ['field.observatii','Câmp Observații']
+      ], [
+        ['section.table-main','Tabel rebut']
+      ])
+    }),
+    'rebut-pm': Object.freeze({
+      hint: 'Rebut PM: vezi doar câmpurile reale din formularul de neconformități și tabel.',
+      items: makeCrudCatalog([
+        ['field.data','Câmp Data înregistrării'],
+        ['field.nr-reper','Câmp Nr. reper'],
+        ['field.reper','Câmp Denumire reper'],
+        ['field.cod-defect','Selector Cod defect'],
+        ['field.loc-depistare','Câmp Loc depistare'],
+        ['field.operator','Câmp Operator'],
+        ['field.piese-neconforme','Câmp Piese neconforme'],
+        ['field.piese-remaniabile','Câmp Piese remaniabile'],
+        ['field.cauza','Câmp Cauză'],
+        ['field.actiuni-corective','Câmp Acțiuni corective'],
+        ['field.observatii','Câmp Observații']
+      ], [
+        ['section.table-main','Tabel Rebut PM']
+      ])
+    }),
+    'rebut-pm-helper': Object.freeze({
+      hint: 'Helper Rebut PM: coduri defect și liste auxiliare.',
+      items: makeCrudCatalog([
+        ['field.cod-defect','Câmp Cod defect'],
+        ['field.reper','Câmp Reper / categorie'],
+        ['field.observatii','Câmp Descriere']
+      ], [
+        ['section.table-main','Tabel helper rebut PM']
+      ])
+    }),
+    'kpi': Object.freeze({
+      hint: 'KPI are în principal filtrele, butoanele de export și zona de tabel / grafic.',
+      items: uniqueCatalog([].concat(
+        entries([
+          ['rows.filter','Filtrare / căutare'],
+          ['cloud.refresh','Refresh cloud'],
+          ['data.export','Export / PDF']
+        ], 'action'),
+        entries([
+          ['field.data','Câmp Dată'],
+          ['field.utilaj','Câmp Utilaj'],
+          ['field.operator','Câmp Operator'],
+          ['field.reper','Câmp Reper']
+        ], 'field'),
+        entries([
+          ['section.table-main','Tabel KPI'],
+          ['section.chart-main','Grafic KPI']
+        ], 'section')
+      ))
+    }),
+    'planificare-forja': Object.freeze({
+      hint: 'Planificare Forjă: grila mare de planificare, selecția și totalurile.',
+      items: uniqueCatalog([].concat(
+        entries([
+          ['rows.filter','Filtrare / căutare'],
+          ['cloud.refresh','Refresh cloud'],
+          ['cloud.save','Salvare în cloud'],
+          ['data.export','Export date']
+        ], 'action'),
+        entries([
+          ['field.data','Câmp Dată'],
+          ['field.reper','Câmp Reper'],
+          ['field.debitat','Câmp Debitat disponibil'],
+          ['field.comanda','Câmp Comandă'],
+          ['field.planificat','Câmp Planificat'],
+          ['field.realizat','Câmp Realizat']
+        ], 'field'),
+        entries([
+          ['section.grid-planificare','Grilă planificare'],
+          ['section.sum-selectie','Suma selecției'],
+          ['section.alert-livrari','Avertizări livrări']
+        ], 'section')
+      ))
+    }),
+    'comenzi-livrare': Object.freeze({
+      hint: 'Comenzi livrare: tabelul, filtrele și câmpurile de livrare.',
+      items: makeCrudCatalog([
+        ['field.data-livrare','Câmp Data livrării'],
+        ['field.client','Câmp Client'],
+        ['field.reper','Câmp Reper'],
+        ['field.cantitate','Câmp Cantitate'],
+        ['field.transport','Câmp Transport'],
+        ['field.observatii','Câmp Observații']
+      ], [
+        ['section.table-main','Tabel comenzi livrare']
+      ])
+    }),
+    'mrc-necesar-otel': Object.freeze({
+      hint: 'MRC / Necesar Oțel: doar tabelul principal și filtrele reale.',
+      items: makeCrudCatalog([
+        ['field.an','Câmp An'],
+        ['field.luna','Câmp Lună'],
+        ['field.reper','Câmp Reper'],
+        ['field.diametru','Câmp Diametru'],
+        ['field.calitate','Câmp Calitate'],
+        ['field.necesar','Câmp Necesar'],
+        ['field.stoc','Câmp Stoc']
+      ], [
+        ['section.table-main','Tabel MRC necesar oțel']
+      ])
+    }),
+    'mrc-comenzi-otel': Object.freeze({
+      hint: 'MRC / Comenzi oțel: tabelul de comenzi, filtrarea și câmpurile de comandă.',
+      items: makeCrudCatalog([
+        ['field.an','Câmp An'],
+        ['field.luna','Câmp Lună'],
+        ['field.reper','Câmp Reper'],
+        ['field.diametru','Câmp Diametru'],
+        ['field.calitate','Câmp Calitate'],
+        ['field.comandat','Câmp Cantitate comandată'],
+        ['field.stoc','Câmp Stoc']
+      ], [
+        ['section.table-main','Tabel MRC comenzi oțel']
+      ])
+    }),
+    'mrc-comenzi-saptamanale': Object.freeze({
+      hint: 'MRC / Comenzi săptămânale: tabelul săptămânal și câmpurile de planificare.',
+      items: makeCrudCatalog([
+        ['field.an','Câmp An'],
+        ['field.luna','Câmp Lună'],
+        ['field.reper','Câmp Reper'],
+        ['field.cantitate','Câmp Cantitate'],
+        ['field.client','Câmp Client'],
+        ['field.observatii','Câmp Observații']
+      ], [
+        ['section.table-main','Tabel MRC comenzi săptămânale']
+      ])
+    })
+  });
+
+  function buildPatternManifest(pageKey) {
+    var key = String(pageKey || '').trim();
+    if (!key) return { hint:'', items:[] };
+    if (/^inventar-/.test(key)) {
+      return {
+        hint: 'Pagina de inventar are formularul, filtrele, tabelul principal și eventual sumarul.',
+        items: makeCrudCatalog([
+          ['field.an','Câmp An'],
+          ['field.luna','Câmp Lună'],
+          ['field.data','Câmp Dată'],
+          ['field.reper','Câmp Reper'],
+          ['field.diametru','Câmp Diametru'],
+          ['field.calitate','Câmp Calitate'],
+          ['field.sarja','Câmp Sarjă'],
+          ['field.cantitate','Câmp Cantitate'],
+          ['field.kg','Câmp KG'],
+          ['field.observatii','Câmp Observații']
+        ], [
+          ['section.table-main','Tabel inventar'],
+          ['section.table-summary','Tabel sumar inventar']
+        ])
+      };
+    }
+    if (/^zale-/.test(key)) {
+      return {
+        hint: 'Paginile Zale au tabelul principal, filtrele și câmpurile de transport / livrare.',
+        items: makeCrudCatalog([
+          ['field.an','Câmp An'],
+          ['field.luna','Câmp Lună'],
+          ['field.data-livrare','Câmp Data livrării'],
+          ['field.transport','Câmp Nr. transport'],
+          ['field.reper','Câmp Reper'],
+          ['field.cantitate','Câmp Cantitate'],
+          ['field.realizat','Câmp Forjat / realizat'],
+          ['field.rebut','Câmp Rebut'],
+          ['field.observatii','Câmp Observații']
+        ], [
+          ['section.table-main','Tabel Urmărire zale']
+        ])
+      };
+    }
+    if (/^ambalare-/.test(key)) {
+      return {
+        hint: 'Paginile de ambalare au tabelul principal și câmpurile de transport / cantitate.',
+        items: makeCrudCatalog([
+          ['field.an','Câmp An'],
+          ['field.luna','Câmp Lună'],
+          ['field.data','Câmp Dată'],
+          ['field.transport','Câmp Nr. transport'],
+          ['field.reper','Câmp Reper'],
+          ['field.cantitate','Câmp Cantitate'],
+          ['field.operator','Câmp Operator'],
+          ['field.observatii','Câmp Observații']
+        ], [
+          ['section.table-main','Tabel ambalare']
+        ])
+      };
+    }
+    return { hint:'Pentru pagina selectată vezi doar elementele reale ale paginii. Dacă lipsește ceva special, îl poți adăuga ca element personalizat.', items: uniqueCatalog(originalGetCatalog(key) || []) };
+  }
+
+  function getManifestForPage(pageKey) {
+    var key = String(pageKey || '').trim();
+    return PAGE_CONTROL_MANIFESTS[key] || buildPatternManifest(key);
+  }
+
+  function normalizeText(value) {
+    return String(value == null ? '' : value)
+      .normalize('NFD')
+      .replace(/[̀-ͯ]/g, '')
+      .replace(/[^a-zA-Z0-9]+/g, ' ')
+      .trim()
+      .toLowerCase();
+  }
+
+  function slugKey(value) {
+    return normalizeText(value).replace(/\s+/g, '-').replace(/^-+|-+$/g, '');
+  }
+
+  RF.getControlCatalogForPage = function (pageKey) {
+    return uniqueCatalog((getManifestForPage(pageKey) || {}).items || []);
+  };
+
+  RF.getControlManifestInfo = function (pageKey) {
+    var manifest = getManifestForPage(pageKey) || { hint:'', items:[] };
+    return {
+      page_key: String(pageKey || '').trim(),
+      hint: String(manifest.hint || '').trim(),
+      count: Array.isArray(manifest.items) ? manifest.items.length : 0
+    };
+  };
+
+  function getElementText(el) {
+    if (!el) return '';
+    var raw = [
+      el.getAttribute && el.getAttribute('data-rf-label'),
+      el.getAttribute && el.getAttribute('aria-label'),
+      el.getAttribute && el.getAttribute('title'),
+      el.value,
+      el.innerText,
+      el.textContent,
+      el.placeholder,
+      el.name,
+      el.id,
+      el.className
+    ].filter(Boolean).join(' ');
+    return normalizeText(raw);
+  }
+
+  function findFieldLabel(el) {
+    if (!el) return '';
+    var id = el.id ? String(el.id) : '';
+    if (id) {
+      try {
+        var lbl = document.querySelector('label[for="' + CSS.escape(id) + '"]');
+        if (lbl && lbl.textContent) return lbl.textContent;
+      } catch (_) {}
+    }
+    var field = el.closest && el.closest('.field, .fltGroup, .formRow, .form-field, .editorRow, .inputWrap, .control-group');
+    if (field) {
+      var label = field.querySelector('label');
+      if (label && label.textContent) return label.textContent;
+    }
+    var prev = el.previousElementSibling;
+    if (prev && prev.tagName === 'LABEL' && prev.textContent) return prev.textContent;
+    return '';
+  }
+
+  function classifyActionElement(el, pageKey) {
+    if (!el) return '';
+    var page = String(pageKey || '').trim();
+    var text = getElementText(el);
+    var href = normalizeText(el.getAttribute && el.getAttribute('href'));
+    if (!text && !href) return '';
+
+    if (page === 'helper-data' && text.indexOf('salveaza') >= 0) return 'masterdata.edit';
+    if (page === 'index') {
+      if (text.indexOf('paleta') >= 0 || text.indexOf('tema') >= 0) return 'dashboard.palette';
+      if (text.indexOf('refresh') >= 0 || text.indexOf('reincarca') >= 0 || text.indexOf('actualizeaza') >= 0) return 'dashboard.refresh';
+    }
+    if (text.indexOf('probleme t t') >= 0 || href.indexOf('tratament termic probleme') >= 0 || href.indexOf('tratament-termic-probleme') >= 0) return 'problems.link';
+    if ((text.indexOf('pdf') >= 0 || text.indexOf('fisa') >= 0 || text.indexOf('fise') >= 0) && (text.indexOf('incarca') >= 0 || text.indexOf('upload') >= 0 || text.indexOf('adauga') >= 0)) return 'pdf.upload';
+    if ((text.indexOf('pdf') >= 0 || text.indexOf('fisa') >= 0 || text.indexOf('fise') >= 0) && (text.indexOf('descarca') >= 0 || text.indexOf('export') >= 0 || text.indexOf('download') >= 0)) return 'pdf.download';
+    if ((text.indexOf('pdf') >= 0 || text.indexOf('fisa') >= 0 || text.indexOf('fise') >= 0) && (text.indexOf('sterge') >= 0 || text.indexOf('elimina') >= 0)) return 'pdf.delete';
+    if ((text.indexOf('pdf') >= 0 || text.indexOf('fisa') >= 0 || text.indexOf('fise') >= 0) && (text.indexOf('deschide') >= 0 || text.indexOf('vizual') >= 0 || text.indexOf('open') >= 0)) return 'pdf.open';
+    if (text.indexOf('import') >= 0 || text.indexOf('incarca excel') >= 0 || text.indexOf('upload excel') >= 0) return 'data.import';
+    if (text.indexOf('export') >= 0 || text.indexOf('descarca') >= 0 || text.indexOf('excel') >= 0 || text.indexOf('pdf') >= 0) return 'data.export';
+    if (text.indexOf('sterge') >= 0 || text.indexOf('elimina') >= 0 || text.indexOf('delete') >= 0) return 'rows.delete';
+    if (text.indexOf('edit') >= 0 || text.indexOf('modifica') >= 0) return 'rows.edit';
+    if (text.indexOf('filtr') >= 0 || text.indexOf('cauta') >= 0 || text.indexOf('search') >= 0) return 'rows.filter';
+    if (text.indexOf('refresh') >= 0 || text.indexOf('sincron') >= 0 || text.indexOf('reincarca') >= 0 || text.indexOf('reintra') >= 0 || text.indexOf('actualizeaza') >= 0) return 'cloud.refresh';
+    if (text.indexOf('salveaza') >= 0 || text.indexOf('save') >= 0) return 'cloud.save';
+    if (text.indexOf('rand nou') >= 0 || text.indexOf('rind nou') >= 0 || text.indexOf('adauga') >= 0 || text.indexOf('nou') >= 0 || text.indexOf('plus') >= 0) return 'rows.add';
+    return '';
+  }
+
+  function isFilterField(el) {
+    if (!el) return false;
+    var text = getElementText(el);
+    if (text.indexOf('filtr') >= 0 || text.indexOf('cauta') >= 0 || text.indexOf('search') >= 0) return true;
+    return !!(el.closest && el.closest('thead .filters, thead tr.filters, thead tr.colFilters, .filtersBar, .filters, .filterBar, .toolbarFilters, .toolbar-search, .searchBox, .tableFilters, .fltGroup'));
+  }
+
+  function inferFieldControlKey(el) {
+    if (!el) return '';
+    var label = findFieldLabel(el);
+    var raw = label || el.getAttribute('data-field-label') || el.name || el.id || el.placeholder || el.getAttribute('data-field') || el.className || '';
+    var slug = slugKey(raw);
+    if (!slug) return '';
+    slug = slug
+      .replace(/^txt-?/, '')
+      .replace(/^cbo-?/, '')
+      .replace(/^inp-?/, '')
+      .replace(/^input-?/, '')
+      .replace(/^field-?/, '')
+      .replace(/^btn-?/, '');
+    return 'field.' + slug;
+  }
+
+  function markAclNodes(scope, pageKey) {
+    var root = scope && scope.querySelectorAll ? scope : document;
+    if (String(pageKey || '').trim() === 'login') return root;
+    var nodes = root.querySelectorAll('button, a, [role="button"], input, select, textarea, [contenteditable], form');
+    for (var i = 0; i < nodes.length; i += 1) {
+      var el = nodes[i];
+      if (el.hasAttribute('data-rf-skip')) continue;
+      if (!el.hasAttribute('data-rf-control') && !el.hasAttribute('data-rf-field')) {
+        if (el.matches('button, a, [role="button"], input[type="button"], input[type="submit"], input[type="file"]')) {
+          var actionKey = classifyActionElement(el, pageKey);
+          if (actionKey) {
+            el.setAttribute('data-rf-control', actionKey);
+          }
+        }
+        if (!el.hasAttribute('data-rf-control') && el.matches('input, select, textarea, [contenteditable]')) {
+          if (isFilterField(el)) {
+            el.setAttribute('data-rf-control', 'rows.filter');
+          } else {
+            var fieldKey = inferFieldControlKey(el);
+            if (fieldKey) el.setAttribute('data-rf-field', fieldKey);
+          }
+        }
+      }
+    }
+    return root;
+  }
+
+  function stricterDefaultForControl(controlKey, pagePermissions) {
+    var perms = pagePermissions || {};
+    var key = String(controlKey || '').trim();
+    var view = perms.can_view === true;
+    if (!key) return { can_view: view, can_use: view, can_edit: perms.can_edit === true };
+    if (key === 'rows.add') return { can_view: perms.can_add === true, can_use: perms.can_add === true, can_edit: false };
+    if (key === 'modal.open') return { can_view: perms.can_add === true || perms.can_edit === true, can_use: perms.can_add === true || perms.can_edit === true, can_edit: false };
+    if (key === 'rows.edit') return { can_view: view, can_use: perms.can_edit === true, can_edit: perms.can_edit === true };
+    if (key === 'rows.delete' || key === 'pdf.delete') return { can_view: perms.can_delete === true, can_use: perms.can_delete === true, can_edit: false };
+    if (key === 'data.export' || key === 'pdf.download') return { can_view: perms.can_export === true, can_use: perms.can_export === true, can_edit: false };
+    if (key === 'data.import' || key === 'pdf.upload') return { can_view: perms.can_import === true || perms.can_add === true, can_use: perms.can_import === true || perms.can_add === true, can_edit: false };
+    if (key === 'cloud.save') return { can_view: perms.can_add === true || perms.can_edit === true, can_use: perms.can_add === true || perms.can_edit === true, can_edit: false };
+    if (key === 'cloud.refresh' || key === 'rows.filter' || key === 'pdf.open' || key === 'problems.link' || key === 'dashboard.palette' || key === 'dashboard.refresh' || key === 'users.manage') return { can_view: view, can_use: view, can_edit: false };
+    if (key.indexOf('field.') === 0 || key.indexOf('pdf.revision.') === 0) return { can_view: view, can_use: perms.can_edit === true, can_edit: perms.can_edit === true };
+    if (key === 'permissions.save' || key === 'controls.save' || key === 'masterdata.edit') return { can_view: perms.can_edit === true, can_use: perms.can_edit === true, can_edit: false };
+    return { can_view: view, can_use: view, can_edit: perms.can_edit === true };
+  }
+
+  RF.resolveControlAccess = async function (pageKey, controlKey, options) {
+    var pageAccess = options && options.pageAccess ? options.pageAccess : (originalResolvePageAccess ? await originalResolvePageAccess(pageKey, options) : { permissions:{} });
+    var res = originalResolveControlAccess
+      ? await originalResolveControlAccess(pageKey, controlKey, Object.assign({}, options || {}, { pageAccess: pageAccess }))
+      : { control_key: controlKey, can_view: true, can_use: true, can_edit: true, source: 'fallback' };
+    var source = String(res && res.source || '');
+    var explicitUser = /user control permissions|admin/i.test(source);
+    if (!explicitUser) {
+      var stricter = stricterDefaultForControl(controlKey, pageAccess && pageAccess.permissions ? pageAccess.permissions : {});
+      res = Object.assign({}, res || {}, stricter);
+      if (!source) res.source = 'page permissions';
+    }
+    res.allowed = res.can_view === true;
+    return res;
+  };
+
+  RF.canUseControl = async function (pageKey, controlKey, options) {
+    var res = await RF.resolveControlAccess(pageKey, controlKey, options);
+    return { allowed: res.can_use === true && res.can_view === true, visible: res.can_view === true, editable: res.can_edit === true, source: res.source || '' };
+  };
+
+  function setReadonlyState(el, editable) {
+    if (!el) return;
+    if (el.matches('input, textarea')) {
+      if (editable) {
+        el.removeAttribute('readonly');
+        if (el.type !== 'file') el.disabled = false;
+      } else {
+        el.setAttribute('readonly', 'readonly');
+        if (el.type === 'file') el.disabled = true;
+      }
+      return;
+    }
+    if (el.matches('select')) {
+      el.disabled = !editable;
+      return;
+    }
+    if (el.hasAttribute('contenteditable')) {
+      el.setAttribute('contenteditable', editable ? 'true' : 'false');
+    }
+  }
+
+  RF.applyDomPermissions = async function (pageKey, root, options) {
+    if (String(pageKey || '').trim() === 'login') {
+      return options && options.pageAccess ? options.pageAccess : { allowed:true, permissions:{} };
+    }
+    var scope = markAclNodes(root && root.querySelectorAll ? root : document, pageKey);
+    var pageAccess = options && options.pageAccess ? options.pageAccess : (originalResolvePageAccess ? await originalResolvePageAccess(pageKey, options) : { permissions:{} });
+    var nodes = scope.querySelectorAll('[data-rf-permission],[data-rf-control],[data-rf-field]');
+    for (var i = 0; i < nodes.length; i += 1) {
+      var el = nodes[i];
+      var permKey = String(el.getAttribute('data-rf-permission') || '').trim();
+      if (permKey) {
+        var allowByPage = pageAccess && pageAccess.permissions ? pageAccess.permissions[permKey] === true : false;
+        if (!allowByPage) {
+          el.style.display = 'none';
+          el.setAttribute('aria-hidden', 'true');
+          if ('disabled' in el) el.disabled = true;
+          continue;
+        }
+      }
+      var controlKey = String(el.getAttribute('data-rf-control') || el.getAttribute('data-rf-field') || '').trim();
+      if (!controlKey) continue;
+      var controlAccess = await RF.resolveControlAccess(pageKey, controlKey, Object.assign({}, options || {}, { pageAccess: pageAccess }));
+      if (controlAccess.can_view !== true) {
+        el.style.display = 'none';
+        el.setAttribute('aria-hidden', 'true');
+        if ('disabled' in el) el.disabled = true;
+        setReadonlyState(el, false);
+        continue;
+      }
+      if (el.matches('button, a, [role="button"], input[type="button"], input[type="submit"], input[type="file"]')) {
+        if ('disabled' in el) el.disabled = controlAccess.can_use !== true;
+      }
+      if (el.matches('input, select, textarea, [contenteditable]')) {
+        setReadonlyState(el, controlAccess.can_edit === true || controlKey === 'rows.filter');
+      }
+    }
+    return pageAccess;
+  };
+
+  function currentPageKey() {
+    if (window.__RF_ACL_PAGE_BOOT__) return window.__RF_ACL_PAGE_BOOT__.pageKey;
+    return RF.inferPageKey ? RF.inferPageKey(window.location.pathname || '') : '';
+  }
+
+  function currentPageFlags() {
+    return window.__RF_ACL_PAGE_BOOT__ || { pageKey: currentPageKey(), controls: {} };
+  }
+
+  function elementInEditableGrid(el) {
+    return !!(el && el.closest && el.closest('table tbody tr, .tableWrap tbody tr, .table-wrap tbody tr, .grid-card tbody tr, .tableContainer tbody tr, .editableCell, td.editable, .lvRow, .listViewRow'));
+  }
+
+  function elementInEditorForm(el) {
+    return !!(el && el.closest && el.closest('form, .modal, .modalCard, .editor, .editorPanel, .sheetModal, .dialog, .popup, .drawer, .panelEditor, .formCard'));
+  }
+
+  function elementInFilterZone(el) {
+    return !!(el && el.closest && el.closest('thead .filters, thead tr.filters, thead tr.colFilters, .filtersBar, .filters, .filterBar, .toolbarFilters, .toolbar-search, .searchBox, .tableFilters, .fltGroup'));
+  }
+
+  function installEventGuards() {
+    if (window.__RF_ACL_EVENT_GUARDS__) return;
+    window.__RF_ACL_EVENT_GUARDS__ = true;
+
+    document.addEventListener('dblclick', function (ev) {
+      var state = currentPageFlags();
+      var edit = state.controls && state.controls['rows.edit'];
+      if (edit && edit.can_use === false && elementInEditableGrid(ev.target)) {
+        ev.preventDefault();
+        ev.stopImmediatePropagation();
+      }
+    }, true);
+
+    document.addEventListener('submit', function (ev) {
+      var form = ev.target;
+      if (!form || elementInFilterZone(form)) return;
+      var state = currentPageFlags();
+      var save = state.controls && state.controls['cloud.save'];
+      if (save && save.can_use === false && elementInEditorForm(form)) {
+        ev.preventDefault();
+        ev.stopImmediatePropagation();
+      }
+    }, true);
+
+    document.addEventListener('beforeinput', function (ev) {
+      var target = ev.target;
+      var state = currentPageFlags();
+      var edit = state.controls && state.controls['rows.edit'];
+      if (edit && edit.can_use === false && target && target.hasAttribute && target.hasAttribute('contenteditable')) {
+        ev.preventDefault();
+        ev.stopImmediatePropagation();
+      }
+    }, true);
+  }
+
+  async function collectControlSnapshot(pageKey, pageAccess, client) {
+    var keys = ['rows.filter','rows.add','rows.edit','rows.delete','data.export','data.import','cloud.refresh','cloud.save','modal.open','pdf.open','pdf.upload','pdf.download','pdf.delete','problems.link'];
+    var snapshot = {};
+    for (var i = 0; i < keys.length; i += 1) {
+      var key = keys[i];
+      snapshot[key] = await RF.resolveControlAccess(pageKey, key, { client: client, pageAccess: pageAccess });
+    }
+    return snapshot;
+  }
+
+  function observeAclMutations(pageKey, client, pageAccess) {
+    if (window.__RF_ACL_MUTATION_OBSERVER__) return;
+    var pending = false;
+    var observer = new MutationObserver(function () {
+      if (pending) return;
+      pending = true;
+      window.requestAnimationFrame(async function () {
+        pending = false;
+        try {
+          await RF.applyDomPermissions(pageKey, document, { client: client, pageAccess: pageAccess });
+        } catch (_) {}
+      });
+    });
+    observer.observe(document.documentElement, { childList: true, subtree: true });
+    window.__RF_ACL_MUTATION_OBSERVER__ = observer;
+  }
+
+  async function bootstrapPageAcl() {
+    if (!window.supabase || typeof window.supabase.createClient !== 'function') return;
+    var pageKey = currentPageKey();
+    if (pageKey === 'login') return;
+    if (!pageKey || !originalResolvePageAccess) return;
+    var client = window.createRfSupabaseClient ? window.createRfSupabaseClient() : null;
+    if (!client) return;
+    var pageAccess = await originalResolvePageAccess(pageKey, { client: client });
+    if (!pageAccess || pageAccess.allowed !== true) return;
+    await RF.applyDomPermissions(pageKey, document, { client: client, pageAccess: pageAccess });
+    installEventGuards();
+    window.__RF_ACL_PAGE_BOOT__ = {
+      pageKey: pageKey,
+      pageAccess: pageAccess,
+      controls: await collectControlSnapshot(pageKey, pageAccess, client)
+    };
+    observeAclMutations(pageKey, client, pageAccess);
+  }
+
+  if (!window.__RF_ACL_AUTO_BIND__) {
+    window.__RF_ACL_AUTO_BIND__ = true;
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', function () { bootstrapPageAcl().catch(function () {}); }, { once: true });
+    } else {
+      bootstrapPageAcl().catch(function () {});
+    }
   }
 })(window);
