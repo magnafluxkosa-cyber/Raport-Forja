@@ -673,6 +673,8 @@
       const btnLogin = qs('#btnLogin');
       const defaultHint = qs('#defaultHint');
       const helperDataLink = qs('#helperDataLink');
+      const itemHelperData = qs('#itemHelperData');
+      const itemAcl = qs('#itemAcl');
       const aclTooltip = qs('#aclTooltip');
       const aclDeniedBanner = qs('#aclDeniedBanner');
 
@@ -792,6 +794,7 @@
       let currentUserPermissions = null;
       let currentRolePermissions = null;
       let currentDashAcl = null;
+      let currentIndexVisibilityDoc = { users:{} };
       let currentPanel = null;
       const currentInnerPanels = { subForja:null };
 
@@ -943,6 +946,60 @@
 
         currentDashAcl = null;
         return null;
+      }
+
+      async function loadIndexVisibilityDoc(){
+        currentIndexVisibilityDoc = { users:{} };
+        if (!sb) return currentIndexVisibilityDoc;
+
+        try {
+          const a = await sb.from('rf_documents').select('content,updated_at').eq('doc_key', 'index_button_visibility_v1').maybeSingle();
+          if (!a.error && a.data?.content && typeof a.data.content === 'object') {
+            currentIndexVisibilityDoc = a.data.content;
+            if (!currentIndexVisibilityDoc.users || typeof currentIndexVisibilityDoc.users !== 'object') currentIndexVisibilityDoc.users = {};
+            return currentIndexVisibilityDoc;
+          }
+        } catch(_){ }
+
+        try {
+          const b = await sb.from('rf_documents').select('data,updated_at').eq('doc_key', 'index_button_visibility_v1').maybeSingle();
+          if (!b.error && b.data?.data && typeof b.data.data === 'object') {
+            currentIndexVisibilityDoc = b.data.data;
+            if (!currentIndexVisibilityDoc.users || typeof currentIndexVisibilityDoc.users !== 'object') currentIndexVisibilityDoc.users = {};
+            return currentIndexVisibilityDoc;
+          }
+        } catch(_){ }
+
+        return currentIndexVisibilityDoc;
+      }
+
+      function getCurrentIdentityKeys(){
+        const keys = [];
+        const email = String(currentUser?.email || '').trim().toLowerCase();
+        const id = String(currentUser?.id || '').trim().toLowerCase();
+        if (email) keys.push(email);
+        if (id) keys.push(id);
+        return keys;
+      }
+
+      function getHiddenIndexPageKeys(){
+        const users = currentIndexVisibilityDoc && currentIndexVisibilityDoc.users && typeof currentIndexVisibilityDoc.users === 'object'
+          ? currentIndexVisibilityDoc.users
+          : {};
+        const identities = getCurrentIdentityKeys();
+        for (const identity of identities) {
+          const row = users[String(identity || '').toLowerCase()];
+          if (row && Array.isArray(row.hiddenPageKeys)) {
+            return row.hiddenPageKeys.map(v => String(v || '').trim()).filter(Boolean);
+          }
+        }
+        return [];
+      }
+
+      function isIndexButtonVisible(pageKey){
+        if (!currentUser) return false;
+        const hidden = new Set(getHiddenIndexPageKeys());
+        return !hidden.has(String(pageKey || '').trim());
       }
 
       function normalizeHref(href){
@@ -1267,7 +1324,7 @@
           const adminOnly = false;
           const navControl = navControlByPage[pageKey] || '';
           const controlOk = navControl ? await controlAllowed(navControl) : true;
-          const on = adminOnly ? (isCurrentAdmin() && controlOk) : (!!currentUser && elementAllowed(item, pageKey) && controlOk);
+          const on = adminOnly ? (isCurrentAdmin() && controlOk && isIndexButtonVisible(pageKey)) : (!!currentUser && elementAllowed(item, pageKey) && controlOk && isIndexButtonVisible(pageKey));
           setVisible(item, on);
           if (on) item.style.display = '';
           applyAccessState(item, on, getDeniedMessage(pageKey, link ? link.getAttribute('href') : ''));
@@ -1275,13 +1332,13 @@
 
         const subLinks = qsa('.subpanel [data-page-key]');
         for (const a of subLinks) {
-          const on = !!currentUser && elementAllowed(a, a.dataset.pageKey);
+          const on = !!currentUser && elementAllowed(a, a.dataset.pageKey) && isIndexButtonVisible(a.dataset.pageKey);
           setVisible(a, on);
           applyAccessState(a, on, getDeniedMessage(a.dataset.pageKey, a.getAttribute('href')));
         }
 
         if (helperDataLink) {
-          const helperDataAllowed = !!currentUser;
+          const helperDataAllowed = !!currentUser && isIndexButtonVisible('helper-data');
           if (itemHelperData) setVisible(itemHelperData, helperDataAllowed);
           setVisible(helperDataLink, helperDataAllowed);
           applyAccessState(helperDataLink, helperDataAllowed, getDeniedMessage('helper-data', helperDataLink.getAttribute('href')));
@@ -1325,7 +1382,7 @@
           const totalPageButtons = panel ? Number(panel.dataset.totalPageButtons || '0') : 0;
           const panelHasVisibleChild = !!(panel && panel.dataset.hasVisibleChild === '1');
           const controlOk = await controlAllowed(navControlByGroup[groupKey] || '');
-          const groupAllowed = !!currentUser && elementAllowed(item, groupKey) && controlOk;
+          const groupAllowed = !!currentUser && elementAllowed(item, groupKey) && controlOk && isIndexButtonVisible(groupKey);
           const on = groupAllowed && totalPageButtons > 0 && panelHasVisibleChild;
           setVisible(item, on);
           applyAccessState(item, on, getDeniedMessage(groupKey, ''));
@@ -1416,6 +1473,7 @@
         currentRolePermissions = await loadRolePermissionMap(currentRole);
         currentPermissions = currentUserPermissions || currentRolePermissions;
         await loadDashboardAcl();
+        await loadIndexVisibilityDoc();
         await applyLayout();
       }
 

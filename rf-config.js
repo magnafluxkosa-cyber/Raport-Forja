@@ -14,6 +14,7 @@
     { page_key: 'group-rapoarte', page_name: 'Grup / Rapoarte' },
     { page_key: 'group-inventar', page_name: 'Grup / Inventar' },
     { page_key: 'helper-data', page_name: 'Helper Data' },
+    { page_key: 'helper-acl', page_name: 'Permisiuni conturi' },
     { page_key: 'numeralkod', page_name: 'Numeral KOD' },
     { page_key: 'intrari-otel', page_name: 'Intrări Oțel' },
     { page_key: 'debitate', page_name: 'Debitate' },
