@@ -1634,19 +1634,12 @@ async function applyDomPermissions(pageKey, root, options) {
       if (permissionEntry.can_view === false) userExplicitFalse = true;
     });
 
-    var mirrorHasAnyUserAcl = !!(
-      (mirror && mirror.user_permissions && email && mirror.user_permissions[email] && Object.keys(mirror.user_permissions[email]).length) ||
-      (mirror && mirror.user_grants && email && mirror.user_grants[email] && Object.keys(mirror.user_grants[email]).length)
-    );
-    var hasAnyUserAcl = !!((userPermissionMap && userPermissionMap.size > 0) || mirrorHasAnyUserAcl);
     var hasUserExplicit = userExplicitTrue || userExplicitFalse;
     var allowed;
     var source;
-    if (hasAnyUserAcl) {
+    if (hasUserExplicit) {
       allowed = userExplicitTrue && !userExplicitFalse;
-      source = hasUserExplicit
-        ? (allowed ? 'user acl explicit true' : 'user acl explicit false')
-        : 'user acl strict deny';
+      source = allowed ? 'user acl explicit true' : 'user acl explicit false';
     } else {
       allowed = rolePermissions.can_view !== false;
       if (roleExplicitFalse) allowed = false;
@@ -2240,13 +2233,22 @@ async function applyDomPermissions(pageKey, root, options) {
 
   var PAGE_CONTROL_MANIFESTS = Object.freeze({
     'index': Object.freeze({
-      hint: 'Pe index, butoanele mari din stânga se setează sus în tabelul de pagini, pe rândurile group-*. Aici vezi doar elementele din interiorul indexului.',
+      hint: 'Pe index poți ascunde direct fiecare buton important. Pentru butoanele mari din stânga folosește elementele btn.group-..., iar pentru butoanele de sus folosește auth./dashboard..',
       items: uniqueCatalog([].concat(
         entries([
           ['dashboard.palette','Buton Paletă'],
           ['dashboard.refresh','Buton Refresh'],
           ['auth.login','Buton Login'],
-          ['auth.logout','Buton Logout']
+          ['auth.logout','Buton Logout'],
+          ['btn.group-forja','Buton mare FORJĂ'],
+          ['btn.group-prelucrari','Buton mare PRELUCRĂRI MECANICE'],
+          ['btn.group-tratament-termic','Buton mare TRATAMENT TERMIC'],
+          ['btn.group-calitate','Buton mare CALITATE'],
+          ['btn.group-probleme-imbunatatire','Buton mare PROBLEME / ÎMBUNĂTĂȚIRI / INVESTIȚII'],
+          ['btn.page-kpi','Buton mare KPI'],
+          ['btn.group-planificari','Buton mare PLANIFICĂRI'],
+          ['btn.helper-data','Buton mare HELPER-DATA'],
+          ['btn.helper-acl','Buton mare PERMISIUNI (ACL)']
         ], 'action'),
         entries([
           ['section.status-bar','Zona status autentificare'],
