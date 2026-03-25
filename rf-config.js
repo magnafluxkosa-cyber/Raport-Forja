@@ -1634,12 +1634,19 @@ async function applyDomPermissions(pageKey, root, options) {
       if (permissionEntry.can_view === false) userExplicitFalse = true;
     });
 
+    var mirrorHasAnyUserAcl = !!(
+      (mirror && mirror.user_permissions && email && mirror.user_permissions[email] && Object.keys(mirror.user_permissions[email]).length) ||
+      (mirror && mirror.user_grants && email && mirror.user_grants[email] && Object.keys(mirror.user_grants[email]).length)
+    );
+    var hasAnyUserAcl = !!((userPermissionMap && userPermissionMap.size > 0) || mirrorHasAnyUserAcl);
     var hasUserExplicit = userExplicitTrue || userExplicitFalse;
     var allowed;
     var source;
-    if (hasUserExplicit) {
+    if (hasAnyUserAcl) {
       allowed = userExplicitTrue && !userExplicitFalse;
-      source = allowed ? 'user acl explicit true' : 'user acl explicit false';
+      source = hasUserExplicit
+        ? (allowed ? 'user acl explicit true' : 'user acl explicit false')
+        : 'user acl strict deny';
     } else {
       allowed = rolePermissions.can_view !== false;
       if (roleExplicitFalse) allowed = false;
