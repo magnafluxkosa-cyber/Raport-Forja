@@ -199,12 +199,12 @@
           chipAuth.textContent = 'Autentificat';
           chipAuth.className = 'chip ok';
           chipUser.textContent = `ID: ${getStoredDisplayId() || safeIdFromEmail(userForDisplay?.email)}`;
-          chipRole.textContent = `Rol: ${normalizeRoleName(roleForDisplay) || '—'}`;
+          chipRole.textContent = `Cont: ${normalizeRoleName(roleForDisplay) || '—'}`;
         } else {
           chipAuth.textContent = 'Neautentificat';
           chipAuth.className = 'chip warn';
           chipUser.textContent = 'ID: —';
-          chipRole.textContent = 'Rol: —';
+          chipRole.textContent = 'Cont: —';
         }
       }
 

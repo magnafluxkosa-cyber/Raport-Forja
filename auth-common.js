@@ -402,3 +402,60 @@
     buildLoginUrl
   };
 })();
+
+
+/* OPEN ACCESS RESET OVERRIDE */
+(function(){
+  'use strict';
+  var A = window.ERPAuth || {};
+  function stripUi(root){
+    var scope = root && root.querySelectorAll ? root : document;
+    try { scope.querySelectorAll('a[href="helper.html"],a[href="helper-acl.html"],[data-page-key="helper-acl"],[data-rf-control="nav.helper-acl"]').forEach(function(el){ el.remove(); }); } catch(_) {}
+    try { scope.querySelectorAll('#chipRole,#roleChip,#roleText,#roleStatus,#roleSub,[id*="roleLabel" i],[class*="roleLabel" i],[id*="chipRole" i]').forEach(function(el){ el.style.display='none'; }); } catch(_) {}
+    try {
+      var walker = document.createTreeWalker(document.body || document.documentElement, NodeFilter.SHOW_TEXT, null);
+      var node;
+      while ((node = walker.nextNode())) {
+        if (!node.nodeValue) continue;
+        if (node.nodeValue.indexOf('Cont:') >= 0) node.nodeValue = node.nodeValue.replace(/\bCont:\s*/g, '');
+        if (node.nodeValue.indexOf('Rol:') >= 0) node.nodeValue = node.nodeValue.replace(/\bRol:\s*/g, '');
+      }
+    } catch(_) {}
+  }
+  async function openUser(){
+    try {
+      var session = await (A.getSession ? A.getSession() : null);
+      var user = session && session.user ? session.user : null;
+      if (!user && A.getSupabaseClient) {
+        var res = await A.getSupabaseClient().auth.getSession();
+        user = res && res.data && res.data.session ? res.data.session.user : null;
+      }
+      if (!user) return null;
+      return { user:user, role:'admin' };
+    } catch(_) { return null; }
+  }
+  A.resolveUserRole = async function(){ return 'admin'; };
+  A.getCurrentUserWithRole = openUser;
+  A.getAccountStatus = async function(){ return { is_active:true, is_banned:false, ban_reason:null, note:null }; };
+  A.roleLabel = function(){ return ''; };
+  A.roleClass = function(){ return ''; };
+  A.canAccess = function(){ return true; };
+  A.getPageAccess = async function(pageKey, options){
+    var auth = options && options.user ? { user: options.user, role:'admin' } : await openUser();
+    return {
+      allowed: !!(auth && auth.user),
+      user: auth ? auth.user : null,
+      role: 'admin',
+      permissions: { can_view:true, can_add:true, can_edit:true, can_delete:true, can_export:true, can_import:true, can_filter:true },
+      source: 'open access'
+    };
+  };
+  window.ERPAuth = A;
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', function(){ stripUi(document); }, { once:true });
+  } else { stripUi(document); }
+  try {
+    var obs = new MutationObserver(function(){ stripUi(document); });
+    obs.observe(document.documentElement, { childList:true, subtree:true });
+  } catch(_) {}
+})();

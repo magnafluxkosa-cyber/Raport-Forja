@@ -910,13 +910,13 @@
           const roleLabel = window.ERPAuth && typeof window.ERPAuth.roleLabel === 'function'
             ? window.ERPAuth.roleLabel(auth.role)
             : auth.role;
-          setChip(els.roleChip, 'Rol: ' + roleLabel, 'ok');
+          setChip(els.roleChip, 'Cont: ' + roleLabel, 'ok');
           setReadonlyMode(!canEdit());
           return true;
         } catch (error) {
           console.error(error);
           setChip(els.authChip, 'Autentificare: eroare', 'bad');
-          setChip(els.roleChip, 'Rol: necunoscut', 'bad');
+          setChip(els.roleChip, 'Cont: necunoscut', 'bad');
           return false;
         }
       }

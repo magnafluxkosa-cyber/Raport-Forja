@@ -1,0 +1,1 @@
+Rulează RESET_TOTAL_OPEN_ACCESS.sql în Supabase SQL Editor, apoi înlocuiește fișierele din zip. Varianta asta lasă toate conturile cu acces complet și scoate din UI referințele la permisiuni și la rol.
