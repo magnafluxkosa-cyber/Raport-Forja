@@ -404,58 +404,85 @@
 })();
 
 
+
 /* OPEN ACCESS RESET OVERRIDE */
 (function(){
   'use strict';
   var A = window.ERPAuth || {};
-  function stripUi(root){
+  var ALL_PERMS = { can_view:true, can_add:true, can_edit:true, can_delete:true, can_export:true, can_import:true, can_filter:true };
+
+  function unhideAll(root){
     var scope = root && root.querySelectorAll ? root : document;
-    try { scope.querySelectorAll('a[href="helper.html"],a[href="helper-acl.html"],[data-page-key="helper-acl"],[data-rf-control="nav.helper-acl"]').forEach(function(el){ el.remove(); }); } catch(_) {}
-    try { scope.querySelectorAll('#chipRole,#roleChip,#roleText,#roleStatus,#roleSub,[id*="roleLabel" i],[class*="roleLabel" i],[id*="chipRole" i]').forEach(function(el){ el.style.display='none'; }); } catch(_) {}
     try {
-      var walker = document.createTreeWalker(document.body || document.documentElement, NodeFilter.SHOW_TEXT, null);
-      var node;
-      while ((node = walker.nextNode())) {
-        if (!node.nodeValue) continue;
-        if (node.nodeValue.indexOf('Cont:') >= 0) node.nodeValue = node.nodeValue.replace(/\bCont:\s*/g, '');
-        if (node.nodeValue.indexOf('Rol:') >= 0) node.nodeValue = node.nodeValue.replace(/\bRol:\s*/g, '');
+      var nodes = scope.querySelectorAll('[data-rf-permission],[data-rf-control],[data-rf-field],.hidden,[hidden],[aria-hidden="true"],[style*="display:none" i]');
+      for (var i = 0; i < nodes.length; i += 1) {
+        var el = nodes[i];
+        if (!el) continue;
+        el.hidden = false;
+        el.removeAttribute('hidden');
+        el.removeAttribute('aria-hidden');
+        if (el.style) {
+          el.style.display = '';
+          el.style.visibility = '';
+          el.style.opacity = '';
+          el.style.pointerEvents = '';
+        }
+        if ('disabled' in el) el.disabled = false;
+        if (el.matches && el.matches('input,textarea,select')) el.removeAttribute('readonly');
       }
     } catch(_) {}
   }
-  async function openUser(){
+
+  async function getOpenAccessAuth(){
     try {
-      var session = await (A.getSession ? A.getSession() : null);
-      var user = session && session.user ? session.user : null;
-      if (!user && A.getSupabaseClient) {
-        var res = await A.getSupabaseClient().auth.getSession();
-        user = res && res.data && res.data.session ? res.data.session.user : null;
+      var session = null;
+      if (typeof A.getSession === 'function') {
+        session = await A.getSession();
       }
+      if (!session && typeof A.getSupabaseClient === 'function') {
+        var res = await A.getSupabaseClient().auth.getSession();
+        session = res && res.data && res.data.session ? res.data.session : null;
+      }
+      var user = session && session.user ? session.user : null;
       if (!user) return null;
-      return { user:user, role:'admin' };
-    } catch(_) { return null; }
+      try { if (typeof A.persistUserState === 'function') A.persistUserState(user, 'admin'); } catch(_) {}
+      return {
+        session: session,
+        user: user,
+        role: 'admin',
+        accountStatus: { is_active:true, is_banned:false, ban_reason:null, note:null }
+      };
+    } catch(_) {
+      return null;
+    }
   }
+
   A.resolveUserRole = async function(){ return 'admin'; };
-  A.getCurrentUserWithRole = openUser;
+  A.getCurrentUserWithRole = getOpenAccessAuth;
   A.getAccountStatus = async function(){ return { is_active:true, is_banned:false, ban_reason:null, note:null }; };
-  A.roleLabel = function(){ return ''; };
-  A.roleClass = function(){ return ''; };
+  A.roleLabel = function(){ return 'Admin'; };
+  A.roleClass = function(){ return 'admin'; };
   A.canAccess = function(){ return true; };
   A.getPageAccess = async function(pageKey, options){
-    var auth = options && options.user ? { user: options.user, role:'admin' } : await openUser();
+    var auth = options && options.user ? { user: options.user, session: options.session || null } : await getOpenAccessAuth();
     return {
       allowed: !!(auth && auth.user),
+      session: auth && auth.session ? auth.session : null,
       user: auth ? auth.user : null,
       role: 'admin',
-      permissions: { can_view:true, can_add:true, can_edit:true, can_delete:true, can_export:true, can_import:true, can_filter:true },
+      permissions: Object.assign({}, ALL_PERMS),
       source: 'open access'
     };
   };
   window.ERPAuth = A;
+
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', function(){ stripUi(document); }, { once:true });
-  } else { stripUi(document); }
+    document.addEventListener('DOMContentLoaded', function(){ unhideAll(document); }, { once:true });
+  } else {
+    unhideAll(document);
+  }
   try {
-    var obs = new MutationObserver(function(){ stripUi(document); });
-    obs.observe(document.documentElement, { childList:true, subtree:true });
+    var obs = new MutationObserver(function(){ unhideAll(document); });
+    obs.observe(document.documentElement, { childList:true, subtree:true, attributes:true });
   } catch(_) {}
 })();

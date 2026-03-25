@@ -3245,3 +3245,372 @@ async function applyDomPermissions(pageKey, root, options) {
     document.addEventListener('DOMContentLoaded', function(){ unhideAll(document); }, { once:true });
   } else { unhideAll(document); }
 })(window);
+
+
+/* RF OPEN ACCESS UNIVERSAL PATCH */
+(function (window) {
+  'use strict';
+  if (!window || window.__RF_OPEN_ACCESS_UNIVERSAL_PATCH__) return;
+  window.__RF_OPEN_ACCESS_UNIVERSAL_PATCH__ = true;
+
+  var ALL_PERMS = {
+    can_view:true,
+    can_add:true,
+    can_edit:true,
+    can_delete:true,
+    can_export:true,
+    can_import:true,
+    can_filter:true,
+    can_use:true,
+    is_visible:true,
+    is_enabled:true,
+    is_editable:true
+  };
+
+  function ok(data) {
+    return { data:data, error:null, count:Array.isArray(data) ? data.length : (data ? 1 : 0), status:200, statusText:'OK' };
+  }
+
+  function ensureArray(value) {
+    if (Array.isArray(value)) return value.slice();
+    if (value === undefined || value === null || value === '') return [];
+    return [value];
+  }
+
+  function clean(value) {
+    return String(value || '').trim();
+  }
+
+  function normalize(value) {
+    return clean(value).toLowerCase();
+  }
+
+  function unique(list) {
+    var seen = Object.create(null);
+    var out = [];
+    ensureArray(list).forEach(function (item) {
+      var key = clean(item);
+      if (!key || seen[key]) return;
+      seen[key] = true;
+      out.push(key);
+    });
+    return out;
+  }
+
+  function pageKeysFromState(state) {
+    var keys = [];
+    if (state.filtersIn.page_key) keys = keys.concat(ensureArray(state.filtersIn.page_key));
+    if (state.filtersEq.page_key) keys.push(state.filtersEq.page_key);
+    if (!keys.length && window.RF_CONFIG && Array.isArray(window.RF_CONFIG.DEFAULT_PAGES)) keys = keys.concat(window.RF_CONFIG.DEFAULT_PAGES);
+    if (!keys.length && window.RF_ACL && Array.isArray(window.RF_ACL.PAGE_LIST)) {
+      keys = keys.concat(window.RF_ACL.PAGE_LIST.map(function (row) { return row && row.page_key ? row.page_key : ''; }));
+    }
+    return unique(keys);
+  }
+
+  function controlKeysFromState(state) {
+    var keys = [];
+    if (state.filtersIn.control_key) keys = keys.concat(ensureArray(state.filtersIn.control_key));
+    if (state.filtersEq.control_key) keys.push(state.filtersEq.control_key);
+    if (state.filtersEq.field_key) keys.push(state.filtersEq.field_key);
+    if (!keys.length) keys.push('*');
+    return unique(keys);
+  }
+
+  function docKeyFromState(state) {
+    return clean(state.filtersEq.doc_key || '');
+  }
+
+  function buildRoleRow(state) {
+    var email = clean(state.filtersEq.email || state.filtersIlike.email || '');
+    var userId = clean(state.filtersEq.user_id || state.filtersEq.id || '');
+    return {
+      role: 'admin',
+      email: email,
+      user_id: userId,
+      id: userId,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString()
+    };
+  }
+
+  function buildPagePermissionRows(state) {
+    var role = clean(state.filtersEq.role || 'admin') || 'admin';
+    var keys = pageKeysFromState(state);
+    if (!keys.length) keys = ['*'];
+    return keys.map(function (pageKey) {
+      return {
+        role: role,
+        page_key: pageKey,
+        can_view: true,
+        can_add: true,
+        can_edit: true,
+        can_delete: true,
+        can_export: true,
+        can_import: true,
+        can_filter: true
+      };
+    });
+  }
+
+  function buildUserPagePermissionRows(state) {
+    var email = clean(state.filtersEq.email || state.filtersIlike.email || '');
+    var userId = clean(state.filtersEq.user_id || '');
+    return pageKeysFromState(state).map(function (pageKey) {
+      return {
+        email: email,
+        user_id: userId,
+        page_key: pageKey,
+        can_view: true,
+        can_add: true,
+        can_edit: true,
+        can_delete: true,
+        can_export: true,
+        can_import: true
+      };
+    });
+  }
+
+  function buildFieldPermissionRows(state) {
+    var role = clean(state.filtersEq.role || 'admin') || 'admin';
+    var pageKeys = pageKeysFromState(state);
+    var fieldKeys = unique((state.filtersIn.field_key || []).concat(state.filtersEq.field_key ? [state.filtersEq.field_key] : []));
+    if (!pageKeys.length) pageKeys = ['*'];
+    if (!fieldKeys.length) fieldKeys = ['*'];
+    var rows = [];
+    pageKeys.forEach(function (pageKey) {
+      fieldKeys.forEach(function (fieldKey) {
+        rows.push({ role: role, page_key: pageKey, field_key: fieldKey, can_edit: true });
+      });
+    });
+    return rows;
+  }
+
+  function buildUserControlRows(state) {
+    var email = clean(state.filtersEq.email || state.filtersIlike.email || '');
+    var userId = clean(state.filtersEq.user_id || '');
+    var pageKeys = pageKeysFromState(state);
+    var controlKeys = controlKeysFromState(state);
+    if (!pageKeys.length) pageKeys = ['*'];
+    var rows = [];
+    pageKeys.forEach(function (pageKey) {
+      controlKeys.forEach(function (controlKey) {
+        rows.push({
+          email: email,
+          user_id: userId,
+          page_key: pageKey,
+          control_key: controlKey,
+          control_label: controlKey,
+          control_type: controlKey === '*' ? 'action' : 'action',
+          can_view: true,
+          can_use: true,
+          can_edit: true,
+          is_visible: true,
+          is_enabled: true,
+          is_editable: true
+        });
+      });
+    });
+    return rows;
+  }
+
+  function buildAclDocument(state) {
+    var docKey = docKeyFromState(state);
+    if (docKey === 'acl_roles_v1') {
+      return { doc_key: docKey, updated_at: new Date().toISOString(), content: { roles:{} }, data: { roles:{} } };
+    }
+    if (docKey === 'dashboard_acl_v1') {
+      return { doc_key: docKey, updated_at: new Date().toISOString(), content: {}, data: {} };
+    }
+    return null;
+  }
+
+  function isSyntheticTable(table) {
+    return ['profiles','rf_acl','page_permissions','user_page_permissions','field_permissions','user_control_permissions','rf_documents'].indexOf(String(table || '')) >= 0;
+  }
+
+  function shouldReturnSynthetic(state) {
+    var table = String(state.table || '');
+    if (table === 'rf_documents') {
+      return !!buildAclDocument(state);
+    }
+    return isSyntheticTable(table);
+  }
+
+  function buildSyntheticResult(state) {
+    var table = String(state.table || '');
+    if (table === 'profiles' || table === 'rf_acl') return [buildRoleRow(state)];
+    if (table === 'page_permissions') return buildPagePermissionRows(state);
+    if (table === 'user_page_permissions') return buildUserPagePermissionRows(state);
+    if (table === 'field_permissions') return buildFieldPermissionRows(state);
+    if (table === 'user_control_permissions') return buildUserControlRows(state);
+    if (table === 'rf_documents') {
+      var doc = buildAclDocument(state);
+      return doc ? [doc] : [];
+    }
+    return [];
+  }
+
+  function finalizeSynthetic(state) {
+    var rows = buildSyntheticResult(state);
+    if (state.mode === 'maybeSingle' || state.mode === 'single') return ok(rows.length ? rows[0] : null);
+    return ok(rows);
+  }
+
+  function passthroughReal(real) {
+    if (real && typeof real.then === 'function') return real;
+    return ok(null);
+  }
+
+  function buildInterceptedQuery(table, realBuilder) {
+    var state = {
+      table: String(table || ''),
+      filtersEq: Object.create(null),
+      filtersIn: Object.create(null),
+      filtersIlike: Object.create(null),
+      mode: 'many'
+    };
+    var real = realBuilder;
+    var api = {};
+
+    function callReal(method, args) {
+      if (real && typeof real[method] === 'function') {
+        real = real[method].apply(real, args);
+      }
+    }
+
+    function chain(method, capture) {
+      api[method] = function () {
+        var args = Array.prototype.slice.call(arguments);
+        if (capture) capture.apply(null, args);
+        callReal(method, args);
+        return api;
+      };
+    }
+
+    chain('select');
+    chain('eq', function (column, value) { state.filtersEq[String(column || '')] = value; });
+    chain('ilike', function (column, value) { state.filtersIlike[String(column || '')] = value; });
+    chain('in', function (column, value) { state.filtersIn[String(column || '')] = ensureArray(value); });
+    chain('limit');
+    chain('order');
+    chain('match', function (obj) {
+      obj = obj || {};
+      Object.keys(obj).forEach(function (key) { state.filtersEq[key] = obj[key]; });
+    });
+    ['neq','gt','gte','lt','lte','contains','containedBy','overlaps','textSearch','or','not','filter'].forEach(function (method) {
+      chain(method);
+    });
+
+    ['insert','update','upsert','delete'].forEach(function (method) {
+      api[method] = function () {
+        if (real && typeof real[method] === 'function') return real[method].apply(real, arguments);
+        return Promise.resolve(ok(null));
+      };
+    });
+
+    api.maybeSingle = function () {
+      state.mode = 'maybeSingle';
+      callReal('maybeSingle', []);
+      return Promise.resolve(shouldReturnSynthetic(state) ? finalizeSynthetic(state) : passthroughReal(real));
+    };
+
+    api.single = function () {
+      state.mode = 'single';
+      callReal('single', []);
+      return Promise.resolve(shouldReturnSynthetic(state) ? finalizeSynthetic(state) : passthroughReal(real));
+    };
+
+    api.then = function (resolve, reject) {
+      return Promise.resolve(shouldReturnSynthetic(state) ? finalizeSynthetic(state) : passthroughReal(real)).then(resolve, reject);
+    };
+    api.catch = function (reject) {
+      return Promise.resolve(shouldReturnSynthetic(state) ? finalizeSynthetic(state) : passthroughReal(real)).catch(reject);
+    };
+    api.finally = function (callback) {
+      return Promise.resolve(shouldReturnSynthetic(state) ? finalizeSynthetic(state) : passthroughReal(real)).finally(callback);
+    };
+    return api;
+  }
+
+  function unhideAll(root) {
+    var scope = root && root.querySelectorAll ? root : document;
+    try {
+      var nodes = scope.querySelectorAll('[data-rf-permission],[data-rf-control],[data-rf-field],.hidden,[hidden],[aria-hidden="true"],[style*="display:none" i]');
+      for (var i = 0; i < nodes.length; i += 1) {
+        var el = nodes[i];
+        if (!el) continue;
+        el.hidden = false;
+        el.removeAttribute('hidden');
+        el.removeAttribute('aria-hidden');
+        if (el.style) {
+          el.style.display = '';
+          el.style.visibility = '';
+          el.style.opacity = '';
+          el.style.pointerEvents = '';
+        }
+        if ('disabled' in el) el.disabled = false;
+        if (el.matches && el.matches('input,textarea,select')) el.removeAttribute('readonly');
+      }
+    } catch (_) {}
+  }
+
+  function patchClient(client) {
+    if (!client || client.__rfOpenAccessClientPatched) return client;
+    if (typeof client.from === 'function') {
+      var originalFrom = client.from.bind(client);
+      client.from = function (table) {
+        var real = originalFrom(table);
+        if (!isSyntheticTable(table)) return real;
+        return buildInterceptedQuery(table, real);
+      };
+    }
+    client.__rfOpenAccessClientPatched = true;
+    return client;
+  }
+
+  if (window.supabase && typeof window.supabase.createClient === 'function' && !window.supabase.__rfOpenAccessCreateClientPatched) {
+    var originalCreateClient = window.supabase.createClient.bind(window.supabase);
+    window.supabase.createClient = function () {
+      return patchClient(originalCreateClient.apply(this, arguments));
+    };
+    window.supabase.__rfOpenAccessCreateClientPatched = true;
+  }
+
+  if (typeof window.createRfSupabaseClient === 'function' && !window.__rfOpenAccessRfCreateClientPatched) {
+    var originalRfCreateClient = window.createRfSupabaseClient;
+    window.createRfSupabaseClient = function () {
+      return patchClient(originalRfCreateClient.apply(this, arguments));
+    };
+    window.__rfOpenAccessRfCreateClientPatched = true;
+  }
+
+  try {
+    if (window.__RF_SUPABASE_SINGLETON__ && window.__RF_SUPABASE_SINGLETON__.client) {
+      patchClient(window.__RF_SUPABASE_SINGLETON__.client);
+    }
+  } catch (_) {}
+
+  var RF = window.RF_ACL = window.RF_ACL || {};
+  RF.resolveRole = async function(){ return 'admin'; };
+  RF.resolvePageAccess = async function(){ return { allowed:true, role:'admin', source:'open access', permissions:Object.assign({}, ALL_PERMS) }; };
+  RF.requirePageAccess = async function(){ return { allowed:true, role:'admin', source:'open access', permissions:Object.assign({}, ALL_PERMS) }; };
+  RF.resolveControlAccess = async function(pageKey, controlKey){
+    return { allowed:true, control_key:String(controlKey || ''), can_view:true, can_use:true, can_edit:true, is_visible:true, is_enabled:true, is_editable:true, source:'open access' };
+  };
+  RF.canUseControl = async function(){ return { allowed:true, visible:true, editable:true, source:'open access' }; };
+  RF.resolveUserBanState = async function(){ return { is_active:true, is_banned:false, ban_reason:null, note:null }; };
+  RF.readDashboardAclMirror = async function(){ return {}; };
+  RF.applyDomPermissions = async function(pageKey, root){ unhideAll(root); return { allowed:true, role:'admin', source:'open access', permissions:Object.assign({}, ALL_PERMS) }; };
+
+  window.__RF_ACL_AUTO_BIND__ = true;
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', function(){ unhideAll(document); }, { once:true });
+  } else {
+    unhideAll(document);
+  }
+  try {
+    var observer = new MutationObserver(function(){ unhideAll(document); });
+    observer.observe(document.documentElement, { childList:true, subtree:true, attributes:true });
+  } catch (_) {}
+})(window);
