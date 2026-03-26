@@ -252,8 +252,8 @@
       clearUserState();
       return null;
     }
-    const role = await resolveUserRole(session.user);
     const status = await getAccountStatus(session.user);
+    const role = await resolveUserRole(session.user);
     persistUserState(session.user, role);
 
     return {
@@ -402,139 +402,6 @@
     getPageAccess,
     buildLoginUrl
   };
-})();
-
-
-/* OPEN ACCESS RESET OVERRIDE */
-(function(){
-  'use strict';
-  if (window && window.__ERP_FORCE_OPEN_ACCESS__ === true) {
-    var A = window.ERPAuth || {};
-    function stripUi(root){
-      var scope = root && root.querySelectorAll ? root : document;
-      try { scope.querySelectorAll('#chipRole,#roleChip,#roleText,#roleStatus,#roleSub,[id*="roleLabel" i],[class*="roleLabel" i],[id*="chipRole" i]').forEach(function(el){ el.style.display='none'; }); } catch(_) {}
-      try {
-        var walker = document.createTreeWalker(document.body || document.documentElement, NodeFilter.SHOW_TEXT, null);
-        var node;
-        while ((node = walker.nextNode())) {
-          if (!node.nodeValue) continue;
-          if (node.nodeValue.indexOf('Cont:') >= 0) node.nodeValue = node.nodeValue.replace(/\bCont:\s*/g, '');
-          if (node.nodeValue.indexOf('Rol:') >= 0) node.nodeValue = node.nodeValue.replace(/\bRol:\s*/g, '');
-        }
-      } catch(_) {}
-    }
-    async function openUser(){
-      try {
-        var session = await (A.getSession ? A.getSession() : null);
-        var user = session && session.user ? session.user : null;
-        if (!user && A.getSupabaseClient) {
-          var res = await A.getSupabaseClient().auth.getSession();
-          user = res && res.data && res.data.session ? res.data.session.user : null;
-        }
-        if (!user) return null;
-        return { user:user, role:'admin' };
-      } catch(_) { return null; }
-    }
-    function normalizePageKey(value){
-      return String(value || '').trim().replace(/\.html$/i, '').toLowerCase();
-    }
-    async function loadUserPagePermissionMap(user){
-      var map = new Map();
-      if (!user || !A.getSupabaseClient) return map;
-      var sb = A.getSupabaseClient();
-      var email = normalizeEmail(user.email || '');
-      var userId = String(user.id || '').trim();
-      async function pullBy(column, value){
-        if (!value) return;
-        try {
-          var res = await sb.from('user_page_permissions').select('page_key,can_view,can_add,can_edit,can_delete,can_export,can_import').eq(column, value).limit(1000);
-          if (!res.error && Array.isArray(res.data)) {
-            res.data.forEach(function(row){
-              var key = normalizePageKey(row && row.page_key);
-              if (!key) return;
-              var canView = row && row.can_view !== false;
-              var canEdit = !!(row && (row.can_edit === true || row.can_add === true || row.can_delete === true || row.can_import === true));
-              var canExport = row ? row.can_export !== false : true;
-              map.set(key, {
-                can_view: canView,
-                can_add: canView && canEdit,
-                can_edit: canView && canEdit,
-                can_delete: canView && canEdit,
-                can_export: canView && canExport,
-                can_import: canView && canEdit,
-                can_filter: canView
-              });
-            });
-          }
-        } catch (_) {}
-      }
-      await pullBy('email', email);
-      await pullBy('user_id', userId);
-      return map;
-    }
-    function allowAllPermissions(){
-      return { can_view:true, can_add:true, can_edit:true, can_delete:true, can_export:true, can_import:true, can_filter:true };
-    }
-    function viewOnlyPermissions(){
-      return { can_view:true, can_add:false, can_edit:false, can_delete:false, can_export:true, can_import:false, can_filter:true };
-    }
-    function denyAllPermissions(){
-      return { can_view:false, can_add:false, can_edit:false, can_delete:false, can_export:false, can_import:false, can_filter:false };
-    }
-    A.resolveUserRole = async function(){ return 'admin'; };
-    A.getCurrentUserWithRole = openUser;
-    A.getAccountStatus = async function(){ return { is_active:true, is_banned:false, ban_reason:null, note:null }; };
-    A.roleLabel = function(){ return ''; };
-    A.roleClass = function(){ return ''; };
-    A.canAccess = function(){ return true; };
-    A.getPageAccess = async function(pageKey, options){
-      var auth = options && options.user ? { user: options.user, role:'admin' } : await openUser();
-      var key = normalizePageKey(pageKey || (typeof getCurrentPageName === 'function' ? getCurrentPageName() : ''));
-      if (key === 'login' || key === 'index') {
-        return { allowed:true, user: auth ? auth.user : null, role:'admin', permissions: allowAllPermissions(), source:'open root' };
-      }
-      if (!(auth && auth.user)) {
-        return { allowed:false, user:null, role:'viewer', permissions: denyAllPermissions(), source:'no session', message:'Autentifică-te pentru a intra în această foaie.' };
-      }
-      var pageMap = await loadUserPagePermissionMap(auth.user);
-      if (!pageMap.has(key)) {
-        return { allowed:true, user:auth.user, role:'admin', permissions: allowAllPermissions(), source:'open access default' };
-      }
-      var perms = pageMap.get(key) || denyAllPermissions();
-      if (perms.can_view === false) {
-        return { allowed:false, user:auth.user, role:'admin', permissions: denyAllPermissions(), source:'user page rule', message:'Nu ai drept de vizualizare pentru această foaie.' };
-      }
-      var editable = perms.can_edit === true || perms.can_add === true || perms.can_delete === true || perms.can_import === true;
-      return { allowed:true, user:auth.user, role:'admin', permissions: editable ? allowAllPermissions() : viewOnlyPermissions(), source: editable ? 'user page edit rule' : 'user page view-only rule' };
-    };
-    A.requireAuth = async function(options){
-      var settings = Object.assign({ redirectToLogin:true, next: (typeof getCurrentPageName === 'function' ? getCurrentPageName() : 'index.html') }, options || {});
-      var authState = await openUser();
-      if (!(authState && authState.user)) {
-        clearUserState();
-        if (settings.redirectToLogin) window.location.href = buildLoginUrl(settings.next);
-        return null;
-      }
-      var key = normalizePageKey(settings.next || (typeof getCurrentPageName === 'function' ? getCurrentPageName() : ''));
-      if (key !== 'login' && key !== 'index') {
-        var access = await A.getPageAccess(key, { user: authState.user, role:'admin' });
-        if (!access.allowed) {
-          try { alert(access.message || 'Nu ai acces în această foaie.'); } catch(_) {}
-          window.location.href = 'index.html';
-          return null;
-        }
-      }
-      return authState;
-    };
-    window.ERPAuth = A;
-    if (document.readyState === 'loading') {
-      document.addEventListener('DOMContentLoaded', function(){ stripUi(document); }, { once:true });
-    } else { stripUi(document); }
-    try {
-      var obs = new MutationObserver(function(){ stripUi(document); });
-      obs.observe(document.documentElement, { childList:true, subtree:true });
-    } catch(_) {}
-  }
 })();
 
 

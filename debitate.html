@@ -494,7 +494,7 @@
     return { role:'viewer', email };
   }
 
-  async function rfResolveAclCompat(supa, pageKey, role){
+  async function rfResolveAclCompat(supa, pageKey, role, user){
     const defaults = {
       can_view: true,
       can_edit_data: role !== 'viewer',
@@ -506,6 +506,40 @@
       can_filter: true,
       can_sync_cloud: role !== 'viewer'
     };
+
+    async function pullUserRule(column, value){
+      if(!value) return null;
+      try{
+        const { data, error } = await supa.from('user_page_permissions')
+          .select('page_key,can_view,can_add,can_edit,can_delete,can_export,can_import')
+          .eq(column, value)
+          .limit(300);
+        if(error || !Array.isArray(data)) return null;
+        const match = data.find(row => {
+          const key = String(row && row.page_key || '').trim().toLowerCase().replace(/\.html$/i,'');
+          return key === String(pageKey || '').trim().toLowerCase();
+        });
+        if(!match) return null;
+        const canView = match.can_view !== false;
+        const canEdit = !!(match.can_edit === true || match.can_add === true || match.can_delete === true || match.can_import === true);
+        return {
+          can_view: canView,
+          can_edit_data: canView && canEdit,
+          show_import_buttons: canView && canEdit,
+          show_add_buttons: canView && canEdit,
+          show_delete_buttons: canView && canEdit,
+          show_reset_buttons: canView && canEdit,
+          can_export: canView && (match.can_export !== false),
+          can_filter: canView,
+          can_sync_cloud: canView
+        };
+      }catch(_e){ return null; }
+    }
+
+    const email = (user?.email || '').toLowerCase();
+    const userId = String(user?.id || '').trim();
+    const userRule = await pullUserRule('email', email) || await pullUserRule('user_id', userId);
+    if(userRule) return userRule;
 
     try{
       const { data, error } = await supa.from('page_permissions').select('*').eq('page_key', pageKey).eq('role', role).maybeSingle();
@@ -2505,7 +2539,11 @@ function setAutofillReadonly(isReadonly){
       }
 
       const resolved = await rfResolveRoleCompat(supa, session.user);
-      applyRole(resolved.role, resolved.email);
+      const acl = await rfResolveAclCompat(supa, 'debitate', resolved.role, session.user);
+      if(!acl.can_view){ alert('Nu ai drept de vizualizare pe această pagină.'); window.location.href = 'index.html'; return; }
+      window.__RF_ACL_CURRENT__ = acl;
+      applyRole((acl.can_edit_data ? resolved.role : 'viewer'), resolved.email);
+      try{ rfApplyAclToUi(acl); }catch(_e){}
 
       setTimeout(()=>{ try{ if(window.pullHelpersCloud) window.pullHelpersCloud(true); }catch(_e){} }, 600);
     }catch(e){

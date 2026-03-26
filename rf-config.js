@@ -3188,12 +3188,7 @@ async function applyDomPermissions(pageKey, root, options) {
     var client = window.createRfSupabaseClient ? window.createRfSupabaseClient() : null;
     if (!client) return;
     var pageAccess = await originalResolvePageAccess(pageKey, { client: client });
-    if (!pageAccess || pageAccess.allowed !== true) {
-      try {
-        renderAccessDeniedPage(pageKey, pageAccess && pageAccess.message ? pageAccess.message : 'Nu ai acces în această pagină.');
-      } catch (_) {}
-      return;
-    }
+    if (!pageAccess || pageAccess.allowed !== true) return;
     await RF.applyDomPermissions(pageKey, document, { client: client, pageAccess: pageAccess });
     installEventGuards();
     window.__RF_ACL_PAGE_BOOT__ = {
@@ -3215,42 +3210,3 @@ async function applyDomPermissions(pageKey, root, options) {
 })(window);
 
 
-/* OPEN ACCESS RESET OVERRIDE */
-(function (window) {
-  'use strict';
-  if (window && window.__RF_FORCE_OPEN_ACCESS__ === true) {
-    var RF = window.RF_ACL = window.RF_ACL || {};
-    var allPerms = {
-      can_view:true, can_add:true, can_edit:true, can_delete:true,
-      can_export:true, can_import:true, can_filter:true
-    };
-    function unhideAll(root){
-      var scope = root && root.querySelectorAll ? root : document;
-      var nodes = scope.querySelectorAll('[data-rf-permission],[data-rf-control],[data-rf-field],.hidden,[hidden],[aria-hidden="true"]');
-      for (var i=0;i<nodes.length;i+=1){
-        var el=nodes[i];
-        el.style.display='';
-        el.style.visibility='';
-        el.hidden=false;
-        el.removeAttribute('hidden');
-        el.removeAttribute('aria-hidden');
-        if ('disabled' in el) el.disabled=false;
-        if (el.matches && el.matches('input,textarea,select')) el.removeAttribute('readonly');
-      }
-    }
-    RF.resolvePageAccess = async function(){
-      return { allowed:true, role:'admin', source:'forced open access', permissions:Object.assign({}, allPerms) };
-    };
-    RF.requirePageAccess = async function(){ return { allowed:true, role:'admin', source:'forced open access', permissions:Object.assign({}, allPerms) }; };
-    RF.resolveControlAccess = async function(pageKey, controlKey){
-      return { allowed:true, control_key:String(controlKey||''), can_view:true, can_use:true, can_edit:true, source:'forced open access' };
-    };
-    RF.canUseControl = async function(){ return { allowed:true, visible:true, editable:true, source:'forced open access' }; };
-    RF.applyDomPermissions = async function(pageKey, root){ unhideAll(root); return { allowed:true, role:'admin', source:'forced open access', permissions:Object.assign({}, allPerms) }; };
-    RF.resolveUserBanState = async function(){ return { is_active:true, is_banned:false, ban_reason:null, note:null }; };
-    window.__RF_ACL_AUTO_BIND__ = true;
-    if (document.readyState === 'loading') {
-      document.addEventListener('DOMContentLoaded', function(){ unhideAll(document); }, { once:true });
-    } else { unhideAll(document); }
-  }
-})(window);

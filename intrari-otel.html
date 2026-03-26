@@ -1938,12 +1938,52 @@ function applyFilters(){
   }
 
   async function resolveRole(user){
-      return user ? 'admin' : 'viewer';
+      if(!user) return 'viewer';
+      const email = String(user.email || '').trim().toLowerCase();
+      if(email === 'forja.editor@gmail.com') return 'admin';
+      const attempts = [
+        () => APP.supa.from('profiles').select('role').eq('user_id', user.id).maybeSingle(),
+        () => APP.supa.from('profiles').select('role').eq('id', user.id).maybeSingle(),
+        () => APP.supa.from('rf_acl').select('role').eq('email', email).maybeSingle()
+      ];
+      for (const run of attempts) {
+        try{
+          const { data, error } = await run();
+          if(!error && data && data.role) return String(data.role).trim().toLowerCase();
+        }catch(_e){}
+      }
+      return 'viewer';
     }
 
   async function resolvePermissions(role){
     const fallback = defaultPermissions(role);
     const keys = Array.from(new Set([PAGE_KEY, PAGE_KEY.replace(/-/g,'_')]));
+    const user = APP.session && APP.session.user ? APP.session.user : null;
+    const email = String(user && user.email || '').trim().toLowerCase();
+    const userId = String(user && user.id || '').trim();
+
+    async function pullUserRule(column, value){
+      if(!value) return null;
+      try{
+        const { data, error } = await APP.supa.from('user_page_permissions')
+          .select('page_key,can_view,can_add,can_edit,can_delete,can_import')
+          .eq(column, value)
+          .limit(300);
+        if(error || !Array.isArray(data)) return null;
+        const match = data.find(row => {
+          const key = String(row && row.page_key || '').trim().toLowerCase().replace(/\.html$/i, '');
+          return keys.includes(key);
+        });
+        if(!match) return null;
+        const canView = match.can_view !== false;
+        const canEdit = !!(match.can_edit === true || match.can_add === true || match.can_delete === true || match.can_import === true);
+        return { can_view: canView, can_add: canView && canEdit, can_edit: canView && canEdit, can_delete: canView && canEdit };
+      }catch(_e){ return null; }
+    }
+
+    const userRule = await pullUserRule('email', email) || await pullUserRule('user_id', userId);
+    if(userRule) return userRule;
+
     for (const key of keys) {
       try{
         const { data, error } = await APP.supa.from('page_permissions').select('can_view,can_add,can_edit,can_delete').eq('role', role).eq('page_key', key).maybeSingle();
@@ -2904,7 +2944,7 @@ function applyFilters(){
         return;
       }
 
-      APP.role = 'admin';
+      APP.role = await resolveRole(APP.session.user);
       APP.permissions = await resolvePermissions(APP.role);
       if (!APP.permissions.can_view) {
         window.location.href = 'index.html';
