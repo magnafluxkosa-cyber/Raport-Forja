@@ -837,6 +837,8 @@
       let currentRolePermissions = null;
       let currentDashAcl = null;
       let currentIndexButtonVisibilityDoc = null;
+      let indexVisibilityLoadedFromCloud = false;
+      let visibilityRefreshPromise = null;
       let currentPanel = null;
       const currentInnerPanels = { subForja:null };
 
@@ -1016,6 +1018,7 @@
       async function loadIndexButtonVisibilityDoc(){
         if (!sb || !currentUser) {
           currentIndexButtonVisibilityDoc = null;
+          indexVisibilityLoadedFromCloud = false;
           return null;
         }
 
@@ -1069,6 +1072,7 @@
           const sample = exactUsers[email] || exactUsers[userId] || exactUsers[localPart] || exactUsers[displayId] || Object.values(exactUsers)[0];
           if (sample && Array.isArray(sample.hidden)) storeHiddenIndexButtons(sample.hidden, 'table-direct');
           currentIndexButtonVisibilityDoc = { users: exactUsers, updated_at: stamps.sort().slice(-1)[0] || new Date().toISOString() };
+          indexVisibilityLoadedFromCloud = true;
           return currentIndexButtonVisibilityDoc;
         }
 
@@ -1104,6 +1108,7 @@
             const sample = tableUsers[email] || tableUsers[userId] || tableUsers[localPart] || tableUsers[displayId] || null;
             if (sample && Array.isArray(sample.hidden)) storeHiddenIndexButtons(sample.hidden, 'table-scan');
             currentIndexButtonVisibilityDoc = { users: tableUsers, updated_at: newestStamp || new Date().toISOString() };
+            indexVisibilityLoadedFromCloud = true;
             return currentIndexButtonVisibilityDoc;
           }
         } catch(_){ }
@@ -1112,6 +1117,7 @@
         const directDoc = pickBestVisibilityDoc(directRows, 'content', 'users') || pickBestVisibilityDoc(directRows, 'data', 'users');
         if (directDoc) {
           currentIndexButtonVisibilityDoc = directDoc;
+          indexVisibilityLoadedFromCloud = true;
           return currentIndexButtonVisibilityDoc;
         }
 
@@ -1119,25 +1125,73 @@
         const mirrorDoc = pickBestVisibilityDoc(mirrorRows, 'content', 'dashboard') || pickBestVisibilityDoc(mirrorRows, 'data', 'dashboard');
         if (mirrorDoc) {
           currentIndexButtonVisibilityDoc = mirrorDoc;
+          indexVisibilityLoadedFromCloud = true;
           return currentIndexButtonVisibilityDoc;
         }
 
         const stored = readStoredHiddenIndexButtons();
         if (stored && Array.isArray(stored.hidden)) {
           currentIndexButtonVisibilityDoc = { users: { [email || userId || 'current']: { hidden: stored.hidden.slice(), account_email: stored.email || email, account_user_id: stored.user_id || userId } } };
+          indexVisibilityLoadedFromCloud = false;
           return currentIndexButtonVisibilityDoc;
         }
 
         currentIndexButtonVisibilityDoc = { users:{} };
+        indexVisibilityLoadedFromCloud = true;
         return currentIndexButtonVisibilityDoc;
       }
 
       function getHiddenIndexButtonKeys(){
+        if (indexVisibilityLoadedFromCloud) {
+          const docHidden = collectHiddenButtonsFromDoc();
+          if (docHidden.size) storeHiddenIndexButtons(Array.from(docHidden), 'doc-match');
+          else clearStoredHiddenIndexButtons();
+          return docHidden;
+        }
+
         const stored = readStoredHiddenIndexButtons();
         if (stored && Array.isArray(stored.hidden) && stored.hidden.length) {
           return new Set(stored.hidden.map(v => String(v || '').trim()).filter(Boolean));
         }
 
+        const docHidden = collectHiddenButtonsFromDoc();
+        if (docHidden.size) storeHiddenIndexButtons(Array.from(docHidden), 'doc-match');
+        return docHidden;
+      }
+
+      function applyVisibilityOverrides(){
+        if (!currentUser) return;
+        const hiddenButtons = getHiddenIndexButtonKeys();
+        qsa('[data-page-key]').forEach(node => {
+          const key = String(node.dataset.pageKey || '').trim();
+          if (!key || !hiddenButtons.has(key)) return;
+          node.classList.add('hidden');
+          node.classList.add('disabled');
+          node.style.display = 'none';
+          node.setAttribute('aria-disabled', 'true');
+          setDeniedHint(node, 'Ascuns din HELPER-ACL pentru acest cont.');
+        });
+      }
+
+      function normalizeHref(href){
+        if (window.RF_ACL && typeof window.RF_ACL.normalizeHref === 'function') {
+          return window.RF_ACL.normalizeHref(href);
+        }
+        return String(href || '').split('#')[0].split('?')[0];
+      }
+
+      function currentUserEmail(){
+        return String(currentUser?.email || '').trim().toLowerCase();
+      }
+
+
+      function clearStoredHiddenIndexButtons(){
+        try { localStorage.removeItem('rf_hidden_index_buttons'); } catch(_) {}
+        try { sessionStorage.removeItem('rf_hidden_index_buttons'); } catch(_) {}
+        try { if (window.__rfSyncHiddenButtonsStyle) window.__rfSyncHiddenButtonsStyle([]); } catch(_) {}
+      }
+
+      function collectHiddenButtonsFromDoc(){
         const doc = currentIndexButtonVisibilityDoc && typeof currentIndexButtonVisibilityDoc === 'object' ? currentIndexButtonVisibilityDoc : null;
         const users = doc && doc.users && typeof doc.users === 'object' ? doc.users : null;
         if (!users) return new Set();
@@ -1176,34 +1230,7 @@
           const entry = users[norm] && typeof users[norm] === 'object' ? users[norm] : null;
           if (entry && Array.isArray(entry.hidden)) hidden.push(...entry.hidden);
         });
-        const result = new Set(hidden.map(v => String(v || '').trim()).filter(Boolean));
-        if (result.size) storeHiddenIndexButtons(Array.from(result), 'doc-match');
-        return result;
-      }
-
-      function applyVisibilityOverrides(){
-        if (!currentUser) return;
-        const hiddenButtons = getHiddenIndexButtonKeys();
-        qsa('[data-page-key]').forEach(node => {
-          const key = String(node.dataset.pageKey || '').trim();
-          if (!key || !hiddenButtons.has(key)) return;
-          node.classList.add('hidden');
-          node.classList.add('disabled');
-          node.style.display = 'none';
-          node.setAttribute('aria-disabled', 'true');
-          setDeniedHint(node, 'Ascuns din HELPER-ACL pentru acest cont.');
-        });
-      }
-
-      function normalizeHref(href){
-        if (window.RF_ACL && typeof window.RF_ACL.normalizeHref === 'function') {
-          return window.RF_ACL.normalizeHref(href);
-        }
-        return String(href || '').split('#')[0].split('?')[0];
-      }
-
-      function currentUserEmail(){
-        return String(currentUser?.email || '').trim().toLowerCase();
+        return new Set(hidden.map(v => String(v || '').trim()).filter(Boolean));
       }
 
 
@@ -1643,6 +1670,16 @@
         applyVisibilityOverrides();
       }
 
+      async function refreshIndexVisibilityFromCloud(force){
+        if (!sb || !currentUser) return;
+        if (visibilityRefreshPromise && !force) return visibilityRefreshPromise;
+        visibilityRefreshPromise = (async () => {
+          await loadIndexButtonVisibilityDoc();
+          await applyLayout();
+        })().finally(() => { visibilityRefreshPromise = null; });
+        return visibilityRefreshPromise;
+      }
+
       function goToLogin(){
         const target = `./login.html?t=${Date.now()}`;
         try { window.location.replace(target); }
@@ -1694,6 +1731,8 @@
           currentUserPermissions = null;
           currentRolePermissions = null;
           currentIndexButtonVisibilityDoc = null;
+          indexVisibilityLoadedFromCloud = false;
+          clearStoredHiddenIndexButtons();
           await applyLayout();
           return;
         }
@@ -1763,7 +1802,8 @@
         currentRole = 'viewer';
         currentPermissions = null;
         currentIndexButtonVisibilityDoc = null;
-        try { if (window.__rfSyncHiddenButtonsStyle) window.__rfSyncHiddenButtonsStyle([]); } catch(_) {}
+        indexVisibilityLoadedFromCloud = false;
+        clearStoredHiddenIndexButtons();
         try { localStorage.removeItem('rf_user_id'); sessionStorage.removeItem('rf_user_id'); } catch (_) {}
         await applyLayout();
 
@@ -1886,6 +1926,21 @@
       }, true);
 
       window.setInterval(() => { enforceAdminOnlyButtons(); applyVisibilityOverrides(); }, 800);
+      window.setInterval(() => {
+        if (!document.hidden && currentUser) refreshIndexVisibilityFromCloud(false);
+      }, 2500);
+
+      window.addEventListener('pageshow', () => {
+        if (currentUser) refreshIndexVisibilityFromCloud(true);
+      });
+
+      window.addEventListener('focus', () => {
+        if (currentUser) refreshIndexVisibilityFromCloud(true);
+      });
+
+      document.addEventListener('visibilitychange', () => {
+        if (!document.hidden && currentUser) refreshIndexVisibilityFromCloud(true);
+      });
 
       sb?.auth.onAuthStateChange(async (event, session) => {
         if (session?.user) {
