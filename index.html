@@ -953,39 +953,49 @@
         return null;
       }
 
+      function pickBestVisibilityDoc(rows, field, mode){
+        const list = Array.isArray(rows) ? rows.slice() : [];
+        list.sort((a,b) => String(b && b.updated_at || '').localeCompare(String(a && a.updated_at || '')));
+        for (const row of list){
+          const value = row && row[field];
+          if (!value || typeof value !== 'object') continue;
+          if (mode === 'users') {
+            if (value.users && typeof value.users === 'object') return value;
+          } else if (mode === 'dashboard') {
+            if (value.hidden_index_buttons_by_user && typeof value.hidden_index_buttons_by_user === 'object') return { users: value.hidden_index_buttons_by_user };
+          }
+        }
+        return null;
+      }
+
+      async function readVisibilityRows(docKey){
+        try {
+          const r = await sb.from('rf_documents').select('content,data,updated_at').eq('doc_key', docKey).order('updated_at', { ascending:false }).limit(50);
+          if (!r.error && Array.isArray(r.data)) return r.data;
+        } catch(_){ }
+        return [];
+      }
+
       async function loadIndexButtonVisibilityDoc(){
         if (!sb) {
           currentIndexButtonVisibilityDoc = null;
           return null;
         }
-        try {
-          const a = await sb.from('rf_documents').select('content,updated_at').eq('doc_key', 'index_button_visibility_v1').maybeSingle();
-          if (!a.error && a.data?.content && typeof a.data.content === 'object') {
-            currentIndexButtonVisibilityDoc = a.data.content;
-            return currentIndexButtonVisibilityDoc;
-          }
-        } catch(_){ }
-        try {
-          const b = await sb.from('rf_documents').select('data,updated_at').eq('doc_key', 'index_button_visibility_v1').maybeSingle();
-          if (!b.error && b.data?.data && typeof b.data.data === 'object') {
-            currentIndexButtonVisibilityDoc = b.data.data;
-            return currentIndexButtonVisibilityDoc;
-          }
-        } catch(_){ }
-        try {
-          const c = await sb.from('rf_documents').select('content,updated_at').eq('doc_key', 'dashboard_acl_v1').maybeSingle();
-          if (!c.error && c.data?.content && typeof c.data.content === 'object' && c.data.content.hidden_index_buttons_by_user && typeof c.data.content.hidden_index_buttons_by_user === 'object') {
-            currentIndexButtonVisibilityDoc = { users: c.data.content.hidden_index_buttons_by_user };
-            return currentIndexButtonVisibilityDoc;
-          }
-        } catch(_){ }
-        try {
-          const d = await sb.from('rf_documents').select('data,updated_at').eq('doc_key', 'dashboard_acl_v1').maybeSingle();
-          if (!d.error && d.data?.data && typeof d.data.data === 'object' && d.data.data.hidden_index_buttons_by_user && typeof d.data.data.hidden_index_buttons_by_user === 'object') {
-            currentIndexButtonVisibilityDoc = { users: d.data.data.hidden_index_buttons_by_user };
-            return currentIndexButtonVisibilityDoc;
-          }
-        } catch(_){ }
+
+        const directRows = await readVisibilityRows('index_button_visibility_v1');
+        const directDoc = pickBestVisibilityDoc(directRows, 'content', 'users') || pickBestVisibilityDoc(directRows, 'data', 'users');
+        if (directDoc) {
+          currentIndexButtonVisibilityDoc = directDoc;
+          return currentIndexButtonVisibilityDoc;
+        }
+
+        const mirrorRows = await readVisibilityRows('dashboard_acl_v1');
+        const mirrorDoc = pickBestVisibilityDoc(mirrorRows, 'content', 'dashboard') || pickBestVisibilityDoc(mirrorRows, 'data', 'dashboard');
+        if (mirrorDoc) {
+          currentIndexButtonVisibilityDoc = mirrorDoc;
+          return currentIndexButtonVisibilityDoc;
+        }
+
         currentIndexButtonVisibilityDoc = null;
         return null;
       }
@@ -996,15 +1006,20 @@
         if (!users) return new Set();
 
         const candidates = [];
+        const add = (v) => { v = String(v || '').trim(); if (!v || candidates.includes(v)) return; candidates.push(v); };
         const email = currentUserEmail();
-        if (email) candidates.push(email, email.toLowerCase(), email.toUpperCase());
+        add(email); add(email.toLowerCase()); add(email.toUpperCase());
         try {
           const rawDisplayId = String(getStoredDisplayId() || '').trim();
-          if (rawDisplayId) candidates.push(rawDisplayId, rawDisplayId.toLowerCase(), rawDisplayId.toUpperCase());
+          add(rawDisplayId); add(rawDisplayId.toLowerCase()); add(rawDisplayId.toUpperCase());
         } catch(_){ }
         try {
           const safeId = String(safeIdFromEmail(currentUser?.email || '') || '').trim();
-          if (safeId) candidates.push(safeId, safeId.toLowerCase(), safeId.toUpperCase());
+          add(safeId); add(safeId.toLowerCase()); add(safeId.toUpperCase());
+        } catch(_){ }
+        try {
+          const localPart = email.includes('@') ? email.split('@')[0] : email;
+          add(localPart); add(localPart.toLowerCase()); add(localPart.toUpperCase());
         } catch(_){ }
 
         const hidden = [];
@@ -1694,6 +1709,7 @@
             currentRolePermissions = await loadRolePermissionMap(currentRole);
             currentPermissions = currentUserPermissions || currentRolePermissions;
             await loadDashboardAcl();
+            await loadIndexButtonVisibilityDoc();
             await applyLayout();
           }
           return;
@@ -1711,6 +1727,7 @@
           currentRolePermissions = await loadRolePermissionMap(currentRole);
           currentPermissions = currentUserPermissions || currentRolePermissions;
           await loadDashboardAcl();
+          await loadIndexButtonVisibilityDoc();
           await applyLayout();
           return;
         }

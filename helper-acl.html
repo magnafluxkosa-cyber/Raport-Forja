@@ -115,6 +115,23 @@
     function setStatus(el, text, cls){ if (!el) return; el.textContent = text; el.className = 'status-value' + (cls ? ' ' + cls : ''); }
     function normalizeEmail(v){ return String(v || '').trim().toLowerCase(); }
     function safeId(email){ const at = String(email || '').indexOf('@'); return at > 0 ? String(email).slice(0, at).toUpperCase() : String(email || '').toUpperCase(); }
+    function accountKeys(email){
+      const mail = normalizeEmail(email);
+      const keys = [];
+      const add = (v) => { v = String(v || '').trim(); if (!v || keys.includes(v)) return; keys.push(v); };
+      add(mail);
+      add(mail.toLowerCase());
+      add(mail.toUpperCase());
+      const sid = safeId(mail);
+      add(sid);
+      add(sid.toLowerCase());
+      add(sid.toUpperCase());
+      const localPart = mail.includes('@') ? mail.split('@')[0] : mail;
+      add(localPart);
+      add(localPart.toLowerCase());
+      add(localPart.toUpperCase());
+      return keys;
+    }
     function fmtNow(){ const d = new Date(); const p = n => String(n).padStart(2,'0'); return p(d.getDate()) + '.' + p(d.getMonth()+1) + '.' + d.getFullYear() + ' ' + p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds()); }
     function currentHidden(){ const email = state.selectedEmail; const entry = (state.doc.users && state.doc.users[email]) || {}; return new Set(Array.isArray(entry.hidden) ? entry.hidden : []); }
 
@@ -153,47 +170,69 @@
       els.countSub.textContent = state.users.length ? 'Lista de conturi este pregătită.' : 'Nu am găsit conturi în tabelele publice.';
     }
 
+    function pickBestDoc(rows, field){
+      const list = Array.isArray(rows) ? rows.slice() : [];
+      list.sort((a,b) => String(b && b.updated_at || '').localeCompare(String(a && a.updated_at || '')));
+      for (const row of list){
+        const value = row && row[field];
+        if (value && typeof value === 'object') return value;
+      }
+      return null;
+    }
+
     async function readDocByKey(docKey){
       try {
-        const a = await sb.from('rf_documents').select('content,updated_at').eq('doc_key', docKey).maybeSingle();
-        if (!a.error && a.data && a.data.content && typeof a.data.content === 'object') return a.data.content;
-      } catch (_) {}
-      try {
-        const b = await sb.from('rf_documents').select('data,updated_at').eq('doc_key', docKey).maybeSingle();
-        if (!b.error && b.data && b.data.data && typeof b.data.data === 'object') return b.data.data;
+        const a = await sb.from('rf_documents').select('content,data,updated_at').eq('doc_key', docKey).order('updated_at', { ascending:false }).limit(50);
+        if (!a.error && Array.isArray(a.data) && a.data.length) {
+          return pickBestDoc(a.data, 'content') || pickBestDoc(a.data, 'data');
+        }
       } catch (_) {}
       return null;
     }
 
-    async function docRowExists(docKey){
+    async function countDocRows(docKey){
       try {
-        const r = await sb.from('rf_documents').select('doc_key').eq('doc_key', docKey).limit(1);
-        return !r.error && Array.isArray(r.data) && r.data.length > 0;
-      } catch (_) {
-        return false;
-      }
+        const r = await sb.from('rf_documents').select('doc_key', { count:'exact', head:true }).eq('doc_key', docKey);
+        if (!r.error && Number.isFinite(r.count)) return r.count || 0;
+      } catch (_) {}
+      try {
+        const r2 = await sb.from('rf_documents').select('doc_key').eq('doc_key', docKey).limit(50);
+        if (!r2.error && Array.isArray(r2.data)) return r2.data.length;
+      } catch (_) {}
+      return 0;
     }
 
     async function writeDocByKey(docKey, payload){
-      const exists = await docRowExists(docKey);
+      const rows = await countDocRows(docKey);
       const stamp = payload && payload.updated_at ? payload.updated_at : new Date().toISOString();
-      const baseVariants = [
-        { content: payload, data: payload, updated_at: stamp },
-        { content: payload, updated_at: stamp },
-        { data: payload, updated_at: stamp }
-      ];
-      let lastErr = null;
-      for (const body of baseVariants){
-        try {
-          const query = exists
-            ? sb.from('rf_documents').update(body).eq('doc_key', docKey).select('doc_key').limit(1)
-            : sb.from('rf_documents').insert(Object.assign({ doc_key: docKey }, body)).select('doc_key').limit(1);
-          const res = await query;
+      const body = { content: payload, data: payload, updated_at: stamp };
+      try {
+        if (rows > 0) {
+          const res = await sb.from('rf_documents').update(body).eq('doc_key', docKey);
           if (!res.error) return { ok:true };
-          lastErr = res.error;
-        } catch (err) { lastErr = err; }
+        } else {
+          const res = await sb.from('rf_documents').insert(Object.assign({ doc_key: docKey }, body));
+          if (!res.error) return { ok:true };
+        }
+      } catch (err) {
+        return { ok:false, error:err };
       }
-      return { ok:false, error:lastErr };
+      try {
+        if (rows > 0) {
+          const res2 = await sb.from('rf_documents').update({ content: payload, updated_at: stamp }).eq('doc_key', docKey);
+          if (!res2.error) return { ok:true };
+          const res3 = await sb.from('rf_documents').update({ data: payload, updated_at: stamp }).eq('doc_key', docKey);
+          if (!res3.error) return { ok:true };
+          return { ok:false, error: res3.error || res2.error };
+        }
+        const res4 = await sb.from('rf_documents').insert({ doc_key: docKey, content: payload, updated_at: stamp });
+        if (!res4.error) return { ok:true };
+        const res5 = await sb.from('rf_documents').insert({ doc_key: docKey, data: payload, updated_at: stamp });
+        if (!res5.error) return { ok:true };
+        return { ok:false, error: res5.error || res4.error };
+      } catch (err2) {
+        return { ok:false, error:err2 };
+      }
     }
 
     async function loadDoc(){
@@ -234,7 +273,7 @@
       const hidden = [];
       qsa('input[type="checkbox"][data-key]').forEach(chk => { if (!chk.checked) hidden.push(chk.getAttribute('data-key')); });
       state.doc.users = state.doc.users || {};
-      state.doc.users[email] = { hidden };
+      accountKeys(email).forEach(key => { state.doc.users[key] = { hidden: hidden.slice(), account_email: email }; });
       state.dirty = true;
       setStatus(els.saveStatus, 'Nesalvat', 'warn');
       els.saveSub.textContent = 'Există modificări locale. Apasă „Salvează în cloud”.';
