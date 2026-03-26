@@ -547,9 +547,54 @@
     return payload;
   }
 
+
+
+  function isDashboardHref(rawHref){
+    const href = String(rawHref || '').trim();
+    if (!href) return false;
+    if (href === '#' || href.toLowerCase().startsWith('javascript:')) return false;
+    try {
+      const url = new URL(href, window.location.href);
+      const path = String(url.pathname || '').toLowerCase();
+      if (path.endsWith('/index.html')) return true;
+      if (path === '/' || path.endsWith('/raport-forja/') || path.endsWith('/raport-forja')) return true;
+      return false;
+    } catch(_) {
+      const clean = href.split('#')[0].split('?')[0].toLowerCase();
+      return clean === 'index.html' || clean === './index.html' || clean === '/index.html';
+    }
+  }
+
+  async function syncBeforeDashboardNavigation(){
+    try {
+      await Promise.race([
+        refreshHiddenIndexButtons(true),
+        new Promise(resolve => setTimeout(resolve, 900))
+      ]);
+    } catch(_) {}
+  }
+
+  function installDashboardNavigationSync(){
+    document.addEventListener('click', function(event){
+      const link = event && event.target && event.target.closest ? event.target.closest('a[href]') : null;
+      if (!link) return;
+      if (link.target && String(link.target).toLowerCase() === '_blank') return;
+      if (event.defaultPrevented) return;
+      if (event.button && event.button !== 0) return;
+      if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+      const hrefAttr = link.getAttribute('href') || '';
+      if (!isDashboardHref(hrefAttr)) return;
+      event.preventDefault();
+      const finalHref = link.href || hrefAttr;
+      syncBeforeDashboardNavigation().finally(function(){
+        try { window.location.href = finalHref; } catch(_) { window.location.assign(finalHref); }
+      });
+    }, true);
+  }
   function start(){
     if (started) return;
     started = true;
+    installDashboardNavigationSync();
     try { if ('BroadcastChannel' in window) { bc = new BroadcastChannel('rf-index-visibility'); } } catch(_) {}
     refreshHiddenIndexButtons(true);
     window.addEventListener('focus', () => { refreshHiddenIndexButtons(true); });
