@@ -252,7 +252,6 @@
       clearUserState();
       return null;
     }
-    const role = await resolveUserRole(session.user);
     const status = await getAccountStatus(session.user);
     persistUserState(session.user, role);
 
@@ -435,10 +434,19 @@
       return { user:user, role:'admin' };
     } catch(_) { return null; }
   }
+  A.resolveUserRole = async function(){ return 'admin'; };
+  A.getCurrentUserWithRole = openUser;
+  A.getAccountStatus = async function(){ return { is_active:true, is_banned:false, ban_reason:null, note:null }; };
+  A.roleLabel = function(){ return ''; };
+  A.roleClass = function(){ return ''; };
+  A.canAccess = function(){ return true; };
   function normalizePageKey(value){
     return String(value || '').trim().replace(/\.html$/i, '').toLowerCase();
   }
-  async function loadUserPageViewMap(user){
+  function allowAllPermissions(){
+    return { can_view:true, can_add:true, can_edit:true, can_delete:true, can_export:true, can_import:true, can_filter:true };
+  }
+  async function loadUserPagePermissionMap(user){
     var map = new Map();
     if (!user || !A.getSupabaseClient) return map;
     var sb = A.getSupabaseClient();
@@ -447,12 +455,20 @@
     async function pullBy(column, value){
       if (!value) return;
       try {
-        var res = await sb.from('user_page_permissions').select('page_key,can_view').eq(column, value).limit(1000);
+        var res = await sb.from('user_page_permissions').select('page_key,can_view,can_add,can_edit,can_delete,can_export,can_import').eq(column, value).limit(1000);
         if (!res.error && Array.isArray(res.data)) {
           res.data.forEach(function(row){
             var key = normalizePageKey(row && row.page_key);
             if (!key) return;
-            map.set(key, row && row.can_view === false ? false : true);
+            map.set(key, {
+              can_view: row && row.can_view === false ? false : true,
+              can_add: !!(row && row.can_add === true),
+              can_edit: !!(row && row.can_edit === true),
+              can_delete: !!(row && row.can_delete === true),
+              can_export: row && row.can_export === false ? false : true,
+              can_import: !!(row && row.can_import === true),
+              can_filter: true
+            });
           });
         }
       } catch (_) {}
@@ -461,53 +477,85 @@
     await pullBy('user_id', userId);
     return map;
   }
-  function allowAllPermissions(){
-    return { can_view:true, can_add:true, can_edit:true, can_delete:true, can_export:true, can_import:true, can_filter:true };
+  function applyReadOnlyUi(permissions){
+    try {
+      var canEdit = !!(permissions && (permissions.can_add || permissions.can_edit || permissions.can_delete || permissions.can_import));
+      if (canEdit) {
+        document.documentElement.removeAttribute('data-rf-view-only');
+        return;
+      }
+      document.documentElement.setAttribute('data-rf-view-only', '1');
+      var styleId = 'rf-view-only-style';
+      if (!document.getElementById(styleId)) {
+        var style = document.createElement('style');
+        style.id = styleId;
+        style.textContent = 'html[data-rf-view-only="1"] [data-rf-readonly-note]{display:inline-flex!important;}';
+        document.head.appendChild(style);
+      }
+      var candidates = Array.prototype.slice.call(document.querySelectorAll('button,[role="button"],input,select,textarea,a'));
+      candidates.forEach(function(el){
+        if (!el || el.closest && el.closest('[data-rf-allow-edit-ui="1"]')) return;
+        var tag = String(el.tagName || '').toLowerCase();
+        var type = String(el.type || '').toLowerCase();
+        var id = String(el.id || '').toLowerCase();
+        var cls = String(el.className || '').toLowerCase();
+        var txt = String(el.textContent || el.value || '').toLowerCase().trim();
+        var marker = [id, cls, txt].join(' ');
+        var isEditAction = /(adaug|salv|sterg|șterg|delete|edit|modific|import|upload|sync|sincron|reset|nou|save)/.test(marker);
+        if (tag === 'input' || tag === 'textarea') {
+          if (type === 'search' || /search|filter|filtru|caut/.test(marker)) return;
+          if (type === 'checkbox' || type === 'radio' || type === 'file' || type === 'date' || type === 'number' || type === 'text' || type === 'time' || type === 'datetime-local' || type === 'email' || type === 'tel' || type === 'url' || type === 'password' || !type) {
+            el.setAttribute('readonly', 'readonly');
+            if (type === 'checkbox' || type === 'radio' || type === 'file' || tag === 'select') el.disabled = true;
+            el.classList.add('rf-view-only-disabled');
+          }
+          return;
+        }
+        if (tag === 'select') { el.disabled = true; el.classList.add('rf-view-only-disabled'); return; }
+        if (tag === 'button' || isEditAction) {
+          if (String(el.getAttribute('href') || '').toLowerCase().includes('index.html')) return;
+          if (String(el.getAttribute('href') || '').toLowerCase().includes('dashboard')) return;
+          el.disabled = true;
+          el.setAttribute('aria-disabled', 'true');
+          el.classList.add('rf-view-only-disabled');
+          if (!el.querySelector('[data-rf-readonly-note]')) {
+            var note = document.createElement('span');
+            note.setAttribute('data-rf-readonly-note', '1');
+            note.style.marginLeft = '8px';
+            note.style.fontSize = '11px';
+            note.style.opacity = '.8';
+            note.textContent = 'doar vizualizare';
+            if (tag !== 'a') el.appendChild(note);
+          }
+        }
+      });
+    } catch(_) {}
   }
-  function denyAllPermissions(){
-    return { can_view:false, can_add:false, can_edit:false, can_delete:false, can_export:false, can_import:false, can_filter:false };
-  }
-  A.resolveUserRole = async function(){ return 'admin'; };
-  A.getCurrentUserWithRole = openUser;
-  A.getAccountStatus = async function(){ return { is_active:true, is_banned:false, ban_reason:null, note:null }; };
-  A.roleLabel = function(){ return ''; };
-  A.roleClass = function(){ return ''; };
-  A.canAccess = function(){ return true; };
   A.getPageAccess = async function(pageKey, options){
     var auth = options && options.user ? { user: options.user, role:'admin' } : await openUser();
-    var key = normalizePageKey(pageKey || (typeof getCurrentPageName === 'function' ? getCurrentPageName() : ''));
-    if (key === 'login' || key === 'index') {
-      return { allowed:true, user: auth ? auth.user : null, role:'admin', permissions: allowAllPermissions(), source:'open root' };
-    }
     if (!(auth && auth.user)) {
-      return { allowed:false, user:null, role:'viewer', permissions: denyAllPermissions(), source:'no session', message:'Autentifică-te pentru a intra în această foaie.' };
+      return { allowed:false, user:null, role:'viewer', permissions:{ can_view:false, can_add:false, can_edit:false, can_delete:false, can_export:false, can_import:false, can_filter:false }, source:'no session' };
     }
-    var viewMap = await loadUserPageViewMap(auth.user);
-    var explicit = viewMap.has(key) ? viewMap.get(key) : true;
-    if (explicit === false) {
-      return { allowed:false, user:auth.user, role:'admin', permissions: denyAllPermissions(), source:'user page rule', message:'Nu ai acces în această foaie. Cere acces de la admin.' };
-    }
-    return { allowed:true, user:auth.user, role:'admin', permissions: allowAllPermissions(), source:'open access with page rules' };
-  };
-  var originalRequireAuth = A.requireAuth;
-  A.requireAuth = async function(options){
-    var settings = Object.assign({ redirectToLogin:true, next: (typeof getCurrentPageName === 'function' ? getCurrentPageName() : 'index.html') }, options || {});
-    var authState = await openUser();
-    if (!(authState && authState.user)) {
-      clearUserState();
-      if (settings.redirectToLogin) window.location.href = buildLoginUrl(settings.next);
-      return null;
-    }
-    var key = normalizePageKey(settings.next || (typeof getCurrentPageName === 'function' ? getCurrentPageName() : ''));
-    if (key !== 'login' && key !== 'index') {
-      var access = await A.getPageAccess(key, { user: authState.user, role:'admin' });
-      if (!access.allowed) {
-        try { alert(access.message || 'Nu ai acces în această foaie.'); } catch(_) {}
-        window.location.href = 'index.html';
-        return null;
+    var key = normalizePageKey(pageKey || (typeof getCurrentPageName === 'function' ? getCurrentPageName() : ''));
+    var permMap = await loadUserPagePermissionMap(auth.user);
+    var permissions = permMap.get(key) || allowAllPermissions();
+    var allowed = permissions.can_view !== false;
+    var access = {
+      allowed: allowed,
+      user: auth.user,
+      role: 'admin',
+      permissions: Object.assign({ can_filter:true }, permissions),
+      source: permMap.has(key) ? 'user_page_permissions' : 'open access'
+    };
+    try {
+      window.__ERP_PAGE_ACCESS__ = access;
+      window.__RF_VIEW_ONLY__ = !!(allowed && !(access.permissions.can_add || access.permissions.can_edit || access.permissions.can_delete || access.permissions.can_import));
+      if (window.__RF_VIEW_ONLY__) {
+        if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', function(){ applyReadOnlyUi(access.permissions); }, { once:true });
+        else setTimeout(function(){ applyReadOnlyUi(access.permissions); }, 0);
       }
-    }
-    return authState;
+    } catch(_) {}
+    return access;
   };
   window.ERPAuth = A;
   if (document.readyState === 'loading') {
