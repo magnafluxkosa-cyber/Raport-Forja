@@ -3188,7 +3188,12 @@ async function applyDomPermissions(pageKey, root, options) {
     var client = window.createRfSupabaseClient ? window.createRfSupabaseClient() : null;
     if (!client) return;
     var pageAccess = await originalResolvePageAccess(pageKey, { client: client });
-    if (!pageAccess || pageAccess.allowed !== true) return;
+    if (!pageAccess || pageAccess.allowed !== true) {
+      try {
+        renderAccessDeniedPage(pageKey, pageAccess && pageAccess.message ? pageAccess.message : 'Nu ai acces în această pagină.');
+      } catch (_) {}
+      return;
+    }
     await RF.applyDomPermissions(pageKey, document, { client: client, pageAccess: pageAccess });
     installEventGuards();
     window.__RF_ACL_PAGE_BOOT__ = {
