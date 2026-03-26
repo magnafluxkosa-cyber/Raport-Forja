@@ -1063,10 +1063,10 @@
         };
 
         let found = false;
-        if (email) found = await tryRows(sb.from('user_index_visibility').select('email,user_id,hidden_buttons,updated_at').eq('email', email).limit(20));
-        if (!found && userId) found = await tryRows(sb.from('user_index_visibility').select('email,user_id,hidden_buttons,updated_at').eq('user_id', userId).limit(20));
-        if (!found && displayId) found = await tryRows(sb.from('user_index_visibility').select('email,user_id,hidden_buttons,updated_at').eq('email', displayId.toLowerCase()).limit(20));
-        if (!found && localPart) found = await tryRows(sb.from('user_index_visibility').select('email,user_id,hidden_buttons,updated_at').eq('email', localPart.toLowerCase()).limit(20));
+        if (email) found = await tryRows(sb.from('user_index_visibility').select('email,user_id,hidden_buttons,updated_at').eq('email', email).order('updated_at', { ascending:false }).limit(20));
+        if (!found && userId) found = await tryRows(sb.from('user_index_visibility').select('email,user_id,hidden_buttons,updated_at').eq('user_id', userId).order('updated_at', { ascending:false }).limit(20));
+        if (!found && displayId) found = await tryRows(sb.from('user_index_visibility').select('email,user_id,hidden_buttons,updated_at').eq('email', displayId.toLowerCase()).order('updated_at', { ascending:false }).limit(20));
+        if (!found && localPart) found = await tryRows(sb.from('user_index_visibility').select('email,user_id,hidden_buttons,updated_at').eq('email', localPart.toLowerCase()).order('updated_at', { ascending:false }).limit(20));
 
         if (found && Object.keys(exactUsers).length) {
           const sample = exactUsers[email] || exactUsers[userId] || exactUsers[localPart] || exactUsers[displayId] || Object.values(exactUsers)[0];
@@ -1676,9 +1676,70 @@
         visibilityRefreshPromise = (async () => {
           await loadIndexButtonVisibilityDoc();
           await applyLayout();
+          try { enforceAdminOnlyButtons(); applyVisibilityOverrides(); } catch(_) {}
         })().finally(() => { visibilityRefreshPromise = null; });
         return visibilityRefreshPromise;
       }
+
+      function matchesCurrentVisibilityRow(row){
+        if (!currentUser || !row) return false;
+        const rowEmail = String(row.email || '').trim().toLowerCase();
+        const rowUserId = String(row.user_id || '').trim();
+        const email = currentUserEmail();
+        const userId = String(currentUser?.id || '').trim();
+        const displayId = String(getStoredDisplayId() || safeIdFromEmail(currentUser?.email || '') || '').trim();
+        const localPart = email.includes('@') ? email.split('@')[0] : email;
+        const candidates = new Set([email, userId, displayId, localPart].map(v => String(v || '').trim().toLowerCase()).filter(Boolean));
+        return (!!rowEmail && candidates.has(rowEmail)) || (!!rowUserId && candidates.has(rowUserId.toLowerCase()));
+      }
+
+      let visibilityRealtimeChannel = null;
+      let visibilityBroadcastChannel = null;
+
+      function stopVisibilityRealtime(){
+        try { if (visibilityRealtimeChannel && sb) sb.removeChannel(visibilityRealtimeChannel); } catch(_) {}
+        visibilityRealtimeChannel = null;
+      }
+
+      function setupVisibilityRealtime(){
+        if (!sb || !currentUser) return;
+        stopVisibilityRealtime();
+        try {
+          visibilityRealtimeChannel = sb
+            .channel('rf-index-visibility-' + String(currentUser?.id || currentUserEmail() || 'anon'))
+            .on('postgres_changes', { event:'*', schema:'public', table:'user_index_visibility' }, (payload) => {
+              const row = (payload && (payload.new || payload.old)) || null;
+              if (!matchesCurrentVisibilityRow(row)) return;
+              refreshIndexVisibilityFromCloud(true);
+            })
+            .subscribe();
+        } catch(_) { visibilityRealtimeChannel = null; }
+      }
+
+      function setupVisibilityBroadcast(){
+        try {
+          if (!('BroadcastChannel' in window)) return;
+          if (visibilityBroadcastChannel) return;
+          visibilityBroadcastChannel = new BroadcastChannel('rf-index-visibility');
+          visibilityBroadcastChannel.onmessage = (event) => {
+            const msg = event && event.data ? event.data : null;
+            if (!msg || msg.type !== 'rf-index-visibility-updated') return;
+            if (currentUser) refreshIndexVisibilityFromCloud(true);
+          };
+        } catch(_) {}
+      }
+
+      window.addEventListener('storage', (event) => {
+        if (!event || event.key !== 'rf_hidden_index_buttons') return;
+        if (!currentUser) return;
+        try { if (window.__rfSyncHiddenButtonsStyle) {
+          const raw = event.newValue || localStorage.getItem('rf_hidden_index_buttons') || sessionStorage.getItem('rf_hidden_index_buttons') || '';
+          const parsed = raw ? JSON.parse(raw) : null;
+          const hidden = parsed && Array.isArray(parsed.hidden) ? parsed.hidden : [];
+          window.__rfSyncHiddenButtonsStyle(hidden);
+        } } catch(_) {}
+        applyLayout();
+      });
 
       function goToLogin(){
         const target = `./login.html?t=${Date.now()}`;
@@ -1753,6 +1814,8 @@
           }
         } catch (_) {}
 
+        setupVisibilityRealtime();
+        await refreshIndexVisibilityFromCloud(true);
         currentUserPermissions = await loadUserPermissionMap(currentUser);
         currentRolePermissions = await loadRolePermissionMap(currentRole);
         currentPermissions = currentUserPermissions || currentRolePermissions;
@@ -1801,6 +1864,7 @@
         currentUser = null;
         currentRole = 'viewer';
         currentPermissions = null;
+        stopVisibilityRealtime();
         currentIndexButtonVisibilityDoc = null;
         indexVisibilityLoadedFromCloud = false;
         clearStoredHiddenIndexButtons();
@@ -1926,9 +1990,10 @@
       }, true);
 
       window.setInterval(() => { enforceAdminOnlyButtons(); applyVisibilityOverrides(); }, 800);
+      setupVisibilityBroadcast();
       window.setInterval(() => {
-        if (!document.hidden && currentUser) refreshIndexVisibilityFromCloud(false);
-      }, 2500);
+        if (!document.hidden && currentUser) refreshIndexVisibilityFromCloud(true);
+      }, 1800);
 
       window.addEventListener('pageshow', () => {
         if (currentUser) refreshIndexVisibilityFromCloud(true);
@@ -1958,12 +2023,15 @@
               sessionStorage.setItem('rf_display_id', displayId);
             }
           } catch (_) {}
+          setupVisibilityRealtime();
+          await refreshIndexVisibilityFromCloud(true);
           currentUserPermissions = await loadUserPermissionMap(currentUser);
           currentRolePermissions = await loadRolePermissionMap(currentRole);
           currentPermissions = currentUserPermissions || currentRolePermissions;
           await loadDashboardAcl();
           await loadIndexButtonVisibilityDoc();
           await applyLayout();
+          try { enforceAdminOnlyButtons(); applyVisibilityOverrides(); } catch(_) {}
           return;
         }
 
@@ -2003,6 +2071,7 @@
           await loadDashboardAcl();
           await loadIndexButtonVisibilityDoc();
           await applyLayout();
+          try { enforceAdminOnlyButtons(); applyVisibilityOverrides(); } catch(_) {}
           return;
         }
 
@@ -2011,6 +2080,7 @@
         currentPermissions = null;
         currentUserPermissions = null;
         currentRolePermissions = null;
+        stopVisibilityRealtime();
         currentIndexButtonVisibilityDoc = null;
         try { localStorage.removeItem('rf_user_id'); sessionStorage.removeItem('rf_user_id'); } catch (_) {}
         await applyLayout();

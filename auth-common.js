@@ -200,7 +200,36 @@
   }
 
   async function resolveUserRole(user){
-    return user ? 'admin' : (safeGetItem(STORAGE.userRole) || 'viewer');
+    const email = normalizeEmail(user && user.email);
+    if(!user){
+      return safeGetItem(STORAGE.userRole) || 'viewer';
+    }
+
+    if(email === ADMIN_EMAIL){
+      return 'admin';
+    }
+
+    const sb = getSupabaseClient();
+    const attempts = [
+      () => tryRoleFromMirror(sb, email),
+      () => tryRoleFromProfilesByUserId(sb, user.id),
+      () => tryRoleFromProfilesByLegacyId(sb, user.id),
+      () => tryRoleFromProfilesByEmail(sb, email),
+      () => tryRoleFromAcl(sb, email)
+    ];
+
+    for(const attempt of attempts){
+      try {
+        const role = await attempt();
+        if(role){
+          return role;
+        }
+      } catch (_) {
+        // fallback compat
+      }
+    }
+
+    return safeGetItem(STORAGE.userRole) || 'viewer';
   }
 
 
@@ -224,9 +253,14 @@
       return null;
     }
     const status = await getAccountStatus(session.user);
-    const role = 'admin';
     persistUserState(session.user, role);
-    return { session, user: session.user, role, accountStatus: status };
+
+    return {
+      session,
+      user: session.user,
+      role,
+      accountStatus: status
+    };
   }
 
   function getCurrentPageName(){
@@ -424,4 +458,132 @@
     var obs = new MutationObserver(function(){ stripUi(document); });
     obs.observe(document.documentElement, { childList:true, subtree:true });
   } catch(_) {}
+})();
+
+
+/* INDEX VISIBILITY SHARED SYNC */
+(function(){
+  'use strict';
+
+  const STORAGE_KEY = 'rf_hidden_index_buttons';
+  let started = false;
+  let timer = null;
+  let channel = null;
+  let bc = null;
+  let lastRun = 0;
+
+  function normalizeEmail(value){ return String(value || '').trim().toLowerCase(); }
+  function nowMs(){ return Date.now ? Date.now() : new Date().getTime(); }
+  function safeJsonParse(raw){ try { return raw ? JSON.parse(raw) : null; } catch(_) { return null; } }
+  function safeSet(key, value){ try { localStorage.setItem(key, value); } catch(_) {} try { sessionStorage.setItem(key, value); } catch(_) {} }
+
+  function safeIdFromEmail(email){
+    const raw = String(email || '').trim();
+    const at = raw.indexOf('@');
+    return at > 0 ? raw.slice(0, at).toUpperCase() : raw.toUpperCase();
+  }
+
+  async function getUser(){
+    try {
+      if (!window.ERPAuth || typeof window.ERPAuth.getSession !== 'function') return null;
+      const session = await window.ERPAuth.getSession();
+      return session && session.user ? session.user : null;
+    } catch(_) { return null; }
+  }
+
+  function rowMatchesUser(row, user){
+    if (!row || !user) return false;
+    const rowEmail = normalizeEmail(row.email);
+    const rowUserId = String(row.user_id || '').trim();
+    const email = normalizeEmail(user.email);
+    const userId = String(user.id || '').trim();
+    const localPart = email.includes('@') ? email.split('@')[0] : email;
+    const displayId = safeIdFromEmail(email);
+    const candidates = new Set([email, userId, localPart, displayId].map(v => String(v || '').trim().toLowerCase()).filter(Boolean));
+    return (!!rowEmail && candidates.has(rowEmail)) || (!!rowUserId && candidates.has(rowUserId.toLowerCase()));
+  }
+
+  async function fetchHiddenButtonsForUser(user){
+    if (!user || !window.ERPAuth || typeof window.ERPAuth.getSupabaseClient !== 'function') return [];
+    const sb = window.ERPAuth.getSupabaseClient();
+    const email = normalizeEmail(user.email);
+    const userId = String(user.id || '').trim();
+    const queries = [];
+    if (email) queries.push(sb.from('user_index_visibility').select('email,user_id,hidden_buttons,updated_at').eq('email', email).order('updated_at', { ascending:false }).limit(20));
+    if (userId) queries.push(sb.from('user_index_visibility').select('email,user_id,hidden_buttons,updated_at').eq('user_id', userId).order('updated_at', { ascending:false }).limit(20));
+    let best = null;
+    for (const query of queries){
+      try {
+        const res = await query;
+        if (res && !res.error && Array.isArray(res.data) && res.data.length) {
+          for (const row of res.data) {
+            if (!rowMatchesUser(row, user)) continue;
+            const stamp = String(row.updated_at || '');
+            if (!best || stamp > String(best.updated_at || '')) best = row;
+          }
+        }
+      } catch(_) {}
+    }
+    return best && Array.isArray(best.hidden_buttons) ? best.hidden_buttons.map(v => String(v || '').trim()).filter(Boolean) : [];
+  }
+
+  async function refreshHiddenIndexButtons(force){
+    const now = nowMs();
+    if (!force && now - lastRun < 1200) return;
+    lastRun = now;
+    const user = await getUser();
+    if (!user) return;
+    const hidden = await fetchHiddenButtonsForUser(user);
+    const payload = {
+      email: normalizeEmail(user.email || ''),
+      user_id: String(user.id || '').trim(),
+      hidden: Array.from(new Set((Array.isArray(hidden) ? hidden : []).map(v => String(v || '').trim()).filter(Boolean))),
+      source: 'auth-common-sync',
+      updated_at: new Date().toISOString()
+    };
+    safeSet(STORAGE_KEY, JSON.stringify(payload));
+    try { window.dispatchEvent(new CustomEvent('rf-hidden-buttons-updated', { detail: payload })); } catch(_) {}
+    try { if (bc) bc.postMessage({ type:'rf-index-visibility-updated', payload: payload }); } catch(_) {}
+    return payload;
+  }
+
+  function start(){
+    if (started) return;
+    started = true;
+    try { if ('BroadcastChannel' in window) { bc = new BroadcastChannel('rf-index-visibility'); } } catch(_) {}
+    refreshHiddenIndexButtons(true);
+    window.addEventListener('focus', () => { refreshHiddenIndexButtons(true); });
+    window.addEventListener('pageshow', () => { refreshHiddenIndexButtons(true); });
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) refreshHiddenIndexButtons(true); });
+    timer = window.setInterval(() => { if (!document.hidden) refreshHiddenIndexButtons(false); }, 2500);
+    try {
+      const sb = window.ERPAuth && typeof window.ERPAuth.getSupabaseClient === 'function' ? window.ERPAuth.getSupabaseClient() : null;
+      if (sb) {
+        channel = sb.channel('rf-shared-index-visibility')
+          .on('postgres_changes', { event:'*', schema:'public', table:'user_index_visibility' }, async (payload) => {
+            const user = await getUser();
+            const row = payload && (payload.new || payload.old) ? (payload.new || payload.old) : null;
+            if (!rowMatchesUser(row, user)) return;
+            refreshHiddenIndexButtons(true);
+          })
+          .subscribe();
+      }
+    } catch(_) {}
+  }
+
+  if (window.ERPAuth) {
+    const originalSignOut = window.ERPAuth.signOut;
+    window.ERPAuth.refreshHiddenIndexButtons = refreshHiddenIndexButtons;
+    window.ERPAuth.signOut = async function(options){
+      try { if (timer) clearInterval(timer); } catch(_) {}
+      try { if (channel && window.ERPAuth && typeof window.ERPAuth.getSupabaseClient === 'function') window.ERPAuth.getSupabaseClient().removeChannel(channel); } catch(_) {}
+      try { if (bc) bc.close(); } catch(_) {}
+      try { localStorage.removeItem(STORAGE_KEY); } catch(_) {}
+      try { sessionStorage.removeItem(STORAGE_KEY); } catch(_) {}
+      return originalSignOut.call(this, options);
+    };
+  }
+
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start, { once:true });
+  else start();
 })();
