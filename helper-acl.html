@@ -167,19 +167,35 @@
 
     async function loadUsers(){
       const found = new Map();
-      const add = (email, extra={}) => { email = normalizeEmail(email); if (!email) return; const prev = found.get(email) || { email, label:safeId(email), role:'', source:[] }; if (extra.role && !prev.role) prev.role = extra.role; if (extra.source) prev.source = Array.from(new Set(prev.source.concat([extra.source]))); found.set(email, prev); };
+      const add = (email, extra={}) => {
+        email = normalizeEmail(email);
+        if (!email) return;
+        const prev = found.get(email) || { email, label:safeId(email), role:'', source:[], user_id:'' };
+        if (extra.role && !prev.role) prev.role = extra.role;
+        if (extra.user_id && !prev.user_id) prev.user_id = String(extra.user_id);
+        if (extra.source) prev.source = Array.from(new Set(prev.source.concat([extra.source])));
+        found.set(email, prev);
+      };
       const queries = [
-        { table:'profiles', select:'email,role' },
+        { table:'profiles', select:'email,role,user_id,id' },
         { table:'rf_acl', select:'email,role' },
-        { table:'user_account_access', select:'email' }
+        { table:'user_account_access', select:'email,user_id' }
       ];
       for (const q of queries){
         try {
           const res = await sb.from(q.table).select(q.select).limit(1000);
-          if (!res.error && Array.isArray(res.data)) res.data.forEach(row => add(row.email, { role: row.role || '', source: q.table }));
+          if (!res.error && Array.isArray(res.data)) {
+            res.data.forEach(row => add(row.email, {
+              role: row.role || '',
+              user_id: row.user_id || row.id || '',
+              source: q.table
+            }));
+          }
         } catch (_) {}
       }
-      if (state.session && state.session.user && state.session.user.email) add(state.session.user.email, { source:'session' });
+      if (state.session && state.session.user && state.session.user.email) {
+        add(state.session.user.email, { user_id: state.session.user.id || '', source:'session' });
+      }
       state.users = Array.from(found.values()).sort((a,b) => a.email.localeCompare(b.email));
       if (!state.selectedEmail && state.users.length) state.selectedEmail = state.users[0].email;
       setStatus(els.countStatus, String(state.users.length), state.users.length ? 'ok' : 'warn');
@@ -205,6 +221,26 @@
       } catch (_) {}
       return null;
     }
+
+    async function loadVisibilityRowsFromTable(){
+      const rows = {};
+      try {
+        const res = await sb.from('user_index_visibility').select('email,user_id,hidden_buttons,updated_at').limit(2000);
+        if (!res.error && Array.isArray(res.data)) {
+          res.data.forEach(row => {
+            const email = normalizeEmail(row.email);
+            if (!email) return;
+            rows[email] = {
+              hidden: Array.isArray(row.hidden_buttons) ? row.hidden_buttons.map(v => String(v || '').trim()).filter(Boolean) : [],
+              account_email: email,
+              account_user_id: row.user_id || ''
+            };
+          });
+        }
+      } catch (_) {}
+      return rows;
+    }
+
 
     async function countDocRows(docKey){
       try {
@@ -253,15 +289,20 @@
 
     async function loadDoc(){
       state.doc = { users:{} };
-      const direct = await readDocByKey('index_button_visibility_v1');
-      if (direct && typeof direct === 'object') {
-        state.doc = direct;
-        if (!state.doc.users || typeof state.doc.users !== 'object') state.doc.users = {};
-        return;
+
+      const tableRows = await loadVisibilityRowsFromTable();
+      if (tableRows && typeof tableRows === 'object' && Object.keys(tableRows).length) {
+        state.doc.users = tableRows;
       }
+
+      const direct = await readDocByKey('index_button_visibility_v1');
+      if (direct && typeof direct === 'object' && direct.users && typeof direct.users === 'object') {
+        state.doc.users = Object.assign({}, direct.users, state.doc.users || {});
+      }
+
       const mirror = await readDocByKey('dashboard_acl_v1');
       if (mirror && typeof mirror === 'object' && mirror.hidden_index_buttons_by_user && typeof mirror.hidden_index_buttons_by_user === 'object') {
-        state.doc = { users: mirror.hidden_index_buttons_by_user };
+        state.doc.users = Object.assign({}, mirror.hidden_index_buttons_by_user, state.doc.users || {});
       }
     }
 
@@ -297,7 +338,31 @@
 
     async function saveDoc(){
       if (!state.selectedEmail) return;
-      const payload = { users: state.doc.users || {}, updated_at: new Date().toISOString() };
+
+      const selected = state.users.find(u => u.email === state.selectedEmail) || null;
+      const currentEntry = selected ? (state.doc.users?.[selected.email] || state.doc.users?.[normalizeEmail(selected.email)] || { hidden: [] }) : { hidden: [] };
+      const hiddenButtons = Array.isArray(currentEntry.hidden) ? currentEntry.hidden : [];
+      const stamp = new Date().toISOString();
+
+      let tableOk = false;
+      let tableErr = null;
+      if (selected) {
+        try {
+          const row = {
+            email: normalizeEmail(selected.email),
+            user_id: selected.user_id || null,
+            hidden_buttons: hiddenButtons,
+            updated_at: stamp
+          };
+          const res = await sb.from('user_index_visibility').upsert(row, { onConflict:'email' });
+          if (!res.error) tableOk = true;
+          else tableErr = res.error;
+        } catch (err) {
+          tableErr = err;
+        }
+      }
+
+      const payload = { users: state.doc.users || {}, updated_at: stamp };
       const savePrimary = await writeDocByKey('index_button_visibility_v1', payload);
 
       const mirrorBase = await readDocByKey('dashboard_acl_v1') || {};
@@ -307,12 +372,13 @@
       });
       const saveMirror = await writeDocByKey('dashboard_acl_v1', mirrorPayload);
 
-      if (!savePrimary.ok && !saveMirror.ok) {
-        const lastErr = savePrimary.error || saveMirror.error;
+      if (!tableOk && !savePrimary.ok && !saveMirror.ok) {
+        const lastErr = tableErr || savePrimary.error || saveMirror.error;
         setStatus(els.saveStatus, 'Eroare', 'err');
-        els.saveSub.textContent = lastErr && lastErr.message ? lastErr.message : 'Nu am putut salva în rf_documents.';
+        els.saveSub.textContent = lastErr && lastErr.message ? lastErr.message : 'Nu am putut salva setările.';
         return;
       }
+
       state.dirty = false;
       setStatus(els.saveStatus, fmtNow(), 'ok');
       els.saveSub.textContent = 'Setările au fost salvate. Fă refresh în index pe contul respectiv.';
