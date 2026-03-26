@@ -398,10 +398,6 @@
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="./rf-config.js"></script>
   <link rel="stylesheet" href="./mobile-erp.css" />
-
-<style id="rf-open-access-hide-ui">
-#roleBadge,#chipRole,.roleBadge,[data-role-badge],#roleStatusWrap,.paletteWrap{display:none !important;}
-</style>
 </head>
 <body class="rf-login-page">
   <div class="login-wrap">
@@ -575,11 +571,117 @@
       }
 
       async function resolveRole(user){
-      return user ? 'admin' : 'viewer';
-    }
+        if(!user || !user.id){
+          return { role: 'viewer', email: normalizeEmail(user?.email || '') };
+        }
+
+        const normalizedEmail = normalizeEmail(user.email);
+        let role = 'viewer';
+
+        try {
+          const prof1 = await supabase
+            .from('profiles')
+            .select('role,email,user_id')
+            .eq('user_id', user.id)
+            .maybeSingle();
+
+          if(!prof1.error && prof1.data && prof1.data.role){
+            role = String(prof1.data.role).toLowerCase();
+            return { role, email: normalizeEmail(prof1.data.email || normalizedEmail) };
+          }
+        } catch(_) {}
+
+        try {
+          const prof2 = await supabase
+            .from('profiles')
+            .select('role,email,id')
+            .eq('id', user.id)
+            .maybeSingle();
+
+          if(!prof2.error && prof2.data && prof2.data.role){
+            role = String(prof2.data.role).toLowerCase();
+            return { role, email: normalizeEmail(prof2.data.email || normalizedEmail) };
+          }
+        } catch(_) {}
+
+        try {
+          const acl = await supabase
+            .from('rf_acl')
+            .select('role,email')
+            .eq('email', normalizedEmail)
+            .maybeSingle();
+
+          if(!acl.error && acl.data && acl.data.role){
+            role = String(acl.data.role).toLowerCase();
+            return { role, email: normalizeEmail(acl.data.email || normalizedEmail) };
+          }
+        } catch(_) {}
+
+        if(normalizedEmail === 'forja.editor@gmail.com'){
+          role = 'admin';
+        }
+
+        return { role, email: normalizedEmail };
+      }
 
       function buildRedirectUrl(){
         return './index.html';
+      }
+
+
+      async function loadHiddenIndexButtonsForUser(user, resolved){
+        if(!supabase || !user) return [];
+        const candidates = [];
+        const add = function(v){
+          v = normalizeEmail(v);
+          if(v && !candidates.includes(v)) candidates.push(v);
+        };
+        add(resolved && resolved.email);
+        add(user.email);
+
+        for(const email of candidates){
+          try {
+            const res = await supabase
+              .from('user_index_visibility')
+              .select('hidden_buttons,email,user_id,updated_at')
+              .eq('email', email)
+              .limit(1)
+              .maybeSingle();
+            if(!res.error && res.data){
+              return Array.isArray(res.data.hidden_buttons) ? res.data.hidden_buttons : [];
+            }
+          } catch(_) {}
+        }
+
+        try {
+          if(user.id){
+            const res2 = await supabase
+              .from('user_index_visibility')
+              .select('hidden_buttons,email,user_id,updated_at')
+              .eq('user_id', user.id)
+              .limit(1)
+              .maybeSingle();
+            if(!res2.error && res2.data){
+              return Array.isArray(res2.data.hidden_buttons) ? res2.data.hidden_buttons : [];
+            }
+          }
+        } catch(_) {}
+
+        return [];
+      }
+
+      function storeHiddenIndexButtonsForLogin(user, resolved, hiddenButtons){
+        try {
+          const payload = {
+            email: normalizeEmail((resolved && resolved.email) || user && user.email || ''),
+            user_id: String(user && user.id || '').trim(),
+            hidden: Array.from(new Set((Array.isArray(hiddenButtons) ? hiddenButtons : []).map(function(v){ return String(v || '').trim(); }).filter(Boolean))),
+            source: 'login',
+            updated_at: new Date().toISOString()
+          };
+          safeSetLocal('rf_hidden_index_buttons', JSON.stringify(payload));
+          try { sessionStorage.setItem('rf_hidden_index_buttons', JSON.stringify(payload)); } catch(_) {}
+        } catch(_) {}
       }
 
       function getFriendlyError(error){
@@ -675,6 +777,11 @@
           safeSetLocal('rf_email', resolved.email || email);
           safeSetLocal('rf_role', resolved.role || 'viewer');
           safeSetLocal('rf_login_ts', String(Date.now()));
+
+          try {
+            const hiddenButtons = await loadHiddenIndexButtonsForUser(user, resolved);
+            storeHiddenIndexButtonsForLogin(user, resolved, hiddenButtons);
+          } catch(_) {}
 
           clearLogoutFlags();
 

@@ -982,40 +982,90 @@
           return null;
         }
 
+        const exactUsers = {};
+        const stamps = [];
+        const email = currentUserEmail();
+        const userId = String(currentUser?.id || '').trim();
+        const displayId = String(getStoredDisplayId() || safeIdFromEmail(currentUser?.email || '') || '').trim();
+        const localPart = email.includes('@') ? email.split('@')[0] : email;
+
+        const saveEntry = (key, hidden, stamp, rowEmail, rowUserId) => {
+          key = String(key || '').trim();
+          if (!key) return;
+          exactUsers[key] = {
+            hidden: Array.from(new Set((Array.isArray(hidden) ? hidden : []).map(v => String(v || '').trim()).filter(Boolean))),
+            account_email: String(rowEmail || '').trim().toLowerCase(),
+            account_user_id: String(rowUserId || '').trim(),
+            updated_at: String(stamp || '')
+          };
+        };
+
+        const tryRows = async (queryBuilder) => {
+          try {
+            const res = await queryBuilder;
+            if (!res.error && Array.isArray(res.data) && res.data.length) {
+              res.data.forEach((row) => {
+                const hidden = Array.isArray(row && row.hidden_buttons) ? row.hidden_buttons : [];
+                const stamp = String(row && row.updated_at || '');
+                const rowEmail = String(row && row.email || '').trim().toLowerCase();
+                const rowUserId = String(row && row.user_id || '').trim();
+                saveEntry(rowEmail, hidden, stamp, rowEmail, rowUserId);
+                saveEntry(rowUserId, hidden, stamp, rowEmail, rowUserId);
+                const lp = rowEmail.includes('@') ? rowEmail.split('@')[0] : rowEmail;
+                saveEntry(lp, hidden, stamp, rowEmail, rowUserId);
+                saveEntry(safeIdFromEmail(rowEmail), hidden, stamp, rowEmail, rowUserId);
+                if (stamp) stamps.push(stamp);
+              });
+              return true;
+            }
+          } catch(_) {}
+          return false;
+        };
+
+        let found = false;
+        if (email) found = await tryRows(sb.from('user_index_visibility').select('email,user_id,hidden_buttons,updated_at').eq('email', email).limit(20));
+        if (!found && userId) found = await tryRows(sb.from('user_index_visibility').select('email,user_id,hidden_buttons,updated_at').eq('user_id', userId).limit(20));
+        if (!found && displayId) found = await tryRows(sb.from('user_index_visibility').select('email,user_id,hidden_buttons,updated_at').eq('email', displayId.toLowerCase()).limit(20));
+        if (!found && localPart) found = await tryRows(sb.from('user_index_visibility').select('email,user_id,hidden_buttons,updated_at').eq('email', localPart.toLowerCase()).limit(20));
+
+        if (found && Object.keys(exactUsers).length) {
+          const sample = exactUsers[email] || exactUsers[userId] || exactUsers[localPart] || exactUsers[displayId] || Object.values(exactUsers)[0];
+          if (sample && Array.isArray(sample.hidden)) storeHiddenIndexButtons(sample.hidden, 'table-direct');
+          currentIndexButtonVisibilityDoc = { users: exactUsers, updated_at: stamps.sort().slice(-1)[0] || new Date().toISOString() };
+          return currentIndexButtonVisibilityDoc;
+        }
+
         const tableUsers = {};
         let newestStamp = '';
         try {
           const allRows = await sb.from('user_index_visibility').select('email,user_id,hidden_buttons,updated_at').order('updated_at', { ascending:false }).limit(5000);
           if (!allRows.error && Array.isArray(allRows.data) && allRows.data.length) {
             allRows.data.forEach((row) => {
-              const email = String(row && row.email || '').trim().toLowerCase();
-              const userId = String(row && row.user_id || '').trim();
+              const rowEmail = String(row && row.email || '').trim().toLowerCase();
+              const rowUserId = String(row && row.user_id || '').trim();
               const hidden = Array.isArray(row && row.hidden_buttons) ? row.hidden_buttons.map(v => String(v || '').trim()).filter(Boolean) : [];
-              if (!hidden.length && !email && !userId) return;
+              if (!hidden.length && !rowEmail && !rowUserId) return;
               const addKey = (key) => {
                 key = String(key || '').trim();
                 if (!key) return;
-                tableUsers[key] = {
-                  hidden: hidden.slice(),
-                  account_email: email,
-                  account_user_id: userId,
-                  updated_at: String(row && row.updated_at || '')
-                };
+                tableUsers[key] = { hidden: hidden.slice(), account_email: rowEmail, account_user_id: rowUserId, updated_at: String(row && row.updated_at || '') };
               };
-              addKey(email);
-              addKey(email.toLowerCase());
-              addKey(email.toUpperCase());
-              const localPart = email.includes('@') ? email.split('@')[0] : email;
-              addKey(localPart);
-              addKey(localPart.toLowerCase());
-              addKey(localPart.toUpperCase());
-              addKey(safeIdFromEmail(email));
-              addKey(userId);
-              addKey(userId.toLowerCase());
-              addKey(userId.toUpperCase());
+              addKey(rowEmail);
+              addKey(rowEmail.toLowerCase());
+              addKey(rowEmail.toUpperCase());
+              const lp = rowEmail.includes('@') ? rowEmail.split('@')[0] : rowEmail;
+              addKey(lp);
+              addKey(lp.toLowerCase());
+              addKey(lp.toUpperCase());
+              addKey(safeIdFromEmail(rowEmail));
+              addKey(rowUserId);
+              addKey(rowUserId.toLowerCase());
+              addKey(rowUserId.toUpperCase());
               const stamp = String(row && row.updated_at || '');
               if (stamp > newestStamp) newestStamp = stamp;
             });
+            const sample = tableUsers[email] || tableUsers[userId] || tableUsers[localPart] || tableUsers[displayId] || null;
+            if (sample && Array.isArray(sample.hidden)) storeHiddenIndexButtons(sample.hidden, 'table-scan');
             currentIndexButtonVisibilityDoc = { users: tableUsers, updated_at: newestStamp || new Date().toISOString() };
             return currentIndexButtonVisibilityDoc;
           }
@@ -1035,11 +1085,22 @@
           return currentIndexButtonVisibilityDoc;
         }
 
+        const stored = readStoredHiddenIndexButtons();
+        if (stored && Array.isArray(stored.hidden)) {
+          currentIndexButtonVisibilityDoc = { users: { [email || userId || 'current']: { hidden: stored.hidden.slice(), account_email: stored.email || email, account_user_id: stored.user_id || userId } } };
+          return currentIndexButtonVisibilityDoc;
+        }
+
         currentIndexButtonVisibilityDoc = { users:{} };
         return currentIndexButtonVisibilityDoc;
       }
 
       function getHiddenIndexButtonKeys(){
+        const stored = readStoredHiddenIndexButtons();
+        if (stored && Array.isArray(stored.hidden) && stored.hidden.length) {
+          return new Set(stored.hidden.map(v => String(v || '').trim()).filter(Boolean));
+        }
+
         const doc = currentIndexButtonVisibilityDoc && typeof currentIndexButtonVisibilityDoc === 'object' ? currentIndexButtonVisibilityDoc : null;
         const users = doc && doc.users && typeof doc.users === 'object' ? doc.users : null;
         if (!users) return new Set();
@@ -1078,7 +1139,9 @@
           const entry = users[norm] && typeof users[norm] === 'object' ? users[norm] : null;
           if (entry && Array.isArray(entry.hidden)) hidden.push(...entry.hidden);
         });
-        return new Set(hidden.map(v => String(v || '').trim()).filter(Boolean));
+        const result = new Set(hidden.map(v => String(v || '').trim()).filter(Boolean));
+        if (result.size) storeHiddenIndexButtons(Array.from(result), 'doc-match');
+        return result;
       }
 
       function applyVisibilityOverrides(){
@@ -1104,6 +1167,45 @@
 
       function currentUserEmail(){
         return String(currentUser?.email || '').trim().toLowerCase();
+      }
+
+
+      function storeHiddenIndexButtons(hiddenButtons, source){
+        try {
+          const payload = {
+            email: currentUserEmail(),
+            user_id: String(currentUser?.id || '').trim(),
+            hidden: Array.from(new Set((Array.isArray(hiddenButtons) ? hiddenButtons : []).map(v => String(v || '').trim()).filter(Boolean))),
+            source: String(source || 'index'),
+            updated_at: new Date().toISOString()
+          };
+          localStorage.setItem('rf_hidden_index_buttons', JSON.stringify(payload));
+          sessionStorage.setItem('rf_hidden_index_buttons', JSON.stringify(payload));
+        } catch(_) {}
+      }
+
+      function readStoredHiddenIndexButtons(){
+        const parse = (raw) => {
+          if (!raw) return null;
+          try {
+            const data = JSON.parse(raw);
+            if (!data || typeof data !== 'object') return null;
+            const email = String(data.email || '').trim().toLowerCase();
+            const userId = String(data.user_id || '').trim();
+            const hidden = Array.isArray(data.hidden) ? data.hidden.map(v => String(v || '').trim()).filter(Boolean) : [];
+            return { email, user_id: userId, hidden };
+          } catch(_) { return null; }
+        };
+
+        let stored = null;
+        try { stored = parse(localStorage.getItem('rf_hidden_index_buttons')) || parse(sessionStorage.getItem('rf_hidden_index_buttons')); } catch(_) {}
+        if (!stored) return null;
+
+        const email = currentUserEmail();
+        const uid = String(currentUser?.id || '').trim();
+        if (stored.email && email && stored.email === email) return stored;
+        if (stored.user_id && uid && stored.user_id === uid) return stored;
+        return null;
       }
 
       function hasAnyExplicitUserAcl(){
