@@ -7,6 +7,7 @@
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
   <script src="./rf-config.js"></script>
+  <script src="./auth-common.js"></script>
   <style>
     :root{
       --bg:#c9d8e5;--panel:#d7e3ee;--panel2:#eef4fa;--panel-border:#8ea7bc;--header:#5b96cf;--subheader:#d9e7f4;
@@ -95,19 +96,6 @@
     tr > td:first-child{
       border-left-color:#000 !important;
     }
-
-    .add-focus-btn{
-      background: linear-gradient(180deg,#f7b955 0%, #e79017 100%) !important;
-      color:#13253a !important;
-      border-color:#b66b00 !important;
-      box-shadow:0 0 0 2px rgba(255,255,255,.28), 0 8px 18px rgba(183,107,0,.30);
-      font-weight:800;
-    }
-    .add-focus-btn:hover{
-      background: linear-gradient(180deg,#ffc76c 0%, #f09a21 100%) !important;
-      transform:translateY(-1px);
-    }
-
 </style>
   <link rel="stylesheet" href="./mobile-erp.css" />
 
@@ -128,7 +116,7 @@
       </div>
       <div class="top-actions">
         <button class="ghost-btn" id="btnRefresh" type="button">Refresh cloud</button>
-        <button class="ghost-btn add-focus-btn" id="btnAdd" type="button">Adaugă</button>
+        <button class="ghost-btn" id="btnAdd" type="button">Adaugă</button>
         <button class="ghost-btn" id="btnImport" type="button">Import Excel</button>
         <button class="primary-btn" id="btnExport" type="button">Export Excel</button>
         <input id="fileImport" type="file" accept=".xlsx,.xls" class="hidden" />
@@ -633,6 +621,10 @@ let yearCache = {};
 let yearMeta = {};
 let cloudIndexState = { years:[String(CURRENT_YEAR)], updatedAtByYear:{} };
 let refreshTimer = null;
+let pageAccess = { can_view:true, can_add:true, can_edit:true, can_delete:true };
+function canPmEdit(){ return !!(pageAccess.can_edit === true || pageAccess.can_add === true || pageAccess.can_import === true); }
+function canPmDelete(){ return !!(pageAccess.can_delete === true || pageAccess.can_edit === true); }
+function applyPmAccessUi(){ try{ els.btnAdd.disabled = !canPmEdit(); }catch(_e){} try{ els.btnImport.disabled = !canPmEdit(); }catch(_e){} try{ els.btnSaveModal.disabled = !canPmEdit(); }catch(_e){} try{ els.btnDelete.disabled = !canPmDelete(); }catch(_e){} }
 
 function createClient(){
   if(!(window.supabase && window.supabase.createClient) || !SUPABASE_URL || !SUPABASE_ANON_KEY) return null;
@@ -1081,6 +1073,16 @@ async function upsertDocRecord(docKey, payload){
   return ts;
 }
 async function ensureSession(){
+  if (window.ERPAuth && typeof window.ERPAuth.requireAuth === 'function') {
+    const auth = await window.ERPAuth.requireAuth({ next:'rebut-pm.html', redirectToLogin:true });
+    const access = await window.ERPAuth.getPageAccess('rebut-pm', { user: auth.user, role: auth.role });
+    pageAccess = access && access.permissions ? access.permissions : pageAccess;
+    if (pageAccess.can_view === false) { window.location.href = 'index.html'; throw new Error('Fără acces'); }
+    const email = normText(auth.user && auth.user.email);
+    els.roleText.textContent = 'Utilizator: ' + (email || '-') + (canPmEdit() ? '' : ' • doar vizualizare');
+    applyPmAccessUi();
+    return;
+  }
   if(!supa) return;
   const { data } = await supa.auth.getSession();
   const session = data && data.session;
@@ -1377,6 +1379,7 @@ function resetForm(){
   setModalRow({ data: dateTodayRo() });
 }
 function openAddModal(){
+  if(!canPmEdit()) return;
   editingIndex = -1;
   els.modalTitle.textContent = 'NECONFORMITATI';
   resetForm();
@@ -1385,6 +1388,7 @@ function openAddModal(){
   els.fData.focus();
 }
 function openEditModal(index){
+  if(!canPmEdit()) return;
   const row = rows[index];
   if(!row) return;
   editingIndex = index;
@@ -1396,6 +1400,7 @@ function openEditModal(index){
 }
 function closeModal(){ els.editModal.classList.remove('show'); }
 async function saveModal(){
+  if(!canPmEdit()) return;
   const row = buildRowFromForm();
   if(!row.data || !row.nr_reper || !row.cod_defect){
     window.alert('Completează cel puțin Data înregistrării, Nr. reper și Cod defect.');
@@ -1422,6 +1427,7 @@ async function saveModal(){
   closeModal();
 }
 async function deleteModalRow(){
+  if(!canPmDelete()) return;
   if(editingIndex < 0 || editingIndex >= rows.length) return;
   if(!window.confirm('Ștergi rândul selectat?')) return;
   const next = rows.slice();
@@ -1476,7 +1482,7 @@ els.btnRefresh.addEventListener('click', async ()=>{
   catch(err){ console.error(err); window.alert('Nu am putut reîncărca anul curent.\n' + (err && err.message ? err.message : err)); }
 });
 els.btnAdd.addEventListener('click', openAddModal);
-els.btnImport.addEventListener('click', ()=> els.fileImport.click());
+els.btnImport.addEventListener('click', ()=> { if(!canPmEdit()) return; els.fileImport.click(); });
 els.btnExport.addEventListener('click', exportWorkbook);
 els.btnCloseModal.addEventListener('click', closeModal);
 els.btnCancelModal.addEventListener('click', closeModal);
@@ -1495,6 +1501,7 @@ els.fileImport.addEventListener('change', async (ev)=>{
   const file = ev.target.files && ev.target.files[0];
   ev.target.value = '';
   if(!file) return;
+  if(!canPmEdit()) return;
   try{
     const buf = await file.arrayBuffer();
     const wb = XLSX.read(buf, { type:'array' });

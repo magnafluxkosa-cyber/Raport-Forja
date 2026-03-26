@@ -200,11 +200,29 @@
   async function queryDocsByKeys(keys){ const unique = queryKeys(keys); if(!unique.length || !state.supabase) return []; try{ const res = await state.supabase.from('rf_documents').select('*').in('doc_key', unique); if(!res.error && Array.isArray(res.data)) return res.data; }catch(_e){} return []; }
   async function readDocumentCompat(docKey){ if(!state.supabase) return null; try{ const res = await state.supabase.from('rf_documents').select('*').eq('doc_key', docKey).maybeSingle(); if(!res.error && res.data) return res.data; }catch(_e){} return null; }
   async function writeDocumentCompat(docKey, payload){ if(!state.supabase) throw new Error('Supabase indisponibil'); const ts = payload && payload.updated_at ? payload.updated_at : nowIso(); let res = await state.supabase.from('rf_documents').upsert({ doc_key:docKey, content:payload, data:payload, updated_at:ts }, { onConflict:'doc_key' }); if(res && res.error){ res = await state.supabase.from('rf_documents').upsert({ doc_key:docKey, content:payload, updated_at:ts }, { onConflict:'doc_key' }); } if(res && res.error) throw res.error; return true; }
-  function getDefaultPermissions(role){ return { canEdit:true, canDelete:true }; }
-  async function resolvePagePermissions(){
-      state.canEdit = true;
-      state.canDelete = true;
-    }
+
+function getDefaultPermissions(role){
+  const cleanRole = trimText(role).toLowerCase();
+  return { canView:true, canEdit:['admin','editor','operator'].includes(cleanRole), canDelete:['admin','editor'].includes(cleanRole) };
+}
+async function resolvePagePermissions(){
+    const fallback = getDefaultPermissions(state.role);
+    state.canEdit = fallback.canEdit;
+    state.canDelete = fallback.canDelete;
+    try{
+      if(window.ERPAuth && typeof window.ERPAuth.getPageAccess === 'function'){
+        const access = await window.ERPAuth.getPageAccess('comenzi-livrare', { user: state.user, role: state.role });
+        const perms = access && access.permissions ? access.permissions : null;
+        if(perms){
+          const canView = perms.can_view !== false;
+          const canEdit = !!(perms.can_edit === true || perms.can_add === true || perms.can_import === true);
+          state.canEdit = canView && canEdit;
+          state.canDelete = canView && !!(perms.can_delete === true || perms.can_edit === true);
+          if(!canView){ alert('Nu ai acces în această foaie.'); window.location.href = 'index.html'; return; }
+        }
+      }
+    }catch(_e){}
+  }
   function buildRepereList(){ const set = new Set(); state.rows.forEach(row => { if(row.reper) set.add(row.reper); }); state.inventarRows.forEach(row => { if(row.reper) set.add(row.reper); }); Object.values(state.forjateRowsByYear).forEach(list => { (list||[]).forEach(row => { if(row.reper) set.add(row.reper); }); }); state.planRows.forEach(row => { MACHINE_ORDER.forEach(machine => { const slot = row && row.slots ? row.slots[machine] : null; if(slot && slot.reper) set.add(upper(slot.reper)); }); }); Object.keys(state.helperMaps && state.helperMaps.forjaByReper ? state.helperMaps.forjaByReper : {}).forEach(key => { if(key) set.add(upper(key)); }); const options = Array.from(set).sort((a,b)=>a.localeCompare(b,'ro',{sensitivity:'base'})); els.repereList.innerHTML = options.map(item => `<option value="${escapeHtml(item)}"></option>`).join(''); els.monthList.innerHTML = MONTHS.map(item => `<option value="${escapeHtml(item)}"></option>`).join(''); }
   function normalizeOrderRow(row, index){ const obj = row || {}; const dataLivrare = displayToIso(obj.dataLivrare || obj.data_livrare || obj.data || obj['data livrarii'] || obj['Data Livrării']) || trimText(obj.dataLivrare || obj.data_livrare || obj.data || obj['data livrarii'] || obj['Data Livrării']); const an = Number(obj.an || obj.AN || obj.anul || (dataLivrare ? dataLivrare.slice(0,4) : 0)) || 0; const luna = trimText(obj.luna || obj.LUNA || obj.luna_livrare || obj.month) || (dataLivrare ? getMonthName(Number(dataLivrare.slice(5,7))) : ''); return { id: trimText(obj.id || obj._id) || ('order-' + index + '-' + Math.random().toString(36).slice(2)), an, luna, reper: upper(obj.reper || obj.REPER || obj.Reper), nrTransport: trimText(obj.nrTransport || obj.nr_transport || obj.transport || obj['nr transport'] || obj['Nr transport']), dataLivrare, cantitate: Math.max(0, Math.round(toNumber(obj.cantitate || obj.cantitate_ceruta || obj.cant_ceruta || obj.cant))), observatii: trimText(obj.observatii || obj.observații || obj.notes) }; }
   function normalizeForjateRow(row, index){ const obj = row || {}; const data = displayToIso(obj.data || obj.DATA || obj.date || obj.Date) || trimText(obj.data || obj.DATA || obj.date || obj.Date); return { id: trimText(obj.id || obj._id) || ('forjate-' + index), an: Number(obj.an || obj.AN || (data ? data.slice(0,4) : 0)) || 0, data, machine: normalizeMachineKey(obj.ciocan || obj.CIOCAN || obj['linie de forjare'] || obj.linie_de_forjare || obj.linie || obj.utilaj || obj.machine || obj.E || obj.BO), reper: upper(obj.reper || obj.REPER || obj['reper forjat'] || obj.reper_forjat), realizatBuc: Math.max(0, Math.round(toNumber(obj.buc_realizate || obj.BUC_REALIZATE || obj.bucRealizate || obj['Buc realizate'] || obj.CB))), rebutBuc: Math.max(0, Math.round(toNumber(obj.rebut || obj.REBUT || obj.CC))) } }
@@ -240,7 +258,7 @@
   function queueSave(){ if(!state.canEdit) return; if(state.saveTimer) clearTimeout(state.saveTimer); els.cloudStatus.textContent = 'Salvare...'; els.cloudSub.textContent = 'Se pregătește payload-ul pentru rf_documents.'; state.saveTimer = setTimeout(async () => { try{ state.updatedAt = nowIso(); const payload = buildPayload(); payload.updated_at = state.updatedAt; await writeDocumentCompat(DOC_KEY, payload); els.cloudStatus.textContent = 'Cloud salvat'; els.cloudSub.textContent = 'rf_documents / comenzi-livrare'; els.syncStatus.textContent = formatDateTime(state.updatedAt); els.sourceSub.textContent = 'Sursă: cloud comenzi-livrare'; }catch(error){ console.error(error); els.cloudStatus.textContent = 'Eroare cloud'; els.cloudSub.textContent = safeText(error && error.message || 'Nu am putut salva documentul.'); } }, 550); }
   async function refreshSupport(){ const years = Array.from(new Set(state.rows.map(row => Number(row.an)||0).filter(v => v > 0).concat([Number(state.activeYear)||0, (Number(state.activeYear)||0)-1]).filter(v => v > 0))); await Promise.all([ loadHelperMaps(), loadPlanDocument(), loadForjateForYears(years), loadInventarForjatForYears(years) ]); buildRepereList(); renderTable(); }
   function updateAccessUi(){ const label = (window.ERPAuth && window.ERPAuth.roleLabel) ? window.ERPAuth.roleLabel(state.role) : state.role; els.roleStatus.textContent = label; els.roleSub.textContent = state.canEdit ? (label + ' • editare activă') : (label + ' • doar vizualizare'); if(els.lockLayer){ els.lockLayer.style.display = 'none'; els.lockLayer.setAttribute('aria-hidden', 'true'); } }
-  async function initAuth(){ try{ if(!window.ERPAuth) throw new Error('auth-common.js nu s-a încărcat.'); const authState = await window.ERPAuth.requireAuth({ next:'comenzi-livrare.html', redirectToLogin:true }); state.supabase = window.ERPAuth.getSupabaseClient(); state.user = authState.user; state.role = 'admin'; await resolvePagePermissions(); const displayName = trimText(state.user && (state.user.email || state.user.id) || '-'); els.authStatus.textContent = displayName; els.authSub.textContent = 'Sesiune activă.'; updateAccessUi(); }catch(error){ console.error(error); els.authStatus.textContent = 'Neautentificat'; els.authSub.textContent = trimText(error && error.message || 'Nu am putut valida sesiunea.'); } }
+  async function initAuth(){ try{ if(!window.ERPAuth) throw new Error('auth-common.js nu s-a încărcat.'); const authState = await window.ERPAuth.requireAuth({ next:'comenzi-livrare.html', redirectToLogin:true }); state.supabase = window.ERPAuth.getSupabaseClient(); state.user = authState.user; state.role = trimText(authState && authState.role || 'viewer') || 'viewer'; await resolvePagePermissions(); const displayName = trimText(state.user && (state.user.email || state.user.id) || '-'); els.authStatus.textContent = displayName; els.authSub.textContent = 'Sesiune activă.'; updateAccessUi(); }catch(error){ console.error(error); els.authStatus.textContent = 'Neautentificat'; els.authSub.textContent = trimText(error && error.message || 'Nu am putut valida sesiunea.'); } }
   function applyOrderFieldUpdate(target, options){
     if(!target || !target.dataset) return { row:null, field:'', needsRender:false, deferCommit:false };
     const row = findRow(target.dataset.id);

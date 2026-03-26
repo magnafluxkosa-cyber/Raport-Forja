@@ -6,6 +6,7 @@
   <title>Program utilaje - K.A.D</title>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="./rf-config.js"></script>
+  <script src="./auth-common.js"></script>
   <style>
     :root{
       --bg:#c9d8e5;
@@ -495,6 +496,10 @@
       let activeChannel = null;
       let editingId = null;
       let currentRole = 'viewer';
+      let currentAccess = { can_view:true, can_add:false, can_edit:false, can_delete:false };
+      function canProgramEdit(){ return !!(currentAccess.can_edit === true || currentAccess.can_add === true || currentAccess.can_import === true); }
+      function canProgramDelete(){ return !!(currentAccess.can_delete === true || currentAccess.can_edit === true); }
+      function applyProgramAccessUi(){ try{ els.btnAdd.disabled = !canProgramEdit(); }catch(_e){} }
 
       const els = {
         tbody: document.getElementById('tbody'),
@@ -871,6 +876,7 @@
       }
 
       function openModal(row = null){
+        if (!canProgramEdit()) return;
         editingId = row?.id || null;
         els.modalTitle.textContent = editingId ? 'Editează program utilaj' : 'Adaugă program utilaj';
         els.btnDelete.classList.toggle('hidden', !editingId);
@@ -891,6 +897,7 @@
       }
 
       function saveFromModal(){
+        if (!canProgramEdit()) return;
         const data = normalizeDate(els.inpDate.value);
         const parts = splitDate(data);
         const schimbul = normalizeShift(els.inpShift.value);
@@ -919,6 +926,7 @@
       }
 
       function deleteCurrent(){
+        if (!canProgramDelete()) return;
         if (!editingId) return;
         if (!confirm('Ștergi acest program utilaj?')) return;
         rows = rows.filter(r => r.id !== editingId);
@@ -964,18 +972,15 @@
 
       async function loadRole(){
         try {
+          if (window.ERPAuth && typeof window.ERPAuth.getCurrentUserWithRole === 'function') {
+            const auth = await window.ERPAuth.getCurrentUserWithRole();
+            currentRole = String((auth && auth.role) || 'viewer').toLowerCase();
+            els.roleChip.textContent = `Cont: ${currentRole}`;
+            return currentRole;
+          }
           const { data: auth } = await supabaseClient.auth.getUser();
           const user = auth?.user;
-          if (!user?.email) { currentRole = 'viewer'; els.roleChip.textContent = 'Cont: viewer'; return currentRole; }
-          const email = user.email.toLowerCase();
-          let role = 'admin';
-          const acl = await supabaseClient.from('rf_acl').select('role').eq('email', email).maybeSingle();
-          if (acl?.data?.role) role = acl.data.role;
-          else {
-            const prof = await supabaseClient.from('profiles').select('role,email,user_id').eq('email', email).maybeSingle();
-            if (prof?.data?.role) role = prof.data.role;
-          }
-          currentRole = String(role || 'viewer').toLowerCase();
+          currentRole = user ? 'viewer' : 'viewer';
           els.roleChip.textContent = `Cont: ${currentRole}`;
           return currentRole;
         } catch (_) {
@@ -986,42 +991,21 @@
       }
 
       async function ensurePageAccess(){
-        const pageKey = 'program-utilaje';
-        const href = 'program-utilaje.html';
         try {
-          const { data: auth } = await supabaseClient.auth.getUser();
-          const user = auth?.user;
-          if (!user?.email) {
-            window.location.href = 'login.html';
-            return false;
-          }
-
-          if (currentRole === 'admin') return true;
-
-          let allowed = null;
-          try {
-            const a = await supabaseClient.from('rf_documents').select('content').eq('doc_key', 'dashboard_acl_v1').maybeSingle();
-            const doc = (!a.error && a.data?.content && typeof a.data.content === 'object') ? a.data.content : null;
-            const grants = doc && doc.grants && doc.grants[currentRole] ? doc.grants[currentRole] : null;
-            if (grants) {
-              if (Object.prototype.hasOwnProperty.call(grants, pageKey)) allowed = grants[pageKey] !== false;
-              if (allowed === null && Object.prototype.hasOwnProperty.call(grants, href)) allowed = grants[href] !== false;
+          if (window.ERPAuth && typeof window.ERPAuth.requireAuth === 'function') {
+            const auth = await window.ERPAuth.requireAuth({ next:'program-utilaje.html', redirectToLogin:true });
+            currentRole = String((auth && auth.role) || currentRole || 'viewer').toLowerCase();
+            els.roleChip.textContent = `Cont: ${currentRole}`;
+            const access = await window.ERPAuth.getPageAccess('program-utilaje', { user: auth.user, role: currentRole });
+            currentAccess = access && access.permissions ? access.permissions : currentAccess;
+            if (currentAccess.can_view === false) {
+              alert('Nu ai acces în această foaie.');
+              window.location.href = 'index.html';
+              return false;
             }
-          } catch (_) {}
-
-          if (allowed === null) {
-            try {
-              const perm = await supabaseClient.from('page_permissions').select('can_view').eq('role', currentRole).eq('page_key', pageKey).maybeSingle();
-              if (!perm.error && perm.data && typeof perm.data.can_view === 'boolean') allowed = perm.data.can_view === true;
-            } catch (_) {}
+            applyProgramAccessUi();
+            return true;
           }
-
-          if (allowed === false) {
-            alert('Nu ai acces în această foaie. Cere acces de la admin.');
-            window.location.href = 'index.html';
-            return false;
-          }
-
           return true;
         } catch (_) {
           return true;
@@ -1029,7 +1013,7 @@
       }
 
       function bindButtons(){
-        els.btnAdd.addEventListener('click', () => openModal());
+        els.btnAdd.addEventListener('click', () => { if (!canProgramEdit()) return; openModal(); });
         els.btnRefresh.addEventListener('click', () => loadData());
         els.btnCloseX.addEventListener('click', closeModal);
         els.btnCancel.addEventListener('click', closeModal);
