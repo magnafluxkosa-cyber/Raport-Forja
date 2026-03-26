@@ -153,16 +153,61 @@
       els.countSub.textContent = state.users.length ? 'Lista de conturi este pregătită.' : 'Nu am găsit conturi în tabelele publice.';
     }
 
+    async function readDocByKey(docKey){
+      try {
+        const a = await sb.from('rf_documents').select('content,updated_at').eq('doc_key', docKey).maybeSingle();
+        if (!a.error && a.data && a.data.content && typeof a.data.content === 'object') return a.data.content;
+      } catch (_) {}
+      try {
+        const b = await sb.from('rf_documents').select('data,updated_at').eq('doc_key', docKey).maybeSingle();
+        if (!b.error && b.data && b.data.data && typeof b.data.data === 'object') return b.data.data;
+      } catch (_) {}
+      return null;
+    }
+
+    async function docRowExists(docKey){
+      try {
+        const r = await sb.from('rf_documents').select('doc_key').eq('doc_key', docKey).limit(1);
+        return !r.error && Array.isArray(r.data) && r.data.length > 0;
+      } catch (_) {
+        return false;
+      }
+    }
+
+    async function writeDocByKey(docKey, payload){
+      const exists = await docRowExists(docKey);
+      const stamp = payload && payload.updated_at ? payload.updated_at : new Date().toISOString();
+      const baseVariants = [
+        { content: payload, data: payload, updated_at: stamp },
+        { content: payload, updated_at: stamp },
+        { data: payload, updated_at: stamp }
+      ];
+      let lastErr = null;
+      for (const body of baseVariants){
+        try {
+          const query = exists
+            ? sb.from('rf_documents').update(body).eq('doc_key', docKey).select('doc_key').limit(1)
+            : sb.from('rf_documents').insert(Object.assign({ doc_key: docKey }, body)).select('doc_key').limit(1);
+          const res = await query;
+          if (!res.error) return { ok:true };
+          lastErr = res.error;
+        } catch (err) { lastErr = err; }
+      }
+      return { ok:false, error:lastErr };
+    }
+
     async function loadDoc(){
       state.doc = { users:{} };
-      try {
-        const a = await sb.from('rf_documents').select('content,updated_at').eq('doc_key','index_button_visibility_v1').maybeSingle();
-        if (!a.error && a.data && a.data.content && typeof a.data.content === 'object') { state.doc = a.data.content; return; }
-      } catch (_) {}
-      try {
-        const b = await sb.from('rf_documents').select('data,updated_at').eq('doc_key','index_button_visibility_v1').maybeSingle();
-        if (!b.error && b.data && b.data.data && typeof b.data.data === 'object') { state.doc = b.data.data; return; }
-      } catch (_) {}
+      const direct = await readDocByKey('index_button_visibility_v1');
+      if (direct && typeof direct === 'object') {
+        state.doc = direct;
+        if (!state.doc.users || typeof state.doc.users !== 'object') state.doc.users = {};
+        return;
+      }
+      const mirror = await readDocByKey('dashboard_acl_v1');
+      if (mirror && typeof mirror === 'object' && mirror.hidden_index_buttons_by_user && typeof mirror.hidden_index_buttons_by_user === 'object') {
+        state.doc = { users: mirror.hidden_index_buttons_by_user };
+      }
     }
 
     function renderUsers(){
@@ -198,20 +243,21 @@
     async function saveDoc(){
       if (!state.selectedEmail) return;
       const payload = { users: state.doc.users || {}, updated_at: new Date().toISOString() };
-      let saved = false, lastErr = null;
-      const variants = [
-        { doc_key:'index_button_visibility_v1', content: payload, data: payload, updated_at: payload.updated_at },
-        { doc_key:'index_button_visibility_v1', content: payload, updated_at: payload.updated_at },
-        { doc_key:'index_button_visibility_v1', data: payload, updated_at: payload.updated_at }
-      ];
-      for (const body of variants){
-        try {
-          const res = await sb.from('rf_documents').upsert(body, { onConflict:'doc_key' }).select('doc_key').maybeSingle();
-          if (!res.error) { saved = true; break; }
-          lastErr = res.error;
-        } catch (err){ lastErr = err; }
+      const savePrimary = await writeDocByKey('index_button_visibility_v1', payload);
+
+      const mirrorBase = await readDocByKey('dashboard_acl_v1') || {};
+      const mirrorPayload = Object.assign({}, mirrorBase, {
+        hidden_index_buttons_by_user: payload.users,
+        updated_at: payload.updated_at
+      });
+      const saveMirror = await writeDocByKey('dashboard_acl_v1', mirrorPayload);
+
+      if (!savePrimary.ok && !saveMirror.ok) {
+        const lastErr = savePrimary.error || saveMirror.error;
+        setStatus(els.saveStatus, 'Eroare', 'err');
+        els.saveSub.textContent = lastErr && lastErr.message ? lastErr.message : 'Nu am putut salva în rf_documents.';
+        return;
       }
-      if (!saved){ setStatus(els.saveStatus, 'Eroare', 'err'); els.saveSub.textContent = lastErr && lastErr.message ? lastErr.message : 'Nu am putut salva în rf_documents.'; return; }
       state.dirty = false;
       setStatus(els.saveStatus, fmtNow(), 'ok');
       els.saveSub.textContent = 'Setările au fost salvate. Fă refresh în index pe contul respectiv.';
