@@ -612,10 +612,6 @@
     }
 </style>
   <link rel="stylesheet" href="./mobile-erp.css" />
-
-<style id="rf-open-access-hide-ui">
-#roleBadge,#chipRole,.roleBadge,[data-role-badge],#roleStatusWrap,.paletteWrap{display:none !important;}
-</style>
 </head>
 <body>
   <div class="page">
@@ -1465,9 +1461,32 @@
         return session;
       }
 
-      async function resolveRole(user){
-      return user ? 'admin' : 'viewer';
-    }
+      async function resolveRole(){
+        const email = (state.user && state.user.email) ? state.user.email : '';
+        let role = null;
+
+        try{
+          let res = await state.supabase.from('profiles').select('role,email').eq('user_id', state.user.id).maybeSingle();
+          if((res.error || !res.data) && email){
+            res = await state.supabase.from('profiles').select('role,email').eq('email', email).maybeSingle();
+          }
+          if(!res.error && res.data && res.data.role) role = res.data.role;
+        }catch(_err){}
+
+        if(!role && email){
+          try{
+            const res = await state.supabase.from('rf_acl').select('role,email').eq('email', email).maybeSingle();
+            if(!res.error && res.data && res.data.role) role = res.data.role;
+          }catch(_err){}
+        }
+
+        role = String(role || '').trim().toLowerCase();
+        if(!role){
+          role = normalizeText(email) === 'forja.editor@gmail.com' ? 'admin' : 'viewer';
+        }
+        state.role = role;
+        return role;
+      }
 
       function fallbackPermissions(role){
         if(role === 'admin') return { canView:true, canAdd:true, canEdit:true, canDelete:true };
@@ -1478,22 +1497,68 @@
 
       async function resolvePermissions(){
         let perms = fallbackPermissions(state.role);
-        try{
-          const res = await state.supabase
-            .from('page_permissions')
-            .select('can_view,can_add,can_edit,can_delete')
-            .eq('role', state.role)
-            .eq('page_key', PAGE_KEY)
-            .maybeSingle();
-          if(!res.error && res.data){
-            perms = {
-              canView: !!res.data.can_view,
-              canAdd: !!res.data.can_add,
-              canEdit: !!res.data.can_edit,
-              canDelete: !!res.data.can_delete
-            };
+        const email = normalizeText((state.user && state.user.email) ? state.user.email : '');
+        const userId = String((state.user && state.user.id) ? state.user.id : '').trim();
+
+        async function loadUserSpecificRule(){
+          const found = [];
+          async function pullBy(column, value){
+            if(!value) return;
+            try{
+              const res = await state.supabase
+                .from('user_page_permissions')
+                .select('page_key,can_view,can_add,can_edit,can_delete,can_import')
+                .eq(column, value)
+                .limit(200);
+              if(!res.error && Array.isArray(res.data)){
+                found.push.apply(found, res.data);
+              }
+            }catch(_err){}
           }
-        }catch(_err){}
+
+          await pullBy('email', email);
+          await pullBy('user_id', userId);
+
+          if(!found.length) return null;
+
+          const match = found.find(row => {
+            const key = normalizeText(row && row.page_key);
+            return key === normalizeText(PAGE_KEY) || key === normalizeText(PAGE_KEY + '.html');
+          });
+          if(!match) return null;
+
+          const canView = match.can_view !== false;
+          const canEdit = !!(match.can_edit === true || match.can_add === true || match.can_delete === true || match.can_import === true);
+          return {
+            canView,
+            canAdd: canView && canEdit,
+            canEdit: canView && canEdit,
+            canDelete: canView && canEdit
+          };
+        }
+
+        const userRule = await loadUserSpecificRule();
+        if(userRule){
+          perms = userRule;
+        }else{
+          try{
+            const res = await state.supabase
+              .from('page_permissions')
+              .select('can_view,can_add,can_edit,can_delete')
+              .eq('role', state.role)
+              .eq('page_key', PAGE_KEY)
+              .maybeSingle();
+            if(!res.error && res.data){
+              perms = {
+                canView: !!res.data.can_view,
+                canAdd: !!res.data.can_add,
+                canEdit: !!res.data.can_edit,
+                canDelete: !!res.data.can_delete
+              };
+            }
+          }catch(_err){}
+        }
+
         state.permissions = perms;
         if(!perms.canView){
           alert('Nu ai drept de acces pe această pagină.');
