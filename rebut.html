@@ -500,6 +500,9 @@ const SOURCE_CONFIGS = {
 const MONTHS = ['ianuarie','februarie','martie','aprilie','mai','iunie','iulie','august','septembrie','octombrie','noiembrie','decembrie'];
 const MF_CODES = ['LM','IBT','SM','FTT','FL','LMC','DES','AS','DIV'];
 const PM_CODES = ['06','07','13'];
+const CURRENT_YEAR = new Date().getFullYear();
+const REBUT_PM_INDEX_KEY = 'rebut-pm:index';
+const REBUT_PM_PREFIX = 'rebut-pm:';
 
 const els = {
   roleText: document.getElementById('roleText'),
@@ -1419,12 +1422,57 @@ async function ensureSession(){
   const email = normText(session.user && session.user.email);
   els.roleText.textContent = 'Utilizator: ' + (email || '-');
 }
+function normalizePmImportYear(v){
+  const s = String(v == null ? '' : v).trim();
+  const m = s.match(/(19|20)\d{2}/);
+  return m ? m[0] : '';
+}
+function yearForPmImportRow(row){
+  const direct = normalizePmImportYear(row && row.an);
+  if(direct) return direct;
+  const d = parseDateValue(pick(row, ['data','Data inregistrare','data inregistrare','C']));
+  if(d && !Number.isNaN(d.getTime())) return String(d.getFullYear());
+  return String(CURRENT_YEAR);
+}
+function sortYearStrings(list){
+  return Array.from(new Set((Array.isArray(list) ? list : []).map(normalizePmImportYear).filter(Boolean))).sort((a,b)=> Number(a)-Number(b));
+}
 async function writePmRows(rows){
   if(!supa) throw new Error('Supabase indisponibil');
-  const payload = { rows, updated_at: new Date().toISOString() };
-  const up = { doc_key: 'rebut-pm', content: payload, updated_at: payload.updated_at };
-  const { error } = await supa.from(DOC_TABLE).upsert(up, { onConflict: 'doc_key' });
-  if(error) throw error;
+  const importedRows = Array.isArray(rows) ? rows.slice() : [];
+  const ts = new Date().toISOString();
+  const grouped = {};
+  importedRows.forEach(row=>{
+    const y = yearForPmImportRow(row);
+    if(!grouped[y]) grouped[y] = [];
+    grouped[y].push(row);
+  });
+  const years = sortYearStrings(Object.keys(grouped));
+  const updatedAtByYear = {};
+
+  for(const year of years){
+    const payload = { year, rows: grouped[year], updated_at: ts };
+    const up = { doc_key: REBUT_PM_PREFIX + year, content: payload, updated_at: ts };
+    const { error } = await supa.from(DOC_TABLE).upsert(up, { onConflict: 'doc_key' });
+    if(error) throw error;
+    updatedAtByYear[year] = ts;
+  }
+
+  const indexPayload = {
+    app:'REBUT_PM_INDEX',
+    version:1,
+    years,
+    currentYear: CURRENT_YEAR,
+    updatedAtByYear,
+    savedAt: ts,
+    updated_at: ts
+  };
+  const { error: indexError } = await supa.from(DOC_TABLE).upsert({ doc_key: REBUT_PM_INDEX_KEY, content: indexPayload, updated_at: ts }, { onConflict: 'doc_key' });
+  if(indexError) throw indexError;
+
+  const legacyPayload = { rows: importedRows, updated_at: ts };
+  const { error: legacyError } = await supa.from(DOC_TABLE).upsert({ doc_key: 'rebut-pm', content: legacyPayload, updated_at: ts }, { onConflict: 'doc_key' });
+  if(legacyError) throw legacyError;
 }
 function findHeaderRow(ws){
   const range = XLSX.utils.decode_range(ws['!ref'] || 'A1:A1');
