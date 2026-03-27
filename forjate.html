@@ -426,6 +426,7 @@
 
     <button class="btn secondary" id="btnExportXlsx">⬇ Export Excel</button>
     <button class="btn secondary" id="btnImportXlsx">⬆ Import Excel</button>
+    <button class="btn secondary" id="btnRefreshTact" title="Actualizează tacturile din helper-data pentru anul activ" style="display:none;">↻ Tact helper</button>
     <button class="btn secondary" id="btnExportJson">⬇ Export JSON</button>
     <button class="btn secondary" id="btnReset">Reset</button>
     <button class="btn secondary" id="btnRestore" style="display:none;">↩ Restore</button>
@@ -1414,6 +1415,27 @@ function getKgBucForjat(f){
   return toNum(f.KG_BUC_FORJAT ?? f.KG_BUC_FORJ ?? f.KG_BUC ?? f.KG_BUC_FORJAT_KG);
 }
 
+function getHelperTactForRow(row, mapsArg){
+  const maps = mapsArg || helperMaps();
+  const rk1 = normKey(row && row.reper), rk2 = normNoSpace(row && row.reper);
+  const ck1 = normKey(row && row.ciocan), ck2 = normNoSpace(row && row.ciocan);
+  if((!rk1 && !rk2) || (!ck1 && !ck2)) return 0;
+
+  const cand = [];
+  if(ck1 && rk1){ cand.push(ck1+'|'+rk1, rk1+'|'+ck1); }
+  if(ck2 && rk1){ cand.push(ck2+'|'+rk1, rk1+'|'+ck2); }
+  if(ck1 && rk2){ cand.push(ck1+'|'+rk2, rk2+'|'+ck1); }
+  if(ck2 && rk2){ cand.push(ck2+'|'+rk2, rk2+'|'+ck2); }
+  if(rk1) cand.push('*|'+rk1);
+  if(rk2) cand.push('*|'+rk2);
+
+  for(const k of cand){
+    const t = toNum(maps && maps.tact ? maps.tact.get(k) : 0);
+    if(t>0) return t;
+  }
+  return 0;
+}
+
 function ensureHelperFields(row){
   const maps = helperMaps();
   const rk1 = normKey(row.reper), rk2 = normNoSpace(row.reper);
@@ -1467,19 +1489,7 @@ function ensureHelperFields(row){
 
   // tact: utilaj|reper cu toleranță (spații / ordine / wildcard)
   if(!toNum(row.tact_sec)){
-    const cand = [];
-    if(ck1 && rk1){ cand.push(ck1+'|'+rk1, rk1+'|'+ck1); }
-    if(ck2 && rk1){ cand.push(ck2+'|'+rk1, rk1+'|'+ck2); }
-    if(ck1 && rk2){ cand.push(ck1+'|'+rk2, rk2+'|'+ck1); }
-    if(ck2 && rk2){ cand.push(ck2+'|'+rk2, rk2+'|'+ck2); }
-    if(rk1) cand.push('*|'+rk1);
-    if(rk2) cand.push('*|'+rk2);
-
-    let t = 0;
-    for(const k of cand){
-      t = maps.tact.get(k) || 0;
-      if(t>0) break;
-    }
+    const t = getHelperTactForRow(row, maps);
     if(t>0) row.tact_sec = t;
   }
 }
@@ -1529,6 +1539,58 @@ function recalcRow(row){
 
 function recalcAll(){
   STATE.rows.forEach(recalcRow);
+}
+
+async function refreshTactsFromHelperForActiveYear(){
+  if(!window.__CAN_EDIT__ && !window.__CAN_ADD__){
+    alert('Nu ai drept de modificare pe această pagină.');
+    return;
+  }
+  const active = normalizeYearValue(activeYear) || String(CURRENT_YEAR);
+  if(!Array.isArray(STATE.rows) || !STATE.rows.length){
+    alert('Nu există rânduri în anul activ ' + active + '.');
+    return;
+  }
+  if(!confirm('Actualizez tacturile din helper-data pentru anul activ ' + active + ' și recalculez Planificat / Performanță / OEE. Continui?')) return;
+
+  loadHelpersLocal();
+  const maps = helperMaps();
+  let updated = 0;
+  let unchanged = 0;
+  let missing = 0;
+
+  (STATE.rows || []).forEach(row=>{
+    const helperTact = getHelperTactForRow(row, maps);
+    if(!(helperTact > 0)){
+      missing += 1;
+      return;
+    }
+    const oldTact = toNum(row && row.tact_sec);
+    if(oldTact !== helperTact){
+      row.tact_sec = helperTact;
+      updated += 1;
+    }else{
+      unchanged += 1;
+    }
+    recalcRow(row);
+  });
+
+  const y = normalizeYearValue(activeYear) || String(CURRENT_YEAR);
+  yearCache[y] = STATE.rows;
+  STATE.updated_at = nowIso();
+  refreshFilterOptions();
+  render();
+
+  if(updated > 0){
+    markDirty(y);
+  }
+
+  alert([
+    'Actualizare tacturi din helper-data finalizată pentru anul ' + y + '.',
+    'Actualizate: ' + updated,
+    'Neschimbate: ' + unchanged,
+    'Fără potrivire Reper + Utilaj în helper-data: ' + missing
+  ].join('\n'));
 }
 
 /* ===============================
@@ -2825,6 +2887,7 @@ function applyRole(role, email, access){
 
   document.getElementById('btnAdd').style.display = window.__CAN_ADD__ ? 'inline-flex' : 'none';
   document.getElementById('btnImportXlsx').style.display = (window.__CAN_ADD__ || window.__CAN_EDIT__) ? 'inline-flex' : 'none';
+  document.getElementById('btnRefreshTact').style.display = (window.__CAN_ADD__ || window.__CAN_EDIT__) ? 'inline-flex' : 'none';
   document.getElementById('btnReset').style.display = window.__CAN_DELETE__ ? 'inline-flex' : 'none';
   try{
     const hasBackup = !!localStorage.getItem(LS_KEY_BACKUP);
@@ -3193,6 +3256,7 @@ modalBack.addEventListener('click', (e)=>{ if(e.target === modalBack) closeModal
 document.getElementById('btnExportJson').addEventListener('click', exportJson);
 document.getElementById('btnExportXlsx').addEventListener('click', exportXlsx);
 document.getElementById('btnImportXlsx').addEventListener('click', importXlsx);
+document.getElementById('btnRefreshTact').addEventListener('click', refreshTactsFromHelperForActiveYear);
 
 document.getElementById('btnRestore').addEventListener('click', async ()=>{
   if(!window.__CAN_EDIT__ && !window.__CAN_DELETE__) return;
