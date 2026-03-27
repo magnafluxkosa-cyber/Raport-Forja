@@ -511,21 +511,30 @@
               ? pick(obj, ['Due Qty'])
               : pick(obj, ['quantity_buc','Requested Quantity','Due Qty','Ordered Qty','Balance','Demand','Cum Qty','qty','RequestedQuantity','cantitate']))
       ))),
-      order_no: trimText(pick(obj, ['order_no','Order No.','PO Nbr','PO NUMBER ','Order Id','Reference','BPO Line ID','Line ID'])),
+      line_id: trimText(pick(obj, ['line_id','Line ID','Line Id','BPO Line ID','BPO Line Id','line id'])),
+      order_no: trimText(pick(obj, ['order_no','Order No.','PO Nbr','PO NUMBER ','Order Id','Reference'])) || trimText(pick(obj, ['line_id','Line ID','Line Id','BPO Line ID','BPO Line Id','line id'])),
       commitment_level: trimText(pick(obj, ['commitment_level','Commitment Level','Stato','Status'])),
       notes: trimText(pick(obj, ['notes','Descr1','Description','Item Description','observatii'])),
       imported_at: nowIso()
     }, maps);
+    if (!normalized.line_id) normalized.line_id = trimText(pick(obj, ['line_id','Line ID','Line Id','BPO Line ID','BPO Line Id','line id']));
     if (!normalized.week_key && normalized.delivery_date) normalized.week_key = isoWeekKey(normalized.delivery_date);
     if (!normalized.month && normalized.delivery_date) normalized.month = getMonthName(Number(normalized.delivery_date.slice(5,7)));
     if (!normalized.year && normalized.delivery_date) normalized.year = Number(normalized.delivery_date.slice(0,4));
     return normalized;
   }
 
-  function customerOrderDedupKey(row){
+  function customerOrderLineIdKey(row){
+    const lineId = trimText(row && (row.line_id || row.lineId || row.lineid || row['Line ID'] || row['BPO Line ID']));
+    const normalized = normalizeLoose(lineId);
+    return normalized ? ('line|' + normalized) : '';
+  }
+
+  function customerOrderFallbackKey(row){
     const item = row || {};
     const sourceType = normalizeLoose(item.source_type || item.import_source_type || item.source_format || 'legacy');
     return [
+      'fallback',
       sourceType,
       normalizeLoose(item.client_name || item.customer_name || ''),
       normalizePart(item.raw_part || item.part_norm || item.reper_intern || ''),
@@ -536,18 +545,67 @@
     ].join('|');
   }
 
-  function dedupeCustomerOrders(rows){
-    const seen = new Set();
-    return (rows || []).filter(row => {
-      const key = customerOrderDedupKey(row);
-      if (!key || seen.has(key)) return false;
-      seen.add(key);
-      return true;
+  function customerOrderDedupKey(row){
+    return customerOrderLineIdKey(row) || customerOrderFallbackKey(row);
+  }
+
+  function mergeCustomerOrderRow(existingRow, incomingRow){
+    const merged = Object.assign({}, existingRow || {});
+    const incoming = incomingRow || {};
+    Object.keys(incoming).forEach(key => {
+      const value = incoming[key];
+      if (value == null) return;
+      if (typeof value === 'string'){
+        if (trimText(value) !== '' || trimText(merged[key]) === '') merged[key] = value;
+        return;
+      }
+      if (typeof value === 'number'){
+        if (Number.isFinite(value)) merged[key] = value;
+        return;
+      }
+      if (typeof value === 'boolean'){
+        merged[key] = value;
+        return;
+      }
+      if (Array.isArray(value)){
+        if (value.length || !Array.isArray(merged[key])) merged[key] = value.slice();
+        return;
+      }
+      if (value && typeof value === 'object'){
+        merged[key] = Object.assign({}, value);
+        return;
+      }
+      if (merged[key] == null) merged[key] = value;
     });
+    const mergedLineId = trimText(merged.line_id || incoming.line_id || existingRow && existingRow.line_id || '');
+    if (mergedLineId) merged.line_id = mergedLineId;
+    if (!trimText(merged.order_no) && mergedLineId) merged.order_no = mergedLineId;
+    return merged;
+  }
+
+  function upsertCustomerOrders(existingRows, importedRows){
+    const map = new Map();
+    const allRows = [].concat(Array.isArray(existingRows) ? existingRows : []);
+    allRows.forEach(row => {
+      const key = customerOrderDedupKey(row);
+      if (!key) return;
+      map.set(key, mergeCustomerOrderRow(null, row));
+    });
+    (importedRows || []).forEach(row => {
+      const key = customerOrderDedupKey(row);
+      if (!key) return;
+      const current = map.get(key);
+      map.set(key, mergeCustomerOrderRow(current, row));
+    });
+    return Array.from(map.values());
+  }
+
+  function dedupeCustomerOrders(rows){
+    return upsertCustomerOrders([], rows || []);
   }
 
   function mergeCustomerOrders(existingRows, importedRows){
-    return dedupeCustomerOrders([].concat(Array.isArray(existingRows) ? existingRows : [], Array.isArray(importedRows) ? importedRows : []));
+    return upsertCustomerOrders(existingRows, importedRows);
   }
 
 
@@ -562,9 +620,24 @@
     const existing = Array.isArray(existingRows) ? existingRows : [];
     const imported = dedupeCustomerOrders(importedRows || []);
     if (!imported.length) return dedupeCustomerOrders(existing);
+
+    const importedByLineId = new Map();
+    imported.forEach(row => {
+      const lineKey = customerOrderLineIdKey(row);
+      if (lineKey) importedByLineId.set(lineKey, row);
+    });
+
+    const remainingExisting = existing.filter(row => {
+      const lineKey = customerOrderLineIdKey(row);
+      if (lineKey) return !importedByLineId.has(lineKey);
+      return true;
+    });
+
     const period = customerOrderClientPeriod(imported);
     const importedSourceTypes = Array.from(new Set(imported.map(row => normalizeLoose(row.source_type || row.import_source_type || row.source_format || 'legacy')).filter(Boolean)));
-    const kept = existing.filter(row => {
+    const kept = remainingExisting.filter(row => {
+      const lineKey = customerOrderLineIdKey(row);
+      if (lineKey) return true;
       const clientKey = normalizeLoose(row.client_name || row.customer_name || '');
       const rowDate = displayToIso(row.delivery_date);
       const rowSourceType = normalizeLoose(row.source_type || row.import_source_type || row.source_format || 'legacy');
@@ -573,7 +646,7 @@
       if (!period.fromIso || !period.toIso || !rowDate) return false;
       return rowDate < period.fromIso || rowDate > period.toIso;
     });
-    return dedupeCustomerOrders([].concat(kept, imported));
+    return upsertCustomerOrders(kept, imported);
   }
 
   function openingStockDedupKey(row){
@@ -1060,8 +1133,12 @@
     importPartMappingFromWorkbook,
     applyPartMapping,
     normalizeCustomerOrderRow,
+    customerOrderLineIdKey,
+    customerOrderFallbackKey,
     customerOrderDedupKey,
+    mergeCustomerOrderRow,
     dedupeCustomerOrders,
+    upsertCustomerOrders,
     mergeCustomerOrders,
     customerOrderClientPeriod,
     replaceCustomerOrdersForClientPeriod,

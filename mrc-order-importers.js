@@ -99,7 +99,8 @@
     let quantity = 0;
     let deliveryIso = '';
     let clientName = trimText(pick(raw, ['Customer','Supplier','Description','Ship To','Supplier Name']));
-    let orderNo = trimText(pick(raw, ['Order No.','PO Nbr','PO NUMBER ','Order Id','Reference','BPO Line ID','Line ID']));
+    const lineId = trimText(pick(raw, ['line_id','Line ID','Line Id','BPO Line ID','BPO Line Id','line id']));
+    let orderNo = trimText(pick(raw, ['Order No.','PO Nbr','PO NUMBER ','Order Id','Reference'])) || lineId;
     let commitment = trimText(pick(raw, ['Commitment Level','Status','Stato']));
     let notes = trimText(pick(raw, ['Description','Item Description','Descr1','observatii']));
 
@@ -138,6 +139,7 @@
       month: deliveryIso ? getMonthName(Number(deliveryIso.slice(5,7))) : '',
       week_key: deliveryIso ? isoWeekKey(deliveryIso) : '',
       quantity_buc: quantity,
+      line_id: lineId,
       order_no: orderNo,
       commitment_level: commitment,
       notes: notes,
