@@ -148,8 +148,8 @@
         <button class="btn-soft" id="btnAddRow">Adaugă rând</button>
         <button class="btn-danger" id="btnDeleteRow">Șterge rând</button>
         <button class="btn-soft" id="btnRefresh">Refresh</button>
-        <input id="fileImportJson" type="file" accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" class="hidden" />
-        <button class="btn-soft" id="btnImport">Import</button>
+        <input id="fileImportJson" type="file" accept=".xlsx,.xls,.xlsm,.xlsb,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,application/vnd.ms-excel.sheet.macroEnabled.12,application/vnd.ms-excel.sheet.binary.macroEnabled.12,text/csv" class="hidden" />
+        <button class="btn-soft" id="btnImport" type="button">Import</button>
         <button class="btn-soft" id="btnExport">Export</button>
       </div>
     </div>
@@ -389,7 +389,7 @@ async function getUserContext(){
     if(window.ERPAuth && typeof window.ERPAuth.getCurrentUserWithRole === 'function'){
       const authInfo = await window.ERPAuth.getCurrentUserWithRole();
       if(authInfo && authInfo.user){
-        authState = await enrichAuthStateWithPageAccess(authInfo);
+        authState = authInfo;
         return authState;
       }
     }
@@ -397,7 +397,7 @@ async function getUserContext(){
 
   const delayedAuth = await waitForAuthenticatedUser(3000);
   if(delayedAuth && delayedAuth.user){
-    authState = await enrichAuthStateWithPageAccess(delayedAuth);
+    authState = delayedAuth;
     return authState;
   }
 
@@ -408,27 +408,6 @@ async function getUserContext(){
 
   throw new Error('Autentificarea nu este disponibilă pe această pagină.');
 }
-
-async function enrichAuthStateWithPageAccess(ctx){
-  const authInfo = ctx || authState || null;
-  if(!(authInfo && authInfo.user)) return authInfo;
-  try{
-    if(window.ERPAuth && typeof window.ERPAuth.getPageAccess === 'function'){
-      const pageKey = (location.pathname.split('/').pop() || '').replace(/\.html$/i, '');
-      const access = await window.ERPAuth.getPageAccess(pageKey, { user: authInfo.user, role: authInfo.role || 'viewer' });
-      if(access && access.role) authInfo.role = access.role;
-      if(access && access.permissions) authInfo.permissions = access.permissions;
-      authInfo.allowed = !(access && access.allowed === false);
-    }
-  }catch(_e){}
-  return authInfo;
-}
-function canViewPage(){
-  const perms = authState && authState.permissions ? authState.permissions : null;
-  if(perms && perms.can_view === false) return false;
-  return true;
-}
-
 function applyRoleBadge(role){
   const el = document.getElementById('roleBadge');
   if(el) el.textContent = 'Cont: ' + ((window.ERPAuth && window.ERPAuth.roleLabel) ? window.ERPAuth.roleLabel(role) : (role || 'Viewer'));
@@ -439,27 +418,9 @@ function setCloudBadge(text, cls){
   el.textContent = text;
   el.className = 'chip ' + (cls || '');
 }
-
-function hasExplicitEditPermissions(perms){
-  return !!(perms && (
-    typeof perms.can_edit === 'boolean' ||
-    typeof perms.can_add === 'boolean' ||
-    typeof perms.can_delete === 'boolean' ||
-    typeof perms.can_import === 'boolean'
-  ));
-}
 function canEdit(){
-  const perms = authState && authState.permissions ? authState.permissions : null;
-  if(hasExplicitEditPermissions(perms)){
-    return !!(perms.can_edit === true || perms.can_add === true || perms.can_delete === true || perms.can_import === true);
-  }
   const role = String((authState && authState.role) || 'viewer').toLowerCase();
   return role === 'admin' || role === 'editor' || role === 'operator';
-}
-function canImportRows(){
-  const perms = authState && authState.permissions ? authState.permissions : null;
-  if(perms && typeof perms.can_import === 'boolean') return perms.can_import === true;
-  return canEdit();
 }
 function canModifyRows(){
   return canEdit();
@@ -858,8 +819,41 @@ function fillSelect(select, values, includeAll=true, allLabel='Toate'){
       });
     }
 
+    async function openImportPicker(){
+      if(!canModifyRows()) return;
+      if(window.showOpenFilePicker){
+        try{
+          const [handle] = await window.showOpenFilePicker({
+            multiple:false,
+            excludeAcceptAllOption:false,
+            types:[{
+              description:'Fișiere Excel',
+              accept:{
+                'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet':['.xlsx'],
+                'application/vnd.ms-excel':['.xls'],
+                'application/vnd.ms-excel.sheet.macroEnabled.12':['.xlsm'],
+                'application/vnd.ms-excel.sheet.binary.macroEnabled.12':['.xlsb'],
+                'text/csv':['.csv']
+              }
+            }]
+          });
+          if(!handle) return;
+          const file = await handle.getFile();
+          await importJsonFile(file);
+          return;
+        }catch(error){
+          if(error && (error.name === 'AbortError' || error.message === 'The user aborted a request.')) return;
+          console.warn('showOpenFilePicker fallback:', error);
+        }
+      }
+      const picker = document.getElementById('fileImportJson');
+      if(!picker) return;
+      try{ picker.value = ''; }catch(_){ }
+      picker.click();
+    }
+
     async function importJsonFile(file){
-      if(!canImportRows()) return;
+      if(!canModifyRows()) return;
       if(!file) return;
       if(!window.XLSX){
         alert('Librăria Excel nu a fost încărcată.');
@@ -976,8 +970,7 @@ function fillSelect(select, values, includeAll=true, allLabel='Toate'){
         setCloudBadge('Cloud: neautentificat', 'bad');
         return;
       }
-      applyRoleBadge((authState && authState.role) || 'viewer');
-      if(!canViewPage()){ alert('Nu ai acces în această foaie.'); window.location.href = 'index.html'; return; }
+      applyRoleBadge('admin');
       setCloudBadge(authState && authState.user ? 'Cloud: conectat' : 'Cloud: neautentificat', authState && authState.user ? 'ok' : 'bad');
       const main = await loadDocByKeys(DOC_KEYS, LOCAL_KEY, SEED_ROWS);
       state.rows = (main.rows || []).map(normalizeRow).sort(rowSort);
@@ -985,22 +978,13 @@ function fillSelect(select, values, includeAll=true, allLabel='Toate'){
       document.getElementById('btnAddTruck').disabled = !canModifyRows();
       document.getElementById('btnAddRow').disabled = !canModifyRows();
       document.getElementById('btnDeleteRow').disabled = !canModifyRows();
-      document.getElementById('btnImport').disabled = !canImportRows();
+      document.getElementById('btnImport').disabled = !canModifyRows();
       document.getElementById('btnExport').disabled = false;
       document.getElementById('btnAddTruck').addEventListener('click', openTruckModal);
       document.getElementById('btnAddRow').addEventListener('click', () => openRowModal());
       document.getElementById('btnDeleteRow').addEventListener('click', deleteSelectedRow);
       document.getElementById('btnRefresh').addEventListener('click', async () => { const main2 = await loadDocByKeys(DOC_KEYS, LOCAL_KEY, SEED_ROWS); state.rows = (main2.rows || []).map(normalizeRow).sort(rowSort); refreshFilters(); renderTable(); renderSummary(); scrollTableToBottom(); });
-      document.getElementById('btnImport').addEventListener('click', () => {
-        if(!canImportRows()){
-          alert('Nu ai drept de import pe această foaie.');
-          return;
-        }
-        const input = document.getElementById('fileImportJson');
-        if(!input) return;
-        input.value = '';
-        try{ input.showPicker ? input.showPicker() : input.click(); }catch(_){ input.click(); }
-      });
+      document.getElementById('btnImport').addEventListener('click', openImportPicker);
       document.getElementById('btnExport').addEventListener('click', exportJson);
       document.getElementById('fileImportJson').addEventListener('change', event => importJsonFile(event.target.files && event.target.files[0]));
       document.getElementById('btnClearFilters').addEventListener('click', () => { ['fltYear','fltTransport','fltData','colTransport','colLada','colBuc','colData'].forEach(id => document.getElementById(id).value=''); ['fltReper','fltMatrita','fltCodCat','fltOperator','fltShift','colReper','colMatrita','colCodCat','colOperator','colShift'].forEach(id => document.getElementById(id).value=''); renderTable(); renderSummary(); });
