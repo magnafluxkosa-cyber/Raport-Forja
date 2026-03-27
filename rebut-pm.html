@@ -1243,133 +1243,71 @@ function render(){
   els.tbody.appendChild(frag);
   scrollToBottom();
 }
-function pmCanonicalHeaderKey(v){
-  return normKey(v).replace(/[^a-z0-9]+/g,'');
-}
-function pmScoreSheet(ws){
-  const raw = XLSX.utils.sheet_to_json(ws, { header:1, defval:'', raw:false, blankrows:false });
-  let best = 0;
-  for(let r=0; r<Math.min(raw.length, 35); r++){
-    const cells = (raw[r] || []).map(pmCanonicalHeaderKey).filter(Boolean);
-    if(!cells.length) continue;
-    let score = 0;
-    if(cells.includes('anul') || cells.includes('an')) score += 1;
-    if(cells.includes('luna')) score += 1;
-    if(cells.some(v=> v.includes('datainregistrare') || v === 'data')) score += 1;
-    if(cells.some(v=> v.includes('nrreper'))) score += 1;
-    if(cells.some(v=> v.includes('denumirereperforja') || v.includes('denumirereperdinforja'))) score += 1;
-    if(cells.some(v=> v.includes('coddefect'))) score += 2;
-    if(cells.some(v=> v.includes('piesenecomforme') || v.includes('pieseneconforme'))) score += 1;
-    if(cells.some(v=> v.includes('pieserebutfinal'))) score += 1;
-    if(score > best) best = score;
-  }
-  return best;
-}
-function findPmSheetName(wb){
-  let bestName = wb && wb.SheetNames && wb.SheetNames[0] ? wb.SheetNames[0] : '';
-  let bestScore = -1;
-  (wb && wb.SheetNames ? wb.SheetNames : []).forEach(name=>{
-    const ws = wb.Sheets[name];
-    if(!ws) return;
-    let score = pmScoreSheet(ws);
-    const sheetKey = pmCanonicalHeaderKey(name);
-    if(sheetKey.includes('rebutpm')) score += 4;
-    else if(sheetKey.includes('pm')) score += 1;
-    if(score > bestScore){
-      bestScore = score;
-      bestName = name;
-    }
-  });
-  return bestName;
-}
 function findHeaderRow(ws){
-  const raw = XLSX.utils.sheet_to_json(ws, { header:1, defval:'', raw:false, blankrows:false });
-  let bestRow = 6;
-  let bestScore = -1;
-  for(let r=0; r<Math.min(raw.length, 35); r++){
-    const cells = (raw[r] || []).map(pmCanonicalHeaderKey).filter(Boolean);
-    if(!cells.length) continue;
-    let score = 0;
-    if(cells.includes('anul') || cells.includes('an')) score += 1;
-    if(cells.includes('luna')) score += 1;
-    if(cells.some(v=> v.includes('datainregistrare') || v === 'data')) score += 1;
-    if(cells.some(v=> v.includes('nrreper'))) score += 1;
-    if(cells.some(v=> v.includes('denumirereperforja') || v.includes('denumirereperdinforja'))) score += 1;
-    if(cells.some(v=> v.includes('coddefect'))) score += 2;
-    if(cells.some(v=> v.includes('piesenecomforme') || v.includes('pieseneconforme'))) score += 1;
-    if(cells.some(v=> v.includes('pieserebutfinal'))) score += 1;
-    if(score > bestScore){
-      bestScore = score;
-      bestRow = r;
+  const range = XLSX.utils.decode_range(ws['!ref'] || 'A1:A1');
+  for(let r=range.s.r; r<=Math.min(range.e.r, 25); r++){
+    const row = [];
+    for(let c=0; c<=Math.min(range.e.c, 20); c++){
+      const cell = ws[XLSX.utils.encode_cell({r,c})];
+      row.push(normKey(cell ? cell.v : ''));
     }
+    if(row.includes('anul') && row.includes('luna') && row.some(v=> v.includes('cod defect'))) return r;
   }
-  return bestRow;
+  return 6;
 }
-function buildPmHeaderMap(headers){
-  const map = {};
-  (headers || []).forEach((h, idx)=>{
-    const key = pmCanonicalHeaderKey(h);
-    if(key && map[key] == null) map[key] = idx;
-  });
-  return map;
-}
-function pickPmCell(arr, headerMap, aliases){
-  for(const alias of aliases){
-    const wanted = pmCanonicalHeaderKey(alias);
-    if(wanted && Number.isInteger(headerMap[wanted])) return arr[headerMap[wanted]];
-    const partial = Object.keys(headerMap).find(k=> k === wanted || k.includes(wanted) || wanted.includes(k));
-    if(partial && Number.isInteger(headerMap[partial])) return arr[headerMap[partial]];
+function pickHeaderValue(obj, names){
+  const entries = Object.entries(obj || {});
+  for(const wanted of names){
+    const wantedKey = normKey(wanted);
+    const found = entries.find(([k])=> normKey(k) === wantedKey);
+    if(found) return found[1];
   }
   return '';
 }
 function importPmFromWorkbook(wb){
-  const name = findPmSheetName(wb);
+  const name = wb.SheetNames.find(x=> normKey(x)==='rebut pm') || wb.SheetNames[0];
   if(!name) throw new Error('Fișierul Excel nu conține foi.');
   const ws = wb.Sheets[name];
-  if(!ws) throw new Error('Nu am găsit foaia Rebut PM în fișier.');
-  const raw = XLSX.utils.sheet_to_json(ws, { header:1, defval:'', raw:false, blankrows:false });
   const headerRow = findHeaderRow(ws);
+  const raw = XLSX.utils.sheet_to_json(ws, { header:1, defval:'', raw:false });
   const headers = (raw[headerRow] || []).map(h=> normText(h));
-  const headerMap = buildPmHeaderMap(headers);
   const parsed = [];
   for(let i=headerRow+1; i<raw.length; i++){
     const arr = raw[i] || [];
-    const nonEmpty = arr.some(v=> normText(v) !== '');
-    if(!nonEmpty) continue;
-    const luna = normText(pickPmCell(arr, headerMap, ['Luna']));
-    const nrExcel = normText(pickPmCell(arr, headerMap, ['Nr. reper','Nr reper','Nr.reper','Reper']));
-    const denExcel = normText(pickPmCell(arr, headerMap, ['Denumire reper forja', 'Denumire reper din forja', 'Denumire din forja']));
+    const obj = {};
+    headers.forEach((h, idx)=>{ if(h) obj[h] = arr[idx]; });
+    if(Object.values(obj).every(v=> normText(v)==='')) continue;
+    const luna = normText(pickHeaderValue(obj, ['Luna']));
+    const nrExcel = normText(pickHeaderValue(obj, ['Nr. reper','Nr reper','Nr.reper']));
+    const denExcel = normText(pickHeaderValue(obj, ['Denumire reper forja', 'Denumire din forja']));
     const nrReper = nrExcel || findNrForDenumire(denExcel) || '';
     const denumire = findDenumireForNrReper(nrReper) || denExcel || '';
-    const descr = normText(pickPmCell(arr, headerMap, ['Descriere necomformitate', 'Descriere neconformitate', 'Descriere defect']));
-    const parsedDate = parseRoDate(pickPmCell(arr, headerMap, ['Data inregistrare','Data \n inregistrare','Data \ninregistrare','Data']), luna);
-    const yearFromDate = parsedDate ? String(parsedDate.getFullYear()) : normalizeYearValue(pickPmCell(arr, headerMap, ['Anul','An'])) || activeYear;
+    const descr = normText(pickHeaderValue(obj, ['Descriere necomformitate', 'Descriere neconformitate']));
+    const parsedDate = parseRoDate(pickHeaderValue(obj, ['Data inregistrare','Data \\ninregistrare','Data']), luna);
+    const yearFromDate = parsedDate ? String(parsedDate.getFullYear()) : normalizeYearValue(pickHeaderValue(obj, ['Anul'])) || activeYear;
     const row = {
       an: yearFromDate,
       luna: luna || (parsedDate ? monthNameRo(parsedDate) : ''),
-      data: formatDateRo(parsedDate || pickPmCell(arr, headerMap, ['Data inregistrare','Data \n inregistrare','Data \ninregistrare','Data'])),
+      data: formatDateRo(parsedDate || pickHeaderValue(obj, ['Data inregistrare','Data \\ninregistrare','Data'])),
       nr_reper: nrReper,
       denumire_reper_forja: denumire,
-      cod_defect: normText(pickPmCell(arr, headerMap, ['Cod defect','Cod'])),
-      provenienta: normText(pickPmCell(arr, headerMap, ['Provenienta defect (FJ/PM)', 'Provenienta defect', 'Provenienta'])),
+      cod_defect: normText(pickHeaderValue(obj, ['Cod defect'])),
+      provenienta: normText(pickHeaderValue(obj, ['Provenienta defect (FJ/PM)', 'Provenienta \\n defect\\n(FJ/PM)      ', 'Provenienta'])),
       descriere_neconformitate_1: descr,
       descriere_neconformitate: descr,
-      loc_depistare: normText(pickPmCell(arr, headerMap, ['Loc depistare necomformitate', 'Loc depistare neconformitate', 'Loc depistare'])),
-      schimb: normText(pickPmCell(arr, headerMap, ['Sch.','Schimb'])),
-      operator: normText(pickPmCell(arr, headerMap, ['Operator'])),
-      piese_neconforme: toNum(pickPmCell(arr, headerMap, ['Piese necomforme                             [buc]', 'Piese necomforme [buc]', 'Piese neconforme [buc]', 'Piese neconforme'])),
-      piese_remaniabile: toNum(pickPmCell(arr, headerMap, ['Piese remaniabile       [buc]', 'Piese remaniabile [buc]', 'Piese remaniabile'])),
-      piese_conforme_dupa_remaniere: toNum(pickPmCell(arr, headerMap, ['Piese conforme dupa remaniere        [buc]', 'Piese conforme dupa remaniere [buc]', 'Piese conforme dupa remaniere'])),
-      piese_rebut_final: toNum(pickPmCell(arr, headerMap, ['Piese rebut final  [buc]', 'Piese rebut final [buc]', 'Piese rebut final'])),
-      obs: normText(pickPmCell(arr, headerMap, ['Obs.','Obs'])),
-      cauza: normText(pickPmCell(arr, headerMap, ['Cauza ', 'Cauza'])),
-      actiuni_corective: normText(pickPmCell(arr, headerMap, ['Actiuni corective ', 'Actiuni corective', 'Actiuni']))
+      loc_depistare: normText(pickHeaderValue(obj, ['Loc depistare necomformitate', 'Loc depistare neconformitate', 'Loc depistare'])),
+      schimb: normText(pickHeaderValue(obj, ['Sch.'])),
+      operator: normText(pickHeaderValue(obj, ['Operator'])),
+      piese_neconforme: toNum(pickHeaderValue(obj, ['Piese necomforme                             [buc]', 'Piese necomforme [buc]', 'Piese neconforme [buc]'])),
+      piese_remaniabile: toNum(pickHeaderValue(obj, ['Piese remaniabile       [buc]', 'Piese remaniabile [buc]'])),
+      piese_conforme_dupa_remaniere: toNum(pickHeaderValue(obj, ['Piese conforme dupa remaniere        [buc]', 'Piese conforme dupa remaniere [buc]'])),
+      piese_rebut_final: toNum(pickHeaderValue(obj, ['Piese rebut final  [buc]', 'Piese rebut final [buc]'])),
+      obs: normText(pickHeaderValue(obj, ['Obs.'])),
+      cauza: normText(pickHeaderValue(obj, ['Cauza ', 'Cauza'])),
+      actiuni_corective: normText(pickHeaderValue(obj, ['Actiuni corective ', 'Actiuni corective']))
     };
-    if(!row.denumire_reper_forja && !row.nr_reper && !row.cod_defect && !row.piese_rebut_final) continue;
+    if(!row.denumire_reper_forja && !row.nr_reper && !row.cod_defect) continue;
     parsed.push(row);
-  }
-  if(!parsed.length){
-    throw new Error('Nu am găsit rânduri valide în foaia Rebut PM. Verifică antetul și foaia importată.');
   }
   return parsed;
 }
@@ -1504,25 +1442,27 @@ async function importWorkbookToYearDocs(wb){
   const grouped = groupRowsByYear(parsed, activeYear);
   const years = Object.keys(grouped).sort((a,b)=> Number(a)-Number(b));
   if(!years.length){
-    throw new Error('Importul nu a găsit ani valizi în fișier.');
+    await replaceYearRows(activeYear, []);
+    return { count:0, years:[activeYear] };
   }
   setCloudStatus('Cloud: se salvează...');
-  const batchTs = nowIso();
   const updatedMap = {};
   for(const y of years){
-    saveYearLocal(y, grouped[y], batchTs);
-    await upsertDocRecord(getYearDocKey(y), getYearPayload(y, grouped[y], batchTs));
-    updatedMap[y] = batchTs;
+    const ts = nowIso();
+    saveYearLocal(y, grouped[y], ts);
+    await upsertDocRecord(getYearDocKey(y), getYearPayload(y, grouped[y], ts));
+    updatedMap[y] = ts;
   }
   await writeCloudIndex(years, updatedMap);
-  await upsertDocRecord(DOC_KEY, { rows: parsed, updated_at: batchTs });
-  const preferredYear = years[years.length - 1];
-  setActiveYearLocal(preferredYear);
-  await refreshActiveYear(true);
+  if(years.includes(activeYear)){
+    setActiveYearLocal(activeYear);
+  }else{
+    loadYearLocal(activeYear);
+    setActiveYearLocal(activeYear);
+  }
   render();
-  setSyncStatus(updatedMap[preferredYear] || batchTs);
   setCloudStatus('Cloud: import terminat');
-  return { count: parsed.length, years, activeYear: preferredYear };
+  return { count: parsed.length, years };
 }
 function startRefreshTimer(){
   if(refreshTimer) clearInterval(refreshTimer);
@@ -1531,6 +1471,85 @@ function startRefreshTimer(){
     if(els.editModal.classList.contains('show')) return;
     refreshActiveYear(false).catch(()=>{});
   }, REFRESH_INTERVAL_MS);
+}
+async function pickExcelFiles(options){
+  const opts = options || {};
+  const multiple = !!opts.multiple;
+  const accept = opts.accept || '.xlsx,.xls,.xlsm';
+  const pickerTypes = [{
+    description: 'Fișiere Excel',
+    accept: {
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': ['.xlsx'],
+      'application/vnd.ms-excel': ['.xls'],
+      'application/vnd.ms-excel.sheet.macroEnabled.12': ['.xlsm']
+    }
+  }];
+  if(window.showOpenFilePicker){
+    try{
+      const handles = await window.showOpenFilePicker({ multiple, types: pickerTypes, excludeAcceptAllOption:false });
+      const files = [];
+      for(const handle of handles) files.push(await handle.getFile());
+      return files;
+    }catch(err){
+      if(err && (err.name === 'AbortError' || /aborted|cancel/i.test(String(err.message || '')))) return [];
+      throw err;
+    }
+  }
+  return await new Promise((resolve, reject)=>{
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = accept;
+    if(multiple) input.multiple = true;
+    input.style.position = 'fixed';
+    input.style.left = '-9999px';
+    input.style.top = '0';
+    input.style.opacity = '0';
+    document.body.appendChild(input);
+    const cleanup = ()=>{ try{ input.remove(); }catch(_e){} };
+    input.addEventListener('change', ()=>{
+      const files = Array.from(input.files || []);
+      cleanup();
+      resolve(files);
+    }, { once:true });
+    input.addEventListener('cancel', ()=>{ cleanup(); resolve([]); }, { once:true });
+    try{
+      if(typeof input.showPicker === 'function') input.showPicker();
+      else input.click();
+    }catch(err){
+      cleanup();
+      reject(err);
+    }
+  });
+}
+async function runPmWorkbookImport(file){
+  if(!file) return;
+  if(!canPmEdit()){
+    window.alert('Nu ai drept de import pe această pagină.');
+    return;
+  }
+  if(typeof XLSX === 'undefined'){
+    window.alert('Lipsește biblioteca Excel (XLSX). Reîncarcă pagina și încearcă din nou.');
+    return;
+  }
+  const buf = await file.arrayBuffer();
+  const wb = XLSX.read(buf, { type:'array' });
+  const result = await importWorkbookToYearDocs(wb);
+  window.alert('Import reușit: ' + result.count + ' rânduri. Ani actualizați: ' + result.years.join(', '));
+}
+async function startPmWorkbookImportPicker(){
+  if(!canPmEdit()){
+    window.alert('Nu ai drept de import pe această pagină.');
+    return;
+  }
+  try{
+    const files = await pickExcelFiles({ accept: '.xlsx,.xls,.xlsm' });
+    const file = files && files[0];
+    if(!file) return;
+    await runPmWorkbookImport(file);
+  }catch(err){
+    console.error(err);
+    window.alert('Importul Excel nu a reușit.\n' + (err && err.message ? err.message : err));
+  }
 }
 
 els.fNrReper.addEventListener('input', syncDenumireForCurrentNrReper);
@@ -1542,7 +1561,10 @@ els.btnRefresh.addEventListener('click', async ()=>{
   catch(err){ console.error(err); window.alert('Nu am putut reîncărca anul curent.\n' + (err && err.message ? err.message : err)); }
 });
 els.btnAdd.addEventListener('click', openAddModal);
-els.btnImport.addEventListener('click', ()=> { if(!canPmEdit()) return; els.fileImport.click(); });
+els.btnImport.addEventListener('click', (ev)=> {
+  ev.preventDefault();
+  startPmWorkbookImportPicker();
+});
 els.btnExport.addEventListener('click', exportWorkbook);
 els.btnCloseModal.addEventListener('click', closeModal);
 els.btnCancelModal.addEventListener('click', closeModal);
@@ -1561,12 +1583,8 @@ els.fileImport.addEventListener('change', async (ev)=>{
   const file = ev.target.files && ev.target.files[0];
   ev.target.value = '';
   if(!file) return;
-  if(!canPmEdit()) return;
   try{
-    const buf = await file.arrayBuffer();
-    const wb = XLSX.read(buf, { type:'array' });
-    const result = await importWorkbookToYearDocs(wb);
-    window.alert('Import reușit: ' + result.count + ' rânduri. Ani actualizați: ' + result.years.join(', ') + '. An afișat: ' + result.activeYear);
+    await runPmWorkbookImport(file);
   }catch(err){
     console.error(err);
     window.alert('Importul Excel nu a reușit.\n' + (err && err.message ? err.message : err));
