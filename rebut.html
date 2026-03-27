@@ -1473,59 +1473,136 @@ async function writePmRows(rows){
   const legacyPayload = { rows: importedRows, updated_at: ts };
   const { error: legacyError } = await supa.from(DOC_TABLE).upsert({ doc_key: 'rebut-pm', content: legacyPayload, updated_at: ts }, { onConflict: 'doc_key' });
   if(legacyError) throw legacyError;
+
+  return {
+    count: importedRows.length,
+    years,
+    activeYear: years.length ? years[years.length - 1] : String(CURRENT_YEAR)
+  };
+}
+function pmCanonicalHeaderKey(v){
+  return normKey(v).replace(/[^a-z0-9]+/g,'');
+}
+function pmScoreSheet(ws){
+  const raw = XLSX.utils.sheet_to_json(ws, { header:1, defval:'', raw:false, blankrows:false });
+  let best = 0;
+  for(let r=0; r<Math.min(raw.length, 35); r++){
+    const cells = (raw[r] || []).map(pmCanonicalHeaderKey).filter(Boolean);
+    if(!cells.length) continue;
+    let score = 0;
+    if(cells.includes('anul') || cells.includes('an')) score += 1;
+    if(cells.includes('luna')) score += 1;
+    if(cells.some(v=> v.includes('datainregistrare') || v === 'data')) score += 1;
+    if(cells.some(v=> v.includes('nrreper'))) score += 1;
+    if(cells.some(v=> v.includes('denumirereperforja') || v.includes('denumirereperdinforja'))) score += 1;
+    if(cells.some(v=> v.includes('coddefect'))) score += 2;
+    if(cells.some(v=> v.includes('piesenecomforme') || v.includes('pieseneconforme'))) score += 1;
+    if(cells.some(v=> v.includes('pieserebutfinal'))) score += 1;
+    if(score > best) best = score;
+  }
+  return best;
+}
+function findPmSheetName(wb){
+  let bestName = wb && wb.SheetNames && wb.SheetNames[0] ? wb.SheetNames[0] : '';
+  let bestScore = -1;
+  (wb && wb.SheetNames ? wb.SheetNames : []).forEach(name=>{
+    const ws = wb.Sheets[name];
+    if(!ws) return;
+    let score = pmScoreSheet(ws);
+    const sheetKey = pmCanonicalHeaderKey(name);
+    if(sheetKey.includes('rebutpm')) score += 4;
+    else if(sheetKey.includes('pm')) score += 1;
+    if(score > bestScore){
+      bestScore = score;
+      bestName = name;
+    }
+  });
+  return bestName;
 }
 function findHeaderRow(ws){
-  const range = XLSX.utils.decode_range(ws['!ref'] || 'A1:A1');
-  for(let r=range.s.r; r<=Math.min(range.e.r, 25); r++){
-    const row = [];
-    for(let c=0; c<=Math.min(range.e.c, 20); c++){
-      const cell = ws[XLSX.utils.encode_cell({r,c})];
-      row.push(normKey(cell ? cell.v : ''));
-    }
-    if(row.includes('anul') && row.includes('luna') && row.some(v=> v.includes('cod defect'))){
-      return r;
+  const raw = XLSX.utils.sheet_to_json(ws, { header:1, defval:'', raw:false, blankrows:false });
+  let bestRow = 6;
+  let bestScore = -1;
+  for(let r=0; r<Math.min(raw.length, 35); r++){
+    const cells = (raw[r] || []).map(pmCanonicalHeaderKey).filter(Boolean);
+    if(!cells.length) continue;
+    let score = 0;
+    if(cells.includes('anul') || cells.includes('an')) score += 1;
+    if(cells.includes('luna')) score += 1;
+    if(cells.some(v=> v.includes('datainregistrare') || v === 'data')) score += 1;
+    if(cells.some(v=> v.includes('nrreper'))) score += 1;
+    if(cells.some(v=> v.includes('denumirereperforja') || v.includes('denumirereperdinforja'))) score += 1;
+    if(cells.some(v=> v.includes('coddefect'))) score += 2;
+    if(cells.some(v=> v.includes('piesenecomforme') || v.includes('pieseneconforme'))) score += 1;
+    if(cells.some(v=> v.includes('pieserebutfinal'))) score += 1;
+    if(score > bestScore){
+      bestScore = score;
+      bestRow = r;
     }
   }
-  return 6; // row 7 in Excel
+  return bestRow;
+}
+function buildPmHeaderMap(headers){
+  const map = {};
+  (headers || []).forEach((h, idx)=>{
+    const key = pmCanonicalHeaderKey(h);
+    if(key && map[key] == null) map[key] = idx;
+  });
+  return map;
+}
+function pickPmCell(arr, headerMap, aliases){
+  for(const alias of aliases){
+    const wanted = pmCanonicalHeaderKey(alias);
+    if(wanted && Number.isInteger(headerMap[wanted])) return arr[headerMap[wanted]];
+    const partial = Object.keys(headerMap).find(k=> k === wanted || k.includes(wanted) || wanted.includes(k));
+    if(partial && Number.isInteger(headerMap[partial])) return arr[headerMap[partial]];
+  }
+  return '';
 }
 function importPmFromWorkbook(wb){
-  const name = wb.SheetNames.find(x=> normKey(x)==='rebut pm') || wb.SheetNames[0];
+  const name = findPmSheetName(wb);
   if(!name) throw new Error('Fișierul Excel nu conține foi.');
   const ws = wb.Sheets[name];
+  if(!ws) throw new Error('Nu am găsit foaia Rebut PM în fișier.');
+  const raw = XLSX.utils.sheet_to_json(ws, { header:1, defval:'', raw:false, blankrows:false });
   const headerRow = findHeaderRow(ws);
-  const raw = XLSX.utils.sheet_to_json(ws, { header:1, defval:'', raw:false });
   const headers = (raw[headerRow] || []).map(h=> normText(h));
+  const headerMap = buildPmHeaderMap(headers);
   const rows = [];
   for(let i=headerRow+1; i<raw.length; i++){
     const arr = raw[i] || [];
-    const obj = {};
-    headers.forEach((h, idx)=>{ if(h) obj[h] = arr[idx]; });
-    const empty = Object.values(obj).every(v=> normText(v)==='');
-    if(empty) continue;
+    const nonEmpty = arr.some(v=> normText(v) !== '');
+    if(!nonEmpty) continue;
+    const luna = normText(pickPmCell(arr, headerMap, ['Luna']));
+    const dataVal = pickPmCell(arr, headerMap, ['Data inregistrare','Data \n inregistrare','Data \ninregistrare','Data']);
+    const parsedDate = parseDateValue(dataVal);
     const mapped = {
-      an: obj['Anul'] || obj['anul'] || '',
-      luna: obj['Luna'] || obj['luna'] || '',
-      data: obj['Data \ninregistrare'] || obj['Data inregistrare'] || obj['data inregistrare'] || '',
-      tip_reper: obj['Tip reper'] || '',
-      nr_reper: obj['Nr. reper'] || '',
-      denumire_reper_forja: obj['Denumire reper forja'] || '',
-      cod_defect: String(obj['Cod defect'] || '').trim(),
-      provenienta: obj['Provenienta defect (FJ/PM)'] || obj['Provenienta\n defect\n(FJ/PM)      '] || '',
-      descriere_neconformitate_1: obj['Descriere necomformitate 1'] || '',
-      descriere_neconformitate: obj['Descriere necomformitate'] || '',
-      loc_depistare: obj['Loc depistare necomformitate'] || '',
-      schimb: obj['Sch.'] || '',
-      operator: obj['Operator'] || '',
-      piese_neconforme: toNum(obj['Piese necomforme                             [buc]'] || obj['Piese necomforme [buc]']),
-      piese_remaniabile: toNum(obj['Piese remaniabile       [buc]'] || obj['Piese remaniabile [buc]']),
-      piese_conforme_dupa_remaniere: toNum(obj['Piese conforme dupa remaniere        [buc]'] || obj['Piese conforme dupa remaniere [buc]']),
-      piese_rebut_final: toNum(obj['Piese rebut final  [buc]'] || obj['Piese rebut final [buc]']),
-      obs: obj['Obs.'] || '',
-      cauza: obj['Cauza '] || obj['Cauza'] || '',
-      actiuni_corective: obj['Actiuni corective '] || obj['Actiuni corective'] || ''
+      an: pickPmCell(arr, headerMap, ['Anul','An']) || (parsedDate ? String(parsedDate.getFullYear()) : ''),
+      luna: luna || (parsedDate ? MONTHS[parsedDate.getMonth()] : ''),
+      data: dataVal || '',
+      tip_reper: pickPmCell(arr, headerMap, ['Tip reper','Tip']),
+      nr_reper: pickPmCell(arr, headerMap, ['Nr. reper','Nr reper','Nr.reper','Reper']),
+      denumire_reper_forja: pickPmCell(arr, headerMap, ['Denumire reper forja','Denumire reper din forja','Denumire din forja']),
+      cod_defect: String(pickPmCell(arr, headerMap, ['Cod defect','Cod']) || '').trim(),
+      provenienta: pickPmCell(arr, headerMap, ['Provenienta defect (FJ/PM)','Provenienta defect','Provenienta']),
+      descriere_neconformitate_1: pickPmCell(arr, headerMap, ['Descriere necomformitate 1','Descriere neconformitate 1','Descriere defect 1']),
+      descriere_neconformitate: pickPmCell(arr, headerMap, ['Descriere necomformitate','Descriere neconformitate','Descriere defect']),
+      loc_depistare: pickPmCell(arr, headerMap, ['Loc depistare necomformitate','Loc depistare neconformitate','Loc depistare']),
+      schimb: pickPmCell(arr, headerMap, ['Sch.','Schimb']),
+      operator: pickPmCell(arr, headerMap, ['Operator']),
+      piese_neconforme: toNum(pickPmCell(arr, headerMap, ['Piese necomforme                             [buc]','Piese necomforme [buc]','Piese neconforme [buc]','Piese neconforme'])),
+      piese_remaniabile: toNum(pickPmCell(arr, headerMap, ['Piese remaniabile       [buc]','Piese remaniabile [buc]','Piese remaniabile'])),
+      piese_conforme_dupa_remaniere: toNum(pickPmCell(arr, headerMap, ['Piese conforme dupa remaniere        [buc]','Piese conforme dupa remaniere [buc]','Piese conforme dupa remaniere'])),
+      piese_rebut_final: toNum(pickPmCell(arr, headerMap, ['Piese rebut final  [buc]','Piese rebut final [buc]','Piese rebut final'])),
+      obs: pickPmCell(arr, headerMap, ['Obs.','Obs']),
+      cauza: pickPmCell(arr, headerMap, ['Cauza ','Cauza']),
+      actiuni_corective: pickPmCell(arr, headerMap, ['Actiuni corective ','Actiuni corective','Actiuni'])
     };
-    if(!mapped.denumire_reper_forja && !mapped.nr_reper && !mapped.cod_defect) continue;
+    if(!mapped.denumire_reper_forja && !mapped.nr_reper && !mapped.cod_defect && !mapped.piese_rebut_final) continue;
     rows.push(mapped);
+  }
+  if(!rows.length){
+    throw new Error('Nu am găsit rânduri valide în foaia Rebut PM. Verifică antetul și foaia importată.');
   }
   return rows;
 }
@@ -1606,12 +1683,15 @@ els.fileImportPm.addEventListener('change', async (ev)=>{
     const buf = await file.arrayBuffer();
     const wb = XLSX.read(buf, { type:'array' });
     const rows = importPmFromWorkbook(wb);
-    await writePmRows(rows);
-    state.docs.rebutPm = rows;
+    const result = await writePmRows(rows);
+    await readDocs();
+    state.an = result && result.activeYear ? String(result.activeYear) : '';
+    state.luna = '';
     buildSummary();
+    renderSelectors();
     renderTable();
     renderSupplierSections();
-    window.alert('Import Rebut PM reușit: ' + rows.length + ' rânduri.');
+    window.alert('Import Rebut PM reușit: ' + rows.length + ' rânduri. An afișat: ' + (state.an || '-'));
   }catch(err){
     console.error(err);
     window.alert('Importul Excel nu a reușit.\n' + (err && err.message ? err.message : err));
