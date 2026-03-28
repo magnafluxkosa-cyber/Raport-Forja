@@ -519,6 +519,15 @@
         el.innerHTML = '<span class="dot ' + dotClass + '"></span><span>' + escapeHtml(text) + '</span>';
       }
 
+      function errorMessage(error, fallback = 'A apărut o eroare.') {
+        if (!error) return fallback;
+        if (typeof error === 'string') return error || fallback;
+        if (error.message) return String(error.message);
+        if (error.error_description) return String(error.error_description);
+        if (error.details) return String(error.details);
+        try { return JSON.stringify(error); } catch (_) { return fallback; }
+      }
+
       function formatDateTimeDisplay(value) {
         const clean = toStr(value);
         if (!clean) return '—';
@@ -779,7 +788,7 @@
         if (!(sb && state.auth && state.auth.user)) {
           setChip(els.cloudChip, 'Cloud: salvat doar local', 'warn');
           renderStats();
-          return false;
+          return { ok: false, error: new Error('Nu există conexiune cloud activă pentru fișe.') };
         }
 
         try {
@@ -791,12 +800,12 @@
           if (error) throw error;
           if (showSuccessChip) setChip(els.cloudChip, 'Cloud: sincronizat', 'ok');
           renderStats();
-          return true;
+          return { ok: true, error: null };
         } catch (error) {
           console.error(error);
           setChip(els.cloudChip, 'Cloud: eroare salvare', 'bad');
           renderStats();
-          return false;
+          return { ok: false, error };
         }
       }
 
@@ -944,8 +953,8 @@
           return;
         }
 
-        const ok = await saveMetadata(nextRows, false);
-        if (!ok) {
+        const saveResult = await saveMetadata(nextRows, false);
+        if (!saveResult.ok) {
           setChip(els.cloudChip, 'Cloud: metadatele nu s-au putut actualiza după migrare', 'bad');
           return;
         }
@@ -1000,105 +1009,136 @@
         }
         if (!canEdit()) return false;
 
-        const currentRow = state.rows.find((item) => item.id === state.selectedId) || null;
-        const row = readForm();
-        const selectedFile = els.fldPdf.files && els.fldPdf.files[0] ? els.fldPdf.files[0] : null;
-        const validationMessage = validateForm(row, selectedFile, currentRow);
-        if (validationMessage) {
-          alert(validationMessage);
-          return false;
-        }
+        const originalLabel = els.btnSaveRow.textContent;
+        els.btnSaveRow.disabled = true;
+        els.btnSaveRow.textContent = 'Se salvează…';
 
-        const duplicate = state.rows.find((item) => item.reper.toLowerCase() === row.reper.toLowerCase() && item.id !== row.id);
-        if (duplicate) {
-          const okReplace = confirm('Există deja o fișă pentru reperul „' + duplicate.reper + '”. Vrei să o înlocuiești?');
-          if (!okReplace) return false;
-          row.id = duplicate.id;
-          row.file_doc_key = duplicate.file_doc_key;
-          row.storage_bucket = duplicate.storage_bucket || STORAGE_BUCKET;
-          row.storage_path = duplicate.storage_path;
-        }
+        try {
+          const currentRow = state.rows.find((item) => item.id === state.selectedId) || null;
+          const row = readForm();
+          const selectedFile = els.fldPdf.files && els.fldPdf.files[0] ? els.fldPdf.files[0] : null;
+          const validationMessage = validateForm(row, selectedFile, currentRow);
+          if (validationMessage) {
+            alert(validationMessage);
+            return false;
+          }
 
-        const sb = await createSupabase();
-        if (!(sb && state.auth && state.auth.user)) {
-          alert('Nu există conexiune cloud activă. Pentru PDF-uri este necesară salvarea în cloud.');
-          return false;
-        }
+          const duplicate = state.rows.find((item) => item.reper.toLowerCase() === row.reper.toLowerCase() && item.id !== row.id);
+          if (duplicate) {
+            const okReplace = confirm('Există deja o fișă pentru reperul „' + duplicate.reper + '”. Vrei să o înlocuiești?');
+            if (!okReplace) return false;
+            row.id = duplicate.id;
+            row.file_doc_key = duplicate.file_doc_key;
+            row.storage_bucket = duplicate.storage_bucket || STORAGE_BUCKET;
+            row.storage_path = duplicate.storage_path;
+          }
 
-        const legacyKeysToDelete = [];
-        const oldStoragePath = toStr((currentRow && currentRow.storage_path) || (duplicate && duplicate.storage_path));
+          const sb = await createSupabase();
+          if (!(sb && state.auth && state.auth.user)) {
+            alert('Nu există conexiune cloud activă. Pentru PDF-uri este necesară salvarea în cloud.');
+            return false;
+          }
 
-        if (selectedFile) {
-          const existingLegacyKey = toStr((currentRow && currentRow.file_doc_key) || (duplicate && duplicate.file_doc_key));
-          try {
-            setChip(els.cloudChip, 'Cloud: încarcă PDF în Storage privat…', 'warn');
-            const storagePath = buildStoragePath(row);
-            const fileBuffer = await selectedFile.arrayBuffer();
-            const uploadBlob = new Blob([fileBuffer], { type: 'application/pdf' });
-            const { error } = await sb.storage.from(STORAGE_BUCKET).upload(storagePath, uploadBlob, {
-              contentType: 'application/pdf',
-              cacheControl: '3600',
-              upsert: true
-            });
-            if (error) throw error;
+          const legacyKeysToDelete = [];
+          const oldStoragePath = toStr((currentRow && currentRow.storage_path) || (duplicate && duplicate.storage_path));
 
-            row.storage_bucket = STORAGE_BUCKET;
-            row.storage_path = storagePath;
-            row.file_name = selectedFile.name;
-            row.file_size = Number(selectedFile.size || 0);
-            row.mime_type = 'application/pdf';
-            row.file_doc_key = '';
-
-            if (existingLegacyKey) legacyKeysToDelete.push(existingLegacyKey);
-          } catch (storageError) {
-            console.warn('Storage upload eșuat, încerc fallback compatibil în rf_documents.', storageError);
+          if (selectedFile) {
+            const existingLegacyKey = toStr((currentRow && currentRow.file_doc_key) || (duplicate && duplicate.file_doc_key));
             try {
-              setChip(els.cloudChip, 'Cloud: Storage indisponibil, salvez PDF-ul în varianta compatibilă…', 'warn');
-              const savedLegacy = await saveLegacyFileDocFromFile(selectedFile, {
-                id: row.id,
-                reper: row.reper,
-                file_doc_key: existingLegacyKey
+              setChip(els.cloudChip, 'Cloud: încarcă PDF în Storage privat…', 'warn');
+              const storagePath = buildStoragePath(row);
+              let uploadError = null;
+
+              const firstTry = await sb.storage.from(STORAGE_BUCKET).upload(storagePath, selectedFile, {
+                contentType: 'application/pdf',
+                cacheControl: '3600',
+                upsert: true
               });
-              row.storage_bucket = '';
-              row.storage_path = '';
+              uploadError = firstTry && firstTry.error ? firstTry.error : null;
+
+              if (uploadError) {
+                console.warn('Upload direct File a eșuat, încerc varianta Blob.', uploadError);
+                const fileBuffer = await selectedFile.arrayBuffer();
+                const uploadBlob = new Blob([fileBuffer], { type: 'application/pdf' });
+                const secondTry = await sb.storage.from(STORAGE_BUCKET).upload(storagePath, uploadBlob, {
+                  contentType: 'application/pdf',
+                  cacheControl: '3600',
+                  upsert: true
+                });
+                uploadError = secondTry && secondTry.error ? secondTry.error : null;
+              }
+
+              if (uploadError) throw uploadError;
+
+              row.storage_bucket = STORAGE_BUCKET;
+              row.storage_path = storagePath;
               row.file_name = selectedFile.name;
               row.file_size = Number(selectedFile.size || 0);
               row.mime_type = 'application/pdf';
-              row.file_doc_key = savedLegacy.docKey;
-            } catch (fallbackError) {
-              console.error(fallbackError);
-              setChip(els.cloudChip, 'Cloud: eroare la import PDF', 'bad');
-              alert('PDF-ul nu a putut fi salvat nici în Storage, nici în fallback-ul compatibil din cloud.');
-              return false;
+              row.file_doc_key = '';
+
+              if (existingLegacyKey) legacyKeysToDelete.push(existingLegacyKey);
+            } catch (storageError) {
+              console.warn('Storage upload eșuat, încerc fallback compatibil în rf_documents.', storageError);
+              try {
+                setChip(els.cloudChip, 'Cloud: Storage indisponibil, salvez PDF-ul în varianta compatibilă…', 'warn');
+                const savedLegacy = await saveLegacyFileDocFromFile(selectedFile, {
+                  id: row.id,
+                  reper: row.reper,
+                  file_doc_key: existingLegacyKey
+                });
+                row.storage_bucket = '';
+                row.storage_path = '';
+                row.file_name = selectedFile.name;
+                row.file_size = Number(selectedFile.size || 0);
+                row.mime_type = 'application/pdf';
+                row.file_doc_key = savedLegacy.docKey;
+              } catch (fallbackError) {
+                console.error(fallbackError);
+                setChip(els.cloudChip, 'Cloud: eroare la import PDF', 'bad');
+                alert('PDF-ul nu a putut fi salvat.\nStorage: ' + errorMessage(storageError, 'eroare necunoscută') + '\nFallback cloud: ' + errorMessage(fallbackError, 'eroare necunoscută'));
+                return false;
+              }
             }
+          } else if (currentRow || duplicate) {
+            const source = normalizeRow(currentRow || duplicate);
+            row.file_name = source.file_name;
+            row.file_size = source.file_size;
+            row.mime_type = source.mime_type;
+            row.file_doc_key = source.file_doc_key;
+            row.storage_bucket = source.storage_bucket || STORAGE_BUCKET;
+            row.storage_path = source.storage_path;
           }
-        } else if (currentRow || duplicate) {
-          const source = normalizeRow(currentRow || duplicate);
-          row.file_name = source.file_name;
-          row.file_size = source.file_size;
-          row.mime_type = source.mime_type;
-          row.file_doc_key = source.file_doc_key;
-          row.storage_bucket = source.storage_bucket || STORAGE_BUCKET;
-          row.storage_path = source.storage_path;
-        }
 
-        const removeIds = new Set([row.id, currentRow && currentRow.id, duplicate && duplicate.id].filter(Boolean));
-        let rows = state.rows.filter((item) => !removeIds.has(item.id) && item.reper.toLowerCase() !== row.reper.toLowerCase());
-        rows.push(row);
-        const ok = await saveMetadata(rows, true);
-        if (!ok) return false;
+          const removeIds = new Set([row.id, currentRow && currentRow.id, duplicate && duplicate.id].filter(Boolean));
+          let rows = state.rows.filter((item) => !removeIds.has(item.id) && item.reper.toLowerCase() !== row.reper.toLowerCase());
+          rows.push(row);
+          const saveResult = await saveMetadata(rows, true);
+          if (!saveResult.ok) {
+            alert('PDF-ul a fost preluat, dar metadatele nu s-au putut salva în cloud.\nDetaliu: ' + errorMessage(saveResult.error, 'eroare necunoscută'));
+            return false;
+          }
 
-        if (selectedFile && oldStoragePath && oldStoragePath !== row.storage_path) {
-          await removePdfFromStorage({ storage_bucket: STORAGE_BUCKET, storage_path: oldStoragePath });
-        }
-        for (const legacyKey of legacyKeysToDelete) {
-          await deleteLegacyFileDoc(legacyKey);
-        }
+          if (selectedFile && oldStoragePath && oldStoragePath !== row.storage_path) {
+            await removePdfFromStorage({ storage_bucket: STORAGE_BUCKET, storage_path: oldStoragePath });
+          }
+          for (const legacyKey of legacyKeysToDelete) {
+            await deleteLegacyFileDoc(legacyKey);
+          }
 
-        state.selectedId = row.id;
-        fillForm(row);
-        renderTable();
-        return false;
+          state.selectedId = row.id;
+          fillForm(row);
+          renderTable();
+          return false;
+        } catch (error) {
+          console.error(error);
+          setChip(els.cloudChip, 'Cloud: eroare la import PDF', 'bad');
+          alert(errorMessage(error, 'PDF-ul nu a putut fi salvat.'));
+          return false;
+        } finally {
+          els.btnSaveRow.disabled = !canEdit();
+          els.btnSaveRow.textContent = originalLabel;
+        }
       }
 
       async function deleteSelected() {
