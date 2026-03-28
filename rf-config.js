@@ -38,6 +38,7 @@
     { page_key: 'inventar-forjat', page_name: 'Inventar Forjat' },
     { page_key: 'planificare-forja', page_name: 'Planificare Forjă' },
     { page_key: 'comenzi-livrare', page_name: 'Comenzi Livrare' },
+    { page_key: 'livrari-zale', page_name: 'Urmărire zale' },
     { page_key: 'mrc-necesar-otel', page_name: 'MRC / Necesar Oțel' },
     { page_key: 'mrc-comenzi-otel', page_name: 'MRC / Comenzi oțel' },
     { page_key: 'mrc-comenzi-saptamanale', page_name: 'MRC / Comenzi săptămânale' },
@@ -121,6 +122,7 @@ var PAGE_CONTROL_OVERRIDES = Object.freeze({
     Object.freeze({ control_key:'nav.investitii', control_label:'Buton INVESTIȚII', control_type:'action' }),
     Object.freeze({ control_key:'nav.planificare-forja', control_label:'Buton PLANIFICARE FORJĂ', control_type:'action' }),
     Object.freeze({ control_key:'nav.comenzi-livrare', control_label:'Buton COMENZI LIVRARE', control_type:'action' }),
+    Object.freeze({ control_key:'nav.livrari-zale', control_label:'Buton URMĂRIRE ZALE', control_type:'action' }),
     Object.freeze({ control_key:'nav.mrc-necesar-otel', control_label:'Buton MRC / NECESAR OȚEL', control_type:'action' }),
     Object.freeze({ control_key:'nav.mrc-comenzi-otel', control_label:'Buton COMENZI OȚEL', control_type:'action' }),
     Object.freeze({ control_key:'nav.mrc-comenzi-saptamanale', control_label:'Buton COMENZI SĂPTĂMÂNALE', control_type:'action' }),
@@ -2748,6 +2750,20 @@ async function applyDomPermissions(pageKey, root, options) {
         ['field.observatii','Câmp Observații']
       ], [
         ['section.table-main','Tabel comenzi livrare']
+      ])
+    }),
+    'livrari-zale': Object.freeze({
+      hint: 'Urmărire zale: tabelul centralizat de livrări, filtrele pe an/lună/reper și import-export Excel.',
+      items: makeCrudCatalog([
+        ['field.an','Câmp An'],
+        ['field.luna','Câmp Lună'],
+        ['field.data-livrare','Câmp Data livrării'],
+        ['field.transport','Câmp Nr. transport'],
+        ['field.reper','Câmp Reper'],
+        ['field.cantitate','Câmp Cantitate']
+      ], [
+        ['section.table-main','Tabel livrări zale'],
+        ['section.quick-links','Linkuri rapide foi zale']
       ])
     }),
     'mrc-necesar-otel': Object.freeze({
