@@ -229,21 +229,26 @@
     </section>
 
     <section class="note-panel">
-      <strong>Logică folosită:</strong> BUCĂȚI REALIZATE, NORMA și rebutul din forjă se iau direct din <strong>Forjate</strong>. Din <strong>Rebut</strong> se includ categoriile LM, IBT, SM, LMC, DES, AS, DIV și codurile PM 06/07/13, iar <strong>FL</strong> și <strong>FTT</strong> sunt excluse. Media realizatelor este calculată pe numărul de înregistrări din Forjate pentru perechea utilaj + reper. Coloana „Norma reper” afișează norma medie planificată pe înregistrare pentru perechea utilaj + reper, iar procentul de rebut este calculat ca rebut fără FL/FTT raportat la bucățile realizate.
+      <strong>Logică folosită:</strong> BUCĂȚI REALIZATE și rebutul din forjă se iau direct din <strong>Forjate</strong>. Din <strong>Rebut</strong> se includ categoriile LM, IBT, SM, LMC, DES, AS, DIV și codurile PM 06/07/13, iar <strong>FL</strong> și <strong>FTT</strong> sunt excluse. <strong>Norma KPI</strong> și <strong>% realizat</strong> sunt calculate acum după aceeași regulă ca în pagina <strong>KPI</strong>: pe fiecare zi + schimb + utilaj, cu tact ponderat după reper, ore din <strong>Program utilaje</strong> și minute pierdute din <strong>Probleme raportate</strong>. În tabelul mare, norma pe reper este repartizată proporțional din norma KPI a schimbului, iar în „Total pe utilaje” procentul este <strong>media KPI pe zi + schimb</strong>, nu raport simplu între total realizat și total normă.
     </section>
   </div>
 
 <script>
+
 (function(){
 'use strict';
 const PAGE_KEY = 'eficienta';
 const STORAGE_KEY = 'rf_eficienta_filters_v1';
 const DOC_TABLE = 'rf_documents';
 const MONTHS = ['ianuarie','februarie','martie','aprilie','mai','iunie','iulie','august','septembrie','octombrie','noiembrie','decembrie'];
+const MONTHS_TITLE = MONTHS.map(m => m.charAt(0).toUpperCase() + m.slice(1));
 const SOURCE_CONFIGS = {
   forjate: { legacyKey:'forjate', indexKey:'forjate:index', prefix:'forjate:' },
   magnaflux: { legacyKey:'magnaflux', indexKey:'magnaflux:index', prefix:'magnaflux:' },
-  rebutPm: { legacyKey:'rebut-pm', indexKey:'rebut-pm:index', prefix:'rebut-pm:' }
+  rebutPm: { legacyKey:'rebut-pm', indexKey:'rebut-pm:index', prefix:'rebut-pm:' },
+  helper: { legacyKey:'helper-data', indexKey:'helper-data:index', prefix:'helper-data:' },
+  program: { legacyKey:'program-utilaje', indexKey:'program-utilaje:index', prefix:'program-utilaje:' },
+  probleme: { legacyKey:'probleme-raportate', indexKey:'probleme-raportate:index', prefix:'probleme-raportate:' }
 };
 const MF_CODES = ['LM','IBT','SM','FTT','FL','LMC','DES','AS','DIV'];
 const MF_INCLUDED_CODES = ['LM','IBT','SM','LMC','DES','AS','DIV'];
@@ -256,6 +261,8 @@ const CHART_PALETTE = [
   ['#b44e4e','#de7a7a'],
   ['#2f9bb0','#59c3d8']
 ];
+const DEFAULT_OEE = 1;
+const DEFAULT_SHIFT_HOURS = 8;
 const els = {
   authText: document.getElementById('authText'),
   roleText: document.getElementById('roleText'),
@@ -284,32 +291,208 @@ const state = {
   supa: null,
   auth: null,
   access: null,
-  docs: { forjate: [], magnaflux: [], rebutPm: [] },
+  docs: { forjate: [], magnaflux: [], rebutPm: [], helper: [], program: [], probleme: [] },
   rows: [],
   utilajeRows: [],
   years: [],
   filter: { an: '', luna: 'toate' },
+  kpiShiftMetrics: [],
   updatedAt: ''
 };
-function qs(s){ return document.querySelector(s); }
+
+function normalizeText(value){
+  return String(value ?? '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/ș/g,'s').replace(/ş/g,'s').replace(/ț/g,'t').replace(/ţ/g,'t')
+    .replace(/[^a-zA-Z0-9]+/g,'')
+    .toLowerCase();
+}
 function normText(v){ return String(v == null ? '' : v).replace(/\u00a0/g,' ').replace(/\s+/g,' ').trim(); }
-function normKey(v){ return normText(v).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,''); }
-function toNum(v){ if(v == null || v === '') return 0; const s = String(v).trim().replace(/\s+/g,'').replace(/\.(?=\d{3}(\D|$))/g,'').replace(',', '.'); const n = Number(s); return Number.isFinite(n) ? n : 0; }
+function normKey(v){ return normalizeText(v); }
+function toNum(v){
+  if(v == null || v === '') return 0;
+  if(typeof v === 'number' && Number.isFinite(v)) return v;
+  const s = String(v).trim().replace(/\s+/g,'').replace(/\.(?=\d{3}(\D|$))/g,'').replace(',', '.').replace(/[^0-9.\-]/g,'');
+  const n = Number(s);
+  return Number.isFinite(n) ? n : 0;
+}
+function toNumber(v){
+  const n = toNum(v);
+  return Number.isFinite(n) ? n : null;
+}
 function roInt(v){ return Math.round(Number(v||0)).toLocaleString('ro-RO'); }
 function roDec(v){ return Number(v||0).toLocaleString('ro-RO', { minimumFractionDigits:1, maximumFractionDigits:1 }); }
 function roPct(v){ return Number(v||0).toLocaleString('ro-RO', { minimumFractionDigits:1, maximumFractionDigits:1 }) + '%'; }
 function escapeHtml(value){ return String(value == null ? '' : value).replace(/[&<>"']/g, function(ch){ return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[ch]; }); }
-function pick(obj, keys){ if(!obj || typeof obj !== 'object') return ''; for(const key of keys){ if(Object.prototype.hasOwnProperty.call(obj, key) && obj[key] != null && obj[key] !== '') return obj[key]; const found = Object.keys(obj).find(k => normKey(k) === normKey(key)); if(found && obj[found] != null && obj[found] !== '') return obj[found]; } return ''; }
-function parseDateValue(value){ if(value instanceof Date && !isNaN(value)) return value; if(typeof value === 'number' && Number.isFinite(value)){ const epoch = new Date(Date.UTC(1899,11,30)); epoch.setUTCDate(epoch.getUTCDate() + Math.floor(value)); return new Date(epoch.getUTCFullYear(), epoch.getUTCMonth(), epoch.getUTCDate()); } const s = normText(value); if(!s) return null; const m = s.match(/^(\d{1,2})[\.\/\-](\d{1,2})[\.\/\-](\d{2,4})$/); if(m){ const dd = Number(m[1]); const mm = Number(m[2]) - 1; const yy = Number(m[3].length === 2 ? ('20'+m[3]) : m[3]); const dt = new Date(yy, mm, dd); return isNaN(dt) ? null : dt; } const iso = new Date(s); return isNaN(iso) ? null : iso; }
-function monthIndex(name){ const idx = MONTHS.indexOf(normKey(name)); return idx >= 0 ? idx : -1; }
-function monthNameFromValue(value){ const s = normKey(value); if(!s) return ''; if(/^\d{1,2}$/.test(s)){ const idx = Number(s)-1; return MONTHS[idx] || ''; } const found = MONTHS.find(m => normKey(m) === s); if(found) return found; const abbr = MONTHS.find(m => normKey(m).slice(0,3) === s.slice(0,3)); return abbr || ''; }
-function yearFromRow(row){ const direct = pick(row, ['an','AN','anul','ANUL']); if(direct !== ''){ const n = Math.round(toNum(direct)); if(n >= 2000 && n <= 2100) return String(n); const t = normText(direct); if(/^\d{4}$/.test(t)) return t; } const date = parseDateValue(pick(row, ['data','DATA','date','Date','data intrare','Data intrare','Data'])); return date ? String(date.getFullYear()) : ''; }
-function lunaFromRow(row){ const direct = monthNameFromValue(pick(row, ['luna','LUNA','luna intrare','Luna intrare'])); if(direct) return direct; const date = parseDateValue(pick(row, ['data','DATA','date','Date','data intrare','Data intrare','Data'])); return date ? MONTHS[date.getMonth()] : ''; }
-function nowIso(){ return new Date().toISOString(); }
-function setCloud(text){ els.cloudText.textContent = 'Cloud: ' + text; }
-function setSync(text){ els.syncText.textContent = text || '-'; }
+function getNormalizedEntries(obj){ if(!obj || typeof obj !== 'object') return []; return Object.keys(obj).map(key => ({ key, norm: normalizeText(key) })); }
+function pick(obj, keys){
+  if(!obj || typeof obj !== 'object') return '';
+  const entries = getNormalizedEntries(obj);
+  for(const key of keys){
+    const wanted = normalizeText(key);
+    const exact = entries.find(item => item.norm === wanted);
+    if(exact && obj[exact.key] != null && obj[exact.key] !== '') return obj[exact.key];
+  }
+  for(const key of keys){
+    const wanted = normalizeText(key);
+    const partial = entries.find(item => item.norm.includes(wanted) || wanted.includes(item.norm));
+    if(partial && obj[partial.key] != null && obj[partial.key] !== '') return obj[partial.key];
+  }
+  return '';
+}
+function normalizeShift(value){
+  const raw = String(value ?? '').trim();
+  const match = raw.match(/(\d+)/);
+  return match ? String(Number(match[1])) : '1';
+}
+function normalizeEquipment(value){
+  const raw = String(value ?? '').trim().toUpperCase();
+  const norm = normalizeText(raw);
+  if (norm === '5tchina' || norm === '5tchinaforja') return '5 T CHINA';
+  if (norm === 'mp') return 'MP';
+  if (['125t','125tona','125tone'].includes(norm)) return '1,25 T';
+  if (['25t','25tona','25tone'].includes(norm)) return '2,5 T';
+  if (['3tbr','3tonbr'].includes(norm)) return '3 T BR';
+  if (raw === '5 T CHINA' || raw === 'MP' || raw === '1,25 T' || raw === '2,5 T' || raw === '3 T BR') return raw;
+  return raw;
+}
+function getRowYearMonth(row){
+  const yearValue = pick(row, ['an', 'anul', 'year', 'AN', 'ANUL']);
+  const monthValue = pick(row, ['luna', 'month', 'LUNA']);
+  const year = toNumber(yearValue);
+  let month = null;
+  const monthNum = toNumber(monthValue);
+  if (monthNum != null && monthNum >= 1 && monthNum <= 12) month = monthNum;
+  if (month == null && monthValue != null) {
+    const idx = MONTHS.findIndex(m => normalizeText(m) === normalizeText(monthValue) || normalizeText(m).slice(0,3) === normalizeText(monthValue).slice(0,3));
+    if (idx >= 0) month = idx + 1;
+  }
+  return { year: year || null, month };
+}
+function reconcileDateWithRow(date, row){
+  if (!(date instanceof Date) || isNaN(date)) return null;
+  const ctx = getRowYearMonth(row);
+  let year = date.getFullYear();
+  let month = date.getMonth() + 1;
+  let day = date.getDate();
+  if (ctx.year && year !== ctx.year) year = ctx.year;
+  if (ctx.month && month !== ctx.month){
+    if (day >= 1 && day <= 12 && day === ctx.month){
+      const swappedMonth = day;
+      const swappedDay = month;
+      if (swappedDay >= 1 && swappedDay <= 31){
+        month = swappedMonth;
+        day = swappedDay;
+      }
+    }
+  }
+  return new Date(year, month - 1, day);
+}
+function parseDateAny(value, row){
+  let parsed = null;
+  if (value instanceof Date && !isNaN(value)) {
+    parsed = new Date(value.getFullYear(), value.getMonth(), value.getDate());
+    return reconcileDateWithRow(parsed, row);
+  }
+  if (typeof value === 'number' && value > 20000 && value < 100000) {
+    const base = new Date(Date.UTC(1899, 11, 30));
+    base.setUTCDate(base.getUTCDate() + Math.floor(value));
+    parsed = new Date(base.getUTCFullYear(), base.getUTCMonth(), base.getUTCDate());
+    return reconcileDateWithRow(parsed, row);
+  }
+  const text = String(value ?? '').trim();
+  if (text) {
+    let m = text.match(/^(\d{1,2})[.\-/](\d{1,2})[.\-/](\d{4})(?:\s+|T)(\d{1,2}):(\d{2})(?::(\d{2}))?/);
+    if (m) {
+      parsed = new Date(Number(m[3]), Number(m[2]) - 1, Number(m[1]));
+      return reconcileDateWithRow(parsed, row);
+    }
+    m = text.match(/^(\d{1,2})[.\-/](\d{1,2})[.\-/](\d{4})$/);
+    if (m) {
+      parsed = new Date(Number(m[3]), Number(m[2]) - 1, Number(m[1]));
+      return reconcileDateWithRow(parsed, row);
+    }
+    m = text.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})(?:[T\s].*)?$/);
+    if (m) {
+      parsed = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+      return reconcileDateWithRow(parsed, row);
+    }
+    const native = new Date(text);
+    if (!isNaN(native)) {
+      parsed = new Date(native.getFullYear(), native.getMonth(), native.getDate());
+      return reconcileDateWithRow(parsed, row);
+    }
+  }
+  const ctx = getRowYearMonth(row);
+  const dayValue = pick(row, ['zi', 'ziua', 'day']);
+  const dayNum = toNumber(dayValue);
+  if (ctx.year && ctx.month && dayNum != null && dayNum >= 1 && dayNum <= 31) {
+    return new Date(ctx.year, ctx.month - 1, dayNum);
+  }
+  return null;
+}
+function formatDate(date){
+  const dd = String(date.getDate()).padStart(2,'0');
+  const mm = String(date.getMonth() + 1).padStart(2,'0');
+  const yyyy = date.getFullYear();
+  return `${dd}.${mm}.${yyyy}`;
+}
+function yearFromRow(row){
+  const direct = pick(row, ['an','anul','year','AN','ANUL']);
+  if(direct !== ''){
+    const n = Math.round(toNum(direct));
+    if(n >= 2000 && n <= 2100) return String(n);
+    const t = normText(direct);
+    if(/^\d{4}$/.test(t)) return t;
+  }
+  const date = parseDateAny(pick(row, ['data','date','data intrare','Data intrare','BM']), row);
+  return date ? String(date.getFullYear()) : '';
+}
+function monthNameFromValue(value){
+  const s = normalizeText(value);
+  if(!s) return '';
+  if(/^\d{1,2}$/.test(String(value).trim())){
+    const idx = Number(String(value).trim()) - 1;
+    return MONTHS[idx] || '';
+  }
+  const exact = MONTHS.find(m => normalizeText(m) === s);
+  if(exact) return exact;
+  const abbr = MONTHS.find(m => normalizeText(m).slice(0,3) === s.slice(0,3));
+  return abbr || '';
+}
+function lunaFromRow(row){
+  const direct = monthNameFromValue(pick(row, ['luna','month','LUNA']));
+  if(direct) return direct;
+  const date = parseDateAny(pick(row, ['data','date','data intrare','BM']), row);
+  return date ? MONTHS[date.getMonth()] : '';
+}
 function saveFilters(){ try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(state.filter)); }catch(_e){} }
 function loadFilters(){ try{ const raw = localStorage.getItem(STORAGE_KEY); if(!raw) return; const data = JSON.parse(raw); if(data && typeof data === 'object'){ if(data.an) state.filter.an = String(data.an); if(data.luna) state.filter.luna = String(data.luna); } }catch(_e){} }
+function setCloud(text){ els.cloudText.textContent = 'Cloud: ' + text; }
+function setSync(text){ els.syncText.textContent = text || '-'; }
+
+function stableStringify(value){
+  if (Array.isArray(value)) return '[' + value.map(stableStringify).join(',') + ']';
+  if (value && typeof value === 'object') {
+    const keys = Object.keys(value).sort();
+    return '{' + keys.map(key => JSON.stringify(key) + ':' + stableStringify(value[key])).join(',') + '}';
+  }
+  return JSON.stringify(value);
+}
+function dedupeRows(rows){
+  const out = [];
+  const seen = new Set();
+  (rows || []).forEach(row => {
+    try{
+      const key = stableStringify(row);
+      if(seen.has(key)) return;
+      seen.add(key);
+    }catch(_e){}
+    out.push(row);
+  });
+  return out;
+}
 function resolveRowsPayload(payload){
   if(!payload) return [];
   if(Array.isArray(payload)) return payload;
@@ -317,6 +500,57 @@ function resolveRowsPayload(payload){
   if(Array.isArray(payload.items)) return payload.items;
   if(Array.isArray(payload.data)) return payload.data;
   return [];
+}
+function tableFromHeadersRows(headers, rows){
+  const head = (headers || []).map(h => typeof h === 'object' ? (h.label ?? h.name ?? h.key ?? '') : String(h ?? ''));
+  return (rows || []).map(row => {
+    const source = Array.isArray(row)
+      ? row
+      : Array.isArray(row?.cells)
+        ? row.cells.map(cell => cell?.value ?? cell?.text ?? cell)
+        : head.map(key => row?.[key]);
+    const obj = {};
+    head.forEach((key, idx) => { obj[key || `COL_${idx+1}`] = source?.[idx] ?? null; });
+    return obj;
+  });
+}
+function looksLikePlainRow(obj){
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return false;
+  const keys = Object.keys(obj);
+  if (!keys.length || keys.length > 80) return false;
+  let primitive = 0;
+  for (const key of keys){
+    const val = obj[key];
+    if (val == null || ['string','number','boolean'].includes(typeof val) || val instanceof Date) primitive++;
+  }
+  return primitive >= Math.max(3, Math.floor(keys.length * 0.5));
+}
+function collectTables(node, path='root', out=[], depth=0){
+  if(depth > 7 || node == null) return out;
+  if(Array.isArray(node)){
+    if(!node.length) return out;
+    if(node.every(item => item && typeof item === 'object' && !Array.isArray(item))){
+      out.push({ path, rows: node });
+    }else if(node.length >= 2 && Array.isArray(node[0]) && node[0].every(cell => typeof cell === 'string' || cell == null)){
+      out.push({ path, rows: tableFromHeadersRows(node[0], node.slice(1)) });
+    }
+    node.forEach((item, index) => collectTables(item, `${path}[${index}]`, out, depth + 1));
+    return out;
+  }
+  if(typeof node === 'object'){
+    if (Array.isArray(node.rows) && Array.isArray(node.headers)) out.push({ path: `${path}.rows`, rows: tableFromHeadersRows(node.headers, node.rows) });
+    if (Array.isArray(node.rows) && Array.isArray(node.columns)) out.push({ path: `${path}.rows`, rows: tableFromHeadersRows(node.columns, node.rows) });
+    if (Array.isArray(node.data) && Array.isArray(node.headers)) out.push({ path: `${path}.data`, rows: tableFromHeadersRows(node.headers, node.data) });
+    if (Array.isArray(node.data) && Array.isArray(node.columns)) out.push({ path: `${path}.data`, rows: tableFromHeadersRows(node.columns, node.data) });
+    if (looksLikePlainRow(node)) out.push({ path, rows: [node] });
+    Object.keys(node).forEach(key => collectTables(node[key], `${path}.${key}`, out, depth + 1));
+  }
+  return out;
+}
+function extractRowsDeep(payload){
+  let rows = [];
+  collectTables(payload).forEach(table => { rows = rows.concat(table.rows || []); });
+  return dedupeRows(rows);
 }
 async function fetchDocsByKeys(keys){
   const cleanKeys = Array.from(new Set((keys || []).map(v => String(v || '').trim()).filter(Boolean)));
@@ -346,44 +580,34 @@ async function fetchDocsByPrefix(prefix){
     return [];
   }
 }
-async function readSourceRows(config){
-  const latests = [];
-  let rows = [];
-  const docs = await fetchDocsByKeys([config.indexKey, config.legacyKey]);
-  const indexDoc = docs.find(d => String(d.doc_key) === String(config.indexKey)) || null;
-  const legacyDoc = docs.find(d => String(d.doc_key) === String(config.legacyKey)) || null;
-  if(indexDoc){
-    const payload = indexDoc.content ?? indexDoc.data ?? null;
-    const years = Array.isArray(payload && payload.years) ? payload.years.map(y => String(y || '').trim()).filter(Boolean) : [];
-    const yearKeys = years.map(y => config.prefix + y);
-    const yearDocs = yearKeys.length ? await fetchDocsByKeys(yearKeys) : [];
-    yearDocs.forEach(doc => {
-      const yearPayload = doc.content ?? doc.data ?? null;
-      rows = rows.concat(resolveRowsPayload(yearPayload));
-      if(doc.updated_at) latests.push(doc.updated_at);
+async function readSourceFlexible(config){
+  const docMap = new Map();
+  const addDocs = function(list){
+    (list || []).forEach(doc => {
+      const key = String(doc?.doc_key || '').trim();
+      if(!key) return;
+      const prev = docMap.get(key);
+      const nextTs = doc?.updated_at ? new Date(doc.updated_at).getTime() : 0;
+      const prevTs = prev?.updated_at ? new Date(prev.updated_at).getTime() : 0;
+      if(!prev || nextTs >= prevTs) docMap.set(key, doc);
     });
-    if(indexDoc.updated_at) latests.push(indexDoc.updated_at);
-  }
-  if(!rows.length && legacyDoc){
-    rows = resolveRowsPayload(legacyDoc.content ?? legacyDoc.data ?? null);
-    if(legacyDoc.updated_at) latests.push(legacyDoc.updated_at);
-  }
-  return { rows, latest: latests.filter(Boolean).sort().pop() || '' };
+  };
+  addDocs(await fetchDocsByKeys([config.indexKey, config.legacyKey]));
+  addDocs(await fetchDocsByPrefix(config.prefix));
+  const docs = Array.from(docMap.values());
+  let rows = [];
+  docs.forEach(doc => {
+    const payload = doc?.content ?? doc?.data ?? null;
+    rows = rows.concat(resolveRowsPayload(payload));
+    rows = rows.concat(extractRowsDeep(payload));
+  });
+  rows = dedupeRows(rows);
+  const latest = docs.map(d => d.updated_at).filter(Boolean).sort().pop() || '';
+  return { rows, latest };
 }
-function normalizeForjateRow(row){
-  const an = yearFromRow(row);
-  const luna = lunaFromRow(row);
-  const data = parseDateValue(pick(row, ['data','DATA','date','Date','BM']));
-  const utilaj = normText(pick(row, ['ciocan','CIOCAN','utilaj','UTILAJ','linie de forjare','Linie de forjare','BO']));
-  const reper = normText(pick(row, ['reper','REPER','BP']));
-  const cantitate = toNum(pick(row, ['buc_realizate','BUC_REALIZATE','buc realizate','Buc realizate','CB']));
-  const rebut = toNum(pick(row, ['rebut','REBUT','Rebut','CC']));
-  const planificat = toNum(pick(row, ['planificat','PLANIFICAT','Planificat','CE']));
-  if(!an || !luna || !utilaj || !reper) return null;
-  return { an, luna, dataObj:data, utilaj, reper, cantitate, rebut, planificat };
-}
+
 function mfCategoryFromString(raw){
-  const s = normKey(raw).replace(/\s+/g,'').toUpperCase();
+  const s = normalizeText(raw).toUpperCase();
   for(const code of MF_CODES){ if(s === code || s.includes(code)) return code; }
   return '';
 }
@@ -392,7 +616,7 @@ function normalizeMagnafluxRows(rows){
   for(const row of rows || []){
     const an = yearFromRow(row);
     const luna = lunaFromRow(row);
-    const reper = normText(pick(row, ['reper','REPER','denumire reper forja','Denumire reper forja','denumire reper','reper forjat']));
+    const reper = normText(pick(row, ['reper','denumire reper forja','denumire reper','reper forjat']));
     if(!an || !luna || !reper) continue;
     let hasWide = false;
     const wide = { an, luna, reper };
@@ -402,9 +626,9 @@ function normalizeMagnafluxRows(rows){
       if(val > 0) hasWide = true;
     }
     if(hasWide){ out.push(wide); continue; }
-    const cat = mfCategoryFromString(pick(row, ['categorie','Categorie','defect','Defect','tip defect','Tip defect','rezultat','Rezultat','cod defect','Cod defect','loc depistare','Loc depistare necomformitate']));
+    const cat = mfCategoryFromString(pick(row, ['categorie','defect','tip defect','rezultat','cod defect','loc depistare necomformitate']));
     if(!cat) continue;
-    const qty = toNum(pick(row, ['cantitate','Cantitate','qty','Quantity','buc','Buc','rebut','Rebut','piese rebut final','Piese rebut final  [buc]']));
+    const qty = toNum(pick(row, ['cantitate','qty','buc','rebut','piese rebut final','Piese rebut final  [buc]']));
     if(qty <= 0) continue;
     const item = { an, luna, reper };
     MF_CODES.forEach(code => item[code] = 0);
@@ -416,40 +640,201 @@ function normalizeMagnafluxRows(rows){
 function normalizePmRow(row){
   const an = yearFromRow(row);
   const luna = lunaFromRow(row);
-  const reper = normText(pick(row, ['denumire_reper_forja','Denumire reper forja','denumire reper forja','reper','REPER','F']));
-  const cod = normText(pick(row, ['cod defect','Cod defect','cod_defect','G']));
-  const qty = toNum(pick(row, ['piese rebut final  [buc]','Piese rebut final  [buc]','piese_rebut_final','piese rebut final','Q']));
+  const reper = normText(pick(row, ['denumire reper forja','reper']));
+  const cod = normText(pick(row, ['cod defect','cod_defect']));
+  const qty = toNum(pick(row, ['piese rebut final  [buc]','piese_rebut_final','piese rebut final']));
   if(!an || !luna || !reper || !PM_CODES.includes(cod) || qty <= 0) return null;
   return { an, luna, reper, cod, qty };
 }
+function scoreForjateRow(row){
+  let score = 0;
+  if (parseDateAny(pick(row, ['data','BM']), row)) score += 3;
+  if (normalizeEquipment(pick(row, ['ciocan','utilaj','linie de forjare','echipament','BO']))) score += 3;
+  if (pick(row, ['reper','BP'])) score += 3;
+  if (pick(row, ['buc realizate','bucati realizate','realizat','cantitate realizata','cantitate','CB']) !== '') score += 2;
+  return score;
+}
+function transformForjate(rows){
+  return (rows || []).filter(row => scoreForjateRow(row) >= 8).map(row => {
+    const date = parseDateAny(pick(row, ['data','BM']), row);
+    const equipment = normalizeEquipment(pick(row, ['ciocan','utilaj','linie de forjare','echipament','BO']) || '');
+    const reper = normText(pick(row, ['reper','BP']) || '');
+    const realized = toNumber(pick(row, ['buc realizate','bucati realizate','realizat','cantitate realizata','cantitate','CB'])) || 0;
+    const tact = toNumber(pick(row, ['tact','tact sec','tact secunde','sec','secunde','EK']));
+    const shift = normalizeShift(pick(row, ['schimbul','schimb','D']) || '1');
+    const rebut = toNumber(pick(row, ['rebut','CC'])) || 0;
+    return { date, equipment, reper, realized, tact, shift, rebut, raw: row };
+  }).filter(item => item.date && item.equipment && item.reper);
+}
+function scoreTactRow(row){
+  let score = 0;
+  if (pick(row, ['reper','B','EI'])) score += 3;
+  if (normalizeEquipment(pick(row, ['ciocan','utilaj','linie de forjare','echipament','C','EJ']))) score += 3;
+  if (pick(row, ['tact','tact sec','tact secunde','sec','secunde','D','EK']) !== '') score += 4;
+  return score;
+}
+function transformTact(rows){
+  return (rows || []).filter(row => scoreTactRow(row) >= 8).map(row => {
+    const reper = normText(pick(row, ['reper','B','EI']) || '');
+    const equipment = normalizeEquipment(pick(row, ['ciocan','utilaj','linie de forjare','echipament','C','EJ']) || '');
+    const tact = toNumber(pick(row, ['tact','tact sec','tact secunde','sec','secunde','D','EK']));
+    return { reper, equipment, tact };
+  }).filter(item => item.reper && item.equipment && item.tact != null);
+}
+function scoreProgramRow(row){
+  let score = 0;
+  if (parseDateAny(pick(row, ['data']), row)) score += 3;
+  if (normalizeEquipment(pick(row, ['utilaj','ciocan','echipament']))) score += 3;
+  if (pick(row, ['ore lucrate','ore','hours']) !== '') score += 3;
+  if (pick(row, ['schimbul','schimb']) !== '') score += 1;
+  return score;
+}
+function transformProgram(rows){
+  return (rows || []).filter(row => scoreProgramRow(row) >= 8).map(row => {
+    const date = parseDateAny(pick(row, ['data']), row);
+    const equipment = normalizeEquipment(pick(row, ['utilaj','ciocan','echipament']) || '');
+    const shift = normalizeShift(pick(row, ['schimbul','schimb']) || '1');
+    const hours = toNumber(pick(row, ['ore lucrate','ore','hours']));
+    return { date, equipment, shift, hours };
+  }).filter(item => item.date && item.equipment && item.hours != null);
+}
+function scoreProblemaRow(row){
+  let score = 0;
+  if (parseDateAny(pick(row, ['data']), row)) score += 3;
+  if (normalizeEquipment(pick(row, ['utilaj','ciocan','echipament']))) score += 3;
+  if (pick(row, ['timp minute pierdute','minute pierdute','minute','timp']) !== '') score += 3;
+  if (pick(row, ['schimbul','schimb']) !== '') score += 1;
+  return score;
+}
+function transformProbleme(rows){
+  return (rows || []).filter(row => scoreProblemaRow(row) >= 8).map(row => {
+    const date = parseDateAny(pick(row, ['data']), row);
+    const equipment = normalizeEquipment(pick(row, ['utilaj','ciocan','echipament']) || '');
+    const shift = normalizeShift(pick(row, ['schimbul','schimb']) || '1');
+    const minutes = toNumber(pick(row, ['timp minute pierdute','minute pierdute','minute','timp'])) || 0;
+    return { date, equipment, shift, minutes };
+  }).filter(item => item.date && item.equipment && item.minutes != null);
+}
+function weightedTact(items, equipment, tactLookup){
+  const relevant = items.filter(item => item.reper);
+  if (!relevant.length) return null;
+  let totalQty = 0;
+  let weighted = 0;
+  const fallback = [];
+  relevant.forEach(item => {
+    let tact = tactLookup.get(`${normalizeText(item.reper)}|${normalizeText(equipment)}`);
+    if (tact == null) tact = item.tact;
+    if (tact != null){
+      const qty = item.realized || 0;
+      totalQty += qty;
+      weighted += tact * qty;
+      fallback.push(tact);
+    }
+  });
+  if (totalQty > 0) return weighted / totalQty;
+  if (fallback.length === 1) return fallback[0];
+  if (fallback.length > 1) return fallback.reduce((a,b) => a+b,0) / fallback.length;
+  return null;
+}
+function computeShiftMetrics(date, equipment, shift, items, tactLookup, programByDayShift, problemsByDayShift){
+  const realized = items.reduce((sum, item) => sum + (item.realized || 0), 0);
+  const tact = weightedTact(items, equipment, tactLookup);
+  const keyBase = `${formatDate(date)}|${equipment}|${shift}`;
+  const hours = programByDayShift.get(keyBase) ?? DEFAULT_SHIFT_HOURS;
+  const problems = (problemsByDayShift.get(keyBase) || []);
+  const lostMinutes = problems.reduce((sum, item) => sum + (item.minutes || 0), 0);
+  const availableMinutes = Math.max(0, Math.round(hours * 60 - lostMinutes));
+  const planned = tact != null ? Math.round((availableMinutes * 60 * DEFAULT_OEE) / tact) : null;
+  const percent = planned != null && planned > 0 ? realized / planned : null;
+  return { date, equipment, shift, realized, tact, hours, lostMinutes, availableMinutes, planned, percent };
+}
+function monthOkFactory(selectedMonth){
+  return function(luna){ return selectedMonth === 'toate' || luna === selectedMonth; };
+}
+function pctClass(v){ if(v >= 95) return 'good'; if(v >= 80) return 'mid'; return 'bad'; }
+
 function buildRows(){
-  const forjate = (state.docs.forjate || []).map(normalizeForjateRow).filter(Boolean);
+  const forjateRaw = transformForjate(state.docs.forjate || []);
   const magna = normalizeMagnafluxRows(state.docs.magnaflux || []);
   const pm = (state.docs.rebutPm || []).map(normalizePmRow).filter(Boolean);
-  const allYears = Array.from(new Set([].concat(forjate.map(r=>r.an), magna.map(r=>r.an), pm.map(r=>r.an)).filter(Boolean))).sort((a,b)=> Number(b)-Number(a));
+  const tactRows = transformTact(state.docs.helper || []);
+  const programRows = transformProgram(state.docs.program || []);
+  const problemeRows = transformProbleme(state.docs.probleme || []);
+  const allYears = Array.from(new Set([].concat(
+    forjateRaw.map(r => String(r.date.getFullYear())),
+    magna.map(r => r.an),
+    pm.map(r => r.an),
+    programRows.map(r => String(r.date.getFullYear())),
+    problemeRows.map(r => String(r.date.getFullYear()))
+  ).filter(Boolean))).sort((a,b)=> Number(b)-Number(a));
   state.years = allYears;
   if(!state.filter.an || !allYears.includes(String(state.filter.an))) state.filter.an = allYears[0] || String(new Date().getFullYear());
   const selectedYear = String(state.filter.an || '');
-  const monthsForYear = new Set([].concat(forjate.filter(r=> String(r.an)===selectedYear).map(r=>r.luna), magna.filter(r=> String(r.an)===selectedYear).map(r=>r.luna), pm.filter(r=> String(r.an)===selectedYear).map(r=>r.luna)).filter(Boolean));
+  const monthOk = monthOkFactory(state.filter.luna);
+  const monthsForYear = new Set([].concat(
+    forjateRaw.filter(r => String(r.date.getFullYear())===selectedYear).map(r => MONTHS[r.date.getMonth()]),
+    magna.filter(r => String(r.an)===selectedYear).map(r => r.luna),
+    pm.filter(r => String(r.an)===selectedYear).map(r => r.luna),
+    programRows.filter(r => String(r.date.getFullYear())===selectedYear).map(r => MONTHS[r.date.getMonth()]),
+    problemeRows.filter(r => String(r.date.getFullYear())===selectedYear).map(r => MONTHS[r.date.getMonth()])
+  ).filter(Boolean));
   if(state.filter.luna !== 'toate' && state.filter.luna && !monthsForYear.has(state.filter.luna)) state.filter.luna = 'toate';
-  const monthOk = function(luna){ return state.filter.luna === 'toate' || luna === state.filter.luna; };
 
-  const selectedForjate = forjate.filter(r => String(r.an)===selectedYear && monthOk(r.luna));
+  const selectedForjate = forjateRaw.filter(r => String(r.date.getFullYear())===selectedYear && monthOk(MONTHS[r.date.getMonth()]));
   const selectedMagna = magna.filter(r => String(r.an)===selectedYear && monthOk(r.luna));
   const selectedPm = pm.filter(r => String(r.an)===selectedYear && monthOk(r.luna));
+  const selectedProgram = programRows.filter(r => String(r.date.getFullYear())===selectedYear && monthOk(MONTHS[r.date.getMonth()]));
+  const selectedProbleme = problemeRows.filter(r => String(r.date.getFullYear())===selectedYear && monthOk(MONTHS[r.date.getMonth()]));
+
+  const tactLookup = new Map();
+  tactRows.forEach(row => tactLookup.set(`${normalizeText(row.reper)}|${normalizeText(row.equipment)}`, row.tact));
+
+  const shiftMap = new Map();
+  selectedForjate.forEach(item => {
+    const key = `${formatDate(item.date)}|${item.equipment}|${item.shift}`;
+    if(!shiftMap.has(key)) shiftMap.set(key, []);
+    shiftMap.get(key).push(item);
+  });
+  const programByDayShift = new Map();
+  selectedProgram.forEach(row => {
+    const key = `${formatDate(row.date)}|${row.equipment}|${row.shift}`;
+    programByDayShift.set(key, row.hours);
+  });
+  const problemsByDayShift = new Map();
+  selectedProbleme.forEach(row => {
+    const key = `${formatDate(row.date)}|${row.equipment}|${row.shift}`;
+    if(!problemsByDayShift.has(key)) problemsByDayShift.set(key, []);
+    problemsByDayShift.get(key).push(row);
+  });
 
   const byKey = new Map();
   const realizedByReper = new Map();
-  selectedForjate.forEach(r => {
-    const key = r.utilaj + '||' + r.reper;
-    const item = byKey.get(key) || { utilaj:r.utilaj, reper:r.reper, realizate:0, rebut_forja:0, norma:0, count:0 };
-    item.realizate += r.cantitate;
-    item.rebut_forja += r.rebut;
-    item.norma += r.planificat;
-    item.count += 1;
-    byKey.set(key, item);
-    realizedByReper.set(r.reper, (realizedByReper.get(r.reper) || 0) + r.cantitate);
+  const utilajPctMap = new Map();
+  const shiftMetrics = [];
+  Array.from(shiftMap.entries()).forEach(([key, items]) => {
+    if(!items.length) return;
+    const base = items[0];
+    const metric = computeShiftMetrics(base.date, base.equipment, base.shift, items, tactLookup, programByDayShift, problemsByDayShift);
+    shiftMetrics.push(metric);
+    if(metric.percent != null && Number.isFinite(metric.percent)){
+      if(!utilajPctMap.has(base.equipment)) utilajPctMap.set(base.equipment, []);
+      utilajPctMap.get(base.equipment).push(metric.percent);
+    }
+    const shiftRealized = metric.realized || 0;
+    items.forEach(item => {
+      const share = shiftRealized > 0 ? (item.realized || 0) / shiftRealized : 0;
+      const plannedShare = metric.planned != null && Number.isFinite(metric.planned) ? metric.planned * share : 0;
+      const mapKey = item.equipment + '||' + item.reper;
+      const agg = byKey.get(mapKey) || { utilaj:item.equipment, reper:item.reper, realizate:0, rebut_forja:0, norma:0, count:0 };
+      agg.realizate += item.realized || 0;
+      agg.rebut_forja += item.rebut || 0;
+      agg.norma += plannedShare;
+      agg.count += 1;
+      byKey.set(mapKey, agg);
+      realizedByReper.set(item.reper, (realizedByReper.get(item.reper) || 0) + (item.realized || 0));
+    });
   });
+  state.kpiShiftMetrics = shiftMetrics;
 
   const extraByReper = new Map();
   selectedMagna.forEach(r => {
@@ -475,7 +860,7 @@ function buildRows(){
       media_realizate:item.count ? item.realizate / item.count : 0,
       procent_rebut:procentRebut,
       norma:item.norma,
-      norma_exacta:item.count ? item.norma / item.count : item.norma,
+      norma_exacta:item.norma,
       procent:procent,
       count:item.count
     };
@@ -483,21 +868,24 @@ function buildRows(){
 
   const utilajMap = new Map();
   state.rows.forEach(r => {
-    const item = utilajMap.get(r.utilaj) || { utilaj:r.utilaj, realizate:0, rebut_total:0, norma:0, count:0 };
+    const item = utilajMap.get(r.utilaj) || { utilaj:r.utilaj, realizate:0, rebut_total:0, norma:0 };
     item.realizate += r.realizate;
     item.rebut_total += r.rebut_total;
     item.norma += r.norma;
-    item.count += r.count || 0;
     utilajMap.set(r.utilaj, item);
   });
-  state.utilajeRows = Array.from(utilajMap.values()).map(item => ({
-    utilaj: item.utilaj,
-    realizate: item.realizate,
-    rebut_total: item.rebut_total,
-    norma: item.norma,
-    procent_rebut: item.realizate > 0 ? (item.rebut_total / item.realizate) * 100 : 0,
-    procent: item.norma > 0 ? (item.realizate / item.norma) * 100 : 0
-  })).sort((a,b) => b.realizate - a.realizate || a.utilaj.localeCompare(b.utilaj,'ro'));
+  state.utilajeRows = Array.from(utilajMap.values()).map(item => {
+    const pctList = utilajPctMap.get(item.utilaj) || [];
+    const pctAvg = pctList.length ? (pctList.reduce((s,v) => s + v, 0) / pctList.length) * 100 : 0;
+    return {
+      utilaj: item.utilaj,
+      realizate: item.realizate,
+      rebut_total: item.rebut_total,
+      norma: item.norma,
+      procent_rebut: item.realizate > 0 ? (item.rebut_total / item.realizate) * 100 : 0,
+      procent: pctAvg
+    };
+  }).sort((a,b) => b.realizate - a.realizate || a.utilaj.localeCompare(b.utilaj,'ro'));
 }
 function populateSelectors(){
   const curYear = String(state.filter.an || '');
@@ -506,7 +894,6 @@ function populateSelectors(){
     .concat(MONTHS.map(m => '<option value="'+m+'"'+(state.filter.luna===m?' selected':'')+'>'+m.charAt(0).toUpperCase()+m.slice(1)+'</option>'));
   els.selLuna.innerHTML = options.join('');
 }
-function pctClass(v){ if(v >= 95) return 'good'; if(v >= 80) return 'mid'; return 'bad'; }
 function render(){
   populateSelectors();
   const rows = state.rows;
@@ -517,7 +904,10 @@ function render(){
   const totalReal = rows.reduce((s,r)=> s + r.realizate, 0);
   const totalReb = rows.reduce((s,r)=> s + r.rebut_total, 0);
   const totalNorm = rows.reduce((s,r)=> s + r.norma, 0);
-  els.helperText.textContent = 'Realizate totale: ' + roInt(totalReal) + ' buc · Rebut fără FL/FTT: ' + roInt(totalReb) + ' buc · Normă totală: ' + roInt(totalNorm) + ' buc';
+  const shiftPctAvg = state.kpiShiftMetrics.length
+    ? (state.kpiShiftMetrics.map(m => m.percent).filter(v => v != null && Number.isFinite(v)).reduce((s,v)=>s+v,0) / Math.max(1, state.kpiShiftMetrics.map(m => m.percent).filter(v => v != null && Number.isFinite(v)).length)) * 100
+    : 0;
+  els.helperText.textContent = 'Realizate totale: ' + roInt(totalReal) + ' buc · Rebut fără FL/FTT: ' + roInt(totalReb) + ' buc · Normă KPI totală: ' + roInt(totalNorm) + ' buc · % realizat KPI (medie zi+schimb): ' + roPct(shiftPctAvg);
   if(!rows.length){
     els.emptyState.classList.remove('hidden');
     renderUtilajeSummary();
@@ -539,7 +929,6 @@ function render(){
     frag.appendChild(tr);
   });
   els.tbody.appendChild(frag);
-  const totalPct = totalNorm > 0 ? (totalReal / totalNorm) * 100 : 0;
   const totalRebutPct = totalReal > 0 ? (totalReb / totalReal) * 100 : 0;
   const tr = document.createElement('tr');
   tr.innerHTML = `
@@ -549,11 +938,10 @@ function render(){
     <td class="num"><strong>${rows.length ? roDec(totalReal / rows.length) : ''}</strong></td>
     <td class="num pct ${pctClass(100 - totalRebutPct)}"><strong>${roPct(totalRebutPct)}</strong></td>
     <td class="num"><strong>${roInt(totalNorm)}</strong></td>
-    <td class="num pct ${pctClass(totalPct)}"><strong>${roPct(totalPct)}</strong></td>`;
+    <td class="num pct ${pctClass(shiftPctAvg)}"><strong>${roPct(shiftPctAvg)}</strong></td>`;
   els.tfoot.appendChild(tr);
   renderUtilajeSummary();
 }
-
 function renderUtilajeSummary(){
   const rows = state.utilajeRows || [];
   els.utilajBody.innerHTML = '';
@@ -593,9 +981,9 @@ function renderUtilajeSummary(){
   });
   const totalReal = rows.reduce((s,r)=> s + r.realizate, 0);
   const totalReb = rows.reduce((s,r)=> s + r.rebut_total, 0);
-  const totalNorm = rows.reduce((s,r)=> s + r.norma, 0);
-  const totalPct = totalNorm > 0 ? (totalReal / totalNorm) * 100 : 0;
   const totalRebutPct = totalReal > 0 ? (totalReb / totalReal) * 100 : 0;
+  const pctList = state.kpiShiftMetrics.map(m => m.percent).filter(v => v != null && Number.isFinite(v));
+  const totalPct = pctList.length ? (pctList.reduce((s,v)=>s+v,0) / pctList.length) * 100 : 0;
   const tr = document.createElement('tr');
   tr.innerHTML = `
     <td class="left"><strong>TOTAL UTILAJE</strong></td>
@@ -605,12 +993,11 @@ function renderUtilajeSummary(){
     <td class="num pct ${pctClass(totalPct)}"><strong>${roPct(totalPct)}</strong></td>`;
   els.utilajFoot.appendChild(tr);
 }
-
 function exportExcel(){
   if(!window.XLSX){ alert('Biblioteca Excel nu este disponibilă.'); return; }
   const rows = state.rows || [];
   const aoa = [[
-    'Utilaj','Reper','Bucăți realizate','Rebut fără FL/FTT','Media realizate','% rebut','Norma','% realizat'
+    'Utilaj','Reper','Bucăți realizate','Rebut fără FL/FTT','Media realizate','% rebut','Norma KPI reper','% realizat'
   ]];
   rows.forEach(r => aoa.push([
     r.utilaj, r.reper, Math.round(r.realizate), Math.round(r.rebut_total), Number(r.media_realizate.toFixed(1)), Number(r.procent_rebut.toFixed(1)), Math.round(r.norma_exacta), Number(r.procent.toFixed(1))
@@ -618,37 +1005,43 @@ function exportExcel(){
   const totalReal = rows.reduce((s,r)=> s + r.realizate, 0);
   const totalReb = rows.reduce((s,r)=> s + r.rebut_total, 0);
   const totalNorm = rows.reduce((s,r)=> s + r.norma, 0);
-  const totalPct = totalNorm > 0 ? (totalReal / totalNorm) * 100 : 0;
   const totalRebutPct = totalReal > 0 ? (totalReb / totalReal) * 100 : 0;
+  const pctList = state.kpiShiftMetrics.map(m => m.percent).filter(v => v != null && Number.isFinite(v));
+  const totalPct = pctList.length ? (pctList.reduce((s,v)=>s+v,0) / pctList.length) * 100 : 0;
   aoa.push(['TOTAL GENERAL','', Math.round(totalReal), Math.round(totalReb), rows.length ? Number((totalReal / rows.length).toFixed(1)) : 0, Number(totalRebutPct.toFixed(1)), Math.round(totalNorm), Number(totalPct.toFixed(1))]);
   const wb = XLSX.utils.book_new();
   const ws = XLSX.utils.aoa_to_sheet(aoa);
-  ws['!cols'] = [{wch:16},{wch:22},{wch:16},{wch:18},{wch:16},{wch:12},{wch:14},{wch:12}];
+  ws['!cols'] = [{wch:16},{wch:22},{wch:16},{wch:18},{wch:16},{wch:12},{wch:16},{wch:12}];
   XLSX.utils.book_append_sheet(wb, ws, 'Eficienta');
 
-  const utilAoA = [['Utilaj','Buc. total','Rebut total','% rebut','% realizat']];
+  const utilAoA = [['Utilaj','Buc. total','Rebut total','% rebut','% realizat KPI']];
   (state.utilajeRows || []).forEach(r => utilAoA.push([r.utilaj, Math.round(r.realizate), Math.round(r.rebut_total), Number(r.procent_rebut.toFixed(1)), Number(r.procent.toFixed(1))]));
   utilAoA.push(['TOTAL UTILAJE', Math.round(totalReal), Math.round(totalReb), Number(totalRebutPct.toFixed(1)), Number(totalPct.toFixed(1))]);
   const wsUtil = XLSX.utils.aoa_to_sheet(utilAoA);
-  wsUtil['!cols'] = [{wch:16},{wch:14},{wch:14},{wch:12},{wch:12}];
+  wsUtil['!cols'] = [{wch:16},{wch:14},{wch:14},{wch:12},{wch:14}];
   XLSX.utils.book_append_sheet(wb, wsUtil, 'Total utilaje');
 
   const suffix = state.filter.luna === 'toate' ? 'toate-lunile' : state.filter.luna;
   XLSX.writeFile(wb, 'eficienta_' + String(state.filter.an || '') + '_' + suffix + '.xlsx');
 }
-
 async function loadAll(){
   setCloud('se încarcă...');
   els.helperText.textContent = 'Se încarcă datele din cloud…';
-  const [forj, mag, pm] = await Promise.all([
-    readSourceRows(SOURCE_CONFIGS.forjate),
-    readSourceRows(SOURCE_CONFIGS.magnaflux),
-    readSourceRows(SOURCE_CONFIGS.rebutPm)
+  const [forj, mag, pm, helper, program, probleme] = await Promise.all([
+    readSourceFlexible(SOURCE_CONFIGS.forjate),
+    readSourceFlexible(SOURCE_CONFIGS.magnaflux),
+    readSourceFlexible(SOURCE_CONFIGS.rebutPm),
+    readSourceFlexible(SOURCE_CONFIGS.helper),
+    readSourceFlexible(SOURCE_CONFIGS.program),
+    readSourceFlexible(SOURCE_CONFIGS.probleme)
   ]);
   state.docs.forjate = forj.rows;
   state.docs.magnaflux = mag.rows;
   state.docs.rebutPm = pm.rows;
-  state.updatedAt = [forj.latest, mag.latest, pm.latest].filter(Boolean).sort().pop() || '';
+  state.docs.helper = helper.rows;
+  state.docs.program = program.rows;
+  state.docs.probleme = probleme.rows;
+  state.updatedAt = [forj.latest, mag.latest, pm.latest, helper.latest, program.latest, probleme.latest].filter(Boolean).sort().pop() || '';
   setCloud('sincronizat');
   setSync(state.updatedAt ? new Date(state.updatedAt).toLocaleString('ro-RO') : '-');
   buildRows();
@@ -691,6 +1084,7 @@ async function boot(){
 }
 boot();
 })();
+
 </script>
 </body>
 </html>
