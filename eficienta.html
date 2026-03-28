@@ -242,6 +242,46 @@ const STORAGE_KEY = 'rf_eficienta_filters_v1';
 const DOC_TABLE = 'rf_documents';
 const MONTHS = ['ianuarie','februarie','martie','aprilie','mai','iunie','iulie','august','septembrie','octombrie','noiembrie','decembrie'];
 const MONTHS_TITLE = MONTHS.map(m => m.charAt(0).toUpperCase() + m.slice(1));
+
+const FORJATE_DOC_KEYS = ['forjate', 'foaia forjate', 'rapoarte', 'raport forja', 'forjate.html'];
+const MAGNAFLUX_DOC_KEYS = ['magnaflux', 'magnaflux.html'];
+const REBUT_PM_DOC_KEYS = ['rebut-pm', 'rebut pm', 'rebut_pm', 'rebutpm'];
+const HELPER_DOC_KEYS = ['helper-data', 'helper_data', 'helperdata', 'helper data'];
+const PROGRAM_DOC_KEYS = ['program-utilaje', 'program utilaje', 'programutilaje'];
+const PROBLEME_DOC_KEYS = ['probleme-raportate', 'probleme raportate', 'probleme_raportate', 'problemeraportate'];
+const DOC_PREFS = {
+  forjate: {
+    yearPrefixes: ['forjate:'],
+    exact: ['forjate', 'forjate.html'],
+    legacy: ['foaia forjate', 'rapoarte', 'raport forja']
+  },
+  magnaflux: {
+    yearPrefixes: ['magnaflux:'],
+    exact: ['magnaflux', 'magnaflux.html'],
+    legacy: []
+  },
+  rebutPm: {
+    yearPrefixes: ['rebut-pm:'],
+    exact: ['rebut-pm', 'rebut pm', 'rebut_pm', 'rebutpm'],
+    legacy: []
+  },
+  helper: {
+    yearPrefixes: ['helper-data:'],
+    exact: ['helper-data', 'helper_data', 'helperdata', 'helper data'],
+    legacy: []
+  },
+  program: {
+    yearPrefixes: ['program-utilaje:'],
+    exact: ['program-utilaje', 'program utilaje', 'programutilaje'],
+    legacy: []
+  },
+  probleme: {
+    yearPrefixes: ['probleme-raportate:'],
+    exact: ['probleme-raportate', 'probleme raportate', 'probleme_raportate', 'problemeraportate'],
+    legacy: []
+  }
+};
+
 const SOURCE_CONFIGS = {
   forjate: { legacyKey:'forjate', indexKey:'forjate:index', prefix:'forjate:' },
   magnaflux: { legacyKey:'magnaflux', indexKey:'magnaflux:index', prefix:'magnaflux:' },
@@ -479,6 +519,144 @@ function stableStringify(value){
     return '{' + keys.map(key => JSON.stringify(key) + ':' + stableStringify(value[key])).join(',') + '}';
   }
   return JSON.stringify(value);
+}
+
+function normalizeDocKey(value){
+  return normalizeText(String(value || '').replace(/\.html$/i,''));
+}
+function extractDocPayload(doc){
+  return doc?.content ?? doc?.data ?? doc?.payload ?? null;
+}
+function getDocKeyRaw(doc){
+  return String(doc?.doc_key || doc?.page_key || doc?.key || '').trim().toLowerCase();
+}
+function uniqueStrings(list){
+  return Array.from(new Set((list || []).map(v => String(v || '').trim()).filter(Boolean)));
+}
+function isNewerDoc(next, prev){
+  const nextTs = next?.updated_at ? new Date(next.updated_at).getTime() : 0;
+  const prevTs = prev?.updated_at ? new Date(prev.updated_at).getTime() : 0;
+  return nextTs >= prevTs;
+}
+function mergeDocLists(){
+  const map = new Map();
+  Array.from(arguments).flat().forEach(doc => {
+    const rawKey = getDocKeyRaw(doc);
+    if (!rawKey) return;
+    const prev = map.get(rawKey);
+    if (!prev || isNewerDoc(doc, prev)) map.set(rawKey, doc);
+  });
+  return [...map.values()].sort((a, b) => {
+    const at = a?.updated_at ? new Date(a.updated_at).getTime() : 0;
+    const bt = b?.updated_at ? new Date(b.updated_at).getTime() : 0;
+    return bt - at;
+  });
+}
+function findMatchingDocs(allDocs, candidates){
+  const wanted = (candidates || []).map(normalizeDocKey);
+  return (allDocs || []).filter(doc => {
+    const key = normalizeDocKey(doc?.doc_key || doc?.page_key || doc?.key);
+    return wanted.some(w => key.includes(w) || w.includes(key));
+  });
+}
+function selectPreferredDocs(allDocs, pref){
+  const docs = Array.isArray(allDocs) ? allDocs : [];
+  const prepared = docs.map(doc => ({
+    doc,
+    raw: getDocKeyRaw(doc),
+    norm: normalizeDocKey(getDocKeyRaw(doc))
+  }));
+  const yearMatches = prepared.filter(item => (pref?.yearPrefixes || []).some(prefix => item.raw.startsWith(prefix)));
+  if (yearMatches.length) return yearMatches.map(item => item.doc);
+  const exactMatches = prepared.filter(item => (pref?.exact || []).some(key => item.norm === normalizeDocKey(key)));
+  if (exactMatches.length) return exactMatches.map(item => item.doc);
+  return prepared
+    .filter(item => (pref?.legacy || []).some(key => item.norm.includes(normalizeDocKey(key)) || normalizeDocKey(key).includes(item.norm)))
+    .map(item => item.doc);
+}
+function scanLocalStorageDocs(candidates){
+  const docs = [];
+  try {
+    const wanted = (candidates || []).map(normalizeDocKey);
+    Object.keys(localStorage).forEach(key => {
+      const keyNorm = normalizeDocKey(key);
+      if (!wanted.some(w => keyNorm.includes(w) || w.includes(keyNorm))) return;
+      const raw = localStorage.getItem(key);
+      if (!raw) return;
+      try { docs.push({ doc_key:key, content:JSON.parse(raw), updated_at:new Date().toISOString() }); } catch (_e) {}
+    });
+  } catch (_e) {}
+  return docs;
+}
+function extractAllRowsFromDocs(docs){
+  const rows = [];
+  const seen = new Set();
+  (docs || []).forEach(doc => {
+    collectTables(extractDocPayload(doc)).forEach(table => {
+      (table.rows || []).forEach(row => {
+        let key = '';
+        try { key = stableStringify(row); } catch (_e) {}
+        if (key && seen.has(key)) return;
+        if (key) seen.add(key);
+        rows.push(row);
+      });
+    });
+  });
+  return rows;
+}
+function buildRawRowSignature(row){
+  const raw = row?.raw || row;
+  return stableStringify(raw);
+}
+function dedupeTransformedRows(rows, keyFn){
+  const list = Array.isArray(rows) ? rows : [];
+  const seen = new Set();
+  return list.filter(item => {
+    let key = '';
+    try { key = keyFn ? String(keyFn(item)) : stableStringify(item); } catch (_e) { key = ''; }
+    if (!key) return true;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+async function queryDocsByExactKeys(keys){
+  const exactKeys = uniqueStrings(keys);
+  if (!exactKeys.length) return [];
+  try{
+    let res = await state.supa.from(DOC_TABLE).select('doc_key,content,data,updated_at').in('doc_key', exactKeys);
+    if(res.error && /data/i.test(String(res.error.message || ''))){
+      res = await state.supa.from(DOC_TABLE).select('doc_key,content,updated_at').in('doc_key', exactKeys);
+    }
+    if (res.error) throw res.error;
+    return Array.isArray(res.data) ? res.data : [];
+  }catch(_e){
+    return [];
+  }
+}
+async function queryDocsByPrefixes(prefixes){
+  const matches = [];
+  for (const prefix of uniqueStrings(prefixes)){
+    try{
+      let res = await state.supa.from(DOC_TABLE).select('doc_key,content,data,updated_at').ilike('doc_key', `${prefix}%`);
+      if(res.error && /data/i.test(String(res.error.message || ''))){
+        res = await state.supa.from(DOC_TABLE).select('doc_key,content,updated_at').ilike('doc_key', `${prefix}%`);
+      }
+      if (res.error) throw res.error;
+      if (Array.isArray(res.data) && res.data.length) matches.push(...res.data);
+    }catch(_e){}
+  }
+  return matches;
+}
+async function fetchDocsForPrefs(){
+  const groups = Object.values(DOC_PREFS || {});
+  const exactKeys = groups.flatMap(group => [...(group?.exact || []), ...(group?.legacy || [])]);
+  const prefixes = groups.flatMap(group => group?.yearPrefixes || []);
+  const [exactDocs, prefixDocs] = await Promise.all([
+    queryDocsByExactKeys(exactKeys),
+    queryDocsByPrefixes(prefixes)
+  ]);
+  return mergeDocLists(exactDocs, prefixDocs);
 }
 function dedupeRows(rows){
   const out = [];
@@ -754,12 +932,30 @@ function monthOkFactory(selectedMonth){
 function pctClass(v){ if(v >= 95) return 'good'; if(v >= 80) return 'mid'; return 'bad'; }
 
 function buildRows(){
-  const forjateRaw = transformForjate(state.docs.forjate || []);
-  const magna = normalizeMagnafluxRows(state.docs.magnaflux || []);
-  const pm = (state.docs.rebutPm || []).map(normalizePmRow).filter(Boolean);
-  const tactRows = transformTact(state.docs.helper || []);
-  const programRows = transformProgram(state.docs.program || []);
-  const problemeRows = transformProbleme(state.docs.probleme || []);
+  const forjateRaw = dedupeTransformedRows(
+    transformForjate(state.docs.forjate || []),
+    row => `${formatDate(row.date)}|${row.equipment}|${row.shift}|${row.reper}|${row.realized}|${row.tact ?? ''}|${buildRawRowSignature(row)}`
+  );
+  const magna = dedupeTransformedRows(
+    normalizeMagnafluxRows(state.docs.magnaflux || []),
+    row => `${row.an}|${row.luna}|${row.reper}|${MF_CODES.map(code => row[code] || 0).join('|')}`
+  );
+  const pm = dedupeTransformedRows(
+    (state.docs.rebutPm || []).map(normalizePmRow).filter(Boolean),
+    row => `${row.an}|${row.luna}|${row.reper}|${row.cod}|${row.qty}`
+  );
+  const tactRows = dedupeTransformedRows(
+    transformTact(state.docs.helper || []),
+    row => `${row.equipment}|${row.reper}|${row.tact ?? ''}|${buildRawRowSignature(row)}`
+  );
+  const programRows = dedupeTransformedRows(
+    transformProgram(state.docs.program || []),
+    row => `${formatDate(row.date)}|${row.equipment}|${row.shift}|${row.hours ?? ''}|${buildRawRowSignature(row)}`
+  );
+  const problemeRows = dedupeTransformedRows(
+    transformProbleme(state.docs.probleme || []),
+    row => `${formatDate(row.date)}|${row.equipment}|${row.shift}|${row.minutes ?? ''}|${buildRawRowSignature(row)}`
+  );
   const allYears = Array.from(new Set([].concat(
     forjateRaw.map(r => String(r.date.getFullYear())),
     magna.map(r => r.an),
@@ -1027,21 +1223,38 @@ function exportExcel(){
 async function loadAll(){
   setCloud('se încarcă...');
   els.helperText.textContent = 'Se încarcă datele din cloud…';
-  const [forj, mag, pm, helper, program, probleme] = await Promise.all([
-    readSourceFlexible(SOURCE_CONFIGS.forjate),
-    readSourceFlexible(SOURCE_CONFIGS.magnaflux),
-    readSourceFlexible(SOURCE_CONFIGS.rebutPm),
-    readSourceFlexible(SOURCE_CONFIGS.helper),
-    readSourceFlexible(SOURCE_CONFIGS.program),
-    readSourceFlexible(SOURCE_CONFIGS.probleme)
-  ]);
-  state.docs.forjate = forj.rows;
-  state.docs.magnaflux = mag.rows;
-  state.docs.rebutPm = pm.rows;
-  state.docs.helper = helper.rows;
-  state.docs.program = program.rows;
-  state.docs.probleme = probleme.rows;
-  state.updatedAt = [forj.latest, mag.latest, pm.latest, helper.latest, program.latest, probleme.latest].filter(Boolean).sort().pop() || '';
+  const docs = await fetchDocsForPrefs();
+
+  let forjateDocs = selectPreferredDocs(docs, DOC_PREFS.forjate);
+  let helperDocs = selectPreferredDocs(docs, DOC_PREFS.helper);
+  let programDocs = selectPreferredDocs(docs, DOC_PREFS.program);
+  let problemeDocs = selectPreferredDocs(docs, DOC_PREFS.probleme);
+  let magnafluxDocs = selectPreferredDocs(docs, DOC_PREFS.magnaflux);
+  let rebutPmDocs = selectPreferredDocs(docs, DOC_PREFS.rebutPm);
+
+  if (!forjateDocs.length) forjateDocs = selectPreferredDocs(scanLocalStorageDocs(FORJATE_DOC_KEYS), DOC_PREFS.forjate);
+  if (!helperDocs.length) helperDocs = selectPreferredDocs(scanLocalStorageDocs(HELPER_DOC_KEYS), DOC_PREFS.helper);
+  if (!programDocs.length) programDocs = selectPreferredDocs(scanLocalStorageDocs(PROGRAM_DOC_KEYS), DOC_PREFS.program);
+  if (!problemeDocs.length) problemeDocs = selectPreferredDocs(scanLocalStorageDocs(PROBLEME_DOC_KEYS), DOC_PREFS.probleme);
+  if (!magnafluxDocs.length) magnafluxDocs = selectPreferredDocs(scanLocalStorageDocs(MAGNAFLUX_DOC_KEYS), DOC_PREFS.magnaflux);
+  if (!rebutPmDocs.length) rebutPmDocs = selectPreferredDocs(scanLocalStorageDocs(REBUT_PM_DOC_KEYS), DOC_PREFS.rebutPm);
+
+  state.docs.forjate = extractAllRowsFromDocs(forjateDocs);
+  state.docs.helper = extractAllRowsFromDocs(helperDocs);
+  state.docs.program = extractAllRowsFromDocs(programDocs);
+  state.docs.probleme = extractAllRowsFromDocs(problemeDocs);
+  state.docs.magnaflux = extractAllRowsFromDocs(magnafluxDocs);
+  state.docs.rebutPm = extractAllRowsFromDocs(rebutPmDocs);
+
+  const selectedDocs = [...forjateDocs, ...helperDocs, ...programDocs, ...problemeDocs, ...magnafluxDocs, ...rebutPmDocs];
+  const latestSource = selectedDocs.length ? selectedDocs : docs;
+  const latestTs = latestSource
+    .map(doc => doc?.updated_at)
+    .filter(Boolean)
+    .map(v => new Date(v))
+    .filter(d => !isNaN(d));
+  state.updatedAt = latestTs.length ? new Date(Math.max(...latestTs.map(d => d.getTime()))).toISOString() : '';
+
   setCloud('sincronizat');
   setSync(state.updatedAt ? new Date(state.updatedAt).toLocaleString('ro-RO') : '-');
   buildRows();
