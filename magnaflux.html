@@ -1118,6 +1118,7 @@
       const YEAR_STORAGE_PREFIX = 'rf:magnaflux:cache:year:v2:';
       const YEAR_INDEX_STORAGE_KEY = 'rf:magnaflux:cache:index:v2';
       const YEAR_MIGRATED_FLAG = 'rf:magnaflux:cache:migrated:v2';
+      const UI_STATE_STORAGE_KEY = 'rf:magnaflux:ui-state:v1';
       const LOCAL_BACKUP_PREFIX = 'rf:magnaflux:backup:year:v1:';
       const CLOUD_DOC_PREFIX = 'magnaflux:';
       const CLOUD_INDEX_KEY = 'magnaflux:index';
@@ -1321,6 +1322,67 @@
 
       function nf(value){
         return new Intl.NumberFormat('ro-RO').format(Number(value || 0));
+      }
+
+      function sanitizeUiFilters(raw){
+        const allowed = new Set(columns.map(col => col.key));
+        const out = {};
+        if(!raw || typeof raw !== 'object') return out;
+        Object.entries(raw).forEach(([key, value]) => {
+          if(!allowed.has(key)) return;
+          out[key] = String(value == null ? '' : value);
+        });
+        return out;
+      }
+
+      function sanitizeUiSupplierFilters(raw){
+        const fallback = {
+          supplier1: { supplier:'', year:String(CURRENT_YEAR), month:'all' },
+          supplier2: { supplier:'', year:String(CURRENT_YEAR), month:'all' }
+        };
+        if(!raw || typeof raw !== 'object') return fallback;
+        ['supplier1','supplier2'].forEach(slot => {
+          const cfg = raw[slot];
+          if(!cfg || typeof cfg !== 'object') return;
+          fallback[slot] = {
+            supplier: String(cfg.supplier == null ? '' : cfg.supplier),
+            year: normalizeYearValue(cfg.year) || String(CURRENT_YEAR),
+            month: String(cfg.month == null ? 'all' : (cfg.month || 'all'))
+          };
+        });
+        return fallback;
+      }
+
+      function persistUiState(){
+        try{
+          const payload = {
+            activeYear: normalizeYearValue(state.activeYear) || String(CURRENT_YEAR),
+            filters: sanitizeUiFilters(state.filters),
+            supplierSummaryFilters: sanitizeUiSupplierFilters(state.supplierSummaryFilters)
+          };
+          localStorage.setItem(UI_STATE_STORAGE_KEY, JSON.stringify(payload));
+        }catch(_err){}
+      }
+
+      function restoreUiState(){
+        try{
+          const raw = localStorage.getItem(UI_STATE_STORAGE_KEY);
+          if(!raw) return;
+          const parsed = JSON.parse(raw);
+          if(!parsed || typeof parsed !== 'object') return;
+          state.filters = sanitizeUiFilters(parsed.filters);
+          state.supplierSummaryFilters = sanitizeUiSupplierFilters(parsed.supplierSummaryFilters);
+          const restoredYear = normalizeYearValue(parsed.activeYear || state.filters.an);
+          if(restoredYear){
+            state.activeYear = restoredYear;
+            state.filters.an = restoredYear;
+          }else if(!state.filters.an){
+            state.filters.an = state.activeYear;
+          }
+        }catch(_err){
+          state.filters = state.filters && typeof state.filters === 'object' ? state.filters : {};
+          state.filters.an = state.activeYear;
+        }
       }
 
       function pf(value){
@@ -1758,10 +1820,12 @@
       function updateActiveRowsFromCache(year){
         const y = ensureYearInIndex(year || state.activeYear);
         state.activeYear = y;
+        state.filters.an = y;
         state.rows = getRowsForYear(y);
         state.lastCloudUpdatedAt = state.yearMeta[y] && state.yearMeta[y].updated_at ? state.yearMeta[y].updated_at : null;
         refreshDirtyFlag();
         persistYearIndexLocal();
+        persistUiState();
       }
 
       function findYearOfRowId(id){
@@ -2690,6 +2754,7 @@
           cfg.year = refs.year.value || String(CURRENT_YEAR);
           cfg.month = refs.month.value || 'all';
         });
+        persistUiState();
       }
 
       async function ensureSummaryYearLoaded(year){
@@ -2833,6 +2898,52 @@
         ]);
       }
 
+      function downloadBlob(blob, filename){
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 1200);
+      }
+
+      function htmlTableFromRows(headers, rows){
+        const headHtml = `<tr>${headers.map(header => `<th>${escapeHtml(header)}</th>`).join('')}</tr>`;
+        const bodyHtml = rows.length
+          ? rows.map(row => `<tr>${headers.map(header => `<td>${escapeHtml(row[header])}</td>`).join('')}</tr>`).join('')
+          : `<tr><td colspan="${headers.length}">Fără date</td></tr>`;
+        return `<table border="1"><thead>${headHtml}</thead><tbody>${bodyHtml}</tbody></table>`;
+      }
+
+      function exportRowsAsExcelCompatibleHtml(sheetRows, filenameBase, metaRows, title){
+        const headers = sheetRows.length
+          ? Object.keys(sheetRows[0])
+          : ['Cod intern oțel (3 litere)','Diametru','Sarja material (furnizor)','Furnizor','Total FL'];
+        const metaHeaders = ['Câmp','Valoare'];
+        const html = `<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Type" content="application/vnd.ms-excel; charset=UTF-8" />
+<title>${escapeHtml(title || 'Export')}</title>
+<style>
+body{font-family:Arial,Helvetica,sans-serif;font-size:12px}
+table{border-collapse:collapse;margin:0 0 14px 0}
+th,td{border:1px solid #000;padding:6px 8px}
+th{background:#dbeaf7;font-weight:700}
+</style>
+</head>
+<body>
+<h3>${escapeHtml(title || 'Export')}</h3>
+${htmlTableFromRows(headers, sheetRows)}
+${Array.isArray(metaRows) && metaRows.length ? `<h4>Filtre</h4>${htmlTableFromRows(metaHeaders, metaRows)}` : ''}
+</body>
+</html>`;
+        downloadBlob(new Blob([html], { type:'application/vnd.ms-excel;charset=utf-8' }), `${filenameBase}.xls`);
+      }
+
       function collectSupplierSummaryItems(slot){
         const cfg = getSupplierSummaryFilter(slot);
         const year = normalizeYearValue(cfg.year) || state.activeYear || String(CURRENT_YEAR);
@@ -2843,34 +2954,36 @@
 
       async function exportKodItemsToExcel(items, filenameBase, metaRows){
         if(!items.length) return showToast('Nu există date de exportat pentru selecția curentă.');
+        const sheetRows = items.map(item => ({
+          'Cod intern oțel (3 litere)': item.code,
+          'Diametru': item.diametru || '',
+          'Sarja material (furnizor)': item.sarja || '',
+          'Furnizor': item.furnizor || '',
+          'Total FL': Number(item.totalFl || 0)
+        }));
         try{
-          await ensureXlsx();
-          const sheetRows = items.map(item => ({
-            'Cod intern oțel (3 litere)': item.code,
-            'Diametru': item.diametru || '',
-            'Sarja material (furnizor)': item.sarja || '',
-            'Furnizor': item.furnizor || '',
-            'Total FL': Number(item.totalFl || 0)
-          }));
+          const XLSX = await ensureXlsxLib();
           const ws = XLSX.utils.json_to_sheet(sheetRows, {
             header: ['Cod intern oțel (3 litere)','Diametru','Sarja material (furnizor)','Furnizor','Total FL']
           });
           ws['!cols'] = [{ wch:22 }, { wch:12 }, { wch:24 }, { wch:18 }, { wch:12 }];
+          const wb = XLSX.utils.book_new();
+          XLSX.utils.book_append_sheet(wb, ws, 'FL');
           if(Array.isArray(metaRows) && metaRows.length){
             const metaWs = XLSX.utils.json_to_sheet(metaRows, { header:['Câmp','Valoare'] });
             metaWs['!cols'] = [{ wch:28 }, { wch:42 }];
-            const wb = XLSX.utils.book_new();
-            XLSX.utils.book_append_sheet(wb, ws, 'FL');
             XLSX.utils.book_append_sheet(wb, metaWs, 'Filtre');
-            XLSX.writeFile(wb, `${filenameBase}.xlsx`);
-            return;
           }
-          const wb = XLSX.utils.book_new();
-          XLSX.utils.book_append_sheet(wb, ws, 'FL');
           XLSX.writeFile(wb, `${filenameBase}.xlsx`);
         }catch(_err){
           console.error('Export summary excel failed:', _err);
-          showToast('Nu am putut exporta tabelul în Excel.');
+          try{
+            exportRowsAsExcelCompatibleHtml(sheetRows, filenameBase, metaRows, 'MAGNAFLUX · FL');
+            showToast('Export Excel realizat în mod compatibil.');
+          }catch(_err2){
+            console.error('Fallback export summary failed:', _err2);
+            showToast('Nu am putut exporta tabelul în Excel.');
+          }
         }
       }
 
@@ -2944,6 +3057,8 @@
         if(key === 'an'){
           const wantedYear = normalizeYearValue(value);
           if(wantedYear && wantedYear !== state.activeYear){
+            state.activeYear = wantedYear;
+            persistUiState();
             switchActiveYear(wantedYear, { allowCloud:true }).catch(() => {
               setSyncBadge('Nu am putut încărca anul cerut', 'err');
             });
@@ -2951,8 +3066,10 @@
           }
         }
 
+        persistUiState();
         state.forceScrollToBottom = true;
         renderBody();
+        renderKodFlSummary(filteredRows());
       }
 
       function openEditor(id){
@@ -3107,6 +3224,7 @@
           ? state.yearMeta[state.activeYear].updated_at
           : null;
 
+        persistUiState();
         renderAll();
         fillForm(row);
         el.modalTitle.textContent = 'Editează înregistrare MAGNAFLUX';
@@ -3293,10 +3411,17 @@
       }
 
       async function exportExcel(){
+        const rows = filteredRows();
+        const exportRows = buildExportRows(rows);
+        const infoRows = [
+          { Câmp: 'Pagină', Valoare: 'MAGNAFLUX' },
+          { Câmp: 'Exportat la', Valoare: new Date().toLocaleString('ro-RO') },
+          { Câmp: 'Rânduri exportate', Valoare: rows.length },
+          { Câmp: 'Sursă activă', Valoare: state.sourceLabel },
+          { Câmp: 'Filtre active', Valoare: columns.map(col => `${col.label}: ${state.filters[col.key] || ''}`).filter(x => !x.endsWith(': ')).join(' | ') || 'Niciun filtru' }
+        ];
         try{
           const XLSX = await ensureXlsxLib();
-          const rows = filteredRows();
-          const exportRows = buildExportRows(rows);
           const ws = XLSX.utils.json_to_sheet(exportRows, { header: columns.map(c => c.label) });
 
           ws['!cols'] = columns.map(col => {
@@ -3313,21 +3438,19 @@
 
           const wb = XLSX.utils.book_new();
           XLSX.utils.book_append_sheet(wb, ws, 'MAGNAFLUX');
-
-          const infoRows = [
-            { Câmp: 'Pagină', Valoare: 'MAGNAFLUX' },
-            { Câmp: 'Exportat la', Valoare: new Date().toLocaleString('ro-RO') },
-            { Câmp: 'Rânduri exportate', Valoare: rows.length },
-            { Câmp: 'Sursă activă', Valoare: state.sourceLabel },
-            { Câmp: 'Filtre active', Valoare: columns.map(col => `${col.label}: ${state.filters[col.key] || ''}`).filter(x => !x.endsWith(': ')).join(' | ') || 'Niciun filtru' }
-          ];
           const wsInfo = XLSX.utils.json_to_sheet(infoRows);
           wsInfo['!cols'] = [{ wpx: 160 }, { wpx: 420 }];
           XLSX.utils.book_append_sheet(wb, wsInfo, 'INFO');
-
           XLSX.writeFile(wb, `magnaflux_${new Date().toISOString().slice(0,10)}.xlsx`);
         }catch(err){
-          showToast('Exportul Excel nu a reușit.');
+          console.error('Export Magnaflux excel failed:', err);
+          try{
+            exportRowsAsExcelCompatibleHtml(exportRows, `magnaflux_${new Date().toISOString().slice(0,10)}`, infoRows, 'MAGNAFLUX');
+            showToast('Export Excel realizat în mod compatibil.');
+          }catch(err2){
+            console.error('Fallback export Magnaflux failed:', err2);
+            showToast('Exportul Excel nu a reușit.');
+          }
         }
       }
 
@@ -3498,6 +3621,7 @@
           state.selectedId = importedRows.length ? importedRows[importedRows.length - 1].id : null;
           state.sourceLabel = 'local';
 
+          persistUiState();
           renderAll();
 
           touchedYears.forEach(year => scheduleCloudSave(year));
@@ -3624,6 +3748,7 @@
         [['supplier1', el.supplier1Select, 'supplier'], ['supplier1', el.supplier1Year, 'year'], ['supplier1', el.supplier1Month, 'month'], ['supplier2', el.supplier2Select, 'supplier'], ['supplier2', el.supplier2Year, 'year'], ['supplier2', el.supplier2Month, 'month']].forEach(([slot, node, key]) => {
           node.addEventListener('change', async () => {
             getSupplierSummaryFilter(slot)[key] = node.value || (key === 'month' ? 'all' : '');
+            persistUiState();
             if(key === 'year'){
               await ensureSummaryYearLoaded(getSupplierSummaryFilter(slot).year);
             }
@@ -3670,6 +3795,7 @@
       async function initialLoad(){
         migrateLegacyLocal();
         loadYearIndexLocal();
+        restoreUiState();
 
         updateActiveRowsFromCache(state.activeYear);
         state.sourceLabel = state.rows.length ? 'local' : 'local';
