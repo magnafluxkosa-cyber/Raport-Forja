@@ -195,10 +195,48 @@
       color: var(--muted);
     }
     .field input[type="file"] {
-      padding: 7px 10px;
-      min-height: 40px;
-      background: #fff;
+      position: absolute;
+      left: -9999px;
+      width: 1px;
+      height: 1px;
+      opacity: 0;
+      pointer-events: none;
     }
+    .picker-shell {
+      width: 100%;
+      min-height: 40px;
+      border-radius: 10px;
+      border: 1px solid var(--line-soft);
+      background: #fff;
+      padding: 4px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      overflow: hidden;
+    }
+    .picker-btn {
+      min-height: 30px;
+      padding: 0 12px;
+      border-radius: 8px;
+      border: 1px solid var(--line-soft);
+      background: #eef5fb;
+      color: var(--text);
+      font: inherit;
+      font-weight: 700;
+      cursor: pointer;
+      flex: 0 0 auto;
+    }
+    .picker-btn:hover { background: #dce9f5; }
+    .picker-name {
+      min-width: 0;
+      flex: 1 1 auto;
+      color: var(--text);
+      font-size: 14px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .picker-name.muted { color: var(--muted); }
     .field.hint-field small {
       color: var(--muted);
       font-size: 11px;
@@ -385,6 +423,10 @@
         <div class="field hint-field">
           <label for="fldPdf">Fișier PDF</label>
           <input id="fldPdf" type="file" accept="application/pdf,.pdf" />
+          <div class="picker-shell" id="pdfPickerShell">
+            <button class="picker-btn" type="button" id="btnPickPdf">Alege PDF</button>
+            <div class="picker-name muted" id="pdfPickName">Niciun fișier ales</div>
+          </div>
           <small>Importă PDF nou sau alege alt PDF pentru a înlocui fișa selectată. Fișierele se salvează în bucket privat.</small>
         </div>
         <div class="field">
@@ -457,6 +499,9 @@
         fldRevizie: document.getElementById('fldRevizie'),
         fldUpdatedBy: document.getElementById('fldUpdatedBy'),
         fldPdf: document.getElementById('fldPdf'),
+        pdfPickerShell: document.getElementById('pdfPickerShell'),
+        btnPickPdf: document.getElementById('btnPickPdf'),
+        pdfPickName: document.getElementById('pdfPickName'),
         fldNumeFisier: document.getElementById('fldNumeFisier'),
         reperList: document.getElementById('reperList')
       };
@@ -468,7 +513,8 @@
         selectedId: null,
         updatedAt: null,
         repere: [],
-        fileCache: Object.create(null)
+        fileCache: Object.create(null),
+        pendingFile: null
       };
 
       function toStr(value) {
@@ -612,8 +658,57 @@
         els.reperList.innerHTML = values.map((value) => '<option value="' + escapeHtml(value) + '"></option>').join('');
       }
 
+
+      function updatePickedFileUi(file) {
+        const picked = file || state.pendingFile || null;
+        if (!els.pdfPickName) return;
+        if (picked && toStr(picked.name)) {
+          els.pdfPickName.textContent = picked.name;
+          els.pdfPickName.classList.remove('muted');
+        } else {
+          els.pdfPickName.textContent = 'Niciun fișier ales';
+          els.pdfPickName.classList.add('muted');
+        }
+      }
+
+      function setPendingFile(file) {
+        state.pendingFile = file || null;
+        try { els.fldPdf.value = ''; } catch (_) {}
+        updatePickedFileUi(state.pendingFile);
+        const selectedFile = state.pendingFile;
+        els.fldNumeFisier.value = selectedFile ? selectedFile.name : ((state.rows.find((item) => item.id === state.selectedId) || {}).file_name || '');
+        updateFormNote();
+      }
+
+      function attachPickedFile(input) {
+        if (!(input && input.files && input.files[0])) return;
+        setPendingFile(input.files[0]);
+      }
+
+      function openPdfPicker() {
+        if (!canEdit()) return;
+        const tempInput = document.createElement('input');
+        tempInput.type = 'file';
+        tempInput.accept = 'application/pdf,.pdf';
+        tempInput.style.position = 'fixed';
+        tempInput.style.left = '-9999px';
+        tempInput.style.top = '0';
+        document.body.appendChild(tempInput);
+        tempInput.addEventListener('change', () => {
+          attachPickedFile(tempInput);
+          setTimeout(() => tempInput.remove(), 0);
+        }, { once: true });
+        try {
+          if (typeof tempInput.showPicker === 'function') tempInput.showPicker();
+          else tempInput.click();
+        } catch (_) {
+          tempInput.click();
+        }
+      }
+
       function setReadonlyMode(readonly) {
         [els.fldReper, els.fldRevizie, els.fldUpdatedBy, els.fldPdf].forEach((el) => { el.disabled = readonly; });
+        if (els.btnPickPdf) els.btnPickPdf.disabled = readonly;
         els.btnSaveRow.disabled = readonly;
         els.btnNew.disabled = readonly;
         els.btnDelete.disabled = readonly || !state.selectedId;
@@ -650,7 +745,7 @@
         els.fldRevizie.value = source.revizie;
         els.fldUpdatedBy.value = source.updated_by;
         els.fldNumeFisier.value = source.file_name;
-        els.fldPdf.value = '';
+        setPendingFile(null);
         updateFormNote();
       }
 
@@ -659,8 +754,8 @@
         els.fldReper.value = '';
         els.fldRevizie.value = '';
         els.fldUpdatedBy.value = '';
-        els.fldPdf.value = '';
         els.fldNumeFisier.value = '';
+        setPendingFile(null);
         updateSelectionUi();
         updateFormNote();
         renderTable();
@@ -1016,7 +1111,7 @@
         try {
           const currentRow = state.rows.find((item) => item.id === state.selectedId) || null;
           const row = readForm();
-          const selectedFile = els.fldPdf.files && els.fldPdf.files[0] ? els.fldPdf.files[0] : null;
+          const selectedFile = state.pendingFile || (els.fldPdf.files && els.fldPdf.files[0] ? els.fldPdf.files[0] : null);
           const validationMessage = validateForm(row, selectedFile, currentRow);
           if (validationMessage) {
             alert(validationMessage);
@@ -1254,10 +1349,14 @@
         els.btnNew.addEventListener('click', clearForm);
         els.btnDelete.addEventListener('click', deleteSelected);
         els.fldPdf.addEventListener('change', () => {
-          const selectedFile = els.fldPdf.files && els.fldPdf.files[0] ? els.fldPdf.files[0] : null;
-          els.fldNumeFisier.value = selectedFile ? selectedFile.name : ((state.rows.find((item) => item.id === state.selectedId) || {}).file_name || '');
-          updateFormNote();
+          attachPickedFile(els.fldPdf);
         });
+        if (els.btnPickPdf) {
+          els.btnPickPdf.addEventListener('click', openPdfPicker);
+        }
+        if (els.pdfPickerShell) {
+          els.pdfPickerShell.addEventListener('dblclick', openPdfPicker);
+        }
         [els.fldReper, els.fldRevizie, els.fldUpdatedBy].forEach((el) => {
           el.addEventListener('input', updateFormNote);
           el.addEventListener('change', updateFormNote);
