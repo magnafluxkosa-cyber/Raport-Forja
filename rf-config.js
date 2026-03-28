@@ -38,7 +38,7 @@
     { page_key: 'inventar-forjat', page_name: 'Inventar Forjat' },
     { page_key: 'planificare-forja', page_name: 'Planificare Forjă' },
     { page_key: 'comenzi-livrare', page_name: 'Comenzi Livrare' },
-    { page_key: 'livrari-zale', page_name: 'Urmărire zale' },
+    { page_key: 'livrari-zale', page_name: 'Livrări zale' },
     { page_key: 'centralizator-livrari-zale', page_name: 'Centralizator livrări zale' },
     { page_key: 'mrc-necesar-otel', page_name: 'MRC / Necesar Oțel' },
     { page_key: 'mrc-comenzi-otel', page_name: 'MRC / Comenzi oțel' },
@@ -123,7 +123,8 @@ var PAGE_CONTROL_OVERRIDES = Object.freeze({
     Object.freeze({ control_key:'nav.investitii', control_label:'Buton INVESTIȚII', control_type:'action' }),
     Object.freeze({ control_key:'nav.planificare-forja', control_label:'Buton PLANIFICARE FORJĂ', control_type:'action' }),
     Object.freeze({ control_key:'nav.comenzi-livrare', control_label:'Buton COMENZI LIVRARE', control_type:'action' }),
-    Object.freeze({ control_key:'nav.livrari-zale', control_label:'Buton URMĂRIRE ZALE', control_type:'action' }),
+    Object.freeze({ control_key:'nav.livrari-zale', control_label:'Buton LIVRĂRI ZALE', control_type:'action' }),
+    Object.freeze({ control_key:'nav.centralizator-livrari-zale', control_label:'Buton CENTRALIZATOR LIVRĂRI', control_type:'action' }),
     Object.freeze({ control_key:'nav.mrc-necesar-otel', control_label:'Buton MRC / NECESAR OȚEL', control_type:'action' }),
     Object.freeze({ control_key:'nav.mrc-comenzi-otel', control_label:'Buton COMENZI OȚEL', control_type:'action' }),
     Object.freeze({ control_key:'nav.mrc-comenzi-saptamanale', control_label:'Buton COMENZI SĂPTĂMÂNALE', control_type:'action' }),
@@ -2754,7 +2755,7 @@ async function applyDomPermissions(pageKey, root, options) {
       ])
     }),
     'livrari-zale': Object.freeze({
-      hint: 'Urmărire zale: tabelul centralizat de livrări, filtrele pe an/lună/reper și import-export Excel.',
+      hint: 'Livrări zale: tabelul centralizat de livrări, filtrele pe an/lună/reper și import-export Excel.',
       items: makeCrudCatalog([
         ['field.an','Câmp An'],
         ['field.luna','Câmp Lună'],
