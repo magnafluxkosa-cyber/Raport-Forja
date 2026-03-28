@@ -19,6 +19,7 @@
     { page_key: 'intrari-otel', page_name: 'Intrări Oțel' },
     { page_key: 'debitate', page_name: 'Debitate' },
     { page_key: 'forjate', page_name: 'Forjate' },
+    { page_key: 'eficienta', page_name: 'Eficiență' },
     { page_key: 'program-utilaje', page_name: 'Program Utilaje' },
     { page_key: 'magnaflux', page_name: 'Magnaflux' },
     { page_key: 'probleme-raportate', page_name: 'Probleme Raportate' },
