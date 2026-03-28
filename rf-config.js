@@ -38,7 +38,8 @@
     { page_key: 'inventar-forjat', page_name: 'Inventar Forjat' },
     { page_key: 'planificare-forja', page_name: 'Planificare Forjă' },
     { page_key: 'comenzi-livrare', page_name: 'Comenzi Livrare' },
-    { page_key: 'livrari-zale', page_name: 'Livrări zale' },
+    { page_key: 'livrari-zale', page_name: 'Urmărire zale' },
+    { page_key: 'centralizator-livrari-zale', page_name: 'Centralizator livrări zale' },
     { page_key: 'mrc-necesar-otel', page_name: 'MRC / Necesar Oțel' },
     { page_key: 'mrc-comenzi-otel', page_name: 'MRC / Comenzi oțel' },
     { page_key: 'mrc-comenzi-saptamanale', page_name: 'MRC / Comenzi săptămânale' },
@@ -2753,7 +2754,7 @@ async function applyDomPermissions(pageKey, root, options) {
       ])
     }),
     'livrari-zale': Object.freeze({
-      hint: 'Livrări zale: tabelul centralizat de livrări, filtrele pe an/lună/reper și import-export Excel.',
+      hint: 'Urmărire zale: tabelul centralizat de livrări, filtrele pe an/lună/reper și import-export Excel.',
       items: makeCrudCatalog([
         ['field.an','Câmp An'],
         ['field.luna','Câmp Lună'],
@@ -2764,6 +2765,19 @@ async function applyDomPermissions(pageKey, root, options) {
       ], [
         ['section.table-main','Tabel livrări zale'],
         ['section.quick-links','Linkuri rapide foi zale']
+      ])
+    }),
+    'centralizator-livrari-zale': Object.freeze({
+      hint: 'Centralizator livrări zale: total anual pe reper, pivot lunar pe ani și grafice de livrări.',
+      items: makeCrudCatalog([
+        ['field.an','Câmp An selectat'],
+        ['field.reper','Câmp Reper'],
+        ['field.total','Câmp Total livrat']
+      ], [
+        ['section.table-annual','Tabel anual pe repere'],
+        ['section.table-pivot','Tabel livrări lunare pe ani'],
+        ['section.chart-monthly','Grafic livrări lunare'],
+        ['section.chart-yearly','Grafic totaluri anuale']
       ])
     }),
     'mrc-necesar-otel': Object.freeze({
@@ -2846,7 +2860,7 @@ async function applyDomPermissions(pageKey, root, options) {
           ['field.rebut','Câmp Rebut'],
           ['field.observatii','Câmp Observații']
         ], [
-          ['section.table-main','Tabel Livrări zale']
+          ['section.table-main','Tabel Urmărire zale']
         ])
       };
     }
