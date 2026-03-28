@@ -660,7 +660,7 @@
   </div>
 
   <button class="fab" id="btnAddFab" title="Adaugă">+</button>
-  <input type="file" id="fileImportExcel" class="hidden" accept=".xlsx,.xls,.csv" />
+  <input type="file" id="fileImportExcel" class="hidden" accept=".xlsx,.xls,.xlsm,.xlsb,.csv" />
 
   <div class="modal-backdrop" id="modalBackdrop">
     <div class="modal" id="editorModal" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
@@ -2334,20 +2334,85 @@
         });
 
         [
+          ['an', 'an'],
+          ['anul', 'an'],
+          ['year', 'an'],
+          ['luna', 'luna'],
+          ['month', 'luna'],
+          ['data', 'data'],
+          ['datainregistrare', 'data'],
+          ['date', 'data'],
+          ['operator', 'operator'],
+          ['reper', 'reper'],
+          ['denumirereperforja', 'reper'],
+          ['codcat', 'cod_cat'],
+          ['codcatdk', 'cod_cat'],
           ['numeralkod', 'numeral_kod'],
           ['numeralkodmaterial', 'numeral_kod'],
           ['valmagnetica', 'val_magnetica'],
           ['valelectrica', 'val_electrica'],
-          ['totalrebut', 'total_rebut'],
-          ['acceptate', 'acceptate'],
           ['controlate', 'controlate'],
+          ['acceptate', 'acceptate'],
+          ['rz', 'rz'],
+          ['bav', 'bav'],
+          ['planeit', 'planeit'],
+          ['lov', 'lov'],
+          ['lm', 'lm'],
+          ['ibt', 'ibt'],
+          ['sm', 'sm'],
+          ['ftt', 'ftt'],
+          ['fl', 'fl'],
+          ['lmc', 'lmc'],
+          ['des', 'des'],
+          ['as', 'as'],
+          ['fb', 'fb'],
+          ['totalrebut', 'total_rebut'],
+          ['rebuttotal', 'total_rebut'],
           ['proc', 'procent'],
           ['procent', 'procent'],
+          ['procentremedieri', 'procent'],
           ['procent2', 'procent2'],
-          ['codcat', 'cod_cat']
+          ['procentrebut', 'procent2']
         ].forEach(([alias, key]) => map.set(alias, key));
 
         return map;
+      }
+
+      function detectSheetScore(sheetName, sheet, XLSX){
+        const nameNorm = normalizeText(sheetName || '');
+        let score = 0;
+        if(nameNorm.includes('magnaflux')) score += 20;
+        else if(nameNorm.includes('magna')) score += 12;
+        else if(nameNorm.includes('flux')) score += 8;
+
+        try{
+          const rows = XLSX.utils.sheet_to_json(sheet, { header:1, defval:'', raw:false, blankrows:false, range:0 });
+          const expected = new Set(['an','anul','luna','data','datainregistrare','operator','reper','codcat','numeralkod','controlate','rz','bav','planeit','lov','lm','ibt','sm','ftt','fl','lmc','des','as','fb']);
+          const topRows = Array.isArray(rows) ? rows.slice(0, 4) : [];
+          topRows.forEach(r => {
+            (Array.isArray(r) ? r : []).forEach(cell => {
+              const key = normalizeHeader(cell);
+              if(expected.has(key)) score += 3;
+            });
+          });
+        }catch(_){ }
+        return score;
+      }
+
+      function pickImportSheet(workbook, XLSX){
+        const names = Array.isArray(workbook && workbook.SheetNames) ? workbook.SheetNames : [];
+        if(!names.length) return null;
+        let bestName = names[0];
+        let bestScore = -1;
+        names.forEach(name => {
+          const sheet = workbook.Sheets[name];
+          const score = detectSheetScore(name, sheet, XLSX);
+          if(score > bestScore){
+            bestScore = score;
+            bestName = name;
+          }
+        });
+        return bestName;
       }
 
       function normalizeImportedDate(value){
@@ -2418,12 +2483,53 @@
         }
       }
 
-      function requestImportExcel(){
+      async function openImportPicker(){
         if(!state.permissions.canEdit && !state.permissions.canAdd){
-          return showToast('Nu ai drept de import pe această pagină.');
+          showToast('Nu ai drept de import pe această pagină.');
+          return;
         }
-        el.fileImportExcel.value = '';
-        el.fileImportExcel.click();
+
+        if(window.showOpenFilePicker){
+          try{
+            const [handle] = await window.showOpenFilePicker({
+              multiple:false,
+              excludeAcceptAllOption:false,
+              types:[{
+                description:'Fișiere Excel',
+                accept:{
+                  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet':['.xlsx'],
+                  'application/vnd.ms-excel':['.xls'],
+                  'application/vnd.ms-excel.sheet.macroEnabled.12':['.xlsm'],
+                  'application/vnd.ms-excel.sheet.binary.macroEnabled.12':['.xlsb'],
+                  'text/csv':['.csv']
+                }
+              }]
+            });
+            if(!handle) return;
+            const file = await handle.getFile();
+            if(file) await importExcelFile(file);
+            return;
+          }catch(error){
+            if(error && (error.name === 'AbortError' || error.message === 'The user aborted a request.')) return;
+            console.warn('showOpenFilePicker fallback:', error);
+          }
+        }
+
+        if(!el.fileImportExcel) return;
+        try{ el.fileImportExcel.value = ''; }catch(_){ }
+        try{
+          if(typeof el.fileImportExcel.showPicker === 'function'){
+            el.fileImportExcel.showPicker();
+          }else{
+            el.fileImportExcel.click();
+          }
+        }catch(_err){
+          el.fileImportExcel.click();
+        }
+      }
+
+      function requestImportExcel(){
+        openImportPicker();
       }
 
       function mapImportedRow(sourceRow, headerMap){
@@ -2477,7 +2583,7 @@
           const XLSX = await ensureXlsxLib();
           const buffer = await file.arrayBuffer();
           const workbook = XLSX.read(buffer, { type:'array', cellDates:true });
-          const preferredSheet = workbook.SheetNames.find(name => normalizeText(name).includes('magnaflux')) || workbook.SheetNames[0];
+          const preferredSheet = pickImportSheet(workbook, XLSX);
           if(!preferredSheet){
             setSyncBadge(state.dirty ? 'Ai modificări locale de sincronizat' : 'Pregătit', state.dirty ? 'warn' : 'ok');
             return showToast('Fișierul nu conține foi de lucru.');
@@ -2550,6 +2656,7 @@
           setSyncBadge('Import Excel finalizat', 'ok');
           showToast(`Import finalizat: ${importedRows.length} rând(uri).`);
         }catch(_err){
+          console.error('Import Magnaflux Excel failed:', _err);
           setSyncBadge('Import Excel eșuat', 'err');
           showToast('Nu am putut importa fișierul Excel.');
         }finally{
