@@ -814,6 +814,31 @@
         return content;
       }
 
+      async function saveLegacyFileDocFromFile(file, row) {
+        const selectedFile = file || null;
+        if (!selectedFile) throw new Error('Nu există niciun PDF selectat pentru salvare.');
+        const sb = await createSupabase();
+        if (!(sb && state.auth && state.auth.user)) throw new Error('Nu există conexiune cloud activă pentru fișe.');
+        const source = normalizeRow(row || {});
+        const docKey = toStr(source.file_doc_key) || (FILE_DOC_PREFIX + source.id);
+        const dataUrl = await fileToDataUrl(selectedFile);
+        const payload = {
+          file_name: toStr(selectedFile.name) || (source.reper + '.pdf'),
+          file_size: Number(selectedFile.size || 0),
+          mime_type: 'application/pdf',
+          data_url: dataUrl,
+          updated_at: nowIso()
+        };
+        const { error } = await sb.from('rf_documents').upsert({
+          doc_key: docKey,
+          content: payload,
+          updated_at: payload.updated_at
+        }, { onConflict: 'doc_key' });
+        if (error) throw error;
+        state.fileCache[docKey] = payload;
+        return { docKey, payload };
+      }
+
       function sanitizePathSegment(value) {
         return toStr(value)
           .normalize('NFD')
@@ -1004,10 +1029,13 @@
         const oldStoragePath = toStr((currentRow && currentRow.storage_path) || (duplicate && duplicate.storage_path));
 
         if (selectedFile) {
+          const existingLegacyKey = toStr((currentRow && currentRow.file_doc_key) || (duplicate && duplicate.file_doc_key));
           try {
             setChip(els.cloudChip, 'Cloud: încarcă PDF în Storage privat…', 'warn');
             const storagePath = buildStoragePath(row);
-            const { error } = await sb.storage.from(STORAGE_BUCKET).upload(storagePath, selectedFile, {
+            const fileBuffer = await selectedFile.arrayBuffer();
+            const uploadBlob = new Blob([fileBuffer], { type: 'application/pdf' });
+            const { error } = await sb.storage.from(STORAGE_BUCKET).upload(storagePath, uploadBlob, {
               contentType: 'application/pdf',
               cacheControl: '3600',
               upsert: true
@@ -1019,14 +1047,30 @@
             row.file_name = selectedFile.name;
             row.file_size = Number(selectedFile.size || 0);
             row.mime_type = 'application/pdf';
+            row.file_doc_key = '';
 
-            const legacyKey = toStr((currentRow && currentRow.file_doc_key) || (duplicate && duplicate.file_doc_key));
-            if (legacyKey) legacyKeysToDelete.push(legacyKey);
-          } catch (error) {
-            console.error(error);
-            setChip(els.cloudChip, 'Cloud: eroare Storage', 'bad');
-            alert('PDF-ul nu a putut fi salvat în Storage. Rulează mai întâi SQL-ul de configurare pentru bucket-ul privat și încearcă din nou.');
-            return false;
+            if (existingLegacyKey) legacyKeysToDelete.push(existingLegacyKey);
+          } catch (storageError) {
+            console.warn('Storage upload eșuat, încerc fallback compatibil în rf_documents.', storageError);
+            try {
+              setChip(els.cloudChip, 'Cloud: Storage indisponibil, salvez PDF-ul în varianta compatibilă…', 'warn');
+              const savedLegacy = await saveLegacyFileDocFromFile(selectedFile, {
+                id: row.id,
+                reper: row.reper,
+                file_doc_key: existingLegacyKey
+              });
+              row.storage_bucket = '';
+              row.storage_path = '';
+              row.file_name = selectedFile.name;
+              row.file_size = Number(selectedFile.size || 0);
+              row.mime_type = 'application/pdf';
+              row.file_doc_key = savedLegacy.docKey;
+            } catch (fallbackError) {
+              console.error(fallbackError);
+              setChip(els.cloudChip, 'Cloud: eroare la import PDF', 'bad');
+              alert('PDF-ul nu a putut fi salvat nici în Storage, nici în fallback-ul compatibil din cloud.');
+              return false;
+            }
           }
         } else if (currentRow || duplicate) {
           const source = normalizeRow(currentRow || duplicate);
