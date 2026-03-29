@@ -40,6 +40,7 @@
     { page_key: 'comenzi-livrare', page_name: 'Comenzi Livrare' },
     { page_key: 'livrari-zale', page_name: 'Livrări zale' },
     { page_key: 'centralizator-livrari-zale', page_name: 'Centralizator livrări zale' },
+    { page_key: 'stoc-ramas-teoretic', page_name: 'Stoc rămas teoretic' },
     { page_key: 'mrc-necesar-otel', page_name: 'MRC / Necesar Oțel' },
     { page_key: 'mrc-comenzi-otel', page_name: 'MRC / Comenzi oțel' },
     { page_key: 'mrc-comenzi-saptamanale', page_name: 'MRC / Comenzi săptămânale' },
@@ -125,6 +126,7 @@ var PAGE_CONTROL_OVERRIDES = Object.freeze({
     Object.freeze({ control_key:'nav.comenzi-livrare', control_label:'Buton COMENZI LIVRARE', control_type:'action' }),
     Object.freeze({ control_key:'nav.livrari-zale', control_label:'Buton LIVRĂRI ZALE', control_type:'action' }),
     Object.freeze({ control_key:'nav.centralizator-livrari-zale', control_label:'Buton CENTRALIZATOR LIVRĂRI', control_type:'action' }),
+    Object.freeze({ control_key:'nav.stoc-ramas-teoretic', control_label:'Buton STOC RĂMAS TEORETIC', control_type:'action' }),
     Object.freeze({ control_key:'nav.mrc-necesar-otel', control_label:'Buton MRC / NECESAR OȚEL', control_type:'action' }),
     Object.freeze({ control_key:'nav.mrc-comenzi-otel', control_label:'Buton COMENZI OȚEL', control_type:'action' }),
     Object.freeze({ control_key:'nav.mrc-comenzi-saptamanale', control_label:'Buton COMENZI SĂPTĂMÂNALE', control_type:'action' }),
@@ -2779,6 +2781,23 @@ async function applyDomPermissions(pageKey, root, options) {
         ['section.table-pivot','Tabel livrări lunare pe ani'],
         ['section.chart-monthly','Grafic livrări lunare'],
         ['section.chart-yearly','Grafic totaluri anuale']
+      ])
+    }),
+    'stoc-ramas-teoretic': Object.freeze({
+      hint: 'Stoc rămas teoretic: urmărește separat oțelul rămas, debitatele rămase, forjatele rămase și piesele teoretic posibile pe reper.',
+      items: makeCrudCatalog([
+        ['field.an','Câmp An'],
+        ['field.luna','Câmp Lună'],
+        ['field.reper','Câmp Reper'],
+        ['field.diametru','Câmp Diametru'],
+        ['field.calitate','Câmp Calitate'],
+        ['field.stoc-otel','Câmp Oțel rămas'],
+        ['field.stoc-debitat','Câmp Debitate rămase'],
+        ['field.stoc-forjat','Câmp Forjate rămase'],
+        ['field.piese-posibile','Câmp Piese posibile']
+      ], [
+        ['section.table-main','Tabel stoc rămas teoretic'],
+        ['section.summary','Sumare stoc teoretic']
       ])
     }),
     'mrc-necesar-otel': Object.freeze({
