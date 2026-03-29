@@ -192,8 +192,6 @@
   function isExcludedDebitatSource(_v){ return false; }
   function isActiveRow(row){
     const raw=pickValue(row,['is_active','is active','activ']);
-    const status=String(pickValue(row,['status','stare','state','row_status'])||'').trim().toLowerCase();
-    if(status && ['inactiv','inactive','dezactivat','disabled','deleted','sters','șters','casat','arhivat','archived'].includes(status)) return false;
     if(raw==null || raw==='') return true;
     if(typeof raw==='boolean') return raw;
     const s=String(raw).trim().toLowerCase();
@@ -376,19 +374,7 @@
 
   async function readExactDocs(keys){ if(!state.supabase||!keys.length) return []; try{ const res=await state.supabase.from('rf_documents').select('*').in('doc_key',keys); if(res && !res.error && Array.isArray(res.data)) return res.data; }catch(_e){} return []; }
   async function readPrefixDocs(prefix){ if(!state.supabase||!prefix) return []; try{ const res=await state.supabase.from('rf_documents').select('*').like('doc_key', prefix+'%'); if(res && !res.error && Array.isArray(res.data)) return res.data; }catch(_e){} return []; }
-  async function loadBucket(bucket,exactKeys,prefixes){
-    const docs=[]; const seen=new Set();
-    const [exactList,prefixLists]=await Promise.all([
-      readExactDocs(exactKeys||[]),
-      Promise.all((prefixes||[]).map(prefix=>readPrefixDocs(prefix)))
-    ]);
-    const prefList=(prefixLists||[]).flat();
-    const hasYearDocs=prefList.some(doc=>{ const key=String(doc&&doc.doc_key||''); return key && !key.endsWith(':index'); });
-    const legacyRoots=new Set((exactKeys||[]).filter(key=>{ const s=String(key||''); return s && !s.includes(':'); }));
-    const merged=[...(hasYearDocs ? (exactList||[]).filter(doc=>!legacyRoots.has(String(doc&&doc.doc_key||''))) : (exactList||[])), ...prefList];
-    merged.forEach(doc=>{ if(doc&&doc.doc_key&&!seen.has(doc.doc_key)){seen.add(doc.doc_key); docs.push(doc);} });
-    return docs;
-  }
+  async function loadBucket(bucket,exactKeys,prefixes){ const docs=[]; const seen=new Set(); const exactList=await readExactDocs(exactKeys||[]); const prefList=[]; for(const prefix of (prefixes||[])){ const list=await readPrefixDocs(prefix); list.forEach(doc=>prefList.push(doc)); } const hasYearDocs=prefList.some(doc=>{ const key=String(doc&&doc.doc_key||''); return key && !key.endsWith(':index'); }); const legacyRoots=new Set((exactKeys||[]).filter(key=>{ const s=String(key||''); return s && !s.includes(':'); })); const merged=[...(hasYearDocs ? exactList.filter(doc=>!legacyRoots.has(String(doc&&doc.doc_key||''))) : exactList), ...prefList]; merged.forEach(doc=>{ if(doc&&doc.doc_key&&!seen.has(doc.doc_key)){seen.add(doc.doc_key); docs.push(doc);} }); return docs; }
   function collectRowsFromDocs(docs){ const rows=[]; let latest=null; (docs||[]).forEach(doc=>{ const payload=(doc&&((doc.content&&typeof doc.content==='object')?doc.content:(doc.data&&typeof doc.data==='object')?doc.data:doc))||null; extractRows(payload).forEach(r=>rows.push(r)); const updated=doc&&doc.updated_at?new Date(doc.updated_at):null; if(updated && !Number.isNaN(updated.getTime()) && (!latest || updated>latest)) latest=updated; }); return {rows,latest}; }
   async function tryReadTableRows(tableName){
     if(!state.supabase || !tableName) return null;
@@ -402,31 +388,34 @@
     const out={forjate:[],debitare:[],source:'rf_documents'};
     const forjateTables=['rf_helper_repere_forjate','helper_repere_forjate'];
     const debitareTables=['rf_helper_repere_debitare','helper_repere_debitare'];
-    const [forjateLists,debitareLists]=await Promise.all([
-      Promise.all(forjateTables.map(tableName=>tryReadTableRows(tableName))),
-      Promise.all(debitareTables.map(tableName=>tryReadTableRows(tableName)))
-    ]);
-    const firstForjate=(forjateLists||[]).find(rows=>Array.isArray(rows));
-    const firstDebitare=(debitareLists||[]).find(rows=>Array.isArray(rows));
-    if(firstForjate){ out.forjate=firstForjate.filter(isActiveRow); out.source='helper_tables'; }
-    if(firstDebitare){ out.debitare=firstDebitare.filter(isActiveRow); out.source='helper_tables'; }
+    for(const tableName of forjateTables){
+      const rows=await tryReadTableRows(tableName);
+      if(rows){ out.forjate=rows.filter(isActiveRow); out.source='helper_tables'; break; }
+    }
+    for(const tableName of debitareTables){
+      const rows=await tryReadTableRows(tableName);
+      if(rows){ out.debitare=rows.filter(isActiveRow); out.source='helper_tables'; break; }
+    }
     return out;
   }
 
   async function loadAllData(){
     const buckets=Object.keys(state.raw);
-    let latestOverall=null;
-    const [bucketDocs, helperTables] = await Promise.all([
-      Promise.all(buckets.map(bucket=>loadBucket(bucket, DOC_EXACT[bucket]||[], DOC_PREFIX[bucket]||[]))),
-      loadHelperTables()
-    ]);
-    buckets.forEach((bucket,idx)=>{
-      const docs=bucketDocs[idx]||[];
+    const results=await Promise.all(buckets.map(async bucket=>{
+      const docs=await loadBucket(bucket, DOC_EXACT[bucket]||[], DOC_PREFIX[bucket]||[]);
       const {rows,latest}=collectRowsFromDocs(docs);
-      state.raw[bucket]=dedupeBucketRows(bucket,(rows||[]).map(row=>normalizeBucketRow(bucket,row)).filter(Boolean));
+      return {
+        bucket,
+        rows:dedupeBucketRows(bucket,(rows||[]).map(row=>normalizeBucketRow(bucket,row)).filter(Boolean)),
+        latest
+      };
+    }));
+    let latestOverall=null;
+    results.forEach(({bucket,rows,latest})=>{
+      state.raw[bucket]=rows;
       if(latest && (!latestOverall || latest>latestOverall)) latestOverall=latest;
     });
-    state.helperTables = helperTables;
+    state.helperTables = await loadHelperTables();
     state.updatedAt=latestOverall;
     const found=buckets.filter(key=>state.raw[key].length).map(key=>key+': '+state.raw[key].length);
     if((state.helperTables.debitare||[]).length || (state.helperTables.forjate||[]).length){
@@ -473,7 +462,7 @@
     forjateRows.forEach(row=>{ const reper=normalizeReper(pickValue(row,['reper','reper_forjat','reper forjat'])); if(!reper||map.has(reper)) return; const fallback=debMeta.get(reper)||{}; map.set(reper,{reperForjat:reper,reperDebitat:reper,diametru:normalizeDiam(pickValue(row,['dimensiune_otel','dimensiune otel','diametru','diametru_otel','diametru otel']))||fallback.diametru||'',calitate:normalizeQuality(pickValue(row,['calitate','material','calitate_otel','calitate otel']))||fallback.calitate||'',kgBuc:toNumber(pickValue(row,['kg_buc_forjat','kgForj','kg forj']))||fallback.kgBuc||0}); });
     return map;
   }
-  function buildDebitatMeta(helperRows,debitateRows,helperDebitateRows,helperForjateRows){
+  function buildDebitatMeta(helperRows,debitateRows,helperDebitateRows,helperForjateRows,helperIndex){
     const map=new Map();
     function upsert(debKey, info){
       if(!debKey) return;
@@ -486,7 +475,7 @@
       });
     }
     debitateRows.forEach(row=>{
-      const debKey=normalizeReper(pickValue(row,['reper','reper debitat','denumire reper debitare']));
+      const debKey=resolveDebKeyRaw(pickValue(row,['reper','reper debitat','denumire reper debitare']), helperIndex);
       upsert(debKey,{
         diametru:normalizeDiam(pickValue(row,['diametru','diametru_otel','diametru otel','dimensiune_otel','dimensiune otel'])),
         calitate:normalizeQuality(pickValue(row,['calitate','material','calitate_otel','calitate otel'])),
@@ -498,7 +487,7 @@
       return Object.prototype.hasOwnProperty.call(row||{}, 'reper_debitare') || Object.prototype.hasOwnProperty.call(row||{}, 'REPER_DEBITARE');
     }))).filter(isActiveRow);
     explicitDebRows.forEach(row=>{
-      const debKey = normalizeReper(row.reper_debitare ?? row.REPER_DEBITARE ?? '');
+      const debKey = resolveDebKeyRaw(row.reper_debitare ?? row.REPER_DEBITARE ?? '', helperIndex);
       upsert(debKey,{
         diametru:normalizeDiam(row.diametru_otel ?? row.DIAMETRU_OTEL ?? row.dimensiune_otel ?? row.DIMENSIUNE_OTEL ?? ''),
         calitate:normalizeQuality(row.calitate_otel ?? row.CALITATE_OTEL ?? row.material ?? row.MATERIAL ?? ''),
@@ -510,7 +499,7 @@
       return Object.prototype.hasOwnProperty.call(row||{}, 'reper_forjat') || Object.prototype.hasOwnProperty.call(row||{}, 'REPER_FORJAT');
     }))).filter(isActiveRow);
     explicitForjRows.forEach(row=>{
-      const debKey=normalizeReper(row.reper_debitare_origine ?? row.REPER_DEBITARE_ORIGINE ?? '');
+      const debKey=resolveDebKeyRaw(row.reper_debitare_origine ?? row.REPER_DEBITARE_ORIGINE ?? '', helperIndex);
       if(!debKey) return;
       upsert(debKey,{
         diametru:normalizeDiam(row.dimensiune_otel ?? row.DIMENSIUNE_OTEL ?? row.diametru_otel ?? row.DIAMETRU_OTEL ?? ''),
@@ -518,6 +507,39 @@
       });
     });
     return map;
+  }
+
+  function resolveDebKeyRaw(reper, helperIndex){
+    const key=normalizeReper(reper);
+    if(!key) return '';
+    const helper=helperIndex && helperIndex.get(key);
+    return normalizeReper((helper && helper.reperDebitat) || key);
+  }
+  function remapInventoryQtyMap(rawMap, helperIndex){
+    const out=new Map();
+    (rawMap||new Map()).forEach((candidate,key)=>{
+      const debKey=resolveDebKeyRaw(key, helperIndex);
+      if(!debKey) return;
+      const qty=candidate && typeof candidate==='object' ? toNumber(candidate.qty) : toNumber(candidate);
+      out.set(debKey,(out.get(debKey)||0)+qty);
+    });
+    return out;
+  }
+  function hasRealForjatActivity(reper, forjInv, forjProduced, livrate){
+    const key=normalizeReper(reper);
+    if(!key) return false;
+    return toNumber(forjInv.get(key))!==0 || toNumber(forjProduced.get(key))!==0 || toNumber(livrate.get(key))!==0;
+  }
+  function isExplicitSelfMappedForjat(reper, helperIndex){
+    const key=normalizeReper(reper);
+    if(!key || !helperIndex || !helperIndex.has(key)) return false;
+    const meta=helperIndex.get(key)||{};
+    return normalizeReper(meta.reperForjat||key)===key && normalizeReper(meta.reperDebitat||key)===key;
+  }
+  function hasRealDebitatActivity(debKey, debInv, debProduced, steelDebitated, debConsumed){
+    const key=normalizeReper(debKey);
+    if(!key) return false;
+    return toNumber(debInv.get(key))!==0 || toNumber(debProduced.get(key))!==0 || toNumber((steelDebitated && steelDebitated.byReper && steelDebitated.byReper.get(key))||0)!==0 || toNumber(debConsumed.get(key))!==0;
   }
 
   function latestInventoryMapForPeriod(rows,type){
@@ -558,11 +580,11 @@
   }
   function rowInSelectedPeriod(row){ const selected=getSelectedPeriod(); if(!selected.year) return true; const period=getRowPeriod(row); if(!period) return false; return selected.month ? (period.year===selected.year && period.month===selected.month) : period.year===selected.year; }
   function aggregateSteelEntriesThisPeriod(){ const map=new Map(); state.raw.intrariOtel.forEach(row=>{ if(!rowInSelectedPeriod(row)) return; const diam=normalizeDiam(pickValue(row,['diametru','diametru otel','dimensiune otel','dimensiune_otel'])); const cal=normalizeQuality(pickValue(row,['calitate','material','calitate otel','calitate_otel'])); const key=[diam,cal].join('|'); if(!diam&&!cal) return; map.set(key,(map.get(key)||0)+toNumber(pickValue(row,['cantitateKg','cantitate kg','cantitate_kg','cantitate in kg','cantitate','kg']))); }); return map; }
-  function aggregateSteelDebitatedThisPeriod(){
+  function aggregateSteelDebitatedThisPeriod(helperIndex){
     const byReper=new Map(), byMaterial=new Map();
     state.raw.debitate.forEach(row=>{
       if(!rowInSelectedPeriod(row)) return;
-      const reper=normalizeReper(pickValue(row,['reper','reper_debitare','reper debitat','denumire reper debitare']));
+      const reper=resolveDebKeyRaw(pickValue(row,['reper','reper_debitare','reper debitat','denumire reper debitare']), helperIndex);
       const diam=normalizeDiam(pickValue(row,['diametru','diametru_otel','diametru otel','dimensiune otel','dimensiune_otel']));
       const cal=normalizeQuality(pickValue(row,['calitate','material','calitate_otel','calitate otel']));
       let totalKg=toNumber(pickValue(row,['totalKg','total_kg','total kg debitat','total kg','kg total']));
@@ -576,7 +598,7 @@
     });
     return {byReper,byMaterial};
   }
-  function aggregateDebitateProducedThisPeriod(){ const map=new Map(); state.raw.debitate.forEach(row=>{ if(!rowInSelectedPeriod(row)) return; const reper=normalizeReper(pickValue(row,['reper','reper debitat','denumire reper debitare'])); if(!reper) return; map.set(reper,(map.get(reper)||0)+toNumber(pickValue(row,['cantitate','cantitateBuc','cantitate_buc','cantitate buc','buc']))); }); return map; }
+  function aggregateDebitateProducedThisPeriod(helperIndex){ const map=new Map(); state.raw.debitate.forEach(row=>{ if(!rowInSelectedPeriod(row)) return; const reper=resolveDebKeyRaw(pickValue(row,['reper','reper debitat','denumire reper debitare']), helperIndex); if(!reper) return; map.set(reper,(map.get(reper)||0)+toNumber(pickValue(row,['cantitate','cantitateBuc','cantitate_buc','cantitate buc','buc']))); }); return map; }
   function aggregateDebitateConsumedThisPeriod(helperIndex){ const map=new Map(); state.raw.forjate.forEach(row=>{ if(!rowInSelectedPeriod(row)) return; const reperForjat=normalizeReper(pickValue(row,['reper','reper forjat'])); if(!reperForjat) return; const helper=helperIndex.get(reperForjat)||{reperDebitat:reperForjat}; const reperDebitat=helper.reperDebitat||reperForjat; const bune=toNumber(pickValue(row,['buc_realizate','buc realizate','bucRealizate','realizat','cantitate','buc'])); const rebut=toNumber(pickValue(row,['rebut','rebuturi'])); map.set(reperDebitat,(map.get(reperDebitat)||0)+(bune+rebut)); }); return map; }
   function aggregateForjateProducedThisPeriod(){ const map=new Map(); state.raw.forjate.forEach(row=>{ if(!rowInSelectedPeriod(row)) return; const reper=normalizeReper(pickValue(row,['reper','reper forjat'])); if(!reper) return; map.set(reper,(map.get(reper)||0)+toNumber(pickValue(row,['buc_realizate','buc realizate','bucRealizate','realizat','cantitate','buc']))); }); return map; }
   function aggregateLivrariThisPeriod(helperIndex){
@@ -606,13 +628,13 @@
 
   function buildRows(){
     const helperIndex=buildHelperIndex(state.raw.helper,state.raw.debitate,state.raw.forjate,state.helperTables.forjate);
-    const debMeta=buildDebitatMeta(state.raw.helper,state.raw.debitate,state.helperTables.debitare,state.helperTables.forjate);
+    const debMeta=buildDebitatMeta(state.raw.helper,state.raw.debitate,state.helperTables.debitare,state.helperTables.forjate,helperIndex);
     const steelInv=latestInventoryMapForPeriod(state.raw.inventarOtel,'steel');
-    const debInv=latestInventoryMapForPeriod(state.raw.inventarDebitate,'debitate');
-    const forjInv=latestInventoryMapForPeriod(state.raw.inventarForjate,'forjate');
+    const debInv=remapInventoryQtyMap(latestInventoryMapForPeriod(state.raw.inventarDebitate,'debitate'), helperIndex);
+    const forjInv=remapInventoryQtyMap(latestInventoryMapForPeriod(state.raw.inventarForjate,'forjate'), new Map());
     const steelEntries=aggregateSteelEntriesThisPeriod();
-    const steelDebitated=aggregateSteelDebitatedThisPeriod();
-    const debProduced=aggregateDebitateProducedThisPeriod();
+    const steelDebitated=aggregateSteelDebitatedThisPeriod(helperIndex);
+    const debProduced=aggregateDebitateProducedThisPeriod(helperIndex);
     const debConsumed=aggregateDebitateConsumedThisPeriod(helperIndex);
     const forjProduced=aggregateForjateProducedThisPeriod();
     const livrate=aggregateLivrariThisPeriod(helperIndex);
@@ -633,7 +655,7 @@
     function ensureDeb(material, debKey){
       let debGroup=material.debGroups.get(debKey);
       if(!debGroup){
-        const startDeb=(debInv.get(debKey)?.qty)||0;
+        const startDeb=debInv.get(debKey)||0;
         const debBuc=debProduced.get(debKey)||0;
         const debKg=steelDebitated.byReper.get(debKey)||0;
         const forjatDinDeb=debConsumed.get(debKey)||0;
@@ -654,6 +676,9 @@
     const seenForjatInDeb=new Set();
     for(const reperForjat of forjatSet){
       if(!reperForjat || isExcludedDisplayReper(reperForjat)) continue;
+      const knownFromHelper=helperIndex.has(reperForjat);
+      const knownAsDebitat=debMeta.has(reperForjat) || debProduced.has(reperForjat) || debInv.has(reperForjat);
+      if(!knownFromHelper && !knownAsDebitat) continue;
       const meta=helperIndex.get(reperForjat)||{reperForjat:reperForjat,reperDebitat:reperForjat,diametru:'',calitate:'',kgBuc:0};
       const debKey=meta.reperDebitat||reperForjat;
       if(!debKey || isExcludedDebitatSource(debKey)) continue;
@@ -679,15 +704,16 @@
       const debGroup=ensureDeb(material, debKey);
       debGroup.forjats.push({
         reperForjat,
-        stocStartForjat:(forjInv.get(reperForjat)?.qty)||0,
+        stocStartForjat:forjInv.get(reperForjat)||0,
         forjatBuc:forjProduced.get(reperForjat)||0,
         livrat:livrate.get(reperForjat)||0,
-        forjatRamas:((forjInv.get(reperForjat)?.qty)||0)+(forjProduced.get(reperForjat)||0)-(livrate.get(reperForjat)||0)
+        forjatRamas:(forjInv.get(reperForjat)||0)+(forjProduced.get(reperForjat)||0)-(livrate.get(reperForjat)||0)
       });
       seenForjatInDeb.add(debKey+'|'+reperForjat);
     }
 
     const debKeySet=new Set();
+    for(const key of debMeta.keys()) debKeySet.add(key);
     for(const key of debInv.keys()) debKeySet.add(key);
     for(const key of debProduced.keys()) debKeySet.add(key);
     for(const key of debConsumed.keys()) debKeySet.add(key);
@@ -695,32 +721,41 @@
 
     for(const debKey of debKeySet){
       if(!debKey || isExcludedDebitatSource(debKey)) continue;
+      const debHasActivity=hasRealDebitatActivity(debKey, debInv, debProduced, steelDebitated, debConsumed);
+      const explicitMirror=isExplicitSelfMappedForjat(debKey, helperIndex);
+      const mirrorForjat=isExcludedDisplayReper(debKey)?'':debKey;
+      const mirrorHasData=hasRealForjatActivity(mirrorForjat, forjInv, forjProduced, livrate);
+      if(!debHasActivity && !explicitMirror && !mirrorHasData) continue;
       const dm=debMeta.get(debKey)||{diametru:'',calitate:''};
       const material=ensureMaterial(dm.diametru||'', dm.calitate||'');
       const debGroup=ensureDeb(material, debKey);
-      if(!debGroup.forjats.length){
-        const mirrorForjat=isExcludedDisplayReper(debKey)?'':debKey;
-        const mirrorHasData=((forjInv.get(mirrorForjat)?.qty)||0)!==0 || (forjProduced.get(mirrorForjat)||0)!==0 || (livrate.get(mirrorForjat)||0)!==0;
-        const debHasSourceData=(debGroup.stocDebitat||0)!==0 || (debGroup.debitatBuc||0)!==0 || (debGroup.debitatKg||0)!==0;
-        if(mirrorForjat && (mirrorHasData || debHasSourceData)){
-          debGroup.forjats.push({
-            reperForjat:mirrorForjat,
-            stocStartForjat:(forjInv.get(mirrorForjat)?.qty)||0,
-            forjatBuc:forjProduced.get(mirrorForjat)||0,
-            livrat:livrate.get(mirrorForjat)||0,
-            forjatRamas:((forjInv.get(mirrorForjat)?.qty)||0)+(forjProduced.get(mirrorForjat)||0)-(livrate.get(mirrorForjat)||0)
-          });
-        }
+      if(!debGroup.forjats.length && mirrorForjat && (mirrorHasData || explicitMirror)){
+        debGroup.forjats.push({
+          reperForjat:mirrorForjat,
+          stocStartForjat:forjInv.get(mirrorForjat)||0,
+          forjatBuc:forjProduced.get(mirrorForjat)||0,
+          livrat:livrate.get(mirrorForjat)||0,
+          forjatRamas:(forjInv.get(mirrorForjat)||0)+(forjProduced.get(mirrorForjat)||0)-(livrate.get(mirrorForjat)||0)
+        });
       }
     }
 
     const groups=Array.from(materialMap.values()).map(material=>{
       const debGroups=Array.from(material.debGroups.values()).map(deb=>({
         ...deb,
-        forjats:deb.forjats.sort((a,b)=>normalizeReper(a.reperForjat).localeCompare(normalizeReper(b.reperForjat),'ro'))
-      })).sort((a,b)=>normalizeReper(a.reperDebitat).localeCompare(normalizeReper(b.reperDebitat),'ro'));
+        forjats:deb.forjats
+          .filter(f=>{
+            const reper=normalizeReper(f.reperForjat);
+            if(!reper) return false;
+            if(isExcludedDisplayReper(reper)) return false;
+            return hasRealForjatActivity(reper, forjInv, forjProduced, livrate) || isExplicitSelfMappedForjat(reper, helperIndex);
+          })
+          .sort((a,b)=>normalizeReper(a.reperForjat).localeCompare(normalizeReper(b.reperForjat),'ro'))
+      })).filter(deb=>deb.forjats.length || hasRealDebitatActivity(deb.reperDebitat, debInv, debProduced, steelDebitated, debConsumed))
+        .sort((a,b)=>normalizeReper(a.reperDebitat).localeCompare(normalizeReper(b.reperDebitat),'ro'));
       return {...material, debGroups};
-    }).sort((a,b)=>{
+    }).filter(material=>material.debGroups.length || toNumber(material.stocStartOtel)!==0 || toNumber(material.intrariOtel)!==0 || toNumber(material.debitatDinOtelKg)!==0)
+      .sort((a,b)=>{
       const aDiam=diamSortValue(a.diametru), bDiam=diamSortValue(b.diametru);
       if(aDiam!==bDiam) return aDiam-bDiam;
       const aDiamTxt=normalizeDiam(a.diametru), bDiamTxt=normalizeDiam(b.diametru);
@@ -740,8 +775,6 @@
       material.debGroups.forEach(deb=>{
         const debMatch=!reperQuery || normalizeReper(deb.reperDebitat).includes(reperQuery);
         let visibleForjats=(deb.forjats||[]).filter(f=>{
-          const hasForjatData=!!(f && (f.reperForjat || f.stocStartForjat || f.forjatBuc || f.livrat || f.forjatRamas));
-          if(!hasForjatData) return false;
           if(!reperQuery) return true;
           if(debMatch) return true;
           return f.reperForjat && normalizeReper(f.reperForjat).includes(reperQuery);
