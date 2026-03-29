@@ -44,6 +44,7 @@
     td.left{text-align:left;padding-left:8px}
     td.num{text-align:right;padding-right:8px;font-variant-numeric:tabular-nums}
     tbody tr:hover td{background:#f8fbff}
+    tbody tr.group-end td{border-bottom:3px solid #173a6a}
     .pill{display:inline-flex;align-items:center;justify-content:center;min-width:70px;padding:3px 8px;border-radius:999px;font-size:11px;font-weight:800;border:1px solid rgba(29,29,29,.16)}
     .pill.ok{background:var(--ok-bg);color:var(--ok-text)}
     .pill.warn{background:var(--warn-bg);color:var(--warn-text)}
@@ -86,7 +87,7 @@
       <div class="field"><label for="filterDiam">Diametru</label><input id="filterDiam" type="text" placeholder="Ex: 65" /></div>
       <div class="field"><label for="filterCal">Calitate</label><input id="filterCal" type="text" placeholder="Ex: C45" /></div>
       <button class="btn secondary" id="btnClear" type="button">Șterge filtrele</button>
-      <div class="hint">Piesele posibile din oțel sunt calculate teoretic, pe fiecare reper în parte, din stocul rămas pe combinația diametru + calitate.</div>
+      <div class="hint">Reperele sunt grupate după diametru + calitate, în ordine de la diametrul cel mai mic la cel mai mare. Linia groasă separă fiecare grup de material.</div>
     </div>
   </section>
 
@@ -140,6 +141,10 @@
   const PAGE_KEY='stoc-ramas-teoretic';
   const STORAGE_KEY='kad-stoc-ramas-teoretic-filters';
   const MONTHS_RO={1:'Ianuarie',2:'Februarie',3:'Martie',4:'Aprilie',5:'Mai',6:'Iunie',7:'Iulie',8:'August',9:'Septembrie',10:'Octombrie',11:'Noiembrie',12:'Decembrie'};
+  const EXCLUDED_REPERS=new Set([
+    'MENTENANTA','SK-304230','SK-304231','SK-304232','SK-304233','106-1625_MP','106-1626_MP',
+    '229-6909/10','106-1625/26','358-5253/55','503-0761/62','7G-0521/22','9K-6628/29','9P-9664/65','ASOLLO'
+  ].map(v=>String(v||'').trim().toUpperCase()));
   const DOC_EXACT={
     helper:['helper-data','helper_data','helpers','numeralkod','numeralkod-data'],
     intrariOtel:['intrari-otel','intrari_otel','intrari otel','intrariotel','intrari-otel:index'],
@@ -271,29 +276,38 @@
     const rows=[];
     for(const reper of reperSet){
       const meta=helperIndex.get(reper)||{reperForjat:reper,reperDebitat:reper,diametru:'',calitate:'',kgBuc:0};
+      const reperForjat=meta.reperForjat||reper;
+      const reperDebitat=meta.reperDebitat||reper;
+      if(isExcludedReper(reperForjat) || isExcludedReper(reperDebitat)) continue;
       let diam=meta.diametru||'', cal=meta.calitate||'', kg=meta.kgBuc||0;
-      if((!diam||!cal||!kg) && meta.reperDebitat){
-        const fallback=state.raw.debitate.find(r=>normalizeReper(pickValue(r,['reper','reper debitat','denumire reper debitare']))===meta.reperDebitat);
+      if((!diam||!cal||!kg) && reperDebitat){
+        const fallback=state.raw.debitate.find(r=>normalizeReper(pickValue(r,['reper','reper debitat','denumire reper debitare']))===reperDebitat);
         if(fallback){ diam=diam||normalizeDiam(pickValue(fallback,['diametru','diametru otel','dimensiune otel'])); cal=cal||normalizeQuality(pickValue(fallback,['calitate','material','calitate otel'])); kg=kg||toNumber(pickValue(fallback,['kg/buc','kg buc','greutate','kg pe buc'])); }
       }
       const steelKey=[diam,cal].join('|');
       const steelQty=(steelInv.get(steelKey)?.qty||0)+(steelDelta.get(steelKey)||0);
-      const debQty=(debInv.get(meta.reperDebitat)?.qty||0)+(debDelta.get(meta.reperDebitat)||0);
-      const forjQty=(forjInv.get(meta.reperForjat)?.qty||0)+(forjDelta.get(meta.reperForjat)||0);
+      const debQty=(debInv.get(reperDebitat)?.qty||0)+(debDelta.get(reperDebitat)||0);
+      const forjQty=(forjInv.get(reperForjat)?.qty||0)+(forjDelta.get(reperForjat)||0);
       const pieseDinOtel=kg>0?Math.floor(Math.max(steelQty,0)/kg):0;
-      rows.push({reper:meta.reperForjat||reper,reperDebitat:meta.reperDebitat||reper,diametru:diam,calitate:cal,kgBuc:kg,otelRamasKg:steelQty,pieseDinOtel,debitateRamase:debQty,forjateRamase:forjQty,totalDisponibil:Math.max(forjQty,0)+Math.max(debQty,0)+pieseDinOtel});
+      rows.push({reper:reperForjat,reperDebitat:reperDebitat,diametru:diam,calitate:cal,kgBuc:kg,otelRamasKg:steelQty,pieseDinOtel,debitateRamase:debQty,forjateRamase:forjQty,totalDisponibil:Math.max(forjQty,0)+Math.max(debQty,0)+pieseDinOtel});
     }
-    state.rows=rows.sort((a,b)=>a.reper.localeCompare(b.reper,'ro'));
+    state.rows=rows.sort(compareRows);
   }
 
-  function applyFilters(){ const reperQuery=normalizeReper(els.filterReper.value), diamQuery=normalizeDiam(els.filterDiam.value), calQuery=normalizeQuality(els.filterCal.value); state.filteredRows=state.rows.filter(row=>{ if(reperQuery && !normalizeReper(row.reper).includes(reperQuery)) return false; if(diamQuery && !normalizeDiam(row.diametru).includes(diamQuery)) return false; if(calQuery && !normalizeQuality(row.calitate).includes(calQuery)) return false; return true; }); }
+  function applyFilters(){ const reperQuery=normalizeReper(els.filterReper.value), diamQuery=normalizeDiam(els.filterDiam.value), calQuery=normalizeQuality(els.filterCal.value); state.filteredRows=state.rows.filter(row=>{ if(isExcludedReper(row.reper) || isExcludedReper(row.reperDebitat)) return false; if(reperQuery && !normalizeReper(row.reper).includes(reperQuery)) return false; if(diamQuery && !normalizeDiam(row.diametru).includes(diamQuery)) return false; if(calQuery && !normalizeQuality(row.calitate).includes(calQuery)) return false; return true; }); }
   function getPill(value){ if(value>0) return '<span class="pill ok">OK</span>'; if(value===0) return '<span class="pill warn">ZERO</span>'; return '<span class="pill bad">MINUS</span>'; }
   function buildUniqueSteelTotal(){ const seen=new Set(); let total=0; state.rows.forEach(row=>{ const key=normalizeDiam(row.diametru)+'|'+normalizeQuality(row.calitate); if(!key||key==='|') return; if(seen.has(key)) return; seen.add(key); total+=row.otelRamasKg||0; }); return total; }
   function buildUniqueTotal(rows,keyField,valueField){ const seen=new Set(); let total=0; rows.forEach(row=>{ const key=row[keyField]||''; if(!key||seen.has(key)) return; seen.add(key); total+=row[valueField]||0; }); return total; }
   function buildFooterStatus(){ const parts=[]; Object.entries({helper:'Helper',intrariOtel:'Intrări oțel',debitate:'Debitate',forjate:'Forjate',inventarOtel:'Inventar oțel',inventarDebitate:'Inventar debitate',inventarForjate:'Inventar forjate',livrari:'Livrări'}).forEach(([key,label])=>{ if(state.raw[key].length) parts.push(label+': '+state.raw[key].length); }); return parts.length?parts.join(' | '):'Nu au fost găsite sursele necesare în rf_documents.'; }
   function render(){
     applyFilters();
-    els.tbody.innerHTML=state.filteredRows.map((row,idx)=>`<tr><td>${idx+1}</td><td class="left">${esc(row.reper)}</td><td class="left">${esc(row.reperDebitat)}</td><td>${esc(row.diametru)}</td><td>${esc(row.calitate)}</td><td class="num">${row.kgBuc?formatNumber(row.kgBuc,3):''}</td><td class="num">${formatNumber(row.otelRamasKg,2)}</td><td class="num">${formatNumber(row.pieseDinOtel,0)}</td><td class="num">${formatNumber(row.debitateRamase,0)}</td><td>${getPill(Math.round(row.debitateRamase))}</td><td class="num">${formatNumber(row.forjateRamase,0)}</td><td>${getPill(Math.round(row.forjateRamase))}</td><td class="num"><strong>${formatNumber(row.totalDisponibil,0)}</strong></td></tr>`).join('');
+    els.tbody.innerHTML=state.filteredRows.map((row,idx,arr)=>{
+      const currKey=normalizeDiam(row.diametru)+'|'+normalizeQuality(row.calitate);
+      const next=arr[idx+1];
+      const nextKey=next?(normalizeDiam(next.diametru)+'|'+normalizeQuality(next.calitate)):'';
+      const groupEnd=!next || currKey!==nextKey;
+      return `<tr class="${groupEnd?'group-end':''}"><td>${idx+1}</td><td class="left">${esc(row.reper)}</td><td class="left">${esc(row.reperDebitat)}</td><td>${esc(row.diametru)}</td><td>${esc(row.calitate)}</td><td class="num">${row.kgBuc?formatNumber(row.kgBuc,3):''}</td><td class="num">${formatNumber(row.otelRamasKg,2)}</td><td class="num">${formatNumber(row.pieseDinOtel,0)}</td><td class="num">${formatNumber(row.debitateRamase,0)}</td><td>${getPill(Math.round(row.debitateRamase))}</td><td class="num">${formatNumber(row.forjateRamase,0)}</td><td>${getPill(Math.round(row.forjateRamase))}</td><td class="num"><strong>${formatNumber(row.totalDisponibil,0)}</strong></td></tr>`;
+    }).join('');
     els.statSteel.textContent=formatNumber(buildUniqueSteelTotal(),2)+' kg';
     els.statDebitate.textContent=formatNumber(buildUniqueTotal(state.rows,'reperDebitat','debitateRamase'),0)+' buc';
     els.statForjate.textContent=formatNumber(buildUniqueTotal(state.rows,'reper','forjateRamase'),0)+' buc';
