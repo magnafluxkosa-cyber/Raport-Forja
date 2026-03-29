@@ -557,7 +557,7 @@ const LABELS_FIXED = {
 };
 const LABEL_ZALE_DOC_KEYS = ['zale-248-2307-08','248-2307-08'];
 const LABEL_MRC_DOC_KEYS = ['mrc-customer-orders'];
-const labelCache = { docs:new Map(), intrari:new Map(), zale:null, mrc:null };
+const labelCache = { docs:new Map(), docsPrefix:new Map(), intrari:new Map(), zale:null, mrc:null };
 
 function pickFirst(obj, keys){
   if(!obj || typeof obj !== 'object') return '';
@@ -611,6 +611,24 @@ async function queryDocsByKeys(docKeys){
     return [];
   }
 }
+async function queryDocsByPrefix(prefix){
+  const pref = toStr(prefix);
+  if(!pref) return [];
+  if(labelCache.docsPrefix.has(pref)) return labelCache.docsPrefix.get(pref);
+  const sb = await createSupabase();
+  if(!(sb && authState && authState.user)) return [];
+  try{
+    const { data, error } = await sb.from('rf_documents').select('doc_key,content,data,updated_at').like('doc_key', pref + '%');
+    if(error) throw error;
+    const docs = Array.isArray(data) ? data : [];
+    labelCache.docsPrefix.set(pref, docs);
+    return docs;
+  }catch(err){
+    console.warn('Nu am putut încărca documentele prefix pentru etichete.', err);
+    return [];
+  }
+}
+
 async function readDocRowsByPriority(docKeys){
   const docs = await queryDocsByKeys(docKeys);
   for(const key of (docKeys || [])){
@@ -636,26 +654,32 @@ function normalizeIntrariLabelRow(raw, index){
 }
 async function loadIntrariRowsForYears(years){
   const expandedYears = Array.from(new Set((years || []).map(v => Number(v)).filter(v => v > 0).flatMap(y => [y, y - 1])));
-  const cacheKey = expandedYears.slice().sort((a,b)=>a-b).join('|');
+  const cacheKey = expandedYears.slice().sort((a,b)=>a-b).join('|') || 'all';
   if(labelCache.intrari.has(cacheKey)) return labelCache.intrari.get(cacheKey);
-  const keys = [];
-  expandedYears.forEach(year => {
-    keys.push(`intrari-otel:${year}`);
+
+  const exactKeys = [];
+  expandedYears.forEach(year => { exactKeys.push(`intrari-otel:${year}`); });
+  exactKeys.push('intrari-otel');
+
+  const [exactDocs, prefixDocs] = await Promise.all([
+    queryDocsByKeys(exactKeys),
+    queryDocsByPrefix('intrari-otel:')
+  ]);
+
+  const docMap = new Map();
+  [...exactDocs, ...prefixDocs].forEach(doc => {
+    if(doc && doc.doc_key) docMap.set(doc.doc_key, doc);
   });
-  keys.push('intrari-otel');
-  const docs = await queryDocsByKeys(keys);
+
   const rows = [];
-  expandedYears.forEach(year => {
-    const specific = docs.find(doc => doc.doc_key === `intrari-otel:${year}` && resolveRowsPayload(doc.content || doc.data).length);
-    const fallback = docs.find(doc => doc.doc_key === 'intrari-otel' && resolveRowsPayload(doc.content || doc.data).length);
-    const picked = specific || fallback;
-    if(!picked) return;
-    resolveRowsPayload(picked.content || picked.data).forEach((raw, index) => {
+  Array.from(docMap.values()).forEach(doc => {
+    resolveRowsPayload(doc.content || doc.data).forEach((raw, index) => {
       const row = normalizeIntrariLabelRow(raw, index);
       if(row.cod_intern && row.sarja) rows.push(row);
     });
   });
-  const deduped = uniqueRowsByKey(rows, row => [row.cod_intern, row.sarja, row.data || row.an].join('|'));
+
+  const deduped = uniqueRowsByKey(rows, row => [row.cod_intern, row.sarja, row.data || row.an, row.cantitate_kg].join('|'));
   labelCache.intrari.set(cacheKey, deduped);
   return deduped;
 }
@@ -735,6 +759,13 @@ function findBestDessinSuffix(reper, deliveryDisplay, mrcRows){
   });
   return Array.from(counts.entries()).sort((a,b) => (b[1].best - a[1].best) || (b[1].count - a[1].count) || a[0].localeCompare(b[0]))[0]?.[0] || '';
 }
+function buildCouleeText(sarje, deliveryDisplay){
+  const distinctSarje = uniqueNonEmpty(sarje);
+  if(!distinctSarje.length) return '-';
+  const yy = (displayToIso(deliveryDisplay) || '').slice(2,4);
+  return yy ? `${yy}/${distinctSarje.join('/')}` : distinctSarje.join('/');
+}
+
 function buildLabelPayloads(transport, transportRows, intrariRows, zaleRows, mrcRows, clientLabel){
   const deliveryRow = (zaleRows || []).find(row => toStr(row.nr_transport) === toStr(transport));
   const deliveryDate = deliveryRow && deliveryRow.data_livrarii ? deliveryRow.data_livrarii : normalizeDate(transportRows[0] && transportRows[0].data);
@@ -768,6 +799,7 @@ function buildLabelPayloads(transport, transportRows, intrariRows, zaleRows, mrc
       quantity: qty,
       codCats: codCatList,
       sarje,
+      couleeText: buildCouleeText(sarje, deliveryDate),
       matrite,
       clientLabel: toStr(clientLabel) || LABELS_FIXED.clientCountry,
       deliveryDate
@@ -866,7 +898,7 @@ function drawLabelPdf(doc, label, originX, originY){
   doc.setFontSize(fit.size);
   doc.text(fit.text, rightValX, row1Y + 0.1);
 
-  const sarjaText = (label.sarje && label.sarje.length ? ('no.' + label.sarje.join('/')) : '-');
+  const sarjaText = toStr(label.couleeText) || '-';
   fit = fitSingleLine(doc, sarjaText, rightValueMax, 11.5, 8.2);
   doc.setFontSize(fit.size);
   doc.text(fit.text, rightValX, row2Y + 0.2);
