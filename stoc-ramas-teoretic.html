@@ -201,7 +201,45 @@
   function firstOfMonth(year,month){ return new Date(year,month-1,1,0,0,0,0); }
   function parseMonthName(v){ const raw=normText(v); const map={'ianuarie':1,'januarie':1,'jan':1,'februarie':2,'feb':2,'martie':3,'mar':3,'aprilie':4,'apr':4,'mai':5,'iunie':6,'iun':6,'iulie':7,'iul':7,'august':8,'aug':8,'septembrie':9,'sep':9,'sept':9,'octombrie':10,'oct':10,'noiembrie':11,'noi':11,'nov':11,'decembrie':12,'dec':12}; return map[raw]||0; }
   function parseLooseDate(value){ if(value instanceof Date && !Number.isNaN(value.getTime())) return value; const raw=trimText(value); if(!raw) return null; const normalized=raw.replace(/\./g,'/').replace(/-/g,'/'); const parts=normalized.split('/').map(s=>s.trim()).filter(Boolean); if(parts.length===3){ let day=Number(parts[0]),month=Number(parts[1]),year=Number(parts[2]); if(parts[0].length===4){ year=Number(parts[0]); month=Number(parts[1]); day=Number(parts[2]); } if(year<100) year+=2000; const d=new Date(year,month-1,day,23,59,59,999); if(!Number.isNaN(d.getTime())) return d; } const d=new Date(raw); return Number.isNaN(d.getTime())?null:d; }
-  function pickValue(row,candidates){ if(!row||typeof row!=='object') return ''; const entries=Object.entries(row); for(const candidate of candidates){ const target=normText(candidate); for(const [key,value] of entries){ if(normText(key)===target && value!=null && value!=='') return value; } } for(const candidate of candidates){ const target=normText(candidate); for(const [key,value] of entries){ const current=normText(key); if((current.includes(target)||target.includes(current)) && value!=null && value!=='') return value; } } return ''; }
+  function squeezeKey(v){ return normText(v).replace(/\s+/g,''); }
+  function normalizeBucketRow(bucket,row){
+    if(!Array.isArray(row)) return row||{};
+    switch(bucket){
+      case 'intrariOtel':
+      case 'inventarOtel':
+        return { an:row[0], luna:row[1], data:row[2], diametru:row[3], calitate:row[4], codIntern:row[5], sarjaMaterial:row[6], cantitateKg:row[7], pretest:row[8], furnizor:row[9] };
+      case 'inventarDebitate':
+        return { an:row[0], luna:row[1], reper:row[2], diametru:row[3], calitate:row[4], cantitateBuc:row[5] };
+      case 'inventarForjate':
+        return { an:row[0], luna:row[1], reper:row[2], dimensiune:row[3], calitate:row[4], rebutAnaliza:row[5], stocFinal:row[6] };
+      default:
+        return row;
+    }
+  }
+  function pickValue(row,candidates){
+    if(!row||typeof row!=='object'||Array.isArray(row)) return '';
+    for(const candidate of candidates){
+      if(Object.prototype.hasOwnProperty.call(row,candidate) && row[candidate]!=null && row[candidate]!=='') return row[candidate];
+    }
+    const entries=Object.entries(row);
+    for(const candidate of candidates){
+      const target=normText(candidate), targetSq=squeezeKey(candidate);
+      for(const [key,value] of entries){
+        if(value==null||value==='') continue;
+        const current=normText(key), currentSq=squeezeKey(key);
+        if(current===target || currentSq===targetSq) return value;
+      }
+    }
+    for(const candidate of candidates){
+      const target=normText(candidate), targetSq=squeezeKey(candidate);
+      for(const [key,value] of entries){
+        if(value==null||value==='') continue;
+        const current=normText(key), currentSq=squeezeKey(key);
+        if(current.includes(target)||target.includes(current)||currentSq.includes(targetSq)||targetSq.includes(currentSq)) return value;
+      }
+    }
+    return '';
+  }
   function parseDateFromRow(row){ const dateKeys=['data','date','ship date','delivery date','data intrare','data debitare','data forjare','data livrarii','data livrării']; const direct=pickValue(row,dateKeys); if(direct){ const d=parseLooseDate(direct); if(d) return d; } const year=Math.round(toNumber(pickValue(row,['an','year','an intrare','anul']))); const monthRaw=pickValue(row,['luna','month','luna intrare']); const month=Math.round(toNumber(monthRaw))||parseMonthName(monthRaw); if(year && month>=1 && month<=12) return endOfMonth(year,month); return null; }
   function getRowPeriod(row){
     const year=Math.round(toNumber(pickValue(row,['an','year','an intrare','anul'])));
@@ -271,7 +309,7 @@
   async function loadAllData(){
     const buckets=Object.keys(state.raw);
     let latestOverall=null;
-    for(const bucket of buckets){ const docs=await loadBucket(DOC_EXACT[bucket]||[], DOC_PREFIX[bucket]||[]); const {rows,latest}=collectRowsFromDocs(docs); state.raw[bucket]=rows; if(latest && (!latestOverall || latest>latestOverall)) latestOverall=latest; }
+    for(const bucket of buckets){ const docs=await loadBucket(DOC_EXACT[bucket]||[], DOC_PREFIX[bucket]||[]); const {rows,latest}=collectRowsFromDocs(docs); state.raw[bucket]=(rows||[]).map(row=>normalizeBucketRow(bucket,row)).filter(Boolean); if(latest && (!latestOverall || latest>latestOverall)) latestOverall=latest; }
     state.updatedAt=latestOverall;
     const found=buckets.filter(key=>state.raw[key].length).map(key=>key+': '+state.raw[key].length);
     els.tableSource.textContent=found.length ? ('Surse: '+found.join(' | ')) : 'Nu au fost găsite încă documente compatibile în rf_documents.';
@@ -339,9 +377,9 @@
     return fallback;
   }
   function rowInSelectedPeriod(row){ const selected=getSelectedPeriod(); if(!selected.year) return true; const period=getRowPeriod(row); if(!period) return false; return selected.month ? (period.year===selected.year && period.month===selected.month) : period.year===selected.year; }
-  function aggregateSteelEntriesThisPeriod(){ const map=new Map(); state.raw.intrariOtel.forEach(row=>{ if(!rowInSelectedPeriod(row)) return; const diam=normalizeDiam(pickValue(row,['diametru','diametru otel','dimensiune otel'])); const cal=normalizeQuality(pickValue(row,['calitate','material','calitate otel'])); const key=[diam,cal].join('|'); if(!diam&&!cal) return; map.set(key,(map.get(key)||0)+toNumber(pickValue(row,['cantitate','cantitate kg','kg']))); }); return map; }
-  function aggregateSteelDebitatedThisPeriod(){ const map=new Map(); state.raw.debitate.forEach(row=>{ if(!rowInSelectedPeriod(row)) return; const diam=normalizeDiam(pickValue(row,['diametru','diametru otel','dimensiune otel'])); const cal=normalizeQuality(pickValue(row,['calitate','material','calitate otel'])); const key=[diam,cal].join('|'); if(!diam&&!cal) return; let totalKg=toNumber(pickValue(row,['total kg debitat','total kg','kg total'])); if(!totalKg){ const kgBuc=toNumber(pickValue(row,['kg/buc','kg buc','greutate','kg pe buc'])); const qty=toNumber(pickValue(row,['cantitate','cantitate buc','buc'])); totalKg=kgBuc*qty; } map.set(key,(map.get(key)||0)+totalKg); }); return map; }
-  function aggregateDebitateProducedThisPeriod(){ const map=new Map(); state.raw.debitate.forEach(row=>{ if(!rowInSelectedPeriod(row)) return; const reper=normalizeReper(pickValue(row,['reper','reper debitat','denumire reper debitare'])); if(!reper) return; map.set(reper,(map.get(reper)||0)+toNumber(pickValue(row,['cantitate','cantitate buc','buc']))); }); return map; }
+  function aggregateSteelEntriesThisPeriod(){ const map=new Map(); state.raw.intrariOtel.forEach(row=>{ if(!rowInSelectedPeriod(row)) return; const diam=normalizeDiam(pickValue(row,['diametru','diametru otel','dimensiune otel','dimensiune_otel'])); const cal=normalizeQuality(pickValue(row,['calitate','material','calitate otel','calitate_otel'])); const key=[diam,cal].join('|'); if(!diam&&!cal) return; map.set(key,(map.get(key)||0)+toNumber(pickValue(row,['cantitateKg','cantitate kg','cantitate_kg','cantitate','kg']))); }); return map; }
+  function aggregateSteelDebitatedThisPeriod(){ const map=new Map(); state.raw.debitate.forEach(row=>{ if(!rowInSelectedPeriod(row)) return; const diam=normalizeDiam(pickValue(row,['diametru','diametru otel','dimensiune otel','dimensiune_otel'])); const cal=normalizeQuality(pickValue(row,['calitate','material','calitate otel','calitate_otel'])); const key=[diam,cal].join('|'); if(!diam&&!cal) return; let totalKg=toNumber(pickValue(row,['totalKg','total kg debitat','total kg','kg total'])); if(!totalKg){ const kgBuc=toNumber(pickValue(row,['kgBuc','kg/buc','kg buc','greutate','kg pe buc'])); const qty=toNumber(pickValue(row,['cantitate','cantitateBuc','cantitate buc','buc'])); totalKg=kgBuc*qty; } map.set(key,(map.get(key)||0)+totalKg); }); return map; }
+  function aggregateDebitateProducedThisPeriod(){ const map=new Map(); state.raw.debitate.forEach(row=>{ if(!rowInSelectedPeriod(row)) return; const reper=normalizeReper(pickValue(row,['reper','reper debitat','denumire reper debitare'])); if(!reper) return; map.set(reper,(map.get(reper)||0)+toNumber(pickValue(row,['cantitate','cantitateBuc','cantitate buc','buc']))); }); return map; }
   function aggregateDebitateConsumedThisPeriod(helperIndex){ const map=new Map(); state.raw.forjate.forEach(row=>{ if(!rowInSelectedPeriod(row)) return; const reperForjat=normalizeReper(pickValue(row,['reper','reper forjat'])); if(!reperForjat) return; const helper=helperIndex.get(reperForjat)||{reperDebitat:reperForjat}; const reperDebitat=helper.reperDebitat||reperForjat; const bune=toNumber(pickValue(row,['buc realizate','realizat','cantitate','buc'])); const rebut=toNumber(pickValue(row,['rebut','rebuturi'])); map.set(reperDebitat,(map.get(reperDebitat)||0)+(bune+rebut)); }); return map; }
   function aggregateForjateProducedThisPeriod(){ const map=new Map(); state.raw.forjate.forEach(row=>{ if(!rowInSelectedPeriod(row)) return; const reper=normalizeReper(pickValue(row,['reper','reper forjat'])); if(!reper) return; map.set(reper,(map.get(reper)||0)+toNumber(pickValue(row,['buc realizate','realizat','cantitate','buc']))); }); return map; }
   function aggregateLivrariThisPeriod(){ const map=new Map(); state.raw.livrari.forEach(row=>{ if(!rowInSelectedPeriod(row)) return; const reper=normalizeReper(pickValue(row,['reper','part','reper forjat'])); if(!reper) return; map.set(reper,(map.get(reper)||0)+toNumber(pickValue(row,['cantitate','cantitate buc','buc','due qty','ordered qty']))); }); return map; }
