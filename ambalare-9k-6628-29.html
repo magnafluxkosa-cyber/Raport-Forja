@@ -124,6 +124,24 @@
       border-left-color:#000 !important;
     }
 </style>
+  
+<style id="ambalare-topbar-tight-buttons">
+.top-right{gap:8px !important}
+.top-right .btn,
+.top-right .btn-soft,
+.top-right .btn-danger{
+  padding:8px 11px !important;
+  font-size:12px !important;
+  min-height:36px;
+  border-radius:9px;
+}
+.top-right .chip{
+  min-height:36px;
+  padding:7px 10px;
+  font-size:12px;
+}
+</style>
+
   <link rel="stylesheet" href="./mobile-erp.css" />
 
 <style id="rf-open-access-hide-ui">
@@ -148,6 +166,7 @@
         <button class="btn-soft" id="btnAddRow">Adaugă rând</button>
         <button class="btn-danger" id="btnDeleteRow">Șterge rând</button>
         <button class="btn-soft" id="btnRefresh">Refresh</button>
+        <button class="btn-soft" id="btnLabels" type="button">Generează etichete</button>
         <input id="fileImportJson" type="file" accept=".xlsx,.xls,.xlsm,.xlsb,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,application/vnd.ms-excel.sheet.macroEnabled.12,application/vnd.ms-excel.sheet.binary.macroEnabled.12,text/csv" class="hidden" />
         <button class="btn-soft" id="btnImport" type="button">Import</button>
         <button class="btn-soft" id="btnExport">Export</button>
@@ -282,6 +301,38 @@
       </div>
     </div>
   </div>
+
+
+<div class="modal-backdrop" id="modalLabelsWrap">
+  <div class="modal">
+    <div class="modal-header">
+      <div class="modal-title">Generează etichete livrare</div>
+      <button class="btn-soft" id="btnCloseLabelsModal" type="button">Închide</button>
+    </div>
+    <div class="form-grid">
+      <div class="field"><label>Nr. transport</label><input id="lbl_transport" placeholder="ex: 394" /></div>
+      <div class="field span-2"><label>Client / destinație</label><input id="lbl_client" value="ITALIE" /></div>
+      <div class="field"><label>Repere</label><input id="lbl_info_reper" disabled value="" /></div>
+      <div class="field span-4">
+        <label>Logică folosită</label>
+        <div class="note-box" style="margin:0">
+          Se generează <b>o etichetă pentru fiecare ladă</b> din transportul introdus. Datele sunt combinate din
+          <b>foaia curentă de ambalare</b> (ladă, reper, cantitate, cod CAT, cod matriță),
+          <b>INTRĂRI OȚEL</b> (sarjă pe cod intern 3 litere),
+          <b>foaia de livrări a reperului</b> (data livrării) și
+          <b>maparea reperelor MRC</b> pentru legătura reper intern ↔ reper client și apoi <b>MRC</b> pentru terminația din <i>Dessin no.</i>, de tip <code>_06</code>.
+        </div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <div style="font-size:12px;color:var(--muted)">Textele fixe rămân în franceză, iar la o ladă cu 2 sau 3 sarje, acestea se afișează distinct în câmpul <b>Coulée no.</b>.</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn-soft" id="btnCancelLabels" type="button">Anulează</button>
+        <button class="btn" id="btnGenerateLabels" type="button">Generează PDF</button>
+      </div>
+    </div>
+  </div>
+</div>
 
   <script>
     const PAGE_KEY = 'ambalare-9k-6628-29';
@@ -512,6 +563,584 @@ function fillSelect(select, values, includeAll=true, allLabel='Toate'){
     opt.textContent = v;
     select.appendChild(opt);
   });
+}
+
+
+
+const LABEL_PAGE_NAME = toStr((document.querySelector('.title-wrap h1') || {}).textContent) || 'Ambalare';
+const LABEL_REPER_OPTIONS = Array.from(document.querySelectorAll('#r_reper option')).map(opt => toStr(opt.value || opt.textContent)).filter(Boolean);
+const LABEL_ZALE_LINK = document.querySelector('.top-left a[href^="zale-"]');
+const LABEL_ZALE_HREF = toStr((LABEL_ZALE_LINK && LABEL_ZALE_LINK.getAttribute('href')) || '').replace(/\.html$/i,'');
+const LABEL_ZALE_TEXT = toStr((LABEL_ZALE_LINK && LABEL_ZALE_LINK.textContent) || '');
+const LABEL_ZALE_DOC_KEYS = Array.from(new Set([
+  LABEL_ZALE_HREF,
+  LABEL_ZALE_HREF.replace(/^zale-/i,''),
+  LABEL_ZALE_TEXT,
+  LABEL_ZALE_TEXT.replace(/\//g,'-')
+].filter(Boolean)));
+const LABELS_FIXED = {
+  clientLine1: 'ALPEMS.r.l.G1151N1',
+  clientLine2: 'via Molinello, 5',
+  clientLine3: '21048 Solbiate Arno(VA)',
+  clientCountry: 'ITALIE',
+  denomination: 'MAILLON (LINK-TRACK)',
+  heatTreatment: 'PIÈCES AVEC TRAITMENT THERMIQUE 1E 106 A'
+};
+const LABEL_MRC_DOC_KEYS = ['mrc-customer-orders','mrc','mrc-forecast','mrc-forecast-orders','mrc-comenzi','mrc-comenzi-otel','pivot-sapt-necesar','comenzi-client','comenzi-clienti'];
+const LABEL_MRC_PREFIXES = ['mrc','pivot-sapt-necesar','comenzi-client'];
+const LABEL_MRC_MAP_DOC_KEYS = ['mapare-repere-mrc','mapare repere mrc','mrc-reper-map','mrc-repere-mapare','mrc-repere-mapping','mrc-mapping-repere','helper-mrc-mapare','helper-mrc-mapping'];
+const LABEL_MRC_MAP_PREFIXES = ['mapare-repere-mrc','mrc-reper','mrc-map','helper-mrc'];
+const labelCache = { docs:new Map(), docsPrefix:new Map(), intrari:new Map(), zale:null, mrc:null, mrcMap:null };
+
+function pickFirst(obj, keys){
+  if(!obj || typeof obj !== 'object') return '';
+  for(const key of (keys || [])){
+    if(Object.prototype.hasOwnProperty.call(obj, key) && obj[key] != null && obj[key] !== '') return obj[key];
+  }
+  return '';
+}
+function normalizeLoose(v){
+  return toStr(v).toUpperCase().normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/\s+/g,' ').trim();
+}
+function displayToIso(value){
+  const disp = normalizeDate(value);
+  const m = disp.match(/^(\d{2})\.(\d{2})\.(\d{4})$/);
+  return m ? `${m[3]}-${m[2]}-${m[1]}` : '';
+}
+function isoToDisplay(iso){
+  const s = toStr(iso);
+  const m = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  return m ? `${m[3]}.${m[2]}.${m[1]}` : normalizeDate(s);
+}
+function uniqueNonEmpty(values){
+  return Array.from(new Set((values || []).map(v => toStr(v)).filter(Boolean)));
+}
+function uniqueRowsByKey(rows, keyFn){
+  const out = [];
+  const seen = new Set();
+  (rows || []).forEach(row => {
+    const key = keyFn(row);
+    if(!key || seen.has(key)) return;
+    seen.add(key);
+    out.push(row);
+  });
+  return out;
+}
+async function queryDocsByKeys(docKeys){
+  const keys = Array.from(new Set((docKeys || []).map(v => toStr(v)).filter(Boolean)));
+  if(!keys.length) return [];
+  const cacheKey = keys.slice().sort().join('|');
+  if(labelCache.docs.has(cacheKey)) return labelCache.docs.get(cacheKey);
+  const sb = await createSupabase();
+  if(!(sb && authState && authState.user)) return [];
+  try{
+    const { data, error } = await sb.from('rf_documents').select('doc_key,content,data,updated_at').in('doc_key', keys);
+    if(error) throw error;
+    const docs = Array.isArray(data) ? data : [];
+    labelCache.docs.set(cacheKey, docs);
+    return docs;
+  }catch(err){
+    console.warn('Nu am putut încărca documentele pentru etichete.', err);
+    return [];
+  }
+}
+async function queryDocsByPrefix(prefix){
+  const pref = toStr(prefix);
+  if(!pref) return [];
+  if(labelCache.docsPrefix.has(pref)) return labelCache.docsPrefix.get(pref);
+  const sb = await createSupabase();
+  if(!(sb && authState && authState.user)) return [];
+  try{
+    const { data, error } = await sb.from('rf_documents').select('doc_key,content,data,updated_at').like('doc_key', pref + '%');
+    if(error) throw error;
+    const docs = Array.isArray(data) ? data : [];
+    labelCache.docsPrefix.set(pref, docs);
+    return docs;
+  }catch(err){
+    console.warn('Nu am putut încărca documentele prefix pentru etichete.', err);
+    return [];
+  }
+}
+
+async function readDocRowsByPriority(docKeys){
+  const docs = await queryDocsByKeys(docKeys);
+  for(const key of (docKeys || [])){
+    const doc = docs.find(item => item && item.doc_key === key);
+    if(!doc) continue;
+    const rows = resolveRowsPayload(doc.content || doc.data);
+    if(rows.length) return rows;
+  }
+  return [];
+}
+function normalizeIntrariLabelRow(raw, index){
+  const obj = Array.isArray(raw) ? {
+    an: raw[0], luna: raw[1], data: raw[2], diametru: raw[3], calitate: raw[4], cod_intern: raw[5], sarja: raw[6], cantitate_kg: raw[7]
+  } : (raw || {});
+  return {
+    id: toStr(pickFirst(obj, ['id','_id'])) || ('intrari-label-' + index),
+    an: Number(pickFirst(obj, ['an','AN','Anul','year'])) || Number((displayToIso(pickFirst(obj, ['data','DATA','Data Intrare','data intrare'])) || '0').slice(0,4)) || 0,
+    data: normalizeDate(pickFirst(obj, ['data','DATA','Data Intrare','data intrare'])),
+    cod_intern: toStr(pickFirst(obj, ['cod_intern','cod intern','Cod intern otel (3 litere)','Cod intern otel','cod intern otel','cod','marcaj','code'])).toUpperCase(),
+    sarja: toStr(pickFirst(obj, ['sarja','sarja material','Sarja material (furnizor)','sarja material (furnizor)','sarja materialului','sarja_material','cod sarja'])),
+    cantitate_kg: toNum(pickFirst(obj, ['cantitate_kg','cantitateKg','Cantitate in KG','Cantitate (kg)','Cantitate KG','cantitate','kg']))
+  };
+}
+async function loadIntrariRowsForYears(years){
+  const expandedYears = Array.from(new Set((years || []).map(v => Number(v)).filter(v => v > 0).flatMap(y => [y, y - 1])));
+  const cacheKey = expandedYears.slice().sort((a,b)=>a-b).join('|') || 'all';
+  if(labelCache.intrari.has(cacheKey)) return labelCache.intrari.get(cacheKey);
+
+  const exactKeys = [];
+  expandedYears.forEach(year => { exactKeys.push(`intrari-otel:${year}`); });
+  exactKeys.push('intrari-otel');
+
+  const [exactDocs, prefixDocs] = await Promise.all([
+    queryDocsByKeys(exactKeys),
+    queryDocsByPrefix('intrari-otel:')
+  ]);
+
+  const docMap = new Map();
+  [...exactDocs, ...prefixDocs].forEach(doc => {
+    if(doc && doc.doc_key) docMap.set(doc.doc_key, doc);
+  });
+
+  const rows = [];
+  Array.from(docMap.values()).forEach(doc => {
+    resolveRowsPayload(doc.content || doc.data).forEach((raw, index) => {
+      const row = normalizeIntrariLabelRow(raw, index);
+      if(row.cod_intern && row.sarja) rows.push(row);
+    });
+  });
+
+  const deduped = uniqueRowsByKey(rows, row => [row.cod_intern, row.sarja, row.data || row.an, row.cantitate_kg].join('|'));
+  labelCache.intrari.set(cacheKey, deduped);
+  return deduped;
+}
+function normalizeZaleLabelRow(raw, index){
+  const obj = Array.isArray(raw) ? {
+    an: raw[0], luna: raw[1], data_livrarii: raw[2], nr_transport: raw[3]
+  } : (raw || {});
+  const delivery = normalizeDate(pickFirst(obj, ['data_livrarii','data livrarii','Data Livrarii','data_livrare','data livrare']));
+  return {
+    id: toStr(pickFirst(obj, ['id','_id'])) || ('zale-label-' + index),
+    nr_transport: toStr(pickFirst(obj, ['nr_transport','nr transport','Nr. Transport','Nr Transport','transport','nr'])),
+    data_livrarii: delivery,
+    data_livrarii_iso: displayToIso(delivery)
+  };
+}
+async function loadZaleRowsForLabels(){
+  if(labelCache.zale) return labelCache.zale;
+  const rows = (await readDocRowsByPriority(LABEL_ZALE_DOC_KEYS)).map(normalizeZaleLabelRow).filter(row => row.nr_transport);
+  labelCache.zale = rows;
+  return rows;
+}
+function normalizeMrcLabelRow(raw, index){
+  const obj = Array.isArray(raw) ? {
+    client_name: raw[0], raw_part: raw[2], order_no: raw[3], delivery_date: raw[5], quantity_buc: raw[7]
+  } : (raw || {});
+  const deliveryIso = displayToIso(pickFirst(obj, ['delivery_date','Delivery Date','Ship Date','data_livrare','Need By','need_by','WeekDlvDate']));
+  return {
+    id: toStr(pickFirst(obj, ['id','_id','line_id','Line ID'])) || ('mrc-label-' + index),
+    reper_intern: toStr(pickFirst(obj, ['reper_intern','REPER_INTERN','reper intern','reper'])).toUpperCase(),
+    raw_part: toStr(pickFirst(obj, ['raw_part','RAW_PART','Part','Item ID','Item Id','Customer Part No.','Customer Part No','customer_part_no'])).toUpperCase(),
+    delivery_iso: deliveryIso,
+    client_name: toStr(pickFirst(obj, ['client_name','CLIENT_NAME','Customer','Supplier','Description'])),
+    quantity_buc: toInt(pickFirst(obj, ['quantity_buc','Ordered Qty','Due Qty','qty','cantitate']))
+  };
+}
+async function loadMrcRowsForLabels(){
+  if(labelCache.mrc) return labelCache.mrc;
+  const [exactDocs, prefixDocsList] = await Promise.all([
+    queryDocsByKeys(LABEL_MRC_DOC_KEYS),
+    Promise.all((LABEL_MRC_PREFIXES || []).map(pref => queryDocsByPrefix(pref)))
+  ]);
+  const docMap = new Map();
+  [...(exactDocs || []), ...((prefixDocsList || []).flat())].forEach(doc => {
+    if(doc && doc.doc_key) docMap.set(doc.doc_key, doc);
+  });
+  const rows = [];
+  Array.from(docMap.values()).forEach(doc => {
+    resolveRowsPayload(doc.content || doc.data).forEach((raw, index) => {
+      const row = normalizeMrcLabelRow(raw, index);
+      if(row.raw_part || row.reper_intern || row.delivery_iso) rows.push(row);
+    });
+  });
+  labelCache.mrc = uniqueRowsByKey(rows, row => [row.id, row.reper_intern, row.raw_part, row.delivery_iso, row.quantity_buc].join('|'));
+  return labelCache.mrc;
+}
+function normalizeMrcMapRow(raw, index){
+  const obj = Array.isArray(raw) ? {
+    reper_intern: raw[0], mapped_raw: raw[1], dessin_no: raw[2], suffix: raw[3]
+  } : (raw || {});
+  const reperIntern = toStr(pickFirst(obj, [
+    'reper_intern','REPER_INTERN','reper intern','reper_intern_erp','reper ERP','reper erp',
+    'reper_forjat','reper forjat','reper intern forjat','reper'
+  ])).toUpperCase();
+  const dessinSource = toStr(pickFirst(obj, [
+    'dessin_no','dessin no','Dessin no.','Dessin no','dessin','reper_client','reper client',
+    'reper_mrc','mrc_reper','part_client','part client','raw_part','RAW_PART','raw part',
+    'customer_part_no','customer part no','part'
+  ])).toUpperCase();
+  const mappedRaw = toStr(pickFirst(obj, ['mapped_raw','mapped raw','raw_part','RAW_PART','reper_client','reper client'])).toUpperCase() || dessinSource;
+  const explicitSuffixRaw = toStr(pickFirst(obj, ['dessin_suffix','suffix','sufix','terminatie','terminație'])).trim();
+  const explicitSuffix = explicitSuffixRaw
+    ? ((/^[_-]/.test(explicitSuffixRaw) ? explicitSuffixRaw : ('_' + explicitSuffixRaw)).replace(/^-/,'_'))
+    : '';
+  return {
+    id: toStr(pickFirst(obj, ['id','_id','line_id','Line ID'])) || ('mrc-map-' + index),
+    reper_intern: reperIntern,
+    mapped_raw: mappedRaw,
+    dessin_source: dessinSource,
+    suffix: explicitSuffix || extractDessinSuffix(dessinSource || mappedRaw, reperIntern || mappedRaw)
+  };
+}
+async function loadMrcMapRowsForLabels(){
+  if(labelCache.mrcMap) return labelCache.mrcMap;
+  const [exactDocs, prefixDocsList] = await Promise.all([
+    queryDocsByKeys(LABEL_MRC_MAP_DOC_KEYS),
+    Promise.all((LABEL_MRC_MAP_PREFIXES || []).map(pref => queryDocsByPrefix(pref)))
+  ]);
+  const docMap = new Map();
+  [...(exactDocs || []), ...((prefixDocsList || []).flat())].forEach(doc => {
+    if(doc && doc.doc_key) docMap.set(doc.doc_key, doc);
+  });
+  const rows = [];
+  Array.from(docMap.values()).forEach(doc => {
+    resolveRowsPayload(doc.content || doc.data).forEach((raw, index) => {
+      const row = normalizeMrcMapRow(raw, index);
+      if(row.reper_intern || row.mapped_raw || row.dessin_source || row.suffix) rows.push(row);
+    });
+  });
+  labelCache.mrcMap = uniqueRowsByKey(rows, row => [row.reper_intern, row.mapped_raw, row.dessin_source, row.suffix].join('|'));
+  return labelCache.mrcMap;
+}
+function normalizePartBase(value){
+  return toStr(value).toUpperCase().replace(/\s+/g,'').replace(/[–—]/g,'-').replace(/([_-])?\d{1,3}\b/g,'');
+}
+function extractDessinSuffix(rawPart, reper){
+  const raw = toStr(rawPart).toUpperCase().replace(/\s+/g,'');
+  const rep = toStr(reper).toUpperCase().replace(/\s+/g,'');
+  if(!raw) return '';
+  if(rep){
+    const idx = raw.indexOf(rep);
+    if(idx >= 0){
+      const rest = raw.slice(idx + rep.length);
+      const match = rest.match(/[_-]?(\d{1,3})\b/);
+      if(match) return '_' + match[1];
+    }
+  }
+  const tail = raw.match(/[_-](\d{1,3})\b/);
+  return tail ? ('_' + tail[1]) : '';
+}
+function rowMatchesMappedReper(orderRow, mappingRows){
+  const raw = toStr(orderRow && orderRow.raw_part).toUpperCase();
+  const rawBase = normalizePartBase(raw);
+  return (mappingRows || []).some(mapRow => {
+    const mapRaw = toStr(mapRow.mapped_raw || mapRow.dessin_source).toUpperCase();
+    const mapBase = normalizePartBase(mapRaw);
+    if(!mapRaw && !mapBase) return false;
+    return (!!raw && raw === mapRaw) || (!!raw && raw.startsWith(mapRaw)) || (!!mapRaw && mapRaw.startsWith(raw)) || (!!rawBase && rawBase === mapBase);
+  });
+}
+function findBestDessinSuffix(reper, deliveryDisplay, mrcRows, mrcMapRows){
+  const rep = toStr(reper).toUpperCase();
+  const deliveryIso = displayToIso(deliveryDisplay);
+  const mapRows = (mrcMapRows || []).filter(row => toStr(row.reper_intern).toUpperCase() === rep);
+  const matches = (mrcRows || []).filter(row => {
+    if(mapRows.length) return rowMatchesMappedReper(row, mapRows);
+    const intern = toStr(row.reper_intern).toUpperCase();
+    const raw = toStr(row.raw_part).toUpperCase();
+    if(intern && intern === rep) return true;
+    return raw.includes(rep);
+  }).map(row => Object.assign({}, row, { suffix: extractDessinSuffix(row.raw_part, rep), mapped: mapRows.length ? rowMatchesMappedReper(row, mapRows) : false })).filter(row => row.suffix);
+
+  const explicitMapSuffixes = uniqueNonEmpty(mapRows.map(row => row.suffix).filter(Boolean));
+  if(!matches.length) return explicitMapSuffixes[0] || '';
+  const score = row => {
+    let s = 0;
+    if(row.mapped) s += 200;
+    if(deliveryIso && row.delivery_iso === deliveryIso) s += 100;
+    if(deliveryIso && row.delivery_iso && row.delivery_iso.slice(0,7) === deliveryIso.slice(0,7)) s += 20;
+    if(toStr(row.reper_intern).toUpperCase() === rep) s += 10;
+    if(toInt(row.quantity_buc) > 0) s += 1;
+    return s;
+  };
+  const counts = new Map();
+  matches.forEach(row => {
+    const val = counts.get(row.suffix) || { count:0, best:0 };
+    val.count += 1;
+    val.best = Math.max(val.best, score(row));
+    counts.set(row.suffix, val);
+  });
+  explicitMapSuffixes.forEach(suffix => {
+    const val = counts.get(suffix) || { count:0, best:150 };
+    val.best = Math.max(val.best, 150);
+    counts.set(suffix, val);
+  });
+  return Array.from(counts.entries()).sort((a,b) => (b[1].best - a[1].best) || (b[1].count - a[1].count) || a[0].localeCompare(b[0]))[0]?.[0] || '';
+}
+function buildCouleeText(sarje, deliveryDisplay){
+  const distinctSarje = uniqueNonEmpty(sarje);
+  if(!distinctSarje.length) return '-';
+  const yy = (displayToIso(deliveryDisplay) || '').slice(2,4);
+  return yy ? `${yy}/${distinctSarje.join('/')}` : distinctSarje.join('/');
+}
+
+function buildLabelPayloads(transport, transportRows, intrariRows, zaleRows, mrcRows, mrcMapRows, clientLabel){
+  const deliveryRow = (zaleRows || []).find(row => toStr(row.nr_transport) === toStr(transport));
+  const deliveryDate = deliveryRow && deliveryRow.data_livrarii ? deliveryRow.data_livrarii : normalizeDate(transportRows[0] && transportRows[0].data);
+  const codeToSarje = new Map();
+  (intrariRows || []).forEach(row => {
+    const key = toStr(row.cod_intern).toUpperCase();
+    if(!key) return;
+    if(!codeToSarje.has(key)) codeToSarje.set(key, []);
+    codeToSarje.get(key).push(toStr(row.sarja));
+  });
+  const crates = new Map();
+  (transportRows || []).forEach(row => {
+    const key = toStr(row.lada);
+    if(!key) return;
+    if(!crates.has(key)) crates.set(key, []);
+    crates.get(key).push(row);
+  });
+  return Array.from(crates.entries()).sort((a,b) => toInt(a[0]) - toInt(b[0])).map(([lada, rows]) => {
+    const reper = uniqueNonEmpty(rows.map(row => row.reper))[0] || '';
+    const qty = rows.reduce((sum, row) => sum + toInt(row.buc), 0);
+    const codCatList = uniqueNonEmpty(rows.map(row => toStr(row.cod_cat).toUpperCase()));
+    const sarje = uniqueNonEmpty(codCatList.flatMap(code => codeToSarje.get(code) || []));
+    const matrite = uniqueNonEmpty(rows.map(row => row.cod_matrita.toUpperCase()));
+    const suffix = findBestDessinSuffix(reper, deliveryDate, mrcRows, mrcMapRows);
+    return {
+      transport: toStr(transport),
+      lada: toStr(lada),
+      reper,
+      dessinNo: reper ? (reper + suffix) : '',
+      denomination: LABELS_FIXED.denomination,
+      quantity: qty,
+      codCats: codCatList,
+      sarje,
+      couleeText: buildCouleeText(sarje, deliveryDate),
+      matrite,
+      clientLabel: toStr(clientLabel) || LABELS_FIXED.clientCountry,
+      deliveryDate
+    };
+  });
+}
+function openLabelsModal(){
+  const selected = getSelectedRow();
+  const transportField = document.getElementById('lbl_transport');
+  if(transportField){
+    const candidate = toStr((selected && selected.nr_transport) || document.getElementById('fltTransport').value || '');
+    transportField.value = candidate;
+    requestAnimationFrame(() => transportField.focus());
+  }
+  document.getElementById('lbl_client').value = LABELS_FIXED.clientCountry;
+  const reperField = document.getElementById('lbl_info_reper');
+  if(reperField) reperField.value = LABEL_REPER_OPTIONS.join(' / ');
+  document.getElementById('modalLabelsWrap').classList.add('show');
+}
+function closeLabelsModal(){
+  document.getElementById('modalLabelsWrap').classList.remove('show');
+}
+
+function fitSingleLine(doc, text, maxW, baseSize, minSize){
+  const t = toStr(text) || '-';
+  let size = baseSize;
+  while(size > (minSize || 7) && doc.getTextWidth(t) > maxW){ size -= 0.3; doc.setFontSize(size); }
+  return { text:t, size };
+}
+function drawLabelPdf(doc, label, originX, originY){
+  const x = originX;
+  const y = originY;
+  const w = 190;
+  const h = 126;
+
+  doc.setDrawColor(0,0,0);
+  doc.setTextColor(0,0,0);
+  doc.setLineWidth(0.22);
+  doc.rect(x, y, w, h);
+
+
+  doc.setFont('times','bold');
+  doc.setFontSize(10.4);
+  doc.text('ALPEM', x + 4, y + 5.1);
+  doc.setFont('times','normal');
+  doc.setFontSize(8.0);
+  doc.text('S.r.l.', x + 17.1, y + 5.1);
+  doc.setFont('times','bold');
+  doc.setFontSize(8.4);
+  doc.text('G1151N1', x + 30.2, y + 5.1);
+  doc.text('DD27', x + w - 6.2, y + 5.1, { align:'right' });
+  doc.setFontSize(8.8);
+  doc.text('via Molinello, 5', x + 4, y + 12.9);
+  doc.text('21048 Solbiate Arno(VA)', x + 4, y + 20.9);
+  doc.setFontSize(10.0);
+  doc.text(toStr(label.clientLabel) || LABELS_FIXED.clientCountry, x + 4, y + 28.1);
+
+  const leftLabelX = x + 4;
+  const leftValX = x + 23;
+  const rightLabelX = x + 94;
+  const rightValX = x + 125;
+  const leftValueMax = 48;
+  const rightValueMax = 53;
+
+  const row1Y = y + 33.5;
+  const row2Y = y + 45.5;
+  const row3Y = y + 56.5;
+
+  doc.setFont('times','normal');
+  doc.setFontSize(8.9);
+  doc.text('Dessin no. :', leftLabelX, row1Y);
+  doc.text('Quantités :', leftLabelX, row2Y);
+  doc.text('Identification de matrice...', leftLabelX, row3Y);
+  doc.text('Denomination :', rightLabelX, row1Y);
+  doc.text('Coulée no.', rightLabelX, row2Y);
+  doc.text('Identification du coulée..', rightLabelX, row3Y);
+
+  doc.setFont('times','bold');
+  let fit;
+  fit = fitSingleLine(doc, label.dessinNo || label.reper || '-', leftValueMax, 13.2, 9.4);
+  doc.setFontSize(fit.size);
+  doc.text(fit.text, leftValX, row1Y + 0.4);
+
+  fit = fitSingleLine(doc, String(label.quantity || 0), 24, 14.5, 10.8);
+  doc.setFontSize(fit.size);
+  doc.text(fit.text, leftValX, row2Y + 0.4);
+
+  const matriteText = (label.matrite && label.matrite.length ? label.matrite.join('/') : 'OL/OK');
+  fit = fitSingleLine(doc, matriteText, 26, 12.2, 9.2);
+  doc.setFontSize(fit.size);
+  doc.text(fit.text, leftValX + 25, row3Y + 0.2);
+
+  fit = fitSingleLine(doc, label.denomination || LABELS_FIXED.denomination, rightValueMax, 9.4, 7.4);
+  doc.setFontSize(fit.size);
+  doc.text(fit.text, rightValX, row1Y + 0.1);
+
+  const sarjaText = toStr(label.couleeText) || '-';
+  fit = fitSingleLine(doc, sarjaText, rightValueMax, 11.5, 8.2);
+  doc.setFontSize(fit.size);
+  doc.text(fit.text, rightValX, row2Y + 0.2);
+
+  const catsText = (label.codCats && label.codCats.length ? label.codCats.join('/') : '-');
+  fit = fitSingleLine(doc, catsText, 26, 13.0, 9.0);
+  doc.setFontSize(fit.size);
+  doc.text(fit.text, rightValX + 22, row3Y + 0.2);
+
+  const sep1 = y + 63.5;
+  const sep2 = y + 75.0;
+  doc.line(x + 4, sep1, x + w - 4, sep1);
+  doc.line(x + 4, sep2, x + w - 4, sep2);
+  doc.setFont('times','bold');
+  doc.setFontSize(11.2);
+  doc.text(LABELS_FIXED.heatTreatment, x + w/2, y + 69.8, { align:'center' });
+
+  doc.setFontSize(8.1);
+  doc.text('INSPECTION FINALE', x + w/2, y + 79.8, { align:'center' });
+
+  const tableX = x + 5;
+  const tableY = y + 82.5;
+  const cols = [20,20,31,20,24,18,47];
+  const totalW = sum(cols);
+  const header1H = 7;
+  const header2H = 7;
+  const valueH = 28;
+  const totalH = header1H + header2H + valueH;
+  const xs = [tableX];
+  for(let i=0;i<cols.length-1;i++) xs.push(xs[i] + cols[i]);
+
+  doc.rect(tableX, tableY, totalW, totalH);
+  xs.slice(1).forEach(v => doc.line(v, tableY, v, tableY + totalH));
+  // fără linia din mijloc dintre cele două rânduri de antet
+  doc.line(tableX, tableY + header1H + header2H, tableX + totalW, tableY + header1H + header2H);
+
+  const centers = cols.map((cw, idx) => tableX + cols.slice(0, idx).reduce((a,b)=>a+b,0) + cw/2);
+  doc.setFont('times','bold');
+  doc.setFontSize(6.0);
+  doc.text('CONTRÔLE', centers[0], tableY + 4.5, { align:'center' });
+  doc.text('CONTRÔLE', centers[1], tableY + 4.5, { align:'center' });
+  doc.text('CONTRÔLE', centers[2], tableY + 4.5, { align:'center' });
+  doc.text('DATE DE', centers[3], tableY + 4.5, { align:'center' });
+  doc.text('NO.', centers[4], tableY + 4.5, { align:'center' });
+  doc.text('NO.', centers[5], tableY + 4.5, { align:'center' });
+  doc.text('SIGNATURE', centers[6], tableY + 4.5, { align:'center' });
+
+  doc.text('DURETE', centers[0], tableY + header1H + 4.6, { align:'center' });
+  doc.text('MAGNAFLUX', centers[1], tableY + header1H + 4.6, { align:'center' });
+  doc.text('DIMENSIONNEL', centers[2], tableY + header1H + 4.6, { align:'center' });
+  doc.text('LIVRAISON', centers[3], tableY + header1H + 4.6, { align:'center' });
+  doc.text('DE TRANSPOT', centers[4], tableY + header1H + 4.6, { align:'center' });
+  doc.text('BENNE', centers[5], tableY + header1H + 4.6, { align:'center' });
+
+  doc.setFontSize(11.0);
+  const centerValueY = tableY + header1H + header2H + (valueH/2) + 2;
+  const headerValueY = tableY + header1H + header2H + 11.0;
+  doc.text('OK', centers[0], centerValueY, { align:'center' });
+  doc.text('OK', centers[1], centerValueY, { align:'center' });
+  doc.text('OK', centers[2], centerValueY, { align:'center' });
+  doc.text(label.deliveryDate || '-', centers[3], headerValueY, { align:'center' });
+  doc.text(label.transport || '-', centers[4], headerValueY, { align:'center' });
+  doc.text(label.lada || '-', centers[5], headerValueY, { align:'center' });
+  doc.text('Jurjut', centers[6], headerValueY, { align:'center' });
+}
+
+function sum(arr){ return arr.reduce((a,b)=>a+b,0); }
+
+
+async function generateLabelsPdf(){
+  if(!window.jspdf || !window.jspdf.jsPDF){
+    alert('Librăria PDF nu este încărcată.');
+    return;
+  }
+  const btn = document.getElementById('btnGenerateLabels');
+  const transport = toStr(document.getElementById('lbl_transport').value);
+  const clientLabel = toStr(document.getElementById('lbl_client').value) || LABELS_FIXED.clientCountry;
+  if(!transport){
+    alert('Completează mai întâi numărul transportului.');
+    return;
+  }
+  const transportRows = state.rows.filter(row => toStr(row.nr_transport) === transport).sort(rowSort);
+  if(!transportRows.length){
+    alert(`Nu există lăzi în ${LABEL_PAGE_NAME} pentru transportul introdus.`);
+    return;
+  }
+  const years = Array.from(new Set(transportRows.map(row => Number(yearFromDate(row.data))).filter(v => v > 0)));
+  const originalText = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Generez...';
+  try{
+    const [intrariRows, zaleRows, mrcRows, mrcMapRows] = await Promise.all([
+      loadIntrariRowsForYears(years),
+      loadZaleRowsForLabels(),
+      loadMrcRowsForLabels(),
+      loadMrcMapRowsForLabels()
+    ]);
+    const labels = buildLabelPayloads(transport, transportRows, intrariRows, zaleRows, mrcRows, mrcMapRows, clientLabel);
+    if(!labels.length){
+      alert('Nu au putut fi construite etichetele pentru transportul introdus.');
+      return;
+    }
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF({ orientation:'portrait', unit:'mm', format:'a4', compress:true });
+    const positions = [{x:10, y:11.25}, {x:10, y:159.75}];
+    labels.forEach((label, index) => {
+      if(index > 0 && index % 2 === 0) doc.addPage();
+      const pos = positions[index % 2];
+      drawLabelPdf(doc, label, pos.x, pos.y);
+    });
+    const blob = doc.output('blob');
+    const blobUrl = URL.createObjectURL(blob);
+    const opened = window.open(blobUrl, '_blank');
+    if(!opened){
+      doc.save(`etichete-${PAGE_KEY.replace(/^ambalare-/,'')}-transport-${transport}.pdf`);
+    }
+    closeLabelsModal();
+  }catch(err){
+    console.error('Etichete PDF error:', err);
+    alert('Etichetele nu au putut fi generate. Verifică datele pentru transportul selectat.');
+  }finally{
+    btn.disabled = false;
+    btn.textContent = originalText;
+  }
 }
 
 
@@ -986,6 +1615,14 @@ function fillSelect(select, values, includeAll=true, allLabel='Toate'){
       document.getElementById('btnRefresh').addEventListener('click', async () => { const main2 = await loadDocByKeys(DOC_KEYS, LOCAL_KEY, SEED_ROWS); state.rows = (main2.rows || []).map(normalizeRow).sort(rowSort); refreshFilters(); renderTable(); renderSummary(); scrollTableToBottom(); });
       document.getElementById('btnImport').addEventListener('click', openImportPicker);
       document.getElementById('btnExport').addEventListener('click', exportJson);
+      const labelsBtn = document.getElementById('btnLabels');
+      if(labelsBtn) labelsBtn.addEventListener('click', openLabelsModal);
+      const closeLabelsBtn = document.getElementById('btnCloseLabelsModal');
+      if(closeLabelsBtn) closeLabelsBtn.addEventListener('click', closeLabelsModal);
+      const cancelLabelsBtn = document.getElementById('btnCancelLabels');
+      if(cancelLabelsBtn) cancelLabelsBtn.addEventListener('click', closeLabelsModal);
+      const genLabelsBtn = document.getElementById('btnGenerateLabels');
+      if(genLabelsBtn) genLabelsBtn.addEventListener('click', generateLabelsPdf);
       document.getElementById('fileImportJson').addEventListener('change', event => importJsonFile(event.target.files && event.target.files[0]));
       document.getElementById('btnClearFilters').addEventListener('click', () => { ['fltYear','fltTransport','fltData','colTransport','colLada','colBuc','colData'].forEach(id => document.getElementById(id).value=''); ['fltReper','fltMatrita','fltCodCat','fltOperator','fltShift','colReper','colMatrita','colCodCat','colOperator','colShift'].forEach(id => document.getElementById(id).value=''); renderTable(); renderSummary(); });
       ['fltYear','fltTransport','fltReper','fltMatrita','fltCodCat','fltOperator','fltData','fltShift','colTransport','colLada','colReper','colMatrita','colCodCat','colBuc','colOperator','colData','colShift'].forEach(id => {
