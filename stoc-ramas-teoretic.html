@@ -179,7 +179,7 @@
     filterYear:document.getElementById('filterYear'),filterMonth:document.getElementById('filterMonth'),filterReper:document.getElementById('filterReper'),filterDiam:document.getElementById('filterDiam'),filterCal:document.getElementById('filterCal'),btnClear:document.getElementById('btnClear'),btnRefresh:document.getElementById('btnRefresh'),btnExport:document.getElementById('btnExport'),
     statSteel:document.getElementById('statSteel'),statDebitate:document.getElementById('statDebitate'),statForjate:document.getElementById('statForjate'),statRepere:document.getElementById('statRepere'),tableInfo:document.getElementById('tableInfo'),tableSource:document.getElementById('tableSource'),tbody:document.getElementById('tbody'),errorBox:document.getElementById('errorBox'),footerStatus:document.getElementById('footerStatus'),footerUpdated:document.getElementById('footerUpdated')
   };
-  const state={supabase:null,user:null,raw:{helper:[],intrariOtel:[],debitate:[],forjate:[],inventarOtel:[],inventarDebitate:[],inventarForjate:[],livrari:[]},groups:[],filteredGroups:[],displayRows:[],updatedAt:null};
+  const state={supabase:null,user:null,raw:{helper:[],intrariOtel:[],debitate:[],forjate:[],inventarOtel:[],inventarDebitate:[],inventarForjate:[],livrari:[]},helperTables:{forjate:[],debitare:[],source:'rf_documents'},groups:[],filteredGroups:[],displayRows:[],updatedAt:null};
 
   function safeText(v){return String(v==null?'':v);}  
   function trimText(v){return safeText(v).trim();}
@@ -371,11 +371,16 @@
     const buckets=Object.keys(state.raw);
     let latestOverall=null;
     for(const bucket of buckets){ const docs=await loadBucket(bucket, DOC_EXACT[bucket]||[], DOC_PREFIX[bucket]||[]); const {rows,latest}=collectRowsFromDocs(docs); state.raw[bucket]=dedupeBucketRows(bucket,(rows||[]).map(row=>normalizeBucketRow(bucket,row)).filter(Boolean)); if(latest && (!latestOverall || latest>latestOverall)) latestOverall=latest; }
+    state.helperTables = await loadHelperTables();
     state.updatedAt=latestOverall;
     const found=buckets.filter(key=>state.raw[key].length).map(key=>key+': '+state.raw[key].length);
+    if((state.helperTables.debitare||[]).length || (state.helperTables.forjate||[]).length){
+      found.unshift('helperTablesForja: '+String((state.helperTables.forjate||[]).length));
+      found.unshift('helperTablesDebitare: '+String((state.helperTables.debitare||[]).length));
+    }
     els.tableSource.textContent=found.length ? ('Surse: '+found.join(' | ')) : 'Nu au fost găsite încă documente compatibile în rf_documents.';
     els.cloudStatus.textContent=found.length?'Sincronizat':'Fără date';
-    els.cloudSub.textContent=found.length?'Surse citite din rf_documents.':'Pagina a pornit, dar sursele nu au fost găsite în cloud.';
+    els.cloudSub.textContent=found.length?((state.helperTables.source==='helper_tables')?'Surse citite din rf_documents + tabelele helper dedicate.':'Surse citite din rf_documents.'):'Pagina a pornit, dar sursele nu au fost găsite în cloud.';
     els.syncStatus.textContent=state.updatedAt?formatDateTime(state.updatedAt):'-';
     els.syncSub.textContent=state.updatedAt?'Ultima modificare detectată într-una dintre sursele citite.':'Așteaptă încărcarea datelor în foile sursă.';
   }
@@ -408,7 +413,7 @@
     forjateRows.forEach(row=>{ const reper=normalizeReper(pickValue(row,['reper','reper_forjat','reper forjat'])); if(!reper||map.has(reper)) return; const fallback=debMeta.get(reper)||{}; map.set(reper,{reperForjat:reper,reperDebitat:reper,diametru:normalizeDiam(pickValue(row,['dimensiune_otel','dimensiune otel','diametru','diametru_otel','diametru otel']))||fallback.diametru||'',calitate:normalizeQuality(pickValue(row,['calitate','material','calitate_otel','calitate otel']))||fallback.calitate||'',kgBuc:toNumber(pickValue(row,['kg_buc_forjat','kgForj','kg forj']))||fallback.kgBuc||0}); });
     return map;
   }
-  function buildDebitatMeta(helperRows,debitateRows){
+  function buildDebitatMeta(helperRows,debitateRows,helperDebitateRows,helperForjateRows){
     const map=new Map();
     function upsert(debKey, info){
       if(!debKey) return;
@@ -428,16 +433,28 @@
         kgBuc:toNumber(pickValue(row,['kgBuc','kg_buc','kg_buc_debitat','kg/buc','kg buc','greutate','kg pe buc']))
       });
     });
-    helperRows.forEach(row=>{
-      const reperForjat=normalizeReper(pickValue(row,['reper_forjat','reper forjat','reper_final','reper final','reper forja','reper']));
-      const debKey=normalizeReper(pickValue(row,['reper_debitare_origine','reper debitat','reper debitare','reper_debitare','reper debitare origine','debitat','semifabricat']))||reperForjat;
-      const kgField=Object.keys(row||{}).find(k=>{const nk=normText(k); return nk.includes('kg buc')||nk.includes('kg/buc')||nk.includes('gg buc')||nk.includes('g buc')||nk.includes('greutate');})||'';
-      let kg=toNumber(kgField?row[kgField]:pickValue(row,['kg_buc_debitat','kg_buc_forjat','kg_per_buc','kgBuc','kg/buc','kg buc','greutate','kg pe buc','gg/buc','g/buc']));
-      if(kg>100 && /(gg|g buc)/.test(normText(kgField))) kg=kg/1000;
+    const explicitDebRows = (helperDebitateRows&&helperDebitateRows.length ? helperDebitateRows : helperRows.filter(row => {
+      if(Array.isArray(row)) return false;
+      return Object.prototype.hasOwnProperty.call(row||{}, 'reper_debitare') || Object.prototype.hasOwnProperty.call(row||{}, 'REPER_DEBITARE');
+    }));
+    explicitDebRows.forEach(row=>{
+      const debKey = normalizeReper(row.reper_debitare ?? row.REPER_DEBITARE ?? '');
       upsert(debKey,{
-        diametru:normalizeDiam(pickValue(row,['dimensiune_otel','dimensiune otel','diametru','diametru_otel','diametru otel'])),
-        calitate:normalizeQuality(pickValue(row,['calitate_otel','calitate otel','calitate','material'])),
-        kgBuc:kg
+        diametru:normalizeDiam(row.diametru_otel ?? row.DIAMETRU_OTEL ?? row.dimensiune_otel ?? row.DIMENSIUNE_OTEL ?? ''),
+        calitate:normalizeQuality(row.calitate_otel ?? row.CALITATE_OTEL ?? row.material ?? row.MATERIAL ?? ''),
+        kgBuc:toNumber(row.kg_buc_debitat ?? row.KG_BUC_DEBITAT ?? 0)
+      });
+    });
+    const explicitForjRows = (helperForjateRows&&helperForjateRows.length ? helperForjateRows : helperRows.filter(row => {
+      if(Array.isArray(row)) return false;
+      return Object.prototype.hasOwnProperty.call(row||{}, 'reper_forjat') || Object.prototype.hasOwnProperty.call(row||{}, 'REPER_FORJAT');
+    }));
+    explicitForjRows.forEach(row=>{
+      const debKey=normalizeReper(row.reper_debitare_origine ?? row.REPER_DEBITARE_ORIGINE ?? '');
+      if(!debKey) return;
+      upsert(debKey,{
+        diametru:normalizeDiam(row.dimensiune_otel ?? row.DIMENSIUNE_OTEL ?? row.diametru_otel ?? row.DIAMETRU_OTEL ?? ''),
+        calitate:normalizeQuality(row.calitate_otel ?? row.CALITATE_OTEL ?? row.material ?? row.MATERIAL ?? '')
       });
     });
     return map;
@@ -528,8 +545,8 @@
   }
 
   function buildRows(){
-    const helperIndex=buildHelperIndex(state.raw.helper,state.raw.debitate,state.raw.forjate);
-    const debMeta=buildDebitatMeta(state.raw.helper,state.raw.debitate);
+    const helperIndex=buildHelperIndex(state.raw.helper,state.raw.debitate,state.raw.forjate,state.helperTables.forjate);
+    const debMeta=buildDebitatMeta(state.raw.helper,state.raw.debitate,state.helperTables.debitare,state.helperTables.forjate);
     const steelInv=latestInventoryMapForPeriod(state.raw.inventarOtel,'steel');
     const debInv=latestInventoryMapForPeriod(state.raw.inventarDebitate,'debitate');
     const forjInv=latestInventoryMapForPeriod(state.raw.inventarForjate,'forjate');
