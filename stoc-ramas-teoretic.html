@@ -367,6 +367,29 @@
   async function readPrefixDocs(prefix){ if(!state.supabase||!prefix) return []; try{ const res=await state.supabase.from('rf_documents').select('*').like('doc_key', prefix+'%'); if(res && !res.error && Array.isArray(res.data)) return res.data; }catch(_e){} return []; }
   async function loadBucket(bucket,exactKeys,prefixes){ const docs=[]; const seen=new Set(); const exactList=await readExactDocs(exactKeys||[]); const prefList=[]; for(const prefix of (prefixes||[])){ const list=await readPrefixDocs(prefix); list.forEach(doc=>prefList.push(doc)); } const hasYearDocs=prefList.some(doc=>{ const key=String(doc&&doc.doc_key||''); return key && !key.endsWith(':index'); }); const legacyRoots=new Set((exactKeys||[]).filter(key=>{ const s=String(key||''); return s && !s.includes(':'); })); const merged=[...(hasYearDocs ? exactList.filter(doc=>!legacyRoots.has(String(doc&&doc.doc_key||''))) : exactList), ...prefList]; merged.forEach(doc=>{ if(doc&&doc.doc_key&&!seen.has(doc.doc_key)){seen.add(doc.doc_key); docs.push(doc);} }); return docs; }
   function collectRowsFromDocs(docs){ const rows=[]; let latest=null; (docs||[]).forEach(doc=>{ const payload=(doc&&((doc.content&&typeof doc.content==='object')?doc.content:(doc.data&&typeof doc.data==='object')?doc.data:doc))||null; extractRows(payload).forEach(r=>rows.push(r)); const updated=doc&&doc.updated_at?new Date(doc.updated_at):null; if(updated && !Number.isNaN(updated.getTime()) && (!latest || updated>latest)) latest=updated; }); return {rows,latest}; }
+  async function tryReadTableRows(tableName){
+    if(!state.supabase || !tableName) return null;
+    try{
+      const res=await state.supabase.from(tableName).select('*').limit(10000);
+      if(res && !res.error && Array.isArray(res.data)) return res.data;
+    }catch(_e){}
+    return null;
+  }
+  async function loadHelperTables(){
+    const out={forjate:[],debitare:[],source:'rf_documents'};
+    const forjateTables=['rf_helper_repere_forjate','helper_repere_forjate'];
+    const debitareTables=['rf_helper_repere_debitare','helper_repere_debitare'];
+    for(const tableName of forjateTables){
+      const rows=await tryReadTableRows(tableName);
+      if(rows){ out.forjate=rows; out.source='helper_tables'; break; }
+    }
+    for(const tableName of debitareTables){
+      const rows=await tryReadTableRows(tableName);
+      if(rows){ out.debitare=rows; out.source='helper_tables'; break; }
+    }
+    return out;
+  }
+
   async function loadAllData(){
     const buckets=Object.keys(state.raw);
     let latestOverall=null;
@@ -385,14 +408,15 @@
     els.syncSub.textContent=state.updatedAt?'Ultima modificare detectată într-una dintre sursele citite.':'Așteaptă încărcarea datelor în foile sursă.';
   }
 
-  function buildHelperIndex(helperRows,debitateRows,forjateRows){
+  function buildHelperIndex(helperRows,debitateRows,forjateRows,helperForjateRows){
     const map=new Map(), debMeta=new Map();
     debitateRows.forEach(row=>{
       const reper=normalizeReper(pickValue(row,['reper','reper debitat','denumire reper debitare'])); if(!reper) return;
       const existing=debMeta.get(reper)||{};
       debMeta.set(reper,{reperDebitat:reper,diametru:normalizeDiam(pickValue(row,['diametru','diametru_otel','diametru otel','dimensiune_otel','dimensiune otel']))||existing.diametru||'',calitate:normalizeQuality(pickValue(row,['calitate','material','calitate_otel','calitate otel']))||existing.calitate||'',kgBuc:toNumber(pickValue(row,['kgBuc','kg_buc','kg_buc_debitat','kg/buc','kg buc','greutate','kg pe buc']))||existing.kgBuc||0});
     });
-    helperRows.forEach(row=>{
+    const helperSource=(Array.isArray(helperForjateRows)&&helperForjateRows.length)?helperForjateRows:helperRows;
+    helperSource.forEach(row=>{
       const reperForjat=normalizeReper(pickValue(row,['reper_forjat','reper forjat','reper_final','reper final','reper forja','reper']));
       const reperDebitat=normalizeReper(pickValue(row,['reper_debitare_origine','reper debitat','reper debitare','reper_debitare','reper debitare origine','debitat','semifabricat']))||reperForjat;
       const fallback=debMeta.get(reperDebitat)||debMeta.get(reperForjat)||{};
