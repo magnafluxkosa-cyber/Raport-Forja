@@ -192,7 +192,7 @@
   function canonicalReper(v){return normalizeReper(v).replace(/_/g,'-');}
   function normalizeLooseReper(v){return canonicalReper(v).replace(/[^A-Z0-9]/g,'');}
   function isExcludedDisplayReper(v){ const c=canonicalReper(v); if(!c) return false; if(c.includes('MENTENANTA')) return true; if(EXCLUDED_PHANTOM_REPERS.has(c)) return true; return EXCLUDED_DISPLAY_REPERS.has(c); }
-  function isExcludedDebitatSource(_v){ return false; }
+  function isExcludedDebitatSource(v){ const c=canonicalReper(v); if(!c) return false; if(c.includes('MENTENANTA')) return true; return EXCLUDED_PHANTOM_REPERS.has(c); }
   function isActiveRow(row){
     const raw=pickValue(row,['is_active','is active','activ']);
     if(raw==null || raw==='') return true;
@@ -465,6 +465,22 @@
     forjateRows.forEach(row=>{ const reper=normalizeReper(pickValue(row,['reper','reper_forjat','reper forjat'])); if(!reper||map.has(reper)) return; const fallback=debMeta.get(reper)||{}; map.set(reper,{reperForjat:reper,reperDebitat:reper,diametru:normalizeDiam(pickValue(row,['dimensiune_otel','dimensiune otel','diametru','diametru_otel','diametru otel']))||fallback.diametru||'',calitate:normalizeQuality(pickValue(row,['calitate','material','calitate_otel','calitate otel']))||fallback.calitate||'',kgBuc:toNumber(pickValue(row,['kg_buc_forjat','kgForj','kg forj']))||fallback.kgBuc||0}); });
     return map;
   }
+
+  function buildHelperForjateByDeb(helperRows, helperForjateRows){
+    const map=new Map();
+    const source=((Array.isArray(helperForjateRows)&&helperForjateRows.length)?helperForjateRows:helperRows).filter(isActiveRow);
+    source.forEach(row=>{
+      const reperForjat=normalizeReper(pickValue(row,['reper_forjat','reper forjat','reper_final','reper final','reper forja','reper']));
+      const reperDebitat=normalizeReper(pickValue(row,['reper_debitare_origine','reper debitat','reper debitare','reper_debitare','reper debitare origine','debitat','semifabricat']))||reperForjat;
+      if(!reperForjat || !reperDebitat) return;
+      if(isExcludedDisplayReper(reperForjat) || isExcludedDebitatSource(reperDebitat)) return;
+      const list=map.get(reperDebitat)||[];
+      if(!list.some(v=>normalizeReper(v)===reperForjat)) list.push(reperForjat);
+      map.set(reperDebitat,list);
+    });
+    return map;
+  }
+
   function buildDebitatMeta(helperRows,debitateRows,helperDebitateRows,helperForjateRows,helperIndex){
     const map=new Map();
     function upsert(debKey, info){
@@ -632,6 +648,7 @@
   function buildRows(){
     const helperIndex=buildHelperIndex(state.raw.helper,state.raw.debitate,state.raw.forjate,state.helperTables.forjate);
     const debMeta=buildDebitatMeta(state.raw.helper,state.raw.debitate,state.helperTables.debitare,state.helperTables.forjate,helperIndex);
+    const helperForjateByDeb=buildHelperForjateByDeb(state.raw.helper,state.helperTables.forjate);
     const steelInv=latestInventoryMapForPeriod(state.raw.inventarOtel,'steel');
     const debInv=remapInventoryQtyMap(latestInventoryMapForPeriod(state.raw.inventarDebitate,'debitate'), helperIndex);
     const forjInv=remapInventoryQtyMap(latestInventoryMapForPeriod(state.raw.inventarForjate,'forjate'), new Map());
@@ -744,17 +761,33 @@
     }
 
     const groups=Array.from(materialMap.values()).map(material=>{
-      const debGroups=Array.from(material.debGroups.values()).map(deb=>({
-        ...deb,
-        forjats:deb.forjats
-          .filter(f=>{
-            const reper=normalizeReper(f.reperForjat);
-            if(!reper) return false;
-            if(isExcludedDisplayReper(reper)) return false;
-            return hasRealForjatActivity(reper, forjInv, forjProduced, livrate) || isExplicitSelfMappedForjat(reper, helperIndex);
-          })
-          .sort((a,b)=>normalizeReper(a.reperForjat).localeCompare(normalizeReper(b.reperForjat),'ro'))
-      })).filter(deb=>deb.forjats.length || hasRealDebitatActivity(deb.reperDebitat, debInv, debProduced, steelDebitated, debConsumed))
+      const debGroups=Array.from(material.debGroups.values()).map(deb=>{
+        const debHasActivity=hasRealDebitatActivity(deb.reperDebitat, debInv, debProduced, steelDebitated, debConsumed);
+        const helperForjats=(helperForjateByDeb.get(deb.reperDebitat)||[])
+          .filter(reper=>debHasActivity || hasRealForjatActivity(reper, forjInv, forjProduced, livrate));
+        helperForjats.forEach(reper=>{
+          if(deb.forjats.some(f=>normalizeReper(f.reperForjat)===normalizeReper(reper))) return;
+          deb.forjats.push({
+            reperForjat:reper,
+            stocStartForjat:forjInv.get(reper)||0,
+            forjatBuc:forjProduced.get(reper)||0,
+            livrat:livrate.get(reper)||0,
+            forjatRamas:(forjInv.get(reper)||0)+(forjProduced.get(reper)||0)-(livrate.get(reper)||0)
+          });
+        });
+        const helperSet=new Set((helperForjateByDeb.get(deb.reperDebitat)||[]).map(v=>normalizeReper(v)));
+        return {
+          ...deb,
+          forjats:deb.forjats
+            .filter(f=>{
+              const reper=normalizeReper(f.reperForjat);
+              if(!reper) return false;
+              if(isExcludedDisplayReper(reper)) return false;
+              return hasRealForjatActivity(reper, forjInv, forjProduced, livrate) || isExplicitSelfMappedForjat(reper, helperIndex) || helperSet.has(reper);
+            })
+            .sort((a,b)=>normalizeReper(a.reperForjat).localeCompare(normalizeReper(b.reperForjat),'ro'))
+        };
+      }).filter(deb=>deb.forjats.length || hasRealDebitatActivity(deb.reperDebitat, debInv, debProduced, steelDebitated, debConsumed))
         .sort((a,b)=>normalizeReper(a.reperDebitat).localeCompare(normalizeReper(b.reperDebitat),'ro'));
       return {...material, debGroups};
     }).filter(material=>material.debGroups.length || toNumber(material.stocStartOtel)!==0 || toNumber(material.intrariOtel)!==0 || toNumber(material.debitatDinOtelKg)!==0)
