@@ -556,7 +556,8 @@ const LABELS_FIXED = {
   heatTreatment: 'PIÈCES AVEC TRAITMENT THERMIQUE 1E 106 A'
 };
 const LABEL_ZALE_DOC_KEYS = ['zale-248-2307-08','248-2307-08'];
-const LABEL_MRC_DOC_KEYS = ['mrc-customer-orders'];
+const LABEL_MRC_DOC_KEYS = ['mrc-customer-orders','mrc','mrc-forecast','mrc-forecast-orders','mrc-comenzi','mrc-comenzi-otel','pivot-sapt-necesar','comenzi-client','comenzi-clienti'];
+const LABEL_MRC_PREFIXES = ['mrc','pivot-sapt-necesar','comenzi-client'];
 const labelCache = { docs:new Map(), docsPrefix:new Map(), intrari:new Map(), zale:null, mrc:null };
 
 function pickFirst(obj, keys){
@@ -717,18 +718,32 @@ function normalizeMrcLabelRow(raw, index){
 }
 async function loadMrcRowsForLabels(){
   if(labelCache.mrc) return labelCache.mrc;
-  const rows = (await readDocRowsByPriority(LABEL_MRC_DOC_KEYS)).map(normalizeMrcLabelRow).filter(row => row.raw_part || row.reper_intern || row.delivery_iso);
-  labelCache.mrc = rows;
-  return rows;
+  const [exactDocs, prefixDocsList] = await Promise.all([
+    queryDocsByKeys(LABEL_MRC_DOC_KEYS),
+    Promise.all((LABEL_MRC_PREFIXES || []).map(pref => queryDocsByPrefix(pref)))
+  ]);
+  const docMap = new Map();
+  [...(exactDocs || []), ...((prefixDocsList || []).flat())].forEach(doc => {
+    if(doc && doc.doc_key) docMap.set(doc.doc_key, doc);
+  });
+  const rows = [];
+  Array.from(docMap.values()).forEach(doc => {
+    resolveRowsPayload(doc.content || doc.data).forEach((raw, index) => {
+      const row = normalizeMrcLabelRow(raw, index);
+      if(row.raw_part || row.reper_intern || row.delivery_iso) rows.push(row);
+    });
+  });
+  labelCache.mrc = uniqueRowsByKey(rows, row => [row.id, row.reper_intern, row.raw_part, row.delivery_iso, row.quantity_buc].join('|'));
+  return labelCache.mrc;
 }
 function extractDessinSuffix(rawPart, reper){
-  const raw = toStr(rawPart).toUpperCase();
-  const rep = toStr(reper).toUpperCase();
+  const raw = toStr(rawPart).toUpperCase().replace(/\s+/g,'');
+  const rep = toStr(reper).toUpperCase().replace(/\s+/g,'');
   if(!raw || !rep) return '';
   const idx = raw.indexOf(rep);
   if(idx < 0) return '';
   const rest = raw.slice(idx + rep.length);
-  const match = rest.match(/[_-](\d{1,3})\b/);
+  const match = rest.match(/[_-]?(\d{1,3})\b/);
   return match ? ('_' + match[1]) : '';
 }
 function findBestDessinSuffix(reper, deliveryDisplay, mrcRows){
