@@ -285,6 +285,42 @@
   function saveFilterState(){ try{ localStorage.setItem(STORAGE_KEY, JSON.stringify({y:trimText(els.filterYear.value),m:trimText(els.filterMonth.value),r:els.filterReper.value||'',d:els.filterDiam.value||'',c:els.filterCal.value||''})); }catch(_e){} }
   function loadFilterState(){ try{ const raw=localStorage.getItem(STORAGE_KEY); return raw?JSON.parse(raw):null; }catch(_e){ return null; } }
 
+
+  function signatureNumber(v){ return String(Math.round((toNumber(v)+Number.EPSILON)*1000)/1000); }
+  function signatureText(v){ return trimText(v).replace(/\s+/g,' ').toUpperCase(); }
+  function signatureMonth(v){ return String(Math.round(toNumber(v)) || parseMonthName(v) || 0); }
+  function signatureDate(v){ const d=parseLooseDate(v); if(d) return d.toISOString().slice(0,10); return signatureText(v); }
+  function rowSignature(bucket,row){
+    switch(bucket){
+      case 'intrariOtel':
+        return ['IN', normalizeYearValue(pickValue(row,['an','year','an intrare','anul'])), signatureMonth(pickValue(row,['luna','month','luna intrare'])), signatureDate(pickValue(row,['data','date','data intrare'])), normalizeDiam(pickValue(row,['diametru','diametru otel','dimensiune otel','dimensiune_otel'])), normalizeQuality(pickValue(row,['calitate','material','calitate otel','calitate_otel'])), signatureText(pickValue(row,['codIntern','cod intern','cod intern otel','cod intern oțel'])), signatureText(pickValue(row,['sarjaMaterial','sarja material','sarja'])), signatureNumber(pickValue(row,['cantitateKg','cantitate kg','cantitate_kg','cantitate','kg'])), signatureText(pickValue(row,['furnizor','supplier']))].join('|');
+      case 'debitate':
+        return ['DB', normalizeYearValue(pickValue(row,['an','year'])), signatureMonth(pickValue(row,['luna','month'])), signatureDate(pickValue(row,['data','date','data debitare'])), signatureText(pickValue(row,['echipament','utilaj'])), normalizeReper(pickValue(row,['reper','reper debitat','denumire reper debitare'])), normalizeDiam(pickValue(row,['diametru','diametru otel','dimensiune otel'])), normalizeQuality(pickValue(row,['calitate','material','calitate otel'])), signatureNumber(pickValue(row,['kgBuc','kg/buc','kg buc','greutate','kg pe buc'])), signatureText(pickValue(row,['codIntern','cod intern oțel','cod intern otel'])), signatureNumber(pickValue(row,['cantitate','cantitateBuc','cantitate buc','buc'])), signatureText(pickValue(row,['schimbul','schimb'])), signatureNumber(pickValue(row,['totalKg','total kg','kg total']))].join('|');
+      case 'forjate':
+        return ['FJ', normalizeYearValue(pickValue(row,['an','year'])), signatureMonth(pickValue(row,['luna','month'])), signatureDate(pickValue(row,['data','date','data forjare'])), signatureText(pickValue(row,['schimbul','schimb'])), signatureText(pickValue(row,['linie de forjare','utilaj','linie'])), normalizeReper(pickValue(row,['reper','reper forjat'])), normalizeDiam(pickValue(row,['dimensiune otel','diametru','diametru otel'])), normalizeQuality(pickValue(row,['calitate','material','calitate otel'])), signatureText(pickValue(row,['cod intern material','cod intern otel','cod intern oțel'])), signatureNumber(pickValue(row,['buc realizate','realizat','cantitate','buc'])), signatureNumber(pickValue(row,['rebut','rebuturi']))].join('|');
+      case 'inventarOtel':
+        return ['IO', normalizeYearValue(pickValue(row,['an','year','an intrare','anul'])), signatureMonth(pickValue(row,['luna','month','luna intrare'])), signatureDate(pickValue(row,['data','date','data intrare'])), normalizeDiam(pickValue(row,['diametru','diametru otel','dimensiune otel','dimensiune_otel'])), normalizeQuality(pickValue(row,['calitate','material','calitate otel','calitate_otel'])), signatureNumber(getInventoryQty(row,'steel'))].join('|');
+      case 'inventarDebitate':
+        return ['ID', normalizeYearValue(pickValue(row,['an','year'])), signatureMonth(pickValue(row,['luna','month'])), normalizeReper(pickValue(row,['reper','reper debitat','denumire reper debitare'])), normalizeDiam(pickValue(row,['diametru','diametru otel'])), normalizeQuality(pickValue(row,['calitate','material'])), signatureNumber(getInventoryQty(row,'debitate'))].join('|');
+      case 'inventarForjate':
+        return ['IF', normalizeYearValue(pickValue(row,['an','year'])), signatureMonth(pickValue(row,['luna','month'])), normalizeReper(pickValue(row,['reper','reper forjat'])), normalizeDiam(pickValue(row,['dimensiune','dimensiune otel','diametru'])), normalizeQuality(pickValue(row,['calitate','material'])), signatureNumber(getInventoryQty(row,'forjate'))].join('|');
+      case 'livrari':
+        return ['LV', normalizeYearValue(pickValue(row,['an','year'])), signatureMonth(pickValue(row,['luna','month'])), signatureDate(pickValue(row,['data','date','ship date','delivery date','data livrarii','data livrării'])), normalizeReper(pickValue(row,['reper','part','reper forjat'])), signatureNumber(pickValue(row,['cantitate','cantitate buc','buc','due qty','ordered qty'])), signatureText(pickValue(row,['nr transport','transport','line id','lineid']))].join('|');
+      default:
+        return bucket + '|' + JSON.stringify(row);
+    }
+  }
+  function dedupeBucketRows(bucket, rows){
+    const out=[], seen=new Set();
+    (rows||[]).forEach(row=>{
+      const sig=rowSignature(bucket,row);
+      if(seen.has(sig)) return;
+      seen.add(sig);
+      out.push(row);
+    });
+    return out;
+  }
+
   async function initAuth(){
     try{
       if(window.ERPAuth && typeof window.ERPAuth.getSupabaseClient==='function') state.supabase=window.ERPAuth.getSupabaseClient();
@@ -304,12 +340,12 @@
 
   async function readExactDocs(keys){ if(!state.supabase||!keys.length) return []; try{ const res=await state.supabase.from('rf_documents').select('*').in('doc_key',keys); if(res && !res.error && Array.isArray(res.data)) return res.data; }catch(_e){} return []; }
   async function readPrefixDocs(prefix){ if(!state.supabase||!prefix) return []; try{ const res=await state.supabase.from('rf_documents').select('*').like('doc_key', prefix+'%'); if(res && !res.error && Array.isArray(res.data)) return res.data; }catch(_e){} return []; }
-  async function loadBucket(exactKeys,prefixes){ const docs=[]; const seen=new Set(); (await readExactDocs(exactKeys||[])).forEach(doc=>{ if(doc&&doc.doc_key&&!seen.has(doc.doc_key)){seen.add(doc.doc_key); docs.push(doc);} }); for(const prefix of (prefixes||[])){ const list=await readPrefixDocs(prefix); list.forEach(doc=>{ if(doc&&doc.doc_key&&!seen.has(doc.doc_key)){seen.add(doc.doc_key); docs.push(doc);} }); } return docs; }
+  async function loadBucket(bucket,exactKeys,prefixes){ const docs=[]; const seen=new Set(); const exactList=await readExactDocs(exactKeys||[]); const prefList=[]; for(const prefix of (prefixes||[])){ const list=await readPrefixDocs(prefix); list.forEach(doc=>prefList.push(doc)); } const hasYearDocs=prefList.some(doc=>{ const key=String(doc&&doc.doc_key||''); return key && !key.endsWith(':index'); }); const legacyRoots=new Set((exactKeys||[]).filter(key=>{ const s=String(key||''); return s && !s.includes(':'); })); const merged=[...(hasYearDocs ? exactList.filter(doc=>!legacyRoots.has(String(doc&&doc.doc_key||''))) : exactList), ...prefList]; merged.forEach(doc=>{ if(doc&&doc.doc_key&&!seen.has(doc.doc_key)){seen.add(doc.doc_key); docs.push(doc);} }); return docs; }
   function collectRowsFromDocs(docs){ const rows=[]; let latest=null; (docs||[]).forEach(doc=>{ const payload=(doc&&((doc.content&&typeof doc.content==='object')?doc.content:(doc.data&&typeof doc.data==='object')?doc.data:doc))||null; extractRows(payload).forEach(r=>rows.push(r)); const updated=doc&&doc.updated_at?new Date(doc.updated_at):null; if(updated && !Number.isNaN(updated.getTime()) && (!latest || updated>latest)) latest=updated; }); return {rows,latest}; }
   async function loadAllData(){
     const buckets=Object.keys(state.raw);
     let latestOverall=null;
-    for(const bucket of buckets){ const docs=await loadBucket(DOC_EXACT[bucket]||[], DOC_PREFIX[bucket]||[]); const {rows,latest}=collectRowsFromDocs(docs); state.raw[bucket]=(rows||[]).map(row=>normalizeBucketRow(bucket,row)).filter(Boolean); if(latest && (!latestOverall || latest>latestOverall)) latestOverall=latest; }
+    for(const bucket of buckets){ const docs=await loadBucket(bucket, DOC_EXACT[bucket]||[], DOC_PREFIX[bucket]||[]); const {rows,latest}=collectRowsFromDocs(docs); state.raw[bucket]=dedupeBucketRows(bucket,(rows||[]).map(row=>normalizeBucketRow(bucket,row)).filter(Boolean)); if(latest && (!latestOverall || latest>latestOverall)) latestOverall=latest; }
     state.updatedAt=latestOverall;
     const found=buckets.filter(key=>state.raw[key].length).map(key=>key+': '+state.raw[key].length);
     els.tableSource.textContent=found.length ? ('Surse: '+found.join(' | ')) : 'Nu au fost găsite încă documente compatibile în rf_documents.';
