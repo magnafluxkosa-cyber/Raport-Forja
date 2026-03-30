@@ -359,18 +359,40 @@
 
       item.style.setProperty('--kad-flyout-top', '0px');
 
-      var links = flyout.querySelectorAll('.kad-shell-flyout-link').length;
+      var links = Array.from(flyout.querySelectorAll('.kad-shell-flyout-link'));
+      var totalLinks = links.length;
+      var longestLabel = links.reduce(function(max, node){
+        var len = (node.textContent || '').trim().length;
+        return len > max ? len : max;
+      }, 0);
+
       var shellRect = shell.getBoundingClientRect();
       var gap = 18;
-      var availableWidth = Math.max(320, window.innerWidth - shellRect.right - gap);
-      var minColWidth = 190;
+      var availableWidth = Math.max(360, window.innerWidth - shellRect.right - gap - 12);
       var panelPadding = 28;
+      var minColWidth = longestLabel > 28 ? 280 : longestLabel > 22 ? 250 : 220;
       var maxCols = Math.max(1, Math.floor((availableWidth - panelPadding) / minColWidth));
-      var cols = links > 20 ? 5 : links > 12 ? 4 : links > 6 ? 3 : links > 3 ? 2 : 1;
-      cols = Math.max(1, Math.min(cols, maxCols));
+
+      var cols;
+      if(totalLinks >= 18){
+        cols = maxCols;
+      }else if(totalLinks >= 12){
+        cols = Math.min(maxCols, 5);
+      }else if(totalLinks >= 8){
+        cols = Math.min(maxCols, 4);
+      }else if(totalLinks >= 4){
+        cols = Math.min(maxCols, 3);
+      }else{
+        cols = Math.min(maxCols, 2);
+      }
+      cols = Math.max(1, cols);
 
       function applySize(){
         var desiredWidth = Math.min(availableWidth, cols * minColWidth + panelPadding);
+        if(totalLinks >= 18 || longestLabel >= 26){
+          desiredWidth = availableWidth;
+        }
+        item.style.setProperty('--kad-col-min', minColWidth + 'px');
         item.style.setProperty('--kad-flyout-max-width', availableWidth + 'px');
         item.style.setProperty('--kad-flyout-width', desiredWidth + 'px');
         item.style.setProperty('--kad-flyout-cols', String(cols));
@@ -380,7 +402,7 @@
 
       var viewportLimit = window.innerHeight - 28;
       var tries = 0;
-      while(tries < 8){
+      while(tries < 10){
         var height = flyout.offsetHeight;
         if(height <= viewportLimit || cols >= maxCols) break;
         cols += 1;
@@ -390,12 +412,6 @@
 
       var rect = flyout.getBoundingClientRect();
       var shift = 0;
-      if(rect.right > window.innerWidth - 12){
-        var clipped = rect.right - (window.innerWidth - 12);
-        var newWidth = Math.max(320, parseFloat(getComputedStyle(item).getPropertyValue('--kad-flyout-width')) - clipped);
-        item.style.setProperty('--kad-flyout-width', newWidth + 'px');
-        rect = flyout.getBoundingClientRect();
-      }
       if(rect.bottom > window.innerHeight - 14){
         shift -= rect.bottom - (window.innerHeight - 14);
       }
