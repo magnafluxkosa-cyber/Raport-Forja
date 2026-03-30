@@ -293,7 +293,7 @@
         '<div class="kad-shell-utility">' +
           '<a class="kad-shell-utility-link" data-kad-nav-link="1" href="index.html">Dashboard</a>' +
           '<a class="kad-shell-utility-link" data-kad-nav-link="1" href="login.html">Login</a>' +
-          '<div class="kad-shell-note">hover la marginea dreaptă</div>' +
+          '<div class="kad-shell-note">hover la marginea stângă</div>' +
         '</div>' +
       '</aside>' +
       '<div class="kad-shell-transition" aria-hidden="true"></div>';
@@ -373,14 +373,29 @@
 
       item.style.setProperty('--kad-flyout-top', '0px');
       var links = flyout.querySelectorAll('.kad-shell-flyout-link').length;
-      var cols = links > 18 ? 4 : links > 10 ? 3 : links > 5 ? 2 : 1;
       var base = baseWidth();
-      var colWidth = 180;
       var gap = 12;
-      var desiredSubmenuWidth = cols * colWidth + Math.max(0, cols - 1) * gap + 30;
-      var maxExpandedWidth = Math.min(window.innerWidth - 24, 1220);
-      var expandedWidth = Math.min(maxExpandedWidth, Math.max(base + desiredSubmenuWidth + 34, base + 300));
-      var actualSubmenuWidth = Math.max(280, expandedWidth - base - 34);
+      var minCol = 170;
+      var maxAvailable = Math.max(320, Math.min(window.innerWidth - 36, 1240) - base - 18);
+      var cols = 1;
+
+      if(links > 14){
+        cols = 4;
+      }else if(links > 8){
+        cols = 3;
+      }else if(links > 4){
+        cols = 2;
+      }
+
+      while(cols > 1){
+        var candidate = cols * minCol + (cols - 1) * gap + 32;
+        if(candidate <= maxAvailable) break;
+        cols -= 1;
+      }
+
+      var desiredSubmenuWidth = Math.min(maxAvailable, cols * minCol + (cols - 1) * gap + 32);
+      var actualSubmenuWidth = Math.max(300, desiredSubmenuWidth);
+      var expandedWidth = Math.min(window.innerWidth - 24, base + actualSubmenuWidth + 18);
 
       root.style.setProperty('--kad-shell-expanded-width', expandedWidth + 'px');
       root.style.setProperty('--kad-shell-submenu-width', actualSubmenuWidth + 'px');
