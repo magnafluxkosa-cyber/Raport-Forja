@@ -339,19 +339,6 @@
       });
     }
 
-    function syncMainWidths(){
-      var nav = shell.querySelector('.kad-shell-nav');
-      var mainWidth = Math.round((nav && nav.clientWidth) ? nav.clientWidth : 188);
-      root.querySelectorAll('.kad-shell-item').forEach(function(item){
-        item.style.setProperty('--kad-main-width', mainWidth + 'px');
-        if(!item.classList.contains('is-open')){
-          item.style.setProperty('--kad-item-width', mainWidth + 'px');
-        }
-      });
-    }
-
-    syncMainWidths();
-
     edge.addEventListener('mouseenter', function(){
       openTimer = window.setTimeout(openShell, 20);
     });
@@ -368,57 +355,54 @@
     });
 
     function layoutFlyout(item, flyout){
-      if(!item || !flyout) return;
+      if(!item || !flyout || window.innerWidth <= 1100) return;
 
-      var nav = shell.querySelector('.kad-shell-nav');
-      var mainWidth = Math.round((nav && nav.clientWidth) ? nav.clientWidth : item.querySelector('.kad-shell-main').getBoundingClientRect().width);
-      item.style.setProperty('--kad-main-width', mainWidth + 'px');
+      item.style.setProperty('--kad-flyout-top', '0px');
 
-      if(window.innerWidth <= 1100){
-        item.style.setProperty('--kad-item-width', mainWidth + 'px');
-        item.style.setProperty('--kad-flyout-width', '100%');
-        item.style.setProperty('--kad-flyout-cols', '1');
-        return;
-      }
-
-      var links = Array.from(flyout.querySelectorAll('.kad-shell-flyout-link'));
-      var totalLinks = links.length;
-      var longestLabel = links.reduce(function(max, node){
-        var len = (node.textContent || '').trim().length;
-        return len > max ? len : max;
-      }, 0);
-
+      var links = flyout.querySelectorAll('.kad-shell-flyout-link').length;
       var shellRect = shell.getBoundingClientRect();
-      var gap = 12;
-      var availableWidth = Math.max(360, Math.floor(window.innerWidth - shellRect.left - mainWidth - gap - 30));
+      var gap = 18;
+      var availableWidth = Math.max(320, window.innerWidth - shellRect.right - gap);
+      var minColWidth = 190;
       var panelPadding = 28;
-      var minColWidth = longestLabel > 30 ? 300 : longestLabel > 24 ? 270 : 220;
       var maxCols = Math.max(1, Math.floor((availableWidth - panelPadding) / minColWidth));
+      var cols = links > 20 ? 5 : links > 12 ? 4 : links > 6 ? 3 : links > 3 ? 2 : 1;
+      cols = Math.max(1, Math.min(cols, maxCols));
 
-      var cols;
-      if(totalLinks >= 18){
-        cols = maxCols;
-      }else if(totalLinks >= 12){
-        cols = Math.min(maxCols, 5);
-      }else if(totalLinks >= 8){
-        cols = Math.min(maxCols, 4);
-      }else if(totalLinks >= 4){
-        cols = Math.min(maxCols, 3);
-      }else{
-        cols = Math.min(maxCols, 2);
-      }
-      cols = Math.max(1, cols);
-
-      var desiredWidth = Math.min(availableWidth, cols * minColWidth + panelPadding);
-      if(totalLinks >= 18 || longestLabel >= 26){
-        desiredWidth = availableWidth;
+      function applySize(){
+        var desiredWidth = Math.min(availableWidth, cols * minColWidth + panelPadding);
+        item.style.setProperty('--kad-flyout-max-width', availableWidth + 'px');
+        item.style.setProperty('--kad-flyout-width', desiredWidth + 'px');
+        item.style.setProperty('--kad-flyout-cols', String(cols));
       }
 
-      item.style.setProperty('--kad-col-min', minColWidth + 'px');
-      item.style.setProperty('--kad-flyout-max-width', availableWidth + 'px');
-      item.style.setProperty('--kad-flyout-width', desiredWidth + 'px');
-      item.style.setProperty('--kad-flyout-cols', String(cols));
-      item.style.setProperty('--kad-item-width', (mainWidth + gap + desiredWidth) + 'px');
+      applySize();
+
+      var viewportLimit = window.innerHeight - 28;
+      var tries = 0;
+      while(tries < 8){
+        var height = flyout.offsetHeight;
+        if(height <= viewportLimit || cols >= maxCols) break;
+        cols += 1;
+        applySize();
+        tries += 1;
+      }
+
+      var rect = flyout.getBoundingClientRect();
+      var shift = 0;
+      if(rect.right > window.innerWidth - 12){
+        var clipped = rect.right - (window.innerWidth - 12);
+        var newWidth = Math.max(320, parseFloat(getComputedStyle(item).getPropertyValue('--kad-flyout-width')) - clipped);
+        item.style.setProperty('--kad-flyout-width', newWidth + 'px');
+        rect = flyout.getBoundingClientRect();
+      }
+      if(rect.bottom > window.innerHeight - 14){
+        shift -= rect.bottom - (window.innerHeight - 14);
+      }
+      if(rect.top + shift < 14){
+        shift += 14 - (rect.top + shift);
+      }
+      item.style.setProperty('--kad-flyout-top', shift + 'px');
     }
 
     root.querySelectorAll('.kad-shell-item').forEach(function(item){
@@ -443,6 +427,7 @@
           if(!item.matches(':hover') && !item.contains(document.activeElement)){
             item.classList.remove('is-open');
             main.setAttribute('aria-expanded', 'false');
+            item.style.setProperty('--kad-flyout-top', '0px');
           }
         }, 120);
       }
@@ -469,7 +454,6 @@
     });
 
     window.addEventListener('resize', function(){
-      syncMainWidths();
       root.querySelectorAll('.kad-shell-item.is-open').forEach(function(item){
         var flyout = item.querySelector('.kad-shell-flyout');
         if(flyout) layoutFlyout(item, flyout);
