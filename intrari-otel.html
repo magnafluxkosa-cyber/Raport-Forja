@@ -3741,10 +3741,13 @@ function applyFilters(){
 
 <script>
 (function(){
-  const STORE_META_KEY='INTRARI_OTEL_PRETEST_META_V10';
-  const STORE_FILE_KEY='INTRARI_OTEL_PRETEST_FILE_V10:';
+
+  const STORE_META_KEY='INTRARI_OTEL_PRETEST_META_V11';
+  const STORE_FILE_KEY='INTRARI_OTEL_PRETEST_FILE_V11:';
+  const PRETEST_DB_NAME='INTRARI_OTEL_PRETEST_DB_V1';
+  const PRETEST_DB_STORE='pdfs';
   let selectedFile = null;
-  let syncTimer = null;
+  let dbPromise = null;
 
   function q(id){ return document.getElementById(id); }
   function safe(v){ return String(v == null ? '' : v); }
@@ -3758,11 +3761,63 @@ function applyFilters(){
   function fileToDataUrl(file){ return new Promise((resolve,reject)=>{ const r=new FileReader(); r.onload=()=>resolve(r.result); r.onerror=()=>reject(r.error || new Error('Nu am putut citi PDF-ul.')); r.readAsDataURL(file); }); }
   function loadMeta(){ try{ const raw=localStorage.getItem(STORE_META_KEY); const parsed=raw?JSON.parse(raw):{}; return parsed && typeof parsed==='object' ? parsed : {}; }catch(_e){ return {}; } }
   function saveMeta(meta){ try{ localStorage.setItem(STORE_META_KEY, JSON.stringify(meta||{})); }catch(_e){} }
-  function getFilePayload(key){ if(!key) return null; try{ const raw=localStorage.getItem(STORE_FILE_KEY + key); return raw?JSON.parse(raw):null; }catch(_e){ return null; } }
-  function saveFilePayload(key,payload){ try{ localStorage.setItem(STORE_FILE_KEY + key, JSON.stringify(payload)); }catch(_e){} }
+  function getLegacyFilePayload(key){ if(!key) return null; try{ const raw=localStorage.getItem('INTRARI_OTEL_PRETEST_FILE_V10:' + key) || localStorage.getItem(STORE_FILE_KEY + key); return raw?JSON.parse(raw):null; }catch(_e){ return null; } }
+  async function getDb(){
+    if(dbPromise) return dbPromise;
+    dbPromise = new Promise((resolve,reject)=>{
+      if(!('indexedDB' in window)) { resolve(null); return; }
+      const req = indexedDB.open(PRETEST_DB_NAME, 1);
+      req.onupgradeneeded = () => {
+        const db = req.result;
+        if(!db.objectStoreNames.contains(PRETEST_DB_STORE)) db.createObjectStore(PRETEST_DB_STORE, { keyPath:'key' });
+      };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error || new Error('IndexedDB nu poate fi deschis.'));
+    });
+    return dbPromise;
+  }
+  async function idbGet(key){
+    if(!key) return null;
+    const db = await getDb();
+    if(!db) return null;
+    return new Promise((resolve,reject)=>{
+      const tx = db.transaction(PRETEST_DB_STORE, 'readonly');
+      const store = tx.objectStore(PRETEST_DB_STORE);
+      const req = store.get(key);
+      req.onsuccess = ()=> resolve(req.result || null);
+      req.onerror = ()=> reject(req.error || new Error('Nu pot citi PDF-ul din IndexedDB.'));
+    });
+  }
+  async function idbPut(payload){
+    const db = await getDb();
+    if(!db) throw new Error('Browserul nu suportă IndexedDB pentru PDF-uri locale.');
+    return new Promise((resolve,reject)=>{
+      const tx = db.transaction(PRETEST_DB_STORE, 'readwrite');
+      const store = tx.objectStore(PRETEST_DB_STORE);
+      const req = store.put(payload);
+      req.onsuccess = ()=> resolve(payload);
+      req.onerror = ()=> reject(req.error || new Error('Nu pot salva PDF-ul în IndexedDB.'));
+    });
+  }
+  async function getFilePayload(key){
+    if(!key) return null;
+    let payload = await idbGet(key);
+    if(payload && payload.data_url) return payload;
+    payload = getLegacyFilePayload(key);
+    if(payload && payload.data_url){
+      try{ await idbPut({ ...payload, key }); }catch(_e){}
+      return payload;
+    }
+    return null;
+  }
+  async function saveFilePayload(key,payload){
+    if(!key || !payload) return null;
+    await idbPut({ ...payload, key });
+    return payload;
+  }
   function currentFormMeta(){ return { diametru: trim(q('fDim') && q('fDim').value), calitate: trim(q('fCal') && q('fCal').value), sarja: trim(q('fCat') && q('fCat').value) }; }
-  function getStoredInfo(dim,cal,sarja){ const key=makeKey(dim,cal,sarja); const meta=loadMeta(); const entry=meta[key] || null; const localPayload=getFilePayload(key); return { key, entry, localPayload, hasPdf: !!(localPayload && localPayload.data_url) || !!(entry && entry.file_name && getFilePayload(key)) } }
-  function stylePretestCell(td, info, fallbackText){ if(!td) return; const hasPdf=!!(info && info.hasPdf); td.textContent = hasPdf ? 'Are pretest' : (trim(fallbackText) || 'Nu are pretest'); td.classList.remove('pretestHasPdf','pretestNoPdf'); td.dataset.hasPdf = hasPdf ? '1' : '0'; td.dataset.pretestKey = hasPdf ? info.key : ''; td.style.cursor = hasPdf ? 'pointer' : 'default'; td.style.textDecoration = hasPdf ? 'underline' : 'none'; td.style.textUnderlineOffset = hasPdf ? '2px' : ''; td.setAttribute('tabindex', hasPdf ? '0' : '-1'); td.title = hasPdf ? 'Deschide PDF-ul pretest' : ''; if(hasPdf) td.classList.add('pretestHasPdf'); else td.classList.add('pretestNoPdf'); }
+  function getStoredInfo(dim,cal,sarja){ const key=makeKey(dim,cal,sarja); const meta=loadMeta(); const entry=meta[key] || null; const localPayload=getLegacyFilePayload(key); return { key, entry, localPayload, hasPdf: !!((entry && entry.file_name) || (localPayload && localPayload.data_url)) } }
+  function stylePretestCell(td, info, fallbackText){ if(!td) return; const hasPdf=!!(info && info.hasPdf); td.textContent = hasPdf ? 'Are pretest' : (trim(fallbackText) || 'Nu are pretest'); td.classList.remove('pretestHasPdf','pretestNoPdf'); td.dataset.hasPdf = hasPdf ? '1' : '0'; td.dataset.pretestKey = hasPdf ? info.key : ''; td.style.cursor = hasPdf ? 'pointer' : 'default'; td.style.textDecoration = hasPdf ? 'underline' : 'none'; td.style.textUnderlineOffset = hasPdf ? '2px' : ''; td.setAttribute('tabindex', hasPdf ? '0' : '-1'); td.title = hasPdf ? 'Deschide PDF-ul pretest' : ''; if (td.onclick) td.onclick = null; if (hasPdf) td.classList.add('pretestHasPdf'); else td.classList.add('pretestNoPdf'); }
   window.resolveStoredPretest = function(dim,cal,sarja){ return getStoredInfo(dim,cal,sarja); };
   window.findRegistryEntry = function(dim,cal,sarja){ return getStoredInfo(dim,cal,sarja).entry; };
   window.setPretestCellState = stylePretestCell;
@@ -3771,10 +3826,41 @@ function applyFilters(){
 
   function scheduleSync(){ clearTimeout(syncTimer); syncTimer=setTimeout(()=>{ try{ window.syncVisibleTablePretests(); }catch(_e){} }, 60); }
   function updateFormUi(){ const meta=currentFormMeta(); const info=getStoredInfo(meta.diametru, meta.calitate, meta.sarja); const nameEl=q('pretestPickName'); const openBtn=q('btnOpenCurrentPretest'); const preSel=q('fPre'); const existingName=(info.entry && info.entry.file_name) || (info.localPayload && info.localPayload.file_name) || ''; if(nameEl) nameEl.textContent = selectedFile ? selectedFile.name : (existingName ? ('PDF existent: ' + existingName) : 'Niciun PDF selectat'); if(openBtn) openBtn.disabled = !(selectedFile || info.hasPdf); if(preSel){ if(selectedFile || info.hasPdf) preSel.value='Are pretest'; else if(!trim(preSel.value)) preSel.value='Nu are pretest'; } }
-  function promptPick(){ const input=document.createElement('input'); input.type='file'; input.accept='application/pdf,.pdf'; input.style.position='fixed'; input.style.left='-9999px'; document.body.appendChild(input); input.addEventListener('change', ()=>{ selectedFile = input.files && input.files[0] ? input.files[0] : null; updateFormUi(); input.remove(); }); input.click(); }
-  async function openPdfFromInfo(info, pendingFile){ const popup=window.open('about:blank','_blank'); try{ if(pendingFile instanceof File){ const url=URL.createObjectURL(pendingFile); popup.location.href=url; setTimeout(()=>URL.revokeObjectURL(url), 60000); return; } const payload=(info && info.localPayload) ? info.localPayload : getFilePayload(info && info.key); if(!payload || !payload.data_url) throw new Error('PDF-ul pretest nu a fost găsit.'); const url=URL.createObjectURL(dataUrlToBlob(payload.data_url)); popup.location.href=url; setTimeout(()=>URL.revokeObjectURL(url), 60000); }catch(err){ try{ if(popup && !popup.closed) popup.close(); }catch(_e){} alert(err && err.message ? err.message : err); } }
+  async function promptPick(){
+    const input=document.createElement('input');
+    input.type='file';
+    input.accept='application/pdf,.pdf';
+    input.style.position='fixed';
+    input.style.left='-9999px';
+    document.body.appendChild(input);
+    input.addEventListener('change', ()=>{ selectedFile = input.files && input.files[0] ? input.files[0] : null; updateFormUi(); input.remove(); }, { once:true });
+    try{
+      if(typeof input.showPicker === 'function') await input.showPicker();
+      else input.click();
+    }catch(_e){ input.click(); }
+  }
+  async function openPdfFromInfo(info, pendingFile){
+    const popup=window.open('about:blank','_blank');
+    try{
+      if(pendingFile instanceof File){
+        const url=URL.createObjectURL(pendingFile);
+        popup.location.href=url;
+        setTimeout(()=>URL.revokeObjectURL(url), 60000);
+        return;
+      }
+      let payload=(info && info.localPayload) ? info.localPayload : null;
+      if(!(payload && payload.data_url)) payload = await getFilePayload(info && info.key);
+      if(!payload || !payload.data_url) throw new Error('PDF-ul pretest nu a fost găsit.');
+      const url=URL.createObjectURL(dataUrlToBlob(payload.data_url));
+      popup.location.href=url;
+      setTimeout(()=>URL.revokeObjectURL(url), 60000);
+    }catch(err){
+      try{ if(popup && !popup.closed) popup.close(); }catch(_e){}
+      alert(err && err.message ? err.message : err);
+    }
+  }
   async function persistSelectedFile(){ if(!(selectedFile instanceof File)) return null; const meta=currentFormMeta(); if(!meta.diametru || !meta.calitate || !meta.sarja) throw new Error('Completează diametrul, calitatea și sarja înainte să salvezi PDF-ul.'); const key=makeKey(meta.diametru, meta.calitate, meta.sarja); const dataUrl=await fileToDataUrl(selectedFile); const payload={ key, diametru:meta.diametru, calitate:meta.calitate, sarja:meta.sarja, file_name:selectedFile.name, mime_type:selectedFile.type || 'application/pdf', file_size:selectedFile.size || 0, updated_at:new Date().toISOString(), data_url:dataUrl };
-    saveFilePayload(key,payload);
+    await saveFilePayload(key,payload);
     const metaStore=loadMeta(); metaStore[key]={ key, diametru:meta.diametru, calitate:meta.calitate, sarja:meta.sarja, file_name:selectedFile.name, mime_type:selectedFile.type || 'application/pdf', file_size:selectedFile.size || 0, updated_at:payload.updated_at };
     saveMeta(metaStore);
     selectedFile=null;
@@ -3793,17 +3879,18 @@ function applyFilters(){
   }
 
   function patchWrappers(){
-    if(typeof window.openForm==='function' && !window.openForm.__pretestPatchedV10){ const orig=window.openForm; window.openForm=function(){ const out=orig.apply(this, arguments); selectedFile=null; setTimeout(updateFormUi, 50); return out; }; window.openForm.__pretestPatchedV10=true; }
-    if(typeof window.openEditRow==='function' && !window.openEditRow.__pretestPatchedV10){ const orig=window.openEditRow; window.openEditRow=function(){ const out=orig.apply(this, arguments); selectedFile=null; setTimeout(updateFormUi, 50); return out; }; window.openEditRow.__pretestPatchedV10=true; }
-    if(typeof window.closeForm==='function' && !window.closeForm.__pretestPatchedV10){ const orig=window.closeForm; window.closeForm=function(){ selectedFile=null; const out=orig.apply(this, arguments); setTimeout(updateFormUi, 0); return out; }; window.closeForm.__pretestPatchedV10=true; }
-    if(typeof window.saveRow==='function' && !window.saveRow.__pretestPatchedV10){ const orig=window.saveRow; window.saveRow=async function(){ try{ if(selectedFile) await persistSelectedFile(); const meta=currentFormMeta(); if(getStoredInfo(meta.diametru, meta.calitate, meta.sarja).hasPdf && q('fPre')) q('fPre').value='Are pretest'; }catch(err){ alert(err && err.message ? err.message : err); return; } const out=orig.apply(this, arguments); scheduleSync(); return out; }; window.saveRow.__pretestPatchedV10=true; }
-    if(typeof window.renderActiveYear==='function' && !window.renderActiveYear.__pretestPatchedV10){ const orig=window.renderActiveYear; window.renderActiveYear=function(){ const out=orig.apply(this, arguments); scheduleSync(); return out; }; window.renderActiveYear.__pretestPatchedV10=true; }
-    if(typeof window.fillTopDown==='function' && !window.fillTopDown.__pretestPatchedV10){ const orig=window.fillTopDown; window.fillTopDown=function(dataRows){ const out=orig.apply(this, arguments); scheduleSync(); return out; }; window.fillTopDown.__pretestPatchedV10=true; }
+    if(typeof window.openForm==='function' && !window.openForm.__pretestPatchedV11){ const orig=window.openForm; window.openForm=function(){ const out=orig.apply(this, arguments); selectedFile=null; setTimeout(updateFormUi, 50); return out; }; window.openForm.__pretestPatchedV11=true; }
+    if(typeof window.openEditRow==='function' && !window.openEditRow.__pretestPatchedV11){ const orig=window.openEditRow; window.openEditRow=function(){ const out=orig.apply(this, arguments); selectedFile=null; setTimeout(updateFormUi, 50); return out; }; window.openEditRow.__pretestPatchedV11=true; }
+    if(typeof window.closeForm==='function' && !window.closeForm.__pretestPatchedV11){ const orig=window.closeForm; window.closeForm=function(){ selectedFile=null; const out=orig.apply(this, arguments); setTimeout(updateFormUi, 0); return out; }; window.closeForm.__pretestPatchedV11=true; }
+    if(typeof window.saveRow==='function' && !window.saveRow.__pretestPatchedV11){ const orig=window.saveRow; window.saveRow=async function(){ try{ if(selectedFile) await persistSelectedFile(); const meta=currentFormMeta(); if(getStoredInfo(meta.diametru, meta.calitate, meta.sarja).hasPdf && q('fPre')) q('fPre').value='Are pretest'; }catch(err){ alert(err && err.message ? err.message : err); return; } const out=orig.apply(this, arguments); scheduleSync(); return out; }; window.saveRow.__pretestPatchedV11=true; }
+    if(typeof window.renderActiveYear==='function' && !window.renderActiveYear.__pretestPatchedV11){ const orig=window.renderActiveYear; window.renderActiveYear=function(){ const out=orig.apply(this, arguments); scheduleSync(); return out; }; window.renderActiveYear.__pretestPatchedV11=true; }
+    if(typeof window.fillTopDown==='function' && !window.fillTopDown.__pretestPatchedV11){ const orig=window.fillTopDown; window.fillTopDown=function(dataRows){ const out=orig.apply(this, arguments); scheduleSync(); return out; }; window.fillTopDown.__pretestPatchedV11=true; }
   }
 
-  function ensureStyles(){ if(document.getElementById('pretestPdfFixStylesV10')) return; const st=document.createElement('style'); st.id='pretestPdfFixStylesV10'; st.textContent='td.pretestHasPdf{background:#16a34a !important;color:#fff !important;font-weight:800;cursor:pointer;text-decoration:underline;text-underline-offset:2px;} td.pretestHasPdf:hover{background:#15803d !important;} td.pretestNoPdf{background:inherit !important;color:inherit !important;} .pretestPickerName{font-size:12px;color:#475569;margin-top:6px;}'; document.head.appendChild(st); }
+  function ensureStyles(){ if(document.getElementById('pretestPdfFixStylesV11')) return; const st=document.createElement('style'); st.id='pretestPdfFixStylesV11'; st.textContent='td.pretestHasPdf{background:#16a34a !important;color:#fff !important;font-weight:800;cursor:pointer;text-decoration:underline;text-underline-offset:2px;} td.pretestHasPdf:hover{background:#15803d !important;} td.pretestNoPdf{background:inherit !important;color:inherit !important;} .pretestPickerName{font-size:12px;color:#475569;margin-top:6px;}'; document.head.appendChild(st); }
 
-  function boot(){ ensureStyles(); bindUi(); patchWrappers(); updateFormUi(); scheduleSync(); const tbody=q('tbody'); if(tbody && !tbody.__pretestObserverV10){ const obs=new MutationObserver(()=>scheduleSync()); obs.observe(tbody,{childList:true,subtree:true,characterData:true}); tbody.__pretestObserverV10=obs; } }
+  function boot(){ ensureStyles(); bindUi(); patchWrappers(); updateFormUi(); scheduleSync(); const tbody=q('tbody'); if(tbody && !tbody.__pretestObserverV11){ const obs=new MutationObserver(()=>scheduleSync()); obs.observe(tbody,{childList:true,subtree:true,characterData:true}); tbody.__pretestObserverV11=obs; } }
+
 
   if(document.readyState==='loading') document.addEventListener('DOMContentLoaded', boot); else boot();
 })();
