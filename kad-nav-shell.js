@@ -361,26 +361,41 @@
 
       var links = flyout.querySelectorAll('.kad-shell-flyout-link').length;
       var shellRect = shell.getBoundingClientRect();
-      var availableWidth = Math.max(240, window.innerWidth - shellRect.right - 26);
-      var maxCols = availableWidth >= 900 ? 4 : availableWidth >= 660 ? 3 : availableWidth >= 360 ? 2 : 1;
-      var cols = links > 18 ? 4 : links > 9 ? 3 : links > 4 ? 2 : 1;
+      var gap = 18;
+      var availableWidth = Math.max(320, window.innerWidth - shellRect.right - gap);
+      var minColWidth = 190;
+      var panelPadding = 28;
+      var maxCols = Math.max(1, Math.floor((availableWidth - panelPadding) / minColWidth));
+      var cols = links > 20 ? 5 : links > 12 ? 4 : links > 6 ? 3 : links > 3 ? 2 : 1;
       cols = Math.max(1, Math.min(cols, maxCols));
 
-      item.style.setProperty('--kad-flyout-max-width', Math.max(260, availableWidth) + 'px');
-      item.style.setProperty('--kad-flyout-cols', String(cols));
+      function applySize(){
+        var desiredWidth = Math.min(availableWidth, cols * minColWidth + panelPadding);
+        item.style.setProperty('--kad-flyout-max-width', availableWidth + 'px');
+        item.style.setProperty('--kad-flyout-width', desiredWidth + 'px');
+        item.style.setProperty('--kad-flyout-cols', String(cols));
+      }
+
+      applySize();
 
       var viewportLimit = window.innerHeight - 28;
       var tries = 0;
-      while(tries < 4){
+      while(tries < 8){
         var height = flyout.offsetHeight;
         if(height <= viewportLimit || cols >= maxCols) break;
         cols += 1;
-        item.style.setProperty('--kad-flyout-cols', String(cols));
+        applySize();
         tries += 1;
       }
 
       var rect = flyout.getBoundingClientRect();
       var shift = 0;
+      if(rect.right > window.innerWidth - 12){
+        var clipped = rect.right - (window.innerWidth - 12);
+        var newWidth = Math.max(320, parseFloat(getComputedStyle(item).getPropertyValue('--kad-flyout-width')) - clipped);
+        item.style.setProperty('--kad-flyout-width', newWidth + 'px');
+        rect = flyout.getBoundingClientRect();
+      }
       if(rect.bottom > window.innerHeight - 14){
         shift -= rect.bottom - (window.innerHeight - 14);
       }
