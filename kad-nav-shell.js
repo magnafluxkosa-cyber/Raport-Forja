@@ -320,6 +320,7 @@
         '<nav class="kad-shell-nav">' + filtered.map(itemHtml).join('') + '</nav>' +
         '<div class="kad-shell-submenu-host" aria-live="polite"></div>' +
         '<div class="kad-shell-utility">' +
+          '<button class="kad-shell-logout" type="button" data-kad-logout="1">Logout</button>' +
           '<div class="kad-shell-note">hover la marginea stângă</div>' +
         '</div>' +
       '</aside>' +
@@ -525,6 +526,13 @@
       navigateWithPulse(href, ev.clientX, ev.clientY, transition);
     });
 
+    root.addEventListener('click', function(ev){
+      var logoutBtn = ev.target.closest('[data-kad-logout]');
+      if(!logoutBtn) return;
+      ev.preventDefault();
+      handleLogout(logoutBtn);
+    });
+
     document.addEventListener('keydown', function(ev){
       if(ev.key === 'Escape'){
         root.classList.remove('is-open');
@@ -532,6 +540,23 @@
         syncBodyState(root);
       }
     });
+  }
+
+
+  function handleLogout(button){
+    if(button) button.disabled = true;
+    var finish = function(){ window.location.href = 'login.html'; };
+    try{
+      if(window.ERPAuth && typeof window.ERPAuth.signOut === 'function'){
+        Promise.resolve(window.ERPAuth.signOut({ redirectTo:'login.html' })).catch(finish);
+        return;
+      }
+      if(window.supabase && typeof window.supabase.createClient === 'function' && window.ERPAuth && typeof window.ERPAuth.getSupabaseClient === 'function'){
+        Promise.resolve(window.ERPAuth.getSupabaseClient().auth.signOut()).then(finish).catch(finish);
+        return;
+      }
+    }catch(_){ }
+    finish();
   }
 
   function navigateWithPulse(href, clientX, clientY, transition){
