@@ -1716,12 +1716,12 @@ function applyFilters(){
       if(idx !== 8) return;
       const vals = Array.from(tr.querySelectorAll('td')).slice(0,10).map(cell => (cell.textContent || '').trim());
       const directKey = td.dataset ? trim(td.dataset.pretestKey) : '';
-      const entry = directKey ? ((state.registry.items || []).find(item => item && item.key === directKey) || findRegistryEntry(vals[3], vals[4], vals[6])) : findRegistryEntry(vals[3], vals[4], vals[6]);
-      if(!entry) return;
+      const info = resolveStoredPretest(vals[3], vals[4], vals[6]);
+      if(!info || !info.hasPdf) return;
       e.stopPropagation();
       const popup = window.open('', '_blank');
       try{
-        await openEntryPdf(entry, null, popup);
+        await openEntryPdf(info, null, popup);
       }catch(err){
         try{ if (popup && !popup.closed) popup.close(); }catch(_e){}
         alert((err && err.message) ? err.message : err);
@@ -1740,11 +1740,11 @@ function applyFilters(){
         e.preventDefault();
         const vals = Array.from(tr.querySelectorAll('td')).slice(0,10).map(cell => (cell.textContent || '').trim());
         const directKey = td.dataset ? trim(td.dataset.pretestKey) : '';
-        const entry = directKey ? ((state.registry.items || []).find(item => item && item.key === directKey) || findRegistryEntry(vals[3], vals[4], vals[6])) : findRegistryEntry(vals[3], vals[4], vals[6]);
-        if(!entry) return;
+        const info = resolveStoredPretest(vals[3], vals[4], vals[6]);
+        if(!info || !info.hasPdf) return;
         const popup = window.open('', '_blank');
         try{
-          await openEntryPdf(entry, null, popup);
+          await openEntryPdf(info, null, popup);
         }catch(err){
           try{ if (popup && !popup.closed) popup.close(); }catch(_e){}
           alert((err && err.message) ? err.message : err);
@@ -3289,9 +3289,25 @@ function applyFilters(){
   function buildKey(dim, cal, sarja){ return [normDiam(dim), normCal(cal), normSarja(sarja)].join('||'); }
   function keyToId(key){ return btoa(unescape(encodeURIComponent(key))).replace(/=+$/,'').replace(/\+/g,'-').replace(/\//g,'_'); }
   function fileDocKeyForEntry(entry){ return PRETEST_FILE_PREFIX + keyToId(entry.key || buildKey(entry.diametru, entry.calitate, entry.sarja)); }
+  function fileDocKeyForMeta(dim, cal, sarja){ return PRETEST_FILE_PREFIX + keyToId(buildKey(dim, cal, sarja)); }
+  function getLocalFilePayloadByDocKey(docKey){
+    if (!docKey) return null;
+    try{
+      const suffix = String(docKey).startsWith(PRETEST_FILE_PREFIX) ? String(docKey).slice(PRETEST_FILE_PREFIX.length) : String(docKey);
+      const raw = localStorage.getItem(PRETEST_LOCAL_FILE_PREFIX + suffix);
+      return raw ? JSON.parse(raw) : null;
+    }catch(_e){ return null; }
+  }
+  function resolveStoredPretest(dim, cal, sarja){
+    const key = buildKey(dim, cal, sarja);
+    const entry = (state.registry.items || []).find(item => item && item.key === key) || null;
+    const docKey = (entry && (entry.file_doc_key || fileDocKeyForEntry(entry))) || fileDocKeyForMeta(dim, cal, sarja);
+    const localPayload = getLocalFilePayloadByDocKey(docKey);
+    return { key, entry, docKey, localPayload, hasPdf: !!(entry || (localPayload && localPayload.data_url)) };
+  }
   function nowIso(){ return new Date().toISOString(); }
-  function hasRegistryEntry(dim, cal, sarja){ return !!findRegistryEntry(dim, cal, sarja); }
-  function findRegistryEntry(dim, cal, sarja){ const key = buildKey(dim, cal, sarja); return (state.registry.items || []).find(item => item && item.key === key) || null; }
+  function hasRegistryEntry(dim, cal, sarja){ return resolveStoredPretest(dim, cal, sarja).hasPdf; }
+  function findRegistryEntry(dim, cal, sarja){ return resolveStoredPretest(dim, cal, sarja).entry; }
   function normalizeEntry(item){
     if (!item) return null;
     const diametru = trim(item.diametru || item.dim || item.d || '');
@@ -3449,15 +3465,20 @@ function applyFilters(){
     row[8] = entry ? 'Are pretest' : (row[8] ? row[8] : 'Nu are pretest');
     return row;
   }
-  function setPretestCellState(td, entry, fallbackText){
+  function setPretestCellState(td, resolved, fallbackText){
     if (!td) return;
     const normalized = normalizePretest(fallbackText || '');
-    const hasPdf = !!entry;
+    const info = resolved && typeof resolved === 'object' && Object.prototype.hasOwnProperty.call(resolved,'hasPdf')
+      ? resolved
+      : resolveStoredPretest('', '', '');
+    const hasPdf = !!(info && info.hasPdf);
+    const fileName = (info && info.entry && info.entry.file_name) || (info && info.localPayload && info.localPayload.file_name) || 'pretest.pdf';
     td.textContent = hasPdf ? 'Are pretest' : (normalized || 'Nu are pretest');
     td.classList.remove('pretestHasPdf','pretestNoPdf');
     td.dataset.hasPdf = hasPdf ? '1' : '0';
-    td.dataset.pretestKey = hasPdf ? (entry.key || '') : '';
-    td.title = hasPdf ? ('Deschide PDF: ' + (entry.file_name || 'pretest.pdf')) : '';
+    td.dataset.pretestKey = hasPdf ? ((info && info.key) || '') : '';
+    td.dataset.pretestDocKey = hasPdf ? ((info && info.docKey) || '') : '';
+    td.title = hasPdf ? ('Deschide PDF: ' + fileName) : '';
     td.style.cursor = hasPdf ? 'pointer' : 'default';
     td.style.textDecoration = hasPdf ? 'underline' : 'none';
     td.style.textUnderlineOffset = hasPdf ? '2px' : '';
@@ -3474,20 +3495,21 @@ function applyFilters(){
       const vals = Array.from(tds).slice(0,10).map(td => trim(td.textContent));
       const any = vals.some(Boolean);
       if (!any) return;
-      const entry = findRegistryEntry(vals[3], vals[4], vals[6]);
-      setPretestCellState(tds[8], entry, vals[8] || 'Nu are pretest');
+      const info = resolveStoredPretest(vals[3], vals[4], vals[6]);
+      setPretestCellState(tds[8], info, vals[8] || 'Nu are pretest');
     });
   }
   function renderFormPretestState(){
     const els = getFormEls();
     const meta = currentFormMeta();
-    const entry = findRegistryEntry(meta.diametru, meta.calitate, meta.sarja);
+    const info = resolveStoredPretest(meta.diametru, meta.calitate, meta.sarja);
     const selectedName = state.selectedFile ? state.selectedFile.name : '';
-    if (els.name) els.name.textContent = selectedName || (entry ? ('PDF existent: ' + (entry.file_name || 'pretest.pdf')) : 'Niciun PDF selectat');
-    if (els.openBtn) els.openBtn.disabled = !(entry || state.selectedFile);
+    const existingName = (info.entry && info.entry.file_name) || (info.localPayload && info.localPayload.file_name) || 'pretest.pdf';
+    if (els.name) els.name.textContent = selectedName || (info.hasPdf ? ('PDF existent: ' + existingName) : 'Niciun PDF selectat');
+    if (els.openBtn) els.openBtn.disabled = !(info.hasPdf || state.selectedFile);
     if (els.pre){
       if (state.selectedFile) els.pre.value = 'Are pretest';
-      else if (entry) els.pre.value = 'Are pretest';
+      else if (info.hasPdf) els.pre.value = 'Are pretest';
       else if (!trim(els.pre.value)) els.pre.value = 'Nu are pretest';
     }
   }
@@ -3507,22 +3529,20 @@ function applyFilters(){
     a.click();
     a.remove();
   }
-  async function openEntryPdf(entry, pendingFile, targetWindow){
+  async function openEntryPdf(entryOrMeta, pendingFile, targetWindow){
     if (pendingFile instanceof File){
       const url = URL.createObjectURL(pendingFile);
       openBlobUrl(url, targetWindow);
       setTimeout(() => URL.revokeObjectURL(url), 60 * 1000);
       return;
     }
-    if (!entry) return;
-    let payload = null;
-    try{
-      const localKey = PRETEST_LOCAL_FILE_PREFIX + (entry.file_doc_key || fileDocKeyForEntry(entry)).slice(PRETEST_FILE_PREFIX.length);
-      const rawLocal = localStorage.getItem(localKey);
-      if (rawLocal) payload = JSON.parse(rawLocal);
-    }catch(_e){}
-    if (!payload){
-      const doc = await readDoc(entry.file_doc_key || fileDocKeyForEntry(entry));
+    const info = (entryOrMeta && Object.prototype.hasOwnProperty.call(entryOrMeta,'hasPdf'))
+      ? entryOrMeta
+      : resolveStoredPretest(entryOrMeta && entryOrMeta.diametru, entryOrMeta && entryOrMeta.calitate, entryOrMeta && entryOrMeta.sarja);
+    let payload = info && info.localPayload ? info.localPayload : null;
+    const docKey = (info && info.docKey) || (info && info.entry && (info.entry.file_doc_key || fileDocKeyForEntry(info.entry)));
+    if (!payload && docKey){
+      const doc = await readDoc(docKey);
       payload = doc && doc.payload ? doc.payload : null;
     }
     if (!payload || !payload.data_url) throw new Error('PDF-ul pretest nu a fost găsit.');
@@ -3577,16 +3597,19 @@ function applyFilters(){
       renderFormPretestState();
     });
 
-    document.addEventListener('click', (ev) => {
-      const pick = ev.target && ev.target.closest ? ev.target.closest('#btnPickPretestPdf') : null;
-      if (pick && els.file) {
-        setTimeout(() => { try{ els.file.click(); }catch(_e){} }, 0);
+    if (els.pickBtn && els.file) els.pickBtn.addEventListener('click', async () => {
+      try{
+        if (typeof els.file.showPicker === 'function') await els.file.showPicker();
+        else els.file.click();
+      }catch(_e){
+        try{ els.file.click(); }catch(__e){}
       }
     });
     if (els.openBtn) els.openBtn.addEventListener('click', async () => {
       const popup = window.open('', '_blank');
       try{
-        await openEntryPdf(findRegistryEntry(currentFormMeta().diametru, currentFormMeta().calitate, currentFormMeta().sarja), state.selectedFile, popup);
+        const meta = currentFormMeta();
+        await openEntryPdf(resolveStoredPretest(meta.diametru, meta.calitate, meta.sarja), state.selectedFile, popup);
       }catch(err){
         try{ if (popup && !popup.closed) popup.close(); }catch(_e){}
         alert((err && err.message) ? err.message : err);
