@@ -290,6 +290,7 @@
           '<div class="kad-shell-active-page">' + escapeHtml(getActivePageLabel()) + '</div>' +
         '</div>' +
         '<nav class="kad-shell-nav">' + filtered.map(itemHtml).join('') + '</nav>' +
+        '<div class="kad-shell-submenu-host" aria-live="polite"></div>' +
         '<div class="kad-shell-utility">' +
           '<a class="kad-shell-utility-link" data-kad-nav-link="1" href="index.html">Dashboard</a>' +
           '<a class="kad-shell-utility-link" data-kad-nav-link="1" href="login.html">Login</a>' +
@@ -306,6 +307,7 @@
   function bindShell(root){
     var edge = root.querySelector('.kad-shell-edge');
     var shell = root.querySelector('.kad-shell');
+    var host = root.querySelector('.kad-shell-submenu-host');
     var transition = root.querySelector('.kad-shell-transition');
     var closeTimer = 0;
     var openTimer = 0;
@@ -329,6 +331,12 @@
       root.classList.remove('has-submenu');
       root.style.setProperty('--kad-shell-expanded-width', baseWidth() + 'px');
       root.style.setProperty('--kad-shell-submenu-width', '0px');
+      root.style.setProperty('--kad-shell-submenu-top', '124px');
+      if(host){
+        host.innerHTML = '';
+        host.removeAttribute('data-owner-key');
+        host.style.removeProperty('--kad-flyout-cols');
+      }
     }
 
     function closeAllItems(except){
@@ -337,7 +345,6 @@
           item.classList.remove('is-open');
           var btn = item.querySelector('.kad-shell-main');
           if(btn) btn.setAttribute('aria-expanded', 'false');
-          item.style.setProperty('--kad-flyout-top', '0px');
         }
       });
       if(!except){
@@ -369,9 +376,8 @@
     });
 
     function layoutFlyout(item, flyout){
-      if(!item || !flyout || window.innerWidth <= 1100) return;
+      if(!item || !flyout || !host) return;
 
-      item.style.setProperty('--kad-flyout-top', '0px');
       var links = flyout.querySelectorAll('.kad-shell-flyout-link').length;
       var base = baseWidth();
       var gap = 12;
@@ -401,17 +407,25 @@
       root.style.setProperty('--kad-shell-submenu-width', actualSubmenuWidth + 'px');
       root.classList.add('has-submenu');
       item.style.setProperty('--kad-flyout-cols', String(cols));
+      host.style.setProperty('--kad-flyout-cols', String(cols));
+      host.innerHTML = flyout.innerHTML;
+      host.setAttribute('data-owner-key', item.getAttribute('data-page-key') || '');
+
+      var shellRect = shell.getBoundingClientRect();
+      var itemRect = item.getBoundingClientRect();
+      var top = Math.max(10, itemRect.top - shellRect.top);
+      root.style.setProperty('--kad-shell-submenu-top', top + 'px');
 
       window.requestAnimationFrame(function(){
-        var rect = flyout.getBoundingClientRect();
-        var shift = 0;
+        var rect = host.getBoundingClientRect();
+        var adjustedTop = top;
         if(rect.bottom > window.innerHeight - 14){
-          shift -= rect.bottom - (window.innerHeight - 14);
+          adjustedTop -= rect.bottom - (window.innerHeight - 14);
         }
-        if(rect.top + shift < 14){
-          shift += 14 - (rect.top + shift);
+        if(rect.top < 14){
+          adjustedTop += 14 - rect.top;
         }
-        item.style.setProperty('--kad-flyout-top', shift + 'px');
+        root.style.setProperty('--kad-shell-submenu-top', Math.max(10, adjustedTop) + 'px');
       });
     }
 
@@ -435,8 +449,7 @@
           if(!item.matches(':hover') && !item.contains(document.activeElement)){
             item.classList.remove('is-open');
             main.setAttribute('aria-expanded', 'false');
-            item.style.setProperty('--kad-flyout-top', '0px');
-            if(!root.querySelector('.kad-shell-item.is-open')){
+              if(!root.querySelector('.kad-shell-item.is-open')){
               resetExpandedShell();
             }
           }
@@ -444,7 +457,6 @@
       }
 
       item.addEventListener('mouseenter', function(){ if(!isTouch) showItem(); });
-      item.addEventListener('mouseleave', hideItem);
       main.addEventListener('click', function(ev){
         ev.preventDefault();
         var open = item.classList.contains('is-open');
@@ -457,7 +469,6 @@
         }else{
           item.classList.remove('is-open');
           main.setAttribute('aria-expanded', 'false');
-          item.style.setProperty('--kad-flyout-top', '0px');
           resetExpandedShell();
         }
       });
