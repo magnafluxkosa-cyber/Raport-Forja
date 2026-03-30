@@ -3738,5 +3738,76 @@ function applyFilters(){
 })();
 </script>
 
+
+<script>
+(function(){
+  const STORE_META_KEY='INTRARI_OTEL_PRETEST_META_V10';
+  const STORE_FILE_KEY='INTRARI_OTEL_PRETEST_FILE_V10:';
+  let selectedFile = null;
+  let syncTimer = null;
+
+  function q(id){ return document.getElementById(id); }
+  function safe(v){ return String(v == null ? '' : v); }
+  function trim(v){ return safe(v).trim(); }
+  function normText(v){ return trim(v).toUpperCase().replace(/\s+/g,' '); }
+  function normDiam(v){ const s=safe(v).toUpperCase().replace(/Ø/g,'').replace(/\s+/g,'').replace(',', '.'); const m=s.match(/\d+(?:\.\d+)?/); return m?m[0]:s; }
+  function normCal(v){ return normText(v); }
+  function normSarja(v){ return trim(v).toUpperCase().replace(/\s+/g,''); }
+  function makeKey(dim,cal,sarja){ return [normDiam(dim), normCal(cal), normSarja(sarja)].join('||'); }
+  function dataUrlToBlob(dataUrl){ const m=String(dataUrl||'').match(/^data:([^;]+);base64,(.+)$/); if(!m) throw new Error('PDF invalid.'); const bin=atob(m[2]); const arr=new Uint8Array(bin.length); for(let i=0;i<bin.length;i++) arr[i]=bin.charCodeAt(i); return new Blob([arr], {type:m[1] || 'application/pdf'}); }
+  function fileToDataUrl(file){ return new Promise((resolve,reject)=>{ const r=new FileReader(); r.onload=()=>resolve(r.result); r.onerror=()=>reject(r.error || new Error('Nu am putut citi PDF-ul.')); r.readAsDataURL(file); }); }
+  function loadMeta(){ try{ const raw=localStorage.getItem(STORE_META_KEY); const parsed=raw?JSON.parse(raw):{}; return parsed && typeof parsed==='object' ? parsed : {}; }catch(_e){ return {}; } }
+  function saveMeta(meta){ try{ localStorage.setItem(STORE_META_KEY, JSON.stringify(meta||{})); }catch(_e){} }
+  function getFilePayload(key){ if(!key) return null; try{ const raw=localStorage.getItem(STORE_FILE_KEY + key); return raw?JSON.parse(raw):null; }catch(_e){ return null; } }
+  function saveFilePayload(key,payload){ try{ localStorage.setItem(STORE_FILE_KEY + key, JSON.stringify(payload)); }catch(_e){} }
+  function currentFormMeta(){ return { diametru: trim(q('fDim') && q('fDim').value), calitate: trim(q('fCal') && q('fCal').value), sarja: trim(q('fCat') && q('fCat').value) }; }
+  function getStoredInfo(dim,cal,sarja){ const key=makeKey(dim,cal,sarja); const meta=loadMeta(); const entry=meta[key] || null; const localPayload=getFilePayload(key); return { key, entry, localPayload, hasPdf: !!(localPayload && localPayload.data_url) || !!(entry && entry.file_name && getFilePayload(key)) } }
+  function stylePretestCell(td, info, fallbackText){ if(!td) return; const hasPdf=!!(info && info.hasPdf); td.textContent = hasPdf ? 'Are pretest' : (trim(fallbackText) || 'Nu are pretest'); td.classList.remove('pretestHasPdf','pretestNoPdf'); td.dataset.hasPdf = hasPdf ? '1' : '0'; td.dataset.pretestKey = hasPdf ? info.key : ''; td.style.cursor = hasPdf ? 'pointer' : 'default'; td.style.textDecoration = hasPdf ? 'underline' : 'none'; td.style.textUnderlineOffset = hasPdf ? '2px' : ''; td.setAttribute('tabindex', hasPdf ? '0' : '-1'); td.title = hasPdf ? 'Deschide PDF-ul pretest' : ''; if(hasPdf) td.classList.add('pretestHasPdf'); else td.classList.add('pretestNoPdf'); }
+  window.resolveStoredPretest = function(dim,cal,sarja){ return getStoredInfo(dim,cal,sarja); };
+  window.findRegistryEntry = function(dim,cal,sarja){ return getStoredInfo(dim,cal,sarja).entry; };
+  window.setPretestCellState = stylePretestCell;
+  window.syncVisibleTablePretests = function(){ const tbody=q('tbody'); if(!tbody) return; Array.from(tbody.querySelectorAll('tr')).forEach(tr=>{ const tds=tr.querySelectorAll('td'); if(!tds || tds.length<10) return; const vals=Array.from(tds).slice(0,10).map(td=>trim(td.textContent)); if(!vals.some(Boolean)) return; const info=getStoredInfo(vals[3], vals[4], vals[6]); stylePretestCell(tds[8], info, vals[8]); if(info.hasPdf){ tds[8].textContent='Are pretest'; } }); };
+  window.__syncVisiblePretestCells = window.syncVisibleTablePretests;
+
+  function scheduleSync(){ clearTimeout(syncTimer); syncTimer=setTimeout(()=>{ try{ window.syncVisibleTablePretests(); }catch(_e){} }, 60); }
+  function updateFormUi(){ const meta=currentFormMeta(); const info=getStoredInfo(meta.diametru, meta.calitate, meta.sarja); const nameEl=q('pretestPickName'); const openBtn=q('btnOpenCurrentPretest'); const preSel=q('fPre'); const existingName=(info.entry && info.entry.file_name) || (info.localPayload && info.localPayload.file_name) || ''; if(nameEl) nameEl.textContent = selectedFile ? selectedFile.name : (existingName ? ('PDF existent: ' + existingName) : 'Niciun PDF selectat'); if(openBtn) openBtn.disabled = !(selectedFile || info.hasPdf); if(preSel){ if(selectedFile || info.hasPdf) preSel.value='Are pretest'; else if(!trim(preSel.value)) preSel.value='Nu are pretest'; } }
+  function promptPick(){ const input=document.createElement('input'); input.type='file'; input.accept='application/pdf,.pdf'; input.style.position='fixed'; input.style.left='-9999px'; document.body.appendChild(input); input.addEventListener('change', ()=>{ selectedFile = input.files && input.files[0] ? input.files[0] : null; updateFormUi(); input.remove(); }); input.click(); }
+  async function openPdfFromInfo(info, pendingFile){ const popup=window.open('about:blank','_blank'); try{ if(pendingFile instanceof File){ const url=URL.createObjectURL(pendingFile); popup.location.href=url; setTimeout(()=>URL.revokeObjectURL(url), 60000); return; } const payload=(info && info.localPayload) ? info.localPayload : getFilePayload(info && info.key); if(!payload || !payload.data_url) throw new Error('PDF-ul pretest nu a fost găsit.'); const url=URL.createObjectURL(dataUrlToBlob(payload.data_url)); popup.location.href=url; setTimeout(()=>URL.revokeObjectURL(url), 60000); }catch(err){ try{ if(popup && !popup.closed) popup.close(); }catch(_e){} alert(err && err.message ? err.message : err); } }
+  async function persistSelectedFile(){ if(!(selectedFile instanceof File)) return null; const meta=currentFormMeta(); if(!meta.diametru || !meta.calitate || !meta.sarja) throw new Error('Completează diametrul, calitatea și sarja înainte să salvezi PDF-ul.'); const key=makeKey(meta.diametru, meta.calitate, meta.sarja); const dataUrl=await fileToDataUrl(selectedFile); const payload={ key, diametru:meta.diametru, calitate:meta.calitate, sarja:meta.sarja, file_name:selectedFile.name, mime_type:selectedFile.type || 'application/pdf', file_size:selectedFile.size || 0, updated_at:new Date().toISOString(), data_url:dataUrl };
+    saveFilePayload(key,payload);
+    const metaStore=loadMeta(); metaStore[key]={ key, diametru:meta.diametru, calitate:meta.calitate, sarja:meta.sarja, file_name:selectedFile.name, mime_type:selectedFile.type || 'application/pdf', file_size:selectedFile.size || 0, updated_at:payload.updated_at };
+    saveMeta(metaStore);
+    selectedFile=null;
+    if(q('fPre')) q('fPre').value='Are pretest';
+    updateFormUi();
+    scheduleSync();
+    return payload;
+  }
+
+  function bindUi(){
+    const pickBtn=q('btnPickPretestPdf'); if(pickBtn) pickBtn.onclick=function(e){ e.preventDefault(); promptPick(); };
+    const openBtn=q('btnOpenCurrentPretest'); if(openBtn) openBtn.onclick=function(e){ e.preventDefault(); const meta=currentFormMeta(); const info=getStoredInfo(meta.diametru, meta.calitate, meta.sarja); openPdfFromInfo(info, selectedFile); };
+    ['fDim','fCal','fCat'].forEach(id=>{ const el=q(id); if(!el) return; el.addEventListener('input', updateFormUi); el.addEventListener('change', updateFormUi); });
+    const topBtn=q('btnPretestTop'); if(topBtn) topBtn.onclick=function(e){ e.preventDefault(); promptPick(); if(typeof window.openForm==='function') setTimeout(()=>{ try{ window.openForm(); }catch(_e){} setTimeout(updateFormUi,100); }, 10); };
+    const tbody=q('tbody'); if(tbody && !tbody.__pretestClickBound){ tbody.__pretestClickBound=true; tbody.addEventListener('click', function(e){ const td=e.target && e.target.closest ? e.target.closest('td') : null; const tr=e.target && e.target.closest ? e.target.closest('tr') : null; if(!td || !tr || tr.parentElement!==tbody) return; const idx=Array.from(tr.children).indexOf(td); if(idx!==8) return; const vals=Array.from(tr.querySelectorAll('td')).slice(0,10).map(cell=>trim(cell.textContent)); const info=getStoredInfo(vals[3], vals[4], vals[6]); if(!info.hasPdf) return; e.preventDefault(); e.stopPropagation(); openPdfFromInfo(info, null); }); tbody.addEventListener('keydown', function(e){ const td=e.target && e.target.closest ? e.target.closest('td') : null; if(!td || td.dataset.hasPdf!=='1') return; if(e.key==='Enter' || e.key===' '){ e.preventDefault(); td.click(); } }); }
+  }
+
+  function patchWrappers(){
+    if(typeof window.openForm==='function' && !window.openForm.__pretestPatchedV10){ const orig=window.openForm; window.openForm=function(){ const out=orig.apply(this, arguments); selectedFile=null; setTimeout(updateFormUi, 50); return out; }; window.openForm.__pretestPatchedV10=true; }
+    if(typeof window.openEditRow==='function' && !window.openEditRow.__pretestPatchedV10){ const orig=window.openEditRow; window.openEditRow=function(){ const out=orig.apply(this, arguments); selectedFile=null; setTimeout(updateFormUi, 50); return out; }; window.openEditRow.__pretestPatchedV10=true; }
+    if(typeof window.closeForm==='function' && !window.closeForm.__pretestPatchedV10){ const orig=window.closeForm; window.closeForm=function(){ selectedFile=null; const out=orig.apply(this, arguments); setTimeout(updateFormUi, 0); return out; }; window.closeForm.__pretestPatchedV10=true; }
+    if(typeof window.saveRow==='function' && !window.saveRow.__pretestPatchedV10){ const orig=window.saveRow; window.saveRow=async function(){ try{ if(selectedFile) await persistSelectedFile(); const meta=currentFormMeta(); if(getStoredInfo(meta.diametru, meta.calitate, meta.sarja).hasPdf && q('fPre')) q('fPre').value='Are pretest'; }catch(err){ alert(err && err.message ? err.message : err); return; } const out=orig.apply(this, arguments); scheduleSync(); return out; }; window.saveRow.__pretestPatchedV10=true; }
+    if(typeof window.renderActiveYear==='function' && !window.renderActiveYear.__pretestPatchedV10){ const orig=window.renderActiveYear; window.renderActiveYear=function(){ const out=orig.apply(this, arguments); scheduleSync(); return out; }; window.renderActiveYear.__pretestPatchedV10=true; }
+    if(typeof window.fillTopDown==='function' && !window.fillTopDown.__pretestPatchedV10){ const orig=window.fillTopDown; window.fillTopDown=function(dataRows){ const out=orig.apply(this, arguments); scheduleSync(); return out; }; window.fillTopDown.__pretestPatchedV10=true; }
+  }
+
+  function ensureStyles(){ if(document.getElementById('pretestPdfFixStylesV10')) return; const st=document.createElement('style'); st.id='pretestPdfFixStylesV10'; st.textContent='td.pretestHasPdf{background:#16a34a !important;color:#fff !important;font-weight:800;cursor:pointer;text-decoration:underline;text-underline-offset:2px;} td.pretestHasPdf:hover{background:#15803d !important;} td.pretestNoPdf{background:inherit !important;color:inherit !important;} .pretestPickerName{font-size:12px;color:#475569;margin-top:6px;}'; document.head.appendChild(st); }
+
+  function boot(){ ensureStyles(); bindUi(); patchWrappers(); updateFormUi(); scheduleSync(); const tbody=q('tbody'); if(tbody && !tbody.__pretestObserverV10){ const obs=new MutationObserver(()=>scheduleSync()); obs.observe(tbody,{childList:true,subtree:true,characterData:true}); tbody.__pretestObserverV10=obs; } }
+
+  if(document.readyState==='loading') document.addEventListener('DOMContentLoaded', boot); else boot();
+})();
+</script>
+
 </body>
 </html>
