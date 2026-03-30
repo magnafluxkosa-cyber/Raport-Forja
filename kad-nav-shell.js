@@ -3,6 +3,7 @@
 
   var currentPath = (window.location.pathname.split('/').pop() || 'index.html').toLowerCase();
   var currentKey = currentPath.replace(/\.html$/i, '');
+  var shellDisabled = /(?:^|\/)(?:login|index)\.html$/i.test(currentPath);
 
   function getStoredHidden(){
     function parse(raw){
@@ -275,8 +276,35 @@
       '</div>';
   }
 
+
+  function removeDashboardButtons(){
+    var nodes = document.querySelectorAll('a[href], button, [role="button"]');
+    nodes.forEach(function(node){
+      if(node && node.closest && node.closest('#kadNavShellRoot')) return;
+      var tag = (node.tagName || '').toLowerCase();
+      var href = String(node.getAttribute && node.getAttribute('href') || '').trim().toLowerCase();
+      var onclick = String(node.getAttribute && node.getAttribute('onclick') || '').trim().toLowerCase();
+      var text = normalizeLabel(node.textContent || '').toLowerCase();
+      var isDashText = /dashboard/.test(text);
+      var isDashHref = /(^|\/|\.)index\.html(?:$|[?#])/.test(href);
+      var isDashAction = /godashboard|gomenu\s*\(|index\.html/.test(onclick);
+      if(!(isDashText || isDashHref || isDashAction)) return;
+      if(tag === 'a' || tag === 'button' || node.classList.contains('btn') || node.classList.contains('back-btn') || node.classList.contains('btn-back') || node.classList.contains('btn-soft') || node.classList.contains('secondary') || node.classList.contains('btnMenu')){
+        node.remove();
+      }
+    });
+  }
+
+  function syncBodyState(root){
+    if(!root) return;
+    document.body.classList.toggle('kad-shell-open', root.classList.contains('is-open'));
+    document.body.classList.toggle('kad-shell-submenu-open', root.classList.contains('has-submenu'));
+  }
+
   function mount(){
+    if(shellDisabled) return;
     if(document.getElementById('kadNavShellRoot')) return;
+    removeDashboardButtons();
 
     var filtered = filterMenu(MENU);
     var shellRoot = document.createElement('div');
@@ -292,8 +320,6 @@
         '<nav class="kad-shell-nav">' + filtered.map(itemHtml).join('') + '</nav>' +
         '<div class="kad-shell-submenu-host" aria-live="polite"></div>' +
         '<div class="kad-shell-utility">' +
-          '<a class="kad-shell-utility-link" data-kad-nav-link="1" href="index.html">Dashboard</a>' +
-          '<a class="kad-shell-utility-link" data-kad-nav-link="1" href="login.html">Login</a>' +
           '<div class="kad-shell-note">hover la marginea stângă</div>' +
         '</div>' +
       '</aside>' +
@@ -301,6 +327,7 @@
 
     document.body.appendChild(shellRoot);
     document.body.classList.add('kad-shell-mounted');
+    syncBodyState(shellRoot);
     bindShell(shellRoot);
   }
 
@@ -325,10 +352,12 @@
     function openShell(){
       clearTimers();
       root.classList.add('is-open');
+      syncBodyState(root);
     }
 
     function resetExpandedShell(){
       root.classList.remove('has-submenu');
+      syncBodyState(root);
       root.style.setProperty('--kad-shell-expanded-width', baseWidth() + 'px');
       root.style.setProperty('--kad-shell-submenu-width', '0px');
       root.style.setProperty('--kad-shell-submenu-top', '124px');
@@ -357,6 +386,7 @@
       closeTimer = window.setTimeout(function(){
         root.classList.remove('is-open');
         closeAllItems();
+        syncBodyState(root);
       }, 140);
     }
 
@@ -406,6 +436,7 @@
       root.style.setProperty('--kad-shell-expanded-width', expandedWidth + 'px');
       root.style.setProperty('--kad-shell-submenu-width', actualSubmenuWidth + 'px');
       root.classList.add('has-submenu');
+      syncBodyState(root);
       item.style.setProperty('--kad-flyout-cols', String(cols));
       host.style.setProperty('--kad-flyout-cols', String(cols));
       host.innerHTML = flyout.innerHTML;
@@ -498,6 +529,7 @@
       if(ev.key === 'Escape'){
         root.classList.remove('is-open');
         closeAllItems();
+        syncBodyState(root);
       }
     });
   }
