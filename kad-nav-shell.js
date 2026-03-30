@@ -293,7 +293,7 @@
         '<div class="kad-shell-utility">' +
           '<a class="kad-shell-utility-link" data-kad-nav-link="1" href="index.html">Dashboard</a>' +
           '<a class="kad-shell-utility-link" data-kad-nav-link="1" href="login.html">Login</a>' +
-          '<div class="kad-shell-note">hover la marginea stângă</div>' +
+          '<div class="kad-shell-note">hover la marginea dreaptă</div>' +
         '</div>' +
       '</aside>' +
       '<div class="kad-shell-transition" aria-hidden="true"></div>';
@@ -354,9 +354,46 @@
       }, 0);
     });
 
+    function layoutFlyout(item, flyout){
+      if(!item || !flyout || window.innerWidth <= 1100) return;
+
+      item.style.setProperty('--kad-flyout-top', '0px');
+
+      var links = flyout.querySelectorAll('.kad-shell-flyout-link').length;
+      var shellRect = shell.getBoundingClientRect();
+      var availableWidth = Math.max(240, window.innerWidth - shellRect.right - 26);
+      var maxCols = availableWidth >= 900 ? 4 : availableWidth >= 660 ? 3 : availableWidth >= 360 ? 2 : 1;
+      var cols = links > 18 ? 4 : links > 9 ? 3 : links > 4 ? 2 : 1;
+      cols = Math.max(1, Math.min(cols, maxCols));
+
+      item.style.setProperty('--kad-flyout-max-width', Math.max(260, availableWidth) + 'px');
+      item.style.setProperty('--kad-flyout-cols', String(cols));
+
+      var viewportLimit = window.innerHeight - 28;
+      var tries = 0;
+      while(tries < 4){
+        var height = flyout.offsetHeight;
+        if(height <= viewportLimit || cols >= maxCols) break;
+        cols += 1;
+        item.style.setProperty('--kad-flyout-cols', String(cols));
+        tries += 1;
+      }
+
+      var rect = flyout.getBoundingClientRect();
+      var shift = 0;
+      if(rect.bottom > window.innerHeight - 14){
+        shift -= rect.bottom - (window.innerHeight - 14);
+      }
+      if(rect.top + shift < 14){
+        shift += 14 - (rect.top + shift);
+      }
+      item.style.setProperty('--kad-flyout-top', shift + 'px');
+    }
+
     root.querySelectorAll('.kad-shell-item').forEach(function(item){
       var main = item.querySelector('.kad-shell-main');
-      var hasFlyout = !!item.querySelector('.kad-shell-flyout');
+      var flyout = item.querySelector('.kad-shell-flyout');
+      var hasFlyout = !!flyout;
       if(!main || !hasFlyout) return;
 
       function showItem(){
@@ -364,6 +401,9 @@
         item.classList.add('is-open');
         main.setAttribute('aria-expanded', 'true');
         openShell();
+        window.requestAnimationFrame(function(){
+          layoutFlyout(item, flyout);
+        });
       }
 
       function hideItem(){
@@ -372,6 +412,7 @@
           if(!item.matches(':hover') && !item.contains(document.activeElement)){
             item.classList.remove('is-open');
             main.setAttribute('aria-expanded', 'false');
+            item.style.setProperty('--kad-flyout-top', '0px');
           }
         }, 120);
       }
@@ -386,10 +427,21 @@
           item.classList.add('is-open');
           main.setAttribute('aria-expanded', 'true');
           openShell();
+          window.requestAnimationFrame(function(){
+            layoutFlyout(item, flyout);
+          });
         }else{
           item.classList.remove('is-open');
           main.setAttribute('aria-expanded', 'false');
+          item.style.setProperty('--kad-flyout-top', '0px');
         }
+      });
+    });
+
+    window.addEventListener('resize', function(){
+      root.querySelectorAll('.kad-shell-item.is-open').forEach(function(item){
+        var flyout = item.querySelector('.kad-shell-flyout');
+        if(flyout) layoutFlyout(item, flyout);
       });
     });
 
@@ -413,7 +465,7 @@
 
   function navigateWithPulse(href, clientX, clientY, transition){
     if(!transition) return window.location.href = href;
-    var x = typeof clientX === 'number' ? clientX : 72;
+    var x = typeof clientX === 'number' ? clientX : window.innerWidth - 72;
     var y = typeof clientY === 'number' ? clientY : window.innerHeight / 2;
     transition.style.setProperty('--kad-x', x + 'px');
     transition.style.setProperty('--kad-y', y + 'px');
