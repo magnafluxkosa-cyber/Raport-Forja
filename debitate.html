@@ -732,7 +732,7 @@ function goDashboard(){ window.location.href='index.html'; }
             <input id="mSchimb" type="text" placeholder="1" data-edit>
           </label>
           <label>Operator
-            <input id="mOper" type="text" placeholder="ex: Nagy Robert" data-edit>
+            <input id="mOper" type="text" list="dlOperatoriDebitare" placeholder="ex: Nagy Robert" data-edit>
           </label>
           <label>Ore lucrate
             <input id="mOre" type="text" placeholder="8,0" data-edit>
@@ -846,6 +846,71 @@ function goDashboard(){ window.location.href='index.html'; }
   const HELPERS_KEY = "RF_HELPERS_v1";
   let _helpers = null;
   let _mapRepDebitare = null;
+  let _operatoriDebitareCloud = [];
+
+  function addUniqueLabel(setLike, value){
+    const v = (value ?? "").toString().trim();
+    if (!v) return;
+    setLike.add(v);
+  }
+
+  function extractItemLabel(item){
+    if (item == null) return "";
+    if (typeof item === "string" || typeof item === "number") return String(item).trim();
+    if (typeof item !== "object") return "";
+    return (item.label ?? item.value ?? item.name ?? item.nume ?? item.operator ?? item.den ?? item.code ?? "").toString().trim();
+  }
+
+  function collectDebitareOperatoriFromHelpers(h){
+    const set = new Set();
+    if (!h || typeof h !== "object") return [];
+
+    const candidateArrays = [
+      h.operatori_debitare,
+      h.debitare_operatori,
+      h.operatoriDebitare,
+      h.operatori,
+      h.debitare?.operatori,
+      h.debitare?.operatori_debitare,
+      h.debitareOperatori,
+      h.items_operatori_debitare
+    ].filter(Array.isArray);
+
+    candidateArrays.forEach(arr => {
+      arr.forEach(item => {
+        const label = extractItemLabel(item);
+        addUniqueLabel(set, label);
+      });
+    });
+
+    const helperItems = Array.isArray(h.helper_items) ? h.helper_items : Array.isArray(h.items) ? h.items : [];
+    helperItems.forEach(item => {
+      if (!item || typeof item !== "object") return;
+      const moduleKey = (item.module_key ?? item.moduleKey ?? "").toString().trim().toLowerCase();
+      const categoryKey = (item.category_key ?? item.categoryKey ?? "").toString().trim().toLowerCase();
+      const isActive = item.is_active;
+      if (moduleKey === "debitare" && categoryKey === "operatori" && (isActive == null || isActive === true || isActive === 1 || isActive === "1")) {
+        addUniqueLabel(set, extractItemLabel(item));
+      }
+    });
+
+    return Array.from(set).sort((a,b)=>a.localeCompare(b, "ro", { sensitivity:"base" }));
+  }
+
+  function renderOperatoriDebitareDatalist(){
+    const dlO = $("dlOperatoriDebitare");
+    if (!dlO) return;
+    dlO.innerHTML = "";
+    const all = Array.from(new Set([
+      ...collectDebitareOperatoriFromHelpers(loadHelpers() || {}),
+      ...(_operatoriDebitareCloud || [])
+    ])).sort((a,b)=>a.localeCompare(b, "ro", { sensitivity:"base" }));
+    all.forEach(v => {
+      const o = document.createElement("option");
+      o.value = v;
+      dlO.appendChild(o);
+    });
+  }
 
   function loadHelpers(){
     if (_helpers) return _helpers;
@@ -867,6 +932,7 @@ function goDashboard(){ window.location.href='index.html'; }
     const dlU = $("dlUtilajeDebitare");
     if (dlR) dlR.innerHTML = "";
     if (dlU) dlU.innerHTML = "";
+    renderOperatoriDebitareDatalist();
 
     if (!h) return;
 
@@ -910,6 +976,7 @@ function goDashboard(){ window.location.href='index.html'; }
       _helpers = null;
       _mapRepDebitare = null;
       try{ buildHelperMaps(); }catch(e){}
+      try{ pullDebitareOperatoriCloud(true); }catch(_e){}
     }
   });
 
@@ -931,6 +998,7 @@ function goDashboard(){ window.location.href='index.html'; }
       _helpers = null;
       _mapRepDebitare = null;
       try{ buildHelperMaps(); }catch(_e){}
+      try{ pullDebitareOperatoriCloud(true); }catch(_e){}
       return true;
     }catch(e){
       console.warn("pullHelpersCloud failed:", e);
@@ -938,8 +1006,40 @@ function goDashboard(){ window.location.href='index.html'; }
     }
   }
 
+  async function pullDebitareOperatoriCloud(force){
+    const supa = window.__SUPA__;
+    if(!supa) return false;
+    try{
+      let data = null;
+      let error = null;
+      let res = await supa.from("rf_helper_items").select("label,code,is_active,module_key,category_key,sort_order").eq("module_key","debitare").eq("category_key","operatori").order("sort_order", { ascending:true });
+      data = res.data; error = res.error;
+      if (error && /column/i.test(String(error.message || error.details || error))) {
+        res = await supa.from("rf_helper_items").select("label,code,is_active,moduleKey,categoryKey,sort_order").eq("moduleKey","debitare").eq("categoryKey","operatori").order("sort_order", { ascending:true });
+        data = res.data; error = res.error;
+      }
+      if (error) throw error;
+      const list = [];
+      (data || []).forEach(item => {
+        const active = item?.is_active;
+        if (!(active == null || active === true || active === 1 || active === "1")) return;
+        const label = extractItemLabel(item);
+        if (label) list.push(label);
+      });
+      const normalized = Array.from(new Set(list)).sort((a,b)=>a.localeCompare(b, "ro", { sensitivity:"base" }));
+      const changed = JSON.stringify(normalized) !== JSON.stringify(_operatoriDebitareCloud || []);
+      _operatoriDebitareCloud = normalized;
+      if (changed || force) renderOperatoriDebitareDatalist();
+      return changed;
+    }catch(e){
+      console.warn("pullDebitareOperatoriCloud failed:", e);
+      return false;
+    }
+  }
+
   function reloadHelpersNow(){
     pullHelpersCloud(true);
+    pullDebitareOperatoriCloud(true);
   }
   window.reloadHelpersNow = reloadHelpersNow;
   window.pullHelpersCloud = pullHelpersCloud;
@@ -950,6 +1050,7 @@ function goDashboard(){ window.location.href='index.html'; }
       _helpers = null;
       _mapRepDebitare = null;
       try{ buildHelperMaps(); }catch(_e){}
+      try{ pullDebitareOperatoriCloud(true); }catch(_e){}
     }
   });
 
@@ -2400,6 +2501,7 @@ function setAutofillReadonly(isReadonly){
 
     // inițializează helperele (repere/utilaje) pentru autocomplete + autofill
     buildHelperMaps();
+    pullDebitareOperatoriCloud(true);
     const _mr = $("mReper"); if (_mr) _mr.addEventListener("input", applyReperAutofill);
     const _ov = $("mOverride"); if (_ov) _ov.addEventListener("change", () => { setAutofillReadonly(!_ov.checked); if(!_ov.checked) applyReperAutofill(); });
 
@@ -2485,6 +2587,7 @@ function setAutofillReadonly(isReadonly){
 
   <datalist id="dlRepereDebitare"></datalist>
   <datalist id="dlUtilajeDebitare"></datalist>
+  <datalist id="dlOperatoriDebitare"></datalist>
 
 <script>
 /* ===============================
