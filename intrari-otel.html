@@ -188,6 +188,15 @@
     tr > td:first-child{
       border-left-color:#000 !important;
     }
+
+    .pretestPickerShell{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+    .pretestPickerBtn{border:0;background:#7c3aed;color:#fff;font-weight:700;padding:6px 10px;border-radius:3px;cursor:pointer;box-shadow:0 1px 0 rgba(0,0,0,.15)}
+    .pretestPickerBtn:hover{background:#6d28d9}
+    .pretestOpenBtn{border:0;background:#0f766e;color:#fff;font-weight:700;padding:6px 10px;border-radius:3px;cursor:pointer;box-shadow:0 1px 0 rgba(0,0,0,.15)}
+    .pretestOpenBtn[disabled]{opacity:.45;cursor:not-allowed}
+    .pretestPickerName{font-size:12px;color:#475569;font-weight:700}
+    .pretestHint{font-size:11px;color:#64748b;line-height:1.35}
+
 </style>
   <link rel="stylesheet" href="./mobile-erp.css" />
 
@@ -217,6 +226,8 @@
     <input id="fileImportXLSX" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" style="display:none" / data-edit>
 
     <button class="btnAdd" onclick="openForm()"><span class="plusCircle">+</span> Adaugă</button>
+    <button class="btnAdd" style="background:#7c3aed" type="button" id="btnPretestTop"><span class="plusCircle" style="color:#7c3aed">📎</span> Pretest PDF</button>
+    <input id="filePretestTop" type="file" accept="application/pdf,.pdf" style="display:none" />
   </div>
 
   <div id="storageBanner">
@@ -396,6 +407,17 @@
               <option value="Are pretest">Are pretest</option>
               <option value="Nu are pretest">Nu are pretest</option>
             </select>
+          </div>
+
+          <div class="field">
+            <label>Pretest PDF</label>
+            <input id="fPretestPdf" type="file" accept="application/pdf,.pdf" style="display:none" />
+            <div class="pretestPickerShell">
+              <button class="pretestPickerBtn" type="button" id="btnPickPretestPdf">Alege PDF</button>
+              <button class="pretestOpenBtn" type="button" id="btnOpenCurrentPretest" disabled>Deschide PDF</button>
+            </div>
+            <div class="pretestPickerName" id="pretestPickName">Niciun PDF selectat</div>
+            <div class="pretestHint">Fișa se leagă automat după combinația <b>diametru + calitate + sarjă</b>. Toate rândurile cu aceeași combinație vor apărea cu <b>Are pretest</b>.</div>
           </div>
 
           <div class="field">
@@ -580,6 +602,7 @@ function goMenu(){ window.location.href = 'index.html'; }
     refreshHelperDatalists();
     refreshCodeList();
     backdrop.classList.remove('hidden');
+    try{ if(window.__syncPretestUiForForm) window.__syncPretestUiForForm(); }catch(_e){}
     setTimeout(() => document.getElementById('fLuna')?.focus(), 0);
   }
 
@@ -613,7 +636,7 @@ function goMenu(){ window.location.href = 'index.html'; }
   
   // asigură modul "Adaugă" când deschizi formularul
   const __origOpenForm = openForm;
-  openForm = function(){ __EDIT_TR = null; __setModalMode(false); return __origOpenForm(); };
+  openForm = function(){ __EDIT_TR = null; __setModalMode(false); const ret = __origOpenForm(); try{ if(window.__resetPretestFormState) window.__resetPretestFormState(); }catch(_e){} return ret; };
 
 function closeForm(){
     backdrop.classList.add('hidden');
@@ -1599,7 +1622,7 @@ function applyFilters(){
     }
   }
 
-  function saveRow(){
+  async function saveRow(){
     const an = document.getElementById('fAn').value.trim();
     const luna = document.getElementById('fLuna').value.trim();
     const data = document.getElementById('fData').value;
@@ -1616,6 +1639,19 @@ function applyFilters(){
     const codIntern = prem; // alias semantic
     const sarja = cat;
 
+    try{
+      if(window.__preparePretestBeforeSave){
+        const result = await window.__preparePretestBeforeSave({ an, luna, data, dim, cal, codIntern, sarja, kg, pre, furn });
+        if(result && result.pretest){
+          const preEl = document.getElementById('fPre');
+          if(preEl) preEl.value = result.pretest;
+        }
+      }
+    }catch(err){
+      alert('Nu am putut salva pretestul PDF: ' + ((err && err.message) ? err.message : err));
+      return;
+    }
+
     if (!an || !luna || !data || !dim || !cal || !codIntern || !sarja || !kg || !pre || !furn){
       alert("Completează: Anul, Luna, Data, Diametru, Calitate, Cod intern (3 litere), Sarja material, Cantitate (kg), Pretest, Furnizor.");
       return;
@@ -1628,7 +1664,8 @@ function applyFilters(){
 
     const parts = data.split('-');
     const dataDisp = parts.length === 3 ? (parts[2] + "." + parts[1] + "." + parts[0]) : data;
-    const cells = [an, luna, dataDisp, dim, cal, prem, cat, kg, pre, furn];
+    const finalPre = (document.getElementById('fPre')?.value || pre || '').trim();
+    const cells = [an, luna, dataDisp, dim, cal, prem, cat, kg, finalPre, furn];
 
     const tbody = document.getElementById('tbody');
     let tr = (__EDIT_TR && __EDIT_TR.parentElement) ? __EDIT_TR : null;
@@ -1652,6 +1689,7 @@ function applyFilters(){
     notifyDataChanged();
     scheduleAutosave();
     scrollToRow(tr);
+    try{ if(window.__syncPretestUiForForm) window.__syncPretestUiForForm(); }catch(_e){}
   }
 
   // ----- INIT -----
@@ -1708,6 +1746,7 @@ function applyFilters(){
     });
 
     window.__setSelectedRow = setSelected; // optional, util daca mai vrei ulterior
+    window.__getSelectedRow = function(){ return selectedTr; };
   })();
 
   if (loaded) autoSaveNow(); // normalize stored format
@@ -3189,5 +3228,337 @@ function applyFilters(){
 
   <script src="./mobile-erp.js"></script>
   <script src="./kad-logo.js"></script>
+
+<script>
+(function(){
+  const PRETEST_REGISTRY_DOC = 'intrari-otel-pretests';
+  const PRETEST_FILE_PREFIX = 'intrari-otel-pretest-file:';
+  const PRETEST_LOCAL_DOC = 'INTRARI_OTEL_pretests_v1';
+  const PRETEST_LOCAL_FILE_PREFIX = 'INTRARI_OTEL_pretest_file_v1:';
+  const state = { registry:{items:[], updated_at:null}, selectedFile:null, loaded:false, client:null };
+
+  function safe(v){ return String(v == null ? '' : v); }
+  function trim(v){ return safe(v).trim(); }
+  function normText(v){ return trim(v).toUpperCase().replace(/\s+/g,' '); }
+  function normDiam(v){ const s = safe(v).toUpperCase().replace(/Ø/g,'').replace(/\s+/g,'').replace(',', '.'); const m = s.match(/\d+(?:\.\d+)?/); return m ? m[0] : s; }
+  function normCal(v){ return normText(v); }
+  function normSarja(v){ return trim(v).toUpperCase().replace(/\s+/g,''); }
+  function buildKey(dim, cal, sarja){ return [normDiam(dim), normCal(cal), normSarja(sarja)].join('||'); }
+  function keyToId(key){ return btoa(unescape(encodeURIComponent(key))).replace(/=+$/,'').replace(/\+/g,'-').replace(/\//g,'_'); }
+  function fileDocKeyForEntry(entry){ return PRETEST_FILE_PREFIX + keyToId(entry.key || buildKey(entry.diametru, entry.calitate, entry.sarja)); }
+  function nowIso(){ return new Date().toISOString(); }
+  function hasRegistryEntry(dim, cal, sarja){ return !!findRegistryEntry(dim, cal, sarja); }
+  function findRegistryEntry(dim, cal, sarja){ const key = buildKey(dim, cal, sarja); return (state.registry.items || []).find(item => item && item.key === key) || null; }
+  function normalizeEntry(item){
+    if (!item) return null;
+    const diametru = trim(item.diametru || item.dim || item.d || '');
+    const calitate = trim(item.calitate || item.grade || item.c || '');
+    const sarja = trim(item.sarja || item.heat || item.s || '');
+    const key = item.key || buildKey(diametru, calitate, sarja);
+    if (!key.replace(/\|/g,'')) return null;
+    return {
+      key,
+      diametru,
+      calitate,
+      sarja,
+      file_doc_key: trim(item.file_doc_key || fileDocKeyForEntry({ key, diametru, calitate, sarja })),
+      file_name: trim(item.file_name || ''),
+      mime_type: trim(item.mime_type || 'application/pdf'),
+      file_size: Number(item.file_size || 0),
+      updated_at: trim(item.updated_at || nowIso())
+    };
+  }
+  function uniqueEntries(items){
+    const out = [];
+    const seen = new Set();
+    (items || []).forEach(item => {
+      const entry = normalizeEntry(item);
+      if (!entry || seen.has(entry.key)) return;
+      seen.add(entry.key);
+      out.push(entry);
+    });
+    return out;
+  }
+  function getCfg(){
+    const cfg = window.RF_CONFIG || window.ERP_FORJA_CONFIG || window.__ERP_FORJA_CONFIG__ || {};
+    return {
+      url: cfg.SUPABASE_URL || cfg.supabaseUrl || window.SUPABASE_URL || '',
+      key: cfg.SUPABASE_ANON_KEY || cfg.supabaseAnonKey || window.SUPABASE_ANON_KEY || ''
+    };
+  }
+  function getClient(){
+    if (state.client) return state.client;
+    const cfg = getCfg();
+    if (!(window.supabase && window.supabase.createClient && cfg.url && cfg.key)) return null;
+    state.client = window.supabase.createClient(cfg.url, cfg.key, { auth:{ persistSession:true, autoRefreshToken:true, detectSessionInUrl:false } });
+    return state.client;
+  }
+  async function readDoc(docKey){
+    const client = getClient();
+    if (!client) return { payload:null, updated_at:null, doc_key:docKey, local:true };
+    const keys = Array.from(new Set([docKey, docKey.replace(/_/g,'-'), docKey.replace(/-/g,'_')]));
+    for (const key of keys){
+      for (const col of ['content','data']){
+        try{
+          const { data, error } = await client.from('rf_documents').select(`doc_key,${col},updated_at`).eq('doc_key', key).maybeSingle();
+          if (error) continue;
+          if (data && data[col]) return { payload:data[col], updated_at:data.updated_at || null, doc_key:key };
+        }catch(_e){}
+      }
+    }
+    return { payload:null, updated_at:null, doc_key:docKey };
+  }
+  async function saveDoc(docKey, payload){
+    const client = getClient();
+    if (!client){
+      localStorage.setItem(docKey.startsWith(PRETEST_FILE_PREFIX) ? (PRETEST_LOCAL_FILE_PREFIX + docKey.slice(PRETEST_FILE_PREFIX.length)) : PRETEST_LOCAL_DOC, JSON.stringify(payload));
+      return { updated_at: nowIso(), doc_key: docKey, local:true };
+    }
+    const variants = Array.from(new Set([docKey, docKey.replace(/_/g,'-'), docKey.replace(/-/g,'_')]));
+    const ts = nowIso();
+    let lastErr = null;
+    for (const key of variants){
+      try{
+        const { error } = await client.from('rf_documents').upsert({ doc_key:key, content:payload, updated_at:ts }, { onConflict:'doc_key' });
+        if (!error) return { updated_at:ts, doc_key:key };
+        lastErr = error;
+      }catch(e){ lastErr = e; }
+      try{
+        const { error } = await client.from('rf_documents').upsert({ doc_key:key, data:payload, updated_at:ts }, { onConflict:'doc_key' });
+        if (!error) return { updated_at:ts, doc_key:key };
+        lastErr = error;
+      }catch(e){ lastErr = e; }
+    }
+    throw lastErr || new Error('Nu s-a putut salva documentul pretest.');
+  }
+  function loadRegistryLocal(){
+    try{ const raw = localStorage.getItem(PRETEST_LOCAL_DOC); if (!raw) return { items:[], updated_at:null }; const parsed = JSON.parse(raw); return { items: uniqueEntries(parsed.items || []), updated_at: parsed.updated_at || null }; }catch(_e){ return { items:[], updated_at:null }; }
+  }
+  function saveRegistryLocal(){
+    try{ localStorage.setItem(PRETEST_LOCAL_DOC, JSON.stringify({ app:'INTRARI_OTEL_PRETESTS', version:1, updated_at: nowIso(), items: state.registry.items })); }catch(_e){}
+  }
+  async function loadRegistry(){
+    const local = loadRegistryLocal();
+    state.registry = { items: uniqueEntries(local.items), updated_at: local.updated_at };
+    try{
+      const doc = await readDoc(PRETEST_REGISTRY_DOC);
+      if (doc && doc.payload){
+        state.registry = {
+          items: uniqueEntries(doc.payload.items || []),
+          updated_at: doc.updated_at || doc.payload.updated_at || nowIso()
+        };
+      }
+    }catch(_e){}
+    state.loaded = true;
+    saveRegistryLocal();
+  }
+  async function saveRegistry(){
+    state.registry.items = uniqueEntries(state.registry.items);
+    state.registry.updated_at = nowIso();
+    saveRegistryLocal();
+    return saveDoc(PRETEST_REGISTRY_DOC, { app:'INTRARI_OTEL_PRETESTS', version:1, updated_at:state.registry.updated_at, items:state.registry.items });
+  }
+  function fileToDataUrl(file){
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = () => reject(reader.error || new Error('Nu am putut citi PDF-ul.'));
+      reader.readAsDataURL(file);
+    });
+  }
+  function dataUrlToBlob(dataUrl){
+    const m = String(dataUrl || '').match(/^data:([^;]+);base64,(.+)$/);
+    if (!m) throw new Error('PDF invalid.');
+    const mime = m[1];
+    const bin = atob(m[2]);
+    const arr = new Uint8Array(bin.length);
+    for (let i=0;i<bin.length;i++) arr[i] = bin.charCodeAt(i);
+    return new Blob([arr], { type:mime || 'application/pdf' });
+  }
+  function getFormEls(){
+    return {
+      dim: document.getElementById('fDim'),
+      cal: document.getElementById('fCal'),
+      sarja: document.getElementById('fCat'),
+      pre: document.getElementById('fPre'),
+      file: document.getElementById('fPretestPdf'),
+      pickBtn: document.getElementById('btnPickPretestPdf'),
+      openBtn: document.getElementById('btnOpenCurrentPretest'),
+      name: document.getElementById('pretestPickName'),
+      topBtn: document.getElementById('btnPretestTop'),
+      topInput: document.getElementById('filePretestTop')
+    };
+  }
+  function currentFormMeta(){
+    const els = getFormEls();
+    return {
+      diametru: trim(els.dim && els.dim.value),
+      calitate: trim(els.cal && els.cal.value),
+      sarja: trim(els.sarja && els.sarja.value)
+    };
+  }
+  function applyPretestToVals(vals){
+    const row = Array.isArray(vals) ? vals.slice(0,10) : [];
+    while (row.length < 10) row.push('');
+    const entry = findRegistryEntry(row[3], row[4], row[6]);
+    row[8] = entry ? 'Are pretest' : (row[8] ? row[8] : 'Nu are pretest');
+    return row;
+  }
+  function syncVisibleTablePretests(){
+    const tbody = document.getElementById('tbody');
+    if (!tbody) return;
+    Array.from(tbody.querySelectorAll('tr')).forEach(tr => {
+      const tds = tr.querySelectorAll('td');
+      if (!tds || tds.length < 10) return;
+      const vals = Array.from(tds).slice(0,10).map(td => trim(td.textContent));
+      const any = vals.some(Boolean);
+      if (!any) return;
+      const entry = findRegistryEntry(vals[3], vals[4], vals[6]);
+      tds[8].textContent = entry ? 'Are pretest' : (vals[8] || 'Nu are pretest');
+    });
+  }
+  function renderFormPretestState(){
+    const els = getFormEls();
+    const meta = currentFormMeta();
+    const entry = findRegistryEntry(meta.diametru, meta.calitate, meta.sarja);
+    const selectedName = state.selectedFile ? state.selectedFile.name : '';
+    if (els.name) els.name.textContent = selectedName || (entry ? ('PDF existent: ' + (entry.file_name || 'pretest.pdf')) : 'Niciun PDF selectat');
+    if (els.openBtn) els.openBtn.disabled = !entry;
+    if (entry && els.pre) els.pre.value = 'Are pretest';
+  }
+  async function openEntryPdf(entry){
+    if (!entry) return;
+    let payload = null;
+    try{
+      const localKey = PRETEST_LOCAL_FILE_PREFIX + (entry.file_doc_key || fileDocKeyForEntry(entry)).slice(PRETEST_FILE_PREFIX.length);
+      const rawLocal = localStorage.getItem(localKey);
+      if (rawLocal) payload = JSON.parse(rawLocal);
+    }catch(_e){}
+    if (!payload){
+      const doc = await readDoc(entry.file_doc_key || fileDocKeyForEntry(entry));
+      payload = doc && doc.payload ? doc.payload : null;
+    }
+    if (!payload || !payload.data_url) throw new Error('PDF-ul pretest nu a fost găsit.');
+    const blob = dataUrlToBlob(payload.data_url);
+    const url = URL.createObjectURL(blob);
+    window.open(url, '_blank', 'noopener');
+    setTimeout(() => URL.revokeObjectURL(url), 60 * 1000);
+  }
+  async function persistSelectedPdf(formCtx){
+    if (!state.selectedFile) return null;
+    const diametru = trim(formCtx.diam || formCtx.diametru || '');
+    const calitate = trim(formCtx.cal || formCtx.calitate || '');
+    const sarja = trim(formCtx.sarja || '');
+    if (!diametru || !calitate || !sarja) throw new Error('Pentru a atașa pretestul trebuie completate diametrul, calitatea și sarja.');
+    const key = buildKey(diametru, calitate, sarja);
+    const entry = normalizeEntry({ key, diametru, calitate, sarja, file_name: state.selectedFile.name, mime_type: state.selectedFile.type || 'application/pdf', file_size: state.selectedFile.size || 0 });
+    const dataUrl = await fileToDataUrl(state.selectedFile);
+    const filePayload = {
+      app:'INTRARI_OTEL_PRETEST_FILE',
+      version:1,
+      key: entry.key,
+      diametru: entry.diametru,
+      calitate: entry.calitate,
+      sarja: entry.sarja,
+      file_name: entry.file_name,
+      mime_type: entry.mime_type,
+      file_size: entry.file_size,
+      updated_at: nowIso(),
+      data_url: dataUrl
+    };
+    const docKey = entry.file_doc_key || fileDocKeyForEntry(entry);
+    entry.file_doc_key = docKey;
+    try{ localStorage.setItem(PRETEST_LOCAL_FILE_PREFIX + docKey.slice(PRETEST_FILE_PREFIX.length), JSON.stringify(filePayload)); }catch(_e){}
+    await saveDoc(docKey, filePayload);
+    state.registry.items = uniqueEntries([...(state.registry.items || []).filter(item => item.key !== entry.key), entry]);
+    await saveRegistry();
+    state.selectedFile = null;
+    syncVisibleTablePretests();
+    renderFormPretestState();
+    return entry;
+  }
+  function bindFormWatchers(){
+    const els = getFormEls();
+    ['input','change'].forEach(evt => {
+      if (els.dim) els.dim.addEventListener(evt, renderFormPretestState);
+      if (els.cal) els.cal.addEventListener(evt, renderFormPretestState);
+      if (els.sarja) els.sarja.addEventListener(evt, renderFormPretestState);
+    });
+    if (els.pickBtn && els.file) els.pickBtn.addEventListener('click', () => els.file.click());
+    if (els.file) els.file.addEventListener('change', () => {
+      state.selectedFile = (els.file.files && els.file.files[0]) ? els.file.files[0] : null;
+      renderFormPretestState();
+    });
+    if (els.openBtn) els.openBtn.addEventListener('click', async () => {
+      try{ await openEntryPdf(findRegistryEntry(currentFormMeta().diametru, currentFormMeta().calitate, currentFormMeta().sarja)); }
+      catch(err){ alert((err && err.message) ? err.message : err); }
+    });
+    if (els.topBtn && els.topInput){
+      els.topBtn.addEventListener('click', () => {
+        const selected = document.querySelector('#tbody tr.row-selected');
+        if (selected && typeof window.openEditRow === 'function') {
+          window.openEditRow(selected);
+          setTimeout(() => els.file && els.file.click(), 50);
+          return;
+        }
+        if (typeof window.openForm === 'function') window.openForm();
+        setTimeout(() => els.file && els.file.click(), 50);
+      });
+      els.topInput.addEventListener('change', () => {
+        const picked = els.topInput.files && els.topInput.files[0] ? els.topInput.files[0] : null;
+        if (!picked) return;
+        state.selectedFile = picked;
+        if (els.file) {
+          try{
+            const dt = new DataTransfer();
+            dt.items.add(picked);
+            els.file.files = dt.files;
+          }catch(_e){}
+        }
+        const selected = document.querySelector('#tbody tr.row-selected');
+        if (selected && typeof window.openEditRow === 'function') window.openEditRow(selected);
+        else if (typeof window.openForm === 'function') window.openForm();
+        setTimeout(renderFormPretestState, 80);
+        els.topInput.value = '';
+      });
+    }
+  }
+
+  window.__preparePretestBeforeSave = async function(ctx){
+    const meta = currentFormMeta();
+    const diam = trim(ctx.dim || meta.diametru || '');
+    const cal = trim(ctx.cal || meta.calitate || '');
+    const sarja = trim(ctx.sarja || meta.sarja || '');
+    if (state.selectedFile) await persistSelectedPdf({ diam, cal, sarja });
+    return { pretest: hasRegistryEntry(diam, cal, sarja) ? 'Are pretest' : (ctx.pre || document.getElementById('fPre')?.value || 'Nu are pretest') };
+  };
+  window.__syncPretestUiForForm = renderFormPretestState;
+  window.__resetPretestFormState = function(){ const els = getFormEls(); state.selectedFile = null; if (els.file) els.file.value = ''; renderFormPretestState(); };
+
+  function patchGlobals(){
+    if (typeof window.fillTopDown === 'function' && !window.fillTopDown.__pretestPatched){
+      const orig = window.fillTopDown;
+      const wrapped = function(dataRows){ return orig.call(this, (dataRows || []).map(applyPretestToVals)); };
+      wrapped.__pretestPatched = true;
+      window.fillTopDown = wrapped;
+    }
+    if (typeof window.getTableData === 'function' && !window.getTableData.__pretestPatched){
+      const orig = window.getTableData;
+      const wrapped = function(){ return (orig.call(this) || []).map(applyPretestToVals); };
+      wrapped.__pretestPatched = true;
+      window.getTableData = wrapped;
+    }
+  }
+  async function initPretests(){
+    patchGlobals();
+    bindFormWatchers();
+    await loadRegistry();
+    syncVisibleTablePretests();
+    renderFormPretestState();
+  }
+  window.addEventListener('load', () => { setTimeout(() => { initPretests().catch(err => console.warn('Pretest init failed', err)); }, 250); });
+})();
+</script>
+
 </body>
 </html>
