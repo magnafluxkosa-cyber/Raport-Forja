@@ -339,6 +339,19 @@
       });
     }
 
+    function syncMainWidths(){
+      var nav = shell.querySelector('.kad-shell-nav');
+      var mainWidth = Math.round((nav && nav.clientWidth) ? nav.clientWidth : 188);
+      root.querySelectorAll('.kad-shell-item').forEach(function(item){
+        item.style.setProperty('--kad-main-width', mainWidth + 'px');
+        if(!item.classList.contains('is-open')){
+          item.style.setProperty('--kad-item-width', mainWidth + 'px');
+        }
+      });
+    }
+
+    syncMainWidths();
+
     edge.addEventListener('mouseenter', function(){
       openTimer = window.setTimeout(openShell, 20);
     });
@@ -355,9 +368,18 @@
     });
 
     function layoutFlyout(item, flyout){
-      if(!item || !flyout || window.innerWidth <= 1100) return;
+      if(!item || !flyout) return;
 
-      item.style.setProperty('--kad-flyout-top', '0px');
+      var nav = shell.querySelector('.kad-shell-nav');
+      var mainWidth = Math.round((nav && nav.clientWidth) ? nav.clientWidth : item.querySelector('.kad-shell-main').getBoundingClientRect().width);
+      item.style.setProperty('--kad-main-width', mainWidth + 'px');
+
+      if(window.innerWidth <= 1100){
+        item.style.setProperty('--kad-item-width', mainWidth + 'px');
+        item.style.setProperty('--kad-flyout-width', '100%');
+        item.style.setProperty('--kad-flyout-cols', '1');
+        return;
+      }
 
       var links = Array.from(flyout.querySelectorAll('.kad-shell-flyout-link'));
       var totalLinks = links.length;
@@ -367,10 +389,10 @@
       }, 0);
 
       var shellRect = shell.getBoundingClientRect();
-      var gap = 18;
-      var availableWidth = Math.max(360, window.innerWidth - shellRect.right - gap - 12);
+      var gap = 12;
+      var availableWidth = Math.max(360, Math.floor(window.innerWidth - shellRect.left - mainWidth - gap - 30));
       var panelPadding = 28;
-      var minColWidth = longestLabel > 28 ? 280 : longestLabel > 22 ? 250 : 220;
+      var minColWidth = longestLabel > 30 ? 300 : longestLabel > 24 ? 270 : 220;
       var maxCols = Math.max(1, Math.floor((availableWidth - panelPadding) / minColWidth));
 
       var cols;
@@ -387,38 +409,16 @@
       }
       cols = Math.max(1, cols);
 
-      function applySize(){
-        var desiredWidth = Math.min(availableWidth, cols * minColWidth + panelPadding);
-        if(totalLinks >= 18 || longestLabel >= 26){
-          desiredWidth = availableWidth;
-        }
-        item.style.setProperty('--kad-col-min', minColWidth + 'px');
-        item.style.setProperty('--kad-flyout-max-width', availableWidth + 'px');
-        item.style.setProperty('--kad-flyout-width', desiredWidth + 'px');
-        item.style.setProperty('--kad-flyout-cols', String(cols));
+      var desiredWidth = Math.min(availableWidth, cols * minColWidth + panelPadding);
+      if(totalLinks >= 18 || longestLabel >= 26){
+        desiredWidth = availableWidth;
       }
 
-      applySize();
-
-      var viewportLimit = window.innerHeight - 28;
-      var tries = 0;
-      while(tries < 10){
-        var height = flyout.offsetHeight;
-        if(height <= viewportLimit || cols >= maxCols) break;
-        cols += 1;
-        applySize();
-        tries += 1;
-      }
-
-      var rect = flyout.getBoundingClientRect();
-      var shift = 0;
-      if(rect.bottom > window.innerHeight - 14){
-        shift -= rect.bottom - (window.innerHeight - 14);
-      }
-      if(rect.top + shift < 14){
-        shift += 14 - (rect.top + shift);
-      }
-      item.style.setProperty('--kad-flyout-top', shift + 'px');
+      item.style.setProperty('--kad-col-min', minColWidth + 'px');
+      item.style.setProperty('--kad-flyout-max-width', availableWidth + 'px');
+      item.style.setProperty('--kad-flyout-width', desiredWidth + 'px');
+      item.style.setProperty('--kad-flyout-cols', String(cols));
+      item.style.setProperty('--kad-item-width', (mainWidth + gap + desiredWidth) + 'px');
     }
 
     root.querySelectorAll('.kad-shell-item').forEach(function(item){
@@ -443,7 +443,6 @@
           if(!item.matches(':hover') && !item.contains(document.activeElement)){
             item.classList.remove('is-open');
             main.setAttribute('aria-expanded', 'false');
-            item.style.setProperty('--kad-flyout-top', '0px');
           }
         }, 120);
       }
@@ -470,6 +469,7 @@
     });
 
     window.addEventListener('resize', function(){
+      syncMainWidths();
       root.querySelectorAll('.kad-shell-item.is-open').forEach(function(item){
         var flyout = item.querySelector('.kad-shell-flyout');
         if(flyout) layoutFlyout(item, flyout);
