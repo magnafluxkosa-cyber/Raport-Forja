@@ -293,7 +293,7 @@
         '<div class="kad-shell-utility">' +
           '<a class="kad-shell-utility-link" data-kad-nav-link="1" href="index.html">Dashboard</a>' +
           '<a class="kad-shell-utility-link" data-kad-nav-link="1" href="login.html">Login</a>' +
-          '<div class="kad-shell-note">hover la marginea dreaptă</div>' +
+          '<div class="kad-shell-note">hover la marginea stângă</div>' +
         '</div>' +
       '</aside>' +
       '<div class="kad-shell-transition" aria-hidden="true"></div>';
@@ -413,7 +413,7 @@
 
   function navigateWithPulse(href, clientX, clientY, transition){
     if(!transition) return window.location.href = href;
-    var x = typeof clientX === 'number' ? clientX : window.innerWidth - 72;
+    var x = typeof clientX === 'number' ? clientX : 72;
     var y = typeof clientY === 'number' ? clientY : window.innerHeight / 2;
     transition.style.setProperty('--kad-x', x + 'px');
     transition.style.setProperty('--kad-y', y + 'px');
