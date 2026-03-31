@@ -2127,6 +2127,8 @@ function applyFilters(){
     throw lastErr || new Error('Nu s-a putut salva documentul.');
   }
   const PRETEST_DOC_KEY = 'intrari-otel:pretest-files';
+  const PRETEST_STORAGE_BUCKET = 'tt-fise-tehnologice';
+  const PRETEST_STORAGE_PATH_PREFIX = 'intrari-otel-pretest';
   APP.pretestDocs = { combos:{}, updated_at:null };
 
   function normalizePretestPart(v){
@@ -2140,6 +2142,63 @@ function applyFilters(){
   function makePretestComboKey(sarja, dim, cal){
     return [normalizePretestPart(sarja), normalizePretestDim(dim), normalizePretestPart(cal)].join('||');
   }
+
+function escapeHtml(value){
+  return String(value == null ? '' : value).replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+}
+
+function slugPretest(value){
+  return normalizePretestPart(value).replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'') || 'x';
+}
+
+function pretestExtFromName(name){
+  const m = String(name || '').toLowerCase().match(/\.([a-z0-9]{1,8})$/);
+  return m ? m[1] : 'bin';
+}
+
+function buildPretestStoragePath(meta, fileId, fileName){
+  const parts = [
+    PRETEST_STORAGE_PATH_PREFIX,
+    slugPretest(meta?.sarja),
+    slugPretest(meta?.dim),
+    slugPretest(meta?.cal),
+    `${fileId}.${pretestExtFromName(fileName)}`
+  ];
+  return parts.join('/');
+}
+
+async function uploadPretestFileToStorage(file, meta, fileId){
+  const path = buildPretestStoragePath(meta, fileId, file.name);
+  const { error } = await APP.supa.storage.from(PRETEST_STORAGE_BUCKET).upload(path, file, {
+    contentType: file.type || 'application/octet-stream',
+    cacheControl: '3600',
+    upsert: true
+  });
+  if (error) throw error;
+  return { storage_bucket: PRETEST_STORAGE_BUCKET, storage_path: path };
+}
+
+async function openPretestFile(file){
+  if (file?.storage_path){
+    const bucket = file.storage_bucket || PRETEST_STORAGE_BUCKET;
+    const { data, error } = await APP.supa.storage.from(bucket).createSignedUrl(file.storage_path, 3600);
+    if (error) throw error;
+    const url = data?.signedUrl || data?.signedURL || '';
+    if (!url) throw new Error('Nu am putut genera linkul fișierului.');
+    window.open(url, '_blank', 'noopener');
+    return;
+  }
+  const href = String(file?.data_url || '');
+  if (!href) throw new Error('Fișierul nu are sursă disponibilă.');
+  window.open(href, '_blank', 'noopener');
+}
+
+async function removePretestFileFromStorage(file){
+  if (!file?.storage_path) return;
+  const bucket = file.storage_bucket || PRETEST_STORAGE_BUCKET;
+  const { error } = await APP.supa.storage.from(bucket).remove([file.storage_path]);
+  if (error) throw error;
+}
 
   function formatBytes(size){
     const n = Number(size || 0);
@@ -2204,47 +2263,68 @@ function applyFilters(){
     });
   }
 
-  function renderPretestFilesList(){
-    const list = document.getElementById('ptFilesList');
-    if (!list) return;
-    const meta = getPretestComboMeta();
-    const entry = getPretestEntry(meta);
-    const files = Array.isArray(entry?.files) ? entry.files : [];
-    if (!files.length){
-      list.innerHTML = '<div class="pretest-empty">Nu există fișiere pentru combinația selectată.</div>';
-      return;
-    }
-    list.innerHTML = files.map(file => {
-      const href = file?.data_url || '#';
-      const name = String(file?.name || 'Fișier');
-      const size = formatBytes(file?.size || 0);
-      const uploaded = String(file?.uploaded_at || '').replace('T',' ').replace('Z','');
-      const fileId = String(file?.id || '');
-      return `<div class="pretest-item"><div class="pretest-item-main"><div class="pretest-item-name">${name.replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]))}</div><div class="pretest-item-meta">${size} • ${uploaded}</div></div><div class="pretest-actions"><a class="btn" href="${href}" target="_blank" rel="noopener">Deschide</a><button class="btn" type="button" data-pretest-delete="${fileId}">Șterge</button></div></div>`;
-    }).join('');
-    list.querySelectorAll('[data-pretest-delete]').forEach(btn => {
-      btn.addEventListener('click', async () => {
-        const meta = getPretestComboMeta();
-        const key = makePretestComboKey(meta.sarja, meta.dim, meta.cal);
-        const entry = APP.pretestDocs?.combos?.[key];
-        if (!entry) return;
-        entry.files = (entry.files || []).filter(f => String(f?.id || '') !== String(btn.getAttribute('data-pretest-delete') || ''));
-        if (!entry.files.length) delete APP.pretestDocs.combos[key];
-        try{
-          await savePretestDocs();
-          renderPretestFilesList();
-          applyPretestDocsToTbody();
-          notifyDataChanged();
-          scheduleAutosave();
-        }catch(e){
-          console.error(e);
-          alert('Nu am putut șterge fișierul.');
-        }
-      });
-    });
+  
+function renderPretestFilesList(){
+  const list = document.getElementById('ptFilesList');
+  if (!list) return;
+  const meta = getPretestComboMeta();
+  const entry = getPretestEntry(meta);
+  const files = Array.isArray(entry?.files) ? entry.files : [];
+  if (!files.length){
+    list.innerHTML = '<div class="pretest-empty">Nu există fișiere pentru combinația selectată.</div>';
+    return;
   }
+  list.innerHTML = files.map(file => {
+    const name = escapeHtml(file?.name || 'Fișier');
+    const size = formatBytes(file?.size || 0);
+    const uploaded = escapeHtml(String(file?.uploaded_at || '').replace('T',' ').replace('Z',''));
+    const fileId = escapeHtml(String(file?.id || ''));
+    return `<div class="pretest-item"><div class="pretest-item-main"><div class="pretest-item-name">${name}</div><div class="pretest-item-meta">${size} • ${uploaded}</div></div><div class="pretest-actions"><button class="btn" type="button" data-pretest-open="${fileId}">Deschide</button><button class="btn" type="button" data-pretest-delete="${fileId}">Șterge</button></div></div>`;
+  }).join('');
+  list.querySelectorAll('[data-pretest-open]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      try{
+        const meta = getPretestComboMeta();
+        const entry = getPretestEntry(meta);
+        const file = (entry?.files || []).find(f => String(f?.id || '') === String(btn.getAttribute('data-pretest-open') || ''));
+        if (!file) return;
+        await openPretestFile(file);
+      }catch(e){
+        console.error(e);
+        alert('Nu am putut deschide fișierul.');
+      }
+    });
+  });
+  list.querySelectorAll('[data-pretest-delete]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const meta = getPretestComboMeta();
+      const key = makePretestComboKey(meta.sarja, meta.dim, meta.cal);
+      const entry = APP.pretestDocs?.combos?.[key];
+      if (!entry) return;
+      const targetId = String(btn.getAttribute('data-pretest-delete') || '');
+      const targetFile = (entry.files || []).find(f => String(f?.id || '') === targetId);
+      try{
+        if (targetFile) await removePretestFileFromStorage(targetFile);
+      }catch(e){
+        console.warn('Nu am putut șterge fișierul din storage.', e);
+      }
+      entry.files = (entry.files || []).filter(f => String(f?.id || '') !== targetId);
+      if (!entry.files.length) delete APP.pretestDocs.combos[key];
+      try{
+        await savePretestDocs();
+        renderPretestFilesList();
+        applyPretestDocsToTbody();
+        notifyDataChanged();
+        scheduleAutosave();
+      }catch(e){
+        console.error(e);
+        alert('Nu am putut șterge fișierul.');
+      }
+    });
+  });
+}
 
-  async function loadPretestDocs(){
+async function loadPretestDocs(){
     try{
       const res = await readDocument(PRETEST_DOC_KEY);
       const payload = (res && res.payload && typeof res.payload === 'object') ? res.payload : { combos:{} };
@@ -2291,14 +2371,16 @@ function applyFilters(){
     setPretestStatus('Pretest: se încarcă fișierele...', true);
     const mapped = [];
     for (const file of files){
-      const dataUrl = await readFileAsDataUrl(file);
+      const fileId = 'f_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2,8);
+      const stored = await uploadPretestFileToStorage(file, meta, fileId);
       mapped.push({
-        id: 'f_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2,8),
+        id: fileId,
         name: file.name,
         type: file.type || '',
         size: Number(file.size || 0),
         uploaded_at: nowIso(),
-        data_url: dataUrl
+        storage_bucket: stored.storage_bucket,
+        storage_path: stored.storage_path
       });
     }
     existing.sarja = meta.sarja;
