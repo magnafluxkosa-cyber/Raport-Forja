@@ -108,7 +108,6 @@
         { key:'mrc-comenzi-saptamanale', label:'COMENZI SĂPTĂMÂNALE', href:'mrc-comenzi-saptamanale.html' }
       ]}
     ]},
-    { key:'helper', label:'HELPER', href:'helper.html' },
     { key:'helper-data', label:'HELPER-DATA', href:'helper-data.html' },
     { key:'helper-acl', label:'HELPER-ACL', href:'helper-acl.html' }
   ];
