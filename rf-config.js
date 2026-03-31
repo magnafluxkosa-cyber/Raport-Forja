@@ -13,6 +13,7 @@
     { page_key: 'group-zale', page_name: 'Grup / Urmărire zale' },
     { page_key: 'group-rapoarte', page_name: 'Grup / Rapoarte' },
     { page_key: 'group-inventar', page_name: 'Grup / Inventar' },
+    { page_key: 'helper', page_name: 'Helper' },
     { page_key: 'helper-data', page_name: 'Helper Data' },
     { page_key: 'helper-acl', page_name: 'Helper ACL' },
     { page_key: 'numeralkod', page_name: 'Numeral KOD' },
@@ -29,6 +30,7 @@
     { page_key: 'tratament-termic-rapoarte', page_name: 'Tratament Termic - Rapoarte' },
     { page_key: 'tratament-termic-probleme', page_name: 'Tratament Termic - Probleme T.T' },
     { page_key: 'tratament-termic-fise-tehnologice', page_name: 'Tratament Termic - Fișe tehnologice' },
+    { page_key: 'tratament-termic-documente', page_name: 'Tratament Termic - Rapoarte Excel / Word' },
     { page_key: 'rebut', page_name: 'Rebut' },
     { page_key: 'rebut-pm', page_name: 'Rebut PM' },
     { page_key: 'rebut-pm-helper', page_name: 'Helper Rebut PM' },
@@ -116,6 +118,7 @@ var PAGE_CONTROL_OVERRIDES = Object.freeze({
     Object.freeze({ control_key:'nav.tratament-termic-rapoarte', control_label:'Buton T.T RAPOARTE', control_type:'action' }),
     Object.freeze({ control_key:'nav.tratament-termic-probleme', control_label:'Buton T.T PROBLEME', control_type:'action' }),
     Object.freeze({ control_key:'nav.tratament-termic-fise-tehnologice', control_label:'Buton T.T FIȘE TEHNOLOGICE', control_type:'action' }),
+    Object.freeze({ control_key:'nav.tratament-termic-documente', control_label:'Buton T.T RAPOARTE EXCEL / WORD', control_type:'action' }),
     Object.freeze({ control_key:'nav.magnaflux', control_label:'Buton MAGNAFLUX', control_type:'action' }),
     Object.freeze({ control_key:'nav.rebut', control_label:'Buton REBUT', control_type:'action' }),
     Object.freeze({ control_key:'nav.probleme-raportate', control_label:'Buton PROBLEME RAPORTATE', control_type:'action' }),
@@ -153,6 +156,14 @@ var PAGE_CONTROL_OVERRIDES = Object.freeze({
   'tratament-termic-probleme': Object.freeze([
     Object.freeze({ control_key:'field.minute', control_label:'Câmp Minute', control_type:'field' }),
     Object.freeze({ control_key:'field.descriere', control_label:'Câmp Problemă în schimb', control_type:'field' })
+  ]),
+  'tratament-termic-documente': Object.freeze([
+    Object.freeze({ control_key:'doc.open', control_label:'Deschidere document', control_type:'action' }),
+    Object.freeze({ control_key:'doc.upload', control_label:'Încărcare document', control_type:'action' }),
+    Object.freeze({ control_key:'doc.download', control_label:'Export / Download document', control_type:'action' }),
+    Object.freeze({ control_key:'doc.delete', control_label:'Ștergere document', control_type:'action' }),
+    Object.freeze({ control_key:'field.titlu', control_label:'Câmp Denumire raport', control_type:'field' }),
+    Object.freeze({ control_key:'field.observatii', control_label:'Câmp Observații document', control_type:'field' })
   ]),
   'rebut-pm': Object.freeze([
     Object.freeze({ control_key:'field.cod-defect', control_label:'Selector Cod defect', control_type:'field' }),
@@ -1187,7 +1198,6 @@ function getControlCatalogForPage(pageKey) {
               '<div style="font-size:18px;font-weight:700;margin:0 0 10px;">' + pageName + '</div>' +
               '<div style="font-size:16px;line-height:1.5;margin:0 0 22px;">' + safeMessage + '</div>' +
               '<div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap;">' +
-                '<a href="index.html" style="text-decoration:none;display:inline-flex;align-items:center;justify-content:center;min-height:46px;padding:0 18px;border:2px solid #1b1b1b;border-radius:12px;background:#3d73b9;color:#fff;font-weight:700;">Înapoi la Dashboard</a>' +
                 '<a href="login.html" style="text-decoration:none;display:inline-flex;align-items:center;justify-content:center;min-height:46px;padding:0 18px;border:2px solid #1b1b1b;border-radius:12px;background:#fff;color:#0d2240;font-weight:700;">Schimbă utilizatorul</a>' +
               '</div>' +
             '</div>' +
@@ -2379,8 +2389,8 @@ async function applyDomPermissions(pageKey, root, options) {
           ['dashboard.refresh','Buton Refresh']
         ], 'action'),
         entries([
-          ['section.nav-rapoarte','Buton / zonă Rapoarte'],
           ['section.nav-helper-data','Buton / zonă Helper Data'],
+          ['section.nav-helper-acl','Buton / zonă Helper ACL'],
         ], 'section')
       ))
     }),
@@ -2653,6 +2663,29 @@ async function applyDomPermissions(pageKey, root, options) {
         ], 'field'),
         entries([
           ['section.table-main','Tabel fișe tehnologice']
+        ], 'section')
+      ))
+    }),
+    'tratament-termic-documente': Object.freeze({
+      hint: 'Rapoarte Excel / Word: denumire raport, fișier Excel/Word, persoana care actualizează și acțiunile pe document.',
+      items: uniqueCatalog([].concat(
+        entries([
+          ['rows.filter','Filtrare / căutare'],
+          ['cloud.refresh','Refresh cloud'],
+          ['doc.open','Deschidere document'],
+          ['doc.upload','Încărcare document'],
+          ['doc.download','Export / download document'],
+          ['doc.delete','Ștergere document']
+        ], 'action'),
+        entries([
+          ['field.titlu','Câmp Denumire raport'],
+          ['field.tip-document','Câmp Tip document'],
+          ['field.document','Fișier Excel / Word'],
+          ['field.actualizat-de','Câmp Actualizat de'],
+          ['field.observatii','Câmp Observații document']
+        ], 'field'),
+        entries([
+          ['section.table-main','Tabel documente Excel / Word']
         ], 'section')
       ))
     }),
