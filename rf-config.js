@@ -30,6 +30,7 @@
     { page_key: 'tratament-termic-rapoarte', page_name: 'Tratament Termic - Rapoarte' },
     { page_key: 'tratament-termic-probleme', page_name: 'Tratament Termic - Probleme T.T' },
     { page_key: 'tratament-termic-fise-tehnologice', page_name: 'Tratament Termic - Fișe tehnologice' },
+    { page_key: 'tratament-termic-documente', page_name: 'Tratament Termic - Rapoarte Excel / Word' },
     { page_key: 'rebut', page_name: 'Rebut' },
     { page_key: 'rebut-pm', page_name: 'Rebut PM' },
     { page_key: 'rebut-pm-helper', page_name: 'Helper Rebut PM' },
@@ -117,6 +118,7 @@ var PAGE_CONTROL_OVERRIDES = Object.freeze({
     Object.freeze({ control_key:'nav.tratament-termic-rapoarte', control_label:'Buton T.T RAPOARTE', control_type:'action' }),
     Object.freeze({ control_key:'nav.tratament-termic-probleme', control_label:'Buton T.T PROBLEME', control_type:'action' }),
     Object.freeze({ control_key:'nav.tratament-termic-fise-tehnologice', control_label:'Buton T.T FIȘE TEHNOLOGICE', control_type:'action' }),
+    Object.freeze({ control_key:'nav.tratament-termic-documente', control_label:'Buton T.T RAPOARTE EXCEL / WORD', control_type:'action' }),
     Object.freeze({ control_key:'nav.magnaflux', control_label:'Buton MAGNAFLUX', control_type:'action' }),
     Object.freeze({ control_key:'nav.rebut', control_label:'Buton REBUT', control_type:'action' }),
     Object.freeze({ control_key:'nav.probleme-raportate', control_label:'Buton PROBLEME RAPORTATE', control_type:'action' }),
@@ -154,6 +156,14 @@ var PAGE_CONTROL_OVERRIDES = Object.freeze({
   'tratament-termic-probleme': Object.freeze([
     Object.freeze({ control_key:'field.minute', control_label:'Câmp Minute', control_type:'field' }),
     Object.freeze({ control_key:'field.descriere', control_label:'Câmp Problemă în schimb', control_type:'field' })
+  ]),
+  'tratament-termic-documente': Object.freeze([
+    Object.freeze({ control_key:'doc.open', control_label:'Deschidere document', control_type:'action' }),
+    Object.freeze({ control_key:'doc.upload', control_label:'Încărcare document', control_type:'action' }),
+    Object.freeze({ control_key:'doc.download', control_label:'Export / Download document', control_type:'action' }),
+    Object.freeze({ control_key:'doc.delete', control_label:'Ștergere document', control_type:'action' }),
+    Object.freeze({ control_key:'field.titlu', control_label:'Câmp Denumire raport', control_type:'field' }),
+    Object.freeze({ control_key:'field.observatii', control_label:'Câmp Observații document', control_type:'field' })
   ]),
   'rebut-pm': Object.freeze([
     Object.freeze({ control_key:'field.cod-defect', control_label:'Selector Cod defect', control_type:'field' }),
@@ -2653,6 +2663,29 @@ async function applyDomPermissions(pageKey, root, options) {
         ], 'field'),
         entries([
           ['section.table-main','Tabel fișe tehnologice']
+        ], 'section')
+      ))
+    }),
+    'tratament-termic-documente': Object.freeze({
+      hint: 'Rapoarte Excel / Word: denumire raport, fișier Excel/Word, persoana care actualizează și acțiunile pe document.',
+      items: uniqueCatalog([].concat(
+        entries([
+          ['rows.filter','Filtrare / căutare'],
+          ['cloud.refresh','Refresh cloud'],
+          ['doc.open','Deschidere document'],
+          ['doc.upload','Încărcare document'],
+          ['doc.download','Export / download document'],
+          ['doc.delete','Ștergere document']
+        ], 'action'),
+        entries([
+          ['field.titlu','Câmp Denumire raport'],
+          ['field.tip-document','Câmp Tip document'],
+          ['field.document','Fișier Excel / Word'],
+          ['field.actualizat-de','Câmp Actualizat de'],
+          ['field.observatii','Câmp Observații document']
+        ], 'field'),
+        entries([
+          ['section.table-main','Tabel documente Excel / Word']
         ], 'section')
       ))
     }),

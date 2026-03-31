@@ -77,7 +77,8 @@
       { key:'tratament-termic-links', label:'Pagini', links:[
         { key:'tratament-termic-rapoarte', label:'RAPOARTE', href:'tratament-termic-rapoarte.html' },
         { key:'tratament-termic-probleme', label:'PROBLEME T.T', href:'tratament-termic-probleme.html' },
-        { key:'tratament-termic-fise-tehnologice', label:'FIȘE TEHNOLOGICE', href:'tratament-termic-fise-tehnologice.html' }
+        { key:'tratament-termic-fise-tehnologice', label:'FIȘE TEHNOLOGICE', href:'tratament-termic-fise-tehnologice.html' },
+        { key:'tratament-termic-documente', label:'RAPOARTE EXCEL / WORD', href:'tratament-termic-documente.html' }
       ]}
     ]},
     { key:'group-calitate', label:'CALITATE', sections:[
