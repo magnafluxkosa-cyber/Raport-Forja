@@ -13,6 +13,7 @@
     { page_key: 'group-zale', page_name: 'Grup / Urmărire zale' },
     { page_key: 'group-rapoarte', page_name: 'Grup / Rapoarte' },
     { page_key: 'group-inventar', page_name: 'Grup / Inventar' },
+    { page_key: 'helper', page_name: 'Helper' },
     { page_key: 'helper-data', page_name: 'Helper Data' },
     { page_key: 'helper-acl', page_name: 'Helper ACL' },
     { page_key: 'numeralkod', page_name: 'Numeral KOD' },
@@ -1187,7 +1188,6 @@ function getControlCatalogForPage(pageKey) {
               '<div style="font-size:18px;font-weight:700;margin:0 0 10px;">' + pageName + '</div>' +
               '<div style="font-size:16px;line-height:1.5;margin:0 0 22px;">' + safeMessage + '</div>' +
               '<div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap;">' +
-                '<a href="index.html" style="text-decoration:none;display:inline-flex;align-items:center;justify-content:center;min-height:46px;padding:0 18px;border:2px solid #1b1b1b;border-radius:12px;background:#3d73b9;color:#fff;font-weight:700;">Înapoi la Dashboard</a>' +
                 '<a href="login.html" style="text-decoration:none;display:inline-flex;align-items:center;justify-content:center;min-height:46px;padding:0 18px;border:2px solid #1b1b1b;border-radius:12px;background:#fff;color:#0d2240;font-weight:700;">Schimbă utilizatorul</a>' +
               '</div>' +
             '</div>' +
@@ -2379,8 +2379,8 @@ async function applyDomPermissions(pageKey, root, options) {
           ['dashboard.refresh','Buton Refresh']
         ], 'action'),
         entries([
-          ['section.nav-rapoarte','Buton / zonă Rapoarte'],
           ['section.nav-helper-data','Buton / zonă Helper Data'],
+          ['section.nav-helper-acl','Buton / zonă Helper ACL'],
         ], 'section')
       ))
     }),
