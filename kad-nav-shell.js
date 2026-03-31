@@ -1,182 +1,124 @@
 (function(){
   'use strict';
 
-  var currentPath = (window.location.pathname.split('/').pop() || 'index.html').toLowerCase();
-  var currentKey = currentPath.replace(/\.html$/i, '');
-  var shellDisabled = /(?:^|\/)(?:login|index)\.html$/i.test(currentPath);
+  var currentPath = (window.location.pathname.split('/').pop() || '').toLowerCase();
+  if(!currentPath || currentPath === 'index.html' || currentPath === 'login.html') return;
 
-  function getStoredHidden(){
-    function parse(raw){
-      if(!raw) return null;
-      try{
-        var data = JSON.parse(raw);
-        if(!data || typeof data !== 'object') return null;
-        return Array.isArray(data.hidden) ? data.hidden.map(function(v){ return String(v || '').trim(); }).filter(Boolean) : [];
-      }catch(_){
-        return null;
-      }
-    }
+  function parseHidden(raw){
+    if(!raw) return null;
     try{
-      return parse(window.sessionStorage && sessionStorage.getItem('rf_hidden_index_buttons'))
-        || parse(window.localStorage && localStorage.getItem('rf_hidden_index_buttons'))
-        || [];
+      var data = JSON.parse(raw);
+      if(!data || typeof data !== 'object') return null;
+      return Array.isArray(data.hidden) ? data.hidden.map(function(v){ return String(v || '').trim(); }).filter(Boolean) : [];
+    }catch(_){ return null; }
+  }
+
+  function getHiddenSet(){
+    try{
+      return new Set(
+        parseHidden(window.sessionStorage && sessionStorage.getItem('rf_hidden_index_buttons')) ||
+        parseHidden(window.localStorage && localStorage.getItem('rf_hidden_index_buttons')) || []
+      );
     }catch(_){
-      return [];
+      return new Set();
     }
   }
 
-  var hiddenSet = new Set(getStoredHidden());
+  var hiddenSet = getHiddenSet();
+  var currentKey = currentPath.replace(/\.html$/i,'');
 
   var MENU = [
     {
-      key:'group-forja',
-      label:'FORJĂ',
-      sections:[
-        {
-          key:'forja-rapoarte',
-          label:'Rapoarte',
-          links:[
-            { key:'numeralkod', label:'NUMERALKOD', href:'numeralkod.html' },
-            { key:'intrari-otel', label:'INTRĂRI OȚEL', href:'intrari-otel.html' },
-            { key:'debitate', label:'DEBITATE', href:'debitate.html' },
-            { key:'forjate', label:'FORJATE', href:'forjate.html' },
-            { key:'eficienta', label:'EFICIENȚĂ', href:'eficienta.html' },
-            { key:'program-utilaje', label:'PROGRAM UTILAJE', href:'program-utilaje.html' }
-          ]
-        },
-        {
-          key:'forja-zale',
-          label:'Urmărire zale',
-          links:[
-            { key:'livrari-zale', label:'LIVRĂRI ZALE', href:'livrari-zale.html' },
-            { key:'centralizator-livrari-zale', label:'CENTRALIZATOR LIVRĂRI', href:'centralizator-livrari-zale.html' },
-            { key:'zale-9k-6628-29', label:'9K-6628/29', href:'zale-9k-6628-29.html' },
-            { key:'zale-229-6909-10', label:'229-6909/10', href:'zale-229-6909-10.html' },
-            { key:'zale-503-0761-62', label:'503-0761/62', href:'zale-503-0761-62.html' },
-            { key:'zale-106-1625-26', label:'106-1625/26', href:'zale-106-1625-26.html' },
-            { key:'zale-378-8241-42', label:'378-8241/42', href:'zale-378-8241-42.html' },
-            { key:'zale-248-2307-08', label:'248-2307/08', href:'zale-248-2307-08.html' },
-            { key:'zale-417-3595-96', label:'417-3595/96', href:'zale-417-3595-96.html' },
-            { key:'zale-418-2091-92', label:'418-2091/92', href:'zale-418-2091-92.html' },
-            { key:'ambalare-9k-6628-29', label:'AMBALARE 9K-6628/29', href:'ambalare-9k-6628-29.html' },
-            { key:'ambalare-229-6909-10', label:'AMBALARE 229-6909/10', href:'ambalare-229-6909-10.html' },
-            { key:'ambalare-503-0761-62', label:'AMBALARE 503-0761/62', href:'ambalare-503-0761-62.html' },
-            { key:'ambalare-106-1625-26', label:'AMBALARE 106-1625/26', href:'ambalare-106-1625-26.html' },
-            { key:'ambalare-378-8241-42', label:'AMBALARE 378-8241/42', href:'ambalare-378-8241-42.html' },
-            { key:'ambalare-248-2307-08', label:'AMBALARE 248-2307/08', href:'ambalare-248-2307-08.html' },
-            { key:'ambalare-417-3595-96', label:'AMBALARE 417-3595/96', href:'ambalare-417-3595-96.html' },
-            { key:'ambalare-418-2091-92', label:'AMBALARE 418-2091/92', href:'ambalare-418-2091-92.html' }
-          ]
-        },
-        {
-          key:'forja-inventar',
-          label:'Inventar',
-          links:[
-            { key:'inventar-otel', label:'INVENTAR OȚEL', href:'inventar-otel.html' },
-            { key:'inventar-debitat', label:'INVENTAR DEBITAT', href:'inventar-debitat.html' },
-            { key:'inventar-forjat', label:'INVENTAR FORJAT', href:'inventar-forjat.html' },
-            { key:'stoc-ramas-teoretic', label:'STOC RĂMAS TEORETIC', href:'stoc-ramas-teoretic.html' }
-          ]
-        }
+      key:'group-forja', label:'FORJĂ', sections:[
+        { key:'forja-rapoarte', label:'Rapoarte', links:[
+          { key:'numeralkod', label:'NUMERALKOD', href:'numeralkod.html' },
+          { key:'intrari-otel', label:'INTRĂRI OȚEL', href:'intrari-otel.html' },
+          { key:'debitate', label:'DEBITATE', href:'debitate.html' },
+          { key:'forjate', label:'FORJATE', href:'forjate.html' },
+          { key:'eficienta', label:'EFICIENȚĂ', href:'eficienta.html' },
+          { key:'program-utilaje', label:'PROGRAM UTILAJE', href:'program-utilaje.html' }
+        ]},
+        { key:'forja-zale', label:'Urmărire zale', links:[
+          { key:'livrari-zale', label:'LIVRĂRI ZALE', href:'livrari-zale.html' },
+          { key:'centralizator-livrari-zale', label:'CENTRALIZATOR LIVRĂRI', href:'centralizator-livrari-zale.html' },
+          { key:'zale-9k-6628-29', label:'9K-6628/29', href:'zale-9k-6628-29.html' },
+          { key:'zale-229-6909-10', label:'229-6909/10', href:'zale-229-6909-10.html' },
+          { key:'zale-503-0761-62', label:'503-0761/62', href:'zale-503-0761-62.html' },
+          { key:'zale-106-1625-26', label:'106-1625/26', href:'zale-106-1625-26.html' },
+          { key:'zale-378-8241-42', label:'378-8241/42', href:'zale-378-8241-42.html' },
+          { key:'zale-248-2307-08', label:'248-2307/08', href:'zale-248-2307-08.html' },
+          { key:'zale-417-3595-96', label:'417-3595/96', href:'zale-417-3595-96.html' },
+          { key:'zale-418-2091-92', label:'418-2091/92', href:'zale-418-2091-92.html' },
+          { key:'ambalare-9k-6628-29', label:'AMBALARE 9K-6628/29', href:'ambalare-9k-6628-29.html' },
+          { key:'ambalare-229-6909-10', label:'AMBALARE 229-6909/10', href:'ambalare-229-6909-10.html' },
+          { key:'ambalare-503-0761-62', label:'AMBALARE 503-0761/62', href:'ambalare-503-0761-62.html' },
+          { key:'ambalare-106-1625-26', label:'AMBALARE 106-1625/26', href:'ambalare-106-1625-26.html' },
+          { key:'ambalare-378-8241-42', label:'AMBALARE 378-8241/42', href:'ambalare-378-8241-42.html' },
+          { key:'ambalare-248-2307-08', label:'AMBALARE 248-2307/08', href:'ambalare-248-2307-08.html' },
+          { key:'ambalare-417-3595-96', label:'AMBALARE 417-3595/96', href:'ambalare-417-3595-96.html' },
+          { key:'ambalare-418-2091-92', label:'AMBALARE 418-2091/92', href:'ambalare-418-2091-92.html' }
+        ]},
+        { key:'forja-inventar', label:'Inventar', links:[
+          { key:'inventar-otel', label:'INVENTAR OȚEL', href:'inventar-otel.html' },
+          { key:'inventar-debitat', label:'INVENTAR DEBITAT', href:'inventar-debitat.html' },
+          { key:'inventar-forjat', label:'INVENTAR FORJAT', href:'inventar-forjat.html' },
+          { key:'stoc-initial-otel', label:'STOC INIȚIAL OȚEL', href:'stoc-initial-otel.html' },
+          { key:'stoc-ramas-teoretic', label:'STOC RĂMAS TEORETIC', href:'stoc-ramas-teoretic.html' }
+        ]}
       ]
     },
-    {
-      key:'group-prelucrari',
-      label:'PRELUCRĂRI MECANICE',
-      sections:[
-        {
-          key:'prelucrari-coming-soon',
-          label:'Secțiune',
-          links:[
-            { key:'prelucrari-placeholder', label:'În lucru — paginile pot fi adăugate aici', href:null, disabled:true }
-          ]
-        }
-      ]
-    },
-    {
-      key:'group-tratament-termic',
-      label:'TRATAMENT TERMIC',
-      sections:[
-        {
-          key:'tratament-termic-links',
-          label:'Pagini',
-          links:[
-            { key:'tratament-termic-rapoarte', label:'RAPOARTE', href:'tratament-termic-rapoarte.html' },
-            { key:'tratament-termic-probleme', label:'PROBLEME T.T', href:'tratament-termic-probleme.html' },
-            { key:'tratament-termic-fise-tehnologice', label:'FIȘE TEHNOLOGICE', href:'tratament-termic-fise-tehnologice.html' }
-          ]
-        }
-      ]
-    },
-    {
-      key:'group-calitate',
-      label:'CALITATE',
-      sections:[
-        {
-          key:'calitate-links',
-          label:'Pagini',
-          links:[
-            { key:'magnaflux', label:'MAGNAFLUX', href:'magnaflux.html' },
-            { key:'rebut', label:'REBUT', href:'rebut.html' },
-            { key:'rebut-pm', label:'REBUT PM', href:'rebut-pm.html' },
-            { key:'rebut-pm-helper', label:'REBUT PM HELPER', href:'rebut-pm-helper.html' },
-            { key:'magnaflux-calendar', label:'CALENDAR MAGNAFLUX', href:'magnaflux-calendar.html' },
-            { key:'calendar-operatori', label:'CALENDAR OPERATORI', href:'calendar-operatori.html' }
-          ]
-        }
-      ]
-    },
-    {
-      key:'group-probleme-imbunatatire',
-      label:'PROBLEME · ÎMBUNĂTĂȚIRI',
-      sections:[
-        {
-          key:'probleme-links',
-          label:'Pagini',
-          links:[
-            { key:'probleme-raportate', label:'PROBLEME RAPORTATE', href:'probleme-raportate.html' },
-            { key:'urmarire-actiuni-progres', label:'URMĂRIRE ACȚIUNI ȘI PROGRES', href:'urmarire-actiuni-progres.html' },
-            { key:'imbunatatire-continua', label:'ÎMBUNĂTĂȚIRE CONTINUĂ', href:'imbunatatire-continua.html' },
-            { key:'investitii', label:'INVESTIȚII', href:'investitii.html' }
-          ]
-        }
-      ]
-    },
+    { key:'group-prelucrari', label:'PRELUCRĂRI MECANICE', sections:[
+      { key:'prelucrari-coming-soon', label:'Secțiune', links:[
+        { key:'prelucrari-placeholder', label:'În lucru', href:null, disabled:true }
+      ]}
+    ]},
+    { key:'group-tratament-termic', label:'TRATAMENT TERMIC', sections:[
+      { key:'tratament-termic-links', label:'Pagini', links:[
+        { key:'tratament-termic-rapoarte', label:'RAPOARTE', href:'tratament-termic-rapoarte.html' },
+        { key:'tratament-termic-probleme', label:'PROBLEME T.T', href:'tratament-termic-probleme.html' },
+        { key:'tratament-termic-fise-tehnologice', label:'FIȘE TEHNOLOGICE', href:'tratament-termic-fise-tehnologice.html' }
+      ]}
+    ]},
+    { key:'group-calitate', label:'CALITATE', sections:[
+      { key:'calitate-links', label:'Pagini', links:[
+        { key:'magnaflux', label:'MAGNAFLUX', href:'magnaflux.html' },
+        { key:'rebut', label:'REBUT', href:'rebut.html' },
+        { key:'rebut-pm', label:'REBUT PM', href:'rebut-pm.html' },
+        { key:'rebut-pm-helper', label:'REBUT PM HELPER', href:'rebut-pm-helper.html' },
+        { key:'magnaflux-calendar', label:'CALENDAR MAGNAFLUX', href:'magnaflux-calendar.html' },
+        { key:'calendar-operatori', label:'CALENDAR OPERATORI', href:'calendar-operatori.html' }
+      ]}
+    ]},
+    { key:'group-probleme-imbunatatire', label:'PROBLEME · ÎMBUNĂTĂȚIRI', sections:[
+      { key:'probleme-links', label:'Pagini', links:[
+        { key:'probleme-raportate', label:'PROBLEME RAPORTATE', href:'probleme-raportate.html' },
+        { key:'urmarire-actiuni-progres', label:'URMĂRIRE ACȚIUNI ȘI PROGRES', href:'urmarire-actiuni-progres.html' },
+        { key:'imbunatatire-continua', label:'ÎMBUNĂTĂȚIRE CONTINUĂ', href:'imbunatatire-continua.html' },
+        { key:'investitii', label:'INVESTIȚII', href:'investitii.html' }
+      ]}
+    ]},
     { key:'kpi', label:'KPI', href:'kpi.html' },
-    {
-      key:'group-planificari',
-      label:'PLANIFICĂRI',
-      sections:[
-        {
-          key:'planificari-links',
-          label:'Pagini',
-          links:[
-            { key:'planificare-forja', label:'PLANIFICARE FORJĂ', href:'planificare-forja.html' },
-            { key:'comenzi-livrare', label:'COMENZI LIVRARE', href:'comenzi-livrare.html' },
-            { key:'mrc-necesar-otel', label:'MRC / NECESAR OȚEL', href:'mrc-necesar-otel.html' },
-            { key:'mrc-comenzi-otel', label:'COMENZI OȚEL', href:'mrc-comenzi-otel.html' },
-            { key:'mrc-comenzi-saptamanale', label:'COMENZI SĂPTĂMÂNALE', href:'mrc-comenzi-saptamanale.html' }
-          ]
-        }
-      ]
-    },
+    { key:'group-planificari', label:'PLANIFICĂRI', sections:[
+      { key:'planificari-links', label:'Pagini', links:[
+        { key:'planificare-forja', label:'PLANIFICARE FORJĂ', href:'planificare-forja.html' },
+        { key:'comenzi-livrare', label:'COMENZI LIVRARE', href:'comenzi-livrare.html' },
+        { key:'mrc-necesar-otel', label:'MRC / NECESAR OȚEL', href:'mrc-necesar-otel.html' },
+        { key:'mrc-comenzi-otel', label:'COMENZI OȚEL', href:'mrc-comenzi-otel.html' },
+        { key:'mrc-comenzi-saptamanale', label:'COMENZI SĂPTĂMÂNALE', href:'mrc-comenzi-saptamanale.html' }
+      ]}
+    ]},
     { key:'helper', label:'HELPER', href:'helper.html' },
     { key:'helper-data', label:'HELPER-DATA', href:'helper-data.html' },
     { key:'helper-acl', label:'HELPER-ACL', href:'helper-acl.html' }
   ];
 
-  function normalizeLabel(text){
-    return String(text || '').replace(/\s+/g, ' ').trim();
+  function escapeHtml(str){
+    return String(str == null ? '' : str)
+      .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+      .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
   }
 
-  function getActivePageLabel(){
-    var match = findByKey(MENU, currentKey);
-    return match ? match.label : normalizeLabel(document.title || currentKey || 'Dashboard');
-  }
-
-  function isVisibleKey(key){
-    return !!key && !hiddenSet.has(key);
-  }
+  function isVisibleKey(key){ return !key || !hiddenSet.has(key); }
 
   function filterMenu(items){
     return items.map(function(item){
@@ -185,9 +127,7 @@
       if(Array.isArray(item.sections)){
         clone.sections = item.sections.map(function(section){
           var s = Object.assign({}, section);
-          s.links = (section.links || []).filter(function(link){
-            return !link.key || isVisibleKey(link.key);
-          });
+          s.links = (section.links || []).filter(function(link){ return isVisibleKey(link.key); });
           return s.links.length ? s : null;
         }).filter(Boolean);
         if(!clone.sections.length && !clone.href) return null;
@@ -196,17 +136,16 @@
     }).filter(Boolean);
   }
 
-  function findByKey(items, key){
+  function findMatch(items){
     for(var i=0;i<items.length;i++){
       var item = items[i];
-      if(item.key === key) return item;
+      if(item.key === currentKey || (item.href && item.href.toLowerCase() === currentPath)) return item;
       if(item.sections){
         for(var j=0;j<item.sections.length;j++){
-          var sec = item.sections[j];
-          if(sec.key === key) return sec;
-          for(var k=0;k<(sec.links||[]).length;k++){
-            var link = sec.links[k];
-            if(link.key === key) return link;
+          var section = item.sections[j];
+          for(var k=0;k<(section.links||[]).length;k++){
+            var link = section.links[k];
+            if(link.key === currentKey || (link.href && link.href.toLowerCase() === currentPath)) return link;
           }
         }
       }
@@ -214,9 +153,15 @@
     return null;
   }
 
+  var filteredMenu = filterMenu(MENU);
+  var currentMatch = findMatch(filteredMenu);
+
+  function getCurrentLabel(){
+    return currentMatch ? currentMatch.label : (document.title || currentKey || 'K.A.D');
+  }
+
   function itemContainsCurrent(item){
-    if(item.key === currentKey) return true;
-    if(item.href && item.href.toLowerCase() === currentPath) return true;
+    if(item.key === currentKey || (item.href && item.href.toLowerCase() === currentPath)) return true;
     if(item.sections){
       return item.sections.some(function(section){
         return (section.links || []).some(function(link){
@@ -227,355 +172,173 @@
     return false;
   }
 
-  function escapeHtml(str){
-    return String(str == null ? '' : str)
-      .replace(/&/g,'&amp;')
-      .replace(/</g,'&lt;')
-      .replace(/>/g,'&gt;')
-      .replace(/"/g,'&quot;')
-      .replace(/'/g,'&#39;');
-  }
-
   function linkHtml(link){
-    var activeClass = (link.key === currentKey || (link.href && link.href.toLowerCase() === currentPath)) ? ' is-active' : '';
+    var active = (link.key === currentKey || (link.href && link.href.toLowerCase() === currentPath)) ? ' is-active' : '';
     if(link.disabled || !link.href){
-      return '<span class="kad-shell-flyout-link' + activeClass + '" aria-disabled="true">' + escapeHtml(link.label) + '</span>';
+      return '<span class="kad-shell-link'+active+'" aria-disabled="true">'+escapeHtml(link.label)+'</span>';
     }
-    return '<a class="kad-shell-flyout-link' + activeClass + '" data-kad-nav-link="1" data-page-key="' + escapeHtml(link.key || '') + '" href="' + escapeHtml(link.href) + '">' + escapeHtml(link.label) + '</a>';
+    return '<a class="kad-shell-link'+active+'" href="'+escapeHtml(link.href)+'">'+escapeHtml(link.label)+'</a>';
   }
 
-  function itemHtml(item){
+  function buildItem(item){
     var active = itemContainsCurrent(item) ? ' is-active' : '';
     if(item.href){
-      return '' +
-        '<div class="kad-shell-item' + active + '" data-page-key="' + escapeHtml(item.key || '') + '">' +
-          '<a class="kad-shell-main" data-kad-nav-link="1" href="' + escapeHtml(item.href) + '">' +
-            '<span class="kad-shell-main-label">' + escapeHtml(item.label) + '</span>' +
-          '</a>' +
-        '</div>';
+      return '<div class="kad-shell-item'+active+'" data-item-key="'+escapeHtml(item.key || '')+'">'
+        + '<a class="kad-shell-main" href="'+escapeHtml(item.href)+'"><span class="kad-shell-main-label">'+escapeHtml(item.label)+'</span></a>'
+        + '</div>';
     }
-
-    var sectionsHtml = (item.sections || []).map(function(section){
-      return '' +
-        '<section class="kad-shell-section" data-page-key="' + escapeHtml(section.key || '') + '">' +
-          '<h3 class="kad-shell-section-label">' + escapeHtml(section.label) + '</h3>' +
-          '<div class="kad-shell-link-grid">' + (section.links || []).map(linkHtml).join('') + '</div>' +
-        '</section>';
-    }).join('');
-
-    return '' +
-      '<div class="kad-shell-item' + active + '" data-page-key="' + escapeHtml(item.key || '') + '">' +
-        '<button class="kad-shell-main" type="button" aria-expanded="false">' +
-          '<span class="kad-shell-main-label">' + escapeHtml(item.label) + '</span>' +
-          '<span class="kad-shell-main-caret" aria-hidden="true"></span>' +
-        '</button>' +
-        '<div class="kad-shell-flyout" role="group" aria-label="' + escapeHtml(item.label) + '">' +
-          '<div class="kad-shell-flyout-title">Navigare rapidă</div>' +
-          sectionsHtml +
-        '</div>' +
-      '</div>';
+    return '<div class="kad-shell-item'+active+'" data-item-key="'+escapeHtml(item.key || '')+'" data-has-submenu="1">'
+      + '<button class="kad-shell-main" type="button" aria-expanded="false">'
+      + '<span class="kad-shell-main-label">'+escapeHtml(item.label)+'</span><span class="kad-shell-main-caret" aria-hidden="true"></span>'
+      + '</button></div>';
   }
 
-
-  function removeDashboardButtons(){
-    var nodes = document.querySelectorAll('a[href], button, [role="button"]');
-    nodes.forEach(function(node){
-      if(node && node.closest && node.closest('#kadNavShellRoot')) return;
-      var tag = (node.tagName || '').toLowerCase();
-      var href = String(node.getAttribute && node.getAttribute('href') || '').trim().toLowerCase();
-      var onclick = String(node.getAttribute && node.getAttribute('onclick') || '').trim().toLowerCase();
-      var text = normalizeLabel(node.textContent || '').toLowerCase();
-      var isDashText = /dashboard/.test(text);
-      var isDashHref = /(^|\/|\.)index\.html(?:$|[?#])/.test(href);
-      var isDashAction = /godashboard|gomenu\s*\(|index\.html/.test(onclick);
-      if(!(isDashText || isDashHref || isDashAction)) return;
-      if(tag === 'a' || tag === 'button' || node.classList.contains('btn') || node.classList.contains('back-btn') || node.classList.contains('btn-back') || node.classList.contains('btn-soft') || node.classList.contains('secondary') || node.classList.contains('btnMenu')){
-        node.remove();
+  function ensureContentWrapper(){
+    var existing = document.querySelector('.kad-shell-page-content');
+    if(existing) return existing;
+    var wrapper = document.createElement('div');
+    wrapper.className = 'kad-shell-page-content';
+    var nodes = [];
+    Array.prototype.slice.call(document.body.childNodes).forEach(function(node){
+      if(node.nodeType === 1){
+        var tag = node.tagName;
+        if(tag === 'SCRIPT' || tag === 'STYLE' || tag === 'LINK') return;
       }
+      nodes.push(node);
     });
+    document.body.insertBefore(wrapper, document.body.firstChild);
+    nodes.forEach(function(node){ wrapper.appendChild(node); });
+    return wrapper;
   }
 
-  function syncBodyState(root){
-    if(!root) return;
-    document.body.classList.toggle('kad-shell-open', root.classList.contains('is-open'));
-    document.body.classList.toggle('kad-shell-submenu-open', root.classList.contains('has-submenu'));
+  function estimatePanelWidth(item){
+    if(!item || !item.sections) return 214;
+    var linkCount = 0;
+    var maxLabel = 0;
+    item.sections.forEach(function(section){
+      (section.links || []).forEach(function(link){
+        linkCount += 1;
+        maxLabel = Math.max(maxLabel, String(link.label || '').length);
+      });
+    });
+    var columns = linkCount > 9 || maxLabel > 18 ? 2 : 1;
+    var width = 214 + 14 + (columns * 190) + 28;
+    var maxAllowed = Math.max(360, window.innerWidth - 28);
+    return Math.min(width, maxAllowed);
+  }
+
+  function renderSubpanel(item){
+    if(!item || !item.sections) return '';
+    return '<div class="kad-shell-subtitle">'+escapeHtml(item.label)+'</div>'
+      + item.sections.map(function(section){
+          return '<section class="kad-shell-section">'
+            + '<div class="kad-shell-section-label">'+escapeHtml(section.label)+'</div>'
+            + '<div class="kad-shell-link-grid">'+(section.links || []).map(linkHtml).join('')+'</div>'
+            + '</section>';
+        }).join('');
   }
 
   function mount(){
-    if(shellDisabled) return;
     if(document.getElementById('kadNavShellRoot')) return;
-    removeDashboardButtons();
-
-    var filtered = filterMenu(MENU);
-    var shellRoot = document.createElement('div');
-    shellRoot.id = 'kadNavShellRoot';
-    shellRoot.innerHTML = '' +
-      '<div class="kad-shell-edge" aria-hidden="true"></div>' +
-      '<aside class="kad-shell" aria-label="Navigare proiect K.A.D">' +
-        '<div class="kad-shell-header">' +
-          '<div class="kad-shell-caption">K.A.D · Navigare</div>' +
-          '<div class="kad-shell-brand">K.A.D</div>' +
-          '<div class="kad-shell-active-page">' + escapeHtml(getActivePageLabel()) + '</div>' +
-        '</div>' +
-        '<nav class="kad-shell-nav">' + filtered.map(itemHtml).join('') + '</nav>' +
-        '<div class="kad-shell-submenu-host" aria-live="polite"></div>' +
-        '<div class="kad-shell-utility">' +
-          '<button class="kad-shell-logout" type="button" data-kad-logout="1">Logout</button>' +
-          '<div class="kad-shell-note">hover la marginea stângă</div>' +
-        '</div>' +
-      '</aside>' +
-      '<div class="kad-shell-transition" aria-hidden="true"></div>';
-
-    document.body.appendChild(shellRoot);
+    ensureContentWrapper();
+    var root = document.createElement('div');
+    root.id = 'kadNavShellRoot';
+    root.innerHTML = '<div class="kad-shell-edge-sensor" aria-hidden="true"></div>'
+      + '<aside class="kad-shell" aria-label="Navigare K.A.D">'
+      + '<div class="kad-shell-peek-label">MENIU</div>'
+      + '<div class="kad-shell-header"><div class="kad-shell-mini">K.A.D · Navigare</div><div class="kad-shell-brand">K.A.D</div><div class="kad-shell-current">'+escapeHtml(getCurrentLabel())+'</div></div>'
+      + '<div class="kad-shell-layout"><nav class="kad-shell-navcol">'+filteredMenu.map(buildItem).join('')+'</nav><div class="kad-shell-subpanel"></div></div>'
+      + '<div class="kad-shell-footer"><button type="button" class="kad-shell-logout">Logout</button><div class="kad-shell-note">hover la marginea stângă</div></div>'
+      + '</aside>';
+    document.body.appendChild(root);
     document.body.classList.add('kad-shell-mounted');
-    syncBodyState(shellRoot);
-    bindShell(shellRoot);
+    bind(root);
   }
 
-  function bindShell(root){
-    var edge = root.querySelector('.kad-shell-edge');
+  function bind(root){
     var shell = root.querySelector('.kad-shell');
-    var host = root.querySelector('.kad-shell-submenu-host');
-    var transition = root.querySelector('.kad-shell-transition');
+    var sensor = root.querySelector('.kad-shell-edge-sensor');
+    var subpanel = root.querySelector('.kad-shell-subpanel');
+    var items = Array.prototype.slice.call(root.querySelectorAll('.kad-shell-item'));
     var closeTimer = 0;
-    var openTimer = 0;
-    var isTouch = window.matchMedia('(hover: none), (pointer: coarse)').matches;
+    var activeItem = null;
 
-    function baseWidth(){
-      return parseFloat(getComputedStyle(root).getPropertyValue('--kad-shell-base-width')) || 212;
-    }
-
-    function clearTimers(){
-      window.clearTimeout(closeTimer);
-      window.clearTimeout(openTimer);
-    }
-
-    function openShell(){
-      clearTimers();
-      root.classList.add('is-open');
-      syncBodyState(root);
-    }
-
-    function resetExpandedShell(){
+    function clearClose(){ window.clearTimeout(closeTimer); }
+    function openShell(){ clearClose(); root.classList.add('is-open'); document.body.classList.add('kad-shell-open'); }
+    function closeShellSoon(){ clearClose(); closeTimer = window.setTimeout(function(){ closeShell(); }, 130); }
+    function closeShell(){ clearClose(); hideSubmenu(); root.classList.remove('is-open'); document.body.classList.remove('kad-shell-open'); }
+    function hideSubmenu(){
+      activeItem = null;
+      items.forEach(function(item){ item.classList.remove('is-open'); var btn = item.querySelector('button.kad-shell-main'); if(btn) btn.setAttribute('aria-expanded','false'); });
       root.classList.remove('has-submenu');
-      syncBodyState(root);
-      root.style.setProperty('--kad-shell-expanded-width', baseWidth() + 'px');
-      root.style.setProperty('--kad-shell-submenu-width', '0px');
-      root.style.setProperty('--kad-shell-submenu-top', '124px');
-      if(host){
-        host.innerHTML = '';
-        host.removeAttribute('data-owner-key');
-        host.style.removeProperty('--kad-flyout-cols');
-      }
+      document.body.classList.remove('kad-shell-submenu');
+      subpanel.innerHTML = '';
+      document.body.style.removeProperty('--kad-shell-panel-width');
     }
-
-    function closeAllItems(except){
-      root.querySelectorAll('.kad-shell-item.is-open').forEach(function(item){
-        if(item !== except){
-          item.classList.remove('is-open');
-          var btn = item.querySelector('.kad-shell-main');
-          if(btn) btn.setAttribute('aria-expanded', 'false');
-        }
-      });
-      if(!except){
-        resetExpandedShell();
-      }
-    }
-
-    function closeShell(){
-      clearTimers();
-      closeTimer = window.setTimeout(function(){
-        root.classList.remove('is-open');
-        closeAllItems();
-        syncBodyState(root);
-      }, 140);
-    }
-
-    edge.addEventListener('mouseenter', function(){
-      openTimer = window.setTimeout(openShell, 20);
-    });
-    shell.addEventListener('mouseenter', openShell);
-    shell.addEventListener('mouseleave', closeShell);
-    edge.addEventListener('mouseleave', function(){
-      if(!shell.matches(':hover')) closeShell();
-    });
-    shell.addEventListener('focusin', openShell);
-    shell.addEventListener('focusout', function(){
-      window.setTimeout(function(){
-        if(!shell.contains(document.activeElement)) closeShell();
-      }, 0);
-    });
-
-    function layoutFlyout(item, flyout){
-      if(!item || !flyout || !host) return;
-
-      var links = flyout.querySelectorAll('.kad-shell-flyout-link').length;
-      var base = baseWidth();
-      var gap = 12;
-      var minCol = 170;
-      var maxAvailable = Math.max(320, Math.min(window.innerWidth - 36, 1240) - base - 18);
-      var cols = 1;
-
-      if(links > 14){
-        cols = 4;
-      }else if(links > 8){
-        cols = 3;
-      }else if(links > 4){
-        cols = 2;
-      }
-
-      while(cols > 1){
-        var candidate = cols * minCol + (cols - 1) * gap + 32;
-        if(candidate <= maxAvailable) break;
-        cols -= 1;
-      }
-
-      var desiredSubmenuWidth = Math.min(maxAvailable, cols * minCol + (cols - 1) * gap + 32);
-      var actualSubmenuWidth = Math.max(300, desiredSubmenuWidth);
-      var expandedWidth = Math.min(window.innerWidth - 24, base + actualSubmenuWidth + 18);
-
-      root.style.setProperty('--kad-shell-expanded-width', expandedWidth + 'px');
-      root.style.setProperty('--kad-shell-submenu-width', actualSubmenuWidth + 'px');
+    function showSubmenu(item, data){
+      if(!item || !data || !data.sections){ hideSubmenu(); return; }
+      activeItem = item;
+      items.forEach(function(entry){ if(entry !== item){ entry.classList.remove('is-open'); var btn = entry.querySelector('button.kad-shell-main'); if(btn) btn.setAttribute('aria-expanded','false'); } });
+      item.classList.add('is-open');
+      var btn = item.querySelector('button.kad-shell-main');
+      if(btn) btn.setAttribute('aria-expanded','true');
+      subpanel.innerHTML = renderSubpanel(data);
+      var width = estimatePanelWidth(data);
+      document.body.style.setProperty('--kad-shell-panel-width', width + 'px');
       root.classList.add('has-submenu');
-      syncBodyState(root);
-      item.style.setProperty('--kad-flyout-cols', String(cols));
-      host.style.setProperty('--kad-flyout-cols', String(cols));
-      host.innerHTML = flyout.innerHTML;
-      host.setAttribute('data-owner-key', item.getAttribute('data-page-key') || '');
-
-      var shellRect = shell.getBoundingClientRect();
-      var itemRect = item.getBoundingClientRect();
-      var top = Math.max(10, itemRect.top - shellRect.top);
-      root.style.setProperty('--kad-shell-submenu-top', top + 'px');
-
-      window.requestAnimationFrame(function(){
-        var rect = host.getBoundingClientRect();
-        var adjustedTop = top;
-        if(rect.bottom > window.innerHeight - 14){
-          adjustedTop -= rect.bottom - (window.innerHeight - 14);
-        }
-        if(rect.top < 14){
-          adjustedTop += 14 - rect.top;
-        }
-        root.style.setProperty('--kad-shell-submenu-top', Math.max(10, adjustedTop) + 'px');
-      });
+      document.body.classList.add('kad-shell-submenu');
     }
 
-    root.querySelectorAll('.kad-shell-item').forEach(function(item){
+    sensor.addEventListener('mouseenter', openShell);
+    shell.addEventListener('mouseenter', openShell);
+    shell.addEventListener('mouseleave', closeShellSoon);
+    shell.addEventListener('focusin', openShell);
+    shell.addEventListener('focusout', function(ev){ if(!shell.contains(ev.relatedTarget)) closeShellSoon(); });
+
+    items.forEach(function(item){
+      var key = item.getAttribute('data-item-key');
+      var data = filteredMenu.find(function(entry){ return entry.key === key; });
       var main = item.querySelector('.kad-shell-main');
-      var flyout = item.querySelector('.kad-shell-flyout');
-      var hasFlyout = !!flyout;
-      if(!main || !hasFlyout) return;
-
-      function showItem(){
-        closeAllItems(item);
-        item.classList.add('is-open');
-        main.setAttribute('aria-expanded', 'true');
-        openShell();
-        layoutFlyout(item, flyout);
+      if(!main) return;
+      if(item.getAttribute('data-has-submenu') === '1'){
+        item.addEventListener('mouseenter', function(){ openShell(); showSubmenu(item, data); });
+        main.addEventListener('focus', function(){ openShell(); showSubmenu(item, data); });
+        main.addEventListener('click', function(ev){ ev.preventDefault(); openShell(); if(activeItem === item){ hideSubmenu(); } else { showSubmenu(item, data); } });
+      } else {
+        item.addEventListener('mouseenter', function(){ openShell(); hideSubmenu(); });
       }
-
-      function hideItem(){
-        if(isTouch) return;
-        window.setTimeout(function(){
-          if(!item.matches(':hover') && !item.contains(document.activeElement)){
-            item.classList.remove('is-open');
-            main.setAttribute('aria-expanded', 'false');
-              if(!root.querySelector('.kad-shell-item.is-open')){
-              resetExpandedShell();
-            }
-          }
-        }, 120);
-      }
-
-      item.addEventListener('mouseenter', function(){ if(!isTouch) showItem(); });
-      main.addEventListener('click', function(ev){
-        ev.preventDefault();
-        var open = item.classList.contains('is-open');
-        closeAllItems();
-        if(!open){
-          item.classList.add('is-open');
-          main.setAttribute('aria-expanded', 'true');
-          openShell();
-          layoutFlyout(item, flyout);
-        }else{
-          item.classList.remove('is-open');
-          main.setAttribute('aria-expanded', 'false');
-          resetExpandedShell();
-        }
-      });
     });
+
+    var logoutBtn = root.querySelector('.kad-shell-logout');
+    if(logoutBtn){
+      logoutBtn.addEventListener('click', async function(){
+        try{
+          if(window.ERPAuth && typeof window.ERPAuth.signOut === 'function'){
+            await window.ERPAuth.signOut({ redirectTo:'login.html' });
+            return;
+          }
+        }catch(_){ }
+        try{
+          if(window.__SUPA__ && window.__SUPA__.auth && typeof window.__SUPA__.auth.signOut === 'function'){
+            await window.__SUPA__.auth.signOut();
+          }
+        }catch(_){ }
+        window.location.href = 'login.html';
+      });
+    }
 
     window.addEventListener('resize', function(){
-      var openItem = root.querySelector('.kad-shell-item.is-open');
-      if(openItem){
-        var flyout = openItem.querySelector('.kad-shell-flyout');
-        if(flyout) layoutFlyout(openItem, flyout);
-      }else{
-        resetExpandedShell();
+      if(activeItem){
+        var key = activeItem.getAttribute('data-item-key');
+        var data = filteredMenu.find(function(entry){ return entry.key === key; });
+        if(data) document.body.style.setProperty('--kad-shell-panel-width', estimatePanelWidth(data) + 'px');
       }
     });
-
-    root.addEventListener('click', function(ev){
-      var link = ev.target.closest('a[data-kad-nav-link]');
-      if(!link) return;
-      var href = link.getAttribute('href');
-      if(!href || href === '#' || link.target === '_blank' || ev.metaKey || ev.ctrlKey || ev.shiftKey || ev.altKey) return;
-      if(/^https?:/i.test(href) && !href.startsWith(window.location.origin)) return;
-      ev.preventDefault();
-      navigateWithPulse(href, ev.clientX, ev.clientY, transition);
-    });
-
-    root.addEventListener('click', function(ev){
-      var logoutBtn = ev.target.closest('[data-kad-logout]');
-      if(!logoutBtn) return;
-      ev.preventDefault();
-      handleLogout(logoutBtn);
-    });
-
-    document.addEventListener('keydown', function(ev){
-      if(ev.key === 'Escape'){
-        root.classList.remove('is-open');
-        closeAllItems();
-        syncBodyState(root);
-      }
-    });
-  }
-
-
-  function handleLogout(button){
-    if(button) button.disabled = true;
-    var finish = function(){ window.location.href = 'login.html'; };
-    try{
-      if(window.ERPAuth && typeof window.ERPAuth.signOut === 'function'){
-        Promise.resolve(window.ERPAuth.signOut({ redirectTo:'login.html' })).catch(finish);
-        return;
-      }
-      if(window.supabase && typeof window.supabase.createClient === 'function' && window.ERPAuth && typeof window.ERPAuth.getSupabaseClient === 'function'){
-        Promise.resolve(window.ERPAuth.getSupabaseClient().auth.signOut()).then(finish).catch(finish);
-        return;
-      }
-    }catch(_){ }
-    finish();
-  }
-
-  function navigateWithPulse(href, clientX, clientY, transition){
-    if(!transition) return window.location.href = href;
-    var x = typeof clientX === 'number' ? clientX : window.innerWidth - 72;
-    var y = typeof clientY === 'number' ? clientY : window.innerHeight / 2;
-    transition.style.setProperty('--kad-x', x + 'px');
-    transition.style.setProperty('--kad-y', y + 'px');
-    transition.classList.remove('is-active');
-    void transition.offsetWidth;
-    transition.classList.add('is-active');
-    window.setTimeout(function(){
-      window.location.href = href;
-    }, 470);
   }
 
   if(document.readyState === 'loading'){
     document.addEventListener('DOMContentLoaded', mount, { once:true });
-  }else{
+  } else {
     mount();
   }
 })();
