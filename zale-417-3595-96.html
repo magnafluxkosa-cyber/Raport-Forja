@@ -324,6 +324,7 @@
     let supa = null;
     let docColumnsCache = null;
     let saveTimer = null;
+    let refreshTimer = null;
     let lastWakeRefreshAt = 0;
     let selectedRowId = '';
     let authState = null;
@@ -1184,23 +1185,27 @@
         const previousStock = getInventarPreviousMonthTotals(state.inventarRows, year, month);
         const externalRebut2307 = toInt(externalRebutTotals.get(key2307));
         const externalRebut2308 = toInt(externalRebutTotals.get(key2308));
-        let remaining2307 = toInt(monthlyTotals.get(key2307)) + toInt(previousStock.p2307);
-        let remaining2308 = toInt(monthlyTotals.get(key2308)) + toInt(previousStock.p2308);
+        let remaining2307 = Math.max(0, toInt(monthlyTotals.get(key2307)) + toInt(previousStock.p2307) - externalRebut2307);
+        let remaining2308 = Math.max(0, toInt(monthlyTotals.get(key2308)) + toInt(previousStock.p2308) - externalRebut2308);
+        const seenTransportPack = new Set();
         monthRows.forEach((base, idx) => {
-          const pack = packTotals.get(normalizeTransportKey(base.nr_transport));
+          const transportKey = normalizeTransportKey(base.nr_transport);
+          const pack = packTotals.get(transportKey);
           const hasPack = !!pack;
+          const applyPackOnThisRow = hasPack && transportKey && !seenTransportPack.has(transportKey);
+          if(transportKey) seenTransportPack.add(transportKey);
           const forceScriptic1650 = isScripticUntilFeb2026(year, month);
-          const default2307 = forceScriptic1650 ? TRUCK_SIZE : ((has2307 || previousStock.p2307) ? Math.min(TRUCK_SIZE, remaining2307) : toInt(base.forjat_2307));
-          const default2308 = forceScriptic1650 ? TRUCK_SIZE : ((has2308 || previousStock.p2308) ? Math.min(TRUCK_SIZE, remaining2308) : toInt(base.forjat_2308));
+          const default2307 = forceScriptic1650 ? TRUCK_SIZE : ((has2307 || previousStock.p2307 || externalRebut2307) ? Math.min(TRUCK_SIZE, remaining2307) : toInt(base.forjat_2307));
+          const default2308 = forceScriptic1650 ? TRUCK_SIZE : ((has2308 || previousStock.p2308 || externalRebut2308) ? Math.min(TRUCK_SIZE, remaining2308) : toInt(base.forjat_2308));
           const forjat2307 = base.manual_forjat_2307 != null ? toInt(base.manual_forjat_2307) : default2307;
           const forjat2308 = base.manual_forjat_2308 != null ? toInt(base.manual_forjat_2308) : default2308;
-          remaining2307 = Math.max(0, remaining2307 - forjat2307);
-          remaining2308 = Math.max(0, remaining2308 - forjat2308);
+          remaining2307 = Math.max(0, remaining2307 - Math.max(0, forjat2307));
+          remaining2308 = Math.max(0, remaining2308 - Math.max(0, forjat2308));
 
-          const ambalat2307 = hasPack ? toInt(pack.p2307) : 0;
-          const ambalat2308 = hasPack ? toInt(pack.p2308) : 0;
-          const autoTratate2307 = hasPack ? ambalat2307 : toInt(base.tratate_2307);
-          const autoTratate2308 = hasPack ? ambalat2308 : toInt(base.tratate_2308);
+          const ambalat2307 = applyPackOnThisRow ? toInt(pack.p2307) : 0;
+          const ambalat2308 = applyPackOnThisRow ? toInt(pack.p2308) : 0;
+          const autoTratate2307 = applyPackOnThisRow ? ambalat2307 : toInt(base.tratate_2307);
+          const autoTratate2308 = applyPackOnThisRow ? ambalat2308 : toInt(base.tratate_2308);
           const tratate2307 = base.manual_tratate_2307 != null ? toInt(base.manual_tratate_2307) : autoTratate2307;
           const tratate2308 = base.manual_tratate_2308 != null ? toInt(base.manual_tratate_2308) : autoTratate2308;
 
@@ -1269,12 +1274,14 @@
       const pack2308 = filtered.reduce((sum,row) => sum + toInt(row.ambalat_2308), 0);
       let totalGood2307 = 0;
       let totalGood2308 = 0;
+      const monthlyTotals = getMonthlyTotals(state.forjateRows);
+      const externalRebutTotals = getMonthlyExternalRebutTotals(state.magnafluxRows, state.rebutPmRows);
       const monthKeys = new Set(filtered.map(row => `${normalizeYear(row.an)}|${normalizeMonthName(row.luna)}`));
       monthKeys.forEach(monthKey => {
         const [year, month] = monthKey.split('|');
         const previousStock = getInventarPreviousMonthTotals(state.inventarRows, year, month);
-        totalGood2307 += toInt(previousStock.p2307) + toInt(getMonthlyTotals(state.forjateRows).get(`${year}|${month}|417-3595`));
-        totalGood2308 += toInt(previousStock.p2308) + toInt(getMonthlyTotals(state.forjateRows).get(`${year}|${month}|417-3596`));
+        totalGood2307 += Math.max(0, toInt(previousStock.p2307) + toInt(monthlyTotals.get(`${year}|${month}|417-3595`)) - toInt(externalRebutTotals.get(`${year}|${month}|417-3595`)));
+        totalGood2308 += Math.max(0, toInt(previousStock.p2308) + toInt(monthlyTotals.get(`${year}|${month}|417-3596`)) - toInt(externalRebutTotals.get(`${year}|${month}|417-3596`)));
       });
       const stock2307 = totalGood2307 - state.packRows.filter(r => r.reper === '417-3595').reduce((s,r)=> s + toInt(r.buc), 0);
       const stock2308 = totalGood2308 - state.packRows.filter(r => r.reper === '417-3596').reduce((s,r)=> s + toInt(r.buc), 0);
@@ -1676,6 +1683,13 @@
       if(now - lastWakeRefreshAt < WAKE_REFRESH_DEBOUNCE_MS) return;
       lastWakeRefreshAt = now;
       refreshAll({ showBadge:false });
+    }
+    function startRefreshTimer() {
+      if(refreshTimer) clearInterval(refreshTimer);
+      refreshTimer = setInterval(() => {
+        if(document.hidden) return;
+        refreshAll({ showBadge:false });
+      }, 60000);
     }
     async function init() {
       populateFormMonthOptions();
