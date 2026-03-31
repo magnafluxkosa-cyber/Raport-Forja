@@ -1,3 +1,4 @@
+
 (function(){
   'use strict';
 
@@ -238,6 +239,175 @@
         }).join('');
   }
 
+  function parseColor(value){
+    if(!value) return null;
+    value = String(value).trim();
+    var m;
+    if((m = value.match(/^rgba?\(([^)]+)\)$/i))){
+      var parts = m[1].split(',').map(function(v){ return parseFloat(v.trim()); });
+      if(parts.length >= 3){
+        return { r: clamp(parts[0],0,255), g: clamp(parts[1],0,255), b: clamp(parts[2],0,255), a: clamp(parts.length > 3 ? parts[3] : 1, 0, 1) };
+      }
+    }
+    if((m = value.match(/^#([0-9a-f]{3,8})$/i))){
+      var hex = m[1];
+      if(hex.length === 3 || hex.length === 4){
+        return {
+          r: parseInt(hex[0] + hex[0], 16),
+          g: parseInt(hex[1] + hex[1], 16),
+          b: parseInt(hex[2] + hex[2], 16),
+          a: hex.length === 4 ? parseInt(hex[3] + hex[3], 16) / 255 : 1
+        };
+      }
+      if(hex.length === 6 || hex.length === 8){
+        return {
+          r: parseInt(hex.slice(0,2), 16),
+          g: parseInt(hex.slice(2,4), 16),
+          b: parseInt(hex.slice(4,6), 16),
+          a: hex.length === 8 ? parseInt(hex.slice(6,8), 16) / 255 : 1
+        };
+      }
+    }
+    return null;
+  }
+
+  function clamp(v,min,max){ return Math.max(min, Math.min(max, Number(v) || 0)); }
+
+  function rgba(color, alpha){
+    if(!color) return '';
+    var a = alpha == null ? (color.a == null ? 1 : color.a) : alpha;
+    return 'rgba(' + Math.round(color.r) + ',' + Math.round(color.g) + ',' + Math.round(color.b) + ',' + clamp(a,0,1) + ')';
+  }
+
+  function mix(a,b,t){
+    if(!a && !b) return { r:244, g:246, b:251, a:1 };
+    if(!a) return b;
+    if(!b) return a;
+    t = clamp(t,0,1);
+    return {
+      r: a.r + (b.r - a.r) * t,
+      g: a.g + (b.g - a.g) * t,
+      b: a.b + (b.b - a.b) * t,
+      a: (a.a == null ? 1 : a.a) + (((b.a == null ? 1 : b.a) - (a.a == null ? 1 : a.a)) * t)
+    };
+  }
+
+  function luminance(c){
+    if(!c) return 1;
+    function channel(v){
+      v = clamp(v / 255, 0, 1);
+      return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+    }
+    return 0.2126 * channel(c.r) + 0.7152 * channel(c.g) + 0.0722 * channel(c.b);
+  }
+
+  function isTransparent(color){
+    return !color || color.a === 0;
+  }
+
+  function readColor(el, prop){
+    if(!el) return null;
+    var color = parseColor(window.getComputedStyle(el)[prop]);
+    return isTransparent(color) ? null : color;
+  }
+
+  function isVisible(el){
+    if(!el || !el.getBoundingClientRect) return false;
+    var cs = window.getComputedStyle(el);
+    if(cs.display === 'none' || cs.visibility === 'hidden' || Number(cs.opacity) === 0) return false;
+    var rect = el.getBoundingClientRect();
+    return rect.width > 6 && rect.height > 6;
+  }
+
+  function pickFirst(selectors, excludeInsideShell){
+    var list = document.querySelectorAll(selectors);
+    for(var i=0;i<list.length;i++){
+      var el = list[i];
+      if(excludeInsideShell && el.closest && el.closest('#kadNavShellRoot')) continue;
+      if(isVisible(el)) return el;
+    }
+    return null;
+  }
+
+  function applyAdaptivePalette(){
+    var root = document.documentElement;
+    var body = document.body;
+    if(!body) return;
+
+    var bg = readColor(body, 'backgroundColor') || readColor(document.documentElement, 'backgroundColor');
+    var panelEl = pickFirst('.box,.panel,.card,.toolbar,.topbar,.header,.wrap,.container,.controls,.table-wrap,.modal,.dialog,.sheet,.content', true);
+    var panelBg = readColor(panelEl, 'backgroundColor');
+    var btnEl = pickFirst('button,.btn,a.btn,.back-btn,.btn-soft,.btnMenu,.secondary,.primary,[class*="btn"]', true);
+    var accent = readColor(btnEl, 'backgroundColor') || readColor(btnEl, 'borderTopColor');
+    var text = readColor(body, 'color') || readColor(panelEl, 'color') || { r:29, g:47, b:82, a:1 };
+
+    var base = panelBg || bg || { r:244, g:246, b:251, a:1 };
+    var light = luminance(base) > 0.56;
+    var accentBase = accent || text;
+
+    var shellBg, shellBg2, border, divider, shellText, muted, surface, surfaceHover, surfaceBorder, caret, scroll, shine1, shine2, shadow;
+
+    if(light){
+      shellText = luminance(text) > 0.6 ? { r:29, g:47, b:82, a:1 } : text;
+      shellBg = mix(base, accentBase, 0.08);
+      shellBg2 = mix(base, accentBase, 0.16);
+      border = mix(shellText, base, 0.58);
+      divider = mix(shellText, base, 0.72);
+      surface = mix(base, { r:255, g:255, b:255, a:1 }, 0.68);
+      surfaceHover = mix(surface, accentBase, 0.06);
+      surfaceBorder = mix(shellText, base, 0.74);
+      caret = mix(shellText, accentBase, 0.18);
+      scroll = mix(shellText, base, 0.7);
+      muted = shellText;
+      shine1 = { r:255, g:255, b:255, a:0.38 };
+      shine2 = { r:255, g:255, b:255, a:0.10 };
+      shadow = '0 18px 42px rgba(16,24,40,.16)';
+      root.style.setProperty('--kad-shell-bg', rgba(shellBg, 0.94));
+      root.style.setProperty('--kad-shell-bg-2', rgba(shellBg2, 0.97));
+      root.style.setProperty('--kad-shell-border', rgba(border, 0.26));
+      root.style.setProperty('--kad-shell-divider', rgba(divider, 0.18));
+      root.style.setProperty('--kad-shell-text', rgba(shellText, 1));
+      root.style.setProperty('--kad-shell-muted', rgba(muted, 0.68));
+      root.style.setProperty('--kad-shell-surface', rgba(surface, 0.72));
+      root.style.setProperty('--kad-shell-surface-hover', rgba(surfaceHover, 0.9));
+      root.style.setProperty('--kad-shell-surface-border', rgba(surfaceBorder, 0.2));
+      root.style.setProperty('--kad-shell-caret', rgba(caret, 0.82));
+      root.style.setProperty('--kad-shell-scroll', rgba(scroll, 0.26));
+      root.style.setProperty('--kad-shell-shine-1', rgba(shine1, 1));
+      root.style.setProperty('--kad-shell-shine-2', rgba(shine2, 1));
+      root.style.setProperty('--kad-shell-shadow', shadow);
+    } else {
+      shellText = luminance(text) < 0.45 ? { r:236, g:242, b:255, a:1 } : text;
+      shellBg = mix(base, accentBase, 0.16);
+      shellBg2 = mix(base, accentBase, 0.28);
+      border = mix(shellText, base, 0.75);
+      divider = mix(shellText, base, 0.82);
+      surface = mix(base, { r:255, g:255, b:255, a:1 }, 0.08);
+      surfaceHover = mix(surface, { r:255, g:255, b:255, a:1 }, 0.06);
+      surfaceBorder = mix(shellText, base, 0.82);
+      caret = mix(shellText, accentBase, 0.16);
+      scroll = mix(shellText, base, 0.8);
+      muted = shellText;
+      shine1 = { r:255, g:255, b:255, a:0.14 };
+      shine2 = { r:255, g:255, b:255, a:0.05 };
+      shadow = '0 18px 42px rgba(0,0,0,.28)';
+      root.style.setProperty('--kad-shell-bg', rgba(shellBg, 0.9));
+      root.style.setProperty('--kad-shell-bg-2', rgba(shellBg2, 0.95));
+      root.style.setProperty('--kad-shell-border', rgba(border, 0.24));
+      root.style.setProperty('--kad-shell-divider', rgba(divider, 0.14));
+      root.style.setProperty('--kad-shell-text', rgba(shellText, 1));
+      root.style.setProperty('--kad-shell-muted', rgba(muted, 0.72));
+      root.style.setProperty('--kad-shell-surface', rgba(surface, 0.22));
+      root.style.setProperty('--kad-shell-surface-hover', rgba(surfaceHover, 0.32));
+      root.style.setProperty('--kad-shell-surface-border', rgba(surfaceBorder, 0.22));
+      root.style.setProperty('--kad-shell-caret', rgba(caret, 0.84));
+      root.style.setProperty('--kad-shell-scroll', rgba(scroll, 0.24));
+      root.style.setProperty('--kad-shell-shine-1', rgba(shine1, 1));
+      root.style.setProperty('--kad-shell-shine-2', rgba(shine2, 1));
+      root.style.setProperty('--kad-shell-shadow', shadow);
+    }
+  }
+
   function mount(){
     if(document.getElementById('kadNavShellRoot')) return;
     ensureContentWrapper();
@@ -252,7 +422,10 @@
       + '</aside>';
     document.body.appendChild(root);
     document.body.classList.add('kad-shell-mounted');
+    applyAdaptivePalette();
     bind(root);
+    window.setTimeout(applyAdaptivePalette, 80);
+    window.setTimeout(applyAdaptivePalette, 600);
   }
 
   function bind(root){
@@ -328,12 +501,19 @@
     }
 
     window.addEventListener('resize', function(){
+      applyAdaptivePalette();
       if(activeItem){
         var key = activeItem.getAttribute('data-item-key');
         var data = filteredMenu.find(function(entry){ return entry.key === key; });
         if(data) document.body.style.setProperty('--kad-shell-panel-width', estimatePanelWidth(data) + 'px');
       }
     });
+
+    if(window.MutationObserver){
+      var mo = new MutationObserver(function(){ applyAdaptivePalette(); });
+      mo.observe(document.documentElement, { attributes:true, attributeFilter:['style','class'] });
+      mo.observe(document.body, { attributes:true, attributeFilter:['style','class'] });
+    }
   }
 
   if(document.readyState === 'loading'){
