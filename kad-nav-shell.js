@@ -80,7 +80,7 @@
     { key:'helper-data', label:'HELPER-DATA', href:'helper-data.html' },
     { key:'helper-acl', label:'HELPER-ACL', href:'helper-acl.html' }
   ];
-  
+  if(document.querySelector('a[href="helper.html"],button[data-page="helper"],#helperPage')) MENU.splice(MENU.length-2,0,{ key:'helper', label:'HELPER', href:'helper.html' });
 
   function escapeHtml(str){ return String(str == null ? '' : str).replace(/[&<>"']/g, function(ch){ return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[ch]; }); }
   function currentKey(){ return currentPath.replace(/\.html$/i,''); }
