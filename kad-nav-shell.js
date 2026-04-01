@@ -348,20 +348,22 @@
     var shellBg, shellBg2, border, divider, shellText, muted, surface, surfaceHover, surfaceBorder, caret, scroll, shine1, shine2, shadow;
 
     if(light){
+      var violetGlass = { r:146, g:118, b:210, a:1 };
+      var violetGlassDeep = { r:124, g:95, b:192, a:1 };
       shellText = luminance(text) > 0.6 ? { r:29, g:47, b:82, a:1 } : text;
-      shellBg = mix(base, accentBase, 0.08);
-      shellBg2 = mix(base, accentBase, 0.16);
-      border = mix(shellText, base, 0.58);
-      divider = mix(shellText, base, 0.72);
-      surface = mix(base, { r:255, g:255, b:255, a:1 }, 0.68);
-      surfaceHover = mix(surface, accentBase, 0.06);
-      surfaceBorder = mix(shellText, base, 0.74);
-      caret = mix(shellText, accentBase, 0.18);
-      scroll = mix(shellText, base, 0.7);
+      shellBg = mix(base, violetGlass, 0.22);
+      shellBg2 = mix(base, violetGlassDeep, 0.34);
+      border = mix(shellText, violetGlass, 0.68);
+      divider = mix(shellText, violetGlass, 0.80);
+      surface = mix(base, { r:255, g:255, b:255, a:1 }, 0.62);
+      surfaceHover = mix(surface, violetGlass, 0.10);
+      surfaceBorder = mix(shellText, violetGlass, 0.78);
+      caret = mix(shellText, violetGlass, 0.26);
+      scroll = mix(shellText, violetGlass, 0.76);
       muted = shellText;
-      shine1 = { r:255, g:255, b:255, a:0.38 };
-      shine2 = { r:255, g:255, b:255, a:0.10 };
-      shadow = '0 18px 42px rgba(16,24,40,.16)';
+      shine1 = { r:255, g:255, b:255, a:0.34 };
+      shine2 = { r:196, g:178, b:241, a:0.18 };
+      shadow = '0 20px 46px rgba(58,41,96,.18)';
       root.style.setProperty('--kad-shell-bg', rgba(shellBg, 0.94));
       root.style.setProperty('--kad-shell-bg-2', rgba(shellBg2, 0.97));
       root.style.setProperty('--kad-shell-border', rgba(border, 0.26));
