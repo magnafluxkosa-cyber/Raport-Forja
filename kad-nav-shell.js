@@ -418,7 +418,7 @@
       + '<div class="kad-shell-peek-label">MENIU</div>'
       + '<div class="kad-shell-header"><div class="kad-shell-mini">K.A.D · Navigare</div><div class="kad-shell-brand">K.A.D</div><div class="kad-shell-current">'+escapeHtml(getCurrentLabel())+'</div></div>'
       + '<div class="kad-shell-layout"><nav class="kad-shell-navcol">'+filteredMenu.map(buildItem).join('')+'</nav><div class="kad-shell-subpanel"></div></div>'
-      + '<div class="kad-shell-footer"><button type="button" class="kad-shell-logout">Logout</button><div class="kad-shell-note">hover la marginea stângă</div></div>'
+      + '<div class="kad-shell-footer"><button type="button" class="kad-shell-logout">Logout</button><div class="kad-shell-note">click pe marginea stângă</div></div>'
       + '</aside>';
     document.body.appendChild(root);
     document.body.classList.add('kad-shell-mounted');
@@ -433,13 +433,17 @@
     var sensor = root.querySelector('.kad-shell-edge-sensor');
     var subpanel = root.querySelector('.kad-shell-subpanel');
     var items = Array.prototype.slice.call(root.querySelectorAll('.kad-shell-item'));
-    var closeTimer = 0;
     var activeItem = null;
 
-    function clearClose(){ window.clearTimeout(closeTimer); }
-    function openShell(){ clearClose(); root.classList.add('is-open'); document.body.classList.add('kad-shell-open'); }
-    function closeShellSoon(){ clearClose(); closeTimer = window.setTimeout(function(){ closeShell(); }, 130); }
-    function closeShell(){ clearClose(); hideSubmenu(); root.classList.remove('is-open'); document.body.classList.remove('kad-shell-open'); }
+    function openShell(){ root.classList.add('is-open'); document.body.classList.add('kad-shell-open'); }
+    function closeShell(){ hideSubmenu(); root.classList.remove('is-open'); document.body.classList.remove('kad-shell-open'); }
+    function toggleShell(){
+      if(root.classList.contains('is-open')){
+        closeShell();
+      } else {
+        openShell();
+      }
+    }
     function hideSubmenu(){
       activeItem = null;
       items.forEach(function(item){ item.classList.remove('is-open'); var btn = item.querySelector('button.kad-shell-main'); if(btn) btn.setAttribute('aria-expanded','false'); });
@@ -462,11 +466,11 @@
       document.body.classList.add('kad-shell-submenu');
     }
 
-    sensor.addEventListener('mouseenter', openShell);
-    shell.addEventListener('mouseenter', openShell);
-    shell.addEventListener('mouseleave', closeShellSoon);
-    shell.addEventListener('focusin', openShell);
-    shell.addEventListener('focusout', function(ev){ if(!shell.contains(ev.relatedTarget)) closeShellSoon(); });
+    sensor.addEventListener('click', function(ev){
+      ev.preventDefault();
+      ev.stopPropagation();
+      toggleShell();
+    });
 
     items.forEach(function(item){
       var key = item.getAttribute('data-item-key');
@@ -474,11 +478,16 @@
       var main = item.querySelector('.kad-shell-main');
       if(!main) return;
       if(item.getAttribute('data-has-submenu') === '1'){
-        item.addEventListener('mouseenter', function(){ openShell(); showSubmenu(item, data); });
-        main.addEventListener('focus', function(){ openShell(); showSubmenu(item, data); });
-        main.addEventListener('click', function(ev){ ev.preventDefault(); openShell(); if(activeItem === item){ hideSubmenu(); } else { showSubmenu(item, data); } });
-      } else {
-        item.addEventListener('mouseenter', function(){ openShell(); hideSubmenu(); });
+        main.addEventListener('click', function(ev){
+          ev.preventDefault();
+          ev.stopPropagation();
+          openShell();
+          if(activeItem === item){
+            hideSubmenu();
+          } else {
+            showSubmenu(item, data);
+          }
+        });
       }
     });
 
@@ -499,6 +508,18 @@
         window.location.href = 'login.html';
       });
     }
+
+    document.addEventListener('click', function(ev){
+      if(!root.classList.contains('is-open')) return;
+      if(root.contains(ev.target)) return;
+      closeShell();
+    });
+
+    document.addEventListener('keydown', function(ev){
+      if(ev.key === 'Escape' && root.classList.contains('is-open')){
+        closeShell();
+      }
+    });
 
     window.addEventListener('resize', function(){
       applyAdaptivePalette();
