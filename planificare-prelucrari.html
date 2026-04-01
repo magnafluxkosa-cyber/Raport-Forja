@@ -81,7 +81,8 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
 <div class="title-row">
 <div class="title">PLANIFICARE PRELUCRĂRI</div>
 <div class="info-chip">Model Excel</div>
-<button class="action-btn" id="btnAddWeek" type="button">Adaugă săptămână</button></div>
+<button class="action-btn" id="btnAddWeek" type="button">Adaugă săptămână</button>
+<button class="action-btn" id="btnToggleWeek" type="button">Ascunde/Arată săptămână</button></div>
 <div class="subtitle">Structură preluată direct din foaia Excel „Planificare Prelucrari”. Aspectul tabelului este păstrat cât mai aproape de modelul original.</div>
 </div>
 </header>
@@ -99,6 +100,7 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
 
   const DOC_KEY = 'planificare-prelucrari-v1';
   const LOCAL_CACHE_KEY = 'kad-planificare-prelucrari-cache-v1';
+  const SCROLL_STATE_KEY = 'kad-planificare-prelucrari-scroll-v1';
   const SAVE_DEBOUNCE_MS = 140;
   const REMOTE_POLL_MS = 2500;
   const WEEK_SIZE = 7;
@@ -106,24 +108,28 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
   const table = document.getElementById('planificareTable');
   const sheetScroll = document.getElementById('sheetScroll');
   const addWeekBtn = document.getElementById('btnAddWeek');
-  if(!table || !sheetScroll || !addWeekBtn) return;
+  const toggleWeekBtn = document.getElementById('btnToggleWeek');
+  if(!table || !sheetScroll || !addWeekBtn || !toggleWeekBtn) return;
 
   const editableSelector = 'td,th';
   const state = {
     weeksAdded: 0,
     cells: {},
+    hiddenWeeks: [],
     currentSignature: '',
     lastSavedSignature: '',
     lastAppliedRemoteSignature: '',
     clientId: createClientId(),
     saveTimer: 0,
     pollTimer: 0,
+    scrollTimer: 0,
     channel: null,
     saving: false,
     pendingSave: false,
     editingCell: null,
     supa: null,
-    bootstrapped: false
+    bootstrapped: false,
+    pendingScrollState: null
   };
   let cellRegistry = Object.create(null);
 
@@ -171,7 +177,8 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
       const value = normalizeSpaces(src[key]);
       if(value) cells[key] = value;
     });
-    return JSON.stringify({ weeksAdded: Math.max(0, Number(payload && payload.weeksAdded || 0) || 0), cells });
+    const hiddenWeeks = Array.from(new Set(((payload && payload.hiddenWeeks) || []).map((value) => Number(value)).filter((value) => Number.isFinite(value) && value > 0))).sort((a,b) => a - b);
+    return JSON.stringify({ weeksAdded: Math.max(0, Number(payload && payload.weeksAdded || 0) || 0), hiddenWeeks, cells });
   }
   function loadLocalCache(){
     try{
@@ -181,6 +188,91 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
   }
   function saveLocalCache(payload){
     try{ localStorage.setItem(LOCAL_CACHE_KEY, JSON.stringify(payload)); }catch(_err){}
+  }
+  function readSavedScroll(){
+    const sources = [];
+    try{ sources.push(sessionStorage.getItem(SCROLL_STATE_KEY)); }catch(_err){}
+    try{ sources.push(localStorage.getItem(SCROLL_STATE_KEY)); }catch(_err){}
+    for(const raw of sources){
+      if(!raw) continue;
+      try{
+        const parsed = JSON.parse(raw);
+        if(parsed && typeof parsed === 'object'){
+          return { left: Math.max(0, Number(parsed.left || 0) || 0), top: Math.max(0, Number(parsed.top || 0) || 0) };
+        }
+      }catch(_err){}
+    }
+    return null;
+  }
+  function persistScrollState(){
+    const payload = JSON.stringify({ left: Math.max(0, sheetScroll.scrollLeft || 0), top: Math.max(0, sheetScroll.scrollTop || 0), at: Date.now() });
+    try{ sessionStorage.setItem(SCROLL_STATE_KEY, payload); }catch(_err){}
+    try{ localStorage.setItem(SCROLL_STATE_KEY, payload); }catch(_err){}
+  }
+  function schedulePersistScroll(){
+    clearTimeout(state.scrollTimer);
+    state.scrollTimer = setTimeout(persistScrollState, 40);
+  }
+  function restoreScrollState(){
+    const snap = state.pendingScrollState || readSavedScroll();
+    if(!snap) return;
+    state.pendingScrollState = snap;
+    const apply = () => {
+      sheetScroll.scrollLeft = Math.max(0, snap.left || 0);
+      sheetScroll.scrollTop = Math.max(0, snap.top || 0);
+    };
+    requestAnimationFrame(() => requestAnimationFrame(apply));
+  }
+  function getWeekHeaderCells(){
+    const headerRow = table.rows[0];
+    if(!headerRow) return [];
+    return Array.from(headerRow.cells).slice(1);
+  }
+  function getWeekColumnStart(weekHeaderCell){
+    const start = Number(weekHeaderCell && weekHeaderCell.dataset && weekHeaderCell.dataset.gridCol || 0);
+    return start > 0 ? start : 0;
+  }
+  function getWeekColumns(weekHeaderCell){
+    const start = getWeekColumnStart(weekHeaderCell);
+    if(!start) return [];
+    const span = Number(weekHeaderCell.colSpan || WEEK_SIZE) || WEEK_SIZE;
+    return Array.from({ length: span }, (_, idx) => start + idx);
+  }
+  function collectExistingWeekNumbers(){
+    return getWeekHeaderCells().map((cell) => {
+      const match = normalizeSpaces(cell.textContent).match(/Week\s+(\d+)/i);
+      return match ? Number(match[1]) : null;
+    }).filter((value) => Number.isFinite(value) && value > 0);
+  }
+  function applyHiddenWeeks(){
+    const hidden = new Set((state.hiddenWeeks || []).map((value) => Number(value)).filter((value) => Number.isFinite(value) && value > 0));
+    const cols = Array.from(table.querySelectorAll('colgroup col'));
+    getWeekHeaderCells().forEach((cell) => {
+      const match = normalizeSpaces(cell.textContent).match(/Week\s+(\d+)/i);
+      const weekNo = match ? Number(match[1]) : null;
+      const isHidden = !!(weekNo && hidden.has(weekNo));
+      cell.style.display = isHidden ? 'none' : '';
+      getWeekColumns(cell).forEach((colNo) => {
+        const colEl = cols[colNo - 1];
+        if(colEl) colEl.style.display = isHidden ? 'none' : '';
+      });
+    });
+  }
+  function toggleWeekVisibilityByNumber(weekNumber){
+    const clean = Number(weekNumber);
+    if(!Number.isFinite(clean) || clean <= 0) return false;
+    const existing = collectExistingWeekNumbers();
+    if(!existing.includes(clean)) return null;
+    const hidden = new Set((state.hiddenWeeks || []).map((value) => Number(value)).filter((value) => Number.isFinite(value) && value > 0));
+    if(hidden.has(clean)) hidden.delete(clean);
+    else hidden.add(clean);
+    state.hiddenWeeks = Array.from(hidden).sort((a,b) => a - b);
+    applyHiddenWeeks();
+    state.currentSignature = buildSignature({ weeksAdded: state.weeksAdded, hiddenWeeks: state.hiddenWeeks, cells: state.cells });
+    saveLocalCache(buildPayload());
+    scheduleSave();
+    schedulePersistScroll();
+    return hidden.has(clean) ? 'hidden' : 'shown';
   }
   function getCellKey(cell){
     return (cell.dataset.gridRow || '0') + ':' + (cell.dataset.gridCol || '0');
@@ -209,7 +301,7 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
     const defaultValue = normalizeSpaces(cell.dataset.defaultRaw || '');
     if(!value || value === defaultValue) delete state.cells[key];
     else state.cells[key] = value;
-    state.currentSignature = buildSignature({ weeksAdded: state.weeksAdded, cells: state.cells });
+    state.currentSignature = buildSignature({ weeksAdded: state.weeksAdded, hiddenWeeks: state.hiddenWeeks, cells: state.cells });
   }
   function annotateGrid(){
     cellRegistry = Object.create(null);
@@ -309,6 +401,8 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
     hydrateCells();
     applyFrozenColumns();
     applyWeekendHighlight();
+    applyHiddenWeeks();
+    restoreScrollState();
   }
   function focusCell(cell){
     if(!cell) return;
@@ -353,6 +447,7 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
       version: 1,
       clientId: state.clientId,
       weeksAdded: state.weeksAdded,
+      hiddenWeeks: Array.from(new Set((state.hiddenWeeks || []).map((value) => Number(value)).filter((value) => Number.isFinite(value) && value > 0))).sort((a,b) => a - b),
       cells: cleanCells,
       editedAt: new Date().toISOString()
     };
@@ -387,24 +482,27 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
     }catch(_err){ return null; }
   }
   function normalizePayload(payload){
-    if(!payload || typeof payload !== 'object') return { weeksAdded: 0, cells: {} };
+    if(!payload || typeof payload !== 'object') return { weeksAdded: 0, hiddenWeeks: [], cells: {} };
     const cells = payload.cells && typeof payload.cells === 'object' ? payload.cells : {};
     const clean = {};
     Object.keys(cells).forEach((key) => {
       const value = normalizeSpaces(cells[key]);
       if(value) clean[key] = value;
     });
-    return { weeksAdded: Math.max(0, Number(payload.weeksAdded || 0) || 0), cells: clean, clientId: payload.clientId || '' };
+    const hiddenWeeks = Array.from(new Set((payload.hiddenWeeks || []).map((value) => Number(value)).filter((value) => Number.isFinite(value) && value > 0))).sort((a,b) => a - b);
+    return { weeksAdded: Math.max(0, Number(payload.weeksAdded || 0) || 0), hiddenWeeks, cells: clean, clientId: payload.clientId || '' };
   }
   function applyPayload(payload, options){
     const opts = options || {};
     const normalized = normalizePayload(payload);
     const signature = buildSignature(normalized);
     if(!opts.force && signature === state.currentSignature) return;
+    state.pendingScrollState = readSavedScroll();
     while(state.weeksAdded < normalized.weeksAdded){
       addWeekInternal(false, true);
     }
     state.cells = normalized.cells || {};
+    state.hiddenWeeks = normalized.hiddenWeeks || [];
     state.currentSignature = signature;
     if(opts.remote) state.lastAppliedRemoteSignature = signature;
     rebuildVisuals();
@@ -469,7 +567,7 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
     state.weeksAdded += 1;
     rebuildVisuals();
     if(triggerSave){
-      state.currentSignature = buildSignature({ weeksAdded: state.weeksAdded, cells: state.cells });
+      state.currentSignature = buildSignature({ weeksAdded: state.weeksAdded, hiddenWeeks: state.hiddenWeeks, cells: state.cells });
       if(!silent) scheduleSave();
     }
   }
@@ -499,7 +597,7 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
     if(remote){
       const remotePayload = normalizePayload(remote);
       const remoteSig = buildSignature(remotePayload);
-      const localSig = buildSignature({ weeksAdded: state.weeksAdded, cells: state.cells });
+      const localSig = buildSignature({ weeksAdded: state.weeksAdded, hiddenWeeks: state.hiddenWeeks, cells: state.cells });
       if(remoteSig && remoteSig !== localSig){
         applyPayload(remotePayload, { remote: true, force: true });
       }
@@ -545,13 +643,37 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
     if(event.key === 'ArrowLeft' && !event.shiftKey){ event.preventDefault(); cell.blur(); setTimeout(() => focusRelative(cell, 0, -1), 0); }
     if(event.key === 'ArrowRight' && !event.shiftKey){ event.preventDefault(); cell.blur(); setTimeout(() => focusRelative(cell, 0, 1), 0); }
   });
-  addWeekBtn.addEventListener('click', () => addWeekInternal(true, false));
+  addWeekBtn.addEventListener('click', () => {
+    state.pendingScrollState = { left: Math.max(0, sheetScroll.scrollLeft || 0), top: Math.max(0, sheetScroll.scrollTop || 0) };
+    addWeekInternal(true, false);
+    schedulePersistScroll();
+  });
+  toggleWeekBtn.addEventListener('click', () => {
+    const response = window.prompt('Scrie numărul săptămânii pe care vrei să o ascunzi sau să o arăți:', '14');
+    if(response == null) return;
+    const weekNumber = Number(String(response).replace(/[^0-9]/g, ''));
+    const result = toggleWeekVisibilityByNumber(weekNumber);
+    if(result === null){
+      window.alert('Săptămâna ' + response + ' nu există în tabel.');
+      return;
+    }
+    if(result === false){
+      window.alert('Număr de săptămână invalid.');
+      return;
+    }
+  });
+  sheetScroll.addEventListener('scroll', schedulePersistScroll, { passive:true });
+  window.addEventListener('beforeunload', persistScrollState);
+  window.addEventListener('pagehide', persistScrollState);
+  document.addEventListener('visibilitychange', () => { if(document.hidden) persistScrollState(); });
 
   (function boot(){
+    state.pendingScrollState = readSavedScroll();
     rebuildVisuals();
     const local = loadLocalCache();
     if(local) applyPayload(local, { force: true });
-    state.currentSignature = buildSignature({ weeksAdded: state.weeksAdded, cells: state.cells });
+    state.currentSignature = buildSignature({ weeksAdded: state.weeksAdded, hiddenWeeks: state.hiddenWeeks, cells: state.cells });
+    restoreScrollState();
     initCloud();
   })();
 })();
