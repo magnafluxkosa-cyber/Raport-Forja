@@ -69,8 +69,10 @@
       ]
     },
     { key:'group-prelucrari', label:'PRELUCRĂRI MECANICE', sections:[
-      { key:'prelucrari-coming-soon', label:'Secțiune', links:[
-        { key:'prelucrari-placeholder', label:'În lucru', href:null, disabled:true }
+      { key:'prelucrari-links', label:'Pagini', links:[
+        { key:'plan-livrari', label:'PLAN LIVRĂRI', href:'plan-livrari.html' },
+        { key:'planificare-prelucrari', label:'PLANIFICARE PRELUCRĂRI', href:'planificare-prelucrari.html' },
+        { key:'inventar-prelucrari', label:'INVENTAR PRELUCRĂRI', href:'inventar-prelucrari.html' }
       ]}
     ]},
     { key:'group-tratament-termic', label:'TRATAMENT TERMIC', sections:[
