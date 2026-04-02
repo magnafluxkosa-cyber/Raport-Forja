@@ -284,10 +284,70 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
     supa: null,
     channel: null,
     pollTimer: 0,
-    clientId: 'planliv-' + Math.random().toString(36).slice(2, 10)
+    clientId: 'planliv-' + Math.random().toString(36).slice(2, 10),
+    canEdit: false,
+    canView: true
   };
 
   function getRows(){ return Array.from(table.rows); }
+  function setUiDisabled(el, disabled){
+    if(!el) return;
+    if('disabled' in el) el.disabled = !!disabled;
+    if(disabled){
+      el.setAttribute('aria-disabled', 'true');
+      el.style.pointerEvents = 'none';
+      el.style.opacity = '.55';
+    }else{
+      el.removeAttribute('aria-disabled');
+      el.style.pointerEvents = '';
+      el.style.opacity = '';
+    }
+  }
+  async function initPageAccess(){
+    let role = 'viewer';
+    try{
+      if(window.ERPAuth && typeof window.ERPAuth.requireAuth === 'function'){
+        const auth = await window.ERPAuth.requireAuth({ next: 'plan-livrari.html', redirectToLogin: true });
+        role = String(auth && auth.role || role).toLowerCase();
+        state.canView = true;
+        state.canEdit = ['admin','editor','operator'].includes(role);
+        if(window.ERPAuth && typeof window.ERPAuth.getPageAccess === 'function'){
+          const access = await window.ERPAuth.getPageAccess('plan-livrari', { user: auth && auth.user ? auth.user : null, role: role });
+          const perms = access && access.permissions ? access.permissions : null;
+          if(perms){
+            const canView = perms.can_view !== false;
+            const canEdit = !!(perms.can_edit === true || perms.can_add === true || perms.can_import === true);
+            state.canView = canView;
+            state.canEdit = canView && canEdit;
+          }
+          if(state.canView === false){
+            window.alert('Nu ai acces în această foaie.');
+            window.location.href = 'index.html';
+            return false;
+          }
+        }
+      }
+    }catch(_err){}
+    return true;
+  }
+  function syncReadOnlyUi(){
+    const disabled = !state.canEdit;
+    setUiDisabled(btnAdd, disabled);
+    setUiDisabled(btnToggle, disabled);
+    paletteButtons.forEach(btn => setUiDisabled(btn, disabled));
+    if(disabled) state.activeCell = null;
+    table.querySelectorAll('.editable-grid-cell').forEach(cell => {
+      cell.classList.remove('is-editing');
+      if(disabled){
+        try{ if(document.activeElement === cell) cell.blur(); }catch(_blurErr){}
+        cell.setAttribute('contenteditable', 'false');
+        cell.setAttribute('tabindex', '-1');
+      }else{
+        cell.setAttribute('contenteditable', 'true');
+        cell.setAttribute('tabindex', '0');
+      }
+    });
+  }
   function getCols(){
     const cg = table.querySelector('colgroup');
     return cg ? Array.from(cg.children) : [];
@@ -372,9 +432,9 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
         const cell = row.cells[c];
         if(!cell) continue;
         cell.classList.add('editable-grid-cell');
-        cell.setAttribute('contenteditable', 'true');
+        cell.setAttribute('contenteditable', state.canEdit ? 'true' : 'false');
         cell.setAttribute('spellcheck', 'false');
-        cell.setAttribute('tabindex', '0');
+        cell.setAttribute('tabindex', state.canEdit ? '0' : '-1');
       }
     }
   }
@@ -418,6 +478,7 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
     paletteButtons.forEach(btn => btn.classList.toggle('is-active', !!(state.activeCell && state.activeCell.getAttribute('data-palette-color') === btn.dataset.color)));
   }
   function applyPaletteToCell(cell, colorKey){
+    if(!state.canEdit) return;
     if(!cell || !PALETTE_CLASS_MAP[colorKey]) return;
     const current = String(cell.getAttribute('data-palette-color') || '').trim();
     if(current === colorKey) cell.removeAttribute('data-palette-color');
@@ -523,6 +584,7 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
   }
 
   function addWeek(){
+    if(!state.canEdit) return;
     saveScroll();
     const rows = getRows();
     if(rows.length < HEADER_ROWS + 1) return;
@@ -584,6 +646,7 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
   }
 
   function toggleWeek(){
+    if(!state.canEdit) return;
     const groups = getWeekGroups();
     const value = window.prompt('Scrie numărul săptămânii pe care vrei să o ascunzi / arăți:', '');
     if(value == null) return;
@@ -703,6 +766,7 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
   }
 
   function scheduleSave(force){
+    if(!state.canEdit) return;
     const payload = buildPayload();
     state.currentSignature = payloadSignature(payload);
     saveLocalCache(payload);
@@ -753,6 +817,7 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
     }catch(_err){}
   }
   async function persistNow(){
+    if(!state.canEdit) return;
     if(state.saveTimer){
       clearTimeout(state.saveTimer);
       state.saveTimer = 0;
@@ -847,6 +912,10 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
   table.addEventListener('focusin', event => {
     const cell = event.target.closest('td.editable-grid-cell');
     if(!cell) return;
+    if(!state.canEdit){
+      try{ cell.blur(); }catch(_blurErr){}
+      return;
+    }
     state.editingCell = cell;
     setActiveCell(cell);
     if(rawCellValue(cell) === '') cell.textContent = '';
@@ -858,6 +927,7 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
   table.addEventListener('focusout', event => {
     const cell = event.target.closest('td.editable-grid-cell');
     if(!cell) return;
+    if(!state.canEdit) return;
     commitCell(cell);
     state.editingCell = null;
     setActiveCell(cell);
@@ -871,11 +941,13 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
   table.addEventListener('input', event => {
     const cell = event.target.closest('td.editable-grid-cell');
     if(!cell) return;
+    if(!state.canEdit) return;
     scheduleSave(false);
   });
   table.addEventListener('keydown', event => {
     const cell = event.target.closest('td.editable-grid-cell');
     if(!cell) return;
+    if(!state.canEdit) return;
     let move = null;
     if(event.key === 'Enter'){
       event.preventDefault();
@@ -896,6 +968,7 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
   if(btnAdd) btnAdd.addEventListener('click', addWeek);
   if(btnToggle) btnToggle.addEventListener('click', toggleWeek);
   paletteButtons.forEach(btn => btn.addEventListener('click', () => {
+    if(!state.canEdit) return;
     if(!state.activeCell){
       window.alert('Selectează mai întâi pătratul pe care vrei să îl colorezi.');
       return;
@@ -905,17 +978,23 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
   scrollEl.addEventListener('scroll', saveScroll, { passive: true });
   window.addEventListener('beforeunload', saveScroll);
 
-  syncUiAfterStructureChange();
-  restoreScroll();
-  const cached = loadLocalCache();
-  if(cached && cached.tableHtml){
-    applyPayload(cached, false);
-  }else{
-    state.currentSignature = payloadSignature(buildPayload());
-    state.lastSavedSignature = state.currentSignature;
-    saveLocalCache(buildPayload());
-  }
-  initCloudSync();
+  Promise.resolve().then(async () => {
+    const allowed = await initPageAccess();
+    if(allowed === false) return;
+    syncUiAfterStructureChange();
+    syncReadOnlyUi();
+    restoreScroll();
+    const cached = loadLocalCache();
+    if(cached && cached.tableHtml){
+      applyPayload(cached, false);
+    }else{
+      state.currentSignature = payloadSignature(buildPayload());
+      state.lastSavedSignature = state.currentSignature;
+      saveLocalCache(buildPayload());
+    }
+    syncReadOnlyUi();
+    initCloudSync();
+  });
 })();
 </script>
 

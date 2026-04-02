@@ -197,12 +197,71 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
     editingCell: null,
     supa: null,
     bootstrapped: false,
-    pendingScrollState: null
+    pendingScrollState: null,
+    canEdit: false,
+    canView: true
   };
   let cellRegistry = Object.create(null);
 
   function createClientId(){
     return 'plan-prel-' + Math.random().toString(36).slice(2) + Date.now().toString(36);
+  }
+  function setUiDisabled(el, disabled){
+    if(!el) return;
+    if('disabled' in el) el.disabled = !!disabled;
+    if(disabled){
+      el.setAttribute('aria-disabled', 'true');
+      el.style.pointerEvents = 'none';
+      el.style.opacity = '.55';
+    }else{
+      el.removeAttribute('aria-disabled');
+      el.style.pointerEvents = '';
+      el.style.opacity = '';
+    }
+  }
+  async function initPageAccess(){
+    let role = 'viewer';
+    try{
+      if(window.ERPAuth && typeof window.ERPAuth.requireAuth === 'function'){
+        const auth = await window.ERPAuth.requireAuth({ next: 'planificare-prelucrari.html', redirectToLogin: true });
+        role = String(auth && auth.role || role).toLowerCase();
+        state.canView = true;
+        state.canEdit = ['admin','editor','operator'].includes(role);
+        if(window.ERPAuth && typeof window.ERPAuth.getPageAccess === 'function'){
+          const access = await window.ERPAuth.getPageAccess('planificare-prelucrari', { user: auth && auth.user ? auth.user : null, role: role });
+          const perms = access && access.permissions ? access.permissions : null;
+          if(perms){
+            const canView = perms.can_view !== false;
+            const canEdit = !!(perms.can_edit === true || perms.can_add === true || perms.can_import === true);
+            state.canView = canView;
+            state.canEdit = canView && canEdit;
+          }
+          if(state.canView === false){
+            window.alert('Nu ai acces în această foaie.');
+            window.location.href = 'index.html';
+            return false;
+          }
+        }
+      }
+    }catch(_err){}
+    return true;
+  }
+  function syncReadOnlyUi(){
+    const disabled = !state.canEdit;
+    setUiDisabled(addWeekBtn, disabled);
+    setUiDisabled(toggleWeekBtn, disabled);
+    setUiDisabled(paletteWrap, disabled);
+    Array.from(table.querySelectorAll('.editable-grid-cell')).forEach((cell) => {
+      cell.classList.remove('is-editing');
+      if(disabled){
+        try{ if(document.activeElement === cell) cell.blur(); }catch(_blurErr){}
+        cell.setAttribute('contenteditable', 'false');
+        cell.setAttribute('tabindex', '-1');
+      }else{
+        cell.setAttribute('contenteditable', 'true');
+        cell.setAttribute('tabindex', '0');
+      }
+    });
   }
   function safeText(v){ return String(v == null ? '' : v); }
   function normalizeSpaces(v){ return safeText(v).replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim(); }
@@ -497,7 +556,8 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
   function hydrateCells(){
     Array.from(table.querySelectorAll(editableSelector)).forEach((cell) => {
       cell.classList.add('editable-grid-cell');
-      cell.setAttribute('contenteditable','true');
+      cell.setAttribute('contenteditable', state.canEdit ? 'true' : 'false');
+      cell.setAttribute('tabindex', state.canEdit ? '0' : '-1');
       cell.setAttribute('spellcheck','false');
       markDefaultRaw(cell);
       const key = getCellKey(cell);
@@ -556,6 +616,10 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
   }
   function handleFocusIn(cell){
     if(!cell || !table.contains(cell)) return;
+    if(!state.canEdit){
+      try{ cell.blur(); }catch(_blurErr){}
+      return;
+    }
     state.editingCell = cell;
     cell.classList.add('is-editing');
     const raw = cell.dataset.rawValue != null ? cell.dataset.rawValue : normalizeSpaces(cell.textContent);
@@ -571,6 +635,11 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
   }
   function handleCommit(cell){
     if(!cell) return;
+    if(!state.canEdit){
+      state.editingCell = null;
+      cell.classList.remove('is-editing');
+      return;
+    }
     const raw = normalizeSpaces(cell.textContent);
     cell.classList.remove('is-editing');
     setSparseValue(cell, raw);
@@ -595,10 +664,12 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
     };
   }
   function scheduleSave(){
+    if(!state.canEdit) return;
     clearTimeout(state.saveTimer);
     state.saveTimer = setTimeout(() => { saveToCloud(); }, SAVE_DEBOUNCE_MS);
   }
   async function saveToCloud(){
+    if(!state.canEdit) return;
     const payload = buildPayload();
     const signature = buildSignature(payload);
     saveLocalCache(payload);
@@ -777,12 +848,14 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
   table.addEventListener('input', (event) => {
     const cell = event.target && event.target.closest ? event.target.closest(editableSelector) : null;
     if(!cell) return;
+    if(!state.canEdit) return;
     setSparseValue(cell, cell.textContent);
     scheduleSave();
   });
   table.addEventListener('keydown', (event) => {
     const cell = event.target && event.target.closest ? event.target.closest(editableSelector) : null;
     if(!cell) return;
+    if(!state.canEdit) return;
     if(event.key === 'Enter'){
       event.preventDefault();
       cell.blur();
@@ -800,6 +873,7 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
       const color = normalizeColorValue(swatch.dataset.fillColor || '');
       const selectedCells = Array.from(table.querySelectorAll('.ms-selected-cell'));
       const targets = selectedCells.length ? selectedCells : (state.editingCell ? [state.editingCell] : []);
+      if(!state.canEdit) return;
       if(!targets.length) return;
       targets.forEach((cell) => {
         applyManualColorToCell(cell, color);
@@ -811,11 +885,13 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
   }
 
   addWeekBtn.addEventListener('click', () => {
+    if(!state.canEdit) return;
     state.pendingScrollState = { left: Math.max(0, sheetScroll.scrollLeft || 0), top: Math.max(0, sheetScroll.scrollTop || 0) };
     addWeekInternal(true, false);
     schedulePersistScroll();
   });
   toggleWeekBtn.addEventListener('click', () => {
+    if(!state.canEdit) return;
     const response = window.prompt('Scrie numărul săptămânii pe care vrei să o ascunzi sau să o arăți:', '14');
     if(response == null) return;
     const weekNumber = Number(String(response).replace(/[^0-9]/g, ''));
@@ -834,15 +910,19 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
   window.addEventListener('pagehide', persistScrollState);
   document.addEventListener('visibilitychange', () => { if(document.hidden) persistScrollState(); });
 
-  (function boot(){
+  Promise.resolve().then(async () => {
     state.pendingScrollState = readSavedScroll();
+    const allowed = await initPageAccess();
+    if(allowed === false) return;
     rebuildVisuals();
+    syncReadOnlyUi();
     const local = loadLocalCache();
     if(local) applyPayload(local, { force: true });
     state.currentSignature = buildSignature({ weeksAdded: state.weeksAdded, hiddenWeeks: state.hiddenWeeks, cells: state.cells, colors: state.colors });
     restoreScrollState();
+    syncReadOnlyUi();
     initCloud();
-  })();
+  });
 })();
 </script>
 <script id="multi-cell-selection-script">

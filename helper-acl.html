@@ -292,39 +292,21 @@
       const queries = [
         { table:'profiles', select:'email,role,user_id,id' },
         { table:'rf_acl', select:'email,role' },
-        { table:'user_account_access', select:'email,user_id' },
-        { table:'user_page_permissions', select:'email,user_id' },
-        { table:'user_index_visibility', select:'email,user_id' }
+        { table:'user_account_access', select:'email,user_id' }
       ];
       for (const q of queries){
         try {
-          const res = await sb.from(q.table).select(q.select).limit(5000);
+          const res = await sb.from(q.table).select(q.select).limit(1000);
           if (!res.error && Array.isArray(res.data)) {
             res.data.forEach(row => add(row.email, { role: row.role || '', user_id: row.user_id || row.id || '', source: q.table }));
           }
         } catch (_) {}
       }
-      try {
-        const mirror = await readDocByKey('dashboard_acl_v1');
-        if (mirror && typeof mirror === 'object') {
-          const hiddenRoot = mirror.hidden_index_buttons_by_user && typeof mirror.hidden_index_buttons_by_user === 'object' ? mirror.hidden_index_buttons_by_user : null;
-          if (hiddenRoot) {
-            Object.keys(hiddenRoot).forEach(key => {
-              const row = hiddenRoot[key] || {};
-              add(row.account_email || key, { user_id: row.account_user_id || '', source:'dashboard_acl_v1:hidden' });
-            });
-          }
-          const permRoot = mirror.user_permissions && typeof mirror.user_permissions === 'object' ? mirror.user_permissions : null;
-          if (permRoot) {
-            Object.keys(permRoot).forEach(key => add(key, { source:'dashboard_acl_v1:user_permissions' }));
-          }
-        }
-      } catch (_) {}
       if (state.session && state.session.user && state.session.user.email) add(state.session.user.email, { user_id: state.session.user.id || '', source:'session' });
       state.users = Array.from(found.values()).sort((a,b) => a.email.localeCompare(b.email));
       if (!state.selectedEmail && state.users.length) state.selectedEmail = state.users[0].email;
       setStatus(els.countStatus, String(state.users.length), state.users.length ? 'ok' : 'warn');
-      els.countSub.textContent = state.users.length ? 'Lista de conturi este pregătită.' : 'Nu am găsit conturi în tabelele publice sau în mirror-ul ACL.';
+      els.countSub.textContent = state.users.length ? 'Lista de conturi este pregătită.' : 'Nu am găsit conturi în tabelele publice.';
     }
 
     function pickBestDoc(rows, field){
@@ -400,30 +382,6 @@
           });
         }
       } catch (_) {}
-      try {
-        const mirror = await readDocByKey('dashboard_acl_v1');
-        const root = mirror && mirror.user_permissions && typeof mirror.user_permissions === 'object' ? mirror.user_permissions : null;
-        if (root) {
-          Object.keys(root).forEach(emailKey => {
-            const email = normalizeEmail(emailKey);
-            const pageMap = root[emailKey] && typeof root[emailKey] === 'object' ? root[emailKey] : null;
-            if (!email || !pageMap) return;
-            if (!state.pageRules[email]) state.pageRules[email] = {};
-            Object.keys(pageMap).forEach(rawPageKey => {
-              const pageKey = normalizeKey(rawPageKey);
-              if (!pageKey) return;
-              const value = pageMap[rawPageKey];
-              const can_view = value && typeof value === 'object' ? value.can_view !== false : value === true;
-              const can_edit = value && typeof value === 'object'
-                ? (value.can_edit === true || value.can_add === true || value.can_delete === true || value.can_import === true)
-                : false;
-              if (!Object.prototype.hasOwnProperty.call(state.pageRules[email], pageKey)) {
-                state.pageRules[email][pageKey] = { can_view, can_edit };
-              }
-            });
-          });
-        }
-      } catch (_) {}
     }
 
     async function loadDoc(){
@@ -435,6 +393,21 @@
       const mirror = await readDocByKey('dashboard_acl_v1');
       if (mirror && typeof mirror === 'object' && mirror.hidden_index_buttons_by_user && typeof mirror.hidden_index_buttons_by_user === 'object') state.doc.users = Object.assign({}, mirror.hidden_index_buttons_by_user, state.doc.users || {});
       await loadPageRules();
+      if (mirror && typeof mirror === 'object' && mirror.user_permissions && typeof mirror.user_permissions === 'object') {
+        Object.keys(mirror.user_permissions).forEach(emailKey => {
+          const email = normalizeEmail(emailKey);
+          if (!email) return;
+          const perms = mirror.user_permissions[emailKey];
+          if (!perms || typeof perms !== 'object') return;
+          if (!state.pageRules[email]) state.pageRules[email] = {};
+          Object.keys(perms).forEach(pageKey => {
+            const cleanPageKey = normalizeKey(pageKey);
+            if (!cleanPageKey) return;
+            const value = perms[pageKey];
+            state.pageRules[email][cleanPageKey] = normalizePagePerm(value);
+          });
+        });
+      }
     }
 
     function renderUsers(){
@@ -532,7 +505,6 @@
 
       const payload = { users: state.doc.users || {}, updated_at: stamp };
       const savePrimary = await writeDocByKey('index_button_visibility_v1', payload);
-      const mirrorBase = await readDocByKey('dashboard_acl_v1') || {};
 
       const email = normalizeEmail(selected.email);
       const pageMap = currentPageRules();
@@ -550,21 +522,27 @@
           can_import:rule.can_edit
         };
       });
-      const mirrorUserPermissions = Object.assign({}, mirrorBase.user_permissions && typeof mirrorBase.user_permissions === 'object' ? mirrorBase.user_permissions : {});
-      mirrorUserPermissions[email] = {};
-      pageRows.forEach(row => {
-        mirrorUserPermissions[email][row.page_key] = {
-          can_view: row.can_view === true,
-          can_add: row.can_add === true,
-          can_edit: row.can_edit === true,
-          can_delete: row.can_delete === true,
-          can_export: row.can_export === true,
-          can_import: row.can_import === true
+      const mirrorBase = await readDocByKey('dashboard_acl_v1') || {};
+      const mirrorUserPermissions = Object.assign({}, (mirrorBase.user_permissions && typeof mirrorBase.user_permissions === 'object') ? mirrorBase.user_permissions : {});
+      const mirrorUserGrants = Object.assign({}, (mirrorBase.user_grants && typeof mirrorBase.user_grants === 'object') ? mirrorBase.user_grants : {});
+      const mirrorUserPageMap = {};
+      MANAGED_PAGE_KEYS.forEach(key => {
+        const rule = normalizePagePerm(pageMap.get(key));
+        mirrorUserPageMap[key] = {
+          can_view: rule.can_view,
+          can_add: rule.can_edit,
+          can_edit: rule.can_edit,
+          can_delete: rule.can_edit,
+          can_export: rule.can_view,
+          can_import: rule.can_edit
         };
       });
+      mirrorUserPermissions[email] = mirrorUserPageMap;
+      mirrorUserGrants[email] = mirrorUserPageMap;
       const mirrorPayload = Object.assign({}, mirrorBase, {
         hidden_index_buttons_by_user: payload.users,
         user_permissions: mirrorUserPermissions,
+        user_grants: mirrorUserGrants,
         updated_at: payload.updated_at
       });
       const saveMirror = await writeDocByKey('dashboard_acl_v1', mirrorPayload);
