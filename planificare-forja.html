@@ -402,7 +402,7 @@
             <span id="deliveryAlertText">Fără alerte active</span>
           </div>
         </div>
-        <div class="hint" id="hintText">Drag rapid pe celule pentru selecție • dublu click pentru editare • Shift+click pentru interval.</div>
+        <div class="hint" id="hintText">Drag rapid pe celule pentru selecție • dublu click pentru editare • Shift+click pentru interval • Ctrl+click / Ctrl+drag pentru selecții separate.</div>
       </div>
 
       <div class="tableWrap" id="tableWrap">
@@ -566,11 +566,14 @@
         inputTarget: null,
         pendingStartCell: null,
         pendingEndCell: null,
+        pendingBaseSelectedKeys: null,
         autoScrollRaf: 0,
         autoScrollDx: 0,
         autoScrollDy: 0,
         deferFocusCell: null,
         anchorCell: null,
+        additive: false,
+        baseSelectedKeys: null,
         stats: { count:0, numericCount:0, sum:0, avg:0 }
       }
     };
@@ -3614,14 +3617,21 @@ function getDefaultPermissions(role){
       }
     }
 
-    function scheduleMultiSelectionRange(startCell, endCell){
+    function scheduleMultiSelectionRange(startCell, endCell, baseSet){
       if(!startCell || !endCell) return;
       state.multiSelect.pendingStartCell = startCell;
       state.multiSelect.pendingEndCell = endCell;
+      state.multiSelect.pendingBaseSelectedKeys = baseSet instanceof Set ? new Set(Array.from(baseSet)) : new Set();
       if(state.multiSelect.rangeRaf) return;
       state.multiSelect.rangeRaf = requestAnimationFrame(function(){
         state.multiSelect.rangeRaf = 0;
-        applyMultiCellSelectionRange(state.multiSelect.pendingStartCell, state.multiSelect.pendingEndCell);
+        const start = state.multiSelect.pendingStartCell;
+        const end = state.multiSelect.pendingEndCell;
+        const base = state.multiSelect.pendingBaseSelectedKeys;
+        state.multiSelect.pendingStartCell = null;
+        state.multiSelect.pendingEndCell = null;
+        state.multiSelect.pendingBaseSelectedKeys = null;
+        applyMultiCellSelectionRange(start, end, base);
       });
     }
 
@@ -3759,6 +3769,54 @@ function getDefaultPermissions(role){
       return Number.isFinite(value) ? value : null;
     }
 
+    function getSelectableCellKey(cell){
+      if(!cell) return '';
+      return String(cell.dataset.selRow || '') + ':' + String(cell.dataset.selCol || '');
+    }
+
+    function getSelectedCellKeySet(){
+      const set = new Set();
+      if(!els.planBody) return set;
+      els.planBody.querySelectorAll('td.multi-selected[data-sel-row][data-sel-col]').forEach(cell => {
+        const key = getSelectableCellKey(cell);
+        if(key) set.add(key);
+      });
+      return set;
+    }
+
+    function setSelectedCellKeySet(keySet){
+      const wanted = keySet instanceof Set ? keySet : new Set(Array.isArray(keySet) ? keySet : []);
+      if(!els.planBody) return;
+      els.planBody.querySelectorAll('td[data-sel-row][data-sel-col]').forEach(cell => {
+        const key = getSelectableCellKey(cell);
+        cell.classList.toggle('multi-selected', !!key && wanted.has(key));
+      });
+      recomputeMultiSelectionStats();
+    }
+
+    function buildRangeCellKeySet(startCell, endCell, baseSet){
+      const result = new Set(baseSet instanceof Set ? Array.from(baseSet) : []);
+      if(!startCell || !endCell) return result;
+      const startRow = Number(startCell.dataset.selRow || 0);
+      const startCol = Number(startCell.dataset.selCol || 0);
+      const endRow = Number(endCell.dataset.selRow || 0);
+      const endCol = Number(endCell.dataset.selCol || 0);
+      const minRow = Math.min(startRow, endRow);
+      const maxRow = Math.max(startRow, endRow);
+      const minCol = Math.min(startCol, endCol);
+      const maxCol = Math.max(startCol, endCol);
+      if(!els.planBody) return result;
+      els.planBody.querySelectorAll('td[data-sel-row][data-sel-col]').forEach(cell => {
+        const row = Number(cell.dataset.selRow || 0);
+        const col = Number(cell.dataset.selCol || 0);
+        if(row >= minRow && row <= maxRow && col >= minCol && col <= maxCol){
+          const key = getSelectableCellKey(cell);
+          if(key) result.add(key);
+        }
+      });
+      return result;
+    }
+
     function recomputeMultiSelectionStats(){
       const selectedCells = els.planBody ? Array.from(els.planBody.querySelectorAll('td.multi-selected')) : [];
       let count = 0;
@@ -3798,6 +3856,9 @@ function getDefaultPermissions(role){
         state.multiSelect.inputTarget = null;
         state.multiSelect.pendingStartCell = null;
         state.multiSelect.pendingEndCell = null;
+        state.multiSelect.pendingBaseSelectedKeys = null;
+        state.multiSelect.additive = false;
+        state.multiSelect.baseSelectedKeys = null;
       }
       if(!skipStatsUpdate){
         state.multiSelect.stats = { count:0, numericCount:0, sum:0, avg:0 };
@@ -3807,23 +3868,10 @@ function getDefaultPermissions(role){
       }
     }
 
-    function applyMultiCellSelectionRange(startCell, endCell){
+    function applyMultiCellSelectionRange(startCell, endCell, baseSet){
       if(!els.planBody || !startCell || !endCell) return;
-      const startRow = Number(startCell.dataset.selRow || 0);
-      const startCol = Number(startCell.dataset.selCol || 0);
-      const endRow = Number(endCell.dataset.selRow || 0);
-      const endCol = Number(endCell.dataset.selCol || 0);
-      const minRow = Math.min(startRow, endRow);
-      const maxRow = Math.max(startRow, endRow);
-      const minCol = Math.min(startCol, endCol);
-      const maxCol = Math.max(startCol, endCol);
-      els.planBody.querySelectorAll('td[data-sel-row][data-sel-col]').forEach(cell => {
-        const row = Number(cell.dataset.selRow || 0);
-        const col = Number(cell.dataset.selCol || 0);
-        const inside = row >= minRow && row <= maxRow && col >= minCol && col <= maxCol;
-        cell.classList.toggle('multi-selected', inside);
-      });
-      recomputeMultiSelectionStats();
+      const nextSet = buildRangeCellKeySet(startCell, endCell, baseSet);
+      setSelectedCellKeySet(nextSet);
     }
 
     function beginMultiCellSelection(event){
@@ -3831,6 +3879,7 @@ function getDefaultPermissions(role){
       const cell = getSelectablePlanCellFromNode(event.target);
       if(!cell) return;
       const inputTarget = event.target && event.target.closest ? event.target.closest('input.cell-input') : null;
+      const isAdditive = !!(event.ctrlKey || event.metaKey);
 
       if(event.shiftKey && state.multiSelect.anchorCell && state.multiSelect.anchorCell !== cell){
         if(inputTarget) event.preventDefault();
@@ -3838,7 +3887,9 @@ function getDefaultPermissions(role){
         state.multiSelect.currentCell = cell;
         state.multiSelect.lastClientX = Number(event.clientX || 0);
         state.multiSelect.lastClientY = Number(event.clientY || 0);
-        applyMultiCellSelectionRange(state.multiSelect.anchorCell, cell);
+        state.multiSelect.additive = isAdditive;
+        state.multiSelect.baseSelectedKeys = isAdditive ? getSelectedCellKeySet() : new Set();
+        applyMultiCellSelectionRange(state.multiSelect.anchorCell, cell, state.multiSelect.baseSelectedKeys);
         state.multiSelect.suppressClickUntil = Date.now() + 140;
         updateSelectionStatsBubble();
         return;
@@ -3854,9 +3905,29 @@ function getDefaultPermissions(role){
       state.multiSelect.lastClientY = Number(event.clientY || 0);
       state.multiSelect.startedOnInput = !!inputTarget;
       state.multiSelect.inputTarget = inputTarget || null;
-      state.multiSelect.deferFocusCell = inputTarget ? cell : null;
+      state.multiSelect.deferFocusCell = inputTarget && !isAdditive ? cell : null;
       state.multiSelect.anchorCell = cell;
       state.multiSelect.suppressClickUntil = 0;
+      state.multiSelect.additive = isAdditive;
+      state.multiSelect.baseSelectedKeys = isAdditive ? getSelectedCellKeySet() : new Set();
+      if(!isAdditive && !event.shiftKey){
+        clearMultiCellSelection(true);
+        state.multiSelect.active = true;
+        state.multiSelect.dragging = false;
+        state.multiSelect.startCell = cell;
+        state.multiSelect.currentCell = cell;
+        state.multiSelect.startX = Number(event.clientX || 0);
+        state.multiSelect.startY = Number(event.clientY || 0);
+        state.multiSelect.lastClientX = Number(event.clientX || 0);
+        state.multiSelect.lastClientY = Number(event.clientY || 0);
+        state.multiSelect.startedOnInput = !!inputTarget;
+        state.multiSelect.inputTarget = inputTarget || null;
+        state.multiSelect.deferFocusCell = inputTarget ? cell : null;
+        state.multiSelect.anchorCell = cell;
+        state.multiSelect.suppressClickUntil = 0;
+        state.multiSelect.additive = false;
+        state.multiSelect.baseSelectedKeys = new Set();
+      }
       if(inputTarget){
         event.preventDefault();
       }
@@ -3887,7 +3958,7 @@ function getDefaultPermissions(role){
         }catch(_e){}
       }
       state.multiSelect.currentCell = currentCell;
-      scheduleMultiSelectionRange(state.multiSelect.startCell, currentCell);
+      scheduleMultiSelectionRange(state.multiSelect.startCell, currentCell, state.multiSelect.baseSelectedKeys);
       updateMultiSelectAutoScroll(state.multiSelect.lastClientX, state.multiSelect.lastClientY);
       updateSelectionStatsBubble();
       event.preventDefault();
@@ -3897,6 +3968,7 @@ function getDefaultPermissions(role){
       if(!state.multiSelect.active) return;
       const wasDragging = !!state.multiSelect.dragging;
       const focusCell = state.multiSelect.deferFocusCell;
+      const clickedCell = state.multiSelect.currentCell || state.multiSelect.startCell;
       state.multiSelect.active = false;
       state.multiSelect.dragging = false;
       state.multiSelect.startCell = null;
@@ -3912,12 +3984,28 @@ function getDefaultPermissions(role){
           event.preventDefault();
           event.stopPropagation();
         }
+      }else if(state.multiSelect.additive && clickedCell){
+        const key = getSelectableCellKey(clickedCell);
+        const nextSet = getSelectedCellKeySet();
+        if(key){
+          if(nextSet.has(key)) nextSet.delete(key);
+          else nextSet.add(key);
+          setSelectedCellKeySet(nextSet);
+          state.multiSelect.anchorCell = clickedCell;
+        }
+        state.multiSelect.suppressClickUntil = Date.now() + 120;
+        if(event){
+          event.preventDefault();
+          event.stopPropagation();
+        }
       }else{
         setSelectionStatsVisible(false);
         if(focusCell){
           focusEditableCell(focusCell, true);
         }
       }
+      state.multiSelect.additive = false;
+      state.multiSelect.baseSelectedKeys = null;
     }
 
 
