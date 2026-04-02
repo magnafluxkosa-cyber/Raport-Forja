@@ -1503,17 +1503,74 @@ async function applyDomPermissions(pageKey, root, options) {
     }
   }
 
+  function pickLatestRfDocumentObject(rows, field) {
+    var list = Array.isArray(rows) ? rows.slice() : [];
+    list.sort(function (a, b) {
+      return String(b && b.updated_at || '').localeCompare(String(a && a.updated_at || ''));
+    });
+    for (var i = 0; i < list.length; i += 1) {
+      var row = list[i];
+      var value = row && row[field];
+      if (value && typeof value === 'object') return value;
+    }
+    return null;
+  }
+
   async function readDashboardAclMirror(client) {
     if (!client) return null;
     try {
-      var a = await client.from('rf_documents').select('content').eq('doc_key', 'dashboard_acl_v1').maybeSingle();
-      if (!a.error && a.data && a.data.content && typeof a.data.content === 'object') return a.data.content;
-    } catch (_) {}
-    try {
-      var b = await client.from('rf_documents').select('data').eq('doc_key', 'dashboard_acl_v1').maybeSingle();
-      if (!b.error && b.data && b.data.data && typeof b.data.data === 'object') return b.data.data;
+      var rows = await client.from('rf_documents').select('content,data,updated_at').eq('doc_key', 'dashboard_acl_v1').order('updated_at', { ascending:false }).limit(50);
+      if (!rows.error && Array.isArray(rows.data) && rows.data.length) {
+        return pickLatestRfDocumentObject(rows.data, 'content') || pickLatestRfDocumentObject(rows.data, 'data');
+      }
     } catch (_) {}
     return null;
+  }
+
+  function loadMirrorUserPermissionMap(mirror, email) {
+    if (!mirror || typeof mirror !== 'object') return null;
+    var normalized = normalizeAclEmail(email);
+    if (!normalized) return null;
+
+    var map = new Map();
+    function appendEntries(source) {
+      if (!source || typeof source !== 'object') return;
+      Object.keys(source).forEach(function (rawKey) {
+        var key = String(rawKey || '').trim();
+        if (!key) return;
+        map.set(key, buildPermissionEntry(source[rawKey]));
+      });
+    }
+
+    var userPermissionsRoot = mirror.user_permissions && typeof mirror.user_permissions === 'object' ? mirror.user_permissions : null;
+    var userPermissions = userPermissionsRoot && userPermissionsRoot[normalized] && typeof userPermissionsRoot[normalized] === 'object' ? userPermissionsRoot[normalized] : null;
+    appendEntries(userPermissions);
+
+    var userGrantsRoot = mirror.user_grants && typeof mirror.user_grants === 'object' ? mirror.user_grants : null;
+    var userGrants = userGrantsRoot && userGrantsRoot[normalized] && typeof userGrantsRoot[normalized] === 'object' ? userGrantsRoot[normalized] : null;
+    appendEntries(userGrants);
+
+    return map.size ? map : null;
+  }
+
+  function resolveStrictUserPermission(pageKey, href, tableMap, mirrorMap) {
+    var key = String(pageKey || '').trim();
+    var cleanHref = normalizeHref(href);
+    var merged = { can_view:false, can_add:false, can_edit:false, can_delete:false, can_export:false, can_import:false };
+    var matched = false;
+
+    function applyFrom(map, lookupKey) {
+      if (!map || !(map instanceof Map) || !lookupKey || !map.has(lookupKey)) return;
+      merged = mergePermissions(merged, map.get(lookupKey));
+      matched = true;
+    }
+
+    applyFrom(mirrorMap, key);
+    applyFrom(mirrorMap, cleanHref);
+    applyFrom(tableMap, key);
+    applyFrom(tableMap, cleanHref);
+
+    return matched ? buildPermissionEntry(merged) : buildPermissionEntry(merged);
   }
 
   function mirrorHasAnyUserAcl(mirror) {
@@ -1721,8 +1778,12 @@ async function applyDomPermissions(pageKey, root, options) {
     }
 
     var email = normalizeAclEmail(user.email);
+    var mirror = await readDashboardAclMirror(client);
     var userPermissionMap = await loadUserPermissionMap(client, user);
-    var hasUserAcl = !!(userPermissionMap && userPermissionMap.size);
+    var mirrorUserPermissionMap = loadMirrorUserPermissionMap(mirror, email);
+    var hasTableUserAcl = !!(userPermissionMap && userPermissionMap.size);
+    var hasMirrorUserAcl = !!(mirrorUserPermissionMap && mirrorUserPermissionMap.size);
+    var hasUserAcl = hasTableUserAcl || hasMirrorUserAcl;
 
     if (key === 'index') {
       return {
@@ -1737,11 +1798,11 @@ async function applyDomPermissions(pageKey, root, options) {
     }
 
     if (hasUserAcl) {
-      var userPerm = userPermissionMap.get(key) || { can_view:false, can_add:false, can_edit:false, can_delete:false, can_export:false, can_import:false };
+      var userPerm = resolveStrictUserPermission(key, href, userPermissionMap, mirrorUserPermissionMap);
       return {
         allowed: userPerm.can_view === true,
         role: role,
-        source: 'user acl strict',
+        source: hasTableUserAcl ? (hasMirrorUserAcl ? 'user acl strict (table+mirror)' : 'user acl strict (table)') : 'user acl strict (mirror)',
         message: userPerm.can_view === true ? '' : 'Nu ai acces în această foaie. Cere acces de la admin.',
         permissions: buildPermissionEntry(userPerm),
         email: email,
@@ -1751,7 +1812,6 @@ async function applyDomPermissions(pageKey, root, options) {
     }
 
     var permissionMap = await loadPagePermissionMap(client, role);
-    var mirror = await readDashboardAclMirror(client);
     var roleDecisions = collectAclDecisions({ pageKey:key, href:href, role:role, email:email, userPermissionMap:null, permissionMap:permissionMap, mirror:mirror });
 
     var rolePermissions = defaultPageAccessFromRole(role, key);
