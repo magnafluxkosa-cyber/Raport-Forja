@@ -38,10 +38,13 @@
     { page_key: 'inventar-otel', page_name: 'Inventar Oțel' },
     { page_key: 'inventar-debitat', page_name: 'Inventar Debitat' },
     { page_key: 'inventar-forjat', page_name: 'Inventar Forjat' },
+    { page_key: 'inventar-prelucrari', page_name: 'Inventar Prelucrări' },
+    { page_key: 'planificare-prelucrari', page_name: 'Planificare Prelucrări' },
+    { page_key: 'plan-livrari', page_name: 'Plan Livrări' },
+    { page_key: 'calendar-operatori', page_name: 'Calendar Operatori' },
+    { page_key: 'magnaflux-calendar', page_name: 'Magnaflux Calendar' },
+    { page_key: 'stoc-initial-otel', page_name: 'Stoc Inițial Oțel' },
     { page_key: 'planificare-forja', page_name: 'Planificare Forjă' },
-    { page_key: 'plan-livrari', page_name: 'Plan livrări' },
-    { page_key: 'planificare-prelucrari', page_name: 'Planificare prelucrări' },
-    { page_key: 'inventar-prelucrari', page_name: 'Inventar prelucrări' },
     { page_key: 'comenzi-livrare', page_name: 'Comenzi Livrare' },
     { page_key: 'livrari-zale', page_name: 'Livrări zale' },
     { page_key: 'centralizator-livrari-zale', page_name: 'Centralizator livrări zale' },
@@ -1458,9 +1461,13 @@ async function applyDomPermissions(pageKey, root, options) {
 
     function appendRows(map, rows) {
       (Array.isArray(rows) ? rows : []).forEach(function (row) {
-        var key = String(row && row.page_key || '').trim();
-        if (!key) return;
-        map.set(key, buildPermissionEntry(row));
+        var rawKey = String(row && row.page_key || '').trim();
+        if (!rawKey) return;
+        var key = rawKey.replace(/\.html$/i, '');
+        var entry = buildPermissionEntry(row);
+        if (key) map.set(key, entry);
+        if (/\.html$/i.test(rawKey)) map.set(rawKey, entry);
+        else if (key) map.set(pageKeyToHref(key), entry);
       });
     }
 
@@ -1506,17 +1513,14 @@ async function applyDomPermissions(pageKey, root, options) {
     }
   }
 
-  function pickNewestAclDoc(rows) {
-    if (!Array.isArray(rows) || !rows.length) return null;
-    var sorted = rows.slice().sort(function (a, b) {
-      var ta = Date.parse(a && a.updated_at || '') || 0;
-      var tb = Date.parse(b && b.updated_at || '') || 0;
-      return tb - ta;
+  function pickLatestRfDocument(rows, field) {
+    var list = Array.isArray(rows) ? rows.slice() : [];
+    list.sort(function (a, b) {
+      return String(b && b.updated_at || '').localeCompare(String(a && a.updated_at || ''));
     });
-    for (var i = 0; i < sorted.length; i += 1) {
-      var row = sorted[i] || {};
-      if (row.content && typeof row.content === 'object') return row.content;
-      if (row.data && typeof row.data === 'object') return row.data;
+    for (var i = 0; i < list.length; i += 1) {
+      var value = list[i] && list[i][field];
+      if (value && typeof value === 'object') return value;
     }
     return null;
   }
@@ -1530,8 +1534,7 @@ async function applyDomPermissions(pageKey, root, options) {
         .order('updated_at', { ascending:false })
         .limit(50);
       if (!res.error && Array.isArray(res.data) && res.data.length) {
-        var picked = pickNewestAclDoc(res.data);
-        if (picked && typeof picked === 'object') return picked;
+        return pickLatestRfDocument(res.data, 'content') || pickLatestRfDocument(res.data, 'data');
       }
     } catch (_) {}
     return null;
@@ -1566,43 +1569,29 @@ async function applyDomPermissions(pageKey, root, options) {
     return !!((userPermissions && Object.keys(userPermissions).length) || (userGrants && Object.keys(userGrants).length));
   }
 
-  function collectStrictUserAclDecisions(opts) {
-    var decisions = [];
-    var pageKey = String(opts && opts.pageKey || '').trim();
-    var href = normalizeHref(opts && opts.href);
-    var email = normalizeAclEmail(opts && opts.email);
-    var userMap = opts && opts.userPermissionMap instanceof Map ? opts.userPermissionMap : null;
-    var mirror = opts && opts.mirror && typeof opts.mirror === 'object' ? opts.mirror : null;
-
-    if (userMap && pageKey && userMap.has(pageKey)) {
-      decisions.push(userMap.get(pageKey));
-    }
-
-    if (mirror && email) {
-      var userPermissionsRoot = mirror.user_permissions && typeof mirror.user_permissions === 'object' ? mirror.user_permissions : null;
-      var userPermissions = userPermissionsRoot && userPermissionsRoot[email] && typeof userPermissionsRoot[email] === 'object' ? userPermissionsRoot[email] : null;
-      if (userPermissions) {
-        if (pageKey && Object.prototype.hasOwnProperty.call(userPermissions, pageKey)) {
-          decisions.push(permissionValueToEntry(userPermissions[pageKey]));
-        }
-        if (href && Object.prototype.hasOwnProperty.call(userPermissions, href)) {
-          decisions.push(permissionValueToEntry(userPermissions[href]));
-        }
+  function collectMirrorUserDecisions(mirror, email, pageKey, href) {
+    var out = [];
+    if (!mirror || typeof mirror !== 'object') return out;
+    var normalized = normalizeAclEmail(email);
+    if (!normalized) return out;
+    var keys = [];
+    var bare = String(pageKey || '').trim().replace(/\.html$/i, '');
+    var cleanHref = normalizeHref(href || pageKeyToHref(bare));
+    if (bare) keys.push(bare);
+    if (cleanHref) keys.push(cleanHref);
+    var userPermissionsRoot = mirror.user_permissions && typeof mirror.user_permissions === 'object' ? mirror.user_permissions : null;
+    var userGrantsRoot = mirror.user_grants && typeof mirror.user_grants === 'object' ? mirror.user_grants : null;
+    var userPermissions = userPermissionsRoot && userPermissionsRoot[normalized] && typeof userPermissionsRoot[normalized] === 'object' ? userPermissionsRoot[normalized] : null;
+    var userGrants = userGrantsRoot && userGrantsRoot[normalized] && typeof userGrantsRoot[normalized] === 'object' ? userGrantsRoot[normalized] : null;
+    keys.forEach(function (key) {
+      if (userPermissions && Object.prototype.hasOwnProperty.call(userPermissions, key)) {
+        out.push(permissionValueToEntry(userPermissions[key]));
       }
-
-      var userGrantsRoot = mirror.user_grants && typeof mirror.user_grants === 'object' ? mirror.user_grants : null;
-      var userGrants = userGrantsRoot && userGrantsRoot[email] && typeof userGrantsRoot[email] === 'object' ? userGrantsRoot[email] : null;
-      if (userGrants) {
-        if (pageKey && Object.prototype.hasOwnProperty.call(userGrants, pageKey)) {
-          decisions.push(permissionValueToEntry(userGrants[pageKey]));
-        }
-        if (href && Object.prototype.hasOwnProperty.call(userGrants, href)) {
-          decisions.push(permissionValueToEntry(userGrants[href]));
-        }
+      if (userGrants && Object.prototype.hasOwnProperty.call(userGrants, key)) {
+        out.push(permissionValueToEntry(userGrants[key]));
       }
-    }
-
-    return decisions;
+    });
+    return out;
   }
 
   function permissionValueToEntry(value) {
@@ -1783,32 +1772,43 @@ async function applyDomPermissions(pageKey, root, options) {
     var email = normalizeAclEmail(user.email);
     var userPermissionMap = await loadUserPermissionMap(client, user);
     var mirror = await readDashboardAclMirror(client);
-    var hasUserAcl = !!((userPermissionMap && userPermissionMap.size) || mirrorHasUserAclForEmail(mirror, email));
+    var hasUserAcl = !!(userPermissionMap && userPermissionMap.size);
+    var hasMirrorUserAcl = mirrorHasUserAclForEmail(mirror, email);
+    var hasStrictUserAcl = hasUserAcl || hasMirrorUserAcl;
 
     if (key === 'index') {
       return {
         allowed:true,
         role:role,
-        source: hasUserAcl ? 'user acl strict index' : 'index by role',
+        source: hasStrictUserAcl ? 'user acl strict index' : 'index by role',
         permissions: { can_view:true, can_add:false, can_edit:false, can_delete:false, can_export:false, can_import:false },
         email: email,
         accountStatus: accountStatus,
-        strictUserAcl: hasUserAcl
+        strictUserAcl: hasStrictUserAcl
       };
     }
 
-    if (hasUserAcl) {
-      var userPermissions = { can_view:false, can_add:false, can_edit:false, can_delete:false, can_export:false, can_import:false };
-      var strictDecisions = collectStrictUserAclDecisions({ pageKey:key, href:href, email:email, userPermissionMap:userPermissionMap, mirror:mirror });
-      for (var s = 0; s < strictDecisions.length; s += 1) {
-        userPermissions = mergePermissions(userPermissions, permissionValueToEntry(strictDecisions[s]));
+    if (hasStrictUserAcl) {
+      var strictPerm = { can_view:false, can_add:false, can_edit:false, can_delete:false, can_export:false, can_import:false };
+      var strictFound = false;
+      if (userPermissionMap) {
+        [key, href].forEach(function (lookupKey) {
+          if (!lookupKey) return;
+          if (!userPermissionMap.has(lookupKey)) return;
+          strictPerm = mergePermissions(strictPerm, userPermissionMap.get(lookupKey));
+          strictFound = true;
+        });
       }
+      collectMirrorUserDecisions(mirror, email, key, href).forEach(function (entry) {
+        strictPerm = mergePermissions(strictPerm, entry);
+        strictFound = true;
+      });
       return {
-        allowed: userPermissions.can_view === true,
+        allowed: strictFound && strictPerm.can_view === true,
         role: role,
-        source: 'user acl strict',
-        message: userPermissions.can_view === true ? '' : 'Nu ai acces în această foaie. Cere acces de la admin.',
-        permissions: userPermissions,
+        source: strictFound ? 'user acl strict' : 'user acl strict default deny',
+        message: strictFound && strictPerm.can_view === true ? '' : 'Nu ai acces în această foaie. Cere acces de la admin.',
+        permissions: buildPermissionEntry(strictPerm),
         email: email,
         accountStatus: accountStatus,
         strictUserAcl: true
@@ -3323,52 +3323,6 @@ async function applyDomPermissions(pageKey, root, options) {
       }
     }, true);
   }
-
-    document.addEventListener('pointerdown', function (ev) {
-      var target = ev.target;
-      var state = currentPageFlags();
-      var edit = state.controls && state.controls['rows.edit'];
-      if (edit && edit.can_use === false && target && (elementInEditableGrid(target) || (target.closest && target.closest('[contenteditable="true"], .editable-grid-cell, td.editable, .cell-input')))) {
-        ev.preventDefault();
-        ev.stopImmediatePropagation();
-      }
-    }, true);
-
-    document.addEventListener('mousedown', function (ev) {
-      var target = ev.target;
-      var state = currentPageFlags();
-      var edit = state.controls && state.controls['rows.edit'];
-      if (edit && edit.can_use === false && target && (elementInEditableGrid(target) || (target.closest && target.closest('[contenteditable="true"], .editable-grid-cell, td.editable, .cell-input')))) {
-        ev.preventDefault();
-        ev.stopImmediatePropagation();
-      }
-    }, true);
-
-    document.addEventListener('keydown', function (ev) {
-      var target = ev.target;
-      var state = currentPageFlags();
-      var edit = state.controls && state.controls['rows.edit'];
-      if (!edit || edit.can_use !== false || !target) return;
-      var isEditor = (target.matches && target.matches('input, textarea, select, [contenteditable], .editable-grid-cell, .cell-input')) || elementInEditableGrid(target) || elementInEditorForm(target);
-      if (!isEditor || elementInFilterZone(target)) return;
-      var nav = ['Tab','Escape','ArrowLeft','ArrowRight','ArrowUp','ArrowDown','PageUp','PageDown','Home','End'];
-      if (nav.indexOf(ev.key) !== -1) return;
-      ev.preventDefault();
-      ev.stopImmediatePropagation();
-    }, true);
-
-    ['input','change','paste','drop'].forEach(function (eventName) {
-      document.addEventListener(eventName, function (ev) {
-        var target = ev.target;
-        var state = currentPageFlags();
-        var edit = state.controls && state.controls['rows.edit'];
-        if (!edit || edit.can_use !== false || !target) return;
-        var isEditor = (target.matches && target.matches('input, textarea, select, [contenteditable], .editable-grid-cell, .cell-input')) || elementInEditableGrid(target) || elementInEditorForm(target);
-        if (!isEditor || elementInFilterZone(target)) return;
-        ev.preventDefault();
-        ev.stopImmediatePropagation();
-      }, true);
-    });
 
   async function collectControlSnapshot(pageKey, pageAccess, client) {
     var keys = ['rows.filter','rows.add','rows.edit','rows.delete','data.export','data.import','cloud.refresh','cloud.save','modal.open','pdf.open','pdf.upload','pdf.download','pdf.delete','problems.link'];

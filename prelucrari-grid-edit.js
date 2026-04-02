@@ -153,7 +153,7 @@
         return canEdit;
       }
     }catch(_err){}
-    return true;
+    return false;
   }
 
   function makeEditable(canEdit){
