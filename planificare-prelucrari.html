@@ -73,6 +73,35 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
 .excel-sheet td.frozen-left,
 .excel-sheet th.frozen-left{background-clip:padding-box;box-shadow: 2px 0 0 rgba(0,0,0,.18)}
 </style>
+
+<style id="multi-cell-selection-style">
+.ms-selection-active,
+.ms-selection-active *{
+  user-select:none !important;
+  -webkit-user-select:none !important;
+}
+.excel-sheet td.editable-grid-cell.ms-selected-cell,
+.excel-sheet th.editable-grid-cell.ms-selected-cell{
+  box-shadow: inset 0 0 0 2px #0b5ed7, inset 0 0 0 9999px rgba(95,143,190,.18) !important;
+}
+.ms-selection-tooltip{
+  position:fixed;
+  left:-9999px;
+  top:-9999px;
+  z-index:10050;
+  pointer-events:none;
+  background:rgba(11,31,70,.96);
+  color:#fff;
+  border:1px solid rgba(191,219,254,.34);
+  border-radius:999px;
+  padding:7px 12px;
+  font:700 12px/1.2 Calibri,Arial,sans-serif;
+  box-shadow:0 16px 34px rgba(15,23,42,.28);
+  white-space:nowrap;
+  backdrop-filter:blur(4px);
+}
+</style>
+
 </head>
 <body>
 <div class="page">
@@ -677,5 +706,275 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
     initCloud();
   })();
 })();
-</script></body>
+</script>
+<script id="multi-cell-selection-script">
+(function(){
+  'use strict';
+  const CELL_SELECTOR = '.excel-sheet td.editable-grid-cell, .excel-sheet th.editable-grid-cell';
+  const SELECTED_CLASS = 'ms-selected-cell';
+  const tooltip = document.createElement('div');
+  tooltip.className = 'ms-selection-tooltip';
+  tooltip.hidden = true;
+  document.body.appendChild(tooltip);
+
+  let selected = new Set();
+  let anchorCell = null;
+  let pending = null;
+  let dragging = false;
+  let baseSelection = new Set();
+  let pointerX = 0;
+  let pointerY = 0;
+  let hideTimer = null;
+  let scrollFrame = null;
+
+  function allCellsIn(table){
+    return Array.from(table.querySelectorAll(CELL_SELECTOR));
+  }
+
+  function coordOf(cell){
+    const row = cell && cell.parentElement ? cell.parentElement.rowIndex : -1;
+    const col = cell ? cell.cellIndex : -1;
+    return { row, col };
+  }
+
+  function cellsInRect(table, a, b){
+    if(!table || !a || !b) return [];
+    const ca = coordOf(a), cb = coordOf(b);
+    const minRow = Math.min(ca.row, cb.row);
+    const maxRow = Math.max(ca.row, cb.row);
+    const minCol = Math.min(ca.col, cb.col);
+    const maxCol = Math.max(ca.col, cb.col);
+    return allCellsIn(table).filter(cell => {
+      const cc = coordOf(cell);
+      return cc.row >= minRow && cc.row <= maxRow && cc.col >= minCol && cc.col <= maxCol;
+    });
+  }
+
+  function clearSelection(keepAnchor){
+    selected.forEach(cell => cell.classList.remove(SELECTED_CLASS));
+    selected = new Set();
+    if(!keepAnchor) anchorCell = null;
+    updateTooltip();
+  }
+
+  function applySelection(nextSet){
+    selected.forEach(cell => { if(!nextSet.has(cell)) cell.classList.remove(SELECTED_CLASS); });
+    nextSet.forEach(cell => { if(!selected.has(cell)) cell.classList.add(SELECTED_CLASS); });
+    selected = nextSet;
+    updateTooltip(pointerX, pointerY);
+  }
+
+  function toggleCell(cell){
+    const next = new Set(selected);
+    if(next.has(cell)) next.delete(cell); else next.add(cell);
+    applySelection(next);
+  }
+
+  function parseNumber(text){
+    const raw = String(text == null ? '' : text).replace(/\u00a0/g, ' ').trim();
+    if(!raw) return null;
+    let normalized = raw.replace(/\s+/g, '');
+    if(/^[-+]?\d{1,3}(\.\d{3})*(,\d+)?$/.test(normalized)) normalized = normalized.replace(/\./g,'').replace(',', '.');
+    else if(/^[-+]?\d{1,3}(,\d{3})*(\.\d+)?$/.test(normalized)) normalized = normalized.replace(/,/g,'');
+    else normalized = normalized.replace(/,/g,'.');
+    if(!/^[-+]?\d*\.?\d+$/.test(normalized)) return null;
+    const value = Number(normalized);
+    return Number.isFinite(value) ? value : null;
+  }
+
+  function cellText(cell){
+    if(!cell) return '';
+    return (cell.innerText || cell.textContent || '').trim();
+  }
+
+  function formatNumber(value){
+    return new Intl.NumberFormat('ro-RO', { maximumFractionDigits: 2 }).format(value || 0);
+  }
+
+  function updateTooltip(x, y){
+    if(hideTimer){ clearTimeout(hideTimer); hideTimer = null; }
+    const count = selected.size;
+    if(!count){
+      tooltip.hidden = true;
+      tooltip.style.left = '-9999px';
+      tooltip.style.top = '-9999px';
+      return;
+    }
+    const numbers = [];
+    selected.forEach(cell => {
+      const n = parseNumber(cellText(cell));
+      if(n !== null) numbers.push(n);
+    });
+    const sum = numbers.reduce((acc, n) => acc + n, 0);
+    const avg = numbers.length ? (sum / numbers.length) : null;
+    tooltip.textContent = 'Pătrate: ' + count + ' • Sumă: ' + formatNumber(sum) + ' • Medie: ' + (avg === null ? '-' : formatNumber(avg));
+    tooltip.hidden = false;
+    if(typeof x === 'number' && typeof y === 'number'){
+      const pad = 16;
+      let left = x + 18;
+      let top = y + 18;
+      const rect = tooltip.getBoundingClientRect();
+      if(left + rect.width + pad > window.innerWidth) left = Math.max(pad, x - rect.width - 18);
+      if(top + rect.height + pad > window.innerHeight) top = Math.max(pad, y - rect.height - 18);
+      tooltip.style.left = left + 'px';
+      tooltip.style.top = top + 'px';
+    }
+  }
+
+  function hideTooltipSoon(){
+    if(hideTimer) clearTimeout(hideTimer);
+    hideTimer = setTimeout(() => {
+      tooltip.hidden = true;
+      tooltip.style.left = '-9999px';
+      tooltip.style.top = '-9999px';
+    }, 1200);
+  }
+
+  function closestCellFromPoint(x, y){
+    const el = document.elementFromPoint(x, y);
+    return el && el.closest ? el.closest(CELL_SELECTOR) : null;
+  }
+
+  function closestScroller(el){
+    let node = el;
+    while(node && node !== document.body){
+      const style = window.getComputedStyle(node);
+      const overflowY = style.overflowY;
+      const overflowX = style.overflowX;
+      const scrollableY = /(auto|scroll|overlay)/.test(overflowY) && node.scrollHeight > node.clientHeight;
+      const scrollableX = /(auto|scroll|overlay)/.test(overflowX) && node.scrollWidth > node.clientWidth;
+      if(scrollableY || scrollableX) return node;
+      node = node.parentElement;
+    }
+    return document.scrollingElement || document.documentElement;
+  }
+
+  function startAutoScroll(){
+    if(scrollFrame) return;
+    const step = () => {
+      if(!pending){ scrollFrame = null; return; }
+      const scroller = pending.scroller;
+      if(scroller){
+        const rect = scroller.getBoundingClientRect();
+        const margin = 42;
+        let dx = 0, dy = 0;
+        if(pointerX < rect.left + margin) dx = -Math.ceil((rect.left + margin - pointerX) / 8);
+        else if(pointerX > rect.right - margin) dx = Math.ceil((pointerX - (rect.right - margin)) / 8);
+        if(pointerY < rect.top + margin) dy = -Math.ceil((rect.top + margin - pointerY) / 8);
+        else if(pointerY > rect.bottom - margin) dy = Math.ceil((pointerY - (rect.bottom - margin)) / 8);
+        if(dx || dy){
+          scroller.scrollLeft += dx;
+          scroller.scrollTop += dy;
+          updateDragSelection(closestCellFromPoint(pointerX, pointerY));
+        }
+      }
+      scrollFrame = requestAnimationFrame(step);
+    };
+    scrollFrame = requestAnimationFrame(step);
+  }
+
+  function stopAutoScroll(){
+    if(scrollFrame){
+      cancelAnimationFrame(scrollFrame);
+      scrollFrame = null;
+    }
+  }
+
+  function updateDragSelection(targetCell){
+    if(!pending || !pending.table || !pending.cell || !targetCell) return;
+    const sameTable = targetCell.closest('table') === pending.table;
+    if(!sameTable) return;
+    const rectCells = cellsInRect(pending.table, pending.cell, targetCell);
+    const next = new Set(baseSelection);
+    rectCells.forEach(cell => next.add(cell));
+    applySelection(next);
+  }
+
+  function beginDrag(){
+    if(!pending || dragging) return;
+    dragging = true;
+    document.body.classList.add('ms-selection-active');
+    if(document.activeElement && document.activeElement !== document.body && document.activeElement.blur){
+      try{ document.activeElement.blur(); }catch(_e){}
+    }
+    baseSelection = pending.additive ? new Set(selected) : new Set();
+    if(!pending.additive){
+      clearSelection(true);
+    }
+    updateDragSelection(pending.cell);
+    startAutoScroll();
+  }
+
+  function finishPointer(){
+    stopAutoScroll();
+    document.body.classList.remove('ms-selection-active');
+    if(!pending){ dragging = false; return; }
+    if(!dragging){
+      if(pending.shift && anchorCell && anchorCell.closest('table') === pending.table){
+        const next = pending.additive ? new Set(selected) : new Set();
+        cellsInRect(pending.table, anchorCell, pending.cell).forEach(cell => next.add(cell));
+        applySelection(next);
+        anchorCell = pending.cell;
+        hideTooltipSoon();
+      } else if(pending.additive){
+        toggleCell(pending.cell);
+        anchorCell = pending.cell;
+        hideTooltipSoon();
+      } else {
+        anchorCell = pending.cell;
+      }
+    } else {
+      anchorCell = pending.cell;
+      hideTooltipSoon();
+    }
+    pending = null;
+    dragging = false;
+  }
+
+  document.addEventListener('pointerdown', function(event){
+    if(event.button !== 0) return;
+    const cell = event.target && event.target.closest ? event.target.closest(CELL_SELECTOR) : null;
+    if(!cell) return;
+    pointerX = event.clientX;
+    pointerY = event.clientY;
+    pending = {
+      cell,
+      table: cell.closest('table'),
+      additive: !!(event.ctrlKey || event.metaKey),
+      shift: !!event.shiftKey,
+      startX: event.clientX,
+      startY: event.clientY,
+      scroller: closestScroller(cell)
+    };
+  }, true);
+
+  document.addEventListener('pointermove', function(event){
+    pointerX = event.clientX;
+    pointerY = event.clientY;
+    if(!pending) return;
+    if(!dragging){
+      const dx = Math.abs(event.clientX - pending.startX);
+      const dy = Math.abs(event.clientY - pending.startY);
+      if(dx < 4 && dy < 4) return;
+      beginDrag();
+    }
+    const targetCell = closestCellFromPoint(event.clientX, event.clientY);
+    updateDragSelection(targetCell);
+    updateTooltip(event.clientX, event.clientY);
+    event.preventDefault();
+  }, true);
+
+  document.addEventListener('pointerup', finishPointer, true);
+  document.addEventListener('pointercancel', finishPointer, true);
+
+  document.addEventListener('keydown', function(event){
+    if(event.key === 'Escape'){
+      clearSelection();
+      tooltip.hidden = true;
+    }
+  });
+})();
+</script>
+
+</body>
 </html>
