@@ -402,7 +402,7 @@
             <span id="deliveryAlertText">Fără alerte active</span>
           </div>
         </div>
-        <div class="hint" id="hintText">Se salvează în rf_documents / planificare-forja.</div>
+        <div class="hint" id="hintText">Drag rapid pe celule pentru selecție • dublu click pentru editare • Shift+click pentru interval.</div>
       </div>
 
       <div class="tableWrap" id="tableWrap">
@@ -569,6 +569,8 @@
         autoScrollRaf: 0,
         autoScrollDx: 0,
         autoScrollDy: 0,
+        deferFocusCell: null,
+        anchorCell: null,
         stats: { count:0, numericCount:0, sum:0, avg:0 }
       }
     };
@@ -3627,13 +3629,13 @@ function getDefaultPermissions(role){
       const wrap = els.tableWrap;
       if(!wrap || !state.multiSelect.active) return;
       const rect = wrap.getBoundingClientRect();
-      const edge = 34;
+      const edge = 48;
       let dx = 0;
       let dy = 0;
-      if(clientX > rect.right - edge) dx = Math.min(22, Math.max(8, Math.round((clientX - (rect.right - edge)) * 0.45)));
-      else if(clientX < rect.left + edge) dx = -Math.min(22, Math.max(8, Math.round(((rect.left + edge) - clientX) * 0.45)));
-      if(clientY > rect.bottom - edge) dy = Math.min(18, Math.max(6, Math.round((clientY - (rect.bottom - edge)) * 0.4)));
-      else if(clientY < rect.top + edge) dy = -Math.min(18, Math.max(6, Math.round(((rect.top + edge) - clientY) * 0.4)));
+      if(clientX > rect.right - edge) dx = Math.min(34, Math.max(10, Math.round((clientX - (rect.right - edge)) * 0.65)));
+      else if(clientX < rect.left + edge) dx = -Math.min(34, Math.max(10, Math.round(((rect.left + edge) - clientX) * 0.65)));
+      if(clientY > rect.bottom - edge) dy = Math.min(26, Math.max(8, Math.round((clientY - (rect.bottom - edge)) * 0.58)));
+      else if(clientY < rect.top + edge) dy = -Math.min(26, Math.max(8, Math.round(((rect.top + edge) - clientY) * 0.58)));
       state.multiSelect.autoScrollDx = dx;
       state.multiSelect.autoScrollDy = dy;
       if((dx || dy) && !state.multiSelect.autoScrollRaf){
@@ -3719,6 +3721,27 @@ function getDefaultPermissions(role){
     function getSelectablePlanCellFromPoint(clientX, clientY){
       const el = document.elementFromPoint(clientX, clientY);
       return getSelectablePlanCellFromNode(el);
+    }
+
+    function getPrimaryEditableInput(cell){
+      if(!cell) return null;
+      const input = cell.querySelector('input.cell-input:not([disabled])');
+      return input || null;
+    }
+
+    function focusEditableCell(cell, selectAll){
+      const input = getPrimaryEditableInput(cell);
+      if(!input) return;
+      requestAnimationFrame(function(){
+        try{
+          input.focus({ preventScroll:true });
+        }catch(_e){
+          try{ input.focus(); }catch(__e){}
+        }
+        if(selectAll && typeof input.select === 'function'){
+          try{ input.select(); }catch(_e){}
+        }
+      });
     }
 
     function parseSelectedCellNumber(cell){
@@ -3808,6 +3831,19 @@ function getDefaultPermissions(role){
       const cell = getSelectablePlanCellFromNode(event.target);
       if(!cell) return;
       const inputTarget = event.target && event.target.closest ? event.target.closest('input.cell-input') : null;
+
+      if(event.shiftKey && state.multiSelect.anchorCell && state.multiSelect.anchorCell !== cell){
+        if(inputTarget) event.preventDefault();
+        state.multiSelect.startCell = state.multiSelect.anchorCell;
+        state.multiSelect.currentCell = cell;
+        state.multiSelect.lastClientX = Number(event.clientX || 0);
+        state.multiSelect.lastClientY = Number(event.clientY || 0);
+        applyMultiCellSelectionRange(state.multiSelect.anchorCell, cell);
+        state.multiSelect.suppressClickUntil = Date.now() + 140;
+        updateSelectionStatsBubble();
+        return;
+      }
+
       state.multiSelect.active = true;
       state.multiSelect.dragging = false;
       state.multiSelect.startCell = cell;
@@ -3818,7 +3854,12 @@ function getDefaultPermissions(role){
       state.multiSelect.lastClientY = Number(event.clientY || 0);
       state.multiSelect.startedOnInput = !!inputTarget;
       state.multiSelect.inputTarget = inputTarget || null;
+      state.multiSelect.deferFocusCell = inputTarget ? cell : null;
+      state.multiSelect.anchorCell = cell;
       state.multiSelect.suppressClickUntil = 0;
+      if(inputTarget){
+        event.preventDefault();
+      }
       updateSelectionStatsBubble();
     }
 
@@ -3828,13 +3869,14 @@ function getDefaultPermissions(role){
       state.multiSelect.lastClientY = Number(event.clientY || 0);
       const currentCell = getSelectablePlanCellFromPoint(event.clientX, event.clientY) || state.multiSelect.currentCell || state.multiSelect.startCell;
       if(!currentCell) return;
-      const movedEnough = Math.abs(Number(event.clientX || 0) - state.multiSelect.startX) > 1 || Math.abs(Number(event.clientY || 0) - state.multiSelect.startY) > 1;
+      const movedEnough = Math.abs(Number(event.clientX || 0) - state.multiSelect.startX) > 2 || Math.abs(Number(event.clientY || 0) - state.multiSelect.startY) > 2;
       if(!state.multiSelect.dragging && !movedEnough && currentCell === state.multiSelect.startCell){
         updateSelectionStatsBubble();
         return;
       }
       if(!state.multiSelect.dragging){
         state.multiSelect.dragging = true;
+        state.multiSelect.deferFocusCell = null;
         document.body.classList.add('grid-range-selecting');
         try{
           const inputTarget = state.multiSelect.inputTarget;
@@ -3854,11 +3896,13 @@ function getDefaultPermissions(role){
     function finishMultiCellSelection(event){
       if(!state.multiSelect.active) return;
       const wasDragging = !!state.multiSelect.dragging;
+      const focusCell = state.multiSelect.deferFocusCell;
       state.multiSelect.active = false;
       state.multiSelect.dragging = false;
       state.multiSelect.startCell = null;
       state.multiSelect.currentCell = null;
       state.multiSelect.inputTarget = null;
+      state.multiSelect.deferFocusCell = null;
       stopMultiSelectAutoScroll();
       document.body.classList.remove('grid-range-selecting');
       updateSelectionStatsBubble();
@@ -3870,6 +3914,9 @@ function getDefaultPermissions(role){
         }
       }else{
         setSelectionStatsVisible(false);
+        if(focusCell){
+          focusEditableCell(focusCell, true);
+        }
       }
     }
 
@@ -4286,6 +4333,12 @@ function getDefaultPermissions(role){
         if(row) setSelectedRow(row.getAttribute('data-row-id'));
       });
       els.planBody.addEventListener('mousedown', beginMultiCellSelection);
+      els.planBody.addEventListener('dblclick', function(event){
+        const cell = getSelectablePlanCellFromNode(event.target);
+        if(!cell) return;
+        clearMultiCellSelection();
+        focusEditableCell(cell, true);
+      });
       document.addEventListener('mousemove', handleMultiCellSelectionMove);
       document.addEventListener('mouseup', finishMultiCellSelection);
       document.addEventListener('mousedown', function(event){
