@@ -3206,12 +3206,92 @@ async function applyDomPermissions(pageKey, root, options) {
     if (window.__RF_ACL_EVENT_GUARDS__) return;
     window.__RF_ACL_EVENT_GUARDS__ = true;
 
-    document.addEventListener('dblclick', function (ev) {
+    function getRowsEditControl(state) {
+      return state && state.controls ? state.controls['rows.edit'] : null;
+    }
+
+    function getControlSnapshot(state, key) {
+      return state && state.controls ? state.controls[String(key || '').trim()] : null;
+    }
+
+    function closestActionTarget(node) {
+      if (!node || !node.closest) return null;
+      return node.closest('[data-rf-control],[data-rf-field],button,a,[role="button"],input[type="button"],input[type="submit"],input[type="file"],summary,[onclick],.btn,.button,.action,.toolbarBtn,.iconBtn');
+    }
+
+    function inferControlKeyFromTarget(target, pageKey) {
+      if (!target || !target.getAttribute) return '';
+      var explicit = String(target.getAttribute('data-rf-control') || target.getAttribute('data-rf-field') || '').trim();
+      if (explicit) return explicit;
+      if (target.matches && target.matches('input,select,textarea,[contenteditable]')) {
+        if (isFilterField(target)) return 'rows.filter';
+        var fieldKey = inferFieldControlKey(target);
+        if (fieldKey) return fieldKey;
+      }
+      return classifyActionElement(target, pageKey) || '';
+    }
+
+    function isMutationTarget(target, state) {
+      var edit = getRowsEditControl(state);
+      if (!edit || edit.can_use !== false) return false;
+      if (!target) return false;
+      if (elementInFilterZone(target)) return false;
+      if (target.matches && target.matches('input,select,textarea,[contenteditable]')) return true;
+      if (elementInEditableGrid(target)) return true;
+      if (elementInEditorForm(target)) return true;
+      return false;
+    }
+
+    function shouldAllowReadonlyKey(ev) {
+      if (!ev) return true;
+      if (ev.ctrlKey || ev.metaKey || ev.altKey) return true;
+      var key = String(ev.key || '');
+      return key === 'Tab' || key === 'Escape' || key === 'Shift' || key === 'Control' || key === 'Alt' || key === 'Meta' || key.indexOf('Arrow') === 0 || key === 'Home' || key === 'End' || key === 'PageUp' || key === 'PageDown';
+    }
+
+    function blockEvent(ev) {
+      if (!ev) return;
+      ev.preventDefault();
+      ev.stopImmediatePropagation();
+      if (typeof ev.stopPropagation === 'function') ev.stopPropagation();
+    }
+
+    function guardAction(ev) {
       var state = currentPageFlags();
-      var edit = state.controls && state.controls['rows.edit'];
-      if (edit && edit.can_use === false && elementInEditableGrid(ev.target)) {
-        ev.preventDefault();
-        ev.stopImmediatePropagation();
+      var pageKey = state && state.pageKey ? state.pageKey : currentPageKey();
+      var actionTarget = closestActionTarget(ev.target);
+      if (!actionTarget) return false;
+      var controlKey = inferControlKeyFromTarget(actionTarget, pageKey);
+      if (!controlKey || controlKey === 'rows.filter') return false;
+      var control = getControlSnapshot(state, controlKey);
+      if (control && (control.can_view === false || control.can_use === false)) {
+        blockEvent(ev);
+        return true;
+      }
+      return false;
+    }
+
+    document.addEventListener('click', function (ev) {
+      if (guardAction(ev)) return;
+      var state = currentPageFlags();
+      if (isMutationTarget(ev.target, state) && !closestActionTarget(ev.target)) {
+        blockEvent(ev);
+      }
+    }, true);
+
+    document.addEventListener('pointerdown', function (ev) {
+      if (guardAction(ev)) return;
+      var state = currentPageFlags();
+      if (isMutationTarget(ev.target, state)) {
+        blockEvent(ev);
+      }
+    }, true);
+
+    document.addEventListener('dblclick', function (ev) {
+      if (guardAction(ev)) return;
+      var state = currentPageFlags();
+      if (isMutationTarget(ev.target, state)) {
+        blockEvent(ev);
       }
     }, true);
 
@@ -3219,21 +3299,54 @@ async function applyDomPermissions(pageKey, root, options) {
       var form = ev.target;
       if (!form || elementInFilterZone(form)) return;
       var state = currentPageFlags();
-      var save = state.controls && state.controls['cloud.save'];
-      if (save && save.can_use === false && elementInEditorForm(form)) {
-        ev.preventDefault();
-        ev.stopImmediatePropagation();
+      var save = getControlSnapshot(state, 'cloud.save');
+      if ((save && save.can_use === false && elementInEditorForm(form)) || isMutationTarget(form, state)) {
+        blockEvent(ev);
+      }
+    }, true);
+
+    document.addEventListener('focusin', function (ev) {
+      var state = currentPageFlags();
+      if (!isMutationTarget(ev.target, state)) return;
+      if (ev.target && typeof ev.target.blur === 'function') {
+        try { ev.target.blur(); } catch (_) {}
       }
     }, true);
 
     document.addEventListener('beforeinput', function (ev) {
-      var target = ev.target;
       var state = currentPageFlags();
-      var edit = state.controls && state.controls['rows.edit'];
-      if (edit && edit.can_use === false && target && target.hasAttribute && target.hasAttribute('contenteditable')) {
-        ev.preventDefault();
-        ev.stopImmediatePropagation();
+      if (isMutationTarget(ev.target, state)) {
+        blockEvent(ev);
       }
+    }, true);
+
+    document.addEventListener('input', function (ev) {
+      var state = currentPageFlags();
+      if (isMutationTarget(ev.target, state)) {
+        blockEvent(ev);
+      }
+    }, true);
+
+    document.addEventListener('change', function (ev) {
+      var state = currentPageFlags();
+      if (isMutationTarget(ev.target, state)) {
+        blockEvent(ev);
+      }
+    }, true);
+
+    document.addEventListener('paste', function (ev) {
+      var state = currentPageFlags();
+      if (isMutationTarget(ev.target, state)) {
+        blockEvent(ev);
+      }
+    }, true);
+
+    document.addEventListener('keydown', function (ev) {
+      if (guardAction(ev)) return;
+      var state = currentPageFlags();
+      if (!isMutationTarget(ev.target, state)) return;
+      if (shouldAllowReadonlyKey(ev)) return;
+      blockEvent(ev);
     }, true);
   }
 
