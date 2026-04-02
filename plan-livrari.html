@@ -123,295 +123,619 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
 <script src="./kad-nav-shell.js"></script>
 <script>window.PRELUCRARI_GRID_CONFIG = {"storageKey": "kad-prelucrari-grid:plan-livrari", "enableHolidayHighlight": true};</script>
 <script src="./prelucrari-grid-edit.js"></script>
+
 <script>
 (function(){
-  const STORAGE_SCROLL = 'kad-plan-livrari-scroll-v3';
-  const STORAGE_HIDDEN = 'kad-plan-livrari-hidden-weeks-v3';
+  const DOC_KEY = 'plan-livrari-live-sync-v1';
+  const STORAGE_SCROLL = 'kad-plan-livrari-scroll-v5';
+  const STORAGE_CACHE = 'kad-plan-livrari-cache-v5';
+  const SAVE_DEBOUNCE_MS = 140;
+  const REMOTE_POLL_MS = 1200;
+  const FIXED_COLS = 2;
+  const HEADER_ROWS = 3;
+  const DAY_NAMES = ['duminică','luni','marți','miercuri','joi','vineri','sâmbătă'];
+
   const scrollEl = document.getElementById('sheetScroll');
   const table = document.getElementById('planLivrariTable');
   const btnAdd = document.getElementById('btnAddWeek');
   const btnToggle = document.getElementById('btnToggleWeek');
   if(!scrollEl || !table) return;
 
-  function saveScroll(){
-    const payload = {left: scrollEl.scrollLeft, top: scrollEl.scrollTop};
-    try{ localStorage.setItem(STORAGE_SCROLL, JSON.stringify(payload)); }catch(_){}
-  }
-  function restoreScroll(){
-    try{
-      const payload = JSON.parse(localStorage.getItem(STORAGE_SCROLL) || '{}');
-      const left = Number(payload.left || 0);
-      const top = Number(payload.top || 0);
-      requestAnimationFrame(() => {
-        scrollEl.scrollLeft = left;
-        scrollEl.scrollTop = top;
-        requestAnimationFrame(() => {
-          scrollEl.scrollLeft = left;
-          scrollEl.scrollTop = top;
-        });
-      });
-    }catch(_){}
-  }
-  scrollEl.addEventListener('scroll', saveScroll, {passive:true});
-  window.addEventListener('beforeunload', saveScroll);
-  window.addEventListener('load', restoreScroll);
+  const state = {
+    hiddenWeekIds: [],
+    saveTimer: 0,
+    saving: false,
+    pendingSave: false,
+    currentSignature: '',
+    lastSavedSignature: '',
+    lastAppliedRemoteSignature: '',
+    cloudUpdatedAt: '',
+    editingCell: null,
+    pendingRemote: null,
+    supa: null,
+    channel: null,
+    pollTimer: 0,
+    clientId: 'planliv-' + Math.random().toString(36).slice(2, 10)
+  };
 
-  function getRows(){
-    return Array.from(table.querySelectorAll(':scope > tr'));
-  }
+  function getRows(){ return Array.from(table.rows); }
   function getCols(){
-    const colgroup = table.querySelector('colgroup');
-    return colgroup ? Array.from(colgroup.children) : [];
-  }
-
-  function parseWeekGroups(){
-    const rows = getRows();
-    if(!rows.length) return [];
-    const headerCells = Array.from(rows[0].children).slice(2);
-    let startCol = 2;
-    return headerCells.map(cell => {
-      const span = Math.max(1, Number(cell.colSpan || 1));
-      const week = String(cell.textContent || '').trim();
-      const g = {week, cell, startCol, span};
-      startCol += span;
-      return g;
-    });
-  }
-
-  function getHiddenWeeks(){
-    try{
-      return new Set(JSON.parse(localStorage.getItem(STORAGE_HIDDEN) || '[]').map(String));
-    }catch(_){
-      return new Set();
-    }
-  }
-  function setHiddenWeeks(set){
-    try{ localStorage.setItem(STORAGE_HIDDEN, JSON.stringify(Array.from(set))); }catch(_){}
-  }
-
-  function applyHiddenWeeks(){
-    const rows = getRows();
-    const cols = getCols();
-    const hidden = getHiddenWeeks();
-    const groups = parseWeekGroups();
-    groups.forEach(group => {
-      const visible = !hidden.has(group.week);
-      group.cell.style.display = visible ? '' : 'none';
-      for(let c = group.startCol; c < group.startCol + group.span; c++){
-        if(cols[c]) cols[c].style.display = visible ? '' : 'none';
-        for(let r = 1; r < rows.length; r++){
-          const cell = rows[r].children[c];
-          if(cell) cell.style.display = visible ? '' : 'none';
-        }
-      }
-    });
-  }
-
-  function formatDate(dt){
-    const d = String(dt.getDate()).padStart(2,'0');
-    const m = String(dt.getMonth()+1).padStart(2,'0');
-    const y = dt.getFullYear();
-    return `${d}.${m}.${y}`;
+    const cg = table.querySelector('colgroup');
+    return cg ? Array.from(cg.children) : [];
   }
   function parseDate(text){
     const m = String(text || '').trim().match(/^(\d{2})\.(\d{2})\.(\d{4})$/);
     if(!m) return null;
-    return new Date(Number(m[3]), Number(m[2])-1, Number(m[1]));
+    return new Date(Number(m[3]), Number(m[2]) - 1, Number(m[1]));
+  }
+  function formatDate(dt){
+    const d = String(dt.getDate()).padStart(2, '0');
+    const m = String(dt.getMonth() + 1).padStart(2, '0');
+    const y = dt.getFullYear();
+    return `${d}.${m}.${y}`;
+  }
+  function isoWeek(date){
+    const dt = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+    const day = dt.getUTCDay() || 7;
+    dt.setUTCDate(dt.getUTCDate() + 4 - day);
+    const yearStart = new Date(Date.UTC(dt.getUTCFullYear(), 0, 1));
+    return Math.ceil((((dt - yearStart) / 86400000) + 1) / 7);
+  }
+  function rawCellValue(cell){
+    if(!cell) return '';
+    return String(cell.textContent || '').replace(/\u00a0/g, ' ').trim();
+  }
+  function formatComputedNumber(value){
+    if(!Number.isFinite(value)) return null;
+    if(Math.abs(value - Math.round(value)) < 1e-9) return String(Math.round(value));
+    return String(Number(value.toFixed(3))).replace(/\.0+$/, '').replace(/(\.\d*?)0+$/, '$1');
+  }
+  function maybeEvaluateExpression(text){
+    const cleaned = String(text || '').trim();
+    if(!cleaned) return null;
+    if(!/[+\-*/()]/.test(cleaned)) return null;
+    const expr = cleaned.replace(/,/g, '.').replace(/\s+/g, '');
+    if(!/^[0-9.+\-*/()]+$/.test(expr)) return null;
+    try{
+      const value = Function(`"use strict"; return (${expr});`)();
+      return formatComputedNumber(Number(value));
+    }catch(_err){
+      return null;
+    }
   }
 
-  function cloneCell(cell, clearText){
-    const clone = cell.cloneNode(true);
-    clone.style.display = '';
-    if(clearText){
-      clone.textContent = '\u00A0';
-    }
-    return clone;
+  function saveScroll(){
+    try{
+      localStorage.setItem(STORAGE_SCROLL, JSON.stringify({ left: scrollEl.scrollLeft, top: scrollEl.scrollTop }));
+    }catch(_err){}
   }
-
-  function addWeek(){
-    saveScroll();
-    const rows = getRows();
-    const cols = getCols();
-    if(rows.length < 4 || cols.length < 9) return;
-
-    const row1 = rows[0], row2 = rows[1], row3 = rows[2];
-    const lastWeekHeader = row1.lastElementChild;
-    const currentWeek = parseInt((lastWeekHeader?.textContent || '').trim(), 10);
-    const nextWeek = Number.isFinite(currentWeek) ? currentWeek + 1 : '';
-
-    // append 7 columns
-    const colgroup = table.querySelector('colgroup');
-    const last7Cols = cols.slice(-7);
-    last7Cols.forEach(col => colgroup.appendChild(col.cloneNode(true)));
-
-    // row1 week header
-    const newWeek = lastWeekHeader.cloneNode(true);
-    newWeek.style.display = '';
-    newWeek.textContent = String(nextWeek);
-    row1.appendChild(newWeek);
-
-    // row2 weekdays
-    const srcWeekdays = Array.from(row2.children).slice(-7);
-    srcWeekdays.forEach(cell => {
-      const clone = cell.cloneNode(true);
-      clone.style.display = '';
-      row2.appendChild(clone);
-    });
-
-    // row3 dates
-    const dateCells = Array.from(row3.children);
-    const lastDateCell = dateCells[dateCells.length - 1];
-    const lastDate = parseDate(lastDateCell ? lastDateCell.textContent : '');
-    let baseDate = lastDate || new Date();
-    for(let i=1;i<=7;i++){
-      const src = dateCells[dateCells.length - 7 + (i-1)];
-      const clone = src.cloneNode(true);
-      clone.style.display = '';
-      const nextDate = new Date(baseDate);
-      nextDate.setDate(baseDate.getDate() + i);
-      clone.textContent = formatDate(nextDate);
-      row3.appendChild(clone);
-    }
-
-    // body rows
-    for(let r=3; r<rows.length; r++){
-      const srcCells = Array.from(rows[r].children).slice(-7);
-      srcCells.forEach(cell => {
-        const clone = cell.cloneNode(true);
-        clone.style.display = '';
-        clone.textContent = '\u00A0';
-        rows[r].appendChild(clone);
+  function restoreScroll(){
+    try{
+      const data = JSON.parse(localStorage.getItem(STORAGE_SCROLL) || '{}');
+      const left = Number(data.left || 0);
+      const top = Number(data.top || 0);
+      requestAnimationFrame(() => {
+        scrollEl.scrollLeft = left;
+        scrollEl.scrollTop = top;
       });
-    }
-
-    applyHiddenWeeks();
-    restoreScroll();
+    }catch(_err){}
   }
 
-  function toggleWeek(){
-    const groups = parseWeekGroups();
-    const promptText = 'Scrie numărul săptămânii pe care vrei să o ascunzi / arăți:';
-    const value = window.prompt(promptText, '');
-    if(value == null) return;
-    const week = String(value).trim();
-    if(!week) return;
-    const match = groups.find(g => g.week === week);
-    if(!match){
-      alert('Săptămâna nu există în tabel.');
-      return;
-    }
-    const hidden = getHiddenWeeks();
-    if(hidden.has(week)) hidden.delete(week); else hidden.add(week);
-    setHiddenWeeks(hidden);
-    applyHiddenWeeks();
-    saveScroll();
+  function getWeekGroups(){
+    const rows = getRows();
+    const row1 = rows[0];
+    if(!row1) return [];
+    let startCol = FIXED_COLS;
+    return Array.from(row1.cells).slice(FIXED_COLS).map((cell, idx) => {
+      const span = Math.max(1, Number(cell.colSpan || 1));
+      if(!cell.dataset.weekId) cell.dataset.weekId = `week-${idx+1}`;
+      const group = { id: cell.dataset.weekId, cell, startCol, span, week: String(cell.textContent || '').trim() };
+      startCol += span;
+      return group;
+    });
   }
 
-  btnAdd?.addEventListener('click', addWeek);
-  btnToggle?.addEventListener('click', toggleWeek);
-  applyHiddenWeeks();
-  restoreScroll();
-})();
-</script>
-<script id="plan-livrari-weekend-holiday-fix-script">
-(function(){
-  const table = document.getElementById('planLivrariTable');
-  if(!table) return;
+  function markEditableCells(){
+    const rows = getRows();
+    for(let r = HEADER_ROWS; r < rows.length; r++){
+      const row = rows[r];
+      for(let c = FIXED_COLS; c < row.cells.length; c++){
+        const cell = row.cells[c];
+        if(!cell) continue;
+        cell.classList.add('editable-grid-cell');
+        cell.setAttribute('contenteditable', 'true');
+        cell.setAttribute('spellcheck', 'false');
+        cell.setAttribute('tabindex', '0');
+      }
+    }
+  }
 
+  function updateWeekNumbersAndHeaders(){
+    const rows = getRows();
+    if(rows.length < HEADER_ROWS) return;
+    const row2 = rows[1];
+    const row3 = rows[2];
+    getWeekGroups().forEach((group, index) => {
+      const firstDateCell = row3.cells[group.startCol];
+      const dt = firstDateCell ? parseDate(firstDateCell.textContent) : null;
+      if(dt) group.cell.textContent = String(isoWeek(dt));
+      else if(!String(group.cell.textContent || '').trim()) group.cell.textContent = String(index + 1);
+      for(let i = 0; i < group.span; i++){
+        const dateCell = row3.cells[group.startCol + i];
+        const dayCell = row2.cells[group.startCol + i];
+        const dateObj = dateCell ? parseDate(dateCell.textContent) : null;
+        if(dayCell && dateObj) dayCell.textContent = DAY_NAMES[dateObj.getDay()];
+      }
+      group.week = String(group.cell.textContent || '').trim();
+    });
+  }
+
+  function clearAutoColorMarks(){
+    table.querySelectorAll('.auto-weekend, .auto-holiday').forEach(cell => {
+      cell.classList.remove('auto-weekend', 'auto-holiday');
+      cell.style.removeProperty('background');
+    });
+  }
   function easterOrthodox(year){
     const a = year % 4;
     const b = year % 7;
     const c = year % 19;
-    const d = (19*c + 15) % 30;
-    const e = (2*a + 4*b - d + 34) % 7;
+    const d = (19 * c + 15) % 30;
+    const e = (2 * a + 4 * b - d + 34) % 7;
     const month = Math.floor((d + e + 114) / 31);
     const day = ((d + e + 114) % 31) + 1;
     const julian = new Date(Date.UTC(year, month - 1, day));
     julian.setUTCDate(julian.getUTCDate() + 13);
     return new Date(julian.getUTCFullYear(), julian.getUTCMonth(), julian.getUTCDate());
   }
-
   function holidaySetForYear(year){
     const set = new Set();
-    const add = (y,m,d)=> set.add(`${y}-${String(m).padStart(2,'0')}-${String(d).padStart(2,'0')}`);
+    const add = (y,m,d) => set.add(`${y}-${String(m).padStart(2,'0')}-${String(d).padStart(2,'0')}`);
     add(year,1,1); add(year,1,2); add(year,1,24);
     add(year,5,1); add(year,6,1); add(year,8,15);
     add(year,11,30); add(year,12,1); add(year,12,25); add(year,12,26);
     const easter = easterOrthodox(year);
-    const goodFriday = new Date(easter); goodFriday.setDate(easter.getDate()-2);
-    const easterMonday = new Date(easter); easterMonday.setDate(easter.getDate()+1);
-    const pentecostSunday = new Date(easter); pentecostSunday.setDate(easter.getDate()+49);
-    const pentecostMonday = new Date(easter); pentecostMonday.setDate(easter.getDate()+50);
-    [goodFriday,easter,easterMonday,pentecostSunday,pentecostMonday].forEach(dt=>add(dt.getFullYear(), dt.getMonth()+1, dt.getDate()));
+    const goodFriday = new Date(easter); goodFriday.setDate(easter.getDate() - 2);
+    const easterMonday = new Date(easter); easterMonday.setDate(easter.getDate() + 1);
+    const pentecostSunday = new Date(easter); pentecostSunday.setDate(easter.getDate() + 49);
+    const pentecostMonday = new Date(easter); pentecostMonday.setDate(easter.getDate() + 50);
+    [goodFriday, easter, easterMonday, pentecostSunday, pentecostMonday].forEach(dt => add(dt.getFullYear(), dt.getMonth() + 1, dt.getDate()));
     return set;
   }
-
-  function parseDateCell(text){
-    const m = String(text || '').trim().match(/^(\d{2})\.(\d{2})\.(\d{4})$/);
-    if(!m) return null;
-    return new Date(Number(m[3]), Number(m[2])-1, Number(m[1]));
-  }
-
-  function clearMarks(){
-    table.querySelectorAll('.auto-weekend, .auto-holiday').forEach(el=>{
-      el.classList.remove('auto-weekend','auto-holiday');
-      el.style.removeProperty('background');
-    });
-  }
-
-  function markColumn(colIndex, cls){
-    const rows = Array.from(table.rows);
-    rows.forEach((row, rowIndex)=>{
-      const cell = row.cells[colIndex];
-      if(!cell) return;
-      cell.classList.remove('auto-weekend','auto-holiday');
-      cell.classList.add(cls);
-      const color = cls === 'auto-holiday' ? '#21ebe4' : '#daf2d0';
-      if(!(colIndex < 2)) {
-        cell.style.setProperty('background', color, 'important');
-      }
-    });
-  }
-
   function applyWeekendHolidayColors(){
-    if(!table.rows[2]) return;
-    clearMarks();
-    const headerDateRow = table.rows[2];
+    const rows = getRows();
+    if(rows.length < HEADER_ROWS) return;
+    clearAutoColorMarks();
+    const row3 = rows[2];
     const yearsCache = new Map();
-    for(let c=2; c<headerDateRow.cells.length; c++){
-      const cell = headerDateRow.cells[c];
-      if(!cell || cell.style.display === 'none') continue;
-      const dt = parseDateCell(cell.textContent);
+    for(let c = FIXED_COLS; c < row3.cells.length; c++){
+      const dateCell = row3.cells[c];
+      if(!dateCell || dateCell.style.display === 'none') continue;
+      const dt = parseDate(dateCell.textContent);
       if(!dt) continue;
-      const y = dt.getFullYear();
-      if(!yearsCache.has(y)) yearsCache.set(y, holidaySetForYear(y));
-      const key = `${y}-${String(dt.getMonth()+1).padStart(2,'0')}-${String(dt.getDate()).padStart(2,'0')}`;
-      const day = dt.getDay();
-      const isWeekend = day === 0 || day === 6;
-      const isHoliday = yearsCache.get(y).has(key);
-      if(isHoliday) markColumn(c, 'auto-holiday');
-      else if(isWeekend) markColumn(c, 'auto-weekend');
+      const year = dt.getFullYear();
+      if(!yearsCache.has(year)) yearsCache.set(year, holidaySetForYear(year));
+      const key = `${year}-${String(dt.getMonth()+1).padStart(2,'0')}-${String(dt.getDate()).padStart(2,'0')}`;
+      const isHoliday = yearsCache.get(year).has(key);
+      const isWeekend = dt.getDay() === 0 || dt.getDay() === 6;
+      if(!isHoliday && !isWeekend) continue;
+      const cls = isHoliday ? 'auto-holiday' : 'auto-weekend';
+      const color = isHoliday ? '#21ebe4' : '#daf2d0';
+      rows.forEach(row => {
+        const cell = row.cells[c];
+        if(!cell) return;
+        cell.classList.remove('auto-weekend', 'auto-holiday');
+        cell.classList.add(cls);
+        if(c >= FIXED_COLS) cell.style.setProperty('background', color, 'important');
+      });
     }
-    // keep first 2 frozen columns white/green as designed
-    for(let r=0; r<table.rows.length; r++){
-      for(let c=0; c<2; c++){
-        const cell = table.rows[r].cells[c];
-        if(cell) cell.style.removeProperty('background');
-      }
-    }
-    const model = table.rows[2]?.cells[0];
+    const model = rows[2] && rows[2].cells[0];
+    const target = rows[2] && rows[2].cells[1];
     if(model) model.style.setProperty('background', '#92d050', 'important');
-    const second = table.rows[2]?.cells[1];
-    if(second) second.style.setProperty('background', '#92d050', 'important');
+    if(target) target.style.setProperty('background', '#92d050', 'important');
   }
 
-  const run = ()=>requestAnimationFrame(()=>requestAnimationFrame(applyWeekendHolidayColors));
-  if(document.readyState === 'loading') document.addEventListener('DOMContentLoaded', run, {once:true});
-  window.addEventListener('load', run);
-  run();
+  function applyHiddenWeeks(){
+    const rows = getRows();
+    const cols = getCols();
+    const hidden = new Set((state.hiddenWeekIds || []).map(String));
+    getWeekGroups().forEach(group => {
+      const show = !hidden.has(group.id);
+      group.cell.style.display = show ? '' : 'none';
+      for(let c = group.startCol; c < group.startCol + group.span; c++){
+        if(cols[c]) cols[c].style.display = show ? '' : 'none';
+        for(let r = 1; r < rows.length; r++){
+          const cell = rows[r].cells[c];
+          if(cell) cell.style.display = show ? '' : 'none';
+        }
+      }
+    });
+  }
 
-  const obs = new MutationObserver(()=>run());
-  obs.observe(table, {childList:true, subtree:true});
+  function syncUiAfterStructureChange(){
+    updateWeekNumbersAndHeaders();
+    markEditableCells();
+    applyHiddenWeeks();
+    applyWeekendHolidayColors();
+  }
+
+  function addWeek(){
+    saveScroll();
+    const rows = getRows();
+    if(rows.length < HEADER_ROWS + 1) return;
+    const row1 = rows[0];
+    const row2 = rows[1];
+    const row3 = rows[2];
+    const colgroup = table.querySelector('colgroup');
+    if(!colgroup) return;
+    const allCols = Array.from(colgroup.children);
+    const last7Cols = allCols.slice(-7);
+    if(last7Cols.length < 7) return;
+
+    const lastDate = parseDate(row3.cells[row3.cells.length - 1] ? row3.cells[row3.cells.length - 1].textContent : '');
+    if(!lastDate) return;
+
+    last7Cols.forEach(col => colgroup.appendChild(col.cloneNode(true)));
+
+    const lastWeekCell = row1.cells[row1.cells.length - 1];
+    const newWeekCell = lastWeekCell ? lastWeekCell.cloneNode(true) : document.createElement('th');
+    newWeekCell.colSpan = 7;
+    newWeekCell.style.display = '';
+    newWeekCell.dataset.weekId = `week-${getWeekGroups().length + 1}`;
+    row1.appendChild(newWeekCell);
+
+    for(let i = 1; i <= 7; i++){
+      const nextDate = new Date(lastDate);
+      nextDate.setDate(lastDate.getDate() + i);
+
+      const dayClone = row2.cells[row2.cells.length - 7] ? row2.cells[row2.cells.length - 7].cloneNode(true) : document.createElement('th');
+      dayClone.style.display = '';
+      dayClone.textContent = DAY_NAMES[nextDate.getDay()];
+      dayClone.style.removeProperty('background');
+      dayClone.classList.remove('auto-weekend', 'auto-holiday');
+      row2.appendChild(dayClone);
+
+      const dateClone = row3.cells[row3.cells.length - 7] ? row3.cells[row3.cells.length - 7].cloneNode(true) : document.createElement('th');
+      dateClone.style.display = '';
+      dateClone.textContent = formatDate(nextDate);
+      dateClone.style.removeProperty('background');
+      dateClone.classList.remove('auto-weekend', 'auto-holiday');
+      row3.appendChild(dateClone);
+    }
+
+    for(let r = HEADER_ROWS; r < rows.length; r++){
+      const row = rows[r];
+      for(let i = 0; i < 7; i++){
+        const template = row.cells[row.cells.length - 7] ? row.cells[row.cells.length - 7].cloneNode(true) : document.createElement('td');
+        template.style.display = '';
+        template.textContent = '\u00A0';
+        template.style.removeProperty('background');
+        template.classList.remove('auto-weekend', 'auto-holiday');
+        row.appendChild(template);
+      }
+    }
+    syncUiAfterStructureChange();
+    scheduleSave(true);
+    restoreScroll();
+  }
+
+  function toggleWeek(){
+    const groups = getWeekGroups();
+    const value = window.prompt('Scrie numărul săptămânii pe care vrei să o ascunzi / arăți:', '');
+    if(value == null) return;
+    const weekNo = String(value).trim();
+    if(!weekNo) return;
+    const match = groups.find(g => String(g.cell.textContent || '').trim() === weekNo);
+    if(!match){
+      window.alert('Săptămâna nu există în tabel.');
+      return;
+    }
+    const hidden = new Set((state.hiddenWeekIds || []).map(String));
+    if(hidden.has(match.id)) hidden.delete(match.id); else hidden.add(match.id);
+    state.hiddenWeekIds = Array.from(hidden);
+    applyHiddenWeeks();
+    scheduleSave(true);
+  }
+
+  function nextEditableCell(cell, direction){
+    const rows = getRows();
+    const row = cell.parentElement;
+    const rowIndex = row ? row.rowIndex : -1;
+    const colIndex = cell.cellIndex;
+    if(direction === 'right' || direction === 'left'){
+      const flat = [];
+      for(let r = HEADER_ROWS; r < rows.length; r++){
+        const sourceRow = rows[r];
+        for(let c = FIXED_COLS; c < sourceRow.cells.length; c++){
+          const candidate = sourceRow.cells[c];
+          if(candidate && candidate.classList.contains('editable-grid-cell') && candidate.style.display !== 'none') flat.push(candidate);
+        }
+      }
+      const idx = flat.indexOf(cell);
+      if(idx === -1) return null;
+      return direction === 'right' ? (flat[idx + 1] || null) : (flat[idx - 1] || null);
+    }
+    if(direction === 'down'){
+      for(let r = rowIndex + 1; r < rows.length; r++){
+        const candidate = rows[r].cells[colIndex];
+        if(candidate && candidate.classList.contains('editable-grid-cell') && candidate.style.display !== 'none') return candidate;
+      }
+      return null;
+    }
+    if(direction === 'up'){
+      for(let r = rowIndex - 1; r >= HEADER_ROWS; r--){
+        const candidate = rows[r].cells[colIndex];
+        if(candidate && candidate.classList.contains('editable-grid-cell') && candidate.style.display !== 'none') return candidate;
+      }
+      return null;
+    }
+    return null;
+  }
+
+  function focusCell(cell){
+    if(!cell) return;
+    cell.focus();
+    const sel = window.getSelection && window.getSelection();
+    if(sel && document.createRange){
+      const range = document.createRange();
+      range.selectNodeContents(cell);
+      range.collapse(false);
+      sel.removeAllRanges();
+      sel.addRange(range);
+    }
+  }
+
+  function commitCell(cell){
+    if(!cell) return;
+    const text = rawCellValue(cell);
+    if(!text){
+      cell.innerHTML = '&nbsp;';
+      return;
+    }
+    const computed = maybeEvaluateExpression(text);
+    if(computed != null) cell.textContent = computed;
+    else cell.textContent = text;
+  }
+
+  function buildPayload(){
+    return {
+      version: 1,
+      editedAt: new Date().toISOString(),
+      hiddenWeekIds: Array.from(state.hiddenWeekIds || []),
+      tableHtml: table.innerHTML
+    };
+  }
+  function payloadSignature(payload){
+    if(!payload) return '';
+    return `${payload.hiddenWeekIds ? payload.hiddenWeekIds.join('|') : ''}::${payload.tableHtml || ''}`;
+  }
+  function saveLocalCache(payload){
+    try{ localStorage.setItem(STORAGE_CACHE, JSON.stringify(payload)); }catch(_err){}
+  }
+  function loadLocalCache(){
+    try{ return JSON.parse(localStorage.getItem(STORAGE_CACHE) || 'null'); }catch(_err){ return null; }
+  }
+  function applyPayload(payload, fromRemote){
+    if(!payload || !payload.tableHtml) return;
+    if(state.editingCell && fromRemote){
+      state.pendingRemote = payload;
+      return;
+    }
+    const keep = { left: scrollEl.scrollLeft, top: scrollEl.scrollTop };
+    table.innerHTML = payload.tableHtml;
+    state.hiddenWeekIds = Array.isArray(payload.hiddenWeekIds) ? payload.hiddenWeekIds.map(String) : [];
+    syncUiAfterStructureChange();
+    requestAnimationFrame(() => {
+      scrollEl.scrollLeft = keep.left;
+      scrollEl.scrollTop = keep.top;
+    });
+    state.currentSignature = payloadSignature(payload);
+    state.lastSavedSignature = state.currentSignature;
+    state.lastAppliedRemoteSignature = state.currentSignature;
+    saveLocalCache(payload);
+  }
+
+  function scheduleSave(force){
+    const payload = buildPayload();
+    state.currentSignature = payloadSignature(payload);
+    saveLocalCache(payload);
+    if(state.saveTimer) clearTimeout(state.saveTimer);
+    if(force){
+      persistNow();
+      return;
+    }
+    state.saveTimer = window.setTimeout(persistNow, SAVE_DEBOUNCE_MS);
+  }
+
+  function getSupabaseClient(){
+    try{
+      if(window.ERPAuth && typeof window.ERPAuth.getSupabaseClient === 'function'){
+        const client = window.ERPAuth.getSupabaseClient();
+        if(client) return client;
+      }
+    }catch(_err){}
+    if(window.__RF_SHARED_SUPABASE__) return window.__RF_SHARED_SUPABASE__;
+    const cfg = window.RF_CONFIG || window.RF_SUPABASE || window.SUPABASE_CONFIG || {};
+    const url = cfg.SUPABASE_URL || cfg.supabaseUrl || window.RF_SUPABASE_URL || window.SUPABASE_URL || '';
+    const key = cfg.SUPABASE_ANON_KEY || cfg.supabaseAnonKey || window.RF_SUPABASE_ANON_KEY || window.SUPABASE_ANON_KEY || '';
+    if(!url || !key || !(window.supabase && window.supabase.createClient)) return null;
+    window.__RF_SHARED_SUPABASE__ = window.supabase.createClient(url, key, {
+      auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: false }
+    });
+    return window.__RF_SHARED_SUPABASE__;
+  }
+  async function readCloudPayload(){
+    if(!state.supa) return null;
+    const res = await state.supa.from('rf_documents').select('content,updated_at').eq('doc_key', DOC_KEY).maybeSingle();
+    if(res.error) throw res.error;
+    const payload = res.data && res.data.content && typeof res.data.content === 'object' ? res.data.content : null;
+    if(!payload) return null;
+    return { payload, updatedAt: res.data.updated_at || payload.editedAt || '' };
+  }
+  async function writeCloudPayload(payload){
+    if(!state.supa) return null;
+    const row = { doc_key: DOC_KEY, content: payload, updated_at: new Date().toISOString() };
+    const res = await state.supa.from('rf_documents').upsert(row, { onConflict: 'doc_key' }).select('updated_at').maybeSingle();
+    if(res.error) throw res.error;
+    return (res.data && res.data.updated_at) || row.updated_at;
+  }
+  async function broadcastChange(signature){
+    if(!state.channel) return;
+    try{
+      await state.channel.send({ type: 'broadcast', event: 'changed', payload: { clientId: state.clientId, signature, docKey: DOC_KEY } });
+    }catch(_err){}
+  }
+  async function persistNow(){
+    if(state.saveTimer){
+      clearTimeout(state.saveTimer);
+      state.saveTimer = 0;
+    }
+    const payload = buildPayload();
+    const signature = payloadSignature(payload);
+    state.currentSignature = signature;
+    saveLocalCache(payload);
+    if(signature === state.lastSavedSignature && !state.pendingSave) return;
+    if(!state.supa){
+      state.lastSavedSignature = signature;
+      return;
+    }
+    if(state.saving){
+      state.pendingSave = true;
+      return;
+    }
+    state.saving = true;
+    try{
+      const updatedAt = await writeCloudPayload(payload);
+      state.cloudUpdatedAt = updatedAt || state.cloudUpdatedAt;
+      state.lastSavedSignature = signature;
+      state.lastAppliedRemoteSignature = signature;
+      await broadcastChange(signature);
+    }catch(error){
+      console.warn('Plan Livrari save cloud', error);
+    }finally{
+      state.saving = false;
+      if(state.pendingSave){
+        state.pendingSave = false;
+        scheduleSave(true);
+      }
+    }
+  }
+  async function fetchAndApplyRemote(force){
+    if(!state.supa) return;
+    if(state.editingCell && !force) return;
+    try{
+      const remote = await readCloudPayload();
+      if(!remote || !remote.payload) return;
+      const signature = payloadSignature(remote.payload);
+      if(!force && signature === state.lastAppliedRemoteSignature) return;
+      applyPayload(remote.payload, true);
+      state.cloudUpdatedAt = remote.updatedAt || state.cloudUpdatedAt;
+    }catch(error){
+      console.warn('Plan Livrari load cloud', error);
+    }
+  }
+  function startRemotePolling(){
+    if(state.pollTimer) clearInterval(state.pollTimer);
+    state.pollTimer = window.setInterval(() => {
+      if(document.hidden || state.editingCell) return;
+      fetchAndApplyRemote(false);
+    }, REMOTE_POLL_MS);
+  }
+  async function initCloudSync(){
+    state.supa = getSupabaseClient();
+    if(!state.supa) return;
+    try{
+      state.channel = state.supa.channel('plan-livrari-sync')
+        .on('broadcast', { event: 'changed' }, ({ payload }) => {
+          if(!payload || payload.clientId === state.clientId) return;
+          fetchAndApplyRemote(true);
+        })
+        .on('postgres_changes', {
+          event: '*',
+          schema: 'public',
+          table: 'rf_documents',
+          filter: 'doc_key=eq.' + DOC_KEY
+        }, payload => {
+          const updatedAt = payload && payload.new ? payload.new.updated_at : '';
+          if(updatedAt && updatedAt === state.cloudUpdatedAt) return;
+          fetchAndApplyRemote(true);
+        });
+      await state.channel.subscribe();
+    }catch(error){
+      console.warn('Plan Livrari realtime', error);
+      state.channel = null;
+    }
+    startRemotePolling();
+    const localPayload = loadLocalCache();
+    const remote = await readCloudPayload().catch(() => null);
+    const localTime = localPayload && localPayload.editedAt ? Date.parse(localPayload.editedAt) : 0;
+    const remoteTime = remote && remote.payload && (remote.payload.editedAt || remote.updatedAt) ? Date.parse(remote.payload.editedAt || remote.updatedAt) : 0;
+    if(remote && remote.payload && remoteTime >= localTime){
+      applyPayload(remote.payload, true);
+    }else if(localPayload){
+      scheduleSave(true);
+    }
+  }
+
+  table.addEventListener('focusin', event => {
+    const cell = event.target.closest('td.editable-grid-cell');
+    if(!cell) return;
+    state.editingCell = cell;
+    if(rawCellValue(cell) === '') cell.textContent = '';
+  });
+  table.addEventListener('focusout', event => {
+    const cell = event.target.closest('td.editable-grid-cell');
+    if(!cell) return;
+    commitCell(cell);
+    state.editingCell = null;
+    scheduleSave(false);
+    if(state.pendingRemote){
+      const payload = state.pendingRemote;
+      state.pendingRemote = null;
+      applyPayload(payload, true);
+    }
+  });
+  table.addEventListener('input', event => {
+    const cell = event.target.closest('td.editable-grid-cell');
+    if(!cell) return;
+    scheduleSave(false);
+  });
+  table.addEventListener('keydown', event => {
+    const cell = event.target.closest('td.editable-grid-cell');
+    if(!cell) return;
+    let move = null;
+    if(event.key === 'Enter'){
+      event.preventDefault();
+      commitCell(cell);
+      move = event.shiftKey ? 'left' : 'right';
+    }else if(event.key === 'ArrowRight') move = 'right';
+    else if(event.key === 'ArrowLeft') move = 'left';
+    else if(event.key === 'ArrowUp') move = 'up';
+    else if(event.key === 'ArrowDown') move = 'down';
+    if(move){
+      event.preventDefault();
+      const next = nextEditableCell(cell, move);
+      if(next) focusCell(next);
+      scheduleSave(false);
+    }
+  });
+
+  if(btnAdd) btnAdd.addEventListener('click', addWeek);
+  if(btnToggle) btnToggle.addEventListener('click', toggleWeek);
+  scrollEl.addEventListener('scroll', saveScroll, { passive: true });
+  window.addEventListener('beforeunload', saveScroll);
+
+  syncUiAfterStructureChange();
+  restoreScroll();
+  const cached = loadLocalCache();
+  if(cached && cached.tableHtml){
+    applyPayload(cached, false);
+  }else{
+    state.currentSignature = payloadSignature(buildPayload());
+    state.lastSavedSignature = state.currentSignature;
+    saveLocalCache(buildPayload());
+  }
+  initCloudSync();
 })();
 </script>
 </body>
