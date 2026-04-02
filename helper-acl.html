@@ -165,7 +165,7 @@
         ['plan-livrari','PLAN LIVRĂRI'],['planificare-prelucrari','PLANIFICARE PRELUCRĂRI'],['inventar-prelucrari','INVENTAR PRELUCRĂRI']
       ]},
       { key:'zale-pages', label:'Foi ZALE / AMBALARE', items:[
-        ['livrari-zale','URMĂRIRE ZALE'],['stoc-ramas-teoretic','STOC RĂMAS TEORETIC'],['zale-9k-6628-29','ZALE 9K-6628/29'],['zale-229-6909-10','ZALE 229-6909/10'],['zale-503-0761-62','ZALE 503-0761/62'],['zale-106-1625-26','ZALE 106-1625/26'],['zale-378-8241-42','ZALE 378-8241/42'],['zale-248-2307-08','ZALE 248-2307/08'],['zale-417-3595-96','ZALE 417-3595/96'],['zale-418-2091-92','ZALE 418-2091/92'],['ambalare-9k-6628-29','AMBALARE 9K-6628/29'],['ambalare-229-6909-10','AMBALARE 229-6909/10'],['ambalare-503-0761-62','AMBALARE 503-0761/62'],['ambalare-106-1625-26','AMBALARE 106-1625/26'],['ambalare-378-8241-42','AMBALARE 378-8241/42'],['ambalare-248-2307-08','AMBALARE 248-2307/08'],['ambalare-417-3595-96','AMBALARE 417-3595/96'],['ambalare-418-2091-92','AMBALARE 418-2091/92']
+        ['livrari-zale','URMĂRIRE ZALE'],['centralizator-livrari-zale','CENTRALIZATOR LIVRĂRI'],['stoc-ramas-teoretic','STOC RĂMAS TEORETIC'],['zale-9k-6628-29','ZALE 9K-6628/29'],['zale-229-6909-10','ZALE 229-6909/10'],['zale-503-0761-62','ZALE 503-0761/62'],['zale-106-1625-26','ZALE 106-1625/26'],['zale-378-8241-42','ZALE 378-8241/42'],['zale-248-2307-08','ZALE 248-2307/08'],['zale-417-3595-96','ZALE 417-3595/96'],['zale-418-2091-92','ZALE 418-2091/92'],['ambalare-9k-6628-29','AMBALARE 9K-6628/29'],['ambalare-229-6909-10','AMBALARE 229-6909/10'],['ambalare-503-0761-62','AMBALARE 503-0761/62'],['ambalare-106-1625-26','AMBALARE 106-1625/26'],['ambalare-378-8241-42','AMBALARE 378-8241/42'],['ambalare-248-2307-08','AMBALARE 248-2307/08'],['ambalare-417-3595-96','AMBALARE 417-3595/96'],['ambalare-418-2091-92','AMBALARE 418-2091/92']
       ]},
       { key:'quality-pages', label:'Calitate / Rebut', items:[
         ['magnaflux','MAGNAFLUX'],['magnaflux-calendar','MAGNAFLUX CALENDAR'],['rebut','REBUT'],['rebut-pm','REBUT PM'],['rebut-pm-helper','REBUT PM HELPER']
@@ -292,7 +292,9 @@
       const queries = [
         { table:'profiles', select:'email,role,user_id,id' },
         { table:'rf_acl', select:'email,role' },
-        { table:'user_account_access', select:'email,user_id' }
+        { table:'user_account_access', select:'email,user_id' },
+        { table:'user_page_permissions', select:'email,user_id' },
+        { table:'user_index_visibility', select:'email,user_id' }
       ];
       for (const q of queries){
         try {
@@ -371,14 +373,32 @@
 
     async function loadPageRules(){
       state.pageRules = {};
+      const applyRule = (emailValue, pageKeyValue, ruleValue) => {
+        const email = normalizeEmail(emailValue); const pageKey = normalizeKey(pageKeyValue);
+        if (!email || !pageKey) return;
+        if (!state.pageRules[email]) state.pageRules[email] = {};
+        state.pageRules[email][pageKey] = normalizePagePerm(ruleValue);
+      };
       try {
         const res = await sb.from('user_page_permissions').select('email,user_id,page_key,can_view,can_add,can_edit,can_delete,can_export,can_import').limit(5000);
         if (!res.error && Array.isArray(res.data)) {
           res.data.forEach(row => {
-            const email = normalizeEmail(row.email); const pageKey = normalizeKey(row.page_key);
-            if (!email || !pageKey) return;
-            if (!state.pageRules[email]) state.pageRules[email] = {};
-            state.pageRules[email][pageKey] = { can_view: row.can_view !== false, can_edit: row.can_edit === true || row.can_add === true || row.can_delete === true || row.can_import === true };
+            applyRule(row.email, row.page_key, { can_view: row.can_view !== false, can_edit: row.can_edit === true || row.can_add === true || row.can_delete === true || row.can_import === true });
+          });
+        }
+      } catch (_) {}
+      try {
+        const mirror = await readDocByKey('dashboard_acl_v1');
+        if (mirror && typeof mirror === 'object') {
+          const roots = ['user_permissions','user_grants'];
+          roots.forEach(rootKey => {
+            const root = mirror[rootKey] && typeof mirror[rootKey] === 'object' ? mirror[rootKey] : null;
+            if (!root) return;
+            Object.keys(root).forEach(emailKey => {
+              const rules = root[emailKey] && typeof root[emailKey] === 'object' ? root[emailKey] : null;
+              if (!rules) return;
+              Object.keys(rules).forEach(pageKey => applyRule(emailKey, pageKey, rules[pageKey]));
+            });
           });
         }
       } catch (_) {}
@@ -490,9 +510,6 @@
 
       const payload = { users: state.doc.users || {}, updated_at: stamp };
       const savePrimary = await writeDocByKey('index_button_visibility_v1', payload);
-      const mirrorBase = await readDocByKey('dashboard_acl_v1') || {};
-      const mirrorPayload = Object.assign({}, mirrorBase, { hidden_index_buttons_by_user: payload.users, updated_at: payload.updated_at });
-      const saveMirror = await writeDocByKey('dashboard_acl_v1', mirrorPayload);
 
       const email = normalizeEmail(selected.email);
       const pageMap = currentPageRules();
@@ -510,6 +527,29 @@
           can_import:rule.can_edit
         };
       });
+      const mirrorBase = await readDocByKey('dashboard_acl_v1') || {};
+      const mirrorUserPermissions = Object.assign({}, mirrorBase.user_permissions || {});
+      const mirrorUserGrants = Object.assign({}, mirrorBase.user_grants || {});
+      mirrorUserPermissions[email] = {};
+      mirrorUserGrants[email] = {};
+      pageRows.forEach(row => {
+        mirrorUserPermissions[email][row.page_key] = { can_view: row.can_view === true, can_edit: row.can_edit === true };
+        mirrorUserGrants[email][row.page_key] = {
+          can_view: row.can_view === true,
+          can_add: row.can_add === true,
+          can_edit: row.can_edit === true,
+          can_delete: row.can_delete === true,
+          can_export: row.can_export === true,
+          can_import: row.can_import === true
+        };
+      });
+      const mirrorPayload = Object.assign({}, mirrorBase, {
+        hidden_index_buttons_by_user: payload.users,
+        user_permissions: mirrorUserPermissions,
+        user_grants: mirrorUserGrants,
+        updated_at: payload.updated_at
+      });
+      const saveMirror = await writeDocByKey('dashboard_acl_v1', mirrorPayload);
       let pageOk = false, pageErr = null;
       try {
         let del1 = await sb.from('user_page_permissions').delete().eq('email', email);
