@@ -23,6 +23,8 @@
     { page_key: 'eficienta', page_name: 'Eficiență' },
     { page_key: 'program-utilaje', page_name: 'Program Utilaje' },
     { page_key: 'magnaflux', page_name: 'Magnaflux' },
+    { page_key: 'magnaflux-calendar', page_name: 'Magnaflux calendar' },
+    { page_key: 'calendar-operatori', page_name: 'Calendar operatori' },
     { page_key: 'probleme-raportate', page_name: 'Probleme Raportate' },
     { page_key: 'urmarire-actiuni-progres', page_name: 'Urmărire acțiuni și progres' },
     { page_key: 'imbunatatire-continua', page_name: 'Îmbunătățire continuă' },
@@ -38,6 +40,10 @@
     { page_key: 'inventar-otel', page_name: 'Inventar Oțel' },
     { page_key: 'inventar-debitat', page_name: 'Inventar Debitat' },
     { page_key: 'inventar-forjat', page_name: 'Inventar Forjat' },
+    { page_key: 'stoc-initial-otel', page_name: 'Stoc inițial oțel' },
+    { page_key: 'inventar-prelucrari', page_name: 'Inventar prelucrări' },
+    { page_key: 'planificare-prelucrari', page_name: 'Planificare prelucrări' },
+    { page_key: 'plan-livrari', page_name: 'Plan livrări' },
     { page_key: 'planificare-forja', page_name: 'Planificare Forjă' },
     { page_key: 'comenzi-livrare', page_name: 'Comenzi Livrare' },
     { page_key: 'livrari-zale', page_name: 'Livrări zale' },
@@ -1503,15 +1509,15 @@ async function applyDomPermissions(pageKey, root, options) {
     }
   }
 
-  function pickLatestRfDocumentObject(rows, field) {
+  function pickMirrorDocObject(rows) {
     var list = Array.isArray(rows) ? rows.slice() : [];
     list.sort(function (a, b) {
       return String(b && b.updated_at || '').localeCompare(String(a && a.updated_at || ''));
     });
     for (var i = 0; i < list.length; i += 1) {
-      var row = list[i];
-      var value = row && row[field];
-      if (value && typeof value === 'object') return value;
+      var row = list[i] || {};
+      if (row.content && typeof row.content === 'object') return row.content;
+      if (row.data && typeof row.data === 'object') return row.data;
     }
     return null;
   }
@@ -1519,58 +1525,17 @@ async function applyDomPermissions(pageKey, root, options) {
   async function readDashboardAclMirror(client) {
     if (!client) return null;
     try {
-      var rows = await client.from('rf_documents').select('content,data,updated_at').eq('doc_key', 'dashboard_acl_v1').order('updated_at', { ascending:false }).limit(50);
-      if (!rows.error && Array.isArray(rows.data) && rows.data.length) {
-        return pickLatestRfDocumentObject(rows.data, 'content') || pickLatestRfDocumentObject(rows.data, 'data');
+      var res = await client.from('rf_documents')
+        .select('content,data,updated_at')
+        .eq('doc_key', 'dashboard_acl_v1')
+        .order('updated_at', { ascending:false })
+        .limit(50);
+      if (!res.error && Array.isArray(res.data) && res.data.length) {
+        var picked = pickMirrorDocObject(res.data);
+        if (picked && typeof picked === 'object') return picked;
       }
     } catch (_) {}
     return null;
-  }
-
-  function loadMirrorUserPermissionMap(mirror, email) {
-    if (!mirror || typeof mirror !== 'object') return null;
-    var normalized = normalizeAclEmail(email);
-    if (!normalized) return null;
-
-    var map = new Map();
-    function appendEntries(source) {
-      if (!source || typeof source !== 'object') return;
-      Object.keys(source).forEach(function (rawKey) {
-        var key = String(rawKey || '').trim();
-        if (!key) return;
-        map.set(key, buildPermissionEntry(source[rawKey]));
-      });
-    }
-
-    var userPermissionsRoot = mirror.user_permissions && typeof mirror.user_permissions === 'object' ? mirror.user_permissions : null;
-    var userPermissions = userPermissionsRoot && userPermissionsRoot[normalized] && typeof userPermissionsRoot[normalized] === 'object' ? userPermissionsRoot[normalized] : null;
-    appendEntries(userPermissions);
-
-    var userGrantsRoot = mirror.user_grants && typeof mirror.user_grants === 'object' ? mirror.user_grants : null;
-    var userGrants = userGrantsRoot && userGrantsRoot[normalized] && typeof userGrantsRoot[normalized] === 'object' ? userGrantsRoot[normalized] : null;
-    appendEntries(userGrants);
-
-    return map.size ? map : null;
-  }
-
-  function resolveStrictUserPermission(pageKey, href, tableMap, mirrorMap) {
-    var key = String(pageKey || '').trim();
-    var cleanHref = normalizeHref(href);
-    var merged = { can_view:false, can_add:false, can_edit:false, can_delete:false, can_export:false, can_import:false };
-    var matched = false;
-
-    function applyFrom(map, lookupKey) {
-      if (!map || !(map instanceof Map) || !lookupKey || !map.has(lookupKey)) return;
-      merged = mergePermissions(merged, map.get(lookupKey));
-      matched = true;
-    }
-
-    applyFrom(mirrorMap, key);
-    applyFrom(mirrorMap, cleanHref);
-    applyFrom(tableMap, key);
-    applyFrom(tableMap, cleanHref);
-
-    return matched ? buildPermissionEntry(merged) : buildPermissionEntry(merged);
   }
 
   function mirrorHasAnyUserAcl(mirror) {
@@ -1591,6 +1556,7 @@ async function applyDomPermissions(pageKey, root, options) {
     return false;
   }
 
+
   function mirrorHasUserAclForEmail(mirror, email) {
     if (!mirror || typeof mirror !== 'object' || !email) return false;
     var normalized = normalizeAclEmail(email);
@@ -1600,6 +1566,34 @@ async function applyDomPermissions(pageKey, root, options) {
     var userPermissions = userPermissionsRoot && userPermissionsRoot[normalized] && typeof userPermissionsRoot[normalized] === 'object' ? userPermissionsRoot[normalized] : null;
     var userGrants = userGrantsRoot && userGrantsRoot[normalized] && typeof userGrantsRoot[normalized] === 'object' ? userGrantsRoot[normalized] : null;
     return !!((userPermissions && Object.keys(userPermissions).length) || (userGrants && Object.keys(userGrants).length));
+  }
+
+  function readMirrorUserPermissionEntry(mirror, email, pageKey, href) {
+    if (!mirror || typeof mirror !== 'object') return null;
+    var normalized = normalizeAclEmail(email);
+    if (!normalized) return null;
+    var key = String(pageKey || '').trim();
+    var fileHref = normalizeHref(href || pageKeyToHref(key));
+    var result = { can_view:false, can_add:false, can_edit:false, can_delete:false, can_export:false, can_import:false };
+    var found = false;
+
+    function applyValue(source) {
+      if (!source || typeof source !== 'object') return;
+      if (key && Object.prototype.hasOwnProperty.call(source, key)) {
+        result = mergePermissions(result, permissionValueToEntry(source[key]));
+        found = true;
+      }
+      if (fileHref && Object.prototype.hasOwnProperty.call(source, fileHref)) {
+        result = mergePermissions(result, permissionValueToEntry(source[fileHref]));
+        found = true;
+      }
+    }
+
+    var userPermissionsRoot = mirror.user_permissions && typeof mirror.user_permissions === 'object' ? mirror.user_permissions : null;
+    var userGrantsRoot = mirror.user_grants && typeof mirror.user_grants === 'object' ? mirror.user_grants : null;
+    applyValue(userPermissionsRoot && userPermissionsRoot[normalized] && typeof userPermissionsRoot[normalized] === 'object' ? userPermissionsRoot[normalized] : null);
+    applyValue(userGrantsRoot && userGrantsRoot[normalized] && typeof userGrantsRoot[normalized] === 'object' ? userGrantsRoot[normalized] : null);
+    return found ? result : null;
   }
 
   function permissionValueToEntry(value) {
@@ -1780,29 +1774,28 @@ async function applyDomPermissions(pageKey, root, options) {
     var email = normalizeAclEmail(user.email);
     var mirror = await readDashboardAclMirror(client);
     var userPermissionMap = await loadUserPermissionMap(client, user);
-    var mirrorUserPermissionMap = loadMirrorUserPermissionMap(mirror, email);
-    var hasTableUserAcl = !!(userPermissionMap && userPermissionMap.size);
-    var hasMirrorUserAcl = !!(mirrorUserPermissionMap && mirrorUserPermissionMap.size);
-    var hasUserAcl = hasTableUserAcl || hasMirrorUserAcl;
+    var hasUserAcl = !!(userPermissionMap && userPermissionMap.size);
+    var hasMirrorUserAcl = mirrorHasUserAclForEmail(mirror, email);
+    var strictUserAcl = hasUserAcl || hasMirrorUserAcl;
 
     if (key === 'index') {
       return {
         allowed:true,
         role:role,
-        source: hasUserAcl ? 'user acl strict index' : 'index by role',
+        source: strictUserAcl ? 'user acl strict index' : 'index by role',
         permissions: { can_view:true, can_add:false, can_edit:false, can_delete:false, can_export:false, can_import:false },
         email: email,
         accountStatus: accountStatus,
-        strictUserAcl: hasUserAcl
+        strictUserAcl: strictUserAcl
       };
     }
 
-    if (hasUserAcl) {
-      var userPerm = resolveStrictUserPermission(key, href, userPermissionMap, mirrorUserPermissionMap);
+    if (strictUserAcl) {
+      var userPerm = (userPermissionMap && userPermissionMap.get(key)) || readMirrorUserPermissionEntry(mirror, email, key, href) || { can_view:false, can_add:false, can_edit:false, can_delete:false, can_export:false, can_import:false };
       return {
         allowed: userPerm.can_view === true,
         role: role,
-        source: hasTableUserAcl ? (hasMirrorUserAcl ? 'user acl strict (table+mirror)' : 'user acl strict (table)') : 'user acl strict (mirror)',
+        source: hasUserAcl ? 'user acl strict' : 'mirror user acl strict',
         message: userPerm.can_view === true ? '' : 'Nu ai acces în această foaie. Cere acces de la admin.',
         permissions: buildPermissionEntry(userPerm),
         email: email,
@@ -3318,6 +3311,35 @@ async function applyDomPermissions(pageKey, root, options) {
         ev.stopImmediatePropagation();
       }
     }, true);
+
+    function blockEditInteraction(ev) {
+      var target = ev.target;
+      var state = currentPageFlags();
+      var edit = state.controls && state.controls['rows.edit'];
+      if (!edit || edit.can_use !== false) return;
+      if (!target) return;
+      var isEditableField = !!(target.matches && target.matches('input, select, textarea, [contenteditable="true"], [contenteditable=""], [contenteditable]'));
+      var editableContext = isEditableField || elementInEditableGrid(target) || elementInEditorForm(target);
+      if (!editableContext || elementInFilterZone(target)) return;
+      ev.preventDefault();
+      ev.stopImmediatePropagation();
+      if (typeof target.blur === 'function') {
+        try { target.blur(); } catch (_) {}
+      }
+    }
+
+    document.addEventListener('pointerdown', blockEditInteraction, true);
+    document.addEventListener('mousedown', blockEditInteraction, true);
+    document.addEventListener('keydown', function (ev) {
+      var key = String(ev.key || '');
+      if (!key) return;
+      var nav = ['Tab','Escape','Shift','Control','Alt','Meta','ArrowLeft','ArrowRight','ArrowUp','ArrowDown','PageUp','PageDown','Home','End'];
+      if (nav.indexOf(key) !== -1) return;
+      blockEditInteraction(ev);
+    }, true);
+    document.addEventListener('paste', blockEditInteraction, true);
+    document.addEventListener('input', blockEditInteraction, true);
+    document.addEventListener('change', blockEditInteraction, true);
   }
 
   async function collectControlSnapshot(pageKey, pageAccess, client) {
@@ -3355,7 +3377,10 @@ async function applyDomPermissions(pageKey, root, options) {
     var client = window.createRfSupabaseClient ? window.createRfSupabaseClient() : null;
     if (!client) return;
     var pageAccess = await originalResolvePageAccess(pageKey, { client: client });
-    if (!pageAccess || pageAccess.allowed !== true) return;
+    if (!pageAccess || pageAccess.allowed !== true) {
+      renderAccessDeniedPage(pageKey, pageAccess && pageAccess.message ? pageAccess.message : 'Nu ai acces în această foaie.');
+      return;
+    }
     await RF.applyDomPermissions(pageKey, document, { client: client, pageAccess: pageAccess });
     installEventGuards();
     window.__RF_ACL_PAGE_BOOT__ = {
