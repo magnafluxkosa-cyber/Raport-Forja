@@ -268,34 +268,38 @@
     }
     .selection-stats{
       position:fixed;
-      right:16px;
-      bottom:16px;
+      left:0;
+      top:0;
       z-index:10040;
       display:flex;
       align-items:center;
-      gap:10px;
-      padding:10px 12px;
+      gap:8px;
+      padding:8px 10px;
       border-radius:14px;
       border:1px solid rgba(29,29,29,.16);
-      background:rgba(255,255,255,.95);
+      background:rgba(255,255,255,.96);
       box-shadow:0 18px 40px rgba(33,56,88,.18);
       backdrop-filter:blur(8px);
       color:#0b1f46;
       font-size:12px;
       font-weight:800;
+      pointer-events:none;
+      opacity:0;
+      transform:translate3d(-9999px,-9999px,0);
+      transition:opacity .12s ease;
+      will-change:transform,opacity;
+    }
+    .selection-stats.is-visible{
+      opacity:1;
     }
     .selection-stats .selection-stats-title{
-      font-size:11px;
-      color:var(--muted);
-      text-transform:uppercase;
-      letter-spacing:.04em;
-      font-weight:800;
+      display:none;
     }
     .selection-stats .selection-stats-values{
       display:flex;
       align-items:center;
-      gap:10px;
-      flex-wrap:wrap;
+      gap:8px;
+      flex-wrap:nowrap;
     }
     .selection-stats .selection-chip{
       display:inline-flex;
@@ -308,15 +312,21 @@
       white-space:nowrap;
     }
     .selection-stats .selection-chip strong{
-      font-size:13px;
+      font-size:12px;
       color:#0b1f46;
+    }
+    body.grid-range-selecting{
+      cursor:crosshair !important;
+    }
+    body.grid-range-selecting .tableWrap,
+    body.grid-range-selecting .tableWrap *{
+      cursor:crosshair !important;
     }
     @media (max-width:760px){
       .selection-stats{
-        left:8px;
-        right:8px;
-        bottom:8px;
-        justify-content:center;
+        max-width:calc(100vw - 16px);
+      }
+      .selection-stats .selection-stats-values{
         flex-wrap:wrap;
       }
     }
@@ -544,8 +554,16 @@
         currentCell: null,
         startX: 0,
         startY: 0,
+        lastClientX: 0,
+        lastClientY: 0,
         suppressClickUntil: 0,
         startedOnInput: false,
+        rangeRaf: 0,
+        pendingStartCell: null,
+        pendingEndCell: null,
+        autoScrollRaf: 0,
+        autoScrollDx: 0,
+        autoScrollDy: 0,
         stats: { count:0, numericCount:0, sum:0, avg:0 }
       }
     };
@@ -3546,6 +3564,99 @@ function getDefaultPermissions(role){
       });
     }
 
+
+    function setSelectionStatsVisible(isVisible){
+      ensureSelectionStatsUi();
+      if(els.selectionStats) els.selectionStats.classList.toggle('is-visible', !!isVisible);
+    }
+
+    function positionSelectionStats(clientX, clientY){
+      ensureSelectionStatsUi();
+      if(!els.selectionStats) return;
+      const pad = 18;
+      const bubble = els.selectionStats;
+      const rect = bubble.getBoundingClientRect();
+      const vw = Math.max(document.documentElement.clientWidth || 0, window.innerWidth || 0);
+      const vh = Math.max(document.documentElement.clientHeight || 0, window.innerHeight || 0);
+      let left = Number(clientX || 0) + 18;
+      let top = Number(clientY || 0) + 18;
+      const width = rect.width || 220;
+      const height = rect.height || 48;
+      if(left + width + pad > vw) left = Math.max(pad, Number(clientX || 0) - width - 18);
+      if(top + height + pad > vh) top = Math.max(pad, Number(clientY || 0) - height - 18);
+      bubble.style.transform = 'translate3d(' + Math.round(left) + 'px,' + Math.round(top) + 'px,0)';
+    }
+
+    function updateSelectionStatsBubble(){
+      const stats = state.multiSelect && state.multiSelect.stats ? state.multiSelect.stats : { count:0, numericCount:0, sum:0, avg:0 };
+      const shouldShow = !!(state.multiSelect && (state.multiSelect.active || stats.count > 0));
+      setSelectionStatsVisible(shouldShow);
+      if(shouldShow){
+        positionSelectionStats(state.multiSelect.lastClientX || state.multiSelect.startX || 0, state.multiSelect.lastClientY || state.multiSelect.startY || 0);
+      }
+    }
+
+    function stopMultiSelectAutoScroll(){
+      if(state.multiSelect && state.multiSelect.autoScrollRaf){
+        cancelAnimationFrame(state.multiSelect.autoScrollRaf);
+        state.multiSelect.autoScrollRaf = 0;
+      }
+      if(state.multiSelect){
+        state.multiSelect.autoScrollDx = 0;
+        state.multiSelect.autoScrollDy = 0;
+      }
+    }
+
+    function scheduleMultiSelectionRange(startCell, endCell){
+      if(!startCell || !endCell) return;
+      state.multiSelect.pendingStartCell = startCell;
+      state.multiSelect.pendingEndCell = endCell;
+      if(state.multiSelect.rangeRaf) return;
+      state.multiSelect.rangeRaf = requestAnimationFrame(function(){
+        state.multiSelect.rangeRaf = 0;
+        applyMultiCellSelectionRange(state.multiSelect.pendingStartCell, state.multiSelect.pendingEndCell);
+      });
+    }
+
+    function updateMultiSelectAutoScroll(clientX, clientY){
+      const wrap = els.tableWrap;
+      if(!wrap || !state.multiSelect.active) return;
+      const rect = wrap.getBoundingClientRect();
+      const edge = 34;
+      let dx = 0;
+      let dy = 0;
+      if(clientX > rect.right - edge) dx = Math.min(22, Math.max(8, Math.round((clientX - (rect.right - edge)) * 0.45)));
+      else if(clientX < rect.left + edge) dx = -Math.min(22, Math.max(8, Math.round(((rect.left + edge) - clientX) * 0.45)));
+      if(clientY > rect.bottom - edge) dy = Math.min(18, Math.max(6, Math.round((clientY - (rect.bottom - edge)) * 0.4)));
+      else if(clientY < rect.top + edge) dy = -Math.min(18, Math.max(6, Math.round(((rect.top + edge) - clientY) * 0.4)));
+      state.multiSelect.autoScrollDx = dx;
+      state.multiSelect.autoScrollDy = dy;
+      if((dx || dy) && !state.multiSelect.autoScrollRaf){
+        const step = function(){
+          if(!state.multiSelect.active){
+            stopMultiSelectAutoScroll();
+            return;
+          }
+          if(state.multiSelect.autoScrollDx) wrap.scrollLeft += state.multiSelect.autoScrollDx;
+          if(state.multiSelect.autoScrollDy) wrap.scrollTop += state.multiSelect.autoScrollDy;
+          const currentCell = getSelectablePlanCellFromPoint(state.multiSelect.lastClientX, state.multiSelect.lastClientY) || state.multiSelect.currentCell || state.multiSelect.startCell;
+          if(currentCell){
+            state.multiSelect.currentCell = currentCell;
+            scheduleMultiSelectionRange(state.multiSelect.startCell, currentCell);
+          }
+          updateSelectionStatsBubble();
+          if(state.multiSelect.autoScrollDx || state.multiSelect.autoScrollDy){
+            state.multiSelect.autoScrollRaf = requestAnimationFrame(step);
+          }else{
+            stopMultiSelectAutoScroll();
+          }
+        };
+        state.multiSelect.autoScrollRaf = requestAnimationFrame(step);
+      }else if(!dx && !dy){
+        stopMultiSelectAutoScroll();
+      }
+    }
+
     function ensureSelectionStatsUi(){
       if(els.selectionStats && document.body.contains(els.selectionStats)) return;
       const box = document.createElement('div');
@@ -3580,6 +3691,7 @@ function getDefaultPermissions(role){
       if(countEl) countEl.textContent = formatSelectionNumber(stats.count || 0);
       if(sumEl) sumEl.textContent = formatSelectionNumber(stats.sum || 0);
       if(avgEl) avgEl.textContent = stats.numericCount ? formatSelectionNumber(stats.avg || 0) : '0';
+      updateSelectionStatsBubble();
     }
 
     function decorateSelectablePlanCells(){
@@ -3645,15 +3757,24 @@ function getDefaultPermissions(role){
       if(els.planBody){
         els.planBody.querySelectorAll('td.multi-selected').forEach(cell => cell.classList.remove('multi-selected'));
       }
+      stopMultiSelectAutoScroll();
       if(state.multiSelect){
+        if(state.multiSelect.rangeRaf){
+          cancelAnimationFrame(state.multiSelect.rangeRaf);
+          state.multiSelect.rangeRaf = 0;
+        }
         state.multiSelect.active = false;
         state.multiSelect.dragging = false;
         state.multiSelect.startCell = null;
         state.multiSelect.currentCell = null;
+        state.multiSelect.pendingStartCell = null;
+        state.multiSelect.pendingEndCell = null;
       }
       if(!skipStatsUpdate){
         state.multiSelect.stats = { count:0, numericCount:0, sum:0, avg:0 };
         updateSelectionStatsBox();
+      }else{
+        updateSelectionStatsBubble();
       }
     }
 
@@ -3686,15 +3807,24 @@ function getDefaultPermissions(role){
       state.multiSelect.currentCell = cell;
       state.multiSelect.startX = Number(event.clientX || 0);
       state.multiSelect.startY = Number(event.clientY || 0);
+      state.multiSelect.lastClientX = Number(event.clientX || 0);
+      state.multiSelect.lastClientY = Number(event.clientY || 0);
       state.multiSelect.startedOnInput = !!(event.target && event.target.closest && event.target.closest('input.cell-input'));
+      state.multiSelect.suppressClickUntil = 0;
+      updateSelectionStatsBubble();
     }
 
     function handleMultiCellSelectionMove(event){
       if(!state.multiSelect.active) return;
-      const currentCell = getSelectablePlanCellFromPoint(event.clientX, event.clientY) || state.multiSelect.currentCell;
+      state.multiSelect.lastClientX = Number(event.clientX || 0);
+      state.multiSelect.lastClientY = Number(event.clientY || 0);
+      const currentCell = getSelectablePlanCellFromPoint(event.clientX, event.clientY) || state.multiSelect.currentCell || state.multiSelect.startCell;
       if(!currentCell) return;
-      const movedEnough = Math.abs(Number(event.clientX || 0) - state.multiSelect.startX) > 4 || Math.abs(Number(event.clientY || 0) - state.multiSelect.startY) > 4;
-      if(!state.multiSelect.dragging && !movedEnough && currentCell === state.multiSelect.startCell) return;
+      const movedEnough = Math.abs(Number(event.clientX || 0) - state.multiSelect.startX) > 1 || Math.abs(Number(event.clientY || 0) - state.multiSelect.startY) > 1;
+      if(!state.multiSelect.dragging && !movedEnough && currentCell === state.multiSelect.startCell){
+        updateSelectionStatsBubble();
+        return;
+      }
       if(!state.multiSelect.dragging){
         state.multiSelect.dragging = true;
         document.body.classList.add('grid-range-selecting');
@@ -3703,7 +3833,9 @@ function getDefaultPermissions(role){
         }catch(_e){}
       }
       state.multiSelect.currentCell = currentCell;
-      applyMultiCellSelectionRange(state.multiSelect.startCell, currentCell);
+      scheduleMultiSelectionRange(state.multiSelect.startCell, currentCell);
+      updateMultiSelectAutoScroll(state.multiSelect.lastClientX, state.multiSelect.lastClientY);
+      updateSelectionStatsBubble();
       event.preventDefault();
     }
 
@@ -3714,13 +3846,17 @@ function getDefaultPermissions(role){
       state.multiSelect.dragging = false;
       state.multiSelect.startCell = null;
       state.multiSelect.currentCell = null;
+      stopMultiSelectAutoScroll();
       document.body.classList.remove('grid-range-selecting');
+      updateSelectionStatsBubble();
       if(wasDragging){
         state.multiSelect.suppressClickUntil = Date.now() + 180;
         if(event){
           event.preventDefault();
           event.stopPropagation();
         }
+      }else{
+        setSelectionStatsVisible(false);
       }
     }
 
