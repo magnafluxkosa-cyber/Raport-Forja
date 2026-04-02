@@ -3024,6 +3024,7 @@ async function applyDomPermissions(pageKey, root, options) {
     if (text.indexOf('import') >= 0 || text.indexOf('incarca excel') >= 0 || text.indexOf('upload excel') >= 0) return 'data.import';
     if (text.indexOf('export') >= 0 || text.indexOf('descarca') >= 0 || text.indexOf('excel') >= 0 || text.indexOf('pdf') >= 0) return 'data.export';
     if (text.indexOf('sterge') >= 0 || text.indexOf('elimina') >= 0 || text.indexOf('delete') >= 0) return 'rows.delete';
+    if ((text.indexOf('sapt') >= 0 && (text.indexOf('ascunde') >= 0 || text.indexOf('arata') >= 0 || text.indexOf('toggle') >= 0)) || text.indexOf('culoare') >= 0 || text.indexOf('paleta') >= 0) return 'rows.edit';
     if (text.indexOf('edit') >= 0 || text.indexOf('modifica') >= 0) return 'rows.edit';
     if (text.indexOf('filtr') >= 0 || text.indexOf('cauta') >= 0 || text.indexOf('search') >= 0) return 'rows.filter';
     if (text.indexOf('refresh') >= 0 || text.indexOf('sincron') >= 0 || text.indexOf('reincarca') >= 0 || text.indexOf('reintra') >= 0 || text.indexOf('actualizeaza') >= 0) return 'cloud.refresh';
@@ -3068,6 +3069,9 @@ async function applyDomPermissions(pageKey, root, options) {
           if (actionKey) {
             el.setAttribute('data-rf-control', actionKey);
           }
+        }
+        if (!el.hasAttribute('data-rf-control') && (el.matches('.paletteSwatch, .color-swatch-btn, [data-fill-color]') || el.closest && el.closest('#paletteWrap'))) {
+          el.setAttribute('data-rf-control', 'rows.edit');
         }
         if (!el.hasAttribute('data-rf-control') && el.matches('input, select, textarea, [contenteditable]')) {
           if (isFilterField(el)) {
@@ -3178,6 +3182,7 @@ async function applyDomPermissions(pageKey, root, options) {
         setReadonlyState(el, controlAccess.can_edit === true || controlKey === 'rows.filter');
       }
     }
+    hardenGenericEditableSurfaces(pageAccess);
     return pageAccess;
   };
 
@@ -3206,92 +3211,35 @@ async function applyDomPermissions(pageKey, root, options) {
     if (window.__RF_ACL_EVENT_GUARDS__) return;
     window.__RF_ACL_EVENT_GUARDS__ = true;
 
-    function getRowsEditControl(state) {
-      return state && state.controls ? state.controls['rows.edit'] : null;
-    }
-
-    function getControlSnapshot(state, key) {
-      return state && state.controls ? state.controls[String(key || '').trim()] : null;
-    }
-
-    function closestActionTarget(node) {
-      if (!node || !node.closest) return null;
-      return node.closest('[data-rf-control],[data-rf-field],button,a,[role="button"],input[type="button"],input[type="submit"],input[type="file"],summary,[onclick],.btn,.button,.action,.toolbarBtn,.iconBtn');
-    }
-
-    function inferControlKeyFromTarget(target, pageKey) {
-      if (!target || !target.getAttribute) return '';
-      var explicit = String(target.getAttribute('data-rf-control') || target.getAttribute('data-rf-field') || '').trim();
-      if (explicit) return explicit;
-      if (target.matches && target.matches('input,select,textarea,[contenteditable]')) {
-        if (isFilterField(target)) return 'rows.filter';
-        var fieldKey = inferFieldControlKey(target);
-        if (fieldKey) return fieldKey;
-      }
-      return classifyActionElement(target, pageKey) || '';
-    }
-
-    function isMutationTarget(target, state) {
-      var edit = getRowsEditControl(state);
-      if (!edit || edit.can_use !== false) return false;
-      if (!target) return false;
-      if (elementInFilterZone(target)) return false;
-      if (target.matches && target.matches('input,select,textarea,[contenteditable]')) return true;
-      if (elementInEditableGrid(target)) return true;
-      if (elementInEditorForm(target)) return true;
-      return false;
-    }
-
-    function shouldAllowReadonlyKey(ev) {
-      if (!ev) return true;
-      if (ev.ctrlKey || ev.metaKey || ev.altKey) return true;
-      var key = String(ev.key || '');
-      return key === 'Tab' || key === 'Escape' || key === 'Shift' || key === 'Control' || key === 'Alt' || key === 'Meta' || key.indexOf('Arrow') === 0 || key === 'Home' || key === 'End' || key === 'PageUp' || key === 'PageDown';
-    }
-
-    function blockEvent(ev) {
-      if (!ev) return;
-      ev.preventDefault();
-      ev.stopImmediatePropagation();
-      if (typeof ev.stopPropagation === 'function') ev.stopPropagation();
-    }
-
-    function guardAction(ev) {
+    function editLocked() {
       var state = currentPageFlags();
-      var pageKey = state && state.pageKey ? state.pageKey : currentPageKey();
-      var actionTarget = closestActionTarget(ev.target);
-      if (!actionTarget) return false;
-      var controlKey = inferControlKeyFromTarget(actionTarget, pageKey);
-      if (!controlKey || controlKey === 'rows.filter') return false;
-      var control = getControlSnapshot(state, controlKey);
-      if (control && (control.can_view === false || control.can_use === false)) {
-        blockEvent(ev);
-        return true;
-      }
-      return false;
+      var edit = state.controls && state.controls['rows.edit'];
+      return !!(edit && edit.can_use === false);
     }
 
-    document.addEventListener('click', function (ev) {
-      if (guardAction(ev)) return;
+    function addLocked() {
       var state = currentPageFlags();
-      if (isMutationTarget(ev.target, state) && !closestActionTarget(ev.target)) {
-        blockEvent(ev);
-      }
-    }, true);
+      var add = state.controls && state.controls['rows.add'];
+      var save = state.controls && state.controls['cloud.save'];
+      return !!((add && add.can_use === false) || (save && save.can_use === false));
+    }
 
-    document.addEventListener('pointerdown', function (ev) {
-      if (guardAction(ev)) return;
-      var state = currentPageFlags();
-      if (isMutationTarget(ev.target, state)) {
-        blockEvent(ev);
-      }
-    }, true);
+    function isEditLikeTrigger(target) {
+      if (!target || !target.closest) return false;
+      return !!target.closest('.editable-grid-cell, [contenteditable], .paletteSwatch, .color-swatch-btn, [data-fill-color], [data-rf-control="rows.edit"], [data-rf-control="rows.add"], [data-rf-control="cloud.save"], [data-rf-control="rows.delete"], [data-rf-control="data.import"], [data-rf-control="pdf.upload"]');
+    }
 
     document.addEventListener('dblclick', function (ev) {
-      if (guardAction(ev)) return;
-      var state = currentPageFlags();
-      if (isMutationTarget(ev.target, state)) {
-        blockEvent(ev);
+      if (editLocked() && elementInEditableGrid(ev.target)) {
+        ev.preventDefault();
+        ev.stopImmediatePropagation();
+      }
+    }, true);
+
+    document.addEventListener('click', function (ev) {
+      if ((editLocked() || addLocked()) && isEditLikeTrigger(ev.target)) {
+        ev.preventDefault();
+        ev.stopImmediatePropagation();
       }
     }, true);
 
@@ -3299,54 +3247,41 @@ async function applyDomPermissions(pageKey, root, options) {
       var form = ev.target;
       if (!form || elementInFilterZone(form)) return;
       var state = currentPageFlags();
-      var save = getControlSnapshot(state, 'cloud.save');
-      if ((save && save.can_use === false && elementInEditorForm(form)) || isMutationTarget(form, state)) {
-        blockEvent(ev);
-      }
-    }, true);
-
-    document.addEventListener('focusin', function (ev) {
-      var state = currentPageFlags();
-      if (!isMutationTarget(ev.target, state)) return;
-      if (ev.target && typeof ev.target.blur === 'function') {
-        try { ev.target.blur(); } catch (_) {}
+      var save = state.controls && state.controls['cloud.save'];
+      if (save && save.can_use === false && elementInEditorForm(form)) {
+        ev.preventDefault();
+        ev.stopImmediatePropagation();
       }
     }, true);
 
     document.addEventListener('beforeinput', function (ev) {
-      var state = currentPageFlags();
-      if (isMutationTarget(ev.target, state)) {
-        blockEvent(ev);
-      }
-    }, true);
-
-    document.addEventListener('input', function (ev) {
-      var state = currentPageFlags();
-      if (isMutationTarget(ev.target, state)) {
-        blockEvent(ev);
-      }
-    }, true);
-
-    document.addEventListener('change', function (ev) {
-      var state = currentPageFlags();
-      if (isMutationTarget(ev.target, state)) {
-        blockEvent(ev);
+      var target = ev.target;
+      if (editLocked() && target && target.hasAttribute && target.hasAttribute('contenteditable')) {
+        ev.preventDefault();
+        ev.stopImmediatePropagation();
       }
     }, true);
 
     document.addEventListener('paste', function (ev) {
-      var state = currentPageFlags();
-      if (isMutationTarget(ev.target, state)) {
-        blockEvent(ev);
+      var target = ev.target;
+      if (editLocked() && target && target.closest && target.closest('[contenteditable], .editable-grid-cell')) {
+        ev.preventDefault();
+        ev.stopImmediatePropagation();
       }
     }, true);
 
     document.addEventListener('keydown', function (ev) {
-      if (guardAction(ev)) return;
-      var state = currentPageFlags();
-      if (!isMutationTarget(ev.target, state)) return;
-      if (shouldAllowReadonlyKey(ev)) return;
-      blockEvent(ev);
+      var target = ev.target;
+      if (elementInFilterZone(target)) return;
+      if (!editLocked()) return;
+      if (target && target.closest && target.closest('[contenteditable], .editable-grid-cell')) {
+        var key = String(ev.key || '');
+        var navOnly = ['Tab','Escape','Shift','Control','Alt','Meta','ArrowUp','ArrowDown','ArrowLeft','ArrowRight','PageUp','PageDown','Home','End'].indexOf(key) >= 0;
+        if (!navOnly) {
+          ev.preventDefault();
+          ev.stopImmediatePropagation();
+        }
+      }
     }, true);
   }
 
@@ -3373,19 +3308,142 @@ async function applyDomPermissions(pageKey, root, options) {
         } catch (_) {}
       });
     });
-    observer.observe(document.documentElement, { childList: true, subtree: true });
+    observer.observe(document.documentElement, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['contenteditable','class','style','readonly','disabled','data-rf-control','data-rf-field','data-rf-permission']
+    });
     window.__RF_ACL_MUTATION_OBSERVER__ = observer;
   }
 
-  async function bootstrapPageAcl() {
-    if (!window.supabase || typeof window.supabase.createClient !== 'function') return;
+
+  function ensureAclPendingStyle() {
+    if (window.__RF_ACL_PENDING_STYLE__) return;
+    window.__RF_ACL_PENDING_STYLE__ = true;
+    try {
+      document.documentElement.setAttribute('data-rf-acl-pending', '1');
+      var style = document.createElement('style');
+      style.id = 'rf-acl-pending-style';
+      style.textContent = 'html[data-rf-acl-pending="1"] body{visibility:hidden !important;}';
+      document.head.appendChild(style);
+    } catch (_) {}
+  }
+
+  function clearAclPendingState() {
+    try { document.documentElement.removeAttribute('data-rf-acl-pending'); } catch (_) {}
+  }
+
+  function accessDeniedHref(pageAccess) {
     var pageKey = currentPageKey();
-    if (pageKey === 'login') return;
-    if (!pageKey || !originalResolvePageAccess) return;
+    if (!pageAccess || pageAccess.source === 'no session') {
+      try {
+        return (window.ERPAuth && typeof window.ERPAuth.buildLoginUrl === 'function')
+          ? window.ERPAuth.buildLoginUrl(pageKey ? (pageKey + '.html') : '')
+          : 'login.html';
+      } catch (_) {
+        return 'login.html';
+      }
+    }
+    return 'index.html';
+  }
+
+  function renderAccessDenied(pageAccess) {
+    var href = accessDeniedHref(pageAccess);
+    var title = pageAccess && pageAccess.source === 'no session' ? 'Autentificare necesară' : 'Acces restricționat';
+    var message = pageAccess && pageAccess.message ? String(pageAccess.message) : 'Nu ai acces în această foaie.';
+    var buttonText = pageAccess && pageAccess.source === 'no session' ? 'Mergi la login' : 'Înapoi la dashboard';
+    try {
+      document.body.innerHTML = ''
+        + '<div style="min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px;background:#c7dbef;font-family:Calibri,Arial,sans-serif;">'
+        + '<div style="width:min(520px,100%);background:rgba(255,255,255,.92);border:1px solid rgba(16,33,61,.16);border-radius:22px;box-shadow:0 18px 45px rgba(47,79,121,.18);padding:26px 24px;text-align:center;color:#10213d;">'
+        + '<div style="font-size:26px;font-weight:800;margin-bottom:10px;">' + title + '</div>'
+        + '<div style="font-size:15px;line-height:1.45;margin-bottom:18px;">' + message + '</div>'
+        + '<a href="' + href + '" style="display:inline-flex;align-items:center;justify-content:center;min-width:190px;height:42px;padding:0 16px;border-radius:12px;border:1px solid #10213d;background:#10213d;color:#fff;text-decoration:none;font-weight:800;">' + buttonText + '</a>'
+        + '</div>'
+        + '</div>';
+    } catch (_) {}
+    clearAclPendingState();
+  }
+
+  function hardenGenericEditableSurfaces(pageAccess) {
+    var perms = pageAccess && pageAccess.permissions ? pageAccess.permissions : {};
+    var canEdit = perms.can_edit === true;
+    var allowAdd = perms.can_add === true;
+    var allowDelete = perms.can_delete === true;
+    var allowImport = perms.can_import === true || perms.can_add === true;
+    var allowExport = perms.can_export === true;
+    var nodes = document.querySelectorAll('[contenteditable], .editable-grid-cell, .paletteSwatch, .color-swatch-btn, [data-fill-color], button, a[role="button"], [role="button"], input[type="button"], input[type="submit"], input[type="file"], input, select, textarea');
+    for (var i = 0; i < nodes.length; i += 1) {
+      var el = nodes[i];
+      if (!el || (el.closest && el.closest('[data-rf-skip]'))) continue;
+      if (el.matches('.paletteSwatch, .color-swatch-btn, [data-fill-color]')) {
+        if (!canEdit) {
+          el.setAttribute('aria-disabled', 'true');
+          el.style.pointerEvents = 'none';
+          el.style.opacity = '0.55';
+        }
+        continue;
+      }
+      if (el.matches('input, select, textarea') && !elementInFilterZone(el)) {
+        setReadonlyState(el, canEdit);
+        continue;
+      }
+      if (el.hasAttribute('contenteditable') || el.classList.contains('editable-grid-cell')) {
+        if (!elementInFilterZone(el)) {
+          setReadonlyState(el, canEdit);
+          if (!canEdit) el.blur && el.blur();
+        }
+        continue;
+      }
+      if (el.matches('button, a[role="button"], [role="button"], input[type="button"], input[type="submit"], input[type="file"]')) {
+        var actionKey = String(el.getAttribute('data-rf-control') || classifyActionElement(el, currentPageKey()) || '').trim();
+        var shouldDisable = false;
+        if (actionKey === 'rows.add' || actionKey === 'modal.open' || actionKey === 'cloud.save') shouldDisable = !allowAdd && !canEdit;
+        else if (actionKey === 'rows.edit') shouldDisable = !canEdit;
+        else if (actionKey === 'rows.delete' || actionKey === 'pdf.delete') shouldDisable = !allowDelete;
+        else if (actionKey === 'data.import' || actionKey === 'pdf.upload') shouldDisable = !allowImport;
+        else if (actionKey === 'data.export' || actionKey === 'pdf.download') shouldDisable = !allowExport;
+        else if (actionKey === 'cloud.refresh' || actionKey === 'rows.filter' || actionKey === 'pdf.open' || actionKey === 'problems.link') shouldDisable = false;
+        else if (!canEdit && (getElementText(el).indexOf('paleta') >= 0 || getElementText(el).indexOf('culo') >= 0 || getElementText(el).indexOf('sapt') >= 0 || getElementText(el).indexOf('ascunde') >= 0 || getElementText(el).indexOf('arata') >= 0 || getElementText(el).indexOf('toggle') >= 0)) shouldDisable = true;
+        if (shouldDisable && 'disabled' in el) {
+          el.disabled = true;
+          el.setAttribute('aria-disabled', 'true');
+        }
+      }
+    }
+  }
+
+  async function bootstrapPageAcl() {
+    ensureAclPendingStyle();
+    if (!window.supabase || typeof window.supabase.createClient !== 'function') {
+      clearAclPendingState();
+      return;
+    }
+    var pageKey = currentPageKey();
+    if (pageKey === 'login') {
+      clearAclPendingState();
+      return;
+    }
+    if (!pageKey || !originalResolvePageAccess) {
+      clearAclPendingState();
+      return;
+    }
     var client = window.createRfSupabaseClient ? window.createRfSupabaseClient() : null;
-    if (!client) return;
+    if (!client) {
+      clearAclPendingState();
+      return;
+    }
     var pageAccess = await originalResolvePageAccess(pageKey, { client: client });
-    if (!pageAccess || pageAccess.allowed !== true) return;
+    if (!pageAccess || pageAccess.allowed !== true) {
+      window.__RF_ACL_PAGE_BOOT__ = {
+        pageKey: pageKey,
+        pageAccess: pageAccess || { allowed:false, permissions:{} },
+        controls: {}
+      };
+      renderAccessDenied(pageAccess || { allowed:false, permissions:{}, message:'Nu ai acces în această foaie.' });
+      return;
+    }
     await RF.applyDomPermissions(pageKey, document, { client: client, pageAccess: pageAccess });
     installEventGuards();
     window.__RF_ACL_PAGE_BOOT__ = {
@@ -3394,7 +3452,10 @@ async function applyDomPermissions(pageKey, root, options) {
       controls: await collectControlSnapshot(pageKey, pageAccess, client)
     };
     observeAclMutations(pageKey, client, pageAccess);
+    clearAclPendingState();
   }
+
+  ensureAclPendingStyle();
 
   if (!window.__RF_ACL_AUTO_BIND__) {
     window.__RF_ACL_AUTO_BIND__ = true;
