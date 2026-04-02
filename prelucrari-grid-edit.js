@@ -136,14 +136,35 @@
     try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }catch(_err){}
   }
 
-  function makeEditable(){
+  async function resolveCanEdit(){
+    try{
+      if(window.ERPAuth && typeof window.ERPAuth.getCurrentUserWithRole === 'function' && typeof window.ERPAuth.getPageAccess === 'function'){
+        const auth = await window.ERPAuth.getCurrentUserWithRole();
+        const user = auth && auth.user ? auth.user : null;
+        const role = auth && auth.role ? auth.role : 'viewer';
+        const pageKey = (location.pathname.split('/').pop() || '').replace(/\.html$/i, '') || '';
+        const access = await window.ERPAuth.getPageAccess(pageKey, { user:user, role:role });
+        const perms = access && access.permissions ? access.permissions : null;
+        const canView = !perms || perms.can_view !== false;
+        const canEdit = !!(perms && (perms.can_edit === true || perms.can_add === true || perms.can_import === true));
+        if(!canView){
+          return false;
+        }
+        return canEdit;
+      }
+    }catch(_err){}
+    return true;
+  }
+
+  function makeEditable(canEdit){
     const saved = loadState();
     const cells = Array.from(table.querySelectorAll(editableSelector));
     cells.forEach(cell => {
       const key = getCellKey(cell);
       cell.classList.add('editable-grid-cell');
-      cell.setAttribute('contenteditable','true');
+      cell.setAttribute('contenteditable', canEdit ? 'true' : 'false');
       cell.setAttribute('spellcheck','false');
+      if(!canEdit) cell.setAttribute('tabindex','-1');
       cell.dataset.originalText = normalizeSpaces(cell.textContent);
 
       const initialRaw = Object.prototype.hasOwnProperty.call(saved, key)
@@ -153,6 +174,7 @@
       setDisplay(cell, initialRaw);
 
       cell.addEventListener('focus', () => {
+        if(!canEdit){ try{ cell.blur(); }catch(_err){} return; }
         cell.classList.add('is-editing');
         const raw = cell.dataset.rawValue != null ? cell.dataset.rawValue : normalizeSpaces(cell.textContent);
         cell.textContent = raw;
@@ -167,6 +189,10 @@
       });
 
       cell.addEventListener('keydown', (ev) => {
+        if(!canEdit){
+          ev.preventDefault();
+          return;
+        }
         if(ev.key === 'Enter'){
           ev.preventDefault();
           cell.blur();
@@ -175,6 +201,10 @@
 
       cell.addEventListener('blur', () => {
         cell.classList.remove('is-editing');
+        if(!canEdit){
+          setDisplay(cell, cell.dataset.rawValue != null ? cell.dataset.rawValue : normalizeSpaces(cell.textContent));
+          return;
+        }
         const raw = normalizeSpaces(cell.textContent);
         saved[key] = raw;
         setDisplay(cell, raw);
@@ -221,9 +251,11 @@
     });
   }
 
-  function init(){
+  async function init(){
     annotateGrid();
-    makeEditable();
+    const canEdit = await resolveCanEdit();
+    window.__KAD_PRELUCRARI_CAN_EDIT__ = canEdit;
+    makeEditable(canEdit);
     highlightHolidayColumns();
   }
 
