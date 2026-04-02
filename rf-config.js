@@ -23,8 +23,6 @@
     { page_key: 'eficienta', page_name: 'Eficiență' },
     { page_key: 'program-utilaje', page_name: 'Program Utilaje' },
     { page_key: 'magnaflux', page_name: 'Magnaflux' },
-    { page_key: 'magnaflux-calendar', page_name: 'Magnaflux calendar' },
-    { page_key: 'calendar-operatori', page_name: 'Calendar operatori' },
     { page_key: 'probleme-raportate', page_name: 'Probleme Raportate' },
     { page_key: 'urmarire-actiuni-progres', page_name: 'Urmărire acțiuni și progres' },
     { page_key: 'imbunatatire-continua', page_name: 'Îmbunătățire continuă' },
@@ -40,10 +38,6 @@
     { page_key: 'inventar-otel', page_name: 'Inventar Oțel' },
     { page_key: 'inventar-debitat', page_name: 'Inventar Debitat' },
     { page_key: 'inventar-forjat', page_name: 'Inventar Forjat' },
-    { page_key: 'stoc-initial-otel', page_name: 'Stoc inițial oțel' },
-    { page_key: 'inventar-prelucrari', page_name: 'Inventar prelucrări' },
-    { page_key: 'planificare-prelucrari', page_name: 'Planificare prelucrări' },
-    { page_key: 'plan-livrari', page_name: 'Plan livrări' },
     { page_key: 'planificare-forja', page_name: 'Planificare Forjă' },
     { page_key: 'comenzi-livrare', page_name: 'Comenzi Livrare' },
     { page_key: 'livrari-zale', page_name: 'Livrări zale' },
@@ -1509,32 +1503,42 @@ async function applyDomPermissions(pageKey, root, options) {
     }
   }
 
-  function pickMirrorDocObject(rows) {
-    var list = Array.isArray(rows) ? rows.slice() : [];
-    list.sort(function (a, b) {
-      return String(b && b.updated_at || '').localeCompare(String(a && a.updated_at || ''));
-    });
-    for (var i = 0; i < list.length; i += 1) {
-      var row = list[i] || {};
-      if (row.content && typeof row.content === 'object') return row.content;
-      if (row.data && typeof row.data === 'object') return row.data;
-    }
-    return null;
-  }
-
   async function readDashboardAclMirror(client) {
     if (!client) return null;
+
+    function pick(rows) {
+      var list = Array.isArray(rows) ? rows : [];
+      for (var i = 0; i < list.length; i += 1) {
+        var row = list[i] || {};
+        if (row.content && typeof row.content === 'object') return row.content;
+        if (row.data && typeof row.data === 'object') return row.data;
+      }
+      return null;
+    }
+
     try {
       var res = await client.from('rf_documents')
         .select('content,data,updated_at')
         .eq('doc_key', 'dashboard_acl_v1')
         .order('updated_at', { ascending:false })
         .limit(50);
-      if (!res.error && Array.isArray(res.data) && res.data.length) {
-        var picked = pickMirrorDocObject(res.data);
-        if (picked && typeof picked === 'object') return picked;
+      if (!res.error) {
+        var best = pick(res.data);
+        if (best) return best;
       }
     } catch (_) {}
+
+    try {
+      var resNoOrder = await client.from('rf_documents')
+        .select('content,data')
+        .eq('doc_key', 'dashboard_acl_v1')
+        .limit(50);
+      if (!resNoOrder.error) {
+        var fallback = pick(resNoOrder.data);
+        if (fallback) return fallback;
+      }
+    } catch (_) {}
+
     return null;
   }
 
@@ -1556,7 +1560,6 @@ async function applyDomPermissions(pageKey, root, options) {
     return false;
   }
 
-
   function mirrorHasUserAclForEmail(mirror, email) {
     if (!mirror || typeof mirror !== 'object' || !email) return false;
     var normalized = normalizeAclEmail(email);
@@ -1566,34 +1569,6 @@ async function applyDomPermissions(pageKey, root, options) {
     var userPermissions = userPermissionsRoot && userPermissionsRoot[normalized] && typeof userPermissionsRoot[normalized] === 'object' ? userPermissionsRoot[normalized] : null;
     var userGrants = userGrantsRoot && userGrantsRoot[normalized] && typeof userGrantsRoot[normalized] === 'object' ? userGrantsRoot[normalized] : null;
     return !!((userPermissions && Object.keys(userPermissions).length) || (userGrants && Object.keys(userGrants).length));
-  }
-
-  function readMirrorUserPermissionEntry(mirror, email, pageKey, href) {
-    if (!mirror || typeof mirror !== 'object') return null;
-    var normalized = normalizeAclEmail(email);
-    if (!normalized) return null;
-    var key = String(pageKey || '').trim();
-    var fileHref = normalizeHref(href || pageKeyToHref(key));
-    var result = { can_view:false, can_add:false, can_edit:false, can_delete:false, can_export:false, can_import:false };
-    var found = false;
-
-    function applyValue(source) {
-      if (!source || typeof source !== 'object') return;
-      if (key && Object.prototype.hasOwnProperty.call(source, key)) {
-        result = mergePermissions(result, permissionValueToEntry(source[key]));
-        found = true;
-      }
-      if (fileHref && Object.prototype.hasOwnProperty.call(source, fileHref)) {
-        result = mergePermissions(result, permissionValueToEntry(source[fileHref]));
-        found = true;
-      }
-    }
-
-    var userPermissionsRoot = mirror.user_permissions && typeof mirror.user_permissions === 'object' ? mirror.user_permissions : null;
-    var userGrantsRoot = mirror.user_grants && typeof mirror.user_grants === 'object' ? mirror.user_grants : null;
-    applyValue(userPermissionsRoot && userPermissionsRoot[normalized] && typeof userPermissionsRoot[normalized] === 'object' ? userPermissionsRoot[normalized] : null);
-    applyValue(userGrantsRoot && userGrantsRoot[normalized] && typeof userGrantsRoot[normalized] === 'object' ? userGrantsRoot[normalized] : null);
-    return found ? result : null;
   }
 
   function permissionValueToEntry(value) {
@@ -1772,32 +1747,42 @@ async function applyDomPermissions(pageKey, root, options) {
     }
 
     var email = normalizeAclEmail(user.email);
-    var mirror = await readDashboardAclMirror(client);
     var userPermissionMap = await loadUserPermissionMap(client, user);
-    var hasUserAcl = !!(userPermissionMap && userPermissionMap.size);
-    var hasMirrorUserAcl = mirrorHasUserAclForEmail(mirror, email);
-    var strictUserAcl = hasUserAcl || hasMirrorUserAcl;
+    var mirror = await readDashboardAclMirror(client);
+    var hasUserAcl = !!((userPermissionMap && userPermissionMap.size) || mirrorHasUserAclForEmail(mirror, email));
 
     if (key === 'index') {
       return {
         allowed:true,
         role:role,
-        source: strictUserAcl ? 'user acl strict index' : 'index by role',
+        source: hasUserAcl ? 'user acl strict index' : 'index by role',
         permissions: { can_view:true, can_add:false, can_edit:false, can_delete:false, can_export:false, can_import:false },
         email: email,
         accountStatus: accountStatus,
-        strictUserAcl: strictUserAcl
+        strictUserAcl: hasUserAcl
       };
     }
 
-    if (strictUserAcl) {
-      var userPerm = (userPermissionMap && userPermissionMap.get(key)) || readMirrorUserPermissionEntry(mirror, email, key, href) || { can_view:false, can_add:false, can_edit:false, can_delete:false, can_export:false, can_import:false };
+    if (hasUserAcl) {
+      var strictBase = { can_view:false, can_add:false, can_edit:false, can_delete:false, can_export:false, can_import:false };
+      var strictDecisions = collectAclDecisions({
+        pageKey:key,
+        href:href,
+        role:role,
+        email:email,
+        userPermissionMap:userPermissionMap,
+        permissionMap:null,
+        mirror:mirror
+      });
+      for (var di = 0; di < strictDecisions.length; di += 1) {
+        strictBase = mergePermissions(strictBase, permissionValueToEntry(strictDecisions[di]));
+      }
       return {
-        allowed: userPerm.can_view === true,
+        allowed: strictBase.can_view === true,
         role: role,
-        source: hasUserAcl ? 'user acl strict' : 'mirror user acl strict',
-        message: userPerm.can_view === true ? '' : 'Nu ai acces în această foaie. Cere acces de la admin.',
-        permissions: buildPermissionEntry(userPerm),
+        source: 'user acl strict',
+        message: strictBase.can_view === true ? '' : 'Nu ai acces în această foaie. Cere acces de la admin.',
+        permissions: buildPermissionEntry(strictBase),
         email: email,
         accountStatus: accountStatus,
         strictUserAcl: true
@@ -3263,83 +3248,83 @@ async function applyDomPermissions(pageKey, root, options) {
     if (window.__RF_ACL_EVENT_GUARDS__) return;
     window.__RF_ACL_EVENT_GUARDS__ = true;
 
-    document.addEventListener('dblclick', function (ev) {
-      var state = currentPageFlags();
-      var edit = state.controls && state.controls['rows.edit'];
-      if (edit && edit.can_use === false && elementInEditableGrid(ev.target)) {
-        ev.preventDefault();
-        ev.stopImmediatePropagation();
-      }
-    }, true);
+    function pageIsReadOnly(state) {
+      return !!(state && state.pageAccess && state.pageAccess.permissions && state.pageAccess.permissions.can_edit !== true);
+    }
 
-    document.addEventListener('click', function (ev) {
+    function findActionNode(target) {
+      if (!target || !target.closest) return null;
+      return target.closest('[data-rf-control],[data-rf-field],a,button,[role="button"],input,select,textarea,[contenteditable],form');
+    }
+
+    function actionAccessForNode(node, state) {
+      if (!node || !state) return null;
+      var key = String(node.getAttribute && (node.getAttribute('data-rf-control') || node.getAttribute('data-rf-field')) || '').trim();
+      if (!key) {
+        if (node.matches && node.matches('input,select,textarea,[contenteditable]')) key = elementInFilterZone(node) ? 'rows.filter' : 'rows.edit';
+        else if (node.matches && node.matches('form')) key = 'cloud.save';
+      }
+      if (!key) return null;
+      if (state.controls && state.controls[key]) return state.controls[key];
+      return stricterDefaultForControl(key, state.pageAccess && state.pageAccess.permissions ? state.pageAccess.permissions : {});
+    }
+
+    function shouldBlockEditInteraction(target, state, eventType) {
+      if (!pageIsReadOnly(state) || !target) return false;
+      if (elementInFilterZone(target)) return false;
+
+      var actionNode = findActionNode(target);
+      var access = actionNode ? actionAccessForNode(actionNode, state) : null;
+      if (access) {
+        if (String(actionNode.getAttribute && (actionNode.getAttribute('data-rf-control') || actionNode.getAttribute('data-rf-field')) || '').trim() === 'rows.filter') return false;
+        if (access.can_use === true && access.can_edit !== true && actionNode.matches && actionNode.matches('a,button,[role="button"],input[type="button"],input[type="submit"]') && !elementInEditableGrid(actionNode) && !elementInEditorForm(actionNode)) {
+          return false;
+        }
+        if (access.can_edit !== true && actionNode.matches && actionNode.matches('input,select,textarea,[contenteditable],form')) {
+          return true;
+        }
+      }
+
+      if (target.matches && target.matches('input,select,textarea,[contenteditable]')) return true;
+      if (target.closest && target.closest('[contenteditable="true"], [contenteditable=""], .editableCell, td.editable, .cell--editable, .is-editable, [data-editable], [data-cell-editable], .editorCell, .grid-cell')) return true;
+      if (elementInEditorForm(target)) return true;
+      if (elementInEditableGrid(target)) return true;
+      if (eventType === 'keydown') return true;
+      return false;
+    }
+
+    function hardBlock(ev) {
+      try {
+        ev.preventDefault();
+        ev.stopImmediatePropagation();
+        ev.stopPropagation();
+      } catch (_) {}
+    }
+
+    ['dblclick','click','pointerdown','mousedown','beforeinput','input','change','paste','drop'].forEach(function (type) {
+      document.addEventListener(type, function (ev) {
+        var state = currentPageFlags();
+        if (shouldBlockEditInteraction(ev.target, state, type)) {
+          hardBlock(ev);
+        }
+      }, true);
+    });
+
+    document.addEventListener('keydown', function (ev) {
       var state = currentPageFlags();
-      var edit = state.controls && state.controls['rows.edit'];
-      var add = state.controls && state.controls['rows.add'];
-      var del = state.controls && state.controls['rows.delete'];
-      var save = state.controls && state.controls['cloud.save'];
-      var imp = state.controls && state.controls['data.import'];
       var target = ev.target;
-      if (edit && edit.can_use === false && target && target.closest && target.closest('.paletteSwatch, .color-swatch-btn, [data-fill-color], [data-rf-control="rows.edit"]')) {
-        ev.preventDefault();
-        ev.stopImmediatePropagation();
-        return;
-      }
-      if (((add && add.can_use === false) || (del && del.can_use === false) || (save && save.can_use === false) || (imp && imp.can_use === false)) && target && target.closest && target.closest('[data-rf-control="rows.add"], [data-rf-control="rows.delete"], [data-rf-control="cloud.save"], [data-rf-control="data.import"], [data-rf-control="pdf.upload"]')) {
-        ev.preventDefault();
-        ev.stopImmediatePropagation();
-      }
+      if (!shouldBlockEditInteraction(target, state, 'keydown')) return;
+      var key = String(ev.key || '');
+      var navOnly = key === 'Tab' || key === 'Escape' || key.indexOf('Arrow') === 0 || key === 'PageUp' || key === 'PageDown' || key === 'Home' || key === 'End';
+      if (!navOnly) hardBlock(ev);
     }, true);
 
     document.addEventListener('submit', function (ev) {
       var form = ev.target;
       if (!form || elementInFilterZone(form)) return;
       var state = currentPageFlags();
-      var save = state.controls && state.controls['cloud.save'];
-      if (save && save.can_use === false && elementInEditorForm(form)) {
-        ev.preventDefault();
-        ev.stopImmediatePropagation();
-      }
+      if (pageIsReadOnly(state) && elementInEditorForm(form)) hardBlock(ev);
     }, true);
-
-    document.addEventListener('beforeinput', function (ev) {
-      var target = ev.target;
-      var state = currentPageFlags();
-      var edit = state.controls && state.controls['rows.edit'];
-      if (edit && edit.can_use === false && target && target.hasAttribute && target.hasAttribute('contenteditable')) {
-        ev.preventDefault();
-        ev.stopImmediatePropagation();
-      }
-    }, true);
-
-    function blockEditInteraction(ev) {
-      var target = ev.target;
-      var state = currentPageFlags();
-      var edit = state.controls && state.controls['rows.edit'];
-      if (!edit || edit.can_use !== false) return;
-      if (!target) return;
-      var isEditableField = !!(target.matches && target.matches('input, select, textarea, [contenteditable="true"], [contenteditable=""], [contenteditable]'));
-      var editableContext = isEditableField || elementInEditableGrid(target) || elementInEditorForm(target);
-      if (!editableContext || elementInFilterZone(target)) return;
-      ev.preventDefault();
-      ev.stopImmediatePropagation();
-      if (typeof target.blur === 'function') {
-        try { target.blur(); } catch (_) {}
-      }
-    }
-
-    document.addEventListener('pointerdown', blockEditInteraction, true);
-    document.addEventListener('mousedown', blockEditInteraction, true);
-    document.addEventListener('keydown', function (ev) {
-      var key = String(ev.key || '');
-      if (!key) return;
-      var nav = ['Tab','Escape','Shift','Control','Alt','Meta','ArrowLeft','ArrowRight','ArrowUp','ArrowDown','PageUp','PageDown','Home','End'];
-      if (nav.indexOf(key) !== -1) return;
-      blockEditInteraction(ev);
-    }, true);
-    document.addEventListener('paste', blockEditInteraction, true);
-    document.addEventListener('input', blockEditInteraction, true);
-    document.addEventListener('change', blockEditInteraction, true);
   }
 
   async function collectControlSnapshot(pageKey, pageAccess, client) {
@@ -3377,10 +3362,7 @@ async function applyDomPermissions(pageKey, root, options) {
     var client = window.createRfSupabaseClient ? window.createRfSupabaseClient() : null;
     if (!client) return;
     var pageAccess = await originalResolvePageAccess(pageKey, { client: client });
-    if (!pageAccess || pageAccess.allowed !== true) {
-      renderAccessDeniedPage(pageKey, pageAccess && pageAccess.message ? pageAccess.message : 'Nu ai acces în această foaie.');
-      return;
-    }
+    if (!pageAccess || pageAccess.allowed !== true) return;
     await RF.applyDomPermissions(pageKey, document, { client: client, pageAccess: pageAccess });
     installEventGuards();
     window.__RF_ACL_PAGE_BOOT__ = {
