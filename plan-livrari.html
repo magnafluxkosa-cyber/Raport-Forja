@@ -167,23 +167,6 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
   color:#10213d !important;
   font-weight:700;
 }
-
-.excel-sheet td.editable-grid-cell,
-.excel-sheet th.editable-grid-cell{
-  font-family:Calibri,Arial,sans-serif !important;
-  line-height:1.2;
-}
-.excel-sheet td.editable-grid-cell *,
-.excel-sheet th.editable-grid-cell *{
-  font:inherit !important;
-  color:inherit !important;
-  text-align:inherit !important;
-  line-height:inherit !important;
-  letter-spacing:inherit !important;
-  background:transparent !important;
-  border:0 !important;
-  text-decoration:inherit !important;
-}
 .excel-sheet td.palette-target,
 .excel-sheet th.palette-target{
   box-shadow: inset 0 0 0 2px rgba(11,31,70,.5);
@@ -679,6 +662,24 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
     return null;
   }
 
+  function normalizeInlineText(text){
+    return String(text || '').replace(/\r?\n+/g, ' ').replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim();
+  }
+  function insertPlainTextAtCursor(text){
+    const plain = normalizeInlineText(text);
+    if(document.queryCommandSupported && document.queryCommandSupported('insertText')){
+      document.execCommand('insertText', false, plain);
+      return;
+    }
+    const sel = window.getSelection && window.getSelection();
+    if(sel && sel.rangeCount){
+      sel.deleteFromDocument();
+      sel.getRangeAt(0).insertNode(document.createTextNode(plain));
+      sel.collapseToEnd();
+      return;
+    }
+    if(state.activeCell) state.activeCell.textContent = rawCellValue(state.activeCell) + plain;
+  }
   function focusCell(cell){
     if(!cell) return;
     cell.focus();
@@ -694,14 +695,14 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
 
   function commitCell(cell){
     if(!cell) return;
-    const text = rawCellValue(cell);
+    const text = (typeof normalizeInlineText === 'function') ? normalizeInlineText(rawCellValue(cell)) : rawCellValue(cell);
     if(!text){
       cell.innerHTML = '&nbsp;';
       return;
     }
     const computed = maybeEvaluateExpression(text);
-    const finalText = computed != null ? computed : text;
-    cell.textContent = finalText;
+    if(computed != null) cell.textContent = computed;
+    else cell.textContent = text;
   }
 
   function buildPayload(){
@@ -923,7 +924,25 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
     if(!state.canEdit) return;
     scheduleSave(false);
   });
-
+  table.addEventListener('beforeinput', event => {
+    const cell = event.target.closest('td.editable-grid-cell');
+    if(!cell) return;
+    if(!state.canEdit){ event.preventDefault(); return; }
+    if(event.inputType === 'insertParagraph' || event.inputType === 'insertLineBreak'){
+      event.preventDefault();
+      commitCell(cell);
+      const next = nextEditableCell(cell, event.shiftKey ? 'up' : 'down');
+      if(next) focusCell(next);
+      scheduleSave(false);
+      return;
+    }
+    if(event.inputType === 'insertFromPaste'){
+      event.preventDefault();
+      const plain = (event.dataTransfer && event.dataTransfer.getData('text/plain')) || event.data || '';
+      insertPlainTextAtCursor(plain);
+      scheduleSave(false);
+    }
+  }, true);
   table.addEventListener('paste', event => {
     const cell = event.target.closest('td.editable-grid-cell');
     if(!cell) return;
@@ -931,23 +950,9 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
     event.preventDefault();
     const clipboard = event.clipboardData || window.clipboardData;
     const pasted = clipboard ? String(clipboard.getData('text/plain') || '') : '';
-    const plain = pasted.replace(/?
-+/g, ' ').replace(/ /g, ' ');
-    if(document.queryCommandSupported && document.queryCommandSupported('insertText')){
-      document.execCommand('insertText', false, plain);
-    }else{
-      const sel = window.getSelection && window.getSelection();
-      if(sel && sel.rangeCount){
-        sel.deleteFromDocument();
-        sel.getRangeAt(0).insertNode(document.createTextNode(plain));
-        sel.collapseToEnd();
-      }else{
-        cell.textContent = rawCellValue(cell) + plain;
-      }
-    }
+    insertPlainTextAtCursor(pasted);
     scheduleSave(false);
   });
-
   table.addEventListener('keydown', event => {
     const cell = event.target.closest('td.editable-grid-cell');
     if(!cell) return;
@@ -967,7 +972,7 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
       if(next) focusCell(next);
       scheduleSave(false);
     }
-  });
+  }, true);
 
   if(btnAdd) btnAdd.addEventListener('click', addWeek);
   if(btnToggle) btnToggle.addEventListener('click', toggleWeek);
