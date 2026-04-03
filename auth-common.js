@@ -361,12 +361,31 @@
     }
 
     if(window.RF_ACL && typeof window.RF_ACL.resolvePageAccess === 'function'){
-      const access = await window.RF_ACL.resolvePageAccess(settings.pageKey, {
-        client: getSupabaseClient(),
-        user,
-        role
-      });
-      return Object.assign({ user, role: access && access.role ? access.role : (role || 'viewer') }, access || {});
+      try{
+        const access = await window.RF_ACL.resolvePageAccess(settings.pageKey, {
+          client: getSupabaseClient(),
+          user,
+          role
+        });
+        return Object.assign({ user, role: access && access.role ? access.role : (role || 'viewer') }, access || {});
+      }catch(err){
+        console.error('ERPAuth.getPageAccess ACL error', err);
+        return {
+          allowed:false,
+          user,
+          role:String(role || 'viewer').toLowerCase(),
+          permissions:{
+            can_view:false,
+            can_add:false,
+            can_edit:false,
+            can_delete:false,
+            can_export:false,
+            can_import:false
+          },
+          source:'acl error',
+          message:'Nu s-au putut încărca permisiunile pentru această foaie.'
+        };
+      }
     }
 
     const cleanRole = String(role || 'viewer').toLowerCase();

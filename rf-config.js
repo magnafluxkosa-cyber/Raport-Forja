@@ -38,13 +38,13 @@
     { page_key: 'inventar-otel', page_name: 'Inventar Oțel' },
     { page_key: 'inventar-debitat', page_name: 'Inventar Debitat' },
     { page_key: 'inventar-forjat', page_name: 'Inventar Forjat' },
-    { page_key: 'inventar-prelucrari', page_name: 'Inventar Prelucrări' },
-    { page_key: 'planificare-prelucrari', page_name: 'Planificare Prelucrări' },
-    { page_key: 'plan-livrari', page_name: 'Plan Livrări' },
-    { page_key: 'calendar-operatori', page_name: 'Calendar Operatori' },
-    { page_key: 'magnaflux-calendar', page_name: 'Magnaflux Calendar' },
-    { page_key: 'stoc-initial-otel', page_name: 'Stoc Inițial Oțel' },
     { page_key: 'planificare-forja', page_name: 'Planificare Forjă' },
+    { page_key: 'planificare-prelucrari', page_name: 'Planificare Prelucrări' },
+    { page_key: 'inventar-prelucrari', page_name: 'Inventar Prelucrări' },
+    { page_key: 'plan-livrari', page_name: 'Plan livrări' },
+    { page_key: 'stoc-initial-otel', page_name: 'Stoc inițial oțel' },
+    { page_key: 'calendar-operatori', page_name: 'Calendar operatori' },
+    { page_key: 'magnaflux-calendar', page_name: 'Magnaflux calendar' },
     { page_key: 'comenzi-livrare', page_name: 'Comenzi Livrare' },
     { page_key: 'livrari-zale', page_name: 'Livrări zale' },
     { page_key: 'centralizator-livrari-zale', page_name: 'Centralizator livrări zale' },
@@ -1461,13 +1461,9 @@ async function applyDomPermissions(pageKey, root, options) {
 
     function appendRows(map, rows) {
       (Array.isArray(rows) ? rows : []).forEach(function (row) {
-        var rawKey = String(row && row.page_key || '').trim();
-        if (!rawKey) return;
-        var key = rawKey.replace(/\.html$/i, '');
-        var entry = buildPermissionEntry(row);
-        if (key) map.set(key, entry);
-        if (/\.html$/i.test(rawKey)) map.set(rawKey, entry);
-        else if (key) map.set(pageKeyToHref(key), entry);
+        var key = String(row && row.page_key || '').trim();
+        if (!key) return;
+        map.set(key, buildPermissionEntry(row));
       });
     }
 
@@ -1513,18 +1509,6 @@ async function applyDomPermissions(pageKey, root, options) {
     }
   }
 
-  function pickLatestRfDocument(rows, field) {
-    var list = Array.isArray(rows) ? rows.slice() : [];
-    list.sort(function (a, b) {
-      return String(b && b.updated_at || '').localeCompare(String(a && a.updated_at || ''));
-    });
-    for (var i = 0; i < list.length; i += 1) {
-      var value = list[i] && list[i][field];
-      if (value && typeof value === 'object') return value;
-    }
-    return null;
-  }
-
   async function readDashboardAclMirror(client) {
     if (!client) return null;
     try {
@@ -1533,8 +1517,22 @@ async function applyDomPermissions(pageKey, root, options) {
         .eq('doc_key', 'dashboard_acl_v1')
         .order('updated_at', { ascending:false })
         .limit(50);
-      if (!res.error && Array.isArray(res.data) && res.data.length) {
-        return pickLatestRfDocument(res.data, 'content') || pickLatestRfDocument(res.data, 'data');
+      if (res && !res.error && Array.isArray(res.data)) {
+        for (var i = 0; i < res.data.length; i += 1) {
+          var row = res.data[i] || {};
+          if (row.content && typeof row.content === 'object') return row.content;
+          if (row.data && typeof row.data === 'object') return row.data;
+        }
+      }
+    } catch (_) {}
+    try {
+      var fallback = await client.from('rf_documents').select('content,data').eq('doc_key', 'dashboard_acl_v1');
+      if (fallback && !fallback.error && Array.isArray(fallback.data)) {
+        for (var j = 0; j < fallback.data.length; j += 1) {
+          var alt = fallback.data[j] || {};
+          if (alt.content && typeof alt.content === 'object') return alt.content;
+          if (alt.data && typeof alt.data === 'object') return alt.data;
+        }
       }
     } catch (_) {}
     return null;
@@ -1569,29 +1567,41 @@ async function applyDomPermissions(pageKey, root, options) {
     return !!((userPermissions && Object.keys(userPermissions).length) || (userGrants && Object.keys(userGrants).length));
   }
 
-  function collectMirrorUserDecisions(mirror, email, pageKey, href) {
-    var out = [];
-    if (!mirror || typeof mirror !== 'object') return out;
-    var normalized = normalizeAclEmail(email);
-    if (!normalized) return out;
-    var keys = [];
-    var bare = String(pageKey || '').trim().replace(/\.html$/i, '');
-    var cleanHref = normalizeHref(href || pageKeyToHref(bare));
-    if (bare) keys.push(bare);
-    if (cleanHref) keys.push(cleanHref);
-    var userPermissionsRoot = mirror.user_permissions && typeof mirror.user_permissions === 'object' ? mirror.user_permissions : null;
-    var userGrantsRoot = mirror.user_grants && typeof mirror.user_grants === 'object' ? mirror.user_grants : null;
-    var userPermissions = userPermissionsRoot && userPermissionsRoot[normalized] && typeof userPermissionsRoot[normalized] === 'object' ? userPermissionsRoot[normalized] : null;
-    var userGrants = userGrantsRoot && userGrantsRoot[normalized] && typeof userGrantsRoot[normalized] === 'object' ? userGrantsRoot[normalized] : null;
-    keys.forEach(function (key) {
-      if (userPermissions && Object.prototype.hasOwnProperty.call(userPermissions, key)) {
-        out.push(permissionValueToEntry(userPermissions[key]));
+  function mergeStrictPermissionValue(target, value) {
+    var next = permissionValueToEntry(value);
+    return mergePermissions(target, next);
+  }
+
+  function resolveStrictUserPermission(key, href, tableMap, mirror, email) {
+    var result = {
+      can_view:false,
+      can_add:false,
+      can_edit:false,
+      can_delete:false,
+      can_export:false,
+      can_import:false
+    };
+    var cleanKey = String(key || '').trim();
+    var cleanHref = normalizeHref(href);
+    if (tableMap instanceof Map && cleanKey && tableMap.has(cleanKey)) {
+      result = mergePermissions(result, tableMap.get(cleanKey));
+    }
+    if (mirror && email) {
+      var normalizedEmail = normalizeAclEmail(email);
+      var roots = ['user_permissions', 'user_grants'];
+      for (var i = 0; i < roots.length; i += 1) {
+        var root = mirror[roots[i]] && typeof mirror[roots[i]] === 'object' ? mirror[roots[i]] : null;
+        var entry = root && normalizedEmail && root[normalizedEmail] && typeof root[normalizedEmail] === 'object' ? root[normalizedEmail] : null;
+        if (!entry) continue;
+        if (cleanKey && Object.prototype.hasOwnProperty.call(entry, cleanKey)) {
+          result = mergeStrictPermissionValue(result, entry[cleanKey]);
+        }
+        if (cleanHref && Object.prototype.hasOwnProperty.call(entry, cleanHref)) {
+          result = mergeStrictPermissionValue(result, entry[cleanHref]);
+        }
       }
-      if (userGrants && Object.prototype.hasOwnProperty.call(userGrants, key)) {
-        out.push(permissionValueToEntry(userGrants[key]));
-      }
-    });
-    return out;
+    }
+    return result;
   }
 
   function permissionValueToEntry(value) {
@@ -1772,43 +1782,30 @@ async function applyDomPermissions(pageKey, root, options) {
     var email = normalizeAclEmail(user.email);
     var userPermissionMap = await loadUserPermissionMap(client, user);
     var mirror = await readDashboardAclMirror(client);
-    var hasUserAcl = !!(userPermissionMap && userPermissionMap.size);
+    var hasTableUserAcl = !!(userPermissionMap && userPermissionMap.size);
     var hasMirrorUserAcl = mirrorHasUserAclForEmail(mirror, email);
-    var hasStrictUserAcl = hasUserAcl || hasMirrorUserAcl;
+    var hasUserAcl = !!(hasTableUserAcl || hasMirrorUserAcl);
 
     if (key === 'index') {
       return {
         allowed:true,
         role:role,
-        source: hasStrictUserAcl ? 'user acl strict index' : 'index by role',
+        source: hasUserAcl ? 'user acl strict index' : 'index by role',
         permissions: { can_view:true, can_add:false, can_edit:false, can_delete:false, can_export:false, can_import:false },
         email: email,
         accountStatus: accountStatus,
-        strictUserAcl: hasStrictUserAcl
+        strictUserAcl: hasUserAcl
       };
     }
 
-    if (hasStrictUserAcl) {
-      var strictPerm = { can_view:false, can_add:false, can_edit:false, can_delete:false, can_export:false, can_import:false };
-      var strictFound = false;
-      if (userPermissionMap) {
-        [key, href].forEach(function (lookupKey) {
-          if (!lookupKey) return;
-          if (!userPermissionMap.has(lookupKey)) return;
-          strictPerm = mergePermissions(strictPerm, userPermissionMap.get(lookupKey));
-          strictFound = true;
-        });
-      }
-      collectMirrorUserDecisions(mirror, email, key, href).forEach(function (entry) {
-        strictPerm = mergePermissions(strictPerm, entry);
-        strictFound = true;
-      });
+    if (hasUserAcl) {
+      var strictUserPerm = resolveStrictUserPermission(key, href, userPermissionMap, mirror, email);
       return {
-        allowed: strictFound && strictPerm.can_view === true,
+        allowed: strictUserPerm.can_view === true,
         role: role,
-        source: strictFound ? 'user acl strict' : 'user acl strict default deny',
-        message: strictFound && strictPerm.can_view === true ? '' : 'Nu ai acces în această foaie. Cere acces de la admin.',
-        permissions: buildPermissionEntry(strictPerm),
+        source: hasTableUserAcl ? 'user acl strict table+mirror' : 'user acl strict mirror',
+        message: strictUserPerm.can_view === true ? '' : 'Nu ai acces în această foaie. Cere acces de la admin.',
+        permissions: buildPermissionEntry(strictUserPerm),
         email: email,
         accountStatus: accountStatus,
         strictUserAcl: true
@@ -3313,15 +3310,53 @@ async function applyDomPermissions(pageKey, root, options) {
       }
     }, true);
 
+    document.addEventListener('pointerdown', function (ev) {
+      var state = currentPageFlags();
+      var edit = state.controls && state.controls['rows.edit'];
+      var target = ev.target;
+      if (edit && edit.can_use === false && target && (elementInEditableGrid(target) || (target.closest && target.closest('[contenteditable="true"], input, textarea, select')))) {
+        if (!elementInFilterZone(target)) {
+          ev.preventDefault();
+          ev.stopImmediatePropagation();
+        }
+      }
+    }, true);
+
+    document.addEventListener('keydown', function (ev) {
+      var state = currentPageFlags();
+      var edit = state.controls && state.controls['rows.edit'];
+      var target = ev.target;
+      if (edit && edit.can_use === false && target && (elementInEditableGrid(target) || (target.closest && target.closest('[contenteditable="true"], input, textarea, select')))) {
+        if (!elementInFilterZone(target)) {
+          ev.preventDefault();
+          ev.stopImmediatePropagation();
+        }
+      }
+    }, true);
+
     document.addEventListener('beforeinput', function (ev) {
       var target = ev.target;
       var state = currentPageFlags();
       var edit = state.controls && state.controls['rows.edit'];
-      if (edit && edit.can_use === false && target && target.hasAttribute && target.hasAttribute('contenteditable')) {
+      if (edit && edit.can_use === false && target && ((target.hasAttribute && target.hasAttribute('contenteditable')) || elementInEditableGrid(target))) {
         ev.preventDefault();
         ev.stopImmediatePropagation();
       }
     }, true);
+
+    ['input','change','paste','drop'].forEach(function (eventName) {
+      document.addEventListener(eventName, function (ev) {
+        var state = currentPageFlags();
+        var edit = state.controls && state.controls['rows.edit'];
+        var target = ev.target;
+        if (edit && edit.can_use === false && target && (elementInEditableGrid(target) || (target.closest && target.closest('[contenteditable="true"], input, textarea, select')))) {
+          if (!elementInFilterZone(target)) {
+            ev.preventDefault();
+            ev.stopImmediatePropagation();
+          }
+        }
+      }, true);
+    });
   }
 
   async function collectControlSnapshot(pageKey, pageAccess, client) {
