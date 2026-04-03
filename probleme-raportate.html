@@ -1249,6 +1249,7 @@
       dirty: false,
       cloudUpdatedAt: "",
       localUpdatedAt: "",
+      cloudDocKey: PAGE_KEY,
       source: "seed/local",
       syncTimer: null,
       syncInFlight: false,
@@ -1536,6 +1537,67 @@
 
     function setModeStatus(text, kind) {
       setBadge(dom.modeBadge, dom.dotMode, text, kind);
+    }
+
+    function uniqueDocKeys(keys) {
+      return [...new Set((keys || []).map(value => String(value ?? "").trim()).filter(Boolean))];
+    }
+
+    function getCloudDocCandidates() {
+      return uniqueDocKeys([state.cloudDocKey, PAGE_KEY, ...DOC_KEYS]);
+    }
+
+    function extractDocumentPayload(doc) {
+      if (!doc || typeof doc !== "object") return null;
+      return doc.content || doc.data || doc.payload || doc;
+    }
+
+    async function queryDocumentsByKeys(keys) {
+      const docKeys = uniqueDocKeys(keys);
+      if (!state.supabase || !docKeys.length) return [];
+
+      let batchError = null;
+      try {
+        const { data, error } = await state.supabase
+          .from("rf_documents")
+          .select("*")
+          .in("doc_key", docKeys)
+          .order("updated_at", { ascending: false })
+          .limit(Math.max(5, docKeys.length * 3));
+
+        if (error) {
+          batchError = error;
+        } else if (Array.isArray(data) && data.length) {
+          return data;
+        }
+      } catch (error) {
+        batchError = error;
+      }
+
+      const collected = [];
+      for (const key of docKeys) {
+        try {
+          const { data, error } = await state.supabase
+            .from("rf_documents")
+            .select("*")
+            .eq("doc_key", key)
+            .order("updated_at", { ascending: false })
+            .limit(3);
+
+          if (error) throw error;
+          if (Array.isArray(data) && data.length) collected.push(...data);
+        } catch (error) {
+          batchError = batchError || error;
+        }
+      }
+
+      if (collected.length) {
+        collected.sort((a, b) => String(b?.updated_at || "").localeCompare(String(a?.updated_at || "")));
+        return collected;
+      }
+
+      if (batchError) throw batchError;
+      return [];
     }
 
     function applyPermissionsToUi() {
@@ -2935,32 +2997,67 @@ async function resolvePagePermissions() {
       if (!state.supabase || !state.user) return false;
 
       try {
-        const { data, error } = await state.supabase
-          .from("rf_documents")
-          .select("*")
-          .in("doc_key", DOC_KEYS)
-          .order("updated_at", { ascending: false })
-          .limit(5);
+        const docs = await queryDocumentsByKeys(getCloudDocCandidates());
 
-        if (error) {
-          throw error;
-        }
-
-        if (!Array.isArray(data) || !data.length) {
+        if (!Array.isArray(docs) || !docs.length) {
           if (force) setCloudStatus("Cloud: fără document, rulezi local", "warning");
           return false;
         }
 
-        const doc = data.find(Boolean);
-        const payload = doc?.content || doc?.data || doc;
-        const rows = rowsFromPayload(payload);
-        if (!rows.length) return false;
+        let matched = null;
+        let matchedRows = [];
+        let emptyDoc = null;
 
-        const remoteStamp = doc?.updated_at || payload?.updated_at || "";
+        for (const doc of docs) {
+          try {
+            const payload = extractDocumentPayload(doc);
+            const rows = rowsFromPayload(payload);
+            if (rows.length) {
+              matched = { doc, payload };
+              matchedRows = rows;
+              break;
+            }
+            if (!emptyDoc && payload && (Array.isArray(payload?.rows) || Array.isArray(payload))) {
+              emptyDoc = { doc, payload };
+            }
+          } catch (innerError) {
+            console.warn("loadCloudDocument candidate skipped", doc?.doc_key, innerError);
+          }
+        }
+
+        if (!matched && emptyDoc) {
+          const remoteStamp = emptyDoc.doc?.updated_at || emptyDoc.payload?.updated_at || "";
+          const canReplace = !state.rows.length || !state.dirty || force;
+          state.cloudDocKey = String(emptyDoc.doc?.doc_key || PAGE_KEY).trim() || PAGE_KEY;
+          state.cloudUpdatedAt = remoteStamp;
+          if (canReplace) {
+            state.rows = [];
+            state.filteredRows = [];
+            state.loadedFromCloud = true;
+            state.source = "cloud";
+            state.selectedId = null;
+            state.didInitYearGroups = false;
+            state.expandedYears = new Set();
+            persistLocal();
+            setModeStatus("Sursă: cloud", "success");
+            setCloudStatus("Cloud: document gol", "success");
+            refreshUi(true);
+            return true;
+          }
+          return false;
+        }
+
+        if (!matched || !matchedRows.length) {
+          if (force) setCloudStatus("Cloud: fără document valid, rulezi local", "warning");
+          return false;
+        }
+
+        const remoteStamp = matched.doc?.updated_at || matched.payload?.updated_at || "";
         const canReplace = !state.rows.length || !state.dirty || force;
+        state.cloudDocKey = String(matched.doc?.doc_key || PAGE_KEY).trim() || PAGE_KEY;
 
         if (canReplace) {
-          state.rows = rows;
+          state.rows = matchedRows;
           state.cloudUpdatedAt = remoteStamp;
           state.loadedFromCloud = true;
           state.source = "cloud";
@@ -2993,19 +3090,21 @@ async function resolvePagePermissions() {
       setCloudStatus("Cloud: se sincronizează...", "warning");
 
       const payload = currentPayload();
-      const row = {
-        doc_key: PAGE_KEY,
+      const docKeys = getCloudDocCandidates();
+      const rowsToUpsert = docKeys.map(docKey => ({
+        doc_key: docKey,
         content: payload,
         updated_at: payload.updated_at
-      };
+      }));
 
       try {
         const { error } = await state.supabase
           .from("rf_documents")
-          .upsert(row, { onConflict: "doc_key" });
+          .upsert(rowsToUpsert, { onConflict: "doc_key" });
 
         if (error) throw error;
 
+        state.cloudDocKey = docKeys[0] || PAGE_KEY;
         state.cloudUpdatedAt = payload.updated_at;
         state.dirty = false;
         state.source = "cloud";
@@ -3028,9 +3127,9 @@ async function resolvePagePermissions() {
         const { data, error } = await state.supabase
           .from("rf_documents")
           .select("doc_key,updated_at")
-          .in("doc_key", DOC_KEYS)
+          .in("doc_key", getCloudDocCandidates())
           .order("updated_at", { ascending: false })
-          .limit(3);
+          .limit(6);
 
         if (error) throw error;
         const remote = Array.isArray(data) && data[0] ? data[0].updated_at : "";
@@ -3163,19 +3262,31 @@ async function resolvePagePermissions() {
 
     function deleteSelected() {
       if (!state.permissions.canDelete) return;
-      if (!state.selectedId) {
+      const activeId = state.selectedId || state.editingId;
+      if (!activeId) {
         alert("Selectează mai întâi un rând.");
         return;
       }
-      const row = rowById(state.selectedId);
-      if (!row) return;
+      const row = rowById(activeId);
+      if (!row) {
+        alert("Rândul selectat nu mai există.");
+        state.selectedId = null;
+        refreshUi(false);
+        return;
+      }
       if (!confirm("Ștergi rândul selectat?")) return;
-      state.rows = state.rows.filter(item => item.id !== state.selectedId);
+      const before = state.rows.length;
+      state.rows = state.rows.filter(item => item.id !== activeId);
+      if (state.rows.length === before) {
+        alert("Rândul selectat nu a putut fi șters.");
+        return;
+      }
       state.selectedId = null;
+      state.editingId = null;
       state.didInitYearGroups = true;
       state.source = "local";
       setModeStatus("Sursă: local modificat", "warning");
-      markDirty();
+      markDirty("modificări locale nesincronizate");
       refreshUi(true);
     }
 
@@ -3339,10 +3450,14 @@ async function resolvePagePermissions() {
       refreshUi(true);
 
       setInterval(checkRemoteChanges, CLOUD_REFRESH_MS);
-      if (navigator.onLine) {
-        setCloudStatus(state.supabase ? "Cloud: pregătit" : "Cloud: indisponibil", state.supabase ? "success" : "danger");
-      } else {
+      if (!navigator.onLine) {
         setCloudStatus("Cloud: offline, cache local activ", "danger");
+      } else if (!state.user) {
+        setCloudStatus("Cloud: fără sesiune activă", "warning");
+      } else if (!state.loadedFromCloud && !state.supabase) {
+        setCloudStatus("Cloud: indisponibil", "danger");
+      } else if (!state.loadedFromCloud && state.supabase) {
+        setCloudStatus("Cloud: rulezi din cache local", "warning");
       }
 
       requestMobileStickyHeadUpdate(true);
