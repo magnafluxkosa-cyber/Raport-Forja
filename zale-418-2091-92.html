@@ -737,8 +737,7 @@
         manual_forjat_2308: null,
         manual_tratate_2307: toOptionalInt(src.manual_tratate_2307),
         manual_tratate_2308: toOptionalInt(src.manual_tratate_2308),
-        _seed: src._seed === true,
-        _auto_generated: src._auto_generated === true || String(src.id || '').startsWith('auto-row:')
+        _seed: src._seed === true
       };
       if(!out.an && out.data_livrarii) out.an = yearFromDate(out.data_livrarii);
       if(!out.luna && out.data_livrarii) out.luna = monthFromDate(out.data_livrarii);
@@ -1180,50 +1179,43 @@
       });
       return keys;
     }
-    function makeAutoMonthRow(year, month, nrTransport, indexInMonth) {
-      return normalizeMainRow({
-        id: `auto-row:${year}:${month}:${nrTransport}:${indexInMonth}`,
-        an: year,
-        luna: month,
-        data_livrarii: '',
-        nr_transport: String(nrTransport),
-        tratate_2307: 0,
-        tratate_2308: 0,
-        ambalat_2307: 0,
-        ambalat_2308: 0,
-        fara_tt_2307: 0,
-        fara_tt_2308: 0,
-        diferenta_2307: 0,
-        diferenta_2308: 0,
-        _auto_generated: true
-      });
+    function isFloatingSeedTransportRow(row) {
+      return !!(row && row._seed === true && !toStr(row.data_livrarii).trim() && toStr(row.nr_transport).trim());
     }
     function computeDerivedRows(baseRows) {
       const sorted = (baseRows || []).map(normalizeMainRow).sort(transportSort);
       const monthlyTotals = getMonthlyTotals(state.forjateRows);
       const packTotals = getPackTotals(state.packRows);
       const externalRebutTotals = getMonthlyExternalRebutTotals(state.magnafluxRows, []);
-      const monthRowsMap = new Map();
+      const explicitMonthRowsMap = new Map();
+      const floatingRows = [];
       const relevantMonthKeys = new Set(getRelevant418MonthKeys(monthlyTotals));
-      let generatedTransportSeq = Math.max(0, ...sorted.map(row => toInt(row.nr_transport)).filter(Number.isFinite));
 
       sorted.forEach(row => {
         const year = normalizeYear(row.an) || yearFromDate(row.data_livrarii);
         const month = normalizeMonthName(row.luna) || monthFromDate(row.data_livrarii);
         if(!year || !month) return;
+        const normalized = { ...row, an: year, luna: month };
+        if(isFloatingSeedTransportRow(normalized)) {
+          floatingRows.push(normalized);
+          return;
+        }
         const monthKey = `${year}|${month}`;
         relevantMonthKeys.add(monthKey);
-        if(!monthRowsMap.has(monthKey)) monthRowsMap.set(monthKey, []);
-        monthRowsMap.get(monthKey).push({ ...row, an: year, luna: month });
+        if(!explicitMonthRowsMap.has(monthKey)) explicitMonthRowsMap.set(monthKey, []);
+        explicitMonthRowsMap.get(monthKey).push(normalized);
       });
 
+      floatingRows.sort(transportSort);
+      const floatingQueue = [...floatingRows];
       const out = [];
+
       Array.from(relevantMonthKeys).sort((a,b) => {
         const [ya, ma] = a.split('|');
         const [yb, mb] = b.split('|');
         return monthSortToken(ya, ma).localeCompare(monthSortToken(yb, mb));
       }).forEach(monthKey => {
-        const monthRows = (monthRowsMap.get(monthKey) || []).map(row => ({ ...row }));
+        const monthRows = (explicitMonthRowsMap.get(monthKey) || []).map(row => ({ ...row }));
         const [year, month] = monthKey.split('|');
         const key2307 = `${year}|${month}|418-2091`;
         const key2308 = `${year}|${month}|418-2092`;
@@ -1238,13 +1230,13 @@
           Math.ceil(totalAvailable2307 / TRUCK_SIZE),
           Math.ceil(totalAvailable2308 / TRUCK_SIZE)
         );
-        const requiredRows = Math.max(monthRows.length, requiredRowsByStock);
 
-        while(monthRows.length < requiredRows) {
-          generatedTransportSeq += 1;
-          monthRows.push(makeAutoMonthRow(year, month, generatedTransportSeq, monthRows.length + 1));
+        while(monthRows.length < requiredRowsByStock && floatingQueue.length) {
+          const template = floatingQueue.shift();
+          monthRows.push({ ...template, an: year, luna: month });
         }
 
+        if(!monthRows.length) return;
         monthRows.sort(transportSort);
 
         let remaining2307 = totalAvailable2307;
