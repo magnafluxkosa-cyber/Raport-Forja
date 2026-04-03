@@ -395,6 +395,68 @@
     .problemHoverTip.show{ display:block; }
 
 
+    .selection-stats{
+      position:fixed;
+      right:18px;
+      bottom:18px;
+      z-index:450;
+      display:none;
+      align-items:center;
+      gap:10px;
+      padding:10px 14px;
+      border-radius:16px;
+      background:rgba(15,23,42,.92);
+      color:#fff;
+      box-shadow:0 16px 40px rgba(15,23,42,.28);
+      font-size:12px;
+      line-height:1;
+      pointer-events:none;
+      backdrop-filter:blur(4px);
+    }
+    .selection-stats.is-visible{ display:flex; }
+    .selection-stats .selection-stats-title{ font-weight:800; opacity:.95; }
+    .selection-stats .selection-chip{ display:inline-flex; align-items:center; gap:4px; white-space:nowrap; }
+    .selection-stats .selection-chip strong{ font-size:13px; }
+    body.grid-range-selecting, body.grid-range-selecting *{ user-select:none !important; }
+    #tblBody td.multi-selected{
+      background:#dbeafe !important;
+      box-shadow: inset 0 0 0 2px #2563eb;
+    }
+    #tblBody td.multi-selected .cellText{ background:transparent !important; }
+    #tblBody td.sticky{
+      position:sticky;
+      z-index:14;
+      overflow:hidden;
+      background:var(--cell) !important;
+      background-clip:padding-box;
+      box-shadow: inset 0 0 0 9999px var(--cell);
+    }
+    #tblHead th.sticky{
+      z-index:35;
+      overflow:hidden;
+      background:linear-gradient(#d4dfef, var(--head)) !important;
+      background-clip:padding-box;
+      box-shadow: inset 0 0 0 9999px var(--head);
+    }
+    tr.rowSel td.sticky{
+      background:#cfe8ff !important;
+      box-shadow: inset 0 0 0 9999px #cfe8ff;
+    }
+    tr.rowHover:not(.rowSel) td.sticky{
+      background:#e6f3ff !important;
+      box-shadow: inset 0 0 0 9999px #e6f3ff;
+    }
+    #tblBody td.multi-selected.sticky{
+      background:#dbeafe !important;
+      box-shadow: inset 0 0 0 9999px #dbeafe, inset 0 0 0 2px #2563eb;
+    }
+    .headWrap{
+      z-index:50;
+      overflow:hidden;
+      box-shadow:0 2px 0 rgba(0,0,0,.9);
+    }
+
+
     /* Table grid visibility override */
     table, thead th, tbody td, tfoot th, tfoot td,
     .mini-table th, .mini-table td,
@@ -895,7 +957,22 @@ const STATE = {
   _selectedId: '',
   _firstPayloadApply: true,
   colFilters: {},
-  _forceBottomOnce: false
+  _forceBottomOnce: false,
+  multiSelect: {
+    active:false,
+    dragging:false,
+    startRef:null,
+    currentRef:null,
+    anchorRef:null,
+    baseSelectedKeys:new Set(),
+    selectedKeys:new Set(),
+    stats:{ count:0, numericCount:0, sum:0, avg:0 },
+    startX:0,
+    startY:0,
+    lastClientX:0,
+    lastClientY:0,
+    suppressClickUntil:0
+  }
 };
 const FILTERS_STORAGE_KEY = 'FORJATE_filters_v1';
 let PERSISTED_FILTERS = {
@@ -1778,7 +1855,7 @@ function updateHover(){
   });
 }
 
-function makeRowTr(row){
+function makeRowTr(row, absoluteRowIndex){
   const tr = document.createElement('tr');
   tr.dataset.id = row.id || '';
   if(STATE._selectedId && tr.dataset.id === STATE._selectedId){ tr.classList.add('rowSel'); }
@@ -1797,6 +1874,7 @@ function makeRowTr(row){
     }
   });
   tr.addEventListener('click', ()=>{
+    if(STATE.multiSelect && Date.now() < Number(STATE.multiSelect.suppressClickUntil || 0)) return;
     const id = tr.dataset.id;
     STATE._selectedId = (STATE._selectedId === id) ? '' : id;
     // update highlight for currently rendered (virtualized) rows
@@ -1807,10 +1885,13 @@ function makeRowTr(row){
   if(window.__CAN_EDIT__){
     tr.addEventListener('dblclick', ()=> openModalEdit(row));
   }
-  COLS.forEach(col=>{
+  COLS.forEach((col, colIndex)=>{
     const td = document.createElement('td');
     td.style.minWidth = col.w + 'px';
     td.style.maxWidth = col.w + 'px';
+    td.dataset.selRow = String(Number.isFinite(absoluteRowIndex) ? absoluteRowIndex : 0);
+    td.dataset.selCol = String(colIndex);
+    if(isForjateCellSelected(Number(td.dataset.selRow), Number(td.dataset.selCol))) td.classList.add('multi-selected');
 
     const div = document.createElement('div');
     div.className = 'cellText' + (col.center?' center':'') + (col.right?' right':'');
@@ -1852,6 +1933,260 @@ function makeRowTr(row){
     tr.appendChild(td);
   });
   return tr;
+}
+
+
+function getForjateSelectionBubble(){
+  let box = document.getElementById('selectionStats');
+  if(box) return box;
+  box = document.createElement('div');
+  box.className = 'selection-stats';
+  box.id = 'selectionStats';
+  box.innerHTML = [
+    '<div class="selection-stats-title">Selecție</div>',
+    '<span class="selection-chip">Patrate: <strong data-selection-field="count">0</strong></span>',
+    '<span class="selection-chip">Sumă: <strong data-selection-field="sum">0</strong></span>',
+    '<span class="selection-chip">Medie: <strong data-selection-field="avg">0</strong></span>'
+  ].join('');
+  document.body.appendChild(box);
+  return box;
+}
+
+function formatForjateSelectionNumber(value){
+  const num = Number(value);
+  if(!Number.isFinite(num)) return '0';
+  const rounded = Math.abs(num - Math.round(num)) < 1e-9 ? Math.round(num) : Number(num.toFixed(2));
+  return new Intl.NumberFormat('ro-RO', { maximumFractionDigits: 2 }).format(rounded);
+}
+
+function forjateCellKey(rowIndex, colIndex){
+  return String(rowIndex) + ':' + String(colIndex);
+}
+
+function getForjateCellRefFromElement(cell){
+  if(!cell) return null;
+  return {
+    row: Number(cell.dataset.selRow || 0),
+    col: Number(cell.dataset.selCol || 0)
+  };
+}
+
+function isForjateCellSelected(rowIndex, colIndex){
+  return !!(STATE.multiSelect && STATE.multiSelect.selectedKeys && STATE.multiSelect.selectedKeys.has(forjateCellKey(rowIndex, colIndex)));
+}
+
+function getSelectableForjateCellFromNode(node){
+  return node && node.closest ? node.closest('#body td[data-sel-row][data-sel-col]') : null;
+}
+
+function getSelectableForjateCellFromPoint(clientX, clientY){
+  const el = document.elementFromPoint(Number(clientX || 0), Number(clientY || 0));
+  return getSelectableForjateCellFromNode(el);
+}
+
+function isForjateSummableColumn(col){
+  if(!col) return false;
+  return !!(col.calc || col.type === 'num' || col.type === 'year' || col.key === 'schimb');
+}
+
+function getForjateCellNumericValue(rowIndex, colIndex){
+  const row = Array.isArray(STATE._view) ? STATE._view[rowIndex] : null;
+  const col = COLS[colIndex];
+  if(!row || !col || !isForjateSummableColumn(col)) return null;
+  const value = toNum(row[col.key]);
+  return Number.isFinite(value) ? value : null;
+}
+
+function updateForjateSelectionClasses(){
+  document.querySelectorAll('#tblBody td[data-sel-row][data-sel-col]').forEach(cell => {
+    const rowIndex = Number(cell.dataset.selRow || 0);
+    const colIndex = Number(cell.dataset.selCol || 0);
+    cell.classList.toggle('multi-selected', isForjateCellSelected(rowIndex, colIndex));
+  });
+}
+
+function setForjateSelectionStatsVisible(isVisible){
+  const bubble = getForjateSelectionBubble();
+  bubble.classList.toggle('is-visible', !!isVisible);
+}
+
+function positionForjateSelectionBubble(clientX, clientY){
+  const bubble = getForjateSelectionBubble();
+  const pad = 18;
+  const rect = bubble.getBoundingClientRect();
+  const vw = Math.max(document.documentElement.clientWidth || 0, window.innerWidth || 0);
+  const vh = Math.max(document.documentElement.clientHeight || 0, window.innerHeight || 0);
+  let left = Number(clientX || 0) + 18;
+  let top = Number(clientY || 0) + 18;
+  const width = rect.width || 240;
+  const height = rect.height || 44;
+  if(left + width + pad > vw) left = Math.max(pad, Number(clientX || 0) - width - 18);
+  if(top + height + pad > vh) top = Math.max(pad, Number(clientY || 0) - height - 18);
+  bubble.style.left = Math.round(left) + 'px';
+  bubble.style.top = Math.round(top) + 'px';
+  bubble.style.right = 'auto';
+  bubble.style.bottom = 'auto';
+}
+
+function updateForjateSelectionBubble(){
+  const stats = STATE.multiSelect && STATE.multiSelect.stats ? STATE.multiSelect.stats : { count:0, numericCount:0, sum:0, avg:0 };
+  const bubble = getForjateSelectionBubble();
+  const countEl = bubble.querySelector('[data-selection-field="count"]');
+  const sumEl = bubble.querySelector('[data-selection-field="sum"]');
+  const avgEl = bubble.querySelector('[data-selection-field="avg"]');
+  if(countEl) countEl.textContent = formatForjateSelectionNumber(stats.count || 0);
+  if(sumEl) sumEl.textContent = formatForjateSelectionNumber(stats.sum || 0);
+  if(avgEl) avgEl.textContent = stats.numericCount ? formatForjateSelectionNumber(stats.avg || 0) : '0';
+  const shouldShow = !!(stats.count || (STATE.multiSelect && STATE.multiSelect.active));
+  setForjateSelectionStatsVisible(shouldShow);
+  if(shouldShow){
+    positionForjateSelectionBubble(STATE.multiSelect.lastClientX || 0, STATE.multiSelect.lastClientY || 0);
+  }
+}
+
+function recomputeForjateSelectionStats(){
+  let count = 0;
+  let numericCount = 0;
+  let sum = 0;
+  if(STATE.multiSelect && STATE.multiSelect.selectedKeys){
+    STATE.multiSelect.selectedKeys.forEach(key => {
+      count += 1;
+      const parts = String(key).split(':');
+      const rowIndex = Number(parts[0] || 0);
+      const colIndex = Number(parts[1] || 0);
+      const value = getForjateCellNumericValue(rowIndex, colIndex);
+      if(Number.isFinite(value)){
+        numericCount += 1;
+        sum += value;
+      }
+    });
+  }
+  STATE.multiSelect.stats = {
+    count,
+    numericCount,
+    sum,
+    avg: numericCount ? (sum / numericCount) : 0
+  };
+  updateForjateSelectionBubble();
+}
+
+function setForjateSelectedKeySet(nextSet){
+  STATE.multiSelect.selectedKeys = nextSet instanceof Set ? nextSet : new Set();
+  updateForjateSelectionClasses();
+  recomputeForjateSelectionStats();
+}
+
+function clearForjateSelection(){
+  if(STATE.multiSelect){
+    STATE.multiSelect.selectedKeys = new Set();
+    STATE.multiSelect.active = false;
+    STATE.multiSelect.dragging = false;
+    STATE.multiSelect.startRef = null;
+    STATE.multiSelect.currentRef = null;
+    STATE.multiSelect.baseSelectedKeys = new Set();
+  }
+  updateForjateSelectionClasses();
+  recomputeForjateSelectionStats();
+}
+
+function buildForjateRangeSet(startRef, endRef, baseSet){
+  const result = baseSet instanceof Set ? new Set(Array.from(baseSet)) : new Set();
+  if(!startRef || !endRef) return result;
+  const minRow = Math.min(Number(startRef.row || 0), Number(endRef.row || 0));
+  const maxRow = Math.max(Number(startRef.row || 0), Number(endRef.row || 0));
+  const minCol = Math.min(Number(startRef.col || 0), Number(endRef.col || 0));
+  const maxCol = Math.max(Number(startRef.col || 0), Number(endRef.col || 0));
+  for(let r = minRow; r <= maxRow; r++){
+    for(let c = minCol; c <= maxCol; c++){
+      result.add(forjateCellKey(r, c));
+    }
+  }
+  return result;
+}
+
+function beginForjateMultiSelection(event){
+  if(!event || event.button !== 0) return;
+  const cell = getSelectableForjateCellFromNode(event.target);
+  if(!cell) return;
+  const ref = getForjateCellRefFromElement(cell);
+  if(!ref) return;
+  const additive = !!(event.ctrlKey || event.metaKey);
+  if(event.shiftKey && STATE.multiSelect.anchorRef){
+    STATE.multiSelect.lastClientX = Number(event.clientX || 0);
+    STATE.multiSelect.lastClientY = Number(event.clientY || 0);
+    const base = additive ? new Set(STATE.multiSelect.selectedKeys) : new Set();
+    setForjateSelectedKeySet(buildForjateRangeSet(STATE.multiSelect.anchorRef, ref, base));
+    STATE.multiSelect.suppressClickUntil = Date.now() + 120;
+    event.preventDefault();
+    return;
+  }
+  STATE.multiSelect.active = true;
+  STATE.multiSelect.dragging = false;
+  STATE.multiSelect.startRef = ref;
+  STATE.multiSelect.currentRef = ref;
+  STATE.multiSelect.anchorRef = ref;
+  STATE.multiSelect.startX = Number(event.clientX || 0);
+  STATE.multiSelect.startY = Number(event.clientY || 0);
+  STATE.multiSelect.lastClientX = Number(event.clientX || 0);
+  STATE.multiSelect.lastClientY = Number(event.clientY || 0);
+  STATE.multiSelect.baseSelectedKeys = additive ? new Set(STATE.multiSelect.selectedKeys) : new Set();
+  setForjateSelectedKeySet(buildForjateRangeSet(ref, ref, STATE.multiSelect.baseSelectedKeys));
+  document.body.classList.add('grid-range-selecting');
+  event.preventDefault();
+}
+
+function moveForjateMultiSelection(event){
+  if(!STATE.multiSelect.active) return;
+  STATE.multiSelect.lastClientX = Number(event.clientX || 0);
+  STATE.multiSelect.lastClientY = Number(event.clientY || 0);
+  const cell = getSelectableForjateCellFromPoint(event.clientX, event.clientY);
+  if(!cell) return;
+  const ref = getForjateCellRefFromElement(cell);
+  if(!ref) return;
+  const movedEnough = Math.abs(STATE.multiSelect.lastClientX - STATE.multiSelect.startX) > 2 || Math.abs(STATE.multiSelect.lastClientY - STATE.multiSelect.startY) > 2;
+  if(movedEnough) STATE.multiSelect.dragging = true;
+  STATE.multiSelect.currentRef = ref;
+  setForjateSelectedKeySet(buildForjateRangeSet(STATE.multiSelect.startRef, ref, STATE.multiSelect.baseSelectedKeys));
+  event.preventDefault();
+}
+
+function finishForjateMultiSelection(event){
+  if(!STATE.multiSelect.active) return;
+  STATE.multiSelect.active = false;
+  document.body.classList.remove('grid-range-selecting');
+  STATE.multiSelect.suppressClickUntil = Date.now() + 120;
+  updateForjateSelectionBubble();
+  if(event){
+    event.preventDefault();
+    event.stopPropagation();
+  }
+}
+
+function bindForjateMultiSelection(){
+  if(bindForjateMultiSelection._done) return;
+  bindForjateMultiSelection._done = true;
+  if(body){
+    body.addEventListener('pointerdown', beginForjateMultiSelection, true);
+  }
+  document.addEventListener('pointermove', moveForjateMultiSelection, true);
+  document.addEventListener('pointerup', finishForjateMultiSelection, true);
+  document.addEventListener('pointercancel', finishForjateMultiSelection, true);
+  document.addEventListener('mousedown', function(event){
+    const insideTable = !!(event.target && event.target.closest && event.target.closest('#tblBody'));
+    const insideBubble = !!(event.target && event.target.closest && event.target.closest('#selectionStats'));
+    if(!insideTable && !insideBubble && !(STATE.multiSelect && STATE.multiSelect.active)){
+      if(STATE.multiSelect && STATE.multiSelect.selectedKeys && STATE.multiSelect.selectedKeys.size){
+        clearForjateSelection();
+      }
+    }
+  }, true);
+  document.addEventListener('keydown', function(event){
+    if(event.key === 'Escape' && STATE.multiSelect && STATE.multiSelect.selectedKeys && STATE.multiSelect.selectedKeys.size){
+      clearForjateSelection();
+    }
+  }, true);
+  window.addEventListener('resize', updateForjateSelectionBubble);
+  document.getElementById('tableWrap')?.addEventListener('scroll', updateForjateSelectionBubble, { passive:true });
 }
 
 function renderSummary(){
@@ -2107,7 +2442,7 @@ function render(){
       for(let i=0;i<sampleEnd;i++){
         const row = view[i];
         recalcRow(row);
-        frag.appendChild(makeRowTr(row));
+        frag.appendChild(makeRowTr(row, i));
       }
       body.appendChild(frag);
       tblBody.style.transform = 'translateY(0px)';
@@ -2148,7 +2483,7 @@ function render(){
     for(let i=start;i<end;i++){
       const row = view[i];
       recalcRow(row);
-      frag.appendChild(makeRowTr(row));
+      frag.appendChild(makeRowTr(row, i));
     }
     body.appendChild(frag);
 
@@ -4578,6 +4913,7 @@ if(btnResetEl){
   refreshFilterOptions();
   persistCurrentFilters();
   render();
+  bindForjateMultiSelection();
   setTimeout(()=>{ __BOOTSTRAP_LOADING = false; }, 1200);
 
   // role + cloud
