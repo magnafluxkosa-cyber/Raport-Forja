@@ -1141,163 +1141,17 @@
         if(normalizeYear(row.an) !== prev.year) return;
         if(normalizeMonthName(row.luna) !== prev.month) return;
         if(row.reper !== '418-2091' && row.reper !== '418-2092') return;
-        const currentSort = `${String(monthIndex(row.an, row.luna) || 0).padStart(10,'0')}|${dateSortValue(row.data) || '9999-99-99'}|${String(idx).padStart(6,'0')}`;
+        const currentSort = `${dateSortValue(row.data) || '9999-99-99'}|${String(idx).padStart(6,'0')}`;
         const prevRow = latest[row.reper];
-        if(!prevRow || currentSort >= prevRow._sort) latest[row.reper] = { ...row, _sort: currentSort };
+        const prevSort = prevRow ? `${dateSortValue(prevRow.data) || '0000-00-00'}|${String(prevRow._idx || 0).padStart(6,'0')}` : '';
+        if(!prevRow || currentSort >= prevSort) latest[row.reper] = { ...row, _idx: idx };
       });
       totals.p2307 = toInt(latest['418-2091'] && latest['418-2091'].stoc_final);
       totals.p2308 = toInt(latest['418-2092'] && latest['418-2092'].stoc_final);
       return totals;
     }
-    function monthIndex(year, month) {
-      const y = Number(normalizeYear(year));
-      const m = MONTHS.indexOf(normalizeMonthName(month)) + 1;
-      if(!y || !m) return null;
-      return (y * 12) + (m - 1);
-    }
-    function monthIndexToPeriod(idx) {
-      if(idx == null || !Number.isFinite(idx)) return { year:'', month:'' };
-      const year = Math.floor(idx / 12);
-      const monthIdx = idx % 12;
-      return {
-        year: String(year),
-        month: MONTHS[monthIdx] || ''
-      };
-    }
-    function getLatestInventarSnapshots(inventarRows) {
-      const latest = { '418-2091': null, '418-2092': null };
-      (inventarRows || []).forEach((row, idx) => {
-        if(row.reper !== '418-2091' && row.reper !== '418-2092') return;
-        const idxMonth = monthIndex(row.an, row.luna);
-        if(idxMonth == null) return;
-        const currentSort = `${String(idxMonth).padStart(10,'0')}|${dateSortValue(row.data) || '9999-99-99'}|${String(idx).padStart(6,'0')}`;
-        const prev = latest[row.reper];
-        if(!prev || currentSort >= prev._sort) {
-          latest[row.reper] = {
-            reper: row.reper,
-            year: normalizeYear(row.an),
-            month: normalizeMonthName(row.luna),
-            monthIdx: idxMonth,
-            stock: toInt(row.stoc_final),
-            _sort: currentSort
-          };
-        }
-      });
-      return latest;
-    }
-    function buildRollingForjateSource(monthlyTotals, externalRebutTotals, inventarRows) {
-      const prodByMonth = new Map();
-      const maxByReper = { '418-2091': null, '418-2092': null };
-      const minByReper = { '418-2091': null, '418-2092': null };
-      const allKeys = new Set([...(monthlyTotals ? monthlyTotals.keys() : []), ...(externalRebutTotals ? externalRebutTotals.keys() : [])]);
-      allKeys.forEach(key => {
-        const parts = String(key || '').split('|');
-        if(parts.length < 3) return;
-        const [year, month, reper] = parts;
-        if(reper !== '418-2091' && reper !== '418-2092') return;
-        const idxMonth = monthIndex(year, month);
-        if(idxMonth == null) return;
-        const bucket = prodByMonth.get(idxMonth) || { p2307:0, p2308:0 };
-        const net = toInt(monthlyTotals && monthlyTotals.get(key)) - toInt(externalRebutTotals && externalRebutTotals.get(key));
-        if(reper === '418-2091') bucket.p2307 += net;
-        if(reper === '418-2092') bucket.p2308 += net;
-        prodByMonth.set(idxMonth, bucket);
-        if(maxByReper[reper] == null || idxMonth > maxByReper[reper]) maxByReper[reper] = idxMonth;
-        if(minByReper[reper] == null || idxMonth < minByReper[reper]) minByReper[reper] = idxMonth;
-      });
-      const snapshots = getLatestInventarSnapshots(inventarRows);
-      function makeReperState(reper) {
-        const snap = snapshots[reper];
-        return {
-          baseMonthIdx: snap ? snap.monthIdx : null,
-          baseStock: snap ? toInt(snap.stock) : 0,
-          pool: snap ? toInt(snap.stock) : 0,
-          cursor: snap ? (snap.monthIdx + 1) : minByReper[reper],
-          maxMonthIdx: maxByReper[reper],
-          hasSnapshot: !!snap
-        };
-      }
-      return {
-        prodByMonth,
-        snapshots,
-        globalBaseMonthIdx: Math.max(
-          snapshots['418-2091'] ? snapshots['418-2091'].monthIdx : -Infinity,
-          snapshots['418-2092'] ? snapshots['418-2092'].monthIdx : -Infinity
-        ),
-        '418-2091': makeReperState('418-2091'),
-        '418-2092': makeReperState('418-2092')
-      };
-    }
-    function pullNextRollingStock(source, reper) {
-      const stateFor = source && source[reper];
-      if(!stateFor) return;
-      const bucketKey = reper === '418-2091' ? 'p2307' : 'p2308';
-      while(stateFor.pool <= 0 && stateFor.cursor != null && stateFor.maxMonthIdx != null && stateFor.cursor <= stateFor.maxMonthIdx) {
-        const bucket = source.prodByMonth.get(stateFor.cursor) || { p2307:0, p2308:0 };
-        stateFor.pool += toInt(bucket[bucketKey]);
-        stateFor.cursor += 1;
-      }
-      if(stateFor.pool < 0) stateFor.pool = 0;
-    }
-    function sumRollingAvailability(source, reper) {
-      const stateFor = source && source[reper];
-      if(!stateFor) return 0;
-      const bucketKey = reper === '418-2091' ? 'p2307' : 'p2308';
-      let total = Math.max(0, toInt(stateFor.baseStock));
-      const startIdx = stateFor.baseMonthIdx != null ? stateFor.baseMonthIdx + 1 : stateFor.cursor;
-      if(startIdx == null || stateFor.maxMonthIdx == null) return total;
-      for(let idxMonth = startIdx; idxMonth <= stateFor.maxMonthIdx; idxMonth += 1) {
-        const bucket = source.prodByMonth.get(idxMonth) || { p2307:0, p2308:0 };
-        total += toInt(bucket[bucketKey]);
-      }
-      return Math.max(0, total);
-    }
-    function computeLegacyMonthAllocations(baseRows, monthlyTotals, externalRebutTotals, cutoffMonthIdx) {
-      const monthRowsMap = new Map();
-      (baseRows || []).forEach(row => {
-        const year = normalizeYear(row.an) || yearFromDate(row.data_livrarii);
-        const month = normalizeMonthName(row.luna) || monthFromDate(row.data_livrarii);
-        const idxMonth = monthIndex(year, month);
-        if(idxMonth == null) return;
-        if(cutoffMonthIdx != null && idxMonth > cutoffMonthIdx) return;
-        const monthKey = `${year}|${month}`;
-        if(!monthRowsMap.has(monthKey)) monthRowsMap.set(monthKey, []);
-        monthRowsMap.get(monthKey).push({ ...row, an: year, luna: month, _monthIdx: idxMonth });
-      });
-      const allocationMap = new Map();
-      Array.from(monthRowsMap.keys()).sort((a, b) => {
-        const [ya, ma] = a.split('|');
-        const [yb, mb] = b.split('|');
-        const da = monthIndex(ya, ma) || 0;
-        const db = monthIndex(yb, mb) || 0;
-        return da - db;
-      }).forEach(monthKey => {
-        const monthRows = monthRowsMap.get(monthKey) || [];
-        monthRows.sort(transportSort);
-        const [year, month] = monthKey.split('|');
-        const key2307 = `${year}|${month}|418-2091`;
-        const key2308 = `${year}|${month}|418-2092`;
-        const has2307 = monthlyTotals.has(key2307);
-        const has2308 = monthlyTotals.has(key2308);
-        const previousStock = getInventarPreviousMonthTotals(state.inventarRows, year, month);
-        const externalRebut2307 = toInt(externalRebutTotals.get(key2307));
-        const externalRebut2308 = toInt(externalRebutTotals.get(key2308));
-        let remaining2307 = Math.max(0, toInt(monthlyTotals.get(key2307)) + toInt(previousStock.p2307) - externalRebut2307);
-        let remaining2308 = Math.max(0, toInt(monthlyTotals.get(key2308)) + toInt(previousStock.p2308) - externalRebut2308);
-        monthRows.forEach((base, idx) => {
-          const forceScriptic1650 = isScripticUntilFeb2026(year, month);
-          const forjat2307 = forceScriptic1650 ? 1650 : ((has2307 || previousStock.p2307 || externalRebut2307) ? Math.min(TRUCK_SIZE, remaining2307) : 0);
-          const forjat2308 = forceScriptic1650 ? 1650 : ((has2308 || previousStock.p2308 || externalRebut2308) ? Math.min(TRUCK_SIZE, remaining2308) : 0);
-          remaining2307 = Math.max(0, remaining2307 - Math.max(0, forjat2307));
-          remaining2308 = Math.max(0, remaining2308 - Math.max(0, forjat2308));
-          allocationMap.set(base.id, {
-            forjat_2307: Math.max(0, forjat2307),
-            forjat_2308: Math.max(0, forjat2308),
-            pos_in_month: idx + 1
-          });
-        });
-      });
-      return allocationMap;
+    function productionValue(monthTotal, positionInMonth) {
+      return Math.min(TRUCK_SIZE, toInt(monthTotal) - (TRUCK_SIZE * (positionInMonth - 1)));
     }
     function isScripticUntilFeb2026(year, month) {
       const y = Number(normalizeYear(year));
@@ -1306,41 +1160,105 @@
       if(y < 2026) return true;
       return y === 2026 && m <= 2;
     }
+    function monthIndexValue(year, month) {
+      const y = Number(normalizeYear(year));
+      const m = MONTHS.indexOf(normalizeMonthName(month)) + 1;
+      if(!y || !m) return -1;
+      return (y * 12) + (m - 1);
+    }
+    function monthKeyFromIndex(index) {
+      const idx = Number(index);
+      if(!Number.isFinite(idx) || idx < 0) return { year:'', month:'' };
+      const year = Math.floor(idx / 12);
+      const monthNo = (idx % 12) + 1;
+      return { year:String(year), month:MONTHS[monthNo - 1] || '' };
+    }
+    function buildInventorySnapshots(inventarRows) {
+      const byReperMonth = new Map();
+      (inventarRows || []).forEach((row, idx) => {
+        const reper = normalizeReper248(row && row.reper);
+        if(reper !== '418-2091' && reper !== '418-2092') return;
+        const year = normalizeYear(row && row.an) || yearFromDate(row && row.data);
+        const month = normalizeMonthName(row && row.luna) || monthFromDate(row && row.data);
+        const monthIndex = monthIndexValue(year, month);
+        if(monthIndex < 0) return;
+        const mapKey = `${reper}|${monthIndex}`;
+        const currentSort = `${dateSortValue(row && row.data) || '9999-99-99'}|${String(idx).padStart(6,'0')}`;
+        const prev = byReperMonth.get(mapKey);
+        const prevSort = prev ? `${dateSortValue(prev.data) || '0000-00-00'}|${String(prev._idx || 0).padStart(6,'0')}` : '';
+        if(!prev || currentSort >= prevSort) {
+          byReperMonth.set(mapKey, { reper, monthIndex, stock: toInt(row && row.stoc_final), data: row && row.data, _idx: idx });
+        }
+      });
+      const out = { '418-2091': [], '418-2092': [] };
+      byReperMonth.forEach(item => {
+        if(out[item.reper]) out[item.reper].push(item);
+      });
+      Object.keys(out).forEach(reper => out[reper].sort((a,b) => a.monthIndex - b.monthIndex));
+      return out;
+    }
+    function getLatestSnapshotForMonth(snapshots, monthIndex) {
+      let found = null;
+      (snapshots || []).forEach(item => {
+        if(item.monthIndex <= monthIndex) found = item;
+      });
+      return found;
+    }
+    function advanceRollingPool(ctx, rowMonthIndex) {
+      if(!ctx) return;
+      const latestSnapshot = getLatestSnapshotForMonth(ctx.snapshots, rowMonthIndex);
+      const latestSnapshotIndex = latestSnapshot ? latestSnapshot.monthIndex : -1;
+      if(!ctx.initialized || ctx.snapshotMonthIndex !== latestSnapshotIndex) {
+        ctx.initialized = true;
+        ctx.snapshotMonthIndex = latestSnapshotIndex;
+        ctx.pool = Math.max(0, latestSnapshot ? toInt(latestSnapshot.stock) : 0);
+        ctx.lastAppliedMonthIndex = latestSnapshotIndex;
+      }
+      for(let mi = ctx.lastAppliedMonthIndex + 1; mi <= rowMonthIndex; mi++) {
+        const { year, month } = monthKeyFromIndex(mi);
+        const monthKey = `${year}|${month}|${ctx.reper}`;
+        const produced = toInt(ctx.monthlyTotals.get(monthKey));
+        const rebut = toInt(ctx.externalRebutTotals.get(monthKey));
+        ctx.pool = Math.max(0, ctx.pool + produced - rebut);
+        ctx.lastAppliedMonthIndex = mi;
+      }
+    }
     function computeDerivedRows(baseRows) {
       const sorted = (baseRows || []).map(normalizeMainRow).sort(transportSort);
       const monthlyTotals = getMonthlyTotals(state.forjateRows);
       const packTotals = getPackTotals(state.packRows);
-      const externalRebutTotals = getMonthlyExternalRebutTotals(state.magnafluxRows, []);
-      const rollingSource = buildRollingForjateSource(monthlyTotals, externalRebutTotals, state.inventarRows);
-      const legacyAllocations = computeLegacyMonthAllocations(sorted, monthlyTotals, externalRebutTotals, Number.isFinite(rollingSource.globalBaseMonthIdx) ? rollingSource.globalBaseMonthIdx : null);
+      const externalRebutTotals = getMonthlyExternalRebutTotals(state.magnafluxRows, state.rebutPmRows);
+      const snapshots = buildInventorySnapshots(state.inventarRows);
+      const rolling = {
+        '418-2091': { reper:'418-2091', snapshots:snapshots['418-2091'] || [], monthlyTotals, externalRebutTotals, initialized:false, snapshotMonthIndex:-1, lastAppliedMonthIndex:-1, pool:0 },
+        '418-2092': { reper:'418-2092', snapshots:snapshots['418-2092'] || [], monthlyTotals, externalRebutTotals, initialized:false, snapshotMonthIndex:-1, lastAppliedMonthIndex:-1, pool:0 }
+      };
+      const monthPositions = new Map();
       const out = [];
-      sorted.forEach((base, idx) => {
+      sorted.forEach(base => {
         const year = normalizeYear(base.an) || yearFromDate(base.data_livrarii);
         const month = normalizeMonthName(base.luna) || monthFromDate(base.data_livrarii);
-        const idxMonth = monthIndex(year, month);
+        const rowMonthIndex = monthIndexValue(year, month);
+        const posKey = `${year}|${month}`;
+        const pos = (monthPositions.get(posKey) || 0) + 1;
+        monthPositions.set(posKey, pos);
         const pack = packTotals.get(normalizeTransportKey(base.nr_transport));
         const hasPack = !!pack;
         let forjat2307 = 0;
         let forjat2308 = 0;
-        let posInMonth = idx + 1;
-        if(idxMonth != null && Number.isFinite(rollingSource.globalBaseMonthIdx) && idxMonth <= rollingSource.globalBaseMonthIdx && legacyAllocations.has(base.id)) {
-          const legacy = legacyAllocations.get(base.id) || {};
-          forjat2307 = Math.max(0, toInt(legacy.forjat_2307));
-          forjat2308 = Math.max(0, toInt(legacy.forjat_2308));
-          posInMonth = legacy.pos_in_month || posInMonth;
+        const forceScriptic1650 = isScripticUntilFeb2026(year, month);
+        if(forceScriptic1650) {
+          forjat2307 = 1650;
+          forjat2308 = 1650;
         } else {
-          const forceScriptic1650 = isScripticUntilFeb2026(year, month);
-          if(forceScriptic1650) {
-            forjat2307 = 1650;
-            forjat2308 = 1650;
-          } else {
-            pullNextRollingStock(rollingSource, '418-2091');
-            pullNextRollingStock(rollingSource, '418-2092');
-            forjat2307 = Math.max(0, Math.min(TRUCK_SIZE, toInt(rollingSource['418-2091'].pool)));
-            forjat2308 = Math.max(0, Math.min(TRUCK_SIZE, toInt(rollingSource['418-2092'].pool)));
-            rollingSource['418-2091'].pool = Math.max(0, toInt(rollingSource['418-2091'].pool) - forjat2307);
-            rollingSource['418-2092'].pool = Math.max(0, toInt(rollingSource['418-2092'].pool) - forjat2308);
+          if(rowMonthIndex >= 0) {
+            advanceRollingPool(rolling['418-2091'], rowMonthIndex);
+            advanceRollingPool(rolling['418-2092'], rowMonthIndex);
           }
+          forjat2307 = Math.max(0, Math.min(TRUCK_SIZE, rolling['418-2091'].pool));
+          forjat2308 = Math.max(0, Math.min(TRUCK_SIZE, rolling['418-2092'].pool));
+          rolling['418-2091'].pool = Math.max(0, rolling['418-2091'].pool - forjat2307);
+          rolling['418-2092'].pool = Math.max(0, rolling['418-2092'].pool - forjat2308);
         }
         const ambalat2307 = hasPack ? toInt(pack.p2307) : 0;
         const ambalat2308 = hasPack ? toInt(pack.p2308) : 0;
@@ -1352,7 +1270,7 @@
           ...base,
           an: year,
           luna: month,
-          pos_in_month: posInMonth,
+          pos_in_month: pos,
           forjat_2307: forjat2307,
           forjat_2308: forjat2308,
           tratate_2307: tratate2307,
@@ -1410,15 +1328,8 @@
       const filtered = getFilteredRows();
       const pack2307 = filtered.reduce((sum,row) => sum + toInt(row.ambalat_2307), 0);
       const pack2308 = filtered.reduce((sum,row) => sum + toInt(row.ambalat_2308), 0);
-      const monthlyTotals = getMonthlyTotals(state.forjateRows);
-      const externalRebutTotals = getMonthlyExternalRebutTotals(state.magnafluxRows, []);
-      const rollingSource = buildRollingForjateSource(monthlyTotals, externalRebutTotals, state.inventarRows);
-      const totalAvailable2307 = sumRollingAvailability(rollingSource, '418-2091');
-      const totalAvailable2308 = sumRollingAvailability(rollingSource, '418-2092');
-      const packedAll2307 = state.packRows.filter(r => r.reper === '418-2091').reduce((s,r)=> s + toInt(r.buc), 0);
-      const packedAll2308 = state.packRows.filter(r => r.reper === '418-2092').reduce((s,r)=> s + toInt(r.buc), 0);
-      const stock2307 = Math.max(0, totalAvailable2307 - packedAll2307);
-      const stock2308 = Math.max(0, totalAvailable2308 - packedAll2308);
+      const stock2307 = Math.max(0, filtered.reduce((sum,row) => sum + toInt(row.forjat_2307) - toInt(row.ambalat_2307), 0));
+      const stock2308 = Math.max(0, filtered.reduce((sum,row) => sum + toInt(row.forjat_2308) - toInt(row.ambalat_2308), 0));
 
       document.getElementById('statTransports').textContent = fmtInt(filtered.length);
       document.getElementById('statPack2307').textContent = fmtInt(pack2307);
@@ -1441,7 +1352,7 @@
         document.getElementById('selectedNote').textContent = 'Nu ai selectat niciun transport.';
       }
       document.getElementById('logicNote').textContent =
-        'FORJAT pornește din ultimul stoc introdus în Inventar Forjat și continuă intern cu lunile următoare din FORJATE (martie, aprilie, mai...) până când apare un inventar mai nou. Lunile din tabel rămân strict luni de livrare, iar lunile din FORJATE sunt folosite doar în calculul intern al stocului disponibil. Tratate = Ambalat, iar Ambalat se ia din Ambalare 418 după Nr. transport.';
+        'FORJAT pornește din ultimul inventar introdus pentru fiecare reper și apoi continuă în lanț cu lunile următoare din FORJATE, minus rebuturile externe. Lunile afișate în tabel rămân lunile de livrare; producția din FORJATE este folosită doar intern ca stoc rulant. Tratate = Ambalat, iar Ambalat se ia din Ambalare 418 după Nr. transport.';
     }
 
     function getForjatCellClass(value) {
