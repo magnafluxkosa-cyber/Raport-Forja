@@ -1125,196 +1125,134 @@
       });
       return map;
     }
-    function buildInventarMonthlySnapshots(inventarRows) {
-      const grouped = new Map();
+    function getMonthIndex(year, month) {
+      const y = Number(normalizeYear(year));
+      const m = MONTHS.indexOf(normalizeMonthName(month)) + 1;
+      if(!y || !m) return -1;
+      return (y * 12) + (m - 1);
+    }
+    function monthPartsFromIndex(monthIndex) {
+      const idx = Number(monthIndex);
+      if(!Number.isFinite(idx) || idx < 0) return { year:'', month:'' };
+      const year = Math.floor(idx / 12);
+      const monthNo = (idx % 12) + 1;
+      return { year: String(year), month: MONTHS[monthNo - 1] || '' };
+    }
+    function compareMonthKeys(a, b) {
+      const [ya, ma] = String(a || '').split('|');
+      const [yb, mb] = String(b || '').split('|');
+      return getMonthIndex(ya, ma) - getMonthIndex(yb, mb);
+    }
+    function getInventarLatestByMonth(inventarRows) {
+      const latest = new Map();
       (inventarRows || []).forEach((row, idx) => {
-        const year = normalizeYear(row.an) || yearFromDate(row.data);
-        const month = normalizeMonthName(row.luna) || monthFromDate(row.data);
+        const year = normalizeYear(row.an);
+        const month = normalizeMonthName(row.luna);
         const reper = normalizeReper248(row.reper);
         if(!year || !month) return;
         if(reper !== '418-2091' && reper !== '418-2092') return;
-        const monthKey = `${year}|${month}`;
-        if(!grouped.has(monthKey)) grouped.set(monthKey, { '418-2091': null, '418-2092': null });
-        const slot = grouped.get(monthKey);
+        const monthKey = `${year}|${month}|${reper}`;
         const currentSort = `${dateSortValue(row.data) || '9999-99-99'}|${String(idx).padStart(6,'0')}`;
-        const prevRow = slot[reper];
-        const prevSort = prevRow ? `${dateSortValue(prevRow.data) || '0000-00-00'}|${String(prevRow._idx || 0).padStart(6,'0')}` : '';
-        if(!prevRow || currentSort >= prevSort) slot[reper] = { ...row, _idx: idx };
+        const prev = latest.get(monthKey);
+        if(!prev || currentSort >= prev._sort) latest.set(monthKey, { value: toInt(row.stoc_final), _sort: currentSort });
       });
-      const snapshots = new Map();
-      grouped.forEach((slot, monthKey) => {
-        snapshots.set(monthKey, {
-          p2307: toInt(slot['418-2091'] && slot['418-2091'].stoc_final),
-          p2308: toInt(slot['418-2092'] && slot['418-2092'].stoc_final)
+      const series = { '418-2091': [], '418-2092': [] };
+      latest.forEach((item, fullKey) => {
+        const [year, month, reper] = fullKey.split('|');
+        const monthIndex = getMonthIndex(year, month);
+        if(monthIndex < 0) return;
+        series[reper].push({ year, month, monthIndex, value: toInt(item.value) });
+      });
+      series['418-2091'].sort((a,b) => a.monthIndex - b.monthIndex);
+      series['418-2092'].sort((a,b) => a.monthIndex - b.monthIndex);
+      return series;
+    }
+    function getTimelineMonthIndexes(monthRowsMap, monthlyTotals, externalRebutTotals, inventarSeries) {
+      const set = new Set();
+      Array.from(monthRowsMap.keys()).forEach(monthKey => {
+        const [year, month] = monthKey.split('|');
+        const idx = getMonthIndex(year, month);
+        if(idx >= 0) set.add(idx);
+      });
+      monthlyTotals.forEach((_, fullKey) => {
+        const [year, month, reper] = String(fullKey || '').split('|');
+        if(reper !== '418-2091' && reper !== '418-2092') return;
+        const idx = getMonthIndex(year, month);
+        if(idx >= 0) set.add(idx);
+      });
+      externalRebutTotals.forEach((_, fullKey) => {
+        const [year, month, reper] = String(fullKey || '').split('|');
+        if(reper !== '418-2091' && reper !== '418-2092') return;
+        const idx = getMonthIndex(year, month);
+        if(idx >= 0) set.add(idx);
+      });
+      ['418-2091','418-2092'].forEach(reper => {
+        (inventarSeries[reper] || []).forEach(item => {
+          if(item && item.monthIndex >= 0) set.add(item.monthIndex);
         });
       });
-      return snapshots;
+      return Array.from(set).sort((a,b) => a - b);
     }
-    function getLatestInventarBaseBeforeOrAt(snapshotMap, year, month) {
-      const currentToken = monthSortToken(year, month);
-      let latestKey = '';
-      let latestToken = '';
-      let latestTotals = { p2307:0, p2308:0 };
-      if(!(snapshotMap instanceof Map) || !currentToken) return { key:latestKey, token:latestToken, p2307:0, p2308:0 };
-      snapshotMap.forEach((totals, monthKey) => {
-        const parts = String(monthKey || '').split('|');
-        if(parts.length !== 2) return;
-        const token = monthSortToken(parts[0], parts[1]);
-        if(!token || token > currentToken) return;
-        if(!latestToken || token > latestToken) {
-          latestKey = monthKey;
-          latestToken = token;
-          latestTotals = { p2307: toInt(totals && totals.p2307), p2308: toInt(totals && totals.p2308) };
-        }
-      });
-      return { key:latestKey, token:latestToken, p2307: latestTotals.p2307, p2308: latestTotals.p2308 };
-    }
-    function productionValue(monthTotal, positionInMonth) {
-      return Math.min(TRUCK_SIZE, toInt(monthTotal) - (TRUCK_SIZE * (positionInMonth - 1)));
-    }
-    function isScripticUntilFeb2026(year, month) {
-      const y = Number(normalizeYear(year));
-      const m = MONTHS.indexOf(normalizeMonthName(month)) + 1;
-      if(!y || !m) return false;
-      if(y < 2026) return true;
-      return y === 2026 && m <= 2;
-    }
-    function monthSortToken(year, month) {
-      const y = normalizeYear(year) || '0000';
-      const m = MONTHS.indexOf(normalizeMonthName(month)) + 1;
-      return `${y}${String(m > 0 ? m : 0).padStart(2,'0')}`;
-    }
-    function getRelevant418MonthKeys(monthlyTotals) {
-      const keys = new Set();
-      if(!(monthlyTotals instanceof Map)) return keys;
-      monthlyTotals.forEach((_, rawKey) => {
-        const parts = String(rawKey || '').split('|');
-        if(parts.length !== 3) return;
-        const year = normalizeYear(parts[0]);
-        const month = normalizeMonthName(parts[1]);
-        const reper = normalizeReper248(parts[2]);
-        if(!year || !month) return;
-        if(reper === '418-2091' || reper === '418-2092') keys.add(`${year}|${month}`);
-      });
-      return keys;
-    }
-    function isFloatingSeedTransportRow(row) {
-      return !!(row && row._seed === true && !toStr(row.data_livrarii).trim() && toStr(row.nr_transport).trim());
-    }
-    function createGeneratedMonthPlaceholder(year, month, sequence) {
-      return normalizeMainRow({
-        id: uid('auto'),
-        an: year,
-        luna: month,
-        data_livrarii: '',
-        nr_transport: '',
-        forjat_2307: 0,
-        forjat_2308: 0,
-        tratate_2307: 0,
-        tratate_2308: 0,
-        ambalat_2307: 0,
-        ambalat_2308: 0,
-        fara_tt_2307: 0,
-        fara_tt_2308: 0,
-        diferenta_2307: 0,
-        diferenta_2308: 0,
-        manual_tratate_2307: null,
-        manual_tratate_2308: null,
-        _generated: true,
-        _auto_month_sequence: sequence || 0
-      });
-    }
-    function computeDerivedRows(baseRows) {
+    function buildRollforwardData(baseRows) {
       const sorted = (baseRows || []).map(normalizeMainRow).sort(transportSort);
       const monthlyTotals = getMonthlyTotals(state.forjateRows);
       const packTotals = getPackTotals(state.packRows);
-      const externalRebutTotals = getMonthlyExternalRebutTotals(state.magnafluxRows, []);
-      const inventarSnapshots = buildInventarMonthlySnapshots(state.inventarRows);
-      const explicitMonthRowsMap = new Map();
-      const floatingRows = [];
-      const relevantMonthKeys = new Set(getRelevant418MonthKeys(monthlyTotals));
-
+      const externalRebutTotals = getMonthlyExternalRebutTotals(state.magnafluxRows, state.rebutPmRows);
+      const inventarSeries = getInventarLatestByMonth(state.inventarRows);
+      const monthRowsMap = new Map();
       sorted.forEach(row => {
         const year = normalizeYear(row.an) || yearFromDate(row.data_livrarii);
         const month = normalizeMonthName(row.luna) || monthFromDate(row.data_livrarii);
         if(!year || !month) return;
-        const normalized = { ...row, an: year, luna: month };
-        if(isFloatingSeedTransportRow(normalized)) {
-          floatingRows.push(normalized);
-          return;
-        }
         const monthKey = `${year}|${month}`;
-        relevantMonthKeys.add(monthKey);
-        if(!explicitMonthRowsMap.has(monthKey)) explicitMonthRowsMap.set(monthKey, []);
-        explicitMonthRowsMap.get(monthKey).push(normalized);
+        if(!monthRowsMap.has(monthKey)) monthRowsMap.set(monthKey, []);
+        monthRowsMap.get(monthKey).push({ ...row, an: year, luna: month });
       });
 
-      floatingRows.sort(transportSort);
-      const floatingQueue = [...floatingRows];
+      const timeline = getTimelineMonthIndexes(monthRowsMap, monthlyTotals, externalRebutTotals, inventarSeries);
       const out = [];
-      let carry2307 = 0;
-      let carry2308 = 0;
-      let activeSnapshotToken = '';
+      const monthEndingStock = new Map();
+      const inventoryBaseUsed = new Map();
 
-      Array.from(relevantMonthKeys).sort((a,b) => {
-        const [ya, ma] = a.split('|');
-        const [yb, mb] = b.split('|');
-        return monthSortToken(ya, ma).localeCompare(monthSortToken(yb, mb));
-      }).forEach(monthKey => {
-        const monthRows = (explicitMonthRowsMap.get(monthKey) || []).map(row => ({ ...row }));
-        const [year, month] = monthKey.split('|');
-        const currentToken = monthSortToken(year, month);
+      const pointers = { '418-2091': 0, '418-2092': 0 };
+      const carry = { '418-2091': 0, '418-2092': 0 };
+      const lastInventoryBase = { '418-2091': null, '418-2092': null };
+
+      timeline.forEach(monthIndex => {
+        const { year, month } = monthPartsFromIndex(monthIndex);
+        if(!year || !month) return;
+        const monthKey = `${year}|${month}`;
+        const monthRows = (monthRowsMap.get(monthKey) || []).slice().sort(transportSort);
+
+        ['418-2091','418-2092'].forEach(reper => {
+          const invList = inventarSeries[reper] || [];
+          while(pointers[reper] < invList.length && invList[pointers[reper]].monthIndex < monthIndex) {
+            const snapshot = invList[pointers[reper]];
+            carry[reper] = Math.max(0, toInt(snapshot.value));
+            lastInventoryBase[reper] = { year: snapshot.year, month: snapshot.month, value: Math.max(0, toInt(snapshot.value)) };
+            pointers[reper] += 1;
+          }
+        });
+
         const key2307 = `${year}|${month}|418-2091`;
         const key2308 = `${year}|${month}|418-2092`;
-        const externalRebut2307 = toInt(externalRebutTotals.get(key2307));
-        const externalRebut2308 = toInt(externalRebutTotals.get(key2308));
-        const latestBase = getLatestInventarBaseBeforeOrAt(inventarSnapshots, year, month);
+        const monthForjate2307 = toInt(monthlyTotals.get(key2307));
+        const monthForjate2308 = toInt(monthlyTotals.get(key2308));
+        const monthRebut2307 = toInt(externalRebutTotals.get(key2307));
+        const monthRebut2308 = toInt(externalRebutTotals.get(key2308));
 
-        if(latestBase.token && latestBase.token !== activeSnapshotToken) {
-          carry2307 = toInt(latestBase.p2307);
-          carry2308 = toInt(latestBase.p2308);
-          activeSnapshotToken = latestBase.token;
-        }
+        let remaining2307 = Math.max(0, toInt(carry['418-2091']) + monthForjate2307 - monthRebut2307);
+        let remaining2308 = Math.max(0, toInt(carry['418-2092']) + monthForjate2308 - monthRebut2308);
 
-        const isSnapshotMonth = !!(latestBase.token && latestBase.token === currentToken);
-        if(!isSnapshotMonth) {
-          carry2307 = Math.max(0, carry2307 + toInt(monthlyTotals.get(key2307)) - externalRebut2307);
-          carry2308 = Math.max(0, carry2308 + toInt(monthlyTotals.get(key2308)) - externalRebut2308);
-        }
+        if(lastInventoryBase['418-2091']) inventoryBaseUsed.set(`${monthKey}|418-2091`, lastInventoryBase['418-2091']);
+        if(lastInventoryBase['418-2092']) inventoryBaseUsed.set(`${monthKey}|418-2092`, lastInventoryBase['418-2092']);
 
-        const totalAvailable2307 = Math.max(0, carry2307);
-        const totalAvailable2308 = Math.max(0, carry2308);
-        const has2307 = totalAvailable2307 > 0 || monthlyTotals.has(key2307) || !!latestBase.p2307 || externalRebut2307 > 0;
-        const has2308 = totalAvailable2308 > 0 || monthlyTotals.has(key2308) || !!latestBase.p2308 || externalRebut2308 > 0;
-        const requiredRowsByStock = Math.max(
-          Math.ceil(totalAvailable2307 / TRUCK_SIZE),
-          Math.ceil(totalAvailable2308 / TRUCK_SIZE)
-        );
-
-        while(monthRows.length < requiredRowsByStock && floatingQueue.length) {
-          const template = floatingQueue.shift();
-          monthRows.push({ ...template, an: year, luna: month });
-        }
-
-        while(monthRows.length < requiredRowsByStock) {
-          monthRows.push(createGeneratedMonthPlaceholder(year, month, monthRows.length + 1));
-        }
-
-        if(!monthRows.length && (has2307 || has2308)) {
-          monthRows.push(createGeneratedMonthPlaceholder(year, month, 1));
-        }
-
-        if(!monthRows.length) return;
-        monthRows.sort(transportSort);
-
-        let remaining2307 = totalAvailable2307;
-        let remaining2308 = totalAvailable2308;
         monthRows.forEach((base, idx) => {
           const pack = packTotals.get(normalizeTransportKey(base.nr_transport));
           const hasPack = !!pack;
           const forceScriptic1650 = isScripticUntilFeb2026(year, month);
-          const default2307 = forceScriptic1650 ? 1650 : (has2307 ? Math.min(TRUCK_SIZE, remaining2307) : 0);
-          const default2308 = forceScriptic1650 ? 1650 : (has2308 ? Math.min(TRUCK_SIZE, remaining2308) : 0);
+          const default2307 = forceScriptic1650 ? 1650 : ((remaining2307 > 0 || monthForjate2307 > 0 || monthRebut2307 > 0 || carry['418-2091'] > 0) ? Math.min(TRUCK_SIZE, remaining2307) : 0);
+          const default2308 = forceScriptic1650 ? 1650 : ((remaining2308 > 0 || monthForjate2308 > 0 || monthRebut2308 > 0 || carry['418-2092'] > 0) ? Math.min(TRUCK_SIZE, remaining2308) : 0);
           const forjat2307 = Math.max(0, default2307);
           const forjat2308 = Math.max(0, default2308);
           remaining2307 = Math.max(0, remaining2307 - forjat2307);
@@ -1341,21 +1279,37 @@
             fara_tt_2307: forjat2307 - tratate2307,
             fara_tt_2308: forjat2308 - tratate2308,
             diferenta_2307: ambalat2307 - tratate2307,
-            diferenta_2308: ambalat2308 - tratate2308,
-            remaining_after_2307: remaining2307,
-            remaining_after_2308: remaining2308,
-            stock_anchor_month: latestBase.key || ''
+            diferenta_2308: ambalat2308 - tratate2308
           });
         });
 
-        carry2307 = remaining2307;
-        carry2308 = remaining2308;
+        carry['418-2091'] = Math.max(0, remaining2307);
+        carry['418-2092'] = Math.max(0, remaining2308);
+        monthEndingStock.set(monthKey, { p2307: carry['418-2091'], p2308: carry['418-2092'] });
       });
-      return out.sort((a,b) => {
-        const byMonth = monthSortToken(a.an, a.luna).localeCompare(monthSortToken(b.an, b.luna));
-        if(byMonth !== 0) return byMonth;
-        return transportSort(a, b);
-      });
+
+      return {
+        rows: out.sort(transportSort),
+        meta: {
+          monthEndingStock,
+          inventoryBaseUsed,
+          monthlyTotals,
+          externalRebutTotals,
+          inventarSeries
+        }
+      };
+    }
+    function isScripticUntilFeb2026(year, month) {
+      const y = Number(normalizeYear(year));
+      const m = MONTHS.indexOf(normalizeMonthName(month)) + 1;
+      if(!y || !m) return false;
+      if(y < 2026) return true;
+      return y === 2026 && m <= 2;
+    }
+    function computeDerivedRows(baseRows) {
+      const result = buildRollforwardData(baseRows);
+      state.rollforwardMeta = result.meta;
+      return result.rows;
     }
     function refreshDerivedRows() {
       state.derivedRows = computeDerivedRows(state.rows);
@@ -1400,14 +1354,11 @@
       const filtered = getFilteredRows();
       const pack2307 = filtered.reduce((sum,row) => sum + toInt(row.ambalat_2307), 0);
       const pack2308 = filtered.reduce((sum,row) => sum + toInt(row.ambalat_2308), 0);
-      const filteredSorted = [...filtered].sort((a,b) => {
-        const byMonth = monthSortToken(a.an, a.luna).localeCompare(monthSortToken(b.an, b.luna));
-        if(byMonth !== 0) return byMonth;
-        return transportSort(a, b);
-      });
-      const lastVisible = filteredSorted.length ? filteredSorted[filteredSorted.length - 1] : null;
-      const stock2307 = toInt(lastVisible && lastVisible.remaining_after_2307);
-      const stock2308 = toInt(lastVisible && lastVisible.remaining_after_2308);
+      const monthKeys = Array.from(new Set(filtered.map(row => `${normalizeYear(row.an)}|${normalizeMonthName(row.luna)}`).filter(Boolean))).sort(compareMonthKeys);
+      const latestMonthKey = monthKeys.length ? monthKeys[monthKeys.length - 1] : '';
+      const ending = latestMonthKey && state.rollforwardMeta && state.rollforwardMeta.monthEndingStock ? state.rollforwardMeta.monthEndingStock.get(latestMonthKey) : null;
+      const stock2307 = ending ? toInt(ending.p2307) : 0;
+      const stock2308 = ending ? toInt(ending.p2308) : 0;
 
       document.getElementById('statTransports').textContent = fmtInt(filtered.length);
       document.getElementById('statPack2307').textContent = fmtInt(pack2307);
@@ -1422,7 +1373,7 @@
       const selected = getSelectedRow();
       if(selected) {
         document.getElementById('selectedNote').innerHTML =
-          `Transport <b>${escapeHtml(selected.nr_transport || '-')}</b><br>` +
+          `Transport <b>${escapeHtml(selected.nr_transport)}</b><br>` +
           `FORJAT: ${fmtInt(selected.forjat_2307)} / ${fmtInt(selected.forjat_2308)}<br>` +
           `AMBALAT: ${fmtInt(selected.ambalat_2307)} / ${fmtInt(selected.ambalat_2308)}<br>` +
           `Data livrării: ${escapeHtml(selected.data_livrarii || '-')}`;
@@ -1430,7 +1381,7 @@
         document.getElementById('selectedNote').textContent = 'Nu ai selectat niciun transport.';
       }
       document.getElementById('logicNote').textContent =
-        'FORJAT pornește din ultimul stoc introdus în INVENTAR FORJAT pentru fiecare reper. Din luna imediat următoare acelui stoc, calculul continuă automat lună cu lună: stoc rămas + buc realizate din FORJATE − rebuturile externe din Rebut (LM, IBT, SM, FTT, FL, LMC, DES, AS, DIV). Când apare o lună nouă de stoc în INVENTAR FORJAT, aceea devine noua bază de pornire. Tratate = Ambalat, iar Ambalat se ia din Ambalare 418 după Nr. transport.';
+        'FORJAT pornește din ultimul stoc introdus în INVENTAR FORJAT și continuă în lanț pe lunile următoare din FORJATE, până când apare o lună nouă de stoc. Pentru fiecare lună se ia: stoc rămas anterior + buc realizate din FORJATE − rebuturile externe din Rebut (LM, IBT, SM, FTT, FL, LMC, DES, AS, DIV), fără rebut forjă. Apoi cantitatea disponibilă se împarte doar pe rândurile reale de transport din lunile existente în foaie. Tratate = Ambalat, iar Ambalat se ia din Ambalare 418 după Nr. transport.';
     }
 
     function getForjatCellClass(value) {
