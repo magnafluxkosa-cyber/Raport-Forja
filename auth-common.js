@@ -125,6 +125,133 @@
     }
   }
 
+
+  function normalizePageKey(value){
+    return String(value || '').trim().toLowerCase().replace(/\.html$/i, '');
+  }
+
+  function defaultPermissionsForRole(role){
+    const cleanRole = String(role || 'viewer').toLowerCase();
+    const canWrite = ['admin','editor','operator'].includes(cleanRole);
+    return {
+      can_view: true,
+      can_add: canWrite,
+      can_edit: canWrite,
+      can_delete: cleanRole === 'admin' || cleanRole === 'editor',
+      can_export: true,
+      can_import: canWrite
+    };
+  }
+
+  function buildPermissions(row){
+    return {
+      can_view: row && row.can_view === true,
+      can_add: row && row.can_add === true,
+      can_edit: row && row.can_edit === true,
+      can_delete: row && row.can_delete === true,
+      can_export: row && row.can_export === true,
+      can_import: row && row.can_import === true
+    };
+  }
+
+  function pickLatestObject(rows, field){
+    const list = Array.isArray(rows) ? rows.slice() : [];
+    list.sort((a,b) => String((b && b.updated_at) || '').localeCompare(String((a && a.updated_at) || '')));
+    for(const row of list){
+      const value = row && row[field];
+      if(value && typeof value === 'object') return value;
+    }
+    return null;
+  }
+
+  async function readLatestRfDocument(sb, docKey){
+    try{
+      const data = await maybeSelect(
+        sb.from('rf_documents')
+          .select('content,data,updated_at')
+          .eq('doc_key', docKey)
+          .order('updated_at', { ascending:false })
+          .limit(50)
+      );
+      if(Array.isArray(data) && data.length){
+        return pickLatestObject(data, 'content') || pickLatestObject(data, 'data') || null;
+      }
+    }catch(_e){}
+    return null;
+  }
+
+  async function loadUserPermissionMap(sb, user){
+    const map = new Map();
+    const email = normalizeEmail(user && user.email);
+    const userId = String(user && user.id || '').trim();
+    if(!sb || (!email && !userId)) return map;
+
+    const pushRows = (rows) => {
+      (Array.isArray(rows) ? rows : []).forEach(row => {
+        const key = normalizePageKey(row && row.page_key);
+        if(!key) return;
+        map.set(key, buildPermissions(row));
+      });
+    };
+
+    if(userId){
+      pushRows(await maybeSelect(
+        sb.from('user_page_permissions')
+          .select('page_key,can_view,can_add,can_edit,can_delete,can_export,can_import')
+          .eq('user_id', userId)
+          .limit(5000)
+      ));
+    }
+
+    if(email){
+      pushRows(await maybeSelect(
+        sb.from('user_page_permissions')
+          .select('page_key,can_view,can_add,can_edit,can_delete,can_export,can_import')
+          .ilike('email', email)
+          .limit(5000)
+      ));
+    }
+
+    const mirror = await readLatestRfDocument(sb, 'dashboard_acl_v1');
+    const roots = [mirror && mirror.user_permissions, mirror && mirror.user_grants];
+    roots.forEach(root => {
+      if(!root || typeof root !== 'object' || !email || !root[email] || typeof root[email] !== 'object') return;
+      Object.keys(root[email]).forEach(key => {
+        const normalized = normalizePageKey(key);
+        if(!normalized) return;
+        map.set(normalized, buildPermissions(root[email][key]));
+      });
+    });
+
+    return map;
+  }
+
+  function renderAccessDeniedPage(pageKey, message){
+    const safePage = String(pageKey || '').trim() || 'această pagină';
+    const safeMessage = String(message || 'Nu ai acces în această pagină.');
+    const mount = () => {
+      if(!document.body) return false;
+      document.body.innerHTML = '' +
+        '<div style="min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px;background:#c8def0;font-family:Arial,Helvetica,sans-serif;color:#0d2240;">' +
+          '<div style="width:min(640px,100%);background:#d7e6f4;border:2px solid #1b1b1b;border-radius:18px;padding:28px;box-shadow:0 1px 0 rgba(0,0,0,.06);text-align:center;">' +
+            '<div style="font-size:32px;font-weight:800;line-height:1.1;margin:0 0 12px;">Acces restricționat</div>' +
+            '<div style="font-size:18px;font-weight:700;margin:0 0 10px;">' + safePage + '</div>' +
+            '<div style="font-size:16px;line-height:1.5;margin:0 0 22px;">' + safeMessage + '</div>' +
+            '<div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap;">' +
+              '<a href="index.html" style="text-decoration:none;display:inline-flex;align-items:center;justify-content:center;min-height:46px;padding:0 18px;border:2px solid #1b1b1b;border-radius:12px;background:#fff;color:#0d2240;font-weight:700;">Înapoi la dashboard</a>' +
+            '</div>' +
+          '</div>' +
+        '</div>';
+      return true;
+    };
+    if(!mount()){
+      document.addEventListener('DOMContentLoaded', function once(){
+        document.removeEventListener('DOMContentLoaded', once);
+        mount();
+      });
+    }
+  }
+
   async function tryRoleFromProfilesByUserId(sb, userId){
     const data = await maybeSelect(
       sb.from('profiles')
@@ -166,27 +293,8 @@
   }
 
   async function readRoleMirror(sb){
-    const tryContent = async () => {
-      const data = await maybeSelect(
-        sb.from('rf_documents')
-          .select('content')
-          .eq('doc_key', 'acl_roles_v1')
-          .maybeSingle()
-      );
-      return data && data.content && typeof data.content === 'object' ? data.content : null;
-    };
-
-    const tryData = async () => {
-      const data = await maybeSelect(
-        sb.from('rf_documents')
-          .select('data')
-          .eq('doc_key', 'acl_roles_v1')
-          .maybeSingle()
-      );
-      return data && data.data && typeof data.data === 'object' ? data.data : null;
-    };
-
-    return (await tryContent()) || (await tryData()) || null;
+    const doc = await readLatestRfDocument(sb, 'acl_roles_v1');
+    return doc && typeof doc === 'object' ? doc : null;
   }
 
   async function tryRoleFromMirror(sb, email){
@@ -346,7 +454,7 @@
   }
 
   async function getPageAccess(pageKey, options){
-    const settings = Object.assign({ pageKey: pageKey || getCurrentPageName().replace(/\.html$/i, '') }, options || {});
+    const settings = Object.assign({ pageKey: normalizePageKey(pageKey || getCurrentPageName()) }, options || {});
     let user = settings.user || null;
     let role = settings.role || '';
 
@@ -360,45 +468,36 @@
       role = await resolveUserRole(user);
     }
 
-    if(window.RF_ACL && typeof window.RF_ACL.resolvePageAccess === 'function'){
-      try{
-        const access = await window.RF_ACL.resolvePageAccess(settings.pageKey, {
-          client: getSupabaseClient(),
-          user,
-          role
-        });
-        return Object.assign({ user, role: access && access.role ? access.role : (role || 'viewer') }, access || {});
-      }catch(err){
-        console.error('ERPAuth.getPageAccess ACL error', err);
+    const cleanRole = String(role || 'viewer').toLowerCase();
+    const fallbackPermissions = defaultPermissionsForRole(cleanRole);
+    const sb = getSupabaseClient();
+
+    if(user && normalizeEmail(user.email) !== ADMIN_EMAIL){
+      const strictMap = await loadUserPermissionMap(sb, user);
+      if(strictMap && strictMap.size){
+        const matched = strictMap.get(settings.pageKey) || { can_view:false, can_add:false, can_edit:false, can_delete:false, can_export:false, can_import:false };
         return {
-          allowed:false,
+          allowed: matched.can_view === true,
           user,
-          role:String(role || 'viewer').toLowerCase(),
-          permissions:{
-            can_view:false,
-            can_add:false,
-            can_edit:false,
-            can_delete:false,
-            can_export:false,
-            can_import:false
-          },
-          source:'acl error',
-          message:'Nu s-au putut încărca permisiunile pentru această foaie.'
+          role: cleanRole,
+          permissions: matched,
+          source: 'user_page_permissions strict',
+          strictUserAcl: true,
+          message: matched.can_view === true ? '' : 'Nu ai acces în această foaie. Cere acces de la admin.'
         };
       }
     }
 
-    const cleanRole = String(role || 'viewer').toLowerCase();
-    const canWrite = ['admin','editor','operator'].includes(cleanRole);
-    const permissions = {
-      can_view: true,
-      can_add: canWrite,
-      can_edit: canWrite,
-      can_delete: cleanRole === 'admin' || cleanRole === 'editor',
-      can_export: true,
-      can_import: canWrite
-    };
-    return { allowed:true, user, role:cleanRole, permissions, source:'role fallback' };
+    if(window.RF_ACL && typeof window.RF_ACL.resolvePageAccess === 'function'){
+      const access = await window.RF_ACL.resolvePageAccess(settings.pageKey, {
+        client: sb,
+        user,
+        role
+      });
+      return Object.assign({ user, role: access && access.role ? access.role : cleanRole }, access || {});
+    }
+
+    return { allowed:true, user, role:cleanRole, permissions:fallbackPermissions, source:'role fallback' };
   }
 
   window.ERPAuth = {
@@ -419,7 +518,8 @@
     roleClass,
     canAccess,
     getPageAccess,
-    buildLoginUrl
+    buildLoginUrl,
+    renderAccessDeniedPage
   };
 })();
 

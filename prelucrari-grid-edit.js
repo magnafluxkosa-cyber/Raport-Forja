@@ -145,9 +145,12 @@
         const pageKey = (location.pathname.split('/').pop() || '').replace(/\.html$/i, '') || '';
         const access = await window.ERPAuth.getPageAccess(pageKey, { user:user, role:role });
         const perms = access && access.permissions ? access.permissions : null;
-        const canView = !perms || perms.can_view !== false;
-        const canEdit = !!(perms && (perms.can_edit === true || perms.can_add === true || perms.can_import === true));
+        const canView = !!(perms && perms.can_view === true);
+        const canEdit = !!(canView && (perms.can_edit === true || perms.can_add === true || perms.can_import === true));
         if(!canView){
+          if(window.ERPAuth && typeof window.ERPAuth.renderAccessDeniedPage === 'function'){
+            window.ERPAuth.renderAccessDeniedPage(pageKey, access && access.message ? access.message : 'Nu ai acces în această foaie.');
+          }
           return false;
         }
         return canEdit;
