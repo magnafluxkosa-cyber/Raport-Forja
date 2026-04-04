@@ -1130,6 +1130,13 @@
       const m = MONTHS.indexOf(normalizeMonthName(month)) + 1;
       return y && m ? (y * 100 + m) : 0;
     }
+    function nextPeriodMeta(year, month) {
+      const y = Number(normalizeYear(year));
+      const m = MONTHS.indexOf(normalizeMonthName(month)) + 1;
+      if(!y || !m) return { year:'', month:'', period:0 };
+      if(m === 12) return { year:String(y + 1), month:MONTHS[0], period:((y + 1) * 100 + 1) };
+      return { year:String(y), month:MONTHS[m], period:(y * 100 + (m + 1)) };
+    }
     function parsePeriodKey(key) {
       const [year='', month='', reper=''] = toStr(key).split('|');
       return { year, month, reper, period: periodIndex(year, month) };
@@ -1138,18 +1145,23 @@
       const bestByPeriod = new Map();
       (inventarRows || []).forEach((row, idx) => {
         if(normalizeReper248(row.reper) !== reper) return;
-        const year = normalizeYear(row.an) || yearFromDate(row.data);
-        const month = normalizeMonthName(row.luna) || monthFromDate(row.data);
-        const period = periodIndex(year, month);
-        if(!period) return;
-        const stamp = `${String(period).padStart(8,'0')}|${dateSortValue(row.data) || '9999-99-99'}|${String(idx).padStart(6,'0')}`;
-        const current = bestByPeriod.get(period);
+        const sourceYear = normalizeYear(row.an) || yearFromDate(row.data);
+        const sourceMonth = normalizeMonthName(row.luna) || monthFromDate(row.data);
+        const sourcePeriod = periodIndex(sourceYear, sourceMonth);
+        if(!sourcePeriod) return;
+        const effective = nextPeriodMeta(sourceYear, sourceMonth);
+        if(!effective.period) return;
+        const stamp = `${String(sourcePeriod).padStart(8,'0')}|${dateSortValue(row.data) || '9999-99-99'}|${String(idx).padStart(6,'0')}`;
+        const current = bestByPeriod.get(effective.period);
         if(!current || stamp >= current.stamp) {
-          bestByPeriod.set(period, {
+          bestByPeriod.set(effective.period, {
             reper,
-            year,
-            month,
-            period,
+            year: effective.year,
+            month: effective.month,
+            period: effective.period,
+            source_year: sourceYear,
+            source_month: sourceMonth,
+            source_period: sourcePeriod,
             stock: Math.max(0, toInt(row.stoc_final)),
             stamp
           });
@@ -1243,6 +1255,29 @@
       if(rowDate) return periodIndex(yearFromDate(rowDate), monthFromDate(rowDate));
       return periodIndex(baseRow.an, baseRow.luna);
     }
+    function getRowFlowMeta(baseRow, idx) {
+      const year = normalizeYear(baseRow.an) || yearFromDate(baseRow.data_livrarii || baseRow.data);
+      const month = normalizeMonthName(baseRow.luna) || monthFromDate(baseRow.data_livrarii || baseRow.data);
+      const period = getRowFlowPeriod({ ...baseRow, an: year, luna: month });
+      const dateKey = dateSortValue(baseRow.data_livrarii || baseRow.data) || `${String(period).padStart(6,'0')}-99-99`;
+      const transportNum = toInt(baseRow.nr_transport);
+      const hasTransportNum = /^-?\d+$/.test(toStr(baseRow.nr_transport).replace(/\s+/g,''));
+      return {
+        year,
+        month,
+        period,
+        dateKey,
+        transportNum,
+        transportKey: hasTransportNum ? String(transportNum).padStart(10,'0') : toStr(baseRow.nr_transport).toLowerCase(),
+        originalIdx: idx
+      };
+    }
+    function flowSort(a, b) {
+      if(a.flowMeta.period !== b.flowMeta.period) return a.flowMeta.period - b.flowMeta.period;
+      if(a.flowMeta.dateKey !== b.flowMeta.dateKey) return String(a.flowMeta.dateKey).localeCompare(String(b.flowMeta.dateKey));
+      if(a.flowMeta.transportKey !== b.flowMeta.transportKey) return String(a.flowMeta.transportKey).localeCompare(String(b.flowMeta.transportKey));
+      return a.flowMeta.originalIdx - b.flowMeta.originalIdx;
+    }
     function takeForjatFromAllocator(allocator, displayYear, displayMonth, flowPeriod) {
       syncAllocatorToFlowPeriod(allocator, flowPeriod);
       pullForjatMonths(allocator, TRUCK_SIZE);
@@ -1252,17 +1287,21 @@
       return granted;
     }
     function computeDerivedRows(baseRows) {
-      const sorted = (baseRows || []).map(normalizeMainRow).sort(transportSort);
+      const displayRows = (baseRows || []).map(normalizeMainRow).sort(transportSort);
+      const flowRows = displayRows.map((base, idx) => ({
+        ...base,
+        flowMeta: getRowFlowMeta(base, idx)
+      })).sort(flowSort);
       const monthlyTotals = getMonthlyTotals(state.forjateRows);
       const packTotals = getPackTotals(state.packRows);
       const externalRebutTotals = getMonthlyExternalRebutTotals(state.magnafluxRows, state.rebutPmRows);
       const alloc2307 = createForjatAllocator('418-2091', monthlyTotals, externalRebutTotals, state.inventarRows);
       const alloc2308 = createForjatAllocator('418-2092', monthlyTotals, externalRebutTotals, state.inventarRows);
-      const out = [];
-      sorted.forEach((base, idx) => {
-        const year = normalizeYear(base.an) || yearFromDate(base.data_livrarii);
-        const month = normalizeMonthName(base.luna) || monthFromDate(base.data_livrarii);
-        const flowPeriod = getRowFlowPeriod({ ...base, an: year, luna: month });
+      const derivedById = new Map();
+      flowRows.forEach((base, flowIdx) => {
+        const year = base.flowMeta.year;
+        const month = base.flowMeta.month;
+        const flowPeriod = base.flowMeta.period;
         const pack = packTotals.get(normalizeTransportKey(base.nr_transport));
         const hasPack = !!pack;
         const forjat2307 = takeForjatFromAllocator(alloc2307, year, month, flowPeriod);
@@ -1273,13 +1312,12 @@
         const autoTratate2308 = hasPack ? ambalat2308 : toInt(base.tratate_2308);
         const tratate2307 = base.manual_tratate_2307 != null ? toInt(base.manual_tratate_2307) : autoTratate2307;
         const tratate2308 = base.manual_tratate_2308 != null ? toInt(base.manual_tratate_2308) : autoTratate2308;
-
-        out.push({
+        derivedById.set(base.id, {
           ...base,
           an: year,
           luna: month,
-          pos_in_month: idx + 1,
-          pos_in_flow: idx + 1,
+          pos_in_month: flowIdx + 1,
+          pos_in_flow: flowIdx + 1,
           flow_period: flowPeriod,
           forjat_2307: forjat2307,
           forjat_2308: forjat2308,
@@ -1293,7 +1331,13 @@
           diferenta_2308: ambalat2308 - tratate2308
         });
       });
-      return out.sort(transportSort);
+      return displayRows.map((row, idx) => {
+        const derived = derivedById.get(row.id) || row;
+        return {
+          ...derived,
+          pos_display: idx + 1
+        };
+      });
     }
     function refreshDerivedRows() {
       state.derivedRows = computeDerivedRows(state.rows);
