@@ -25,68 +25,7 @@
     }
   }
 
-  function flattenMenuKeys(items){
-    var keys = [];
-    (items || []).forEach(function(item){
-      if(item && item.key) keys.push(String(item.key));
-      if(item && item.sections){
-        item.sections.forEach(function(section){
-          if(section && section.key) keys.push(String(section.key));
-          (section && section.links || []).forEach(function(link){
-            if(link && link.key) keys.push(String(link.key));
-          });
-        });
-      }
-    });
-    return keys;
-  }
-
-  async function getAclVisibleSet(){
-    var visible = new Set();
-    try{
-      var auth = window.ERPAuth;
-      if(!auth || typeof auth.getSession !== 'function' || typeof auth.getSupabaseClient !== 'function'){
-        return null;
-      }
-      var session = await auth.getSession();
-      var user = session && session.user ? session.user : null;
-      if(!user) return null;
-      var email = String(user.email || '').trim().toLowerCase();
-      var adminEmail = String(auth.ADMIN_EMAIL || '').trim().toLowerCase();
-      var allKeys = flattenMenuKeys(MENU);
-      if(email && adminEmail && email === adminEmail){
-        allKeys.forEach(function(k){ visible.add(k); });
-        return visible;
-      }
-      var sb = auth.getSupabaseClient();
-      if(!sb) return null;
-      var rows = [];
-      try{
-        var res1 = await sb.from('user_page_permissions').select('page_key,can_view').eq('email', email).limit(5000);
-        if(!res1.error && Array.isArray(res1.data)) rows = rows.concat(res1.data);
-      }catch(_){}
-      try{
-        var res2 = await sb.from('user_page_permissions').select('page_key,can_view').eq('user_id', user.id).limit(5000);
-        if(!res2.error && Array.isArray(res2.data)) rows = rows.concat(res2.data);
-      }catch(_){}
-      if(!rows.length) return null;
-      rows.forEach(function(r){
-        var key = String(r && r.page_key || '').trim();
-        if(key && r && r.can_view === true) visible.add(key);
-      });
-      return visible;
-    }catch(_){
-      return null;
-    }
-  }
-
-  function rebuildMenuState(){
-    filteredMenu = filterMenu(MENU);
-    currentMatch = findMatch(filteredMenu);
-  }
-
   var hiddenSet = getHiddenSet();
-  var aclVisibleSet = null;
   var currentKey = currentPath.replace(/\.html$/i,'');
 
   var MENU = [
@@ -172,6 +111,16 @@
         { key:'mrc-comenzi-saptamanale', label:'COMENZI SĂPTĂMÂNALE', href:'mrc-comenzi-saptamanale.html' }
       ]}
     ]},
+,
+    { key:'group-sdv', label:'SDV', sections:[
+      { key:'sdv-links', label:'Pagini', links:[
+        { key:'stoc-matrite', label:'STOC MATRIȚE', href:'stoc-matrite.html' },
+        { key:'urmarire-matrite', label:'URMĂRIRE MATRIȚE', href:'urmarire-matrite.html' },
+        { key:'progres-matrite', label:'PROGRES MATRIȚE', href:'progres-matrite.html' },
+        { key:'utilaje-matrite', label:'UTILAJE MATRIȚE', href:'utilaje-matrite.html' },
+        { key:'repere-matrite', label:'REPERE MATRIȚE', href:'repere-matrite.html' }
+      ]}
+    ]},
     { key:'helper-data', label:'HELPER-DATA', href:'helper-data.html' },
     { key:'helper-acl', label:'HELPER-ACL', href:'helper-acl.html' }
   ];
@@ -182,12 +131,7 @@
       .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
   }
 
-  function isVisibleKey(key){
-    if(!key) return true;
-    if(hiddenSet.has(key)) return false;
-    if(aclVisibleSet instanceof Set) return aclVisibleSet.has(key);
-    return true;
-  }
+  function isVisibleKey(key){ return !key || !hiddenSet.has(key); }
 
   function filterMenu(items){
     return items.map(function(item){
@@ -222,8 +166,8 @@
     return null;
   }
 
-  var filteredMenu = [];
-  var currentMatch = null;
+  var filteredMenu = filterMenu(MENU);
+  var currentMatch = findMatch(filteredMenu);
 
   function getCurrentLabel(){
     return currentMatch ? currentMatch.label : (document.title || currentKey || 'K.A.D');
@@ -607,16 +551,9 @@
     }
   }
 
-  async function start(){
-    hiddenSet = getHiddenSet();
-    aclVisibleSet = await getAclVisibleSet();
-    rebuildMenuState();
-    mount();
-  }
-
   if(document.readyState === 'loading'){
-    document.addEventListener('DOMContentLoaded', function(){ start(); }, { once:true });
+    document.addEventListener('DOMContentLoaded', mount, { once:true });
   } else {
-    start();
+    mount();
   }
 })();
