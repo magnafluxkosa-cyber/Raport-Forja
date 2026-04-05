@@ -139,6 +139,14 @@
             <select id="selUtilaj"></select>
           </div>
           <div class="control">
+            <label>Tip matriță</label>
+            <select id="selTip">
+              <option value="">Toate</option>
+              <option value="Superior">Superior</option>
+              <option value="Inferior">Inferior</option>
+            </select>
+          </div>
+          <div class="control">
             <label>Înălțime minimă utilaj (mm)</label>
             <input id="txtMin" readonly />
           </div>
@@ -158,6 +166,12 @@
       </section>
 
       <section class="middle">
+        <section class="panel">
+          <div class="panel-head"><div class="panel-title">Registru matrițe filtrat</div><div class="panel-subtitle">Toate matrițele de pe toate reperele, filtrabile după reper, utilaj și tip.</div></div>
+          <div class="panel-body" style="padding-top:0">
+            <div class="table-wrap"><table><thead><tr><th class="left">Reper</th><th>Tip</th><th class="left">Cod fizic</th><th>ID intern</th><th>Status</th><th>Înălțime</th><th>Utilaje folosite</th></tr></thead><tbody id="tbAll"></tbody></table></div>
+          </div>
+        </section>
         <div class="stock-grid">
           <section class="panel">
             <div class="panel-head"><div class="panel-title">Matrițe SUPERIOR</div><div class="panel-subtitle">Citite direct din Stoc Matrițe pe reperul selectat.</div></div>
@@ -183,7 +197,7 @@
             <div class="line"><span id="bestBar" style="width:0%"></span></div>
           </aside>
         </div>
-        <div class="footer-note">Matrițele CASAT nu intră în combinații. Matrițele IN REGRAVARE sunt vizibile, dar nu devin recomandare activă.</div>
+        <div class="footer-note">Poți vedea toate matrițele pe toate reperele și pe toate utilajele în registrul filtrat de sus. Combinațiile detaliate se calculează când alegi un reper.</div>
       </section>
 
       <aside class="panel right-col">
@@ -217,7 +231,9 @@ const els = {
   combosCount: document.getElementById('combosCount'),
   selReper: document.getElementById('selReper'),
   selUtilaj: document.getElementById('selUtilaj'),
+  selTip: document.getElementById('selTip'),
   txtMin: document.getElementById('txtMin'),
+  tbAll: document.getElementById('tbAll'),
   countSup: document.getElementById('countSup'),
   countInf: document.getElementById('countInf'),
   tbSup: document.getElementById('tbSup'),
@@ -349,6 +365,17 @@ function buildRowsFromForjate(reper){
   };
 }
 
+
+function getUtilajeForMatrita(codFizic, reper){
+  const utilaje = Array.from(new Set(
+    state.forjateRows
+      .filter(r => (!reper || upper(r.reper) === upper(reper)) && (upper(r.matrita_sup) === upper(codFizic) || upper(r.matrita_inf) === upper(codFizic)))
+      .map(r => norm(r.utilaj))
+      .filter(Boolean)
+  ));
+  return utilaje;
+}
+
 async function ensureAuth(){
   if(window.ERPAuth && typeof window.ERPAuth.requireAuth === 'function'){
     const auth = await window.ERPAuth.requireAuth({ next:'urmarire-matrite.html', redirectToLogin:true });
@@ -431,33 +458,34 @@ function fillSelectors(){
     ...state.forjateRows.map(r => upper(r.reper)).filter(Boolean)
   ])).sort((a,b) => a.localeCompare(b, 'ro', { sensitivity:'base' }));
 
-  els.selReper.innerHTML = repere.length
-    ? repere.map(r => `<option>${esc(r)}</option>`).join('')
-    : '<option value="">-</option>';
+  els.selReper.innerHTML = ['<option value="">TOATE</option>']
+    .concat(repere.map(r => `<option>${esc(r)}</option>`))
+    .join('');
 
   if(repere.includes(currentReper)) els.selReper.value = currentReper;
-  else if(repere.length) els.selReper.value = repere[0];
+  else els.selReper.value = '';
 
   const utilaje = Array.from(new Set([
     ...state.utilaje.map(u => norm(u.nume)).filter(Boolean),
     ...state.forjateRows.map(r => norm(r.utilaj)).filter(Boolean)
   ])).sort((a,b) => a.localeCompare(b, 'ro', { sensitivity:'base' }));
 
-  els.selUtilaj.innerHTML = utilaje.length
-    ? utilaje.map(u => `<option>${esc(u)}</option>`).join('')
-    : '<option value="">-</option>';
+  els.selUtilaj.innerHTML = ['<option value="">TOATE</option>']
+    .concat(utilaje.map(u => `<option>${esc(u)}</option>`))
+    .join('');
 
   if(utilaje.includes(currentUtilaj)) els.selUtilaj.value = currentUtilaj;
-  else if(utilaje.length) els.selUtilaj.value = utilaje[0];
+  else els.selUtilaj.value = '';
 }
 
 function render(){
   const reper = upper(els.selReper.value);
   const utilaj = norm(els.selUtilaj.value);
+  const tipFilter = norm(els.selTip.value);
   const util = state.utilaje.find(u => norm(u.nume) === utilaj) || { inaltimeMinima: 136 };
-  els.txtMin.value = String(util.inaltimeMinima);
+  els.txtMin.value = utilaj ? String(util.inaltimeMinima) : '-';
 
-  const rows = state.stocRows.filter(r => upper(r.reper) === reper);
+  const rows = reper ? state.stocRows.filter(r => upper(r.reper) === reper) : [];
   const hasStockRows = rows.length > 0;
   const fallbackRows = buildRowsFromForjate(reper);
   const sup = hasStockRows ? rows.filter(r => upper(r.tip) === 'SUPERIOR') : fallbackRows.sup;
@@ -465,15 +493,54 @@ function render(){
   const supActive = sup.filter(r => r.status !== 'CASAT');
   const infActive = inf.filter(r => r.status !== 'CASAT');
 
-  els.countSup.textContent = String(supActive.length);
-  els.countInf.textContent = String(infActive.length);
+  const allBaseRows = state.stocRows.length
+    ? state.stocRows.map(r => ({...r}))
+    : Array.from(new Map(
+        state.forjateRows
+          .filter(r => !reper || upper(r.reper) === reper)
+          .flatMap(r => {
+            const out = [];
+            if(upper(r.matrita_sup)) out.push({ reper: upper(r.reper), tip:'Superior', cod_fizic:upper(r.matrita_sup), id_intern:'', status:'DIN FORJATE', inaltime:toNum(r.inaltime_sup), regravari:0 });
+            if(upper(r.matrita_inf)) out.push({ reper: upper(r.reper), tip:'Inferior', cod_fizic:upper(r.matrita_inf), id_intern:'', status:'DIN FORJATE', inaltime:toNum(r.inaltime_inf), regravari:0 });
+            return out;
+          })
+          .map(x => [upper(x.reper) + '|' + x.tip + '|' + upper(x.cod_fizic), x])
+      ).values());
 
-  els.tbSup.innerHTML = sup.length
-    ? sup.map(r => `<tr><td class="left">${esc(r.cod_fizic)}</td><td>${esc(r.id_intern || '')}</td><td>${r.inaltime ? String(r.inaltime).replace('.', ',') : ''}</td><td><span class="tag-status ${statusClass(r.status)}">${esc(r.status)}</span></td><td>${r.regravari || 0}</td></tr>`).join('')
-    : '<tr><td colspan="5">Fără matrițe SUPERIOR</td></tr>';
-  els.tbInf.innerHTML = inf.length
-    ? inf.map(r => `<tr><td class="left">${esc(r.cod_fizic)}</td><td>${esc(r.id_intern || '')}</td><td>${r.inaltime ? String(r.inaltime).replace('.', ',') : ''}</td><td><span class="tag-status ${statusClass(r.status)}">${esc(r.status)}</span></td><td>${r.regravari || 0}</td></tr>`).join('')
-    : '<tr><td colspan="5">Fără matrițe INFERIOR</td></tr>';
+  const allFilteredRows = allBaseRows.filter(r => {
+    if(reper && upper(r.reper) !== reper) return false;
+    if(tipFilter && norm(r.tip) !== tipFilter) return false;
+    if(utilaj){
+      const used = getUtilajeForMatrita(r.cod_fizic, r.reper);
+      if(!used.includes(utilaj)) return false;
+    }
+    return true;
+  }).sort((a,b) =>
+    upper(a.reper).localeCompare(upper(b.reper), 'ro', { sensitivity:'base' }) ||
+    norm(a.tip).localeCompare(norm(b.tip), 'ro', { sensitivity:'base' }) ||
+    upper(a.cod_fizic).localeCompare(upper(b.cod_fizic), 'ro', { sensitivity:'base' })
+  );
+
+  els.tbAll.innerHTML = allFilteredRows.length
+    ? allFilteredRows.map(r => {
+        const utilajeTxt = getUtilajeForMatrita(r.cod_fizic, r.reper).join(', ');
+        return `<tr><td class="left">${esc(r.reper)}</td><td>${esc(r.tip)}</td><td class="left">${esc(r.cod_fizic)}</td><td>${esc(r.id_intern || '')}</td><td><span class="tag-status ${statusClass(r.status)}">${esc(r.status)}</span></td><td>${r.inaltime ? String(r.inaltime).replace('.', ',') : ''}</td><td>${esc(utilajeTxt || '-')}</td></tr>`;
+      }).join('')
+    : '<tr><td colspan="7">Nu există matrițe pe filtrul curent.</td></tr>';
+
+  els.countSup.textContent = String(allFilteredRows.filter(r => upper(r.tip) === 'SUPERIOR' && (!reper ? true : upper(r.reper) === reper)).length);
+  els.countInf.textContent = String(allFilteredRows.filter(r => upper(r.tip) === 'INFERIOR' && (!reper ? true : upper(r.reper) === reper)).length);
+
+  els.tbSup.innerHTML = reper
+    ? (sup.length
+      ? sup.map(r => `<tr><td class="left">${esc(r.cod_fizic)}</td><td>${esc(r.id_intern || '')}</td><td>${r.inaltime ? String(r.inaltime).replace('.', ',') : ''}</td><td><span class="tag-status ${statusClass(r.status)}">${esc(r.status)}</span></td><td>${r.regravari || 0}</td></tr>`).join('')
+      : '<tr><td colspan="5">Fără matrițe SUPERIOR</td></tr>')
+    : '<tr><td colspan="5">Alege un reper pentru lista detaliată</td></tr>';
+  els.tbInf.innerHTML = reper
+    ? (inf.length
+      ? inf.map(r => `<tr><td class="left">${esc(r.cod_fizic)}</td><td>${esc(r.id_intern || '')}</td><td>${r.inaltime ? String(r.inaltime).replace('.', ',') : ''}</td><td><span class="tag-status ${statusClass(r.status)}">${esc(r.status)}</span></td><td>${r.regravari || 0}</td></tr>`).join('')
+      : '<tr><td colspan="5">Fără matrițe INFERIOR</td></tr>')
+    : '<tr><td colspan="5">Alege un reper pentru lista detaliată</td></tr>';
 
   const combos = [];
   supActive.forEach(s => {
@@ -500,7 +567,7 @@ function render(){
     return `<tr><td class="left">${esc(c.sup)}</td><td class="left">${esc(c.inf)}</td><td>${String(c.total).replace('.', ',')}</td><td>${c.diff >= 0 ? '+' : ''}${String(c.diff).replace('.', ',')}</td><td><span class="tag-status ${cls}">${label}</span></td></tr>`;
   }).join('');
 
-  const best = combos.find(c => c.recommended) || combos[0] || null;
+  const best = reper ? (combos.find(c => c.recommended) || combos[0] || null) : null;
   if(best){
     els.bestCombo.textContent = best.sup + ' + ' + best.inf;
     els.bestHeight.textContent = best.hasHeights ? (String(best.total).replace('.', ',') + ' mm') : '-';
@@ -549,6 +616,7 @@ async function boot(){
 
 els.selReper.addEventListener('change', render);
 els.selUtilaj.addEventListener('change', render);
+els.selTip.addEventListener('change', render);
 els.btnRefresh.addEventListener('click', boot);
 
 boot();
