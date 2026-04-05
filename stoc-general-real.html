@@ -606,6 +606,70 @@ function buildSalesMap(rows){
   });
   return map;
 }
+function periodOfRow(row){ return buildPeriodKey(row && row.an, row && row.lunaNum); }
+function pickBaseSnapshotRows(rows, targetYear, targetMonth){
+  const targetKey = buildPeriodKey(targetYear, targetMonth);
+  const filtered = (rows || []).filter(row => row && Number(row.an || 0) > 0 && Number(row.lunaNum || 0) > 0);
+  if(!filtered.length) return { rows: [], label: '', key: '' };
+  const older = filtered.filter(row => periodOfRow(row) < targetKey).sort((a,b) => periodOfRow(b).localeCompare(periodOfRow(a)));
+  if(older.length){
+    const bestKey = periodOfRow(older[0]);
+    return { rows: older.filter(row => periodOfRow(row) === bestKey), label: String(older[0].an) + ' / ' + getMonthName(older[0].lunaNum), key: bestKey };
+  }
+  const exact = filtered.filter(row => periodOfRow(row) === targetKey);
+  if(exact.length) return { rows: exact, label: String(targetYear) + ' / ' + getMonthName(targetMonth), key: targetKey };
+  const latest = filtered.slice().sort((a,b) => periodOfRow(b).localeCompare(periodOfRow(a)));
+  const bestKey = periodOfRow(latest[0]);
+  return { rows: latest.filter(row => periodOfRow(row) === bestKey), label: String(latest[0].an) + ' / ' + getMonthName(latest[0].lunaNum), key: bestKey };
+}
+function filterRowsThroughPeriod(rows, startExclusiveKey, endInclusiveKey){
+  return (rows || []).filter(row => {
+    const key = periodOfRow(row);
+    if(!key) return false;
+    if(startExclusiveKey && key <= startExclusiveKey) return false;
+    return key <= endInclusiveKey;
+  });
+}
+function buildMonthlySalesMap(rows){
+  const map = Object.create(null);
+  (rows || []).forEach(row => {
+    if(trimText(row.um) && norm(row.um) !== 'buc') return;
+    const periodKey = periodOfRow(row);
+    if(!periodKey) return;
+    map[periodKey] = map[periodKey] || Object.create(null);
+    const keys = new Set();
+    [row.cod_articol, row.nume_articol].forEach(value => {
+      const raw = trimText(value).toUpperCase();
+      if(!raw) return;
+      const loose = normalizeReperLoose(raw);
+      const stripped = normalizeReperLoose(stripVariantSuffix(raw));
+      if(loose) keys.add(loose);
+      if(stripped) keys.add(stripped);
+    });
+    keys.forEach(key => { map[periodKey][key] = toNumber(map[periodKey][key]) + toNumber(row.cantitate); });
+  });
+  return map;
+}
+function getPeriodsBetween(startExclusiveKey, endInclusiveKey){
+  return (state.periods || []).filter(key => {
+    if(!key || key > endInclusiveKey) return false;
+    if(startExclusiveKey && key <= startExclusiveKey) return false;
+    return true;
+  }).sort(comparePeriodsAsc);
+}
+function getSnapshotRowsForPeriod(periodKey){
+  const snap = state.prelucrariByPeriod[periodKey] || null;
+  return snap && Array.isArray(snap.rows) ? snap.rows : [];
+}
+function getDownstreamTotalForPeriod(periodKey, modelKey){
+  const rows = getSnapshotRowsForPeriod(periodKey);
+  let total = 0;
+  rows.forEach(row => {
+    if(normalizeReperLoose(row.model) !== modelKey) return;
+    total += toNumber(row.packed) + toNumber(row.finished) + toNumber(row.wip);
+  });
+  return total;
+}
 function consecutiveSpans(rows, keyGetter, valueGetter){
   const spans = Array(rows.length).fill(1), hidden = Array(rows.length).fill(false);
   let i = 0;
@@ -624,58 +688,34 @@ function consecutiveSpans(rows, keyGetter, valueGetter){
 function rowMatchesSelectedPeriod(row){
   return buildPeriodKey(row.an, row.lunaNum) === buildPeriodKey(state.selectedYear, state.selectedMonth);
 }
-function aggregateSteelEntriesCurrentPeriod(){
+function aggregateByMap(rows, keyFn, valueFn){
   const map = Object.create(null);
-  (state.intrariFlowRows || []).forEach(row => {
-    if(!rowMatchesSelectedPeriod(row)) return;
-    const key = buildSpecKey(row.diametru, row.calitate);
-    if(!key || key === '|') return;
-    map[key] = toNumber(map[key]) + toNumber(row.cantitateKg);
-  });
-  return map;
-}
-function aggregateSteelConsumedCurrentPeriod(){
-  const map = Object.create(null);
-  (state.debitateFlowRows || []).forEach(row => {
-    if(!rowMatchesSelectedPeriod(row)) return;
-    const key = buildSpecKey(row.diametru, row.calitate);
-    if(!key || key === '|') return;
-    map[key] = toNumber(map[key]) + toNumber(row.totalKg);
-  });
-  return map;
-}
-function aggregateDebitateProducedCurrentPeriod(){
-  const map = Object.create(null);
-  (state.debitateFlowRows || []).forEach(row => {
-    if(!rowMatchesSelectedPeriod(row)) return;
-    const key = normalizeReperLoose(trimText(row.reper).toUpperCase());
+  (rows || []).forEach(row => {
+    const key = trimText(keyFn(row));
     if(!key) return;
-    map[key] = toNumber(map[key]) + toNumber(row.cantitateBuc);
+    map[key] = toNumber(map[key]) + toNumber(valueFn(row));
   });
   return map;
 }
-function aggregateForjateProducedCurrentPeriod(){
-  const map = Object.create(null);
-  (state.forjateFlowRows || []).forEach(row => {
-    if(!rowMatchesSelectedPeriod(row)) return;
-    const key = normalizeReperLoose(trimText(row.reper).toUpperCase());
-    if(!key) return;
-    map[key] = toNumber(map[key]) + toNumber(row.bucRealizate);
-  });
-  return map;
+function aggregateSteelEntriesThroughPeriod(baseKey, endKey){
+  return aggregateByMap(filterRowsThroughPeriod(state.intrariFlowRows, baseKey, endKey), row => buildSpecKey(row.diametru, row.calitate), row => row.cantitateKg);
 }
-function aggregateDebitateConsumedCurrentPeriod(){
-  const map = Object.create(null);
-  (state.forjateFlowRows || []).forEach(row => {
-    if(!rowMatchesSelectedPeriod(row)) return;
+function aggregateSteelConsumedThroughPeriod(baseKey, endKey){
+  return aggregateByMap(filterRowsThroughPeriod(state.debitateFlowRows, baseKey, endKey), row => buildSpecKey(row.diametru, row.calitate), row => row.totalKg);
+}
+function aggregateDebitateProducedThroughPeriod(baseKey, endKey){
+  return aggregateByMap(filterRowsThroughPeriod(state.debitateFlowRows, baseKey, endKey), row => normalizeReperLoose(trimText(row.reper).toUpperCase()), row => row.cantitateBuc);
+}
+function aggregateForjateProducedThroughPeriod(baseKey, endKey){
+  return aggregateByMap(filterRowsThroughPeriod(state.forjateFlowRows, baseKey, endKey), row => normalizeReperLoose(trimText(row.reper).toUpperCase()), row => row.bucRealizate);
+}
+function aggregateDebitateConsumedThroughPeriod(baseKey, endKey){
+  const rows = filterRowsThroughPeriod(state.forjateFlowRows, baseKey, endKey);
+  return aggregateByMap(rows, row => {
     const reper = trimText(row.reper).toUpperCase();
-    if(!reper) return;
     const meta = resolveReperMeta(reper);
-    const key = meta && meta.originDebitatKey ? meta.originDebitatKey : normalizeReperLoose(reper);
-    if(!key) return;
-    map[key] = toNumber(map[key]) + toNumber(row.bucRealizate) + toNumber(row.rebut);
-  });
-  return map;
+    return meta && meta.originDebitatKey ? meta.originDebitatKey : normalizeReperLoose(reper);
+  }, row => toNumber(row.bucRealizate) + toNumber(row.rebut));
 }
 function ensureCurrentPeriod(){
   if(!state.periods.length){ state.selectedYear = ''; state.selectedMonth = ''; return; }
@@ -706,23 +746,25 @@ function buildCurrentRows(){
   const snapshotRows = invSnapshot ? invSnapshot.rows : [];
   state.dateLabel = invSnapshot ? invSnapshot.dateLabel : (String(state.selectedYear || '') + ' / ' + getMonthName(state.selectedMonth || 0));
 
-  const forjatSnapshot = pickSnapshotRows(state.forjatRows, state.selectedYear, state.selectedMonth);
-  const debitatSnapshot = pickSnapshotRows(state.debitatRows, state.selectedYear, state.selectedMonth);
-  const steelSnapshot = pickSnapshotRows(state.steelRows, state.selectedYear, state.selectedMonth);
+  const forjatBase = pickBaseSnapshotRows(state.forjatRows, state.selectedYear, state.selectedMonth);
+  const debitatBase = pickBaseSnapshotRows(state.debitatRows, state.selectedYear, state.selectedMonth);
+  const steelBase = pickBaseSnapshotRows(state.steelRows, state.selectedYear, state.selectedMonth);
   const ambalareRows = (state.ambalareRows || []).filter(row => buildPeriodKey(row.an, row.lunaNum) === periodKey);
-  const salesRows = (state.salesRows || []).filter(row => buildPeriodKey(row.an, row.lunaNum) === periodKey);
+  const salesRowsCurrent = (state.salesRows || []).filter(row => buildPeriodKey(row.an, row.lunaNum) === periodKey);
+  const salesMonthlyMap = buildMonthlySalesMap(state.salesRows || []);
 
-  const forjatStartMap = buildSnapshotMap(forjatSnapshot.rows, row => normalizeReperLoose(row.reper), row => row.stocFinal);
-  const debitatStartMap = buildSnapshotMap(debitatSnapshot.rows, row => normalizeReperLoose(row.reper), row => row.cantitateBuc);
-  const steelStartMap = buildSnapshotMap(steelSnapshot.rows, row => buildSpecKey(row.diametru, row.calitate), row => row.cantitateKg);
+  const forjatStartMap = buildSnapshotMap(forjatBase.rows, row => normalizeReperLoose(row.reper), row => row.stocFinal);
+  const debitatStartMap = buildSnapshotMap(debitatBase.rows, row => normalizeReperLoose(row.reper), row => row.cantitateBuc);
+  const steelStartMap = buildSnapshotMap(steelBase.rows, row => buildSpecKey(row.diametru, row.calitate), row => row.cantitateKg);
   const ambalareMap = buildSnapshotMap(ambalareRows, row => normalizeReperLoose(row.reper), row => row.buc);
-  const salesMap = buildSalesMap(salesRows);
+  const salesMapCurrent = buildSalesMap(salesRowsCurrent);
 
-  const steelEntriesMap = aggregateSteelEntriesCurrentPeriod();
-  const steelConsumedMap = aggregateSteelConsumedCurrentPeriod();
-  const debitateProducedMap = aggregateDebitateProducedCurrentPeriod();
-  const debitateConsumedMap = aggregateDebitateConsumedCurrentPeriod();
-  const forjateProducedMap = aggregateForjateProducedCurrentPeriod();
+  const steelEntriesMap = aggregateSteelEntriesThroughPeriod(steelBase.key, periodKey);
+  const steelConsumedMap = aggregateSteelConsumedThroughPeriod(steelBase.key, periodKey);
+  const debitateProducedMap = aggregateDebitateProducedThroughPeriod(debitatBase.key, periodKey);
+  const debitateConsumedMap = aggregateDebitateConsumedThroughPeriod(debitatBase.key, periodKey);
+  const forjateProducedMap = aggregateForjateProducedThroughPeriod(forjatBase.key, periodKey);
+  const forjaPeriods = getPeriodsBetween(forjatBase.key, periodKey);
 
   const rawByKey = Object.create(null), ordered = [], seen = new Map();
   function upsertRow(model, packed, finished, wip, sourceType, modelHighlight){
@@ -743,10 +785,30 @@ function buildCurrentRows(){
     const forjaKey = (meta && meta.forjaKey) || key;
     const debKey = (meta && meta.originDebitatKey) || key;
     const steelKey = (meta && meta.specKey) || '';
-    const soldForja = toNumber(salesMap[forjaKey] || salesMap[normalizeReperLoose(meta.clean)] || salesMap[key] || 0);
     const startForja = toNumber(forjatStartMap[forjaKey] || forjatStartMap[normalizeReperLoose(meta.clean)] || forjatStartMap[key] || 0);
     const startDebitat = toNumber(debitatStartMap[debKey] || 0);
     const startSteel = toNumber(steelStartMap[steelKey] || 0);
+
+    let downstreamOut = 0;
+    if(sourceType === 'zala'){
+      forjaPeriods.forEach(period => {
+        (state.ambalareRows || []).forEach(row => {
+          if(buildPeriodKey(row.an, row.lunaNum) !== period) return;
+          if(normalizeReperLoose(row.reper) !== key) return;
+          downstreamOut += toNumber(row.buc);
+        });
+      });
+    }else{
+      let prevDownstream = getDownstreamTotalForPeriod(forjatBase.key, key);
+      forjaPeriods.forEach(period => {
+        const currentDownstream = getDownstreamTotalForPeriod(period, key);
+        const soldThisPeriod = toNumber((salesMonthlyMap[period] || Object.create(null))[key] || (salesMonthlyMap[period] || Object.create(null))[normalizeReperLoose(meta.clean)] || 0);
+        const deltaDownstream = Math.max(0, currentDownstream - prevDownstream);
+        downstreamOut += deltaDownstream + soldThisPeriod;
+        if(currentDownstream > 0 || prevDownstream > 0) prevDownstream = currentDownstream;
+      });
+    }
+
     const row = {
       model: displayModel,
       packed: toInt(packed),
@@ -755,7 +817,7 @@ function buildCurrentRows(){
       sourceType: sourceType || 'prelucrari',
       modelHighlight: !!modelHighlight,
       meta,
-      stocForja: Math.max(0, Math.round(startForja + toNumber(forjateProducedMap[forjaKey] || 0) - soldForja)),
+      stocForja: Math.max(0, Math.round(startForja + toNumber(forjateProducedMap[forjaKey] || 0) - downstreamOut)),
       stocDebitat: Math.max(0, Math.round(startDebitat + toNumber(debitateProducedMap[debKey] || 0) - toNumber(debitateConsumedMap[debKey] || 0))),
       stocOtel: Math.max(0, startSteel + toNumber(steelEntriesMap[steelKey] || 0) - toNumber(steelConsumedMap[steelKey] || 0))
     };
@@ -765,7 +827,7 @@ function buildCurrentRows(){
 
   snapshotRows.forEach(row => upsertRow(row.model, row.packed, row.finished, row.wip, 'prelucrari', row.modelHighlight));
   Object.keys(ambalareMap).sort((a,b) => a.localeCompare(b, 'ro')).forEach(key => {
-    const sold = toNumber(salesMap[key] || salesMap[normalizeReperLoose(stripVariantSuffix(rawByKey[key] || key))] || 0);
+    const sold = toNumber(salesMapCurrent[key] || salesMapCurrent[normalizeReperLoose(stripVariantSuffix(rawByKey[key] || key))] || 0);
     const packed = Math.max(0, toNumber(ambalareMap[key]) - sold);
     if(packed > 0 || !(key in seen)) upsertRow(rawByKey[key] || key, packed, 0, 0, 'zala', false);
   });
@@ -773,11 +835,11 @@ function buildCurrentRows(){
   state.rows = ordered;
   state.sourceLabels = [
     'Inventar prelucrări: ' + (invSnapshot ? invSnapshot.dateLabel : '-'),
-    'Forjă calculată: ' + (forjatSnapshot.label || '-') + ' + producția din ' + String(state.selectedYear || '') + ' / ' + getMonthName(state.selectedMonth || 0) + ' - vânzări',
-    'Debitat calculat: ' + (debitatSnapshot.label || '-') + ' + debitate - consum forjare',
-    'Oțel calculat: ' + (steelSnapshot.label || '-') + ' + intrări oțel - debitat',
-    'Ambalare zale: ' + String(state.selectedYear || '') + ' / ' + getMonthName(state.selectedMonth || 0),
-    'Vânzări: ' + String(state.selectedYear || '') + ' / ' + getMonthName(state.selectedMonth || 0)
+    'Forjă rămasă: snapshot anterior ' + (forjatBase.label || '-') + ' + forjate produse până la luna selectată − ieșiri către prelucrări / ambalare',
+    'Debitat rămas: snapshot anterior ' + (debitatBase.label || '-') + ' + debitate produse − consum intrat în forjare',
+    'Oțel rămas: snapshot anterior ' + (steelBase.label || '-') + ' + intrări oțel − kg debitate',
+    'Ambalare zale (luna selectată): ' + String(state.selectedYear || '') + ' / ' + getMonthName(state.selectedMonth || 0),
+    'Vânzări (luna selectată): ' + String(state.selectedYear || '') + ' / ' + getMonthName(state.selectedMonth || 0)
   ];
 }
 function renderTable(){
