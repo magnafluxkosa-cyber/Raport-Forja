@@ -29,7 +29,7 @@
     .status-value{font-size:16px;font-weight:800;color:#0b1f46;line-height:1.2}.status-sub{font-size:11px;color:var(--muted);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
     .workspace{flex:1;min-height:0;display:flex;flex-direction:column;gap:10px;background:rgba(255,255,255,.22);border:1px solid rgba(29,29,29,.18);border-radius:18px;padding:10px;box-shadow:var(--shadow)}
     .toolbar{display:flex;align-items:flex-end;gap:10px;flex-wrap:wrap}.field{display:flex;flex-direction:column;gap:4px;min-width:180px}.field label{font-size:11px;font-weight:800;color:#0b1f46}
-    .field input{height:36px;border-radius:10px;border:1px solid rgba(29,29,29,.24);background:#fff;padding:0 10px;font-size:12px;color:#0b1f46;outline:none}
+    .field input,.field select{height:36px;border-radius:10px;border:1px solid rgba(29,29,29,.24);background:#fff;padding:0 10px;font-size:12px;color:#0b1f46;outline:none}
     .hint{margin-left:auto;font-size:12px;color:var(--muted);font-weight:700}
     .tableWrap{flex:1;min-height:0;background:rgba(255,255,255,.35);border:1px solid rgba(29,29,29,.18);border-radius:16px;overflow:auto}
     table{border-collapse:collapse;min-width:960px;width:max-content;color:#0b1f46}
@@ -72,8 +72,10 @@
 
     <div class="workspace">
       <div class="toolbar">
+        <div class="field"><label for="fltYear">An</label><select id="fltYear"></select></div>
+        <div class="field"><label for="fltMonth">Lună</label><select id="fltMonth"></select></div>
         <div class="field"><label for="searchInput">Caută model</label><input id="searchInput" type="text" placeholder="ex: 248-2307"></div>
-        <div class="hint" id="hintText">Stoc debitat și stoc oțel se afișează o singură dată pe grupurile consecutive comune.</div>
+        <div class="hint" id="hintText">Packed la zale = ambalare din luna selectată minus vânzările din aceeași lună. Stoc debitat și stoc oțel se afișează o singură dată pe grupurile consecutive comune.</div>
       </div>
 
       <div class="tableWrap">
@@ -100,6 +102,7 @@ const AMBALARE_DOC_KEYS = ['ambalare-9k-6628-29','ambalare-106-1625-26','ambalar
 const FORJAT_INV_BASE_KEYS = ['inventar-forjat','inventar_forjat','inventar-forjate','inventar_forjate','inventar-piese-forjate','inventar_piese_forjate','stoc-forjate','stoc_forjate'];
 const DEBITAT_DOC_BASE_KEYS = ['inventar-debitat','inventar_debitat','stoc-initial-debitat','stoc_initial_debitat'];
 const STEEL_DOC_KEYS = ['stoc-initial-otel','stoc_initial_otel','inventar-otel','inventar_otel','inventar-otel-initial','inventar_otel_initial'];
+const SALES_DOC_KEYS = ['lista-vanzari'];
 const MONTHS = ['Ianuarie','Februarie','Martie','Aprilie','Mai','Iunie','Iulie','August','Septembrie','Octombrie','Noiembrie','Decembrie'];
 
 const els = {
@@ -111,6 +114,8 @@ const els = {
   countSub: document.getElementById('countSub'),
   sourceValue: document.getElementById('sourceValue'),
   sourceSub: document.getElementById('sourceSub'),
+  fltYear: document.getElementById('fltYear'),
+  fltMonth: document.getElementById('fltMonth'),
   searchInput: document.getElementById('searchInput'),
   tableHead: document.getElementById('tableHead'),
   tableBody: document.getElementById('tableBody'),
@@ -130,7 +135,16 @@ const state = {
   filteredRows: [],
   dateLabel: '',
   sourceLabels: [],
-  helperMaps: { debitByReper:Object.create(null), forjaByReper:Object.create(null) }
+  helperMaps: { debitByReper:Object.create(null), forjaByReper:Object.create(null), source:'-' },
+  periods: [],
+  selectedYear: '',
+  selectedMonth: '',
+  prelucrariByPeriod: Object.create(null),
+  forjatRows: [],
+  debitatRows: [],
+  steelRows: [],
+  ambalareRows: [],
+  salesRows: []
 };
 
 function trimText(v){ return String(v == null ? '' : v).replace(/\s+/g,' ').trim(); }
@@ -159,6 +173,28 @@ function monthNumberFromAny(value){
   return idx >= 0 ? idx + 1 : 0;
 }
 function getMonthName(value){ const n = Number(value) || 0; return MONTHS[Math.max(1, Math.min(12, n)) - 1] || ''; }
+function buildPeriodKey(year, month){ const y = String(year || '').trim(); const m = String(month || '').trim(); return y && m ? (y + '-' + String(m).padStart(2,'0')) : ''; }
+function parseDisplayDate(value){
+  const raw = trimText(value);
+  if(!raw) return null;
+  let m = raw.match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})$/);
+  if(m) return new Date(Number(m[3]), Number(m[2]) - 1, Number(m[1]));
+  m = raw.match(/^(\d{1,2})\.(\d{1,2})\.(\d{2})$/);
+  if(m) return new Date(2000 + Number(m[3]), Number(m[2]) - 1, Number(m[1]));
+  m = raw.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+  if(m) return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  return null;
+}
+function parseAnyDate(value){
+  if(value == null || value === '') return null;
+  if(value instanceof Date && !Number.isNaN(value.getTime())) return new Date(value.getFullYear(), value.getMonth(), value.getDate());
+  if(typeof value === 'number' && Number.isFinite(value)){
+    const ms = Math.round((value - 25569) * 86400 * 1000);
+    const d = new Date(ms);
+    if(!Number.isNaN(d.getTime())) return new Date(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
+  }
+  return parseDisplayDate(value);
+}
 function pick(obj, keys){
   if(!obj || typeof obj !== 'object') return '';
   for(const key of keys){ if(Object.prototype.hasOwnProperty.call(obj, key) && obj[key] != null && obj[key] !== '') return obj[key]; }
@@ -187,6 +223,8 @@ function stripVariantSuffix(v){
   return out;
 }
 function buildSpecKey(diametru, calitate){ return trimText(diametru).replace(/\s+/g,'').toUpperCase() + '|' + trimText(calitate).replace(/\s+/g,'').toUpperCase(); }
+function comparePeriodsDesc(a, b){ return String(b).localeCompare(String(a)); }
+function comparePeriodsAsc(a, b){ return String(a).localeCompare(String(b)); }
 
 async function createClient(){
   try{
@@ -210,14 +248,20 @@ async function queryDocsByKeys(keys){
   if(error) throw error;
   return data || [];
 }
-function pickLatestRowsByYearMonth(rows){
-  let bestYear = 0, bestMonth = 0;
+function pickSnapshotRows(rows, targetYear, targetMonth){
+  const targetKey = buildPeriodKey(targetYear, targetMonth);
   const filtered = (rows || []).filter(row => row && Number(row.an || 0) > 0 && Number(row.lunaNum || 0) > 0);
-  filtered.forEach(row => {
-    const y = Number(row.an) || 0, m = Number(row.lunaNum) || 0;
-    if(y > bestYear || (y === bestYear && m > bestMonth)){ bestYear = y; bestMonth = m; }
-  });
-  return { rows: filtered.filter(row => Number(row.an) === bestYear && Number(row.lunaNum) === bestMonth), year: bestYear, month: bestMonth, label: bestYear && bestMonth ? String(bestYear) + ' / ' + getMonthName(bestMonth) : '' };
+  if(!filtered.length) return { rows: [], label: '' };
+  const exact = filtered.filter(row => buildPeriodKey(row.an, row.lunaNum) === targetKey);
+  if(exact.length) return { rows: exact, label: String(targetYear) + ' / ' + getMonthName(targetMonth) };
+  const eligible = filtered.filter(row => buildPeriodKey(row.an, row.lunaNum) <= targetKey).sort((a,b) => buildPeriodKey(b.an, b.lunaNum).localeCompare(buildPeriodKey(a.an, a.lunaNum)));
+  if(eligible.length){
+    const bestKey = buildPeriodKey(eligible[0].an, eligible[0].lunaNum);
+    return { rows: eligible.filter(row => buildPeriodKey(row.an, row.lunaNum) === bestKey), label: String(eligible[0].an) + ' / ' + getMonthName(eligible[0].lunaNum) };
+  }
+  const latest = filtered.slice().sort((a,b) => buildPeriodKey(b.an, b.lunaNum).localeCompare(buildPeriodKey(a.an, a.lunaNum)));
+  const bestKey = buildPeriodKey(latest[0].an, latest[0].lunaNum);
+  return { rows: latest.filter(row => buildPeriodKey(row.an, row.lunaNum) === bestKey), label: String(latest[0].an) + ' / ' + getMonthName(latest[0].lunaNum) };
 }
 function normalizeInventarForjatRow(row, index){
   const obj = Array.isArray(row) ? { an: row[0], luna: row[1], reper: row[2], stocFinal: row[6] } : (row || {});
@@ -237,7 +281,32 @@ function normalizeSteelRow(row, index){
   const luna = trimText(pick(obj, ['luna','Luna'])) || '';
   return { id: trimText(pick(obj, ['id','_id'])) || ('inventar-otel-' + index), an, luna, lunaNum: monthNumberFromAny(luna), diametru: trimText(pick(obj, ['diametru','Diametru','diametru otel','Diametru oțel','dimensiune otel'])), calitate: trimText(pick(obj, ['calitate','Calitate','calitate otel','Calitate oțel'])), cantitateKg: Math.max(0, toNumber(pick(obj, ['cantitateKg','cantitate kg','cantitate_kg','kg','stoc initial','stoc actual kg','stoc final kg','STOC OTEL (KG)','Stoc Otel (Kg)']))) };
 }
-function normalizeAmbalareRow(row, index){ return { id: trimText(pick(row || {}, ['id','_id'])) || ('ambalare-' + index), reper: trimText(pick(row || {}, ['reper','REPER','Reper'])).toUpperCase(), buc: toInt(pick(row || {}, ['buc','Buc','cantitate','Cantitate'])) }; }
+function normalizeAmbalareRow(row, index){
+  const obj = row || {};
+  const d = parseAnyDate(pick(obj, ['data','Data','data ambalare']));
+  return {
+    id: trimText(pick(obj, ['id','_id'])) || ('ambalare-' + index),
+    reper: trimText(pick(obj, ['reper','REPER','Reper'])).toUpperCase(),
+    buc: toInt(pick(obj, ['buc','Buc','cantitate','Cantitate'])),
+    an: d ? d.getFullYear() : 0,
+    lunaNum: d ? (d.getMonth() + 1) : 0,
+    dataObj: d
+  };
+}
+function normalizeSalesRow(row, index){
+  const obj = row || {};
+  const d = parseAnyDate(pick(obj, ['data_emiterii','data emiterii','Data emiterii']));
+  return {
+    id: trimText(pick(obj, ['_id','id'])) || ('sale-' + index),
+    cod_articol: trimText(pick(obj, ['cod_articol','cod articol','Cod articol'])).toUpperCase(),
+    nume_articol: trimText(pick(obj, ['nume_articol','nume art.','Nume art.'])).toUpperCase(),
+    cantitate: toNumber(pick(obj, ['cantitate','Cantitate'])),
+    um: trimText(pick(obj, ['um','U.M.','u.m.'])).toUpperCase() || 'BUC',
+    an: d ? d.getFullYear() : Number(pick(obj, ['an','An'])) || 0,
+    lunaNum: d ? (d.getMonth() + 1) : monthNumberFromAny(pick(obj, ['luna','Luna'])),
+    dataObj: d
+  };
+}
 function isTruthyActive(value){ if(value === false || value === 0) return false; const n = norm(value); return !(n === 'false' || n === '0' || n === 'nu' || n === 'inactiv'); }
 function parseHelpersPayload(payload){
   const source = payload && payload.payload ? payload.payload : (payload || {});
@@ -260,8 +329,12 @@ async function loadHelperMaps(){
   if(!state.supabase) return;
   let debitByReper = Object.create(null), forjaByReper = Object.create(null), source = '-';
   try{
-    const [debitRes, forjaRes] = await Promise.all([state.supabase.from('rf_helper_repere_debitare').select('*').order('sort_order', { ascending:true }), state.supabase.from('rf_helper_repere_forjate').select('*').order('sort_order', { ascending:true })]);
-    if(debitRes.error) throw debitRes.error; if(forjaRes.error) throw forjaRes.error;
+    const [debitRes, forjaRes] = await Promise.all([
+      state.supabase.from('rf_helper_repere_debitare').select('*').order('sort_order', { ascending:true }),
+      state.supabase.from('rf_helper_repere_forjate').select('*').order('sort_order', { ascending:true })
+    ]);
+    if(debitRes.error) throw debitRes.error;
+    if(forjaRes.error) throw forjaRes.error;
     (debitRes.data || []).forEach(row => {
       if(!isTruthyActive(row.is_active)) return;
       const reper = trimText(row.reper_debitare || '').toUpperCase();
@@ -280,10 +353,7 @@ async function loadHelperMaps(){
     try{
       const docs = await queryDocsByKeys(['helper-data']);
       const doc = (docs || []).find(item => (item.content || item.data));
-      if(doc){
-        const parsed = parseHelpersPayload(doc.content || doc.data);
-        debitByReper = parsed.debitByReper; forjaByReper = parsed.forjaByReper; source = doc.doc_key || 'helper-data';
-      }
+      if(doc){ const parsed = parseHelpersPayload(doc.content || doc.data); debitByReper = parsed.debitByReper; forjaByReper = parsed.forjaByReper; source = doc.doc_key || 'helper-data'; }
     }catch(inner){ console.error('helper fallback error', inner); }
   }
   state.helperMaps = { debitByReper, forjaByReper, source };
@@ -320,40 +390,57 @@ function buildDebitatKeys(){
   DEBITAT_DOC_BASE_KEYS.forEach(base => { keys.push(base + ':' + year); keys.push(base); });
   return uniqueKeys(keys);
 }
-async function loadInventarForjatMap(){
+async function loadInventarForjatRows(){
   const docs = await queryDocsByKeys(buildForjatInventarKeys()), rows = [];
   docs.forEach(doc => extractRowsPayload(doc.content || doc.data).map(normalizeInventarForjatRow).forEach(row => { if(row.reper && row.an && row.lunaNum) rows.push(row); }));
-  const latest = pickLatestRowsByYearMonth(rows), map = Object.create(null);
-  latest.rows.forEach(row => { const key = normalizeReperLoose(row.reper); map[key] = Math.max(0, Math.round(toNumber(map[key]) + row.stocFinal)); });
-  return { map, label: latest.label || 'inventar-forjat' };
+  return rows;
 }
-async function loadDebitatMap(){
+async function loadDebitatRows(){
   const docs = await queryDocsByKeys(buildDebitatKeys()), rows = [];
   docs.forEach(doc => extractRowsPayload(doc.content || doc.data).map(normalizeDebitatRow).forEach(row => { if(row.reper && row.an && row.lunaNum) rows.push(row); }));
-  const latest = pickLatestRowsByYearMonth(rows), map = Object.create(null);
-  latest.rows.forEach(row => { const key = normalizeReperLoose(row.reper); map[key] = Math.max(0, Math.round(toNumber(map[key]) + row.cantitateBuc)); });
-  return { map, label: latest.label || 'inventar-debitat' };
+  return rows;
 }
-async function loadSteelMap(){
+async function loadSteelRows(){
   const docs = await queryDocsByKeys(STEEL_DOC_KEYS), rows = [];
   docs.forEach(doc => extractRowsPayload(doc.content || doc.data).map(normalizeSteelRow).forEach(row => { if(row.diametru && row.calitate && row.an && row.lunaNum) rows.push(row); }));
-  const latest = pickLatestRowsByYearMonth(rows), map = Object.create(null);
-  latest.rows.forEach(row => { const key = buildSpecKey(row.diametru, row.calitate); map[key] = toNumber(map[key]) + row.cantitateKg; });
-  return { map, label: latest.label || 'inventar-otel' };
+  return rows;
 }
-async function loadZalePackedMap(){
-  const docs = await queryDocsByKeys(AMBALARE_DOC_KEYS);
-  const map = Object.create(null), rawByKey = Object.create(null);
-  docs.forEach(doc => extractRowsPayload(doc.content || doc.data).map(normalizeAmbalareRow).forEach(row => {
-    if(!row.reper || row.buc <= 0) return;
-    const key = normalizeReperLoose(row.reper);
-    if(!(key in rawByKey)) rawByKey[key] = trimText(row.reper).toUpperCase();
-    map[key] = Math.max(0, Math.round(toNumber(map[key]) + row.buc));
-  }));
-  return { map, rawByKey, label: 'ambalare zale' };
+async function loadZaleRows(){
+  const docs = await queryDocsByKeys(AMBALARE_DOC_KEYS), rows = [];
+  docs.forEach(doc => extractRowsPayload(doc.content || doc.data).map(normalizeAmbalareRow).forEach(row => { if(row.reper && row.buc > 0 && row.an && row.lunaNum) rows.push(row); }));
+  return rows;
+}
+async function loadSalesRows(){
+  const docs = await queryDocsByKeys(SALES_DOC_KEYS), rows = [];
+  docs.forEach(doc => extractRowsPayload((doc.content || doc.data) && ((doc.content || doc.data).rows ? (doc.content || doc.data) : (doc.content || doc.data))).map(normalizeSalesRow).forEach(row => { if((row.cod_articol || row.nume_articol) && row.cantitate > 0 && row.an && row.lunaNum) rows.push(row); }));
+  return rows;
 }
 function cellText(cell){ return trimText(cell && cell.textContent ? cell.textContent : ''); }
-async function scrapeInventarPrelucrari(){
+function buildTableMatrix(table){
+  const rows = Array.from(table.rows || []);
+  const matrix = [];
+  const occupied = {};
+  rows.forEach((row, rIdx) => {
+    if(!matrix[rIdx]) matrix[rIdx] = [];
+    let col = 0;
+    Array.from(row.cells || []).forEach(cell => {
+      while(occupied[rIdx + ':' + col]) col += 1;
+      const rowSpan = Math.max(1, Number(cell.rowSpan) || 1);
+      const colSpan = Math.max(1, Number(cell.colSpan) || 1);
+      for(let rr = 0; rr < rowSpan; rr++){
+        for(let cc = 0; cc < colSpan; cc++){
+          const tr = rIdx + rr, tc = col + cc;
+          if(!matrix[tr]) matrix[tr] = [];
+          matrix[tr][tc] = cell;
+          occupied[tr + ':' + tc] = true;
+        }
+      }
+      col += colSpan;
+    });
+  });
+  return matrix;
+}
+async function scrapeInventarPrelucrariSnapshots(){
   const frame = els.frame;
   const src = INVENTAR_PRELUCRARI_PAGE + '?rf_embed=1&ts=' + Date.now();
   return new Promise((resolve, reject) => {
@@ -365,22 +452,50 @@ async function scrapeInventarPrelucrari(){
         const doc = frame.contentDocument || (frame.contentWindow && frame.contentWindow.document);
         const table = doc && doc.getElementById('mainExcelSheet');
         if(!table) return false;
-        const rows = Array.from(table.querySelectorAll('tr'));
-        if(rows.length < 3) return false;
-        const dateCells = rows[1] ? Array.from(rows[1].children) : [];
-        const dateLabel = cellText(dateCells[1]) || new Date().toLocaleDateString('ro-RO');
-        const out = [];
-        for(let i = 2; i < rows.length; i++){
-          const cells = Array.from(rows[i].children).slice(0, 7);
-          if(!cells.length) continue;
-          const model = cellText(cells[0]);
-          if(!model) continue;
-          const packed = cellText(cells[1]), finished = cellText(cells[2]), wip = cellText(cells[3]);
-          const bg = (cells[0].style && (cells[0].style.background || cells[0].style.backgroundColor)) || '';
-          out.push({ model, packed: toInt(packed), finished: toInt(finished), wip: toInt(wip), modelHighlight: /ffff00|yellow|rgb\(255,\s*255,\s*0\)/i.test(bg) });
+        const cols = Array.from(table.querySelectorAll('colgroup col')).length;
+        if(!cols) return false;
+        const blockCount = Math.max(1, Math.floor(cols / 8) || 1);
+        const matrix = buildTableMatrix(table);
+        if(!matrix.length) return false;
+        const snapshots = Object.create(null);
+        const periodSet = new Set();
+        for(let block = 0; block < blockCount; block++){
+          const start = block * 8;
+          const dateCell = matrix[1] && matrix[1][start + 1];
+          const dateLabel = cellText(dateCell);
+          const dateObj = parseAnyDate(dateLabel);
+          if(!dateObj) continue;
+          const year = dateObj.getFullYear();
+          const month = dateObj.getMonth() + 1;
+          const periodKey = buildPeriodKey(year, month);
+          const rows = [];
+          for(let r = 2; r < matrix.length; r++){
+            const modelCell = matrix[r] && matrix[r][start];
+            const model = cellText(modelCell);
+            if(!model) continue;
+            const packed = cellText(matrix[r] && matrix[r][start + 1]);
+            const finished = cellText(matrix[r] && matrix[r][start + 2]);
+            const wip = cellText(matrix[r] && matrix[r][start + 3]);
+            const bg = modelCell && modelCell.style ? (modelCell.style.background || modelCell.style.backgroundColor || '') : '';
+            rows.push({
+              model,
+              packed: toInt(packed),
+              finished: toInt(finished),
+              wip: toInt(wip),
+              modelHighlight: /ffff00|yellow|rgb\(255,\s*255,\s*0\)/i.test(bg),
+              an: year,
+              lunaNum: month
+            });
+          }
+          if(!rows.length) continue;
+          snapshots[periodKey] = { year, month, dateLabel, rows };
+          periodSet.add(periodKey);
         }
-        done = true; window.clearTimeout(timeout); resolve({ rows: out, dateLabel }); return true;
-      }catch(err){ console.error('scrapeInventarPrelucrari', err); return false; }
+        done = true;
+        window.clearTimeout(timeout);
+        resolve({ snapshots, periods: Array.from(periodSet).sort(comparePeriodsDesc) });
+        return true;
+      }catch(err){ console.error('scrapeInventarPrelucrariSnapshots', err); return false; }
     }
     frame.onload = () => {
       if(tryRead()) return;
@@ -389,12 +504,38 @@ async function scrapeInventarPrelucrari(){
         attempts += 1;
         if(tryRead() || attempts > 80){
           window.clearInterval(poll);
-          if(!done && attempts > 80){ done = true; window.clearTimeout(timeout); reject(new Error('Nu am putut citi tabelul din inventar prelucrări.')); }
+          if(!done && attempts > 80){ done = true; window.clearTimeout(timeout); reject(new Error('Nu am putut citi tabelele din inventar prelucrări.')); }
         }
       }, 250);
     };
     frame.src = src;
   });
+}
+function buildSnapshotMap(rows, keySelector, valueSelector){
+  const map = Object.create(null);
+  (rows || []).forEach(row => {
+    const key = trimText(keySelector(row));
+    if(!key) return;
+    map[key] = toNumber(map[key]) + toNumber(valueSelector(row));
+  });
+  return map;
+}
+function buildSalesMap(rows){
+  const map = Object.create(null);
+  (rows || []).forEach(row => {
+    if(trimText(row.um) && norm(row.um) !== 'buc') return;
+    const keys = new Set();
+    [row.cod_articol, row.nume_articol].forEach(value => {
+      const raw = trimText(value).toUpperCase();
+      if(!raw) return;
+      const loose = normalizeReperLoose(raw);
+      const stripped = normalizeReperLoose(stripVariantSuffix(raw));
+      if(loose) keys.add(loose);
+      if(stripped) keys.add(stripped);
+    });
+    keys.forEach(key => { map[key] = toNumber(map[key]) + toNumber(row.cantitate); });
+  });
+  return map;
 }
 function consecutiveSpans(rows, keyGetter, valueGetter){
   const spans = Array(rows.length).fill(1), hidden = Array(rows.length).fill(false);
@@ -411,52 +552,177 @@ function consecutiveSpans(rows, keyGetter, valueGetter){
   }
   return { spans, hidden };
 }
+function ensureCurrentPeriod(){
+  if(!state.periods.length){ state.selectedYear = ''; state.selectedMonth = ''; return; }
+  const currentKey = buildPeriodKey(state.selectedYear, state.selectedMonth);
+  if(currentKey && state.periods.includes(currentKey)) return;
+  const today = new Date();
+  const todayKey = buildPeriodKey(today.getFullYear(), today.getMonth() + 1);
+  const fallbackKey = state.periods.includes(todayKey) ? todayKey : state.periods[0];
+  state.selectedYear = fallbackKey.slice(0,4);
+  state.selectedMonth = String(Number(fallbackKey.slice(5)));
+}
+function rebuildFilters(){
+  const years = Array.from(new Set(state.periods.map(key => key.slice(0,4)))).sort((a,b) => Number(b) - Number(a));
+  ensureCurrentPeriod();
+  els.fltYear.innerHTML = years.map(year => '<option value="' + escapeHtml(year) + '">' + escapeHtml(year) + '</option>').join('');
+  if(state.selectedYear && years.includes(String(state.selectedYear))) els.fltYear.value = String(state.selectedYear);
+  const monthKeys = state.periods.filter(key => key.slice(0,4) === String(state.selectedYear)).sort(comparePeriodsAsc);
+  const months = monthKeys.map(key => ({ key, month: Number(key.slice(5)) }));
+  els.fltMonth.innerHTML = months.map(item => '<option value="' + item.month + '">' + escapeHtml(getMonthName(item.month)) + '</option>').join('');
+  const monthValue = String(Number(state.selectedMonth || '0'));
+  if(months.some(item => String(item.month) === monthValue)) els.fltMonth.value = monthValue;
+  else if(months[0]){ state.selectedMonth = String(months[0].month); els.fltMonth.value = state.selectedMonth; }
+}
+function buildCurrentRows(){
+  ensureCurrentPeriod();
+  const periodKey = buildPeriodKey(state.selectedYear, state.selectedMonth);
+  const invSnapshot = state.prelucrariByPeriod[periodKey] || null;
+  const snapshotRows = invSnapshot ? invSnapshot.rows : [];
+  state.dateLabel = invSnapshot ? invSnapshot.dateLabel : (String(state.selectedYear || '') + ' / ' + getMonthName(state.selectedMonth || 0));
+
+  const forjatSnapshot = pickSnapshotRows(state.forjatRows, state.selectedYear, state.selectedMonth);
+  const debitatSnapshot = pickSnapshotRows(state.debitatRows, state.selectedYear, state.selectedMonth);
+  const steelSnapshot = pickSnapshotRows(state.steelRows, state.selectedYear, state.selectedMonth);
+  const ambalareRows = (state.ambalareRows || []).filter(row => buildPeriodKey(row.an, row.lunaNum) === periodKey);
+  const salesRows = (state.salesRows || []).filter(row => buildPeriodKey(row.an, row.lunaNum) === periodKey);
+
+  const forjatMap = buildSnapshotMap(forjatSnapshot.rows, row => normalizeReperLoose(row.reper), row => row.stocFinal);
+  const debitatMap = buildSnapshotMap(debitatSnapshot.rows, row => normalizeReperLoose(row.reper), row => row.cantitateBuc);
+  const steelMap = buildSnapshotMap(steelSnapshot.rows, row => buildSpecKey(row.diametru, row.calitate), row => row.cantitateKg);
+  const ambalareMap = buildSnapshotMap(ambalareRows, row => normalizeReperLoose(row.reper), row => row.buc);
+  const salesMap = buildSalesMap(salesRows);
+
+  const rawByKey = Object.create(null), ordered = [], seen = new Map();
+  function upsertRow(model, packed, finished, wip, sourceType, modelHighlight){
+    const displayModel = trimText(model).toUpperCase();
+    const key = normalizeReperLoose(displayModel);
+    if(!key) return;
+    if(!(key in rawByKey)) rawByKey[key] = displayModel;
+    const existing = seen.get(key);
+    if(existing){
+      existing.packed += toInt(packed);
+      existing.finished += toInt(finished);
+      existing.wip += toInt(wip);
+      existing.modelHighlight = existing.modelHighlight || !!modelHighlight;
+      if(sourceType === 'zala') existing.sourceType = 'zala';
+      return;
+    }
+    const meta = resolveReperMeta(displayModel);
+    const row = {
+      model: displayModel,
+      packed: toInt(packed),
+      finished: toInt(finished),
+      wip: toInt(wip),
+      sourceType: sourceType || 'prelucrari',
+      modelHighlight: !!modelHighlight,
+      meta,
+      stocForja: toInt(forjatMap[meta.forjaKey] || forjatMap[normalizeReperLoose(meta.clean)] || forjatMap[key] || 0),
+      stocDebitat: toInt(debitatMap[meta.originDebitatKey] || 0),
+      stocOtel: Math.max(0, toNumber(steelMap[meta.specKey] || 0))
+    };
+    seen.set(key, row);
+    ordered.push(row);
+  }
+
+  snapshotRows.forEach(row => upsertRow(row.model, row.packed, row.finished, row.wip, 'prelucrari', row.modelHighlight));
+  Object.keys(ambalareMap).sort((a,b) => a.localeCompare(b, 'ro')).forEach(key => {
+    const sold = toNumber(salesMap[key] || salesMap[normalizeReperLoose(stripVariantSuffix(rawByKey[key] || key))] || 0);
+    const packed = Math.max(0, toNumber(ambalareMap[key]) - sold);
+    if(packed > 0 || !(key in seen)) upsertRow(rawByKey[key] || key, packed, 0, 0, 'zala', false);
+  });
+
+  state.rows = ordered;
+  state.sourceLabels = [
+    'Inventar prelucrări: ' + (invSnapshot ? invSnapshot.dateLabel : '-'),
+    'Forjă: ' + (forjatSnapshot.label || '-'),
+    'Debitat: ' + (debitatSnapshot.label || '-'),
+    'Oțel: ' + (steelSnapshot.label || '-'),
+    'Ambalare zale: ' + String(state.selectedYear || '') + ' / ' + getMonthName(state.selectedMonth || 0),
+    'Vânzări: ' + String(state.selectedYear || '') + ' / ' + getMonthName(state.selectedMonth || 0)
+  ];
+}
 function renderTable(){
   const term = norm(els.searchInput.value);
   state.filteredRows = state.rows.filter(row => !term || norm(row.model).includes(term) || norm((row.meta && row.meta.originDebitatRaw) || '').includes(term) || norm((row.meta && row.meta.specLabel) || '').includes(term));
-  els.tableHead.innerHTML = ''; els.tableBody.innerHTML = '';
-  if(!state.filteredRows.length){ els.emptyState.style.display = ''; els.countValue.textContent = '0'; els.countSub.textContent = '0 repere afișate'; return; }
+  els.tableHead.innerHTML = '';
+  els.tableBody.innerHTML = '';
+  if(!state.filteredRows.length){
+    els.emptyState.style.display = '';
+    els.countValue.textContent = '0';
+    els.countSub.textContent = '0 repere afișate';
+    els.sourceValue.textContent = state.dateLabel || '-';
+    els.sourceSub.textContent = state.sourceLabels.join(' • ');
+    return;
+  }
   els.emptyState.style.display = 'none';
-  const h1 = document.createElement('tr'); h1.className = 'head-row';
+  const h1 = document.createElement('tr');
+  h1.className = 'head-row';
   h1.innerHTML = '<th class="head-empty"></th><th class="head-packed">STOC AMBALAT (PACKED PCS)</th><th class="head-finished">STOC FINITE PRELUCRĂRI (FINISHED PCS)</th><th class="head-wip">STOC WIP (WORK IN PROCESS PCS)</th><th class="head-forja">STOC FORJĂ (BUC)</th><th class="head-debitat">STOC DEBITAT (BUC)</th><th class="head-otel">STOC OȚEL (KG)</th>';
-  const h2 = document.createElement('tr'); h2.className = 'date-row';
+  const h2 = document.createElement('tr');
+  h2.className = 'date-row';
   h2.innerHTML = '<th class="date-model">MODEL</th><th class="date-value" colspan="6">' + escapeHtml(state.dateLabel || '') + '</th>';
-  els.tableHead.appendChild(h1); els.tableHead.appendChild(h2);
+  els.tableHead.appendChild(h1);
+  els.tableHead.appendChild(h2);
   const debSpan = consecutiveSpans(state.filteredRows, row => row.meta ? row.meta.originDebitatKey : '', row => row.stocDebitat);
   const steelSpan = consecutiveSpans(state.filteredRows, row => row.meta ? row.meta.specKey : '', row => row.stocOtel);
   const frag = document.createDocumentFragment();
   state.filteredRows.forEach((row, index) => {
-    const tr = document.createElement('tr'); if(row.sourceType === 'zala') tr.classList.add('source-zala');
-    const modelTd = document.createElement('td'); modelTd.className = 'model-cell' + (row.modelHighlight ? ' model-highlight' : ''); modelTd.textContent = row.model; tr.appendChild(modelTd);
+    const tr = document.createElement('tr');
+    if(row.sourceType === 'zala') tr.classList.add('source-zala');
+    const modelTd = document.createElement('td');
+    modelTd.className = 'model-cell' + (row.modelHighlight ? ' model-highlight' : '');
+    modelTd.textContent = row.model;
+    tr.appendChild(modelTd);
     function appendQty(value, red){
       const td = document.createElement('td');
       td.className = 'qty ' + ((red && toNumber(value) > 0) ? 'qty-red ' : '') + ((toNumber(value) <= 0) ? 'qty-zero' : '');
-      td.textContent = toNumber(value) > 0 ? roInt(value) : ''; tr.appendChild(td);
+      td.textContent = toNumber(value) > 0 ? roInt(value) : '';
+      tr.appendChild(td);
     }
-    appendQty(row.packed, false); appendQty(row.finished, false); appendQty(row.wip, false); appendQty(row.stocForja, true);
+    appendQty(row.packed, false);
+    appendQty(row.finished, false);
+    appendQty(row.wip, false);
+    appendQty(row.stocForja, true);
     if(!debSpan.hidden[index]){
-      const td = document.createElement('td'); td.className = 'qty ' + (row.stocDebitat > 0 ? 'qty-red qty-merged' : 'qty-zero'); td.textContent = row.stocDebitat > 0 ? roInt(row.stocDebitat) : ''; if(debSpan.spans[index] > 1) td.rowSpan = debSpan.spans[index]; td.title = row.meta && row.meta.originDebitatRaw ? 'Reper debitat: ' + row.meta.originDebitatRaw : ''; tr.appendChild(td);
+      const td = document.createElement('td');
+      td.className = 'qty ' + (row.stocDebitat > 0 ? 'qty-red qty-merged' : 'qty-zero');
+      td.textContent = row.stocDebitat > 0 ? roInt(row.stocDebitat) : '';
+      if(debSpan.spans[index] > 1) td.rowSpan = debSpan.spans[index];
+      td.title = row.meta && row.meta.originDebitatRaw ? 'Reper debitat: ' + row.meta.originDebitatRaw : '';
+      tr.appendChild(td);
     }
     if(!steelSpan.hidden[index]){
-      const td = document.createElement('td'); td.className = 'qty ' + (row.stocOtel > 0 ? 'qty-red qty-merged' : 'qty-zero'); td.textContent = row.stocOtel > 0 ? roInt(row.stocOtel) : ''; if(steelSpan.spans[index] > 1) td.rowSpan = steelSpan.spans[index]; td.title = row.meta && row.meta.specLabel ? 'Oțel comun: ' + row.meta.specLabel : ''; tr.appendChild(td);
+      const td = document.createElement('td');
+      td.className = 'qty ' + (row.stocOtel > 0 ? 'qty-red qty-merged' : 'qty-zero');
+      td.textContent = row.stocOtel > 0 ? roInt(row.stocOtel) : '';
+      if(steelSpan.spans[index] > 1) td.rowSpan = steelSpan.spans[index];
+      td.title = row.meta && row.meta.specLabel ? 'Oțel comun: ' + row.meta.specLabel : '';
+      tr.appendChild(td);
     }
     frag.appendChild(tr);
   });
   els.tableBody.appendChild(frag);
   els.countValue.textContent = String(state.filteredRows.length);
   els.countSub.textContent = state.filteredRows.length + ' repere afișate';
+  els.sourceValue.textContent = state.dateLabel || '-';
+  els.sourceSub.textContent = state.sourceLabels.join(' • ');
 }
 function exportExcel(){
   if(typeof XLSX === 'undefined'){ window.alert('Biblioteca Excel nu s-a încărcat.'); return; }
   const aoa = [['MODEL','STOC AMBALAT (PACKED PCS)','STOC FINITE PRELUCRĂRI (FINISHED PCS)','STOC WIP (WORK IN PROCESS PCS)','STOC FORJĂ (BUC)','STOC DEBITAT (BUC)','STOC OȚEL (KG)']];
   state.filteredRows.forEach(row => aoa.push([row.model, row.packed || 0, row.finished || 0, row.wip || 0, row.stocForja || 0, row.stocDebitat || 0, row.stocOtel || 0]));
-  const wb = XLSX.utils.book_new(); const ws = XLSX.utils.aoa_to_sheet(aoa); XLSX.utils.book_append_sheet(wb, ws, 'Stoc general real'); XLSX.writeFile(wb, 'stoc-general-real.xlsx');
+  const wb = XLSX.utils.book_new();
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  XLSX.utils.book_append_sheet(wb, ws, 'Stoc general real');
+  XLSX.writeFile(wb, 'stoc-general-real.xlsx');
 }
 async function ensureSession(){
   if(window.ERPAuth && typeof window.ERPAuth.requireAuth === 'function'){
     const auth = await window.ERPAuth.requireAuth({ next:'stoc-general-real.html', redirectToLogin:true });
     const access = await window.ERPAuth.getPageAccess(PAGE_KEY, { user: auth.user, role: auth.role });
-    state.user = auth.user || null; state.role = trimText(auth.role || 'viewer').toLowerCase() || 'viewer';
+    state.user = auth.user || null;
+    state.role = trimText(auth.role || 'viewer').toLowerCase() || 'viewer';
     const perms = access && access.permissions ? access.permissions : null;
     state.canView = perms ? (perms.can_view === true) : true;
     if(!state.canView){
@@ -465,47 +731,79 @@ async function ensureSession(){
       else window.location.href = 'index.html';
       throw new Error('Fără acces la pagină.');
     }
-    const email = trimText(auth.user && auth.user.email); els.userValue.textContent = email || '-'; els.userSub.textContent = (state.role || 'viewer') + ' • doar vizualizare'; return;
+    const email = trimText(auth.user && auth.user.email);
+    els.userValue.textContent = email || '-';
+    els.userSub.textContent = (state.role || 'viewer') + ' • doar vizualizare';
+    return;
   }
   if(!state.supabase) return;
   const { data } = await state.supabase.auth.getSession();
   const session = data && data.session;
   if(!session){ window.location.href = 'login.html'; throw new Error('Sesiune lipsă.'); }
-  state.user = session.user; els.userValue.textContent = trimText(session.user && session.user.email) || '-'; els.userSub.textContent = 'viewer • doar vizualizare';
+  state.user = session.user;
+  els.userValue.textContent = trimText(session.user && session.user.email) || '-';
+  els.userSub.textContent = 'viewer • doar vizualizare';
 }
-function representativeRaw(map, key){ return map[key] || key; }
 async function loadAll(){
-  els.cloudValue.textContent = 'Se încarcă'; els.cloudSub.textContent = 'Inventar prelucrări, zale și stocuri...';
+  els.cloudValue.textContent = 'Se încarcă';
+  els.cloudSub.textContent = 'Inventar prelucrări, zale, vânzări și stocuri...';
   await loadHelperMaps();
-  const [prelucrari, forjaData, debData, steelData, zaleData] = await Promise.all([scrapeInventarPrelucrari(), loadInventarForjatMap(), loadDebitatMap(), loadSteelMap(), loadZalePackedMap()]);
-  const rawByKey = Object.create(null), ordered = [], seen = new Map();
-  function upsertRow(model, packed, finished, wip, sourceType, modelHighlight){
-    const displayModel = trimText(model).toUpperCase(), key = normalizeReperLoose(displayModel);
-    if(!key) return;
-    if(!(key in rawByKey)) rawByKey[key] = displayModel;
-    const existing = seen.get(key);
-    if(existing){
-      existing.packed += toInt(packed); existing.finished += toInt(finished); existing.wip += toInt(wip); existing.modelHighlight = existing.modelHighlight || !!modelHighlight; if(sourceType === 'zala') existing.sourceType = 'zala'; return;
-    }
-    const meta = resolveReperMeta(displayModel);
-    const row = { model: displayModel, packed: toInt(packed), finished: toInt(finished), wip: toInt(wip), sourceType: sourceType || 'prelucrari', modelHighlight: !!modelHighlight, meta, stocForja: toInt(forjaData.map[meta.forjaKey] || forjaData.map[normalizeReperLoose(meta.clean)] || forjaData.map[key] || 0), stocDebitat: toInt(debData.map[meta.originDebitatKey] || 0), stocOtel: Math.max(0, toNumber(steelData.map[meta.specKey] || 0)) };
-    seen.set(key, row); ordered.push(row);
-  }
-  (prelucrari.rows || []).forEach(row => upsertRow(row.model, row.packed, row.finished, row.wip, 'prelucrari', row.modelHighlight));
-  Object.keys(zaleData.map).sort((a,b) => a.localeCompare(b, 'ro')).forEach(key => upsertRow(representativeRaw(zaleData.rawByKey, key), zaleData.map[key], 0, 0, 'zala', false));
-  state.rows = ordered; state.dateLabel = prelucrari.dateLabel || ''; state.sourceLabels = [state.helperMaps.source, forjaData.label, debData.label, steelData.label, zaleData.label].filter(Boolean);
-  els.cloudValue.textContent = 'Cloud încărcat'; els.cloudSub.textContent = 'Surse citite: ' + state.sourceLabels.join(' • '); els.sourceValue.textContent = prelucrari.dateLabel || '-'; els.sourceSub.textContent = 'Packed/Finished/WIP din inventar prelucrări • zalele din ambalare';
+  const [prelucrari, forjatRows, debitatRows, steelRows, ambalareRows, salesRows] = await Promise.all([
+    scrapeInventarPrelucrariSnapshots(),
+    loadInventarForjatRows(),
+    loadDebitatRows(),
+    loadSteelRows(),
+    loadZaleRows(),
+    loadSalesRows()
+  ]);
+  state.prelucrariByPeriod = prelucrari.snapshots || Object.create(null);
+  state.forjatRows = forjatRows;
+  state.debitatRows = debitatRows;
+  state.steelRows = steelRows;
+  state.ambalareRows = ambalareRows;
+  state.salesRows = salesRows;
+
+  const periodSet = new Set(prelucrari.periods || []);
+  forjatRows.forEach(row => periodSet.add(buildPeriodKey(row.an, row.lunaNum)));
+  debitatRows.forEach(row => periodSet.add(buildPeriodKey(row.an, row.lunaNum)));
+  steelRows.forEach(row => periodSet.add(buildPeriodKey(row.an, row.lunaNum)));
+  ambalareRows.forEach(row => periodSet.add(buildPeriodKey(row.an, row.lunaNum)));
+  salesRows.forEach(row => periodSet.add(buildPeriodKey(row.an, row.lunaNum)));
+  state.periods = Array.from(periodSet).filter(Boolean).sort(comparePeriodsDesc);
+  ensureCurrentPeriod();
+  rebuildFilters();
+  buildCurrentRows();
+  els.cloudValue.textContent = 'Cloud încărcat';
+  els.cloudSub.textContent = 'Luna selectată: ' + String(state.selectedYear || '-') + ' / ' + getMonthName(state.selectedMonth || 0);
   renderTable();
 }
-async function boot(){
-  try{ state.supabase = await createClient(); await ensureSession(); await loadAll(); }
-  catch(err){ console.error(err); els.cloudValue.textContent = 'Eroare'; els.cloudSub.textContent = trimText(err && err.message) || 'Pagina nu a putut fi încărcată.'; if(!state.canView) return; window.alert('Nu am putut încărca STOC GENERAL REAL.\n' + (err && err.message ? err.message : err)); }
+function refreshCurrentView(){
+  buildCurrentRows();
+  renderTable();
+  els.cloudSub.textContent = 'Luna selectată: ' + String(state.selectedYear || '-') + ' / ' + getMonthName(state.selectedMonth || 0);
 }
+async function boot(){
+  try{
+    state.supabase = await createClient();
+    await ensureSession();
+    await loadAll();
+  }catch(err){
+    console.error(err);
+    els.cloudValue.textContent = 'Eroare';
+    els.cloudSub.textContent = trimText(err && err.message) || 'Pagina nu a putut fi încărcată.';
+    if(!state.canView) return;
+    window.alert('Nu am putut încărca STOC GENERAL REAL.\n' + (err && err.message ? err.message : err));
+  }
+}
+
 els.searchInput.addEventListener('input', renderTable);
+els.fltYear.addEventListener('change', () => { state.selectedYear = els.fltYear.value; rebuildFilters(); refreshCurrentView(); });
+els.fltMonth.addEventListener('change', () => { state.selectedMonth = els.fltMonth.value; refreshCurrentView(); });
 els.btnExport.addEventListener('click', exportExcel);
 els.btnRefresh.addEventListener('click', async () => { try{ await loadAll(); }catch(err){ console.error(err); window.alert('Refresh-ul nu a reușit.\n' + (err && err.message ? err.message : err)); } });
 boot();
 })();
+</script>
 </script>
 <script src="./mobile-erp.js"></script>
 <script src="./kad-logo.js"></script>
