@@ -80,8 +80,12 @@
         <a class="back-btn" href="index.html">Înapoi la Dashboard</a>
         <a class="back-btn" href="stoc-matrite.html">Stoc Matrițe</a>
         <div class="title">URMĂRIRE MATRIȚE</div>
+        <div class="control">
+          <label>Limită maximă utilaj (mm)</label>
+          <input id="inpMax" type="number" min="0" step="0.01" readonly />
+        </div>
       </div>
-      <div class="subtitle">Selectezi reperul și utilajul, vezi stocul matrițelor și toate combinațiile posibile peste limita minimă a utilajului.</div>
+      <div class="subtitle">Selectezi reperul și utilajul, vezi stocul matrițelor și toate combinațiile posibile între limita minimă și limita maximă a utilajului. Dacă maximul nu este setat, este ignorat.</div>
     </div>
     <div class="actions">
       <button class="btn" id="btnRefresh" type="button">Refresh cloud</button>
@@ -104,7 +108,7 @@
     <div class="section-head">
       <div>
         <div class="section-title">Filtre și limită utilaj</div>
-        <div class="section-subtitle">Combinațiile se calculează doar dacă suma înălțimilor este peste limita minimă a utilajului.</div>
+        <div class="section-subtitle">Combinațiile se calculează dacă suma înălțimilor este peste limita minimă și, dacă există, sub limita maximă a utilajului.</div>
       </div>
       <div class="legend">
         <span class="pill">Pe stoc = combinații listate primele</span>
@@ -164,7 +168,8 @@
                   <th>H inf</th>
                   <th>Status inf</th>
                   <th>Total</th>
-                  <th>Limită utilaj</th>
+                  <th>Limită minimă</th>
+                  <th>Limită maximă</th>
                   <th>Observație</th>
                 </tr>
               </thead>
@@ -195,6 +200,7 @@
     repereList: document.getElementById('repereList'),
     selUtilaj: document.getElementById('selUtilaj'),
     inpLimit: document.getElementById('inpLimit'),
+    inpMax: document.getElementById('inpMax'),
     tbodyStock: document.getElementById('tbodyStock'),
     tbodyCombos: document.getElementById('tbodyCombos'),
     stokCount: document.getElementById('stokCount'),
@@ -206,11 +212,11 @@
     codedRows: [],
     overrides: {},
     utilaje: {
-      '2,5 T': 450,
-      '1,25 T': 450,
-      '3 T BR': 450,
-      'MP': 450,
-      '5 T CHINA': 450
+      '2,5 T': { min: 450, max: 0 },
+      '1,25 T': { min: 450, max: 0 },
+      '3 T BR': { min: 450, max: 0 },
+      'MP': { min: 450, max: 0 },
+      '5 T CHINA': { min: 450, max: 0 }
     },
     updatedAt: '',
     saveUpdatedAt: ''
@@ -342,9 +348,38 @@
     if(!obj) return;
 
     if(obj.utilaje && typeof obj.utilaje === 'object' && !Array.isArray(obj.utilaje)){
-      state.utilaje = { ...state.utilaje, ...obj.utilaje };
+      const merged = {};
+      Object.entries(obj.utilaje).forEach(([k,v]) => {
+        if(v && typeof v === 'object'){
+          merged[k] = { min: toNum(v.min ?? v.inaltime_minima), max: toNum(v.max ?? v.inaltime_maxima) };
+        } else {
+          merged[k] = { min: toNum(v), max: 0 };
+        }
+      });
+      state.utilaje = { ...state.utilaje, ...merged };
       return;
     }
+
+    const rows = Array.isArray(obj.rows) ? obj.rows
+      : Array.isArray(obj.utilaje) ? obj.utilaje
+      : Array.isArray(obj.data) ? obj.data
+      : Array.isArray(obj) ? obj
+      : [];
+
+    if(rows.length){
+      const parsed = {};
+      rows.forEach(r => {
+        if(!r || typeof r !== 'object') return;
+        const utilaj = String(r.utilaj ?? r.nume ?? r.Utilaj ?? r.Nume ?? r.UTILAJ ?? '').trim();
+        const minVal = toNum(r.inaltime_minima ?? r.limita_minima ?? r.minim_mm ?? r['Înălțime minimă'] ?? r['Limita minimă'] ?? r.inaltimeMinima ?? r.limitaMinima ?? '');
+        const maxVal = toNum(r.inaltime_maxima ?? r.limita_maxima ?? r.maxim_mm ?? r['Înălțime maximă'] ?? r['Limita maximă'] ?? r.inaltimeMaxima ?? r.limitaMaxima ?? '');
+        if(utilaj) parsed[utilaj] = { min: minVal, max: maxVal };
+      });
+      if(Object.keys(parsed).length){
+        state.utilaje = { ...state.utilaje, ...parsed };
+      }
+    }
+  }
 
     const rows = Array.isArray(obj.rows) ? obj.rows
       : Array.isArray(obj.utilaje) ? obj.utilaje
@@ -417,7 +452,9 @@
     els.selUtilaj.innerHTML = utilaje.map(u => `<option value="${esc(u)}">${esc(u)}</option>`).join('');
     if(utilaje.length){
       els.selUtilaj.value = utilaje[0];
-      els.inpLimit.value = state.utilaje[utilaje[0]] ?? '';
+      const lim = state.utilaje[utilaje[0]] || { min: 0, max: 0 };
+      els.inpLimit.value = lim.min || '';
+      els.inpMax.value = lim.max || '';
     }
   }
 
@@ -518,30 +555,31 @@
     els.stokCount.textContent = 'Matrițe afișate: ' + rows.length;
   }
 
-  function buildCombos(supRows, infRows, minLimit){
+  function buildCombos(supRows, infRows, minLimit, maxLimit){
     const combos = [];
     supRows.forEach(s => {
       infRows.forEach(i => {
         const total = toNum(s.effective_height) + toNum(i.effective_height);
         if(total < minLimit) return;
+        if(maxLimit > 0 && total > maxLimit) return;
         const bothStock = s.final_status === 'PE STOC' && i.final_status === 'PE STOC';
         const hasRegr = s.final_status === 'LA REGRAVAT' || i.final_status === 'LA REGRAVAT';
         let obs = bothStock ? 'Pe stoc' : '';
         if(hasRegr) obs = obs ? (obs + ' | conține matriță la regravat') : 'Conține matriță la regravat';
         if(!obs) obs = 'Compatibilă';
         combos.push({
-          sup: s, inf: i, total, limit: minLimit, obs,
+          sup: s, inf: i, total, minLimit, maxLimit, obs,
           sortRank: bothStock ? 0 : (hasRegr ? 2 : 1)
         });
       });
     });
-    combos.sort((a,b) => a.sortRank - b.sortRank || b.total - a.total || a.sup.cod_intern.localeCompare(b.sup.cod_intern) || a.inf.cod_intern.localeCompare(b.inf.cod_intern));
+    combos.sort((a,b) => a.sortRank - b.sortRank || a.total - b.total || a.sup.cod_intern.localeCompare(b.sup.cod_intern) || a.inf.cod_intern.localeCompare(b.inf.cod_intern));
     return combos;
   }
 
   function renderCombos(combos){
     if(!combos.length){
-      els.tbodyCombos.innerHTML = '<tr><td colspan="9">Nu există combinații posibile peste limita utilajului.</td></tr>';
+      els.tbodyCombos.innerHTML = '<tr><td colspan="10">Nu există combinații posibile peste limita utilajului.</td></tr>';
       els.comboCount.textContent = 'Combinații posibile: 0';
       return;
     }
@@ -554,7 +592,8 @@
         <td>${esc(String(c.inf.effective_height).replace('.', ','))}</td>
         <td>${c.inf.final_status ? `<span class="status ${statusClass(c.inf.final_status)}">${esc(c.inf.final_status)}</span>` : ''}</td>
         <td class="ok">${esc(String(c.total).replace('.', ','))}</td>
-        <td>${esc(String(c.limit).replace('.', ','))}</td>
+        <td>${esc(String(c.minLimit).replace('.', ','))}</td>
+        <td>${c.maxLimit > 0 ? esc(String(c.maxLimit).replace('.', ',')) : ''}</td>
         <td class="${c.obs.includes('regravat') ? 'warn' : 'ok'}">${esc(c.obs)}</td>
       </tr>
     `).join('');
@@ -566,7 +605,7 @@
     const reper = upper((els.selReper.value || '').trim());
     if(!reper){
       els.tbodyStock.innerHTML = '<tr><td colspan="5">Selectează un reper.</td></tr>';
-      els.tbodyCombos.innerHTML = '<tr><td colspan="9">Selectează un reper.</td></tr>';
+      els.tbodyCombos.innerHTML = '<tr><td colspan="10">Selectează un reper.</td></tr>';
       els.stokCount.textContent = 'Matrițe afișate: 0';
       els.comboCount.textContent = 'Combinații posibile: 0';
       return;
@@ -578,7 +617,8 @@
     renderStock(allRows);
 
     const minLimit = toNum(els.inpLimit.value);
-    const combos = buildCombos(supRows, infRows, minLimit);
+    const maxLimit = toNum(els.inpMax.value);
+    const combos = buildCombos(supRows, infRows, minLimit, maxLimit);
     renderCombos(combos);
   }
 
@@ -596,7 +636,7 @@
       console.error(err);
       showCloud('eroare');
       els.tbodyStock.innerHTML = '<tr><td colspan="5">Nu am putut încărca datele.</td></tr>';
-      els.tbodyCombos.innerHTML = '<tr><td colspan="9">Nu am putut încărca datele.</td></tr>';
+      els.tbodyCombos.innerHTML = '<tr><td colspan="10">Nu am putut încărca datele.</td></tr>';
       alert('Nu am putut încărca Urmărire Matrițe.\n' + (err && err.message ? err.message : err));
     }
   }
@@ -604,7 +644,9 @@
   els.selReper.addEventListener('input', render);
   els.selReper.addEventListener('change', render);
   els.selUtilaj.addEventListener('change', () => {
-    els.inpLimit.value = state.utilaje[els.selUtilaj.value] ?? '';
+    const lim = state.utilaje[els.selUtilaj.value] || { min: 0, max: 0 };
+    els.inpLimit.value = lim.min || '';
+    els.inpMax.value = lim.max || '';
     render();
   });
   els.btnRefresh.addEventListener('click', boot);
