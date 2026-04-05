@@ -103,6 +103,9 @@ const FORJAT_INV_BASE_KEYS = ['inventar-forjat','inventar_forjat','inventar-forj
 const DEBITAT_DOC_BASE_KEYS = ['inventar-debitat','inventar_debitat','stoc-initial-debitat','stoc_initial_debitat'];
 const STEEL_DOC_KEYS = ['stoc-initial-otel','stoc_initial_otel','inventar-otel','inventar_otel','inventar-otel-initial','inventar_otel_initial'];
 const SALES_DOC_KEYS = ['lista-vanzari'];
+const INTRARI_OTEL_DOC_BASE_KEYS = ['intrari-otel','intrari_otel','intrari otel','INTRARI_OTEL','INTRARI OTEL'];
+const DEBITATE_FLOW_DOC_BASE_KEYS = ['debitate','debitari','debitate_otel','debitari_otel','DEBITATE','DEBITARI'];
+const FORJATE_FLOW_DOC_BASE_KEYS = ['forjate','forjate-data','FORJATE'];
 const MONTHS = ['Ianuarie','Februarie','Martie','Aprilie','Mai','Iunie','Iulie','August','Septembrie','Octombrie','Noiembrie','Decembrie'];
 
 const els = {
@@ -144,7 +147,10 @@ const state = {
   debitatRows: [],
   steelRows: [],
   ambalareRows: [],
-  salesRows: []
+  salesRows: [],
+  intrariFlowRows: [],
+  debitateFlowRows: [],
+  forjateFlowRows: []
 };
 
 function trimText(v){ return String(v == null ? '' : v).replace(/\s+/g,' ').trim(); }
@@ -378,30 +384,32 @@ function resolveReperMeta(model){
   const calitate = trimText((debit && debit.calitate_otel) || (forja && forja.calitate_otel) || '');
   return { raw, clean, forjaKey: normalizeReperLoose(raw), originDebitatRaw: originRaw, originDebitatKey: normalizeReperLoose(originRaw || clean || raw), specKey: diametru && calitate ? buildSpecKey(diametru, calitate) : '', specLabel: diametru && calitate ? (diametru + ' / ' + calitate) : '' };
 }
-function buildForjatInventarKeys(){
-  const year = new Date().getFullYear();
-  const keys = [];
-  FORJAT_INV_BASE_KEYS.forEach(base => { keys.push(base + ':' + (year - 1)); keys.push(base + ':' + year); keys.push(base); });
-  return uniqueKeys(keys);
+function buildDocKeys(baseKeys, years, includeIndex){
+  const set = new Set();
+  (baseKeys || []).forEach(base => {
+    const clean = trimText(base);
+    if(!clean) return;
+    set.add(clean);
+    if(includeIndex) set.add(clean + ':index');
+    (years || []).forEach(year => {
+      const y = String(year || '').trim();
+      if(y) set.add(clean + ':' + y);
+    });
+  });
+  return Array.from(set);
 }
-function buildDebitatKeys(){
-  const year = new Date().getFullYear();
-  const keys = [];
-  DEBITAT_DOC_BASE_KEYS.forEach(base => { keys.push(base + ':' + year); keys.push(base); });
-  return uniqueKeys(keys);
-}
-async function loadInventarForjatRows(){
-  const docs = await queryDocsByKeys(buildForjatInventarKeys()), rows = [];
+async function loadInventarForjatRows(years){
+  const docs = await queryDocsByKeys(buildDocKeys(FORJAT_INV_BASE_KEYS, years, true)), rows = [];
   docs.forEach(doc => extractRowsPayload(doc.content || doc.data).map(normalizeInventarForjatRow).forEach(row => { if(row.reper && row.an && row.lunaNum) rows.push(row); }));
   return rows;
 }
-async function loadDebitatRows(){
-  const docs = await queryDocsByKeys(buildDebitatKeys()), rows = [];
+async function loadDebitatRows(years){
+  const docs = await queryDocsByKeys(buildDocKeys(DEBITAT_DOC_BASE_KEYS, years, true)), rows = [];
   docs.forEach(doc => extractRowsPayload(doc.content || doc.data).map(normalizeDebitatRow).forEach(row => { if(row.reper && row.an && row.lunaNum) rows.push(row); }));
   return rows;
 }
-async function loadSteelRows(){
-  const docs = await queryDocsByKeys(STEEL_DOC_KEYS), rows = [];
+async function loadSteelRows(years){
+  const docs = await queryDocsByKeys(buildDocKeys(STEEL_DOC_KEYS, years, true)), rows = [];
   docs.forEach(doc => extractRowsPayload(doc.content || doc.data).map(normalizeSteelRow).forEach(row => { if(row.diametru && row.calitate && row.an && row.lunaNum) rows.push(row); }));
   return rows;
 }
@@ -413,6 +421,67 @@ async function loadZaleRows(){
 async function loadSalesRows(){
   const docs = await queryDocsByKeys(SALES_DOC_KEYS), rows = [];
   docs.forEach(doc => extractRowsPayload((doc.content || doc.data) && ((doc.content || doc.data).rows ? (doc.content || doc.data) : (doc.content || doc.data))).map(normalizeSalesRow).forEach(row => { if((row.cod_articol || row.nume_articol) && row.cantitate > 0 && row.an && row.lunaNum) rows.push(row); }));
+  return rows;
+}
+function normalizeIntrariFlowRow(row, index){
+  const obj = Array.isArray(row) ? { an: row[0], luna: row[1], data: row[2], diametru: row[3], calitate: row[4], cantitateKg: row[7] } : (row || {});
+  const d = parseAnyDate(pick(obj, ['data','Data','data intrare','Data intrare']));
+  const an = d ? d.getFullYear() : (Number(pick(obj, ['an','AN','Anul','anul'])) || 0);
+  const lunaNum = d ? (d.getMonth() + 1) : monthNumberFromAny(pick(obj, ['luna','Luna']));
+  return {
+    id: trimText(pick(obj, ['id','_id'])) || ('intrari-flow-' + index),
+    an,
+    lunaNum,
+    diametru: trimText(pick(obj, ['diametru','Diametru','diametru otel','Diametru oțel','diametru oțel','dimensiune otel','Dimensiune oțel'])),
+    calitate: trimText(pick(obj, ['calitate','Calitate','calitate otel','Calitate oțel','calitate oțel','material'])),
+    cantitateKg: Math.max(0, toNumber(pick(obj, ['cantitateKg','cantitate kg','cantitate_kg','cantitate in kg','Cantitate','cantitate','kg'])))
+  };
+}
+function normalizeDebitateFlowRow(row, index){
+  const obj = Array.isArray(row) ? { an: row[0], luna: row[1], data: row[2], reper: row[4], diametru: row[5], calitate: row[6], kgBuc: row[7], cantitateBuc: row[10], totalKg: row[12] } : (row || {});
+  const d = parseAnyDate(pick(obj, ['data','Data','data debitare','Data debitare']));
+  const an = d ? d.getFullYear() : (Number(pick(obj, ['an','AN','Anul','anul'])) || 0);
+  const lunaNum = d ? (d.getMonth() + 1) : monthNumberFromAny(pick(obj, ['luna','Luna']));
+  const cantitateBuc = Math.max(0, toNumber(pick(obj, ['cantitate','cantitateBuc','cantitate buc','cantitate_buc','Buc'])));
+  const kgBuc = Math.max(0, toNumber(pick(obj, ['kgBuc','kg/buc','kg buc','kg_buc','kg_buc_debitat','Kg/buc'])));
+  let totalKg = Math.max(0, toNumber(pick(obj, ['totalKg','total kg','total_kg','Total kg debitat','kg total'])));
+  if(!totalKg && kgBuc && cantitateBuc) totalKg = kgBuc * cantitateBuc;
+  return {
+    id: trimText(pick(obj, ['id','_id'])) || ('debitate-flow-' + index),
+    an, lunaNum,
+    reper: trimText(pick(obj, ['reper','Reper','reper debitat','denumire reper debitare'])).toUpperCase(),
+    diametru: trimText(pick(obj, ['diametru','Diametru','diametru otel','Diametru oțel','diametru oțel','dimensiune otel','Dimensiune oțel'])),
+    calitate: trimText(pick(obj, ['calitate','Calitate','calitate otel','Calitate oțel','calitate oțel','material'])),
+    cantitateBuc: Math.max(0, Math.round(cantitateBuc)),
+    totalKg
+  };
+}
+function normalizeForjateFlowRow(row, index){
+  const obj = Array.isArray(row) ? { an: row[0], luna: row[1], data: row[2], reper: row[5], bune: row[17], rebut: row[18] } : (row || {});
+  const d = parseAnyDate(pick(obj, ['data','Data','data forjare','Data forjare']));
+  const an = d ? d.getFullYear() : (Number(pick(obj, ['an','AN','Anul','anul'])) || 0);
+  const lunaNum = d ? (d.getMonth() + 1) : monthNumberFromAny(pick(obj, ['luna','Luna']));
+  return {
+    id: trimText(pick(obj, ['id','_id'])) || ('forjate-flow-' + index),
+    an, lunaNum,
+    reper: trimText(pick(obj, ['reper','Reper','reper forjat'])).toUpperCase(),
+    bucRealizate: Math.max(0, toNumber(pick(obj, ['buc_realizate','buc realizate','bucRealizate','realizat','cantitate','Buc realizate']))),
+    rebut: Math.max(0, toNumber(pick(obj, ['rebut','Rebut','rebuturi'])))
+  };
+}
+async function loadIntrariFlowRows(years){
+  const docs = await queryDocsByKeys(buildDocKeys(INTRARI_OTEL_DOC_BASE_KEYS, years, true)), rows = [];
+  docs.forEach(doc => extractRowsPayload(doc.content || doc.data).map(normalizeIntrariFlowRow).forEach(row => { if(row.an && row.lunaNum && row.diametru && row.calitate) rows.push(row); }));
+  return rows;
+}
+async function loadDebitateFlowRows(years){
+  const docs = await queryDocsByKeys(buildDocKeys(DEBITATE_FLOW_DOC_BASE_KEYS, years, true)), rows = [];
+  docs.forEach(doc => extractRowsPayload(doc.content || doc.data).map(normalizeDebitateFlowRow).forEach(row => { if(row.an && row.lunaNum && row.reper) rows.push(row); }));
+  return rows;
+}
+async function loadForjateFlowRows(years){
+  const docs = await queryDocsByKeys(buildDocKeys(FORJATE_FLOW_DOC_BASE_KEYS, years, true)), rows = [];
+  docs.forEach(doc => extractRowsPayload(doc.content || doc.data).map(normalizeForjateFlowRow).forEach(row => { if(row.an && row.lunaNum && row.reper) rows.push(row); }));
   return rows;
 }
 function cellText(cell){ return trimText(cell && cell.textContent ? cell.textContent : ''); }
@@ -552,6 +621,62 @@ function consecutiveSpans(rows, keyGetter, valueGetter){
   }
   return { spans, hidden };
 }
+function rowMatchesSelectedPeriod(row){
+  return buildPeriodKey(row.an, row.lunaNum) === buildPeriodKey(state.selectedYear, state.selectedMonth);
+}
+function aggregateSteelEntriesCurrentPeriod(){
+  const map = Object.create(null);
+  (state.intrariFlowRows || []).forEach(row => {
+    if(!rowMatchesSelectedPeriod(row)) return;
+    const key = buildSpecKey(row.diametru, row.calitate);
+    if(!key || key === '|') return;
+    map[key] = toNumber(map[key]) + toNumber(row.cantitateKg);
+  });
+  return map;
+}
+function aggregateSteelConsumedCurrentPeriod(){
+  const map = Object.create(null);
+  (state.debitateFlowRows || []).forEach(row => {
+    if(!rowMatchesSelectedPeriod(row)) return;
+    const key = buildSpecKey(row.diametru, row.calitate);
+    if(!key || key === '|') return;
+    map[key] = toNumber(map[key]) + toNumber(row.totalKg);
+  });
+  return map;
+}
+function aggregateDebitateProducedCurrentPeriod(){
+  const map = Object.create(null);
+  (state.debitateFlowRows || []).forEach(row => {
+    if(!rowMatchesSelectedPeriod(row)) return;
+    const key = normalizeReperLoose(trimText(row.reper).toUpperCase());
+    if(!key) return;
+    map[key] = toNumber(map[key]) + toNumber(row.cantitateBuc);
+  });
+  return map;
+}
+function aggregateForjateProducedCurrentPeriod(){
+  const map = Object.create(null);
+  (state.forjateFlowRows || []).forEach(row => {
+    if(!rowMatchesSelectedPeriod(row)) return;
+    const key = normalizeReperLoose(trimText(row.reper).toUpperCase());
+    if(!key) return;
+    map[key] = toNumber(map[key]) + toNumber(row.bucRealizate);
+  });
+  return map;
+}
+function aggregateDebitateConsumedCurrentPeriod(){
+  const map = Object.create(null);
+  (state.forjateFlowRows || []).forEach(row => {
+    if(!rowMatchesSelectedPeriod(row)) return;
+    const reper = trimText(row.reper).toUpperCase();
+    if(!reper) return;
+    const meta = resolveReperMeta(reper);
+    const key = meta && meta.originDebitatKey ? meta.originDebitatKey : normalizeReperLoose(reper);
+    if(!key) return;
+    map[key] = toNumber(map[key]) + toNumber(row.bucRealizate) + toNumber(row.rebut);
+  });
+  return map;
+}
 function ensureCurrentPeriod(){
   if(!state.periods.length){ state.selectedYear = ''; state.selectedMonth = ''; return; }
   const currentKey = buildPeriodKey(state.selectedYear, state.selectedMonth);
@@ -587,11 +712,17 @@ function buildCurrentRows(){
   const ambalareRows = (state.ambalareRows || []).filter(row => buildPeriodKey(row.an, row.lunaNum) === periodKey);
   const salesRows = (state.salesRows || []).filter(row => buildPeriodKey(row.an, row.lunaNum) === periodKey);
 
-  const forjatMap = buildSnapshotMap(forjatSnapshot.rows, row => normalizeReperLoose(row.reper), row => row.stocFinal);
-  const debitatMap = buildSnapshotMap(debitatSnapshot.rows, row => normalizeReperLoose(row.reper), row => row.cantitateBuc);
-  const steelMap = buildSnapshotMap(steelSnapshot.rows, row => buildSpecKey(row.diametru, row.calitate), row => row.cantitateKg);
+  const forjatStartMap = buildSnapshotMap(forjatSnapshot.rows, row => normalizeReperLoose(row.reper), row => row.stocFinal);
+  const debitatStartMap = buildSnapshotMap(debitatSnapshot.rows, row => normalizeReperLoose(row.reper), row => row.cantitateBuc);
+  const steelStartMap = buildSnapshotMap(steelSnapshot.rows, row => buildSpecKey(row.diametru, row.calitate), row => row.cantitateKg);
   const ambalareMap = buildSnapshotMap(ambalareRows, row => normalizeReperLoose(row.reper), row => row.buc);
   const salesMap = buildSalesMap(salesRows);
+
+  const steelEntriesMap = aggregateSteelEntriesCurrentPeriod();
+  const steelConsumedMap = aggregateSteelConsumedCurrentPeriod();
+  const debitateProducedMap = aggregateDebitateProducedCurrentPeriod();
+  const debitateConsumedMap = aggregateDebitateConsumedCurrentPeriod();
+  const forjateProducedMap = aggregateForjateProducedCurrentPeriod();
 
   const rawByKey = Object.create(null), ordered = [], seen = new Map();
   function upsertRow(model, packed, finished, wip, sourceType, modelHighlight){
@@ -609,6 +740,13 @@ function buildCurrentRows(){
       return;
     }
     const meta = resolveReperMeta(displayModel);
+    const forjaKey = (meta && meta.forjaKey) || key;
+    const debKey = (meta && meta.originDebitatKey) || key;
+    const steelKey = (meta && meta.specKey) || '';
+    const soldForja = toNumber(salesMap[forjaKey] || salesMap[normalizeReperLoose(meta.clean)] || salesMap[key] || 0);
+    const startForja = toNumber(forjatStartMap[forjaKey] || forjatStartMap[normalizeReperLoose(meta.clean)] || forjatStartMap[key] || 0);
+    const startDebitat = toNumber(debitatStartMap[debKey] || 0);
+    const startSteel = toNumber(steelStartMap[steelKey] || 0);
     const row = {
       model: displayModel,
       packed: toInt(packed),
@@ -617,9 +755,9 @@ function buildCurrentRows(){
       sourceType: sourceType || 'prelucrari',
       modelHighlight: !!modelHighlight,
       meta,
-      stocForja: toInt(forjatMap[meta.forjaKey] || forjatMap[normalizeReperLoose(meta.clean)] || forjatMap[key] || 0),
-      stocDebitat: toInt(debitatMap[meta.originDebitatKey] || 0),
-      stocOtel: Math.max(0, toNumber(steelMap[meta.specKey] || 0))
+      stocForja: Math.max(0, Math.round(startForja + toNumber(forjateProducedMap[forjaKey] || 0) - soldForja)),
+      stocDebitat: Math.max(0, Math.round(startDebitat + toNumber(debitateProducedMap[debKey] || 0) - toNumber(debitateConsumedMap[debKey] || 0))),
+      stocOtel: Math.max(0, startSteel + toNumber(steelEntriesMap[steelKey] || 0) - toNumber(steelConsumedMap[steelKey] || 0))
     };
     seen.set(key, row);
     ordered.push(row);
@@ -635,9 +773,9 @@ function buildCurrentRows(){
   state.rows = ordered;
   state.sourceLabels = [
     'Inventar prelucrări: ' + (invSnapshot ? invSnapshot.dateLabel : '-'),
-    'Forjă: ' + (forjatSnapshot.label || '-'),
-    'Debitat: ' + (debitatSnapshot.label || '-'),
-    'Oțel: ' + (steelSnapshot.label || '-'),
+    'Forjă calculată: ' + (forjatSnapshot.label || '-') + ' + producția din ' + String(state.selectedYear || '') + ' / ' + getMonthName(state.selectedMonth || 0) + ' - vânzări',
+    'Debitat calculat: ' + (debitatSnapshot.label || '-') + ' + debitate - consum forjare',
+    'Oțel calculat: ' + (steelSnapshot.label || '-') + ' + intrări oțel - debitat',
     'Ambalare zale: ' + String(state.selectedYear || '') + ' / ' + getMonthName(state.selectedMonth || 0),
     'Vânzări: ' + String(state.selectedYear || '') + ' / ' + getMonthName(state.selectedMonth || 0)
   ];
@@ -746,15 +884,25 @@ async function ensureSession(){
 }
 async function loadAll(){
   els.cloudValue.textContent = 'Se încarcă';
-  els.cloudSub.textContent = 'Inventar prelucrări, zale, vânzări și stocuri...';
+  els.cloudSub.textContent = 'Inventar prelucrări, zale, vânzări și fluxuri...';
   await loadHelperMaps();
-  const [prelucrari, forjatRows, debitatRows, steelRows, ambalareRows, salesRows] = await Promise.all([
-    scrapeInventarPrelucrariSnapshots(),
-    loadInventarForjatRows(),
-    loadDebitatRows(),
-    loadSteelRows(),
+  const prelucrari = await scrapeInventarPrelucrariSnapshots();
+  const yearSet = new Set();
+  (prelucrari.periods || []).forEach(key => { if(key) yearSet.add(key.slice(0,4)); });
+  const currentYear = String(new Date().getFullYear());
+  yearSet.add(currentYear);
+  yearSet.add(String(Number(currentYear) - 1));
+  const years = Array.from(yearSet).filter(Boolean);
+
+  const [forjatRows, debitatRows, steelRows, ambalareRows, salesRows, intrariFlowRows, debitateFlowRows, forjateFlowRows] = await Promise.all([
+    loadInventarForjatRows(years),
+    loadDebitatRows(years),
+    loadSteelRows(years),
     loadZaleRows(),
-    loadSalesRows()
+    loadSalesRows(),
+    loadIntrariFlowRows(years),
+    loadDebitateFlowRows(years),
+    loadForjateFlowRows(years)
   ]);
   state.prelucrariByPeriod = prelucrari.snapshots || Object.create(null);
   state.forjatRows = forjatRows;
@@ -762,13 +910,12 @@ async function loadAll(){
   state.steelRows = steelRows;
   state.ambalareRows = ambalareRows;
   state.salesRows = salesRows;
+  state.intrariFlowRows = intrariFlowRows;
+  state.debitateFlowRows = debitateFlowRows;
+  state.forjateFlowRows = forjateFlowRows;
 
   const periodSet = new Set(prelucrari.periods || []);
-  forjatRows.forEach(row => periodSet.add(buildPeriodKey(row.an, row.lunaNum)));
-  debitatRows.forEach(row => periodSet.add(buildPeriodKey(row.an, row.lunaNum)));
-  steelRows.forEach(row => periodSet.add(buildPeriodKey(row.an, row.lunaNum)));
-  ambalareRows.forEach(row => periodSet.add(buildPeriodKey(row.an, row.lunaNum)));
-  salesRows.forEach(row => periodSet.add(buildPeriodKey(row.an, row.lunaNum)));
+  [...forjatRows, ...debitatRows, ...steelRows, ...ambalareRows, ...salesRows, ...intrariFlowRows, ...debitateFlowRows, ...forjateFlowRows].forEach(row => periodSet.add(buildPeriodKey(row.an, row.lunaNum)));
   state.periods = Array.from(periodSet).filter(Boolean).sort(comparePeriodsDesc);
   ensureCurrentPeriod();
   rebuildFilters();
