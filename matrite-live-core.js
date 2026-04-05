@@ -1,283 +1,385 @@
 
 (function(){
   'use strict';
-  const RF = window.RF_CONFIG || {};
-  const SUPABASE_URL = RF.SUPABASE_URL || 'https://addlybnigrywqowpbhvd.supabase.co';
-  const SUPABASE_ANON_KEY = RF.SUPABASE_ANON_KEY || '';
-  const DOC_TABLE = 'rf_documents';
-  const HELPERS_TABLE = 'rf_helper_repere_forjate';
-  const FORJATE_INDEX_KEY = 'forjate:index';
-  const FORJATE_PREFIX = 'forjate:';
-  const STOK_KEY = 'stoc-matrite';
-  const UTILAJE_KEY = 'utilaje-matrite';
-  const REPERE_KEY = 'repere-matrite';
+  const DOC_KEYS = {
+    stoc: 'matrite:stoc',
+    utilaje: 'matrite:utilaje-minime',
+    repere: 'matrite:repere-minime'
+  };
   const LETTERS = ['N','U','M','E','R','A','L','K','O','D'];
-  const MIN_YEAR = 2026;
+  const DEFAULT_MIN_BY_UTILAJ = {
+    '1,25 T': 136,
+    '2,5 T': 134,
+    '3 T BR': 136,
+    'MP': 138,
+    '5 T CHINA': 140
+  };
 
   function norm(v){ return String(v == null ? '' : v).trim(); }
   function upper(v){ return norm(v).toUpperCase(); }
-  function low(v){ return norm(v).toLowerCase(); }
-  function esc(v){ return String(v == null ? '' : v).replace(/[&<>"]/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[m])); }
   function toNum(v){
-    if(v == null || v === '') return 0;
-    if(typeof v === 'number') return Number.isFinite(v) ? v : 0;
-    let s = String(v).trim().replace(/\s/g,'');
-    if(s.includes(',') && s.includes('.')){
-      if(s.lastIndexOf(',') > s.lastIndexOf('.')) s = s.replace(/\./g,'').replace(',', '.');
-      else s = s.replace(/,/g,'');
-    } else if(s.includes(',')) s = s.replace(',', '.');
+    const s = norm(v).replace(/\s/g,'').replace(',', '.');
+    if(!s) return 0;
     const n = Number(s);
     return Number.isFinite(n) ? n : 0;
   }
-  function fmtInt(v){ return Math.round(Number(v || 0)).toLocaleString('ro-RO'); }
-  function parseDateValue(v){
-    if(v == null || v === '') return null;
-    if(v instanceof Date && !Number.isNaN(v.getTime())) return new Date(v.getFullYear(), v.getMonth(), v.getDate());
-    if(typeof v === 'number' && Number.isFinite(v)){
-      const ms = Math.round((v - 25569) * 86400 * 1000);
-      const d = new Date(ms);
-      if(!Number.isNaN(d.getTime())) return new Date(d.getFullYear(), d.getMonth(), d.getDate());
-    }
+  function fmtNum(v, digits){
+    const n = Number(v || 0);
+    return n.toLocaleString('ro-RO', { minimumFractionDigits: digits||0, maximumFractionDigits: digits||0 });
+  }
+  function fmtDate(v){
+    const d = parseDate(v);
+    if(!d) return '';
+    return `${String(d.getDate()).padStart(2,'0')}.${String(d.getMonth()+1).padStart(2,'0')}.${d.getFullYear()}`;
+  }
+  function parseDate(v){
+    if(!v) return null;
+    if(v instanceof Date) return v;
     let s = norm(v);
-    if(!s) return null;
-    s = s.replace(/[T]/g, ' ').split(' ')[0];
-    let m = s.match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})$/);
-    if(m) return new Date(Number(m[3]), Number(m[2])-1, Number(m[1]));
-    m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
-    if(m) return new Date(Number(m[1]), Number(m[2])-1, Number(m[3]));
+    let m = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if(m) return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+    m = s.match(/^(\d{2})\.(\d{2})\.(\d{4})$/);
+    if(m) return new Date(Number(m[3]), Number(m[2]) - 1, Number(m[1]));
     return null;
   }
-  function fmtDate(v){ const d=parseDateValue(v); return d ? `${String(d.getDate()).padStart(2,'0')}.${String(d.getMonth()+1).padStart(2,'0')}.${d.getFullYear()}` : ''; }
-  function pick(obj, keys){
-    const src = obj || {};
-    for(const k of keys){
-      if(src[k] != null && src[k] !== '') return src[k];
-      const found = Object.keys(src).find(x => x.toLowerCase() === String(k).toLowerCase());
-      if(found && src[found] != null && src[found] !== '') return src[found];
+  function pad3(n){ return String(n).padStart(3, '0'); }
+  function esc(v){ return String(v == null ? '' : v).replace(/[&<>"]/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[ch])); }
+  function sb(){
+    return window.ERPAuth && typeof window.ERPAuth.getSupabaseClient === 'function' ? window.ERPAuth.getSupabaseClient() : null;
+  }
+  async function requirePage(pageKey){
+    if(window.ERPAuth && typeof window.ERPAuth.requireAuth === 'function'){
+      const auth = await window.ERPAuth.requireAuth({ next: location.pathname.split('/').pop(), redirectToLogin: true });
+      const access = await window.ERPAuth.getPageAccess(pageKey, { user: auth.user, role: auth.role });
+      if(access && access.permissions && access.permissions.can_view === false){
+        alert('Nu ai acces în această pagină.');
+        location.href = 'index.html';
+        throw new Error('Fără acces');
+      }
+      return { auth, access };
+    }
+    return { auth:null, access:null };
+  }
+
+  async function loadDoc(docKey){
+    const client = sb();
+    if(!client) throw new Error('Supabase indisponibil');
+    const { data, error } = await client.from('rf_documents')
+      .select('content,data,updated_at')
+      .eq('doc_key', docKey)
+      .order('updated_at', { ascending:false })
+      .limit(1);
+    if(error) throw error;
+    if(Array.isArray(data) && data.length){
+      const row = data[0];
+      const payload = row.content && typeof row.content === 'object' ? row.content : (row.data && typeof row.data === 'object' ? row.data : null);
+      return { payload: payload || {}, updated_at: row.updated_at || '' };
+    }
+    return { payload:{}, updated_at:'' };
+  }
+
+  async function saveDoc(docKey, payload){
+    const client = sb();
+    if(!client) throw new Error('Supabase indisponibil');
+    const body = { doc_key: docKey, content: payload, data: payload, updated_at: new Date().toISOString() };
+    const { error } = await client.from('rf_documents').upsert(body, { onConflict:'doc_key' });
+    if(error) throw error;
+    return body.updated_at;
+  }
+
+  async function fetchRepereForjate(){
+    const client = sb();
+    if(!client) throw new Error('Supabase indisponibil');
+    const rows = [];
+    let from = 0;
+    const pageSize = 1000;
+    while(true){
+      const { data, error } = await client
+        .from('rf_helper_repere_forjate')
+        .select('reper_forjat,is_active,sort_order')
+        .order('sort_order', { ascending:true, nullsFirst:false })
+        .order('reper_forjat', { ascending:true })
+        .range(from, from + pageSize - 1);
+      if(error) throw error;
+      if(!data || !data.length) break;
+      rows.push(...data);
+      if(data.length < pageSize) break;
+      from += pageSize;
+    }
+    const repere = rows
+      .filter(r => r && norm(r.reper_forjat) && (r.is_active === null || r.is_active === undefined || r.is_active === true))
+      .map(r => upper(r.reper_forjat));
+    return Array.from(new Set(repere)).sort((a,b) => a.localeCompare(b, 'ro', { sensitivity:'base' }));
+  }
+
+  async function fetchForjateRows2026Plus(){
+    const idx = await loadDoc('forjate:index').catch(() => ({ payload:{}, updated_at:'' }));
+    let years = Array.isArray(idx.payload.years) ? idx.payload.years.map(x => String(x)).filter(y => /^\d{4}$/.test(y) && Number(y) >= 2026) : [];
+    years = Array.from(new Set(years)).sort();
+    const out = [];
+    if(!years.length){
+      // fallback legacy single doc
+      const legacy = await loadDoc('forjate').catch(() => ({ payload:{}, updated_at:'' }));
+      const rows = Array.isArray(legacy.payload.rows) ? legacy.payload.rows : [];
+      out.push(...rows);
+    } else {
+      for(const y of years){
+        const doc = await loadDoc(`forjate:${y}`).catch(() => ({ payload:{}, updated_at:'' }));
+        const rows = Array.isArray(doc.payload.rows) ? doc.payload.rows : [];
+        out.push(...rows);
+      }
+    }
+    return out.map(normalizeForjateRow).filter(Boolean).filter(r => {
+      const d = parseDate(r.data);
+      return d && d.getFullYear() >= 2026;
+    });
+  }
+
+  function pick(row, keys){
+    if(!row || typeof row !== 'object') return '';
+    const entries = Object.keys(row);
+    for(const key of keys){
+      if(row[key] != null && row[key] !== '') return row[key];
+      const found = entries.find(k => k.toLowerCase() === String(key).toLowerCase());
+      if(found && row[found] != null && row[found] !== '') return row[found];
     }
     return '';
   }
-  function resolveRowsPayload(payload){
-    if(!payload) return [];
-    if(Array.isArray(payload)) return payload;
-    if(Array.isArray(payload.rows)) return payload.rows;
-    if(Array.isArray(payload.data)) return payload.data;
-    return [];
-  }
-  function normalizeYearValue(v){
-    const s = String(v == null ? '' : v).trim();
+
+  function extractLetter(v){
+    const s = upper(v);
     if(!s) return '';
-    const m = s.match(/(19|20)\d{2}/);
-    return m ? m[0] : '';
-  }
-  function sortYearsAsc(years){ return years.slice().sort((a,b)=> Number(a)-Number(b)); }
-
-  async function getClient(){
-    if(window.ERPAuth && typeof window.ERPAuth.getSupabaseClient === 'function') return window.ERPAuth.getSupabaseClient();
-    if(!(window.supabase && window.supabase.createClient) || !SUPABASE_URL || !SUPABASE_ANON_KEY) throw new Error('Supabase indisponibil');
-    if(window.__RF_SHARED_SUPABASE__) return window.__RF_SHARED_SUPABASE__;
-    window.__RF_SHARED_SUPABASE__ = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
-    return window.__RF_SHARED_SUPABASE__;
-  }
-  async function requirePage(pageKey, nextFile){
-    if(window.ERPAuth && typeof window.ERPAuth.requireAuth === 'function'){
-      const auth = await window.ERPAuth.requireAuth({ next: nextFile || (pageKey + '.html'), redirectToLogin:true });
-      const access = await window.ERPAuth.getPageAccess(pageKey, { user: auth.user, role: auth.role });
-      const perms = access && access.permissions ? access.permissions : { can_view:true, can_edit:false, can_add:false, can_delete:false };
-      if(perms.can_view === false){ window.location.href = 'index.html'; throw new Error('Fără acces'); }
-      return { auth, perms };
-    }
-    return { auth:null, perms:{ can_view:true, can_edit:true, can_add:true, can_delete:true } };
-  }
-  async function readDoc(docKey){
-    const sb = await getClient();
-    const res = await sb.from(DOC_TABLE).select('*').eq('doc_key', docKey).maybeSingle();
-    if(res.error) throw res.error;
-    const row = res.data || null;
-    return row ? { row, payload: row.content ?? row.data ?? null } : { row:null, payload:null };
-  }
-  async function writeDoc(docKey, payload){
-    const sb = await getClient();
-    const ts = payload && payload.updated_at ? payload.updated_at : new Date().toISOString();
-    let res = await sb.from(DOC_TABLE).upsert({ doc_key: docKey, content: payload, data: payload, updated_at: ts }, { onConflict:'doc_key' });
-    if(res.error){
-      res = await sb.from(DOC_TABLE).upsert({ doc_key: docKey, content: payload, updated_at: ts }, { onConflict:'doc_key' });
-    }
-    if(res.error) throw res.error;
-    return ts;
+    if(LETTERS.includes(s)) return s;
+    if(s.length >= 1 && LETTERS.includes(s.charAt(0))) return s.charAt(0);
+    return '';
   }
 
-  async function loadHelperRepereForjate(){
-    const sb = await getClient();
-    try{
-      const res = await sb.from(HELPERS_TABLE).select('reper_forjat,is_active,sort_order').order('sort_order', { ascending:true }).order('reper_forjat', { ascending:true });
-      if(res.error) throw res.error;
-      const rows = Array.isArray(res.data) ? res.data : [];
-      return Array.from(new Set(rows.filter(r => r && (r.is_active !== false)).map(r => upper(r.reper_forjat)).filter(Boolean))).sort((a,b)=>a.localeCompare(b,'ro',{sensitivity:'base'}));
-    }catch(err){
-      console.warn('helper repere forjate fallback', err);
-      return [];
-    }
-  }
-
-  async function loadForjateRows2026Plus(){
-    const years = [];
-    let latest = '';
-    try{
-      const idx = await readDoc(FORJATE_INDEX_KEY);
-      const payload = idx.payload || {};
-      const ys = Array.isArray(payload.years) ? payload.years.map(normalizeYearValue).filter(Boolean).filter(y => Number(y) >= MIN_YEAR) : [];
-      years.push(...sortYearsAsc(Array.from(new Set(ys))));
-      latest = idx.row && idx.row.updated_at || latest;
-    }catch(err){ console.warn('forjate:index fallback', err); }
-    if(!years.length){
-      const current = new Date().getFullYear();
-      for(let y=MIN_YEAR; y<=current; y++) years.push(String(y));
-    }
-    let raw = [];
-    for(const y of years){
-      try{
-        const doc = await readDoc(FORJATE_PREFIX + y);
-        if(doc && doc.payload){ raw.push(...resolveRowsPayload(doc.payload)); if(doc.row && doc.row.updated_at && doc.row.updated_at > latest) latest = doc.row.updated_at; }
-      }catch(err){ /* ignore missing year */ }
-    }
-    if(!raw.length){
-      try{
-        const legacy = await readDoc('forjate');
-        raw.push(...resolveRowsPayload(legacy.payload));
-        latest = legacy.row && legacy.row.updated_at || latest;
-      }catch(err){}
-    }
-    const rows = raw.map((row, idx) => normalizeForjateRow(row, idx)).filter(Boolean).filter(r => Number(r.an) >= MIN_YEAR);
-    return { rows, latest };
-  }
-
-  function normalizeForjateRow(row, idx){
-    const data = parseDateValue(pick(row, ['data','DATA','date','Date','BM']));
-    const an = normalizeYearValue(pick(row, ['an','AN','ANUL','Anul','A'])) || (data ? String(data.getFullYear()) : '');
-    if(!an || Number(an) < MIN_YEAR) return null;
+  function normalizeForjateRow(row){
+    if(!row || typeof row !== 'object') return null;
     const reper = upper(pick(row, ['reper','REPER','BP']));
     if(!reper) return null;
-    const utilaj = norm(pick(row, ['ciocan','CIOCAN','utilaj','UTILAJ','linie de forjare','Linie de forjare','BO']));
-    const supLetter = upper(pick(row, ['matrita_sup','MATRITA_SUP']));
-    const infLetter = upper(pick(row, ['matrita_inf','MATRITA_INF']));
-    const supH = toNum(pick(row, ['inaltime_sup','INALTIME_SUP']));
-    const infH = toNum(pick(row, ['inaltime_inf','INALTIME_INF']));
-    const buc = Math.max(0, Math.round(toNum(pick(row, ['buc_realizate','BUC_REALIZATE','CB']))));
-    const schimb = norm(pick(row, ['schimb','SCHIMB','D']));
-    return { id: 'fj-' + idx, an, data: data ? `${data.getFullYear()}-${String(data.getMonth()+1).padStart(2,'0')}-${String(data.getDate()).padStart(2,'0')}` : '', reper, utilaj, schimb, supLetter, supH, infLetter, infH, buc };
+    const data = pick(row, ['data','DATA','BM','C']);
+    const utilaj = norm(pick(row, ['ciocan','CIOCAN','utilaj','UTILAJ','linie forjare','Linie de forjare','BO']));
+    const bucati = toNum(pick(row, ['buc_realizate','BUC_REALIZATE','CB']));
+    const supLetter = extractLetter(pick(row, ['matrita_sup','MATRITA_SUP','matrita superioara','MATRITA SUPERIOARA','MATRITA SUP']));
+    const infLetter = extractLetter(pick(row, ['matrita_inf','MATRITA_INF','matrita inferioara','MATRITA INFERIOARA','MATRITA INF']));
+    const supHeight = toNum(pick(row, ['inaltime_sup','INALTIME_SUP','inaltime mf sup','INALTIME MF SUP','Inaltime MF SUP']));
+    const infHeight = toNum(pick(row, ['inaltime_inf','INALTIME_INF','inaltime mf inf','INALTIME MF INF','Inaltime MF INF']));
+    return {
+      reper, data, utilaj, bucati,
+      sup_litera: supLetter,
+      inf_litera: infLetter,
+      sup_h: supHeight,
+      inf_h: infHeight
+    };
   }
 
-  function deriveInternalSeries(rows){
-    const sorted = rows.slice().sort((a,b)=> (a.data||'').localeCompare(b.data||''));
+  function assignInternalCodes(rows){
+    const sorted = [...rows].sort((a,b) => {
+      const da = parseDate(a.data), db = parseDate(b.data);
+      const ta = da ? da.getTime() : 0, tb = db ? db.getTime() : 0;
+      return ta - tb;
+    });
     const trackers = new Map();
+
     for(const row of sorted){
       for(const side of [
-        { tip:'Superior', letterKey:'supLetter', heightKey:'supH', outCode:'supCode' },
-        { tip:'Inferior', letterKey:'infLetter', heightKey:'infH', outCode:'infCode' }
+        { tip:'Superior', letterKey:'sup_litera', heightKey:'sup_h', outKey:'sup_code' },
+        { tip:'Inferior', letterKey:'inf_litera', heightKey:'inf_h', outKey:'inf_code' }
       ]){
         const lit = upper(row[side.letterKey]);
         const h = toNum(row[side.heightKey]);
-        if(!lit){ row[side.outCode] = ''; continue; }
+        if(!lit){
+          row[side.outKey] = '';
+          continue;
+        }
         const key = `${row.reper}|${side.tip}|${lit}`;
         const tr = trackers.get(key);
-        if(!tr){ trackers.set(key, { index:1, startHeight:h }); row[side.outCode] = `${lit}${String(1).padStart(3,'0')}`; continue; }
-        if(h > tr.startHeight){ tr.index += 1; tr.startHeight = h; }
-        row[side.outCode] = `${lit}${String(tr.index).padStart(3,'0')}`;
+        if(!tr){
+          trackers.set(key, { idx:1, start:h });
+          row[side.outKey] = `${lit}${pad3(1)}`;
+          continue;
+        }
+        if(h > tr.start){
+          tr.idx += 1;
+          tr.start = h;
+        }
+        row[side.outKey] = `${lit}${pad3(tr.idx)}`;
       }
     }
     return sorted;
   }
 
-  function buildStocTemplate(repere, forjateRows){
-    const seriesMap = new Map();
-    for(const r of forjateRows){
-      if(r.supCode){ const key = `${r.reper}|Superior|${r.supLetter}`; seriesMap.set(key, Math.max(seriesMap.get(key)||0, Number(r.supCode.slice(1))||1)); }
-      if(r.infCode){ const key = `${r.reper}|Inferior|${r.infLetter}`; seriesMap.set(key, Math.max(seriesMap.get(key)||0, Number(r.infCode.slice(1))||1)); }
+  function buildRegistry(forjateRows){
+    const rows = assignInternalCodes(forjateRows);
+    const map = new Map();
+    const combos = new Map();
+    const heights = [];
+
+    for(const r of rows){
+      for(const side of [
+        { tip:'Superior', codeKey:'sup_code', letterKey:'sup_litera', heightKey:'sup_h', otherCodeKey:'inf_code' },
+        { tip:'Inferior', codeKey:'inf_code', letterKey:'inf_litera', heightKey:'inf_h', otherCodeKey:'sup_code' }
+      ]){
+        const code = norm(r[side.codeKey]);
+        const lit = upper(r[side.letterKey]);
+        const h = toNum(r[side.heightKey]);
+        if(!code || !lit) continue;
+        const key = `${r.reper}|${side.tip}|${code}`;
+        if(!map.has(key)){
+          map.set(key, {
+            reper: r.reper,
+            tip: side.tip,
+            litera: lit,
+            cod_intern: code,
+            buc_total: 0,
+            utilaje: new Set(),
+            inaltimi_map: new Map(),
+            combinatii_map: new Map()
+          });
+        }
+        const item = map.get(key);
+        item.buc_total += r.bucati;
+        if(r.utilaj) item.utilaje.add(r.utilaj);
+        item.inaltimi_map.set(h, (item.inaltimi_map.get(h) || 0) + r.bucati);
+        const otherCode = norm(r[side.otherCodeKey]);
+        if(otherCode){
+          const combo = side.tip === 'Superior' ? `${code} + ${otherCode}` : `${otherCode} + ${code}`;
+          item.combinatii_map.set(combo, (item.combinatii_map.get(combo) || 0) + r.bucati);
+          combos.set(`${r.reper}|${combo}`, (combos.get(`${r.reper}|${combo}`) || 0) + r.bucati);
+        }
+        heights.push({ reper:r.reper, tip:side.tip, litera:lit, cod_intern:code, inaltime:h, bucati:r.bucati, data:r.data, utilaj:r.utilaj });
+      }
     }
+
+    const outRows = Array.from(map.values()).map(r => ({
+      reper: r.reper,
+      tip: r.tip,
+      litera: r.litera,
+      cod_intern: r.cod_intern,
+      buc_total: r.buc_total,
+      utilaje: Array.from(r.utilaje).sort(),
+      inaltimi: Array.from(r.inaltimi_map.entries()).map(([inaltime,bucati]) => ({ inaltime, bucati })).sort((a,b)=>a.inaltime-b.inaltime),
+      combinatii: Array.from(r.combinatii_map.entries()).map(([combinatie,bucati]) => ({ combinatie, bucati })).sort((a,b)=>b.bucati-a.bucati)
+    })).sort((a,b) => a.reper.localeCompare(b.reper) || a.tip.localeCompare(b.tip) || a.cod_intern.localeCompare(b.cod_intern));
+
+    return { registryRows: outRows, comboTotals: combos, heightRows: heights, sourceRows: rows };
+  }
+
+  async function loadStocHeights(){
+    const doc = await loadDoc(DOC_KEYS.stoc).catch(() => ({ payload:{ rows:[] }, updated_at:'' }));
+    const rows = Array.isArray(doc.payload.rows) ? doc.payload.rows : [];
+    return rows.map(r => ({
+      reper: upper(r.reper),
+      tip: norm(r.tip),
+      litera: upper(r.litera),
+      cod_intern: upper(r.cod_intern),
+      inaltime: toNum(r.inaltime)
+    })).filter(r => r.reper && r.tip && r.litera && r.cod_intern);
+  }
+  async function saveStocHeights(rows){ return saveDoc(DOC_KEYS.stoc, { rows }); }
+
+  async function loadUtilajeMinime(){
+    const helperRows = [];
+    try{
+      const client = sb();
+      let from = 0;
+      while(true){
+        const { data, error } = await client.from('rf_helper_items')
+          .select('label,code,category_key,module_key,is_active,sort_order')
+          .eq('module_key', 'forja')
+          .eq('category_key', 'utilaje')
+          .order('sort_order', { ascending:true, nullsFirst:false })
+          .range(from, from + 999);
+        if(error) break;
+        if(!data || !data.length) break;
+        helperRows.push(...data);
+        if(data.length < 1000) break;
+        from += 1000;
+      }
+    }catch(_e){}
+    const names = Array.from(new Set([
+      ...Object.keys(DEFAULT_MIN_BY_UTILAJ),
+      ...helperRows.filter(r => r.is_active === null || r.is_active === undefined || r.is_active === true).map(r => norm(r.label || r.code)).filter(Boolean)
+    ])).sort((a,b) => a.localeCompare(b, 'ro', { sensitivity:'base' }));
+    const doc = await loadDoc(DOC_KEYS.utilaje).catch(() => ({ payload:{ rows:[] }, updated_at:'' }));
+    const saved = Array.isArray(doc.payload.rows) ? doc.payload.rows : [];
+    const byName = new Map(saved.map(r => [norm(r.utilaj), toNum(r.inaltime_minima)]));
+    return names.map(name => ({ utilaj:name, inaltime_minima: byName.has(name) ? byName.get(name) : (DEFAULT_MIN_BY_UTILAJ[name] || 0) }));
+  }
+  async function saveUtilajeMinime(rows){ return saveDoc(DOC_KEYS.utilaje, { rows }); }
+
+  async function loadRepereMinime(repere){
+    const doc = await loadDoc(DOC_KEYS.repere).catch(() => ({ payload:{ rows:[] }, updated_at:'' }));
+    const saved = Array.isArray(doc.payload.rows) ? doc.payload.rows : [];
+    const byRep = new Map(saved.map(r => [upper(r.reper), { min_sup: toNum(r.min_sup), min_inf: toNum(r.min_inf) }]));
+    return repere.map(reper => ({ reper, min_sup: byRep.has(reper) ? byRep.get(reper).min_sup : 0, min_inf: byRep.has(reper) ? byRep.get(reper).min_inf : 0 }));
+  }
+  async function saveRepereMinime(rows){ return saveDoc(DOC_KEYS.repere, { rows }); }
+
+  function mergeStocWithRegistry(repere, registryRows, stocRows){
+    const stocMap = new Map(stocRows.map(r => [`${r.reper}|${r.tip}|${r.cod_intern}`, r.inaltime]));
+    const regByReperTipLetter = new Map();
+    for(const row of registryRows){
+      const key = `${row.reper}|${row.tip}|${row.litera}`;
+      if(!regByReperTipLetter.has(key)) regByReperTipLetter.set(key, []);
+      regByReperTipLetter.get(key).push(row);
+    }
+
     const out = [];
-    repere.forEach(reper => {
-      ['Inferior','Superior'].forEach(tip => {
-        LETTERS.forEach(lit => {
-          const count = Math.max(1, seriesMap.get(`${reper}|${tip}|${lit}`) || 1);
-          for(let i=1;i<=count;i++){
-            out.push({ reper, tip, litera:lit, cod_intern:`${lit}${String(i).padStart(3,'0')}`, inaltime:'', updated_at:'' });
+    for(const reper of repere){
+      for(const tip of ['Inferior','Superior']){
+        for(const lit of LETTERS){
+          const list = regByReperTipLetter.get(`${reper}|${tip}|${lit}`) || [];
+          if(list.length){
+            list.sort((a,b) => a.cod_intern.localeCompare(b.cod_intern));
+            for(const row of list){
+              out.push({
+                reper, tip, litera: lit, cod_intern: row.cod_intern,
+                inaltime: stocMap.has(`${reper}|${tip}|${row.cod_intern}`) ? stocMap.get(`${reper}|${tip}|${row.cod_intern}`) : 0,
+                buc_total: row.buc_total
+              });
+            }
+          }else{
+            const code = `${lit}001`;
+            out.push({ reper, tip, litera: lit, cod_intern: code, inaltime: stocMap.has(`${reper}|${tip}|${code}`) ? stocMap.get(`${reper}|${tip}|${code}`) : 0, buc_total: 0 });
           }
-        });
-      });
-    });
+        }
+      }
+    }
     return out;
   }
 
-  function mergeStocManual(templateRows, manualPayload){
-    const manualRows = resolveRowsPayload(manualPayload).map(r => ({ reper:upper(r.reper), tip:norm(r.tip), litera:upper(r.litera), cod_intern:upper(r.cod_intern), inaltime:r.inaltime == null ? '' : r.inaltime, updated_at:r.updated_at || '' }));
-    const byKey = new Map(manualRows.map(r => [`${r.reper}|${r.tip}|${r.cod_intern}`, r]));
-    const merged = templateRows.map(r => {
-      const key = `${r.reper}|${r.tip}|${r.cod_intern}`;
-      return byKey.has(key) ? { ...r, ...byKey.get(key) } : { ...r };
-    });
-    // keep extra manual rows too
-    manualRows.forEach(r => {
-      const key = `${r.reper}|${r.tip}|${r.cod_intern}`;
-      if(!merged.find(x => `${x.reper}|${x.tip}|${x.cod_intern}` === key)) merged.push(r);
-    });
-    return merged;
-  }
-
-  function buildRegistry(forjateRows, stocRows){
-    const stocMap = new Map(stocRows.map(r => [`${r.reper}|${r.tip}|${r.cod_intern}`, r]));
-    const reg = new Map();
-    const comboMap = new Map();
-    for(const row of forjateRows){
-      const entries = [
-        { tip:'Superior', code:row.supCode, lit:row.supLetter, h:row.supH, otherCode:row.infCode },
-        { tip:'Inferior', code:row.infCode, lit:row.infLetter, h:row.infH, otherCode:row.supCode }
-      ];
-      for(const e of entries){
-        if(!e.code) continue;
-        const key = `${row.reper}|${e.tip}|${e.code}`;
-        if(!reg.has(key)){
-          const manual = stocMap.get(key) || null;
-          reg.set(key, {
-            reper: row.reper,
-            tip: e.tip,
-            litera: e.lit,
-            cod_intern: e.code,
-            inaltime_stoc: manual && manual.inaltime !== '' ? toNum(manual.inaltime) : '',
-            buc_total: 0,
-            utilaje: new Set(),
-            historyHeights: new Map(),
-            combinations: new Map(),
-            lastDate: ''
-          });
-        }
-        const item = reg.get(key);
-        item.buc_total += row.buc;
-        if(row.utilaj) item.utilaje.add(row.utilaj);
-        item.historyHeights.set(e.h, (item.historyHeights.get(e.h) || 0) + row.buc);
-        if(e.otherCode) item.combinations.set(`${e.code}+${e.otherCode}`, (item.combinations.get(`${e.code}+${e.otherCode}`) || 0) + row.buc);
-        if(row.data && (!item.lastDate || row.data > item.lastDate)) item.lastDate = row.data;
-      }
-      if(row.supCode && row.infCode){
-        const ck = `${row.reper}|${row.supCode}+${row.infCode}`;
-        comboMap.set(ck, (comboMap.get(ck) || 0) + row.buc);
+  function getProgressRows(registryRows){
+    const groups = new Map();
+    for(const row of registryRows){
+      const key = `${row.reper}|${row.tip}`;
+      if(!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(row);
+    }
+    const out = [];
+    for(const arr of groups.values()){
+      const totals = arr.map(r => r.buc_total);
+      const min = Math.min(...totals), max = Math.max(...totals);
+      for(const row of arr){
+        let color = 'green';
+        if(row.buc_total === min) color = 'red';
+        else if(row.buc_total !== max) color = 'orange';
+        out.push({ ...row, progress_color: color });
       }
     }
-    return { rows:Array.from(reg.values()).sort((a,b)=>a.reper.localeCompare(b.reper)||a.tip.localeCompare(b.tip)||a.cod_intern.localeCompare(b.cod_intern)), comboTotals: comboMap };
-  }
-
-  function summarizeHeightMap(map){
-    return Array.from(map.entries()).sort((a,b)=>Number(b[0])-Number(a[0])).map(([h,b]) => `${h}: ${fmtInt(b)} buc`).join(' | ');
-  }
-  function summarizeComboMap(map){
-    return Array.from(map.entries()).sort((a,b)=>b[1]-a[1]).map(([c,b]) => `${c}: ${fmtInt(b)} buc`).join(' | ');
+    return out.sort((a,b) => a.reper.localeCompare(b.reper) || a.tip.localeCompare(b.tip) || a.cod_intern.localeCompare(b.cod_intern));
   }
 
   window.MATRITE_LIVE = {
-    LETTERS, MIN_YEAR, esc, toNum, fmtInt, fmtDate, norm, upper,
-    getClient, requirePage, readDoc, writeDoc,
-    loadHelperRepereForjate, loadForjateRows2026Plus,
-    deriveInternalSeries, buildStocTemplate, mergeStocManual, buildRegistry,
-    summarizeHeightMap, summarizeComboMap
+    LETTERS, DOC_KEYS, DEFAULT_MIN_BY_UTILAJ,
+    norm, upper, toNum, fmtNum, fmtDate, esc,
+    requirePage, loadDoc, saveDoc,
+    fetchRepereForjate, fetchForjateRows2026Plus,
+    assignInternalCodes, buildRegistry,
+    loadStocHeights, saveStocHeights,
+    loadUtilajeMinime, saveUtilajeMinime,
+    loadRepereMinime, saveRepereMinime,
+    mergeStocWithRegistry, getProgressRows
   };
 })();
