@@ -111,6 +111,16 @@
         { key:'mrc-comenzi-saptamanale', label:'COMENZI SĂPTĂMÂNALE', href:'mrc-comenzi-saptamanale.html' }
       ]}
     ]},
+,
+    { key:'group-sdv', label:'SDV', sections:[
+      { key:'sdv-links', label:'Pagini', links:[
+        { key:'stoc-matrite', label:'STOC MATRIȚE', href:'stoc-matrite.html' },
+        { key:'urmarire-matrite', label:'URMĂRIRE MATRIȚE', href:'urmarire-matrite.html' },
+        { key:'progres-matrite', label:'PROGRES MATRIȚE', href:'progres-matrite.html' },
+        { key:'utilaje-matrite', label:'UTILAJE MATRIȚE', href:'utilaje-matrite.html' },
+        { key:'repere-matrite', label:'REPERE MATRIȚE', href:'repere-matrite.html' }
+      ]}
+    ]},
     { key:'helper-data', label:'HELPER-DATA', href:'helper-data.html' },
     { key:'helper-acl', label:'HELPER-ACL', href:'helper-acl.html' }
   ];
