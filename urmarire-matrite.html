@@ -78,7 +78,7 @@
     .tag-status{display:inline-flex;align-items:center;justify-content:center;min-width:92px;padding:4px 8px;border-radius:999px;font-size:11px;font-weight:800;border:1px solid transparent}
     .s-stock{background:#e3f6eb;color:#14633a;border-color:#b4e0c4}
     .s-regr{background:#fff6d8;color:#8d6b00;border-color:#ecd98c}
-    .s-casat{background:#fde4e4;color:#962f2f;border-color:#f0bbbb}
+    .s-casat{background:#fde4e4;color:#962f2f;border-color:#f0bbbb}.s-forjate{background:#e0ecff;color:#174ea6;border-color:#b7cff7}
     .history-list{min-height:0;overflow:auto;display:grid;gap:10px}
     .history-item{background:rgba(255,255,255,.62);border:1px solid rgba(29,29,29,.14);border-radius:14px;padding:12px}
     .history-item strong{display:block;margin-bottom:6px}
@@ -274,6 +274,7 @@ function parseDate(v){
 function statusClass(status){
   if(status === 'PE STOC') return 's-stock';
   if(status === 'IN REGRAVARE') return 's-regr';
+  if(status === 'DIN FORJATE') return 's-forjate';
   return 's-casat';
 }
 
@@ -314,7 +315,38 @@ function normalizeForjateRow(row){
   const data = pick(row, ['data','DATA','BM','C']);
   const bucati = toNum(pick(row, ['buc_realizate','BUC_REALIZATE','CB']));
   const schimb = norm(pick(row, ['schimb','SCHIMB','D']));
-  return { reper, matrita_sup:sup, matrita_inf:inf, utilaj, data, bucati, schimb };
+  const inaltime_sup = toNum(pick(row, ['inaltime_sup','INALTIME_SUP','inaltime mf sup','Înălțime MF SUP','INALTIME_MF_SUP']));
+  const inaltime_inf = toNum(pick(row, ['inaltime_inf','INALTIME_INF','inaltime mf inf','Înălțime MF INF','INALTIME_MF_INF']));
+  return { reper, matrita_sup:sup, matrita_inf:inf, utilaj, data, bucati, schimb, inaltime_sup, inaltime_inf };
+}
+
+
+function buildRowsFromForjate(reper){
+  const supMap = new Map();
+  const infMap = new Map();
+  state.forjateRows
+    .filter(r => upper(r.reper) === upper(reper))
+    .forEach(r => {
+      const sup = upper(r.matrita_sup || '');
+      const inf = upper(r.matrita_inf || '');
+      const hs = toNum(r.inaltime_sup || r.sup_h || 0);
+      const hi = toNum(r.inaltime_inf || r.inf_h || 0);
+
+      if(sup){
+        const ex = supMap.get(sup) || { reper: upper(reper), tip:'Superior', cod_fizic:sup, id_intern:'', status:'DIN FORJATE', inaltime:hs, regravari:0, observatii:'Preluat automat din Forjate' };
+        if(hs > 0) ex.inaltime = hs;
+        supMap.set(sup, ex);
+      }
+      if(inf){
+        const ex = infMap.get(inf) || { reper: upper(reper), tip:'Inferior', cod_fizic:inf, id_intern:'', status:'DIN FORJATE', inaltime:hi, regravari:0, observatii:'Preluat automat din Forjate' };
+        if(hi > 0) ex.inaltime = hi;
+        infMap.set(inf, ex);
+      }
+    });
+  return {
+    sup: Array.from(supMap.values()).sort((a,b) => String(a.cod_fizic).localeCompare(String(b.cod_fizic), 'ro', { sensitivity:'base' })),
+    inf: Array.from(infMap.values()).sort((a,b) => String(a.cod_fizic).localeCompare(String(b.cod_fizic), 'ro', { sensitivity:'base' }))
+  };
 }
 
 async function ensureAuth(){
@@ -427,16 +459,21 @@ function render(){
 
   const rows = state.stocRows.filter(r => upper(r.reper) === reper);
   const hasStockRows = rows.length > 0;
-  const sup = rows.filter(r => upper(r.tip) === 'SUPERIOR');
-  const inf = rows.filter(r => upper(r.tip) === 'INFERIOR');
+  const fallbackRows = buildRowsFromForjate(reper);
+  const sup = hasStockRows ? rows.filter(r => upper(r.tip) === 'SUPERIOR') : fallbackRows.sup;
+  const inf = hasStockRows ? rows.filter(r => upper(r.tip) === 'INFERIOR') : fallbackRows.inf;
   const supActive = sup.filter(r => r.status !== 'CASAT');
   const infActive = inf.filter(r => r.status !== 'CASAT');
 
   els.countSup.textContent = String(supActive.length);
   els.countInf.textContent = String(infActive.length);
 
-  els.tbSup.innerHTML = sup.map(r => `<tr><td class="left">${esc(r.cod_fizic)}</td><td>${esc(r.id_intern)}</td><td>${r.inaltime ? String(r.inaltime).replace('.', ',') : ''}</td><td><span class="tag-status ${statusClass(r.status)}">${esc(r.status)}</span></td><td>${r.regravari}</td></tr>`).join('');
-  els.tbInf.innerHTML = inf.map(r => `<tr><td class="left">${esc(r.cod_fizic)}</td><td>${esc(r.id_intern)}</td><td>${r.inaltime ? String(r.inaltime).replace('.', ',') : ''}</td><td><span class="tag-status ${statusClass(r.status)}">${esc(r.status)}</span></td><td>${r.regravari}</td></tr>`).join('');
+  els.tbSup.innerHTML = sup.length
+    ? sup.map(r => `<tr><td class="left">${esc(r.cod_fizic)}</td><td>${esc(r.id_intern || '')}</td><td>${r.inaltime ? String(r.inaltime).replace('.', ',') : ''}</td><td><span class="tag-status ${statusClass(r.status)}">${esc(r.status)}</span></td><td>${r.regravari || 0}</td></tr>`).join('')
+    : '<tr><td colspan="5">Fără matrițe SUPERIOR</td></tr>';
+  els.tbInf.innerHTML = inf.length
+    ? inf.map(r => `<tr><td class="left">${esc(r.cod_fizic)}</td><td>${esc(r.id_intern || '')}</td><td>${r.inaltime ? String(r.inaltime).replace('.', ',') : ''}</td><td><span class="tag-status ${statusClass(r.status)}">${esc(r.status)}</span></td><td>${r.regravari || 0}</td></tr>`).join('')
+    : '<tr><td colspan="5">Fără matrițe INFERIOR</td></tr>';
 
   const combos = [];
   supActive.forEach(s => {
@@ -466,10 +503,12 @@ function render(){
   const best = combos.find(c => c.recommended) || combos[0] || null;
   if(best){
     els.bestCombo.textContent = best.sup + ' + ' + best.inf;
-    els.bestHeight.textContent = String(best.total).replace('.', ',') + ' mm';
-    els.bestDiff.textContent = (best.diff >= 0 ? '+' : '') + String(best.diff).replace('.', ',') + ' mm';
-    els.bestStatus.textContent = best.recommended ? 'Compatibil • disponibil • recomandat' : 'Nu există variantă perfectă';
-    const pct = Math.max(12, Math.min(100, 100 - Math.abs(best.diff) * 8));
+    els.bestHeight.textContent = best.hasHeights ? (String(best.total).replace('.', ',') + ' mm') : '-';
+    els.bestDiff.textContent = best.hasHeights ? ((best.diff >= 0 ? '+' : '') + String(best.diff).replace('.', ',') + ' mm') : '-';
+    els.bestStatus.textContent = best.hasHeights
+      ? (best.recommended ? 'Compatibil • disponibil • recomandat' : 'Nu există variantă perfectă')
+      : 'Preluat din Forjate • fără calcul complet';
+    const pct = best.hasHeights ? Math.max(12, Math.min(100, 100 - Math.abs(best.diff) * 8)) : 40;
     els.bestBar.style.width = pct + '%';
   } else {
     els.bestCombo.textContent = '-';
@@ -486,7 +525,7 @@ function render(){
     ? hist.slice(0, 20).map(h => `<div class="history-item"><strong>${esc(fmtDate(h.data))} • ${esc(h.utilaj || '-')} • ${Math.round(h.bucati).toLocaleString('ro-RO')} buc</strong><p>${esc(h.matrita_sup || '-')} + ${esc(h.matrita_inf || '-')} • Schimb: ${esc(h.schimb || '-')}</p></div>`).join('')
     : `<div class="history-item"><strong>Fără utilizări</strong><p>Nu există rânduri în Forjate pentru reperul selectat din 2026 în sus.</p></div>`;
   if(reper && !hasStockRows){
-    historyHtml = `<div class="history-item"><strong style="color:var(--blue)">Reperul există în Forjate, dar nu există încă în Stoc Matrițe</strong><p>Istoricul din dreapta este preluat din Forjate. Pentru listele SUPERIOR / INFERIOR și combinații, reperul trebuie introdus și în foaia Stoc Matrițe.</p></div>` + historyHtml;
+    historyHtml = `<div class="history-item"><strong style="color:var(--blue)">Reperul există în Forjate, dar nu există încă în Stoc Matrițe</strong><p>Istoricul din dreapta este preluat din Forjate. Listele SUPERIOR / INFERIOR sunt acum completate automat și din Forjate. Pentru status real, regrăvări și control complet, reperul trebuie introdus și în foaia Stoc Matrițe.</p></div>` + historyHtml;
   }
   els.historyBox.innerHTML = historyHtml;
 }
