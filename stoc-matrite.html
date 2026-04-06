@@ -73,6 +73,17 @@
     .manualSel,.hInp{width:100%; min-height:32px; border:1px solid rgba(29,29,29,.18); border-radius:8px; padding:4px 6px; font:inherit}
     .saveNote{font-size:12px;color:var(--muted)}
     .missingRow td{background:#fffef3}
+
+    .editableRow{cursor:pointer}
+    .editableRow:hover td{background:#f6fbff}
+    .rowEditInp,.rowEditSel{
+      width:100%; min-height:32px; border:1px solid rgba(29,29,29,.18); border-radius:8px; padding:4px 6px; font:inherit
+    }
+    .rowActionWrap{display:flex;gap:6px;justify-content:center}
+    .rowBtn{
+      min-height:30px;padding:0 10px;border-radius:8px;border:1px solid rgba(29,29,29,.25);background:#fff;cursor:pointer;font:inherit;font-size:11px;font-weight:700
+    }
+    .rowBtn.danger{background:#ffe8e8}
     @media (max-width:1100px){.reper-grid{grid-template-columns:1fr}}
   </style>
   <link rel="stylesheet" href="./mobile-erp.css" />
@@ -237,7 +248,7 @@ window.__SDV_ACL__ = window.__SDV_ACL__ || (async function(pageKey, cfg){
 </script>
 <script>
 window.__SDV_ACL_CONFIG__ = {
-  disableSelectors: ['#btnSave', '.manualSel', '.hInp'],
+  disableSelectors: ['#btnSave', '.manualSel', '.hInp', '.rowEditInp', '.rowEditSel', '.rowBtn', 'tr[data-row-open]'],
   allowSelectors: ['#selReper', '#btnRefresh', '.back-btn', '.actions a', '#repereList']
 };
 </script>
@@ -295,7 +306,7 @@ window.__SDV_ACL_CONFIG__ = {
         </div>
       </div>
       <div class="hint">
-        În această foaie apar: <strong>codul</strong>, <strong>ultima înălțime din Forjate</strong>, <strong>înălțimea manuală</strong> și <strong>statusul</strong>. Dacă nu există nicio înălțime, statusul rămâne gol.
+        În această foaie apar: <strong>codul</strong>, <strong>ultima înălțime din Forjate</strong>, <strong>înălțimea manuală</strong> și <strong>statusul</strong>. Dacă nu există nicio înălțime, statusul rămâne gol. Poți edita un rând prin <strong>dublu click</strong> și îl poți și șterge.
       </div>
       <div class="saveNote" id="saveNote">Stare salvare: -</div>
       <div id="contentBox"></div>
@@ -330,7 +341,7 @@ window.__SDV_ACL_CONFIG__ = {
     casatText: document.getElementById('casatText')
   };
 
-  const state = { forjateRows: [], codedRows: [], overrides: {}, updatedAt: '', saveUpdatedAt: '' };
+  const state = { forjateRows: [], codedRows: [], overrides: {}, updatedAt: '', saveUpdatedAt: '', editingKey: '' };
 
   function sb(){
     return window.ERPAuth && typeof window.ERPAuth.getSupabaseClient === 'function'
@@ -526,7 +537,7 @@ window.__SDV_ACL_CONFIG__ = {
       if(!display || !code || !lit) return;
       const key = `${upper(r.reper)}|${display}`;
       if(!map.has(key)){
-        map.set(key, { reper: upper(r.reper), display, cod_intern: code, litera: lit, last_height: h });
+        map.set(key, { reper: upper(r.reper), display, cod_intern: code, base_cod_intern: code, litera: lit, last_height: h });
       } else {
         map.get(key).last_height = h;
       }
@@ -537,7 +548,7 @@ window.__SDV_ACL_CONFIG__ = {
       const code = letter + '000';
       const key = `${upper(reper)}|${display}`;
       if(!map.has(key)){
-        map.set(key, { reper: upper(reper), display, cod_intern: code, litera: letter, missing:true, last_height:'' });
+        map.set(key, { reper: upper(reper), display, cod_intern: code, base_cod_intern: code, litera: letter, missing:true, last_height:'' });
       }
     });
 
@@ -566,11 +577,13 @@ window.__SDV_ACL_CONFIG__ = {
     const rep = upper(reper);
     const wk = workingSet.get(rep);
     return rows.map(row => {
-      const key = overrideKey(rep, tip, row.cod_intern);
-      const manual = upper(state.overrides[key]?.manual_status || '');
-      const effHeight = getEffectiveHeight(row, key);
+      const baseKey = overrideKey(rep, tip, row.base_cod_intern || row.cod_intern);
+      const ov = state.overrides[baseKey] || {};
+      if (ov.deleted === true || ov.deleted === 'true' || ov.deleted === 1 || ov.deleted === '1') return null;
+      const manual = upper(ov.manual_status || '');
+      const effHeight = getEffectiveHeight(row, baseKey);
       let finalStatus = '';
-      const currentCode = upper(row.cod_intern);
+      const currentCode = upper((ov.custom_cod_intern || row.cod_intern));
 
       if(effHeight > 0){
         if(manual === 'CASAT') finalStatus = 'CASAT';
@@ -580,8 +593,17 @@ window.__SDV_ACL_CONFIG__ = {
         else finalStatus = 'PE STOC';
       }
 
-      return { ...row, manual_status: manual, manual_height: getManualHeight(key), effective_height: effHeight, final_status: finalStatus };
-    });
+      return {
+        ...row,
+        key: baseKey,
+        display: ov.custom_display || row.display,
+        cod_intern: ov.custom_cod_intern || row.cod_intern,
+        manual_status: manual,
+        manual_height: getManualHeight(baseKey),
+        effective_height: effHeight,
+        final_status: finalStatus
+      };
+    }).filter(Boolean);
   }
 
   function statusClass(status){
@@ -589,6 +611,53 @@ window.__SDV_ACL_CONFIG__ = {
     if(status === 'LA REGRAVAT') return 's-regr';
     if(status === 'CASAT') return 's-casat';
     return 's-stock';
+  }
+
+  
+  function setOverrideField(key, field, value){
+    if(!state.overrides[key]) state.overrides[key] = {};
+    state.overrides[key][field] = value;
+    els.saveNote.textContent = 'Stare salvare: modificări nesalvate';
+  }
+
+  function startEdit(key){
+    if (window.__CAN_EDIT__ === false) return;
+    state.editingKey = key;
+    render();
+  }
+
+  function cancelEdit(){
+    state.editingKey = '';
+    render();
+  }
+
+  function saveRowEdit(key){
+    if (window.__CAN_EDIT__ === false) return;
+    const rowEl = document.querySelector(`tr[data-edit-key="${key}"]`);
+    if(!rowEl) return;
+    const display = rowEl.querySelector('[data-row-field="custom_display"]')?.value?.trim() || '';
+    const codIntern = rowEl.querySelector('[data-row-field="custom_cod_intern"]')?.value?.trim() || '';
+    const manualHeight = rowEl.querySelector('[data-row-field="manual_height"]')?.value?.trim() || '';
+    const manualStatus = rowEl.querySelector('[data-row-field="manual_status"]')?.value?.trim() || '';
+    if(!state.overrides[key]) state.overrides[key] = {};
+    state.overrides[key].custom_display = display;
+    state.overrides[key].custom_cod_intern = codIntern;
+    state.overrides[key].manual_height = manualHeight;
+    state.overrides[key].manual_status = manualStatus;
+    delete state.overrides[key].deleted;
+    state.editingKey = '';
+    els.saveNote.textContent = 'Stare salvare: modificări nesalvate';
+    render();
+  }
+
+  function deleteRow(key){
+    if (window.__CAN_EDIT__ === false) return;
+    if(!confirm('Ștergi acest rând din Stoc Matrițe?')) return;
+    if(!state.overrides[key]) state.overrides[key] = {};
+    state.overrides[key].deleted = true;
+    state.editingKey = '';
+    els.saveNote.textContent = 'Stare salvare: modificări nesalvate';
+    render();
   }
 
   function renderTable(rows, reper, tip){
@@ -608,24 +677,41 @@ window.__SDV_ACL_CONFIG__ = {
           </thead>
           <tbody>
             ${enriched.length ? enriched.map(row => {
-              const key = overrideKey(reper, tip, row.cod_intern);
-              return `
-                <tr class="${row.missing ? 'missingRow' : ''}">
-                  <td>${esc(row.display)}</td>
-                  <td>${esc(row.cod_intern)}</td>
+              const key = row.key;
+              const isEditing = state.editingKey === key;
+              if (isEditing) {
+                return `
+                <tr data-edit-key="${esc(key)}" class="${row.missing ? 'missingRow' : ''}">
+                  <td><input class="rowEditInp" data-row-field="custom_display" value="${esc(row.display)}"></td>
+                  <td><input class="rowEditInp" data-row-field="custom_cod_intern" value="${esc(row.cod_intern)}"></td>
                   <td>${row.last_height ? esc(String(row.last_height).replace('.', ',')) : ''}</td>
-                  <td><input class="hInp" type="number" min="0" step="0.01" value="${esc(row.manual_height)}" data-key="${esc(key)}" data-field="manual_height"></td>
+                  <td><input class="rowEditInp" data-row-field="manual_height" type="number" min="0" step="0.01" value="${esc(row.manual_height)}"></td>
                   <td>
-                    <select class="manualSel" data-key="${esc(key)}" data-field="manual_status">
+                    <select class="rowEditSel" data-row-field="manual_status">
                       <option value="" ${!row.manual_status ? 'selected' : ''}>automat</option>
                       <option value="PE STOC" ${row.manual_status === 'PE STOC' ? 'selected' : ''}>Pe stoc</option>
                       <option value="LA REGRAVAT" ${row.manual_status === 'LA REGRAVAT' ? 'selected' : ''}>La regravat</option>
                       <option value="CASAT" ${row.manual_status === 'CASAT' ? 'selected' : ''}>Casat</option>
                     </select>
                   </td>
+                  <td>
+                    <div class="rowActionWrap">
+                      <button type="button" class="rowBtn" data-row-save="${esc(key)}">Salvează</button>
+                      <button type="button" class="rowBtn" data-row-cancel="1">Renunță</button>
+                      <button type="button" class="rowBtn danger" data-row-delete="${esc(key)}">Șterge</button>
+                    </div>
+                  </td>
+                </tr>`;
+              }
+              return `
+                <tr class="${row.missing ? 'missingRow ' : ''}editableRow" data-row-open="${esc(key)}" title="Dublu click pentru editare">
+                  <td>${esc(row.display)}</td>
+                  <td>${esc(row.cod_intern)}</td>
+                  <td>${row.last_height ? esc(String(row.last_height).replace('.', ',')) : ''}</td>
+                  <td>${row.manual_height ? esc(String(row.manual_height).replace('.', ',')) : ''}</td>
+                  <td>${row.manual_status ? esc(row.manual_status) : 'automat'}</td>
                   <td>${row.final_status ? `<span class="status ${statusClass(row.final_status)}">${esc(row.final_status)}</span>` : '<span class="s-empty"></span>'}</td>
-                </tr>
-              `;
+                </tr>`;
             }).join('') : '<tr><td colspan="6">Fără matrițe</td></tr>'}
           </tbody>
         </table>
@@ -656,16 +742,18 @@ window.__SDV_ACL_CONFIG__ = {
     els.casatText.textContent = 'Casat: ' + casat;
   }
 
-  function bindInputs(){
-    els.contentBox.querySelectorAll('[data-key]').forEach(el => {
-      el.addEventListener('change', () => {
-        const key = el.dataset.key;
-        const field = el.dataset.field;
-        if(!state.overrides[key]) state.overrides[key] = {};
-        state.overrides[key][field] = String(el.value || '').trim();
-        els.saveNote.textContent = 'Stare salvare: modificări nesalvate';
-        render();
-      });
+  function bindRowActions(){
+    els.contentBox.querySelectorAll('tr[data-row-open]').forEach(row => {
+      row.addEventListener('dblclick', () => startEdit(row.dataset.rowOpen));
+    });
+    els.contentBox.querySelectorAll('[data-row-save]').forEach(btn => {
+      btn.addEventListener('click', () => saveRowEdit(btn.dataset.rowSave));
+    });
+    els.contentBox.querySelectorAll('[data-row-delete]').forEach(btn => {
+      btn.addEventListener('click', () => deleteRow(btn.dataset.rowDelete));
+    });
+    els.contentBox.querySelectorAll('[data-row-cancel]').forEach(btn => {
+      btn.addEventListener('click', () => cancelEdit());
     });
   }
 
@@ -697,7 +785,7 @@ window.__SDV_ACL_CONFIG__ = {
       </div>
     `).join('');
 
-    bindInputs();
+    bindRowActions();
     recomputeCounters();
     if (window.__CAN_EDIT__ === false && window.__SDV_ACL__) { setTimeout(() => window.__SDV_ACL__('stoc-matrite', window.__SDV_ACL_CONFIG__), 0); }
   }
