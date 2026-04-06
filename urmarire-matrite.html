@@ -166,7 +166,6 @@
             </table>
           </div>
         </div>
-      </div>
 
 <div class="panelBox">
   <div class="panelTitle">PLANIFICARE REGRĂVARE</div>
@@ -187,7 +186,7 @@
     </table>
   </div>
 </div>
-
+    </div>
   </section>
 </div>
 
@@ -198,7 +197,6 @@
   const FORJATE_INDEX_KEY = 'forjate:index';
   const FORJATE_LEGACY_KEY = 'forjate';
   const STOCK_DOC_KEY = 'stoc-matrite-status';
-  const REPERE_DOC_KEY = 'repere-matrite';
   const els = {
     userText: document.getElementById('userText'),
     cloudText: document.getElementById('cloudText'),
@@ -221,7 +219,6 @@
     codedRows: [],
     overrides: {},
     utilajeMap: {},
-    repereCfg: {},
     updatedAt: ''
   };
 
@@ -258,8 +255,7 @@
     const infLit = upper(pick(row,['matrita_inf','MATRITA_INF','matrita inferioara','MATRITA INFERIOARA','matrita inferioară']));
     const supH = toNum(pick(row,['inaltime_sup','INALTIME_SUP','inaltime mf sup','INALTIME MF SUP','Înălțime MF SUP']));
     const infH = toNum(pick(row,['inaltime_inf','INALTIME_INF','inaltime mf inf','INALTIME MF INF','Înălțime MF INF']));
-    const bucati = toNum(pick(row,['buc_realizate','BUC_REALIZATE','CB']));
-    return { reper, data, sup_litera:supLit, inf_litera:infLit, sup_h:supH, inf_h:infH, bucati };
+    return { reper, data, sup_litera:supLit, inf_litera:infLit, sup_h:supH, inf_h:infH };
   }
   async function fetchDocObject(docKey){
     const client = sb(); if(!client) throw new Error('Supabase indisponibil');
@@ -340,20 +336,22 @@
 
 async function loadRepereCfg(){
   const cfg = {};
-  try{
-    const payload = await fetchDocObject(REPERE_DOC_KEY).catch(() => ({obj:null,updated_at:''}));
-    const obj = payload.obj;
-    const rows = Array.isArray(obj?.rows) ? obj.rows : Array.isArray(obj?.payload?.rows) ? obj.payload.rows : [];
-    rows.forEach(r => {
-      const reper = upper(r.reper);
-      if(!reper) return;
-      cfg[reper] = {
-        limit_sup: toNum(r.limit_sup),
-        limit_inf: toNum(r.limit_inf),
-        warn_pct: toNum(r.warn_pct) || 15
-      };
-    });
-  }catch(_e){}
+  const payload = await fetchDocObject(REPERE_DOC_KEY).catch(() => ({obj:null, updated_at:''}));
+  const obj = payload.obj;
+  const rows =
+    Array.isArray(obj?.rows) ? obj.rows :
+    Array.isArray(obj?.payload?.rows) ? obj.payload.rows :
+    Array.isArray(obj?.data) ? obj.data :
+    Array.isArray(obj) ? obj : [];
+  rows.forEach(r => {
+    const reper = upper(r.reper || r.REPER || '');
+    if(!reper) return;
+    cfg[reper] = {
+      limit_sup: toNum(r.limit_sup ?? r.limita_piese_superior ?? r['Limită piese Superior'] ?? r['Limita piese Superior']),
+      limit_inf: toNum(r.limit_inf ?? r.limita_piese_inferior ?? r['Limită piese Inferior'] ?? r['Limita piese Inferior']),
+      warn_pct: toNum(r.warn_pct ?? r.prag_avertizare ?? r['Prag avertizare %'] ?? r['Prag avertizare']) || 15
+    };
+  });
   state.repereCfg = cfg;
 }
 
@@ -417,9 +415,8 @@ async function loadRepereCfg(){
       const h = toNum(isSup ? r.sup_h : r.inf_h);
       if(!display || !code || !lit) return;
       const key = `${upper(r.reper)}|${display}`;
-      if(!map.has(key)) map.set(key, { reper: upper(r.reper), display, cod_intern: code, litera: lit, last_height: h, total_piese: 0 });
+      if(!map.has(key)) map.set(key, { reper: upper(r.reper), display, cod_intern: code, litera: lit, last_height: h });
       else map.get(key).last_height = h;
-      map.get(key).total_piese += toNum(r.bucati);
     });
     return Array.from(map.values()).map(row => {
       const key = overrideKey(reper, tip, row.cod_intern);
@@ -442,25 +439,22 @@ async function loadRepereCfg(){
     if(status === 'CASAT') return 's-casat';
     return 's-stock';
   }
-
-function renderStock(supRows, infRows){
-  const renderSide = (target, rows) => {
+  function renderStock(rows){
     if(!rows.length){
-      target.innerHTML = '<tr><td colspan="4">Nu există matrițe.</td></tr>';
+      els.tbodyStock.innerHTML = '<tr><td colspan="5">Nu există matrițe cu înălțime pe reperul selectat.</td></tr>';
+      els.stokCount.textContent = 'Matrițe afișate: 0';
       return;
     }
-    target.innerHTML = rows.map(r => `
+    els.tbodyStock.innerHTML = rows.map(r => `
       <tr>
+        <td>${esc(r.tip)}</td>
         <td>${esc(r.display)}</td>
         <td>${esc(r.cod_intern)}</td>
         <td>${esc(String(r.effective_height).replace('.', ','))}</td>
         <td>${r.final_status ? `<span class="status ${statusClass(r.final_status)}">${esc(r.final_status)}</span>` : ''}</td>
       </tr>`).join('');
-  };
-  renderSide(els.tbodyStockInf, infRows);
-  renderSide(els.tbodyStockSup, supRows);
-  els.stokCount.textContent = 'Matrițe afișate: ' + (supRows.length + infRows.length);
-}
+    els.stokCount.textContent = 'Matrițe afișate: ' + rows.length;
+  }
   function buildCombos(supRows, infRows, minLimit, maxLimit){
     const combos = [];
     supRows.forEach(s => infRows.forEach(i => {
@@ -500,21 +494,31 @@ function renderStock(supRows, infRows){
 
 function renderRegr(reper, supRows, infRows){
   const cfg = state.repereCfg[reper] || { limit_sup: 0, limit_inf: 0, warn_pct: 15 };
-  const build = (rows, tip, limit) => rows
-    .filter(r => limit > 0)
-    .map(r => {
+  const warnPct = cfg.warn_pct || 15;
+
+  const rows = [
+    ...infRows.filter(r => cfg.limit_inf > 0).map(r => {
       const total = toNum(r.total_piese);
+      const limit = toNum(cfg.limit_inf);
       const remaining = limit - total;
-      const warnThreshold = Math.round(limit * ((cfg.warn_pct || 15) / 100));
+      const warnThreshold = Math.round(limit * warnPct / 100);
       let status = 'OK';
       let cls = 'ok';
-      if (remaining <= 0) { status = 'Depășită'; cls = 'warn'; }
-      else if (remaining <= warnThreshold) { status = 'Planifică regrăvarea'; cls = 'warn'; }
-      return { tip, display:r.display, cod_intern:r.cod_intern, total, limit, remaining, status, cls };
-    });
-  const rows = [
-    ...build(infRows, 'Inferior', cfg.limit_inf),
-    ...build(supRows, 'Superior', cfg.limit_sup),
+      if(remaining <= 0){ status = 'Depășită'; cls = 'warn'; }
+      else if(remaining <= warnThreshold){ status = 'Planifică regrăvarea'; cls = 'warn'; }
+      return { tip:'Inferior', display:r.display, cod_intern:r.cod_intern, total, limit, remaining, status, cls };
+    }),
+    ...supRows.filter(r => cfg.limit_sup > 0).map(r => {
+      const total = toNum(r.total_piese);
+      const limit = toNum(cfg.limit_sup);
+      const remaining = limit - total;
+      const warnThreshold = Math.round(limit * warnPct / 100);
+      let status = 'OK';
+      let cls = 'ok';
+      if(remaining <= 0){ status = 'Depășită'; cls = 'warn'; }
+      else if(remaining <= warnThreshold){ status = 'Planifică regrăvarea'; cls = 'warn'; }
+      return { tip:'Superior', display:r.display, cod_intern:r.cod_intern, total, limit, remaining, status, cls };
+    })
   ].sort((a,b) => {
     const rank = s => s.status === 'Depășită' ? 0 : s.status === 'Planifică regrăvarea' ? 1 : 2;
     return rank(a) - rank(b) || a.remaining - b.remaining || a.cod_intern.localeCompare(b.cod_intern);
@@ -524,6 +528,7 @@ function renderRegr(reper, supRows, infRows){
     els.tbodyRegr.innerHTML = '<tr><td colspan="7">Nu există limite de piese setate pentru reperul filtrat.</td></tr>';
     return;
   }
+
   els.tbodyRegr.innerHTML = rows.map(r => `
     <tr>
       <td>${esc(r.tip)}</td>
