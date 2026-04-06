@@ -53,8 +53,6 @@
     .mini-table tbody tr:last-child td{border-bottom:0}
     .empty{padding:28px 12px;text-align:center;color:var(--muted);font-weight:700;border:1px dashed var(--panel-border);border-radius:14px;background:rgba(255,255,255,.35)}
     .col-empty{border:1px dashed #777;background:#fff;padding:12px;text-align:center;color:#666}
-    .warnbox{padding:10px 12px;border:1px solid rgba(29,29,29,.14);border-radius:12px;background:#fff;font-size:12px;color:var(--text)}
-    .status-ok{font-weight:800;color:#14633a}.status-plan{font-weight:800;color:#b85d00}.status-over{font-weight:800;color:#b00020}.status-none{color:#666}
     @media (max-width:1100px){.reper-grid{grid-template-columns:1fr}}
   </style>
   <link rel="stylesheet" href="./mobile-erp.css" />
@@ -102,7 +100,6 @@
           <select id="selReper"></select>
         </div>
       </div>
-      <div id="alertsBox"></div>
       <div id="contentBox"></div>
     </div>
   </section>
@@ -122,11 +119,10 @@
     countText: document.getElementById('countText'),
     btnRefresh: document.getElementById('btnRefresh'),
     selReper: document.getElementById('selReper'),
-    alertsBox: document.getElementById('alertsBox'),
     contentBox: document.getElementById('contentBox')
   };
 
-  const state = { forjateRows: [], codedRows: [], repereCfg: new Map(), updatedAt: '' };
+  const state = { forjateRows: [], codedRows: [], updatedAt: '' };
 
   function sb(){
     return window.ERPAuth && typeof window.ERPAuth.getSupabaseClient === 'function'
@@ -289,32 +285,6 @@
     state.codedRows = out;
   }
 
-
-  async function loadRepereConfig(){
-    const payload = await fetchDocObject('matrite:repere-minime').catch(() => ({obj:null,updated_at:''}));
-    const rows = Array.isArray(payload.obj?.rows) ? payload.obj.rows : [];
-    state.repereCfg = new Map(rows.map(r => [upper(r.reper), {
-      min_sup: toNum(r.min_sup),
-      min_inf: toNum(r.min_inf),
-      limit_sup: toNum(r.limit_sup),
-      limit_inf: toNum(r.limit_inf),
-      warn_pct: toNum(r.warn_pct) || 15
-    }]));
-  }
-
-  function getWearInfo(reper, tip, total){
-    const cfg = state.repereCfg.get(upper(reper)) || {};
-    const limit = tip === 'Superior' ? toNum(cfg.limit_sup) : toNum(cfg.limit_inf);
-    const warnPct = toNum(cfg.warn_pct) || 15;
-    if(limit <= 0){
-      return { limit:0, remaining:'', wearStatus:'Fără limită', wearClass:'status-none' };
-    }
-    const remaining = limit - toNum(total);
-    if(remaining <= 0) return { limit, remaining, wearStatus:'Depășită', wearClass:'status-over' };
-    if(remaining <= (limit * warnPct / 100)) return { limit, remaining, wearStatus:'Planifică regrăvarea', wearClass:'status-plan' };
-    return { limit, remaining, wearStatus:'OK', wearClass:'status-ok' };
-  }
-
   function fillReperSelector(){
     const repere = Array.from(new Set(state.codedRows.map(r => upper(r.reper)).filter(Boolean)))
       .sort((a,b) => a.localeCompare(b, 'ro', { sensitivity:'base' }));
@@ -358,9 +328,7 @@
       lines.forEach((line, idx) => {
         line.mm_regravat = idx === 0 ? 0 : Math.max(0, lines[idx-1].inaltime - line.inaltime);
       });
-      const total = lines.reduce((s,x)=>s + toNum(x.piese), 0);
-      const wear = getWearInfo(obj.reper, tip, total);
-      return { ...obj, lines, total_piese: total, limit_piese: wear.limit, remaining_piese: wear.remaining, wear_status: wear.wearStatus, wear_class: wear.wearClass };
+      return { ...obj, lines };
     }).sort((a,b) => a.cod_intern.localeCompare(b.cod_intern));
   }
 
@@ -375,9 +343,6 @@
               <th>Piese</th>
               <th>Data regr.</th>
               <th>mm regravat</th>
-              <th>Limită piese</th>
-              <th>Piese rămase</th>
-              <th>Status</th>
             </tr>
           </thead>
           <tbody>
@@ -387,9 +352,6 @@
                 <td>${esc(String(Math.round(line.piese)))}</td>
                 <td>${esc(fmtDate(line.data_regr))}</td>
                 <td>${esc(String(Math.round(line.mm_regravat || 0)))}</td>
-                <td>${mold.limit_piese ? esc(String(Math.round(mold.limit_piese))) : ''}</td>
-                <td>${mold.remaining_piese !== '' ? esc(String(Math.round(mold.remaining_piese))) : ''}</td>
-                <td class="${mold.wear_class}">${esc(mold.wear_status)}</td>
               </tr>
             `).join('')}
           </tbody>
@@ -407,20 +369,9 @@
     els.countText.textContent = 'Matrițe: ' + state.codedRows.filter(r => !reperFilter || upper(r.reper) === reperFilter).length;
 
     if(!repere.length){
-      els.alertsBox.innerHTML='';
       els.contentBox.innerHTML = '<div class="empty">Nu există rânduri în FORJATE 2026+ pentru filtrul curent.</div>';
       return;
     }
-
-    const alertRows = [];
-    repere.forEach(rep => {
-      [...aggregateSide(rep, 'Superior'), ...aggregateSide(rep, 'Inferior')].forEach(m => {
-        if(m.wear_status === 'Planifică regrăvarea' || m.wear_status === 'Depășită'){
-          alertRows.push({ reper: rep, tip: m.limit_piese && m.wear_status ? (m.cod_intern.startsWith('') ? m.wear_status : '') : '', cod: m.cod_intern, status: m.wear_status, remaining: m.remaining_piese });
-        }
-      });
-    });
-    els.alertsBox.innerHTML = alertRows.length ? `<div class="warnbox"><strong>Matrițe de planificat / depășite:</strong> ${alertRows.map(r => `${esc(r.reper)} ${esc(r.cod)} — ${esc(r.status)}${r.remaining !== '' ? ` (${esc(String(Math.round(r.remaining)))} rămase)` : ''}`).join(' | ')}</div>` : '<div class="warnbox">Nu există matrițe la limită sau depășite.</div>';
 
     els.contentBox.innerHTML = repere.map(rep => {
       const sup = aggregateSide(rep, 'Superior');
@@ -448,7 +399,6 @@
       await ensureAuth();
       showCloud('se încarcă...');
       await loadForjate();
-      await loadRepereConfig();
       buildInternalAssignments();
       fillReperSelector();
       render();
