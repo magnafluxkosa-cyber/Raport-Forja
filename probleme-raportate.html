@@ -2988,6 +2988,21 @@ async function resolvePagePermissions() {
       return false;
     }
 
+    function getErrorText(error) {
+      if (!error) return "";
+      return String(error.message || error.details || error.hint || error.code || error.error_description || error.description || error).trim();
+    }
+
+    function buildCloudRow(docKey, payload, includeLegacyData = false) {
+      const row = {
+        doc_key: docKey,
+        content: payload,
+        updated_at: payload.updated_at
+      };
+      if (includeLegacyData) row.data = payload;
+      return row;
+    }
+
     async function saveCloud(force = false) {
       if (!state.supabase || !state.user) return false;
       if (state.syncInFlight) return false;
@@ -2997,10 +3012,6 @@ async function resolvePagePermissions() {
       setCloudStatus("Cloud: se sincronizează...", "warning");
 
       const payload = currentPayload();
-      const updatePatch = {
-        content: payload,
-        updated_at: payload.updated_at
-      };
       const keyCandidates = Array.from(new Set([
         state.cloudDocKey,
         PAGE_KEY,
@@ -3008,107 +3019,102 @@ async function resolvePagePermissions() {
       ].filter(Boolean).map(value => String(value).trim()).filter(Boolean)));
 
       try {
+        try {
+          const sessionResp = await state.supabase.auth.getSession();
+          const liveUser = sessionResp?.data?.session?.user || null;
+          if (liveUser) state.user = liveUser;
+        } catch (_err) {}
+
         let saved = false;
         let lastError = null;
 
-        async function tryUpdateById(idValue) {
-          if (!idValue || saved) return false;
-          const { data, error } = await state.supabase
-            .from("rf_documents")
-            .update(updatePatch)
-            .eq("id", idValue)
-            .select("id,doc_key,updated_at")
-            .limit(1);
-          if (error) {
-            lastError = error;
-            return false;
-          }
-          if (Array.isArray(data) && data.length) {
-            const doc = data[0] || {};
-            state.cloudDocId = doc.id || idValue;
-            state.cloudDocKey = doc.doc_key || state.cloudDocKey || PAGE_KEY;
-            state.cloudUpdatedAt = doc.updated_at || payload.updated_at;
-            saved = true;
-            return true;
-          }
-          return false;
-        }
-
-        async function tryUpdateByKey(docKey) {
+        async function tryUpsert(docKey, includeLegacyData = false) {
           if (!docKey || saved) return false;
-          const { data, error } = await state.supabase
-            .from("rf_documents")
-            .update(updatePatch)
-            .eq("doc_key", docKey)
-            .select("id,doc_key,updated_at")
-            .order("updated_at", { ascending: false })
-            .limit(1);
-          if (error) {
-            lastError = error;
-            return false;
-          }
-          if (Array.isArray(data) && data.length) {
-            const doc = data[0] || {};
-            state.cloudDocId = doc.id || state.cloudDocId || null;
-            state.cloudDocKey = doc.doc_key || docKey;
-            state.cloudUpdatedAt = doc.updated_at || payload.updated_at;
-            saved = true;
-            return true;
-          }
-          return false;
-        }
-
-        async function tryInsert(docKey) {
-          if (!docKey || saved) return false;
-          const insertRow = {
-            doc_key: docKey,
-            content: payload,
-            updated_at: payload.updated_at
-          };
-          const { data, error } = await state.supabase
-            .from("rf_documents")
-            .insert(insertRow)
-            .select("id,doc_key,updated_at")
-            .limit(1);
-          if (error) {
-            lastError = error;
-            return false;
-          }
-          if (Array.isArray(data) && data.length) {
-            const doc = data[0] || {};
-            state.cloudDocId = doc.id || null;
-            state.cloudDocKey = doc.doc_key || docKey;
-            state.cloudUpdatedAt = doc.updated_at || payload.updated_at;
-            saved = true;
-            return true;
-          }
-          return false;
-        }
-
-        await tryUpdateById(state.cloudDocId);
-        if (!saved) {
-          for (const key of keyCandidates) {
-            if (await tryUpdateByKey(key)) break;
-          }
-        }
-        if (!saved) {
-          for (const key of keyCandidates) {
-            if (await tryInsert(key)) break;
-          }
-        }
-        if (!saved && !lastError) {
+          const row = buildCloudRow(docKey, payload, includeLegacyData);
           const { error } = await state.supabase
             .from("rf_documents")
-            .upsert({ doc_key: keyCandidates[0] || PAGE_KEY, content: payload, updated_at: payload.updated_at }, { onConflict: "doc_key" });
-          if (error) lastError = error;
-          else {
-            state.cloudDocKey = keyCandidates[0] || PAGE_KEY;
+            .upsert(row, { onConflict: "doc_key" });
+          if (error) {
+            lastError = error;
+            return false;
+          }
+          state.cloudDocKey = docKey;
+          state.cloudUpdatedAt = payload.updated_at;
+          saved = true;
+          return true;
+        }
+
+        async function tryUpdate(docKey, includeLegacyData = false) {
+          if (!docKey || saved) return false;
+          const patch = buildCloudRow(docKey, payload, includeLegacyData);
+          delete patch.doc_key;
+          const { error, count } = await state.supabase
+            .from("rf_documents")
+            .update(patch, { count: "exact" })
+            .eq("doc_key", docKey);
+          if (error) {
+            lastError = error;
+            return false;
+          }
+          if ((count || 0) > 0) {
+            state.cloudDocKey = docKey;
             state.cloudUpdatedAt = payload.updated_at;
             saved = true;
+            return true;
+          }
+          return false;
+        }
+
+        async function tryInsert(docKey, includeLegacyData = false) {
+          if (!docKey || saved) return false;
+          const row = buildCloudRow(docKey, payload, includeLegacyData);
+          const { error } = await state.supabase
+            .from("rf_documents")
+            .insert(row);
+          if (error) {
+            lastError = error;
+            return false;
+          }
+          state.cloudDocKey = docKey;
+          state.cloudUpdatedAt = payload.updated_at;
+          saved = true;
+          return true;
+        }
+
+        for (const key of keyCandidates) {
+          if (await tryUpsert(key, false)) break;
+        }
+        if (!saved) {
+          for (const key of keyCandidates) {
+            if (await tryUpsert(key, true)) break;
           }
         }
-        if (!saved) throw lastError || new Error("Nu s-a putut salva în rf_documents.");
+        if (!saved) {
+          for (const key of keyCandidates) {
+            if (await tryUpdate(key, false)) break;
+          }
+        }
+        if (!saved) {
+          for (const key of keyCandidates) {
+            if (await tryUpdate(key, true)) break;
+          }
+        }
+        if (!saved) {
+          for (const key of keyCandidates) {
+            if (await tryInsert(key, false)) break;
+          }
+        }
+        if (!saved) {
+          for (const key of keyCandidates) {
+            if (await tryInsert(key, true)) break;
+          }
+        }
 
+        if (!saved) {
+          throw lastError || new Error("Nu s-a putut salva în rf_documents.");
+        }
+
+        state.cloudDocId = null;
         state.dirty = false;
         state.source = "cloud";
         setModeStatus("Sursă: cloud", "success");
@@ -3117,7 +3123,8 @@ async function resolvePagePermissions() {
         return true;
       } catch (error) {
         console.error("saveCloud", error);
-        setCloudStatus("Cloud: salvare eșuată, ai cache local", "danger");
+        const errorText = getErrorText(error);
+        setCloudStatus(errorText ? `Cloud: salvare eșuată (${errorText})` : "Cloud: salvare eșuată, ai cache local", "danger");
         return false;
       } finally {
         state.syncInFlight = false;
