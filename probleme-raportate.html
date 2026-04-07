@@ -2988,21 +2988,6 @@ async function resolvePagePermissions() {
       return false;
     }
 
-    function getErrorText(error) {
-      if (!error) return "";
-      return String(error.message || error.details || error.hint || error.code || error.error_description || error.description || error).trim();
-    }
-
-    function buildCloudRow(docKey, payload, includeLegacyData = false) {
-      const row = {
-        doc_key: docKey,
-        content: payload,
-        updated_at: payload.updated_at
-      };
-      if (includeLegacyData) row.data = payload;
-      return row;
-    }
-
     async function saveCloud(force = false) {
       if (!state.supabase || !state.user) return false;
       if (state.syncInFlight) return false;
@@ -3012,6 +2997,10 @@ async function resolvePagePermissions() {
       setCloudStatus("Cloud: se sincronizează...", "warning");
 
       const payload = currentPayload();
+      const updatePatch = {
+        content: payload,
+        updated_at: payload.updated_at
+      };
       const keyCandidates = Array.from(new Set([
         state.cloudDocKey,
         PAGE_KEY,
@@ -3019,102 +3008,107 @@ async function resolvePagePermissions() {
       ].filter(Boolean).map(value => String(value).trim()).filter(Boolean)));
 
       try {
-        try {
-          const sessionResp = await state.supabase.auth.getSession();
-          const liveUser = sessionResp?.data?.session?.user || null;
-          if (liveUser) state.user = liveUser;
-        } catch (_err) {}
-
         let saved = false;
         let lastError = null;
 
-        async function tryUpsert(docKey, includeLegacyData = false) {
-          if (!docKey || saved) return false;
-          const row = buildCloudRow(docKey, payload, includeLegacyData);
-          const { error } = await state.supabase
+        async function tryUpdateById(idValue) {
+          if (!idValue || saved) return false;
+          const { data, error } = await state.supabase
             .from("rf_documents")
-            .upsert(row, { onConflict: "doc_key" });
+            .update(updatePatch)
+            .eq("id", idValue)
+            .select("id,doc_key,updated_at")
+            .limit(1);
           if (error) {
             lastError = error;
             return false;
           }
-          state.cloudDocKey = docKey;
-          state.cloudUpdatedAt = payload.updated_at;
-          saved = true;
-          return true;
-        }
-
-        async function tryUpdate(docKey, includeLegacyData = false) {
-          if (!docKey || saved) return false;
-          const patch = buildCloudRow(docKey, payload, includeLegacyData);
-          delete patch.doc_key;
-          const { error, count } = await state.supabase
-            .from("rf_documents")
-            .update(patch, { count: "exact" })
-            .eq("doc_key", docKey);
-          if (error) {
-            lastError = error;
-            return false;
-          }
-          if ((count || 0) > 0) {
-            state.cloudDocKey = docKey;
-            state.cloudUpdatedAt = payload.updated_at;
+          if (Array.isArray(data) && data.length) {
+            const doc = data[0] || {};
+            state.cloudDocId = doc.id || idValue;
+            state.cloudDocKey = doc.doc_key || state.cloudDocKey || PAGE_KEY;
+            state.cloudUpdatedAt = doc.updated_at || payload.updated_at;
             saved = true;
             return true;
           }
           return false;
         }
 
-        async function tryInsert(docKey, includeLegacyData = false) {
+        async function tryUpdateByKey(docKey) {
           if (!docKey || saved) return false;
-          const row = buildCloudRow(docKey, payload, includeLegacyData);
-          const { error } = await state.supabase
+          const { data, error } = await state.supabase
             .from("rf_documents")
-            .insert(row);
+            .update(updatePatch)
+            .eq("doc_key", docKey)
+            .select("id,doc_key,updated_at")
+            .order("updated_at", { ascending: false })
+            .limit(1);
           if (error) {
             lastError = error;
             return false;
           }
-          state.cloudDocKey = docKey;
-          state.cloudUpdatedAt = payload.updated_at;
-          saved = true;
-          return true;
+          if (Array.isArray(data) && data.length) {
+            const doc = data[0] || {};
+            state.cloudDocId = doc.id || state.cloudDocId || null;
+            state.cloudDocKey = doc.doc_key || docKey;
+            state.cloudUpdatedAt = doc.updated_at || payload.updated_at;
+            saved = true;
+            return true;
+          }
+          return false;
         }
 
-        for (const key of keyCandidates) {
-          if (await tryUpsert(key, false)) break;
-        }
-        if (!saved) {
-          for (const key of keyCandidates) {
-            if (await tryUpsert(key, true)) break;
+        async function tryInsert(docKey) {
+          if (!docKey || saved) return false;
+          const insertRow = {
+            doc_key: docKey,
+            content: payload,
+            updated_at: payload.updated_at
+          };
+          const { data, error } = await state.supabase
+            .from("rf_documents")
+            .insert(insertRow)
+            .select("id,doc_key,updated_at")
+            .limit(1);
+          if (error) {
+            lastError = error;
+            return false;
           }
-        }
-        if (!saved) {
-          for (const key of keyCandidates) {
-            if (await tryUpdate(key, false)) break;
+          if (Array.isArray(data) && data.length) {
+            const doc = data[0] || {};
+            state.cloudDocId = doc.id || null;
+            state.cloudDocKey = doc.doc_key || docKey;
+            state.cloudUpdatedAt = doc.updated_at || payload.updated_at;
+            saved = true;
+            return true;
           }
-        }
-        if (!saved) {
-          for (const key of keyCandidates) {
-            if (await tryUpdate(key, true)) break;
-          }
-        }
-        if (!saved) {
-          for (const key of keyCandidates) {
-            if (await tryInsert(key, false)) break;
-          }
-        }
-        if (!saved) {
-          for (const key of keyCandidates) {
-            if (await tryInsert(key, true)) break;
-          }
+          return false;
         }
 
+        await tryUpdateById(state.cloudDocId);
         if (!saved) {
-          throw lastError || new Error("Nu s-a putut salva în rf_documents.");
+          for (const key of keyCandidates) {
+            if (await tryUpdateByKey(key)) break;
+          }
         }
+        if (!saved) {
+          for (const key of keyCandidates) {
+            if (await tryInsert(key)) break;
+          }
+        }
+        if (!saved && !lastError) {
+          const { error } = await state.supabase
+            .from("rf_documents")
+            .upsert({ doc_key: keyCandidates[0] || PAGE_KEY, content: payload, updated_at: payload.updated_at }, { onConflict: "doc_key" });
+          if (error) lastError = error;
+          else {
+            state.cloudDocKey = keyCandidates[0] || PAGE_KEY;
+            state.cloudUpdatedAt = payload.updated_at;
+            saved = true;
+          }
+        }
+        if (!saved) throw lastError || new Error("Nu s-a putut salva în rf_documents.");
 
-        state.cloudDocId = null;
         state.dirty = false;
         state.source = "cloud";
         setModeStatus("Sursă: cloud", "success");
@@ -3123,8 +3117,7 @@ async function resolvePagePermissions() {
         return true;
       } catch (error) {
         console.error("saveCloud", error);
-        const errorText = getErrorText(error);
-        setCloudStatus(errorText ? `Cloud: salvare eșuată (${errorText})` : "Cloud: salvare eșuată, ai cache local", "danger");
+        setCloudStatus("Cloud: salvare eșuată, ai cache local", "danger");
         return false;
       } finally {
         state.syncInFlight = false;
@@ -3158,15 +3151,75 @@ async function resolvePagePermissions() {
     async function ensureSheetJs() {
       if (window.XLSX) return window.XLSX;
       if (!state.sheetJsPromise) {
-        state.sheetJsPromise = new Promise((resolve, reject) => {
-          const script = document.createElement("script");
-          script.src = "https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js";
-          script.onload = () => resolve(window.XLSX);
-          script.onerror = () => reject(new Error("Nu s-a putut încărca biblioteca XLSX."));
-          document.head.appendChild(script);
-        });
+        state.sheetJsPromise = (async () => {
+          const sources = [
+            "https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js",
+            "https://unpkg.com/xlsx@0.18.5/dist/xlsx.full.min.js"
+          ];
+
+          let lastError = null;
+          for (const src of sources) {
+            try {
+              await new Promise((resolve, reject) => {
+                const existing = Array.from(document.scripts).find(s => s.src === src);
+                if (existing && window.XLSX) {
+                  resolve();
+                  return;
+                }
+
+                const script = document.createElement("script");
+                script.src = src;
+                script.async = true;
+                script.onload = () => resolve();
+                script.onerror = () => reject(new Error(`Nu s-a putut încărca biblioteca XLSX din ${src}`));
+                document.head.appendChild(script);
+              });
+
+              if (window.XLSX) return window.XLSX;
+            } catch (error) {
+              lastError = error;
+            }
+          }
+
+          throw lastError || new Error("Nu s-a putut încărca biblioteca XLSX.");
+        })();
       }
       return state.sheetJsPromise;
+    }
+
+    function openExcelPicker() {
+      return new Promise((resolve) => {
+        const input = document.createElement("input");
+        input.type = "file";
+        input.accept = ".xlsx,.xls";
+        input.style.position = "fixed";
+        input.style.left = "-9999px";
+        input.style.top = "0";
+        input.style.opacity = "0";
+        input.style.pointerEvents = "none";
+        input.style.width = "1px";
+        input.style.height = "1px";
+        document.body.appendChild(input);
+
+        const cleanup = () => {
+          setTimeout(() => {
+            try { input.remove(); } catch (_) {}
+          }, 0);
+        };
+
+        input.addEventListener("change", () => {
+          const file = input.files && input.files[0] ? input.files[0] : null;
+          resolve(file);
+          cleanup();
+        }, { once: true });
+
+        try {
+          if (typeof input.showPicker === "function") input.showPicker();
+          else input.click();
+        } catch (_error) {
+          input.click();
+        }
+      });
     }
 
     async function exportExcel() {
@@ -3257,9 +3310,10 @@ async function resolvePagePermissions() {
         refreshUi(true);
       } catch (error) {
         console.error("importExcelFile", error);
-        alert("Importul Excel a eșuat.");
+        alert(`Importul Excel a eșuat.
+${error && error.message ? error.message : error}`);
       } finally {
-        dom.excelInput.value = "";
+        if (dom.excelInput) dom.excelInput.value = "";
       }
     }
 
@@ -3299,7 +3353,10 @@ async function resolvePagePermissions() {
       });
       dom.btnDelete.addEventListener("click", deleteSelected);
       dom.btnExport.addEventListener("click", exportExcel);
-      dom.btnImport.addEventListener("click", () => dom.excelInput.click());
+      dom.btnImport.addEventListener("click", async () => {
+        const file = await openExcelPicker();
+        if (file) await importExcelFile(file);
+      });
       dom.btnDashboard.addEventListener("click", goToDashboard);
       dom.excelInput.addEventListener("change", event => importExcelFile(event.target.files?.[0]));
       dom.btnRefresh.addEventListener("click", async () => {
