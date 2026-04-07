@@ -460,7 +460,6 @@
     const DEBITARI_FLOW_DOC_BASE_KEYS = ['debitate','debitari','debitate_otel','debitari_otel','DEBITATE','DEBITARI'];
     const DELIVERY_DOC_KEY = 'comenzi-livrare';
     const DELIVERY_DOC_ALIASES = ['comenzi-livrare','comenzi livrare'];
-    const DELIVERY_DOC_BASE_KEYS = ['comenzi-livrare','comenzi livrare','comenzi_livrare'];
     const FORJAT_INV_BASE_KEYS = ['inventar-forjat','inventar_forjat','inventar-forjate','inventar_forjate','inventar-piese-forjate','inventar_piese_forjate','stoc-forjate','stoc_forjate'];
     const LOCK_DOC_KEY = 'planificare-forja:locks';
     const PLAN_SYNC_CHANNEL_TOPIC = 'planificare-forja-sync';
@@ -1634,37 +1633,6 @@ function getDefaultPermissions(role){
       }catch(_e){}
       return [];
     }
-    async function queryDocsByPrefixes(prefixes){
-      const unique = Array.from(new Set((prefixes || []).map(trimText).filter(Boolean)));
-      if(!unique.length || !state.supabase) return [];
-      const settled = await Promise.allSettled(unique.map(prefix => {
-        return state.supabase
-          .from('rf_documents')
-          .select('*')
-          .ilike('doc_key', prefix + '%');
-      }));
-      const merged = [];
-      settled.forEach(result => {
-        if(!result || result.status !== 'fulfilled') return;
-        const value = result.value || {};
-        if(value.error || !Array.isArray(value.data)) return;
-        merged.push.apply(merged, value.data);
-      });
-      return merged;
-    }
-    function mergeDocsUnique(){
-      const seen = new Set();
-      const merged = [];
-      Array.from(arguments).forEach(list => {
-        (Array.isArray(list) ? list : []).forEach(doc => {
-          const key = trimText(doc && doc.doc_key) || ('doc-' + merged.length + '-' + Math.random().toString(36).slice(2));
-          if(seen.has(key)) return;
-          seen.add(key);
-          merged.push(doc);
-        });
-      });
-      return merged;
-    }
     async function writeDocumentCompat(docKey, payload){
       if(!state.supabase) throw new Error('Supabase indisponibil');
       const ts = payload && payload.updated_at ? payload.updated_at : nowIso();
@@ -2591,7 +2559,6 @@ function getDefaultPermissions(role){
           };
           (state.deliveryReadyByCell[cellKey] = state.deliveryReadyByCell[cellKey] || []).push(readyItem);
         });
-        const latestDeliveryMonthIso = getLatestDeliveryMonthIso(scopedOrders);
         const readyByCycle = Object.create(null);
         Object.keys(state.deliveryReadyByCell).forEach(key => {
           state.deliveryReadyByCell[key].sort((a,b) => String(a.deliveryIso).localeCompare(String(b.deliveryIso), 'ro', { sensitivity:'base' }) || Number(a.monthSeq || 0) - Number(b.monthSeq || 0) || String(a.transportLabel || '').localeCompare(String(b.transportLabel || ''), 'ro', { sensitivity:'base' }));
@@ -2611,11 +2578,8 @@ function getDefaultPermissions(role){
           });
           if(last){
             const readyMonthIso = trimText(last.readyDateIso).slice(0,7);
-            const deliveryMonthIso = getDeliveryMonthIso(last);
-            const isFinalDeliveryFromLatestMonth = !!(last.isCycleLast && latestDeliveryMonthIso && deliveryMonthIso === latestDeliveryMonthIso);
-            if(isFinalDeliveryFromLatestMonth && readyMonthIso && deliveryMonthIso && readyMonthIso === deliveryMonthIso){
-              last.finalTone = 'current';
-            }
+            const deliveryMonthIso = trimText(last.deliveryIso).slice(0,7);
+            last.finalTone = readyMonthIso && deliveryMonthIso && readyMonthIso === deliveryMonthIso ? 'current' : 'next';
           }
         });
       }catch(error){
@@ -2732,64 +2696,18 @@ function getDefaultPermissions(role){
       });
       return Array.from(new Set(keys));
     }
-    function buildDeliveryDocKeys(year){
-      const baseKeys = Array.isArray(DELIVERY_DOC_BASE_KEYS) && DELIVERY_DOC_BASE_KEYS.length ? DELIVERY_DOC_BASE_KEYS : DELIVERY_DOC_ALIASES;
-      const y = Number(trimText(year) || 0);
-      const years = [y - 1, y, y + 1].filter(value => Number.isFinite(value) && value > 0);
-      const keys = [];
-      baseKeys.forEach(base => {
-        years.forEach(oneYear => {
-          keys.push(base + ':' + oneYear);
-          keys.push(base + '_' + oneYear);
-          keys.push(base + '-' + oneYear);
-          keys.push(base + '/' + oneYear);
-        });
-        keys.push(base + ':index');
-        keys.push(base + '_index');
-        keys.push(base + '-index');
-        keys.push(base);
-      });
-      return Array.from(new Set(keys.concat(DELIVERY_DOC_ALIASES)));
-    }
-    function buildDeliveryDocPrefixes(){
-      const baseKeys = Array.isArray(DELIVERY_DOC_BASE_KEYS) && DELIVERY_DOC_BASE_KEYS.length ? DELIVERY_DOC_BASE_KEYS : DELIVERY_DOC_ALIASES;
-      return Array.from(new Set(baseKeys.concat(DELIVERY_DOC_ALIASES).concat(['comenzi livrare','comenzi-livrare','comenzi_livrare'])));
-    }
     async function loadDeliveryOrders(){
       if(!state.supabase) return { rows:[], source:'-', ok:false };
-      const keys = buildDeliveryDocKeys(state.activeYear || CURRENT_YEAR);
-      const prefixes = buildDeliveryDocPrefixes();
-      const exactDocs = await queryDocsByKeys(keys);
-      const prefixDocs = await queryDocsByPrefixes(prefixes);
-      const docs = mergeDocsUnique(exactDocs, prefixDocs);
+      const docs = await queryDocsByKeys(DELIVERY_DOC_ALIASES);
       const picked = (() => {
-        for(const key of keys){
+        for(const key of DELIVERY_DOC_ALIASES){
           const doc = docs.find(item => item.doc_key === key && extractRowsPayload(item.content || item.data).length);
           if(doc) return doc;
         }
         return docs.find(item => extractRowsPayload(item.content || item.data).length) || docs[0] || null;
       })();
       if(!picked) return { rows:[], source:'comenzi-livrare lipsă', ok:false };
-      const rows = [];
-      const seen = new Set();
-      docs.forEach(doc => {
-        const extracted = extractRowsPayload(doc.content || doc.data)
-          .map(normalizeDeliveryOrderRow)
-          .filter(row => row.reper && row.dataLivrare && row.cantitate > 0);
-        extracted.forEach((row, index) => {
-          const semanticKey = [
-            trimText(row.dataLivrare),
-            getCanonicalDeliveryReperKey(row.reper) || normalizeDeliveryReperLoose(row.reper),
-            trimText(row.nrTransport),
-            String(Math.max(0, Math.round(toNumber(row.cantitate))))
-          ].join('|');
-          const safeKey = semanticKey !== '|||0' ? semanticKey : (String(doc.doc_key || '') + '|' + String(index));
-          if(seen.has(safeKey)) return;
-          seen.add(safeKey);
-          rows.push(row);
-        });
-      });
-      rows.sort(compareDeliveryOrders);
+      const rows = extractRowsPayload(picked.content || picked.data).map(normalizeDeliveryOrderRow).filter(row => row.reper && row.dataLivrare && row.cantitate > 0);
       return { rows, source:picked.doc_key || DELIVERY_DOC_KEY, ok:rows.length > 0 };
     }
     async function loadInventarForjatRows(year){
@@ -2836,22 +2754,6 @@ function getDefaultPermissions(role){
       const reperKey = getCanonicalDeliveryReperKey(order && order.reper);
       if(!an || !lunaNum || !reperKey) return '';
       return [String(an), String(lunaNum), reperKey].join('|');
-    }
-    function getDeliveryMonthIso(order){
-      const deliveryIso = trimText(order && order.dataLivrare);
-      if(/^\d{4}-\d{2}-\d{2}$/.test(deliveryIso)) return deliveryIso.slice(0,7);
-      const an = Number(order && order.an) || 0;
-      const lunaNum = getDeliveryOrderMonthNumber(order);
-      if(!an || !lunaNum) return '';
-      return String(an).padStart(4,'0') + '-' + String(lunaNum).padStart(2,'0');
-    }
-    function getLatestDeliveryMonthIso(orders){
-      let latest = '';
-      (Array.isArray(orders) ? orders : []).forEach(order => {
-        const monthIso = getDeliveryMonthIso(order);
-        if(monthIso && (!latest || monthIso > latest)) latest = monthIso;
-      });
-      return latest;
     }
     function getPreviousCommittedDeliveryQty(targetOrder, scopedOrders, afterExclusiveIso){
       const reperKey = getCanonicalDeliveryReperKey(targetOrder && targetOrder.reper);
@@ -2997,14 +2899,10 @@ function getDefaultPermissions(role){
       const risk = Array.isArray(summary && summary.futureRisk) ? summary.futureRisk : [];
       const late = Array.isArray(summary && summary.futureLate) ? summary.futureLate : [];
       const ahead = Array.isArray(summary && summary.futureAhead) ? summary.futureAhead : [];
-      const planUncovered = Array.isArray(summary && summary.planUncovered) ? summary.planUncovered : [];
-      if(!overdue.length && !risk.length && !late.length && !ahead.length && !planUncovered.length){
-        return '<div class="delivery-tip-title">Alerte active livrare</div><div class="delivery-tip-empty">Nu există livrări restante, comenzi neacoperite în planificare, întârzieri D-2 sau avansuri D-4 active.</div>';
+      if(!overdue.length && !risk.length && !late.length && !ahead.length){
+        return '<div class="delivery-tip-title">Alerte active livrare</div><div class="delivery-tip-empty">Nu există livrări restante, riscuri până la livrare, întârzieri D-2 sau avansuri D-4 active.</div>';
       }
       let html = '<div class="delivery-tip-title">Alerte active livrare</div>';
-      if(planUncovered.length){
-        html += '<div class="delivery-tip-section"><div class="delivery-tip-section-title late">Comenzi neacoperite în planificare • ' + escapeHtml(String(planUncovered.length)) + '</div><div class="delivery-tip-list">' + planUncovered.map(item => buildDeliveryAlertItemHtml(item, 'late')).join('') + '</div></div>';
-      }
       if(overdue.length){
         html += '<div class="delivery-tip-section"><div class="delivery-tip-section-title late">Livrări în urmă • ' + escapeHtml(String(overdue.length)) + '</div><div class="delivery-tip-list">' + overdue.map(item => buildDeliveryAlertItemHtml(item, 'late')).join('') + '</div></div>';
       }
@@ -3021,16 +2919,14 @@ function getDefaultPermissions(role){
     }
     function updateDeliveryIndicator(){
       if(!els.deliveryAlertButton || !els.deliveryAlertText) return;
-      const summary = state.deliverySupport && state.deliverySupport.alertSummary ? state.deliverySupport.alertSummary : { late:0, ahead:0, risk:0, tone:'neutral', overdueLate:[], futureRisk:[], futureLate:[], futureAhead:[], planUncovered:[] };
+      const summary = state.deliverySupport && state.deliverySupport.alertSummary ? state.deliverySupport.alertSummary : { late:0, ahead:0, risk:0, tone:'neutral', overdueLate:[], futureRisk:[], futureLate:[], futureAhead:[] };
       const overdueCount = Array.isArray(summary.overdueLate) ? summary.overdueLate.length : 0;
       const riskCount = Array.isArray(summary.futureRisk) ? summary.futureRisk.length : 0;
       const lateCount = Array.isArray(summary.futureLate) ? summary.futureLate.length : 0;
       const aheadCount = Array.isArray(summary.futureAhead) ? summary.futureAhead.length : 0;
-      const planUncoveredCount = Array.isArray(summary.planUncovered) ? summary.planUncovered.length : 0;
-      const tone = overdueCount > 0 || riskCount > 0 || lateCount > 0 || planUncoveredCount > 0 ? 'late' : (aheadCount > 0 ? 'ahead' : 'neutral');
+      const tone = overdueCount > 0 || riskCount > 0 || lateCount > 0 ? 'late' : (aheadCount > 0 ? 'ahead' : 'neutral');
       els.deliveryAlertButton.className = 'delivery-alert-button is-' + tone;
-      if(planUncoveredCount > 0) els.deliveryAlertText.textContent = 'Neacoperite în plan: ' + planUncoveredCount;
-      else if(overdueCount > 0) els.deliveryAlertText.textContent = 'În urmă livrări: ' + overdueCount;
+      if(overdueCount > 0) els.deliveryAlertText.textContent = 'În urmă livrări: ' + overdueCount;
       else if(riskCount > 0) els.deliveryAlertText.textContent = 'Risc livrare: ' + riskCount;
       else if(lateCount > 0) els.deliveryAlertText.textContent = 'Întârzieri D-2: ' + lateCount;
       else if(aheadCount > 0) els.deliveryAlertText.textContent = 'Avans D-4: ' + aheadCount;
@@ -3040,7 +2936,7 @@ function getDefaultPermissions(role){
     }
     function buildDeliveryFooterSummary(){
       try{
-        const summary = state.deliverySupport && state.deliverySupport.alertSummary ? state.deliverySupport.alertSummary : { late:0, ahead:0, risk:0, overdueLate:[], futureRisk:[], futureLate:[], futureAhead:[], planUncovered:[] };
+        const summary = state.deliverySupport && state.deliverySupport.alertSummary ? state.deliverySupport.alertSummary : { late:0, ahead:0, risk:0, overdueLate:[], futureRisk:[], futureLate:[], futureAhead:[] };
         const sourceOrders = Array.isArray(state.deliverySupport && state.deliverySupport.orders) ? state.deliverySupport.orders : [];
         const ordersCount = sourceOrders.filter(order => {
           const deliveryIso = trimText(order && order.dataLivrare);
@@ -3054,8 +2950,7 @@ function getDefaultPermissions(role){
         const riskCount = Array.isArray(summary.futureRisk) ? summary.futureRisk.length : 0;
         const lateCount = Array.isArray(summary.futureLate) ? summary.futureLate.length : 0;
         const aheadCount = Array.isArray(summary.futureAhead) ? summary.futureAhead.length : 0;
-        const planUncoveredCount = Array.isArray(summary.planUncovered) ? summary.planUncovered.length : 0;
-        return ' Comenzi livrare active: ' + String(ordersCount) + ' • neacoperite în planificare = ' + String(planUncoveredCount) + ' • în urmă = ' + String(overdueCount) + ' • risc până la livrare = ' + String(riskCount) + ' • întârzieri D-2 = ' + String(lateCount) + ' • avans D-4 = ' + String(aheadCount) + '.';
+        return ' Comenzi livrare active: ' + String(ordersCount) + ' • în urmă = ' + String(overdueCount) + ' • risc până la livrare = ' + String(riskCount) + ' • întârzieri D-2 = ' + String(lateCount) + ' • avans D-4 = ' + String(aheadCount) + '.';
       }catch(error){
         console.warn('buildDeliveryFooterSummary', error);
         return ' Comenzi livrare: sumar indisponibil momentan.';
@@ -3070,7 +2965,7 @@ function getDefaultPermissions(role){
           if(!deliveryIso || !reper || cantitate <= 0) return false;
           return !state.activeYear || String(order.an || deliveryIso.slice(0,4)) === String(state.activeYear);
         }).slice().sort(compareDeliveryOrders);
-        const summary = { late:0, ahead:0, risk:0, tone:'neutral', overdueLate:[], futureRisk:[], futureLate:[], futureAhead:[], planUncovered:[] };
+        const summary = { late:0, ahead:0, risk:0, tone:'neutral', overdueLate:[], futureRisk:[], futureLate:[], futureAhead:[] };
         if(!scopedOrders.length){
           state.deliverySupport.alertSummary = summary;
           updateDeliveryIndicator();
@@ -3090,7 +2985,7 @@ function getDefaultPermissions(role){
           if(deliveryIso <= TODAY_ISO){
             if(metrics.shortageDelivery > 0){
               summary.late += 1;
-              const uncoveredItem = {
+              summary.overdueLate.push({
                 tone: 'late',
                 label,
                 reper,
@@ -3102,16 +2997,14 @@ function getDefaultPermissions(role){
                 alertLabel: deliveryIso === TODAY_ISO ? 'Astăzi' : 'Restanță',
                 deliveryIso,
                 message: (deliveryIso === TODAY_ISO ? 'Neacoperit la livrare ' : 'În urmă la livrare ') + label + ' = ' + roMaybeNumber(metrics.shortageDelivery) + ' buc lipsă'
-              };
-              summary.overdueLate.push(uncoveredItem);
-              summary.planUncovered.push({ ...uncoveredItem, alertLabel: 'Planificare' });
+              });
             }
             return;
           }
           if(metrics.shortageDelivery > 0){
             if(readyMinus2Iso && readyMinus2Iso <= TODAY_ISO){
               summary.late += 1;
-              const lateItem = {
+              summary.futureLate.push({
                 tone: 'late',
                 label,
                 reper,
@@ -3123,13 +3016,11 @@ function getDefaultPermissions(role){
                 alertLabel: 'D-2',
                 deliveryIso,
                 message: 'Întârziere ' + label + ' = ' + roMaybeNumber(metrics.shortageDelivery) + ' buc lipsă la livrare'
-              };
-              summary.futureLate.push(lateItem);
-              summary.planUncovered.push({ ...lateItem, alertLabel: 'Planificare' });
+              });
               return;
             }
             summary.risk += 1;
-            const riskItem = {
+            summary.futureRisk.push({
               tone: 'late',
               label,
               reper,
@@ -3141,9 +3032,7 @@ function getDefaultPermissions(role){
               alertLabel: 'Livrare',
               deliveryIso,
               message: 'Risc ' + label + ' = ' + roMaybeNumber(metrics.shortageDelivery) + ' buc lipsă până la livrare'
-            };
-            summary.futureRisk.push(riskItem);
-            summary.planUncovered.push({ ...riskItem, alertLabel: 'Planificare' });
+            });
             return;
           }
           if(metrics.shortageD2 > 0 && readyMinus2Iso && readyMinus2Iso <= TODAY_ISO){
@@ -3184,17 +3073,12 @@ function getDefaultPermissions(role){
         summary.futureRisk.sort((a,b) => String(a.deliveryIso).localeCompare(String(b.deliveryIso), 'ro', { sensitivity:'base' }) || String(a.label).localeCompare(String(b.label), 'ro', { sensitivity:'base' }));
         summary.futureLate.sort((a,b) => String(a.alertDate).localeCompare(String(b.alertDate), 'ro', { sensitivity:'base' }) || String(a.label).localeCompare(String(b.label), 'ro', { sensitivity:'base' }));
         summary.futureAhead.sort((a,b) => String(a.alertDate).localeCompare(String(b.alertDate), 'ro', { sensitivity:'base' }) || String(a.label).localeCompare(String(b.label), 'ro', { sensitivity:'base' }));
-        summary.planUncovered = summary.planUncovered.filter((item, index, arr) => {
-          const key = [trimText(item && item.deliveryIso), trimText(item && item.transportLabel), trimText(item && item.reper), String(Math.max(0, Math.round(toNumber(item && item.orderQty))))].join('|');
-          return arr.findIndex(other => [trimText(other && other.deliveryIso), trimText(other && other.transportLabel), trimText(other && other.reper), String(Math.max(0, Math.round(toNumber(other && other.orderQty))))].join('|') === key) === index;
-        });
-        summary.planUncovered.sort((a,b) => String(a.deliveryIso).localeCompare(String(b.deliveryIso), 'ro', { sensitivity:'base' }) || String(a.label).localeCompare(String(b.label), 'ro', { sensitivity:'base' }));
-        summary.tone = summary.planUncovered.length > 0 || summary.overdueLate.length > 0 || summary.futureRisk.length > 0 || summary.futureLate.length > 0 ? 'late' : (summary.futureAhead.length > 0 ? 'ahead' : 'neutral');
+        summary.tone = summary.overdueLate.length > 0 || summary.futureRisk.length > 0 || summary.futureLate.length > 0 ? 'late' : (summary.futureAhead.length > 0 ? 'ahead' : 'neutral');
         state.deliverySupport.alertSummary = summary;
         updateDeliveryIndicator();
       }catch(error){
         console.error('rebuildDeliveryAlerts', error);
-        state.deliverySupport.alertSummary = { late:0, ahead:0, risk:0, tone:'neutral', overdueLate:[], futureRisk:[], futureLate:[], futureAhead:[], planUncovered:[] };
+        state.deliverySupport.alertSummary = { late:0, ahead:0, risk:0, tone:'neutral', overdueLate:[], futureRisk:[], futureLate:[], futureAhead:[] };
         updateDeliveryIndicator();
       }
     }
@@ -3690,7 +3574,7 @@ function getDefaultPermissions(role){
             const realizedClass = (planValue > 0 && realized.value >= planValue) ? 'ok' : ((planValue > 0 && realized.value < planValue && realized.value > 0) ? 'warn' : '');
             const reperReadyClass = readyItems.length ? ' delivery-ready-reper-marker' : '';
             const reperFinalDarkClass = readyItems.some(item => item && item.isCycleLast && item.finalTone === 'current') ? ' delivery-ready-cycle-final-current' : '';
-            const reperFinalLightClass = '';
+            const reperFinalLightClass = !reperFinalDarkClass && readyItems.some(item => item && item.isCycleLast && item.finalTone === 'next') ? ' delivery-ready-cycle-final-next' : '';
             const tdReperFinalClass = reperFinalDarkClass || reperFinalLightClass;
             const hideReperDuplicate = !!(mask.hideReper && !readyItems.length);
             const hidePlanDuplicate = !!mask.hidePlan;
