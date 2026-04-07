@@ -460,6 +460,7 @@
     const DEBITARI_FLOW_DOC_BASE_KEYS = ['debitate','debitari','debitate_otel','debitari_otel','DEBITATE','DEBITARI'];
     const DELIVERY_DOC_KEY = 'comenzi-livrare';
     const DELIVERY_DOC_ALIASES = ['comenzi-livrare','comenzi livrare'];
+    const DELIVERY_DOC_BASE_KEYS = ['comenzi-livrare','comenzi livrare','comenzi_livrare'];
     const FORJAT_INV_BASE_KEYS = ['inventar-forjat','inventar_forjat','inventar-forjate','inventar_forjate','inventar-piese-forjate','inventar_piese_forjate','stoc-forjate','stoc_forjate'];
     const LOCK_DOC_KEY = 'planificare-forja:locks';
     const PLAN_SYNC_CHANNEL_TOPIC = 'planificare-forja-sync';
@@ -2302,13 +2303,15 @@ function getDefaultPermissions(role){
     async function refreshSupportData(forceRefresh){
       await loadHelperMaps(forceRefresh);
       const targetYear = state.activeYear || CURRENT_YEAR;
-      const steel = await loadSteelStock(forceRefresh);
-      const debitat = await loadDebitatStock(targetYear);
-      const intrari = await loadIntrariOtelEntries(targetYear);
-      const debitari = await loadDebitariEntries(targetYear);
-      const forjateFlow = await loadForjateDailyMovements(targetYear);
-      const deliveryOrders = await loadDeliveryOrders();
-      const inventarForjat = await loadInventarForjatRows(targetYear);
+      const [steel, debitat, intrari, debitari, forjateFlow, deliveryOrders, inventarForjat] = await Promise.all([
+        loadSteelStock(forceRefresh),
+        loadDebitatStock(targetYear),
+        loadIntrariOtelEntries(targetYear),
+        loadDebitariEntries(targetYear),
+        loadForjateDailyMovements(targetYear),
+        loadDeliveryOrders(),
+        loadInventarForjatRows(targetYear)
+      ]);
 
       const notes = [];
       notes.push('Helper: ' + (state.helperMaps.source || '-'));
@@ -2625,7 +2628,7 @@ function getDefaultPermissions(role){
         });
         const readyByCycle = Object.create(null);
         Object.keys(state.deliveryReadyByCell).forEach(key => {
-          state.deliveryReadyByCell[key].sort((a,b) => String(a.deliveryIso).localeCompare(String(b.deliveryIso), 'ro', { sensitivity:'base' }) || Number(a.monthSeq || 0) - Number(b.monthSeq || 0) || String(a.transportLabel || '').localeCompare(String(b.transportLabel || ''), 'ro', { sensitivity:'base' }));
+          state.deliveryReadyByCell[key].sort((a,b) => String(a.deliveryIso).localeCompare(String(b.deliveryIso), 'ro', { sensitivity:'base' }) || Number(a.monthSeq || 0) - Number(b.monthSeq || 0) || getDeliveryTransportNumber(a && a.transportLabel) - getDeliveryTransportNumber(b && b.transportLabel) || String(a.transportLabel || '').localeCompare(String(b.transportLabel || ''), 'ro', { sensitivity:'base' }));
           state.deliveryReadyByCell[key].forEach(item => {
             const cycleKey = trimText(item && item.cycleKey);
             if(!cycleKey) return;
@@ -2633,7 +2636,7 @@ function getDefaultPermissions(role){
           });
         });
         Object.keys(readyByCycle).forEach(cycleKey => {
-          const list = readyByCycle[cycleKey].slice().sort((a,b) => String(a.deliveryIso).localeCompare(String(b.deliveryIso), 'ro', { sensitivity:'base' }) || Number(a.monthSeq || 0) - Number(b.monthSeq || 0) || String(a.transportLabel || '').localeCompare(String(b.transportLabel || ''), 'ro', { sensitivity:'base' }));
+          const list = readyByCycle[cycleKey].slice().sort((a,b) => String(a.deliveryIso).localeCompare(String(b.deliveryIso), 'ro', { sensitivity:'base' }) || Number(a.monthSeq || 0) - Number(b.monthSeq || 0) || getDeliveryTransportNumber(a && a.transportLabel) - getDeliveryTransportNumber(b && b.transportLabel) || String(a.transportLabel || '').localeCompare(String(b.transportLabel || ''), 'ro', { sensitivity:'base' }));
           const last = list[list.length - 1];
           list.forEach(item => {
             item.cycleCount = list.length;
@@ -2760,18 +2763,51 @@ function getDefaultPermissions(role){
       });
       return Array.from(new Set(keys));
     }
+    function buildDeliveryDocKeys(year){
+      const baseKeys = Array.isArray(DELIVERY_DOC_BASE_KEYS) && DELIVERY_DOC_BASE_KEYS.length ? DELIVERY_DOC_BASE_KEYS : DELIVERY_DOC_ALIASES;
+      const y = Number(trimText(year) || 0);
+      const years = [y - 1, y, y + 1].filter(value => Number.isFinite(value) && value > 0);
+      const keys = [];
+      baseKeys.forEach(base => {
+        years.forEach(oneYear => keys.push(base + ':' + oneYear));
+        keys.push(base + ':index');
+        keys.push(base);
+      });
+      return queryKeys(keys.concat(DELIVERY_DOC_ALIASES));
+    }
     async function loadDeliveryOrders(){
       if(!state.supabase) return { rows:[], source:'-', ok:false };
-      const docs = await queryDocsByKeys(DELIVERY_DOC_ALIASES);
+      const keys = buildDeliveryDocKeys(state.activeYear || CURRENT_YEAR);
+      const docs = await queryDocsByKeys(keys);
       const picked = (() => {
-        for(const key of DELIVERY_DOC_ALIASES){
+        for(const key of keys){
           const doc = docs.find(item => item.doc_key === key && extractRowsPayload(item.content || item.data).length);
           if(doc) return doc;
         }
         return docs.find(item => extractRowsPayload(item.content || item.data).length) || docs[0] || null;
       })();
       if(!picked) return { rows:[], source:'comenzi-livrare lipsă', ok:false };
-      const rows = extractRowsPayload(picked.content || picked.data).map(normalizeDeliveryOrderRow).filter(row => row.reper && row.dataLivrare && row.cantitate > 0);
+      const rows = [];
+      const seen = new Set();
+      docs.forEach(doc => {
+        const extracted = extractRowsPayload(doc.content || doc.data)
+          .map(normalizeDeliveryOrderRow)
+          .filter(row => row.reper && row.dataLivrare && row.cantitate > 0);
+        extracted.forEach((row, index) => {
+          const key = [
+            trimText(row.id),
+            trimText(row.dataLivrare),
+            trimText(row.reper),
+            trimText(row.nrTransport),
+            String(Math.max(0, Math.round(toNumber(row.cantitate))))
+          ].join('|');
+          const safeKey = key !== '||||0' ? key : (String(doc.doc_key || '') + '|' + String(index));
+          if(seen.has(safeKey)) return;
+          seen.add(safeKey);
+          rows.push(row);
+        });
+      });
+      rows.sort(compareDeliveryOrders);
       return { rows, source:picked.doc_key || DELIVERY_DOC_KEY, ok:rows.length > 0 };
     }
     async function loadInventarForjatRows(year){
@@ -4725,22 +4761,29 @@ function getDefaultPermissions(role){
       const accessOk = await initAuth();
       if(accessOk === false) return;
 
-      await loadPlanDocument(true);
-      if(!Array.isArray(state.rows) || !state.rows.length) state.rows = cloneSeedRows();
-      ensureFilters();
-      renderFilters();
-      try{
-        updateRepereDatalist();
-      }catch(error){
-        console.error('boot.updateRepereDatalist', error);
-      }
-      try{
-        renderTable(false);
-      }catch(error){
-        console.error('boot.initialRender', error);
-      }
-      restoreUiState(openUiState);
-      updateRowActionUi();
+      setTimeout(async () => {
+        try{
+          await loadPlanDocument(true);
+          if(!Array.isArray(state.rows) || !state.rows.length) state.rows = cloneSeedRows();
+          ensureFilters();
+          renderFilters();
+          try{
+            updateRepereDatalist();
+          }catch(error){
+            console.error('boot.updateRepereDatalist', error);
+          }
+          try{
+            renderTable(false);
+          }catch(error){
+            console.error('boot.initialRender', error);
+          }
+          restoreUiState(openUiState);
+          updateRowActionUi();
+        }catch(error){
+          console.error('boot.deferredLoadPlanDocument', error);
+        }
+      }, 0);
+
       setTimeout(() => {
         startCollaborativeSync();
         scheduleInitialLiveHydration(openUiState);
