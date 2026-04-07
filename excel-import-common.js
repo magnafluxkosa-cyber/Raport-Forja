@@ -65,12 +65,14 @@
     }, 0);
   }
 
-  function pickFile(options = {}) {
+  function pickFiles(options = {}) {
     const accept = options.accept || '.xlsx,.xls';
+    const multiple = !!options.multiple;
     return new Promise((resolve, reject) => {
       const input = document.createElement('input');
       input.type = 'file';
       input.accept = accept;
+      input.multiple = multiple;
       input.style.position = 'fixed';
       input.style.left = '-9999px';
       input.style.top = '0';
@@ -79,11 +81,11 @@
       document.body.appendChild(input);
 
       let settled = false;
-      const finish = (file) => {
+      const finish = (files) => {
         if (settled) return;
         settled = true;
         cleanupInput(input);
-        resolve(file || null);
+        resolve(Array.isArray(files) ? files : []);
       };
       const fail = (error) => {
         if (settled) return;
@@ -92,8 +94,11 @@
         reject(error);
       };
 
-      input.addEventListener('change', () => finish(input.files && input.files[0] ? input.files[0] : null), { once: true });
-      input.addEventListener('cancel', () => finish(null), { once: true });
+      input.addEventListener('change', () => {
+        const files = Array.from(input.files || []);
+        finish(files);
+      }, { once: true });
+      input.addEventListener('cancel', () => finish([]), { once: true });
 
       try {
         if (typeof input.showPicker === 'function') input.showPicker();
@@ -107,8 +112,13 @@
         }
       }
 
-      setTimeout(() => finish(input.files && input.files[0] ? input.files[0] : null), options.timeoutMs || 120000);
+      setTimeout(() => finish(Array.from(input.files || [])), options.timeoutMs || 120000);
     });
+  }
+
+  async function pickFile(options = {}) {
+    const files = await pickFiles({ ...options, multiple: false });
+    return files[0] || null;
   }
 
   function findHeaderRow(rawArrays, expectedHeaders, aliases = {}) {
@@ -183,6 +193,7 @@
 
   global.RFExcelImport = {
     ensureSheetJs,
+    pickFiles,
     pickFile,
     normalizeText,
     findHeaderRow,

@@ -1223,6 +1223,7 @@
 
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="./rf-config.js"></script>
+  <script src="./excel-import-common.js"></script>
   <script>
     const PAGE_KEY = "probleme-raportate";
     const DOC_KEYS = ["probleme-raportate", "probleme_raportate", "Probleme Raportate"];
@@ -3149,77 +3150,20 @@ async function resolvePagePermissions() {
     }
 
     async function ensureSheetJs() {
+      if (window.RFExcelImport && typeof window.RFExcelImport.ensureSheetJs === "function") {
+        return window.RFExcelImport.ensureSheetJs();
+      }
       if (window.XLSX) return window.XLSX;
       if (!state.sheetJsPromise) {
-        state.sheetJsPromise = (async () => {
-          const sources = [
-            "https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js",
-            "https://unpkg.com/xlsx@0.18.5/dist/xlsx.full.min.js"
-          ];
-
-          let lastError = null;
-          for (const src of sources) {
-            try {
-              await new Promise((resolve, reject) => {
-                const existing = Array.from(document.scripts).find(s => s.src === src);
-                if (existing && window.XLSX) {
-                  resolve();
-                  return;
-                }
-
-                const script = document.createElement("script");
-                script.src = src;
-                script.async = true;
-                script.onload = () => resolve();
-                script.onerror = () => reject(new Error(`Nu s-a putut încărca biblioteca XLSX din ${src}`));
-                document.head.appendChild(script);
-              });
-
-              if (window.XLSX) return window.XLSX;
-            } catch (error) {
-              lastError = error;
-            }
-          }
-
-          throw lastError || new Error("Nu s-a putut încărca biblioteca XLSX.");
-        })();
+        state.sheetJsPromise = new Promise((resolve, reject) => {
+          const script = document.createElement("script");
+          script.src = "https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js";
+          script.onload = () => resolve(window.XLSX);
+          script.onerror = () => reject(new Error("Nu s-a putut încărca biblioteca XLSX."));
+          document.head.appendChild(script);
+        });
       }
       return state.sheetJsPromise;
-    }
-
-    function openExcelPicker() {
-      return new Promise((resolve) => {
-        const input = document.createElement("input");
-        input.type = "file";
-        input.accept = ".xlsx,.xls";
-        input.style.position = "fixed";
-        input.style.left = "-9999px";
-        input.style.top = "0";
-        input.style.opacity = "0";
-        input.style.pointerEvents = "none";
-        input.style.width = "1px";
-        input.style.height = "1px";
-        document.body.appendChild(input);
-
-        const cleanup = () => {
-          setTimeout(() => {
-            try { input.remove(); } catch (_) {}
-          }, 0);
-        };
-
-        input.addEventListener("change", () => {
-          const file = input.files && input.files[0] ? input.files[0] : null;
-          resolve(file);
-          cleanup();
-        }, { once: true });
-
-        try {
-          if (typeof input.showPicker === "function") input.showPicker();
-          else input.click();
-        } catch (_error) {
-          input.click();
-        }
-      });
     }
 
     async function exportExcel() {
@@ -3284,12 +3228,34 @@ async function resolvePagePermissions() {
       }
 
       try {
-        const XLSX = await ensureSheetJs();
-        const buffer = await file.arrayBuffer();
-        const wb = XLSX.read(buffer, { type: "array" });
-        const firstSheet = wb.Sheets[wb.SheetNames[0]];
-        const rawRows = XLSX.utils.sheet_to_json(firstSheet, { defval: "" });
-        const imported = rawRows.map(normalizeRow).filter(row => row.an || row.luna || row.data || row.utilaj || row.reper);
+        const result = window.RFExcelImport && typeof window.RFExcelImport.importWorkbook === "function"
+          ? await window.RFExcelImport.importWorkbook({
+              file,
+              expectedHeaders: [
+                "ANUL",
+                "LUNA",
+                "DATA",
+                "SCHIMBUL",
+                "UTILAJ",
+                "REPER",
+                "Timp Minute Pierdute",
+                "Observații",
+                "Denumire operațiune",
+                "Departament",
+                "Planificat (DA/NU)"
+              ],
+              aliases: {
+                "Observații": ["Observatii"],
+                "Denumire operațiune": ["Denumire operatiune", "Operatiune", "Operațiune"],
+                "Planificat (DA/NU)": ["Planificat", "Planificat DA NU"]
+              },
+              normalizeRow
+            })
+          : null;
+
+        const imported = result
+          ? result.normalizedRows.filter(row => row.an || row.luna || row.data || row.utilaj || row.reper)
+          : [];
 
         if (!imported.length) {
           alert("Fișierul nu conține rânduri valide.");
@@ -3310,8 +3276,7 @@ async function resolvePagePermissions() {
         refreshUi(true);
       } catch (error) {
         console.error("importExcelFile", error);
-        alert(`Importul Excel a eșuat.
-${error && error.message ? error.message : error}`);
+        alert("Importul Excel a eșuat. " + (error && error.message ? error.message : ""));
       } finally {
         if (dom.excelInput) dom.excelInput.value = "";
       }
@@ -3354,8 +3319,17 @@ ${error && error.message ? error.message : error}`);
       dom.btnDelete.addEventListener("click", deleteSelected);
       dom.btnExport.addEventListener("click", exportExcel);
       dom.btnImport.addEventListener("click", async () => {
-        const file = await openExcelPicker();
-        if (file) await importExcelFile(file);
+        try {
+          if (window.RFExcelImport && typeof window.RFExcelImport.pickFile === "function") {
+            const file = await window.RFExcelImport.pickFile({ accept: ".xlsx,.xls" });
+            if (file) await importExcelFile(file);
+            return;
+          }
+          if (dom.excelInput) dom.excelInput.click();
+        } catch (error) {
+          console.error("btnImport", error);
+          alert("Nu am putut deschide selectorul de fișier.");
+        }
       });
       dom.btnDashboard.addEventListener("click", goToDashboard);
       dom.excelInput.addEventListener("change", event => importExcelFile(event.target.files?.[0]));
@@ -3520,5 +3494,7 @@ ${error && error.message ? error.message : error}`);
   <script src="./kad-logo.js"></script>
 
 <script src="./kad-nav-shell.js"></script>
+
+<script src="./excel-import-bootstrap.js"></script>
 </body>
 </html>
