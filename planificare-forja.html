@@ -463,9 +463,13 @@
     const FORJAT_INV_BASE_KEYS = ['inventar-forjat','inventar_forjat','inventar-forjate','inventar_forjate','inventar-piese-forjate','inventar_piese_forjate','stoc-forjate','stoc_forjate'];
     const LOCK_DOC_KEY = 'planificare-forja:locks';
     const PLAN_SYNC_CHANNEL_TOPIC = 'planificare-forja-sync';
-    const PLAN_SYNC_INTERVAL_MS = 1200;
-    const LOCK_SYNC_INTERVAL_MS = 1200;
+    const PLAN_SYNC_INTERVAL_MS = 5000;
+    const LOCK_SYNC_INTERVAL_MS = 2500;
     const LOCK_HEARTBEAT_MS = 2500;
+    const PLAN_CACHE_KEY = 'planificare-forja:instant-cache:v1';
+    const PLAN_CACHE_MAX_AGE_MS = 12 * 60 * 60 * 1000;
+    const BOOT_LIVE_DELAY_MS = 180;
+    const COLLAB_SYNC_BOOT_DELAY_MS = 1100;
     const LOCK_TTL_MS = 9000;
     const SESSION_STORAGE_LOCK_KEY = 'planificare-forja:session-id';
     const PLAN_DB_SYNC_CHANNEL_TOPIC = 'planificare-forja-db-sync';
@@ -646,6 +650,66 @@
         .replace(/'/g,'&#39;');
     }
     function nowIso(){ return new Date().toISOString(); }
+    function nextPaint(){
+      return new Promise(resolve => {
+        if(typeof requestAnimationFrame === 'function'){
+          requestAnimationFrame(() => setTimeout(resolve, 0));
+        }else{
+          setTimeout(resolve, 0);
+        }
+      });
+    }
+    function persistInstantPlanCache(rows, updatedAt, source){
+      try{
+        if(!Array.isArray(rows) || !rows.length) return;
+        const payload = {
+          rows: rows,
+          updatedAt: trimText(updatedAt),
+          source: trimText(source || ''),
+          cachedAt: nowIso()
+        };
+        localStorage.setItem(PLAN_CACHE_KEY, JSON.stringify(payload));
+      }catch(error){
+        console.warn('persistInstantPlanCache', error);
+      }
+    }
+    function readInstantPlanCache(){
+      try{
+        const raw = localStorage.getItem(PLAN_CACHE_KEY);
+        if(!raw) return null;
+        const parsed = JSON.parse(raw);
+        const cachedAt = trimText(parsed && parsed.cachedAt);
+        if(cachedAt){
+          const age = Date.now() - new Date(cachedAt).getTime();
+          if(Number.isFinite(age) && age > PLAN_CACHE_MAX_AGE_MS) return null;
+        }
+        const rows = Array.isArray(parsed && parsed.rows) ? parsed.rows.map((row, index) => normalizePlanRow(row, index)) : [];
+        if(!rows.length) return null;
+        return {
+          rows: ensureRowsContinueToYearEnd(reindexRowsInDisplayOrder(sortRowsStable(rows))),
+          updatedAt: trimText(parsed && parsed.updatedAt),
+          source: trimText(parsed && parsed.source),
+          cachedAt
+        };
+      }catch(error){
+        console.warn('readInstantPlanCache', error);
+        return null;
+      }
+    }
+    function applyFastBootRows(rows, meta){
+      const normalizedRows = Array.isArray(rows) ? rows.map((row, index) => normalizePlanRow(row, index)) : [];
+      state.rows = normalizedRows.length ? ensureRowsContinueToYearEnd(reindexRowsInDisplayOrder(sortRowsStable(normalizedRows))) : cloneSeedRows();
+      state.updatedAt = trimText(meta && meta.updatedAt) || null;
+      state.hasPendingLocalChanges = false;
+      ensureFilters();
+      renderFilters();
+      try{ updateRepereDatalist(); }catch(error){ console.error('applyFastBootRows.updateRepereDatalist', error); }
+      try{ renderTable(false); }catch(error){ console.error('applyFastBootRows.renderTable', error); }
+      const cachedLabel = trimText(meta && meta.cachedAt) ? formatDateTime(meta.cachedAt) : 'cache local';
+      els.modePill.textContent = trimText(meta && meta.modeLabel) || 'Pornire rapidă';
+      els.cloudValue.textContent = trimText(meta && meta.cloudValue) || 'Pornire rapidă';
+      els.cloudSub.textContent = trimText(meta && meta.cloudSub) || ('Randare instant din ' + cachedLabel + '.');
+    }
     function roNumber(value){
       const n = Math.round(toNumber(value));
       return n ? safeText(n).replace(/\B(?=(\d{3})+(?!\d))/g,'.') : '0';
@@ -4197,6 +4261,7 @@ function getDefaultPermissions(role){
           }
         }
         state.hasPendingLocalChanges = false;
+        persistInstantPlanCache(state.rows, state.updatedAt, 'cloud-saved');
         els.cloudValue.textContent = 'Cloud salvat';
         els.cloudSub.textContent = 'Ultima sincronizare plan: ' + formatDateTime(state.updatedAt);
       }catch(error){
@@ -4234,6 +4299,7 @@ function getDefaultPermissions(role){
           state.rows = hydratedRows;
           state.updatedAt = remoteUpdated || nowIso();
           state.hasPendingLocalChanges = false;
+          persistInstantPlanCache(state.rows, state.updatedAt, 'cloud');
           els.cloudValue.textContent = 'Cloud încărcat';
           els.cloudSub.textContent = 'Ultima sincronizare plan: ' + formatDateTime(state.updatedAt);
           return;
@@ -4243,12 +4309,14 @@ function getDefaultPermissions(role){
           els.cloudSub.textContent = 'Ultima sincronizare plan: ' + formatDateTime(remoteUpdated || state.updatedAt);
           state.rows = state.rows.length ? state.rows : hydratedRows;
           state.hasPendingLocalChanges = false;
+          persistInstantPlanCache(state.rows, remoteUpdated || state.updatedAt, 'cloud');
           return;
         }
       }
       state.rows = seedRows;
       state.updatedAt = null;
       state.hasPendingLocalChanges = false;
+      persistInstantPlanCache(state.rows, '', 'seed');
       els.cloudValue.textContent = 'Model local';
       els.cloudSub.textContent = 'Încă nu există document cloud pentru planificare.';
     }
@@ -4403,10 +4471,17 @@ function getDefaultPermissions(role){
         try{ await refreshLiveAndSupport(false, uiSnap); }catch(error){ console.error('boot.refreshLiveAndSupport', error); }
         try{ await refreshRemoteLocks(true); }catch(error){ console.error('boot.refreshRemoteLocks', error); }
       };
+      const launch = function(){
+        if(typeof window !== 'undefined' && typeof window.requestIdleCallback === 'function'){
+          window.requestIdleCallback(() => { setTimeout(runner, 0); }, { timeout: 1200 });
+        }else{
+          setTimeout(runner, BOOT_LIVE_DELAY_MS);
+        }
+      };
       if(typeof requestAnimationFrame === 'function'){
-        requestAnimationFrame(function(){ setTimeout(runner, 0); });
+        requestAnimationFrame(function(){ setTimeout(launch, BOOT_LIVE_DELAY_MS); });
       }else{
-        setTimeout(runner, 0);
+        setTimeout(launch, BOOT_LIVE_DELAY_MS);
       }
     }
 
@@ -4605,8 +4680,51 @@ function getDefaultPermissions(role){
     async function boot(){
       const initialUiState = readPersistedUiState();
       buildHeader();
+
+      let fastBootMeta = null;
+      try{
+        fastBootMeta = readInstantPlanCache();
+      }catch(error){
+        console.error('boot.readInstantPlanCache', error);
+      }
+
+      if(fastBootMeta && Array.isArray(fastBootMeta.rows) && fastBootMeta.rows.length){
+        applyFastBootRows(fastBootMeta.rows, {
+          updatedAt: fastBootMeta.updatedAt,
+          modeLabel: 'Pornire rapidă',
+          cloudValue: 'Instant',
+          cloudSub: 'Randare instant din cache local: ' + formatDateTime(fastBootMeta.cachedAt || fastBootMeta.updatedAt || nowIso())
+        });
+      }else{
+        state.rows = cloneSeedRows();
+        ensureFilters();
+        renderFilters();
+        try{
+          updateRepereDatalist();
+        }catch(error){
+          console.error('boot.updateRepereDatalist.seed', error);
+        }
+        try{
+          renderTable(false);
+        }catch(error){
+          console.error('boot.initialSeedRender', error);
+        }
+        els.modePill.textContent = 'Pornire rapidă';
+        els.cloudValue.textContent = 'Instant';
+        els.cloudSub.textContent = 'Am afișat imediat modelul local, apoi continui cu cloud.';
+      }
+
+      const openUiState = getInitialOpenUiState(initialUiState);
+      bindEvents();
+      ensureSelectionStatsUi();
+      restoreUiState(openUiState);
+      updateRowActionUi();
+
+      await nextPaint();
+
       const accessOk = await initAuth();
       if(accessOk === false) return;
+
       await loadPlanDocument(true);
       if(!Array.isArray(state.rows) || !state.rows.length) state.rows = cloneSeedRows();
       ensureFilters();
@@ -4621,13 +4739,12 @@ function getDefaultPermissions(role){
       }catch(error){
         console.error('boot.initialRender', error);
       }
-      const openUiState = getInitialOpenUiState(initialUiState);
-      bindEvents();
-      ensureSelectionStatsUi();
-      startCollaborativeSync();
       restoreUiState(openUiState);
       updateRowActionUi();
-      scheduleInitialLiveHydration(openUiState);
+      setTimeout(() => {
+        startCollaborativeSync();
+        scheduleInitialLiveHydration(openUiState);
+      }, COLLAB_SYNC_BOOT_DELAY_MS);
     }
 
     boot().catch(error => {
