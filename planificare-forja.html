@@ -460,6 +460,7 @@
     const DEBITARI_FLOW_DOC_BASE_KEYS = ['debitate','debitari','debitate_otel','debitari_otel','DEBITATE','DEBITARI'];
     const DELIVERY_DOC_KEY = 'comenzi-livrare';
     const DELIVERY_DOC_ALIASES = ['comenzi-livrare','comenzi livrare'];
+    const DELIVERY_DOC_BASE_KEYS = ['comenzi-livrare','comenzi livrare','comenzi_livrare'];
     const FORJAT_INV_BASE_KEYS = ['inventar-forjat','inventar_forjat','inventar-forjate','inventar_forjate','inventar-piese-forjate','inventar_piese_forjate','stoc-forjate','stoc_forjate'];
     const LOCK_DOC_KEY = 'planificare-forja:locks';
     const PLAN_SYNC_CHANNEL_TOPIC = 'planificare-forja-sync';
@@ -2696,18 +2697,51 @@ function getDefaultPermissions(role){
       });
       return Array.from(new Set(keys));
     }
+    function buildDeliveryDocKeys(year){
+      const baseKeys = Array.isArray(DELIVERY_DOC_BASE_KEYS) && DELIVERY_DOC_BASE_KEYS.length ? DELIVERY_DOC_BASE_KEYS : DELIVERY_DOC_ALIASES;
+      const y = Number(trimText(year) || 0);
+      const years = [y - 1, y, y + 1].filter(value => Number.isFinite(value) && value > 0);
+      const keys = [];
+      baseKeys.forEach(base => {
+        years.forEach(oneYear => keys.push(base + ':' + oneYear));
+        keys.push(base + ':index');
+        keys.push(base);
+      });
+      return Array.from(new Set(keys.concat(DELIVERY_DOC_ALIASES)));
+    }
     async function loadDeliveryOrders(){
       if(!state.supabase) return { rows:[], source:'-', ok:false };
-      const docs = await queryDocsByKeys(DELIVERY_DOC_ALIASES);
+      const keys = buildDeliveryDocKeys(state.activeYear || CURRENT_YEAR);
+      const docs = await queryDocsByKeys(keys);
       const picked = (() => {
-        for(const key of DELIVERY_DOC_ALIASES){
+        for(const key of keys){
           const doc = docs.find(item => item.doc_key === key && extractRowsPayload(item.content || item.data).length);
           if(doc) return doc;
         }
         return docs.find(item => extractRowsPayload(item.content || item.data).length) || docs[0] || null;
       })();
       if(!picked) return { rows:[], source:'comenzi-livrare lipsă', ok:false };
-      const rows = extractRowsPayload(picked.content || picked.data).map(normalizeDeliveryOrderRow).filter(row => row.reper && row.dataLivrare && row.cantitate > 0);
+      const rows = [];
+      const seen = new Set();
+      docs.forEach(doc => {
+        const extracted = extractRowsPayload(doc.content || doc.data)
+          .map(normalizeDeliveryOrderRow)
+          .filter(row => row.reper && row.dataLivrare && row.cantitate > 0);
+        extracted.forEach((row, index) => {
+          const key = [
+            trimText(row.id),
+            trimText(row.dataLivrare),
+            trimText(row.reper),
+            trimText(row.nrTransport),
+            String(Math.max(0, Math.round(toNumber(row.cantitate))))
+          ].join('|');
+          const safeKey = key !== '||||0' ? key : (String(doc.doc_key || '') + '|' + String(index));
+          if(seen.has(safeKey)) return;
+          seen.add(safeKey);
+          rows.push(row);
+        });
+      });
+      rows.sort(compareDeliveryOrders);
       return { rows, source:picked.doc_key || DELIVERY_DOC_KEY, ok:rows.length > 0 };
     }
     async function loadInventarForjatRows(year){
