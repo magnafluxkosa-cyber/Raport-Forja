@@ -1634,6 +1634,37 @@ function getDefaultPermissions(role){
       }catch(_e){}
       return [];
     }
+    async function queryDocsByPrefixes(prefixes){
+      const unique = Array.from(new Set((prefixes || []).map(trimText).filter(Boolean)));
+      if(!unique.length || !state.supabase) return [];
+      const settled = await Promise.allSettled(unique.map(prefix => {
+        return state.supabase
+          .from('rf_documents')
+          .select('*')
+          .ilike('doc_key', prefix + '%');
+      }));
+      const merged = [];
+      settled.forEach(result => {
+        if(!result || result.status !== 'fulfilled') return;
+        const value = result.value || {};
+        if(value.error || !Array.isArray(value.data)) return;
+        merged.push.apply(merged, value.data);
+      });
+      return merged;
+    }
+    function mergeDocsUnique(){
+      const seen = new Set();
+      const merged = [];
+      Array.from(arguments).forEach(list => {
+        (Array.isArray(list) ? list : []).forEach(doc => {
+          const key = trimText(doc && doc.doc_key) || ('doc-' + merged.length + '-' + Math.random().toString(36).slice(2));
+          if(seen.has(key)) return;
+          seen.add(key);
+          merged.push(doc);
+        });
+      });
+      return merged;
+    }
     async function writeDocumentCompat(docKey, payload){
       if(!state.supabase) throw new Error('Supabase indisponibil');
       const ts = payload && payload.updated_at ? payload.updated_at : nowIso();
@@ -2703,16 +2734,30 @@ function getDefaultPermissions(role){
       const years = [y - 1, y, y + 1].filter(value => Number.isFinite(value) && value > 0);
       const keys = [];
       baseKeys.forEach(base => {
-        years.forEach(oneYear => keys.push(base + ':' + oneYear));
+        years.forEach(oneYear => {
+          keys.push(base + ':' + oneYear);
+          keys.push(base + '_' + oneYear);
+          keys.push(base + '-' + oneYear);
+          keys.push(base + '/' + oneYear);
+        });
         keys.push(base + ':index');
+        keys.push(base + '_index');
+        keys.push(base + '-index');
         keys.push(base);
       });
       return Array.from(new Set(keys.concat(DELIVERY_DOC_ALIASES)));
     }
+    function buildDeliveryDocPrefixes(){
+      const baseKeys = Array.isArray(DELIVERY_DOC_BASE_KEYS) && DELIVERY_DOC_BASE_KEYS.length ? DELIVERY_DOC_BASE_KEYS : DELIVERY_DOC_ALIASES;
+      return Array.from(new Set(baseKeys.concat(DELIVERY_DOC_ALIASES).concat(['comenzi livrare','comenzi-livrare','comenzi_livrare'])));
+    }
     async function loadDeliveryOrders(){
       if(!state.supabase) return { rows:[], source:'-', ok:false };
       const keys = buildDeliveryDocKeys(state.activeYear || CURRENT_YEAR);
-      const docs = await queryDocsByKeys(keys);
+      const prefixes = buildDeliveryDocPrefixes();
+      const exactDocs = await queryDocsByKeys(keys);
+      const prefixDocs = await queryDocsByPrefixes(prefixes);
+      const docs = mergeDocsUnique(exactDocs, prefixDocs);
       const picked = (() => {
         for(const key of keys){
           const doc = docs.find(item => item.doc_key === key && extractRowsPayload(item.content || item.data).length);
@@ -2728,14 +2773,13 @@ function getDefaultPermissions(role){
           .map(normalizeDeliveryOrderRow)
           .filter(row => row.reper && row.dataLivrare && row.cantitate > 0);
         extracted.forEach((row, index) => {
-          const key = [
-            trimText(row.id),
+          const semanticKey = [
             trimText(row.dataLivrare),
-            trimText(row.reper),
+            getCanonicalDeliveryReperKey(row.reper) || normalizeDeliveryReperLoose(row.reper),
             trimText(row.nrTransport),
             String(Math.max(0, Math.round(toNumber(row.cantitate))))
           ].join('|');
-          const safeKey = key !== '||||0' ? key : (String(doc.doc_key || '') + '|' + String(index));
+          const safeKey = semanticKey !== '|||0' ? semanticKey : (String(doc.doc_key || '') + '|' + String(index));
           if(seen.has(safeKey)) return;
           seen.add(safeKey);
           rows.push(row);
