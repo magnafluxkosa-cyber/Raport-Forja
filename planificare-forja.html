@@ -408,6 +408,12 @@
             <span id="deliveryAlertText">Toate comenzile lunare sunt acoperite</span>
           </div>
         </div>
+        <div class="delivery-alert-anchor">
+          <div class="delivery-alert-button is-neutral" id="scheduleAlertButton" tabindex="0" aria-label="Avertizări termen livrare">
+            <span class="delivery-alert-dot" aria-hidden="true"></span>
+            <span id="scheduleAlertText">Livrări la termen OK</span>
+          </div>
+        </div>
                 <div class="hint" id="hintText">Drag rapid pe celule pentru selecție • dublu click pentru editare • Shift+click pentru interval • Ctrl+click / Ctrl+drag pentru selecții separate.</div>
       </div>
 
@@ -503,6 +509,8 @@
       repereList: document.getElementById('repereList'),
       deliveryAlertButton: document.getElementById('deliveryAlertButton'),
       deliveryAlertText: document.getElementById('deliveryAlertText'),
+      scheduleAlertButton: document.getElementById('scheduleAlertButton'),
+      scheduleAlertText: document.getElementById('scheduleAlertText'),
       selectionStats: null
     };
 
@@ -542,7 +550,7 @@
       deliveryReadyByCell: Object.create(null),
       hoveredRowId: '',
       selectedRowId: '',
-      deliverySupport: { orders:[], inventarRows:[], ordersSource:'-', inventarSource:'-', ok:false, alertSummary:{ tone:'neutral', uncovered:[], count:0, shortageTotal:0 } },
+      deliverySupport: { orders:[], inventarRows:[], ordersSource:'-', inventarSource:'-', ok:false, alertSummary:{ tone:'neutral', uncovered:[], count:0, shortageTotal:0 }, scheduleSummary:{ tone:'neutral', warnings:[], count:0 } },
       sessionId: getPlanSessionId(),
       remoteLocks: Object.create(null),
       activeCellLockKey: '',
@@ -3063,6 +3071,234 @@ function getDefaultPermissions(role){
       deliveryTooltipVisible = true;
       positionDeliveryIndicatorTooltip();
     }
+
+    let scheduleTooltipEl = null;
+    let scheduleTooltipVisible = false;
+    let scheduleTooltipHideTimer = null;
+
+    function isSaturdayIso(iso){
+      if(!iso) return false;
+      const d = new Date(iso + 'T00:00:00');
+      return d.getDay() === 6;
+    }
+    function isHolidayIso(iso){
+      if(!iso) return false;
+      const y = Number(String(iso).slice(0,4));
+      const holidays = getHolidaysForYear(y);
+      return !!holidays[iso];
+    }
+    function isWorkingDayIso(iso, allowSaturday){
+      if(!iso) return false;
+      if(isHolidayIso(iso)) return false;
+      const d = new Date(iso + 'T00:00:00');
+      const day = d.getDay();
+      if(day === 0) return false;
+      if(day === 6 && !allowSaturday) return false;
+      return true;
+    }
+    function subtractWorkingDaysIsoCustom(iso, days, allowSaturday){
+      if(!iso || !days) return iso;
+      let d = new Date(iso + 'T00:00:00');
+      let remaining = Math.max(0, Math.round(toNumber(days)));
+      while(remaining > 0){
+        d.setDate(d.getDate() - 1);
+        const curIso = d.toISOString().slice(0,10);
+        if(isWorkingDayIso(curIso, !!allowSaturday)) remaining -= 1;
+      }
+      return d.toISOString().slice(0,10);
+    }
+    function nextCandidateDeliveryIso(startIso){
+      let d = new Date(startIso + 'T00:00:00');
+      for(let i = 0; i < 120; i += 1){
+        d.setDate(d.getDate() + 1);
+        const iso = d.toISOString().slice(0,10);
+        if(isWorkingDayIso(iso, false)) return iso;
+      }
+      return '';
+    }
+    function formatDeliveryWarningLabel(order){
+      const transport = trimText(order && order.nrTransport);
+      const transportPart = transport ? (' • Transport ' + transport) : '';
+      return trimText(order && order.reper) + transportPart + ' • ' + trimText(isoToDisplay(order && order.dataLivrare));
+    }
+    function getAvailableQtyForOrderByDeadline(order, deadlineIso, scopedOrders, dailyByDate){
+      const snapshot = findInventarForjatSnapshot(order && order.reper, order && order.dataLivrare);
+      const priorCommitted = Math.max(0, Math.round(toNumber(getPreviousCommittedDeliveryQty(order, scopedOrders, snapshot && snapshot.endIso))));
+      const gross = snapshot.qty + sumProjectedGood(dailyByDate, order && order.reper, snapshot.endIso, deadlineIso);
+      return {
+        snapshotQty: Math.max(0, Math.round(toNumber(snapshot && snapshot.qty))),
+        priorCommitted,
+        availableQty: Math.max(0, Math.round(toNumber(gross)) - priorCommitted)
+      };
+    }
+    function findFirstFeasibleDeliveryDate(order, scopedOrders, dailyByDate){
+      let candidateIso = trimText(order && order.dataLivrare);
+      for(let i = 0; i < 45; i += 1){
+        candidateIso = nextCandidateDeliveryIso(candidateIso);
+        if(!candidateIso) break;
+        const deadlineIso = subtractWorkingDaysIsoCustom(candidateIso, 3, false);
+        const metrics = getAvailableQtyForOrderByDeadline({ ...order, dataLivrare:candidateIso }, deadlineIso, scopedOrders, dailyByDate);
+        const required = Math.max(0, Math.round(toNumber(order && order.cantitate)));
+        if(metrics.availableQty >= required){
+          return candidateIso;
+        }
+      }
+      return '';
+    }
+    function buildScheduleWarningEntries(){
+      const sourceOrders = (Array.isArray(state.deliverySupport && state.deliverySupport.orders) ? state.deliverySupport.orders : [])
+        .slice()
+        .sort(compareDeliveryOrders)
+        .filter(order => {
+          const year = Number(order && order.an) || (trimText(order && order.dataLivrare) ? Number(String(order.dataLivrare).slice(0,4)) : 0);
+          return !state.activeYear || String(year) === String(state.activeYear);
+        });
+
+      const dailyByDate = buildProjectedGoodByDate();
+      const warnings = [];
+
+      sourceOrders.forEach(order => {
+        const required = Math.max(0, Math.round(toNumber(order && order.cantitate)));
+        const strictDeadlineIso = subtractWorkingDaysIsoCustom(order.dataLivrare, 3, false);
+        const satDeadlineIso = subtractWorkingDaysIsoCustom(order.dataLivrare, 3, true);
+        const strictMetrics = getAvailableQtyForOrderByDeadline(order, strictDeadlineIso, sourceOrders, dailyByDate);
+        if(strictMetrics.availableQty >= required) return;
+
+        const satMetrics = getAvailableQtyForOrderByDeadline(order, satDeadlineIso, sourceOrders, dailyByDate);
+        const saturdayNeeded = satDeadlineIso && satDeadlineIso !== strictDeadlineIso && isSaturdayIso(satDeadlineIso) && !isHolidayIso(satDeadlineIso);
+        const item = {
+          id: trimText(order && order.id) || ('sched-' + Math.random().toString(36).slice(2)),
+          reper: trimText(order && order.reper),
+          nrTransport: trimText(order && order.nrTransport),
+          dataLivrare: trimText(order && order.dataLivrare),
+          cantitate: required,
+          strictDeadlineIso,
+          strictAvailable: strictMetrics.availableQty,
+          shortage: Math.max(0, required - strictMetrics.availableQty),
+          type: 'late',
+          saturdayIso: '',
+          recommendedIso: ''
+        };
+
+        if(saturdayNeeded && satMetrics.availableQty >= required){
+          item.type = 'saturday';
+          item.saturdayIso = satDeadlineIso;
+        } else {
+          item.recommendedIso = findFirstFeasibleDeliveryDate(order, sourceOrders, dailyByDate);
+        }
+        warnings.push(item);
+      });
+
+      return warnings;
+    }
+    function buildScheduleAlertHtml(summary){
+      const warnings = Array.isArray(summary && summary.warnings) ? summary.warnings : [];
+      if(!warnings.length){
+        return '<div class="delivery-tip-title">Avertizări termen livrare</div><div class="delivery-tip-empty">Toate livrările sunt fezabile la termen cu regula de 3 zile lucrătoare înainte de livrare.</div>';
+      }
+      let html = '<div class="delivery-tip-title">Avertizări termen livrare</div>';
+      html += '<div class="delivery-tip-section"><div class="delivery-tip-section-title late">Avertizări • ' + escapeHtml(String(warnings.length)) + '</div><div class="delivery-tip-list">';
+      html += warnings.map(item => {
+        const title = item.type === 'saturday'
+          ? (escapeHtml(formatDeliveryWarningLabel(item)) + ' — poate fi livrată doar dacă se lucrează sâmbătă')
+          : (escapeHtml(formatDeliveryWarningLabel(item)) + ' — livrarea ar trebui replanificată mai târziu');
+        const detail1 = item.type === 'saturday'
+          ? ('Ar fi nevoie de sâmbătă ' + escapeHtml(String(isoToDisplay(item.saturdayIso))) + ' pentru a putea livra comanda.')
+          : ('Prima dată fezabilă estimată pentru livrare: ' + escapeHtml(item.recommendedIso ? isoToDisplay(item.recommendedIso) : 'nedeterminată'));
+        const detail2 = 'Disponibil până la termen: ' + escapeHtml(roMaybeNumber(item.strictAvailable)) + ' buc • Necesar: ' + escapeHtml(roMaybeNumber(item.cantitate)) + ' buc • Lipsă: ' + escapeHtml(roMaybeNumber(item.shortage)) + ' buc';
+        return '<div class="delivery-tip-item">'
+          + '<div class="delivery-tip-line1">' + title + '</div>'
+          + '<div class="delivery-tip-line2">' + detail1 + '</div>'
+          + '<div class="delivery-tip-line2">' + detail2 + '</div>'
+          + '</div>';
+      }).join('');
+      html += '</div></div>';
+      return html;
+    }
+    function updateScheduleAlertIndicator(){
+      if(!els.scheduleAlertButton || !els.scheduleAlertText) return;
+      const summary = state.deliverySupport && state.deliverySupport.scheduleSummary ? state.deliverySupport.scheduleSummary : { tone:'neutral', warnings:[], count:0 };
+      const warnings = Array.isArray(summary.warnings) ? summary.warnings : [];
+      const tone = warnings.length ? 'late' : 'ok';
+      els.scheduleAlertButton.className = 'delivery-alert-button is-' + tone;
+      els.scheduleAlertText.textContent = warnings.length ? ('Avertizări termen livrare: ' + String(warnings.length)) : 'Livrări la termen OK';
+      els.scheduleAlertButton.setAttribute('data-tooltip-html', buildScheduleAlertHtml(summary));
+      els.scheduleAlertButton.setAttribute('data-tooltip-tone', tone);
+    }
+    function rebuildScheduleAlerts(){
+      try{
+        const warnings = buildScheduleWarningEntries();
+        state.deliverySupport.scheduleSummary = {
+          tone: warnings.length ? 'late' : 'ok',
+          warnings,
+          count: warnings.length
+        };
+        updateScheduleAlertIndicator();
+      }catch(error){
+        console.error('rebuildScheduleAlerts', error);
+        state.deliverySupport.scheduleSummary = { tone:'neutral', warnings:[], count:0 };
+        updateScheduleAlertIndicator();
+      }
+    }
+    function ensureScheduleTooltip(){
+      if(scheduleTooltipEl) return scheduleTooltipEl;
+      scheduleTooltipEl = document.createElement('div');
+      scheduleTooltipEl.className = 'delivery-floating-tooltip';
+      scheduleTooltipEl.hidden = true;
+      scheduleTooltipEl.addEventListener('mouseenter', showScheduleIndicatorTooltip);
+      scheduleTooltipEl.addEventListener('mouseleave', () => hideScheduleIndicatorTooltip(false));
+      document.body.appendChild(scheduleTooltipEl);
+      return scheduleTooltipEl;
+    }
+    function clearScheduleTooltipHideTimer(){
+      if(scheduleTooltipHideTimer){
+        clearTimeout(scheduleTooltipHideTimer);
+        scheduleTooltipHideTimer = null;
+      }
+    }
+    function hideScheduleIndicatorTooltip(force){
+      if(!scheduleTooltipEl) return;
+      clearScheduleTooltipHideTimer();
+      const doHide = () => {
+        scheduleTooltipVisible = false;
+        scheduleTooltipEl.hidden = true;
+        scheduleTooltipEl.style.left = '-9999px';
+        scheduleTooltipEl.style.top = '-9999px';
+      };
+      if(force){ doHide(); return; }
+      scheduleTooltipHideTimer = setTimeout(doHide, 180);
+    }
+    function positionScheduleIndicatorTooltip(){
+      if(!scheduleTooltipVisible || !scheduleTooltipEl || !els.scheduleAlertButton) return;
+      const rect = els.scheduleAlertButton.getBoundingClientRect();
+      const gap = 10;
+      const margin = 12;
+      const vw = window.innerWidth || document.documentElement.clientWidth || 0;
+      const vh = window.innerHeight || document.documentElement.clientHeight || 0;
+      const tipRect = scheduleTooltipEl.getBoundingClientRect();
+      let left = rect.right - tipRect.width;
+      if(left < margin) left = margin;
+      if(left + tipRect.width > vw - margin) left = vw - tipRect.width - margin;
+      let top = rect.bottom + gap;
+      if(top + tipRect.height > vh - margin) top = rect.top - tipRect.height - gap;
+      if(top < margin) top = margin;
+      scheduleTooltipEl.style.left = Math.round(left) + 'px';
+      scheduleTooltipEl.style.top = Math.round(top) + 'px';
+    }
+    function showScheduleIndicatorTooltip(){
+      if(!els.scheduleAlertButton) return;
+      clearScheduleTooltipHideTimer();
+      const html = els.scheduleAlertButton.getAttribute('data-tooltip-html');
+      if(!html) return;
+      const tip = ensureScheduleTooltip();
+      const tone = trimText(els.scheduleAlertButton.getAttribute('data-tooltip-tone'));
+      tip.innerHTML = html;
+      tip.className = 'delivery-floating-tooltip' + (tone ? (' is-' + tone) : '');
+      tip.hidden = false;
+      scheduleTooltipVisible = true;
+      positionScheduleIndicatorTooltip();
+    }
+
     function rebuildStockCalculations(){
       state.stockCalcByCell = Object.create(null);
 
@@ -3991,6 +4227,7 @@ function getDefaultPermissions(role){
       }
       try{
         rebuildDeliveryAlerts();
+        rebuildScheduleAlerts();
       }catch(error){
         console.error('rebuildDeliveryAlerts', error);
       }
@@ -4393,16 +4630,41 @@ function getDefaultPermissions(role){
           }
         });
       }
+      if(els.scheduleAlertButton){
+        els.scheduleAlertButton.addEventListener('mouseenter', showScheduleIndicatorTooltip);
+        els.scheduleAlertButton.addEventListener('mouseleave', () => hideScheduleIndicatorTooltip(false));
+        els.scheduleAlertButton.addEventListener('focus', showScheduleIndicatorTooltip);
+        els.scheduleAlertButton.addEventListener('blur', () => hideScheduleIndicatorTooltip(false));
+        els.scheduleAlertButton.addEventListener('click', (event) => {
+          event.preventDefault();
+          if(scheduleTooltipVisible){
+            hideScheduleIndicatorTooltip(true);
+          } else {
+            showScheduleIndicatorTooltip();
+          }
+        });
+      }
       document.addEventListener('click', (event) => {
-        if(!deliveryTooltipVisible || !deliveryTooltipEl || !els.deliveryAlertButton) return;
-        const target = event.target;
-        if(els.deliveryAlertButton.contains(target)) return;
-        if(deliveryTooltipEl.contains(target)) return;
-        hideDeliveryIndicatorTooltip(true);
+        if(deliveryTooltipVisible && deliveryTooltipEl && els.deliveryAlertButton){
+          const target = event.target;
+          if(!els.deliveryAlertButton.contains(target) && !deliveryTooltipEl.contains(target)){
+            hideDeliveryIndicatorTooltip(true);
+          }
+        }
+        if(scheduleTooltipVisible && scheduleTooltipEl && els.scheduleAlertButton){
+          const target = event.target;
+          if(!els.scheduleAlertButton.contains(target) && !scheduleTooltipEl.contains(target)){
+            hideScheduleIndicatorTooltip(true);
+          }
+        }
       });
       if(deliveryTooltipEl){
         deliveryTooltipEl.addEventListener('mouseenter', showDeliveryIndicatorTooltip);
         deliveryTooltipEl.addEventListener('mouseleave', () => hideDeliveryIndicatorTooltip(false));
+      }
+      if(scheduleTooltipEl){
+        scheduleTooltipEl.addEventListener('mouseenter', showScheduleIndicatorTooltip);
+        scheduleTooltipEl.addEventListener('mouseleave', () => hideScheduleIndicatorTooltip(false));
       }
       els.planBody.addEventListener('click', function(event){
         if(state.multiSelect && Date.now() < Number(state.multiSelect.suppressClickUntil || 0)){
