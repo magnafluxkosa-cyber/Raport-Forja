@@ -2472,6 +2472,25 @@ function getDefaultPermissions(role){
       const readyHtml = buildDeliveryReadySectionHtml(readyItems, { standalone: !stockHtml });
       return (stockHtml || '') + readyHtml;
     }
+    function getFeasibleProjectedQty(row, machine, slot){
+      const planned = Math.max(0, Math.round(toNumber(slot && slot.planificat)));
+      if(planned <= 0) return 0;
+      const calc = state.stockCalcByCell ? state.stockCalcByCell[cellCalcKey(row && row.id, machine)] : null;
+      if(!calc) return planned;
+      if(trimText(calc.usedSource) === 'realizat') return planned;
+      const status = trimText(calc.status || '');
+      if(status === 'ok') return planned;
+      if(status === 'empty' || trimText(calc.mode || '') === 'error') return 0;
+      const fromDebitat = Math.max(0, Math.round(toNumber(calc.beforeDebitat)));
+      const fromSteelPieces = Math.max(0, Math.floor(toNumber(calc.beforeSteelPieces)));
+      const feasible = Math.max(0, fromDebitat + fromSteelPieces);
+      if(status === 'partial') return Math.min(planned, feasible);
+      if(Number.isFinite(toNumber(calc.coverageRatio))){
+        const ratio = Math.max(0, Math.min(1, toNumber(calc.coverageRatio)));
+        return Math.min(planned, Math.max(0, Math.floor(planned * ratio)));
+      }
+      return Math.min(planned, feasible || planned);
+    }
     function getDeliveryContributionRows(){
       const rows = sortRowsStable(state.rows).filter(row => !state.activeYear || String(row && row.an) === String(state.activeYear));
       const items = [];
@@ -2483,9 +2502,9 @@ function getDefaultPermissions(role){
           const reper = trimText(slot && slot.reper).toUpperCase();
           if(!reper) return;
           const realized = getRealizedForSlot(row, machine, slot);
-          const planValue = Math.max(0, Math.round(toNumber(slot && slot.planificat)));
-          const qty = realized && toNumber(realized.value) > 0 ? Math.max(0, Math.round(toNumber(realized.value))) : planValue;
-          if(qty <= 0) return;
+          const realizedQty = realized && toNumber(realized.value) > 0 ? Math.max(0, Math.round(toNumber(realized.value))) : 0;
+          const projectedQty = realizedQty > 0 ? realizedQty : getFeasibleProjectedQty(row, machine, slot);
+          if(projectedQty <= 0) return;
           const reperKey = getCanonicalDeliveryReperKey(reper);
           if(!reperKey) return;
           items.push({
@@ -2497,8 +2516,8 @@ function getDefaultPermissions(role){
             machineIndex,
             reper,
             reperKey,
-            qty,
-            sourceType: realized && toNumber(realized.value) > 0 ? 'realizat' : 'planificat'
+            qty: projectedQty,
+            sourceType: realizedQty > 0 ? 'realizat' : 'planificat'
           });
         });
       });
@@ -2852,7 +2871,7 @@ function getDefaultPermissions(role){
         MACHINE_ORDER.forEach(machine => {
           const slot = row && row.slots ? (row.slots[machine] || normalizePlanSlot()) : normalizePlanSlot();
           const reper = trimText(slot.reper).toUpperCase();
-          const qty = Math.max(0, Math.round(toNumber(slot.planificat)));
+          const qty = getFeasibleProjectedQty(row, machine, slot);
           if(!reper || qty <= 0) return;
           if(actualSlotMap[buildDeliveryRealizedKey(rowIso, machine, reper)]) return;
           const reperKey = getCanonicalDeliveryReperKey(reper);
