@@ -187,11 +187,12 @@
     .delivery-alert-button.is-late .delivery-alert-dot{background:#b42318;box-shadow:0 0 0 3px rgba(180,35,24,.16)}
     .delivery-alert-button.is-ahead .delivery-alert-dot{background:#2563eb;box-shadow:0 0 0 3px rgba(37,99,235,.16)}
     .delivery-alert-button.is-neutral .delivery-alert-dot{background:#64748b;box-shadow:0 0 0 3px rgba(100,116,139,.18)}
-    .delivery-alert-button.is-ok{background:rgba(236,253,245,.96);border-color:rgba(22,163,74,.32);color:#166534;box-shadow:0 10px 26px rgba(22,163,74,.12)}
-    .delivery-alert-button.is-ok .delivery-alert-dot{background:#16a34a;box-shadow:0 0 0 3px rgba(22,163,74,.18)}
     .delivery-floating-tooltip{position:fixed;left:-9999px;top:-9999px;z-index:10010;width:360px;max-width:min(360px,calc(100vw - 24px));max-height:min(420px,calc(100vh - 24px));overflow:auto;padding:12px;border-radius:16px;background:linear-gradient(180deg,#12284b 0%,#0f1e36 100%);color:#eef6ff;border:1px solid rgba(191,219,254,.28);box-shadow:0 22px 50px rgba(15,23,42,.42);pointer-events:auto}
     .delivery-floating-tooltip.is-late{background:linear-gradient(180deg,#4b1621 0%,#34111a 100%);border-color:rgba(254,202,202,.28)}
     .delivery-floating-tooltip.is-ahead{background:linear-gradient(180deg,#102f61 0%,#0f2348 100%);border-color:rgba(191,219,254,.28)}
+    .delivery-floating-tooltip.is-ok{background:linear-gradient(180deg,#14532d 0%,#123524 100%);border-color:rgba(134,239,172,.28)}
+    .delivery-floating-tooltip.is-warn{background:linear-gradient(180deg,#78350f 0%,#5b280b 100%);border-color:rgba(253,186,116,.28)}
+    .delivery-floating-tooltip.is-danger{background:linear-gradient(180deg,#7f1d1d 0%,#571313 100%);border-color:rgba(252,165,165,.28)}
     .delivery-tip-title{font-size:12px;font-weight:800;letter-spacing:.02em;text-transform:uppercase;margin-bottom:8px;color:#dbeafe}
     .delivery-tip-empty{font-size:12px;line-height:1.45;color:#dbeafe}
     .delivery-tip-section + .delivery-tip-section{margin-top:10px;padding-top:10px;border-top:1px solid rgba(255,255,255,.12)}
@@ -403,9 +404,13 @@
         </div>
         
         <div class="delivery-alert-anchor">
-          <div class="delivery-alert-button is-neutral" id="deliveryAlertButton" tabindex="0" aria-label="Comenzi neacoperite în planificare">
+          <div class="delivery-alert-button is-ok" id="deliveryAlertButton" tabindex="0" aria-label="Comenzi neacoperite în planificare">
             <span class="delivery-alert-dot" aria-hidden="true"></span>
             <span id="deliveryAlertText">Toate comenzile lunare sunt acoperite</span>
+          </div>
+          <div class="delivery-alert-button is-ok" id="deliveryTimingButton" tabindex="0" aria-label="Risc termen livrare">
+            <span class="delivery-alert-dot" aria-hidden="true"></span>
+            <span id="deliveryTimingText">Toate livrările sunt fezabile la termen</span>
           </div>
         </div>
                 <div class="hint" id="hintText">Drag rapid pe celule pentru selecție • dublu click pentru editare • Shift+click pentru interval • Ctrl+click / Ctrl+drag pentru selecții separate.</div>
@@ -503,6 +508,8 @@
       repereList: document.getElementById('repereList'),
       deliveryAlertButton: document.getElementById('deliveryAlertButton'),
       deliveryAlertText: document.getElementById('deliveryAlertText'),
+      deliveryTimingButton: document.getElementById('deliveryTimingButton'),
+      deliveryTimingText: document.getElementById('deliveryTimingText'),
       selectionStats: null
     };
 
@@ -542,7 +549,7 @@
       deliveryReadyByCell: Object.create(null),
       hoveredRowId: '',
       selectedRowId: '',
-      deliverySupport: { orders:[], inventarRows:[], ordersSource:'-', inventarSource:'-', ok:false, alertSummary:{ tone:'neutral', uncovered:[], count:0, shortageTotal:0 } },
+      deliverySupport: { orders:[], inventarRows:[], ordersSource:'-', inventarSource:'-', ok:false, alertSummary:{ tone:'neutral', uncovered:[], count:0, shortageTotal:0 }, timingSummary:{ tone:'ok', ok:[], saturday:[], reschedule:[], count:0 } },
       sessionId: getPlanSessionId(),
       remoteLocks: Object.create(null),
       activeCellLockKey: '',
@@ -1577,6 +1584,72 @@
       if(Number.isNaN(d.getTime())) return '';
       d.setUTCDate(d.getUTCDate() + 1);
       return d.toISOString().slice(0,10);
+    }
+    function prevDayIso(iso){
+      const clean = trimText(iso);
+      if(!clean) return '';
+      const d = new Date(clean + 'T00:00:00Z');
+      if(Number.isNaN(d.getTime())) return '';
+      d.setUTCDate(d.getUTCDate() - 1);
+      return d.toISOString().slice(0,10);
+    }
+    function isSundayIso(iso){
+      const d = new Date(trimText(iso) + 'T00:00:00Z');
+      return !Number.isNaN(d.getTime()) && d.getUTCDay() === 0;
+    }
+    function isSaturdayIso(iso){
+      const d = new Date(trimText(iso) + 'T00:00:00Z');
+      return !Number.isNaN(d.getTime()) && d.getUTCDay() === 6;
+    }
+    function isHolidayIso(iso){
+      const clean = trimText(iso);
+      if(!clean) return false;
+      const year = Number(clean.slice(0,4));
+      const map = getHolidaysForYear(year);
+      return !!map[clean];
+    }
+    function isBusinessDayIso(iso, includeSaturday){
+      if(!trimText(iso)) return false;
+      if(isHolidayIso(iso)) return false;
+      if(isSundayIso(iso)) return false;
+      if(isSaturdayIso(iso)) return !!includeSaturday;
+      return true;
+    }
+    function subtractBusinessDaysIso(iso, days, includeSaturday){
+      let cursor = trimText(iso);
+      let left = Math.max(0, Number(days) || 0);
+      while(cursor && left > 0){
+        cursor = prevDayIso(cursor);
+        if(cursor && isBusinessDayIso(cursor, includeSaturday)) left -= 1;
+      }
+      return cursor || '';
+    }
+    function subtractDaysIso(iso, days){
+      let cursor = trimText(iso);
+      let left = Math.max(0, Number(days) || 0);
+      while(cursor && left > 0){
+        cursor = prevDayIso(cursor);
+        left -= 1;
+      }
+      return cursor || '';
+    }
+    function addBusinessDaysIso(iso, days, includeSaturday){
+      let cursor = trimText(iso);
+      let left = Math.max(0, Number(days) || 0);
+      while(cursor && left > 0){
+        cursor = nextDayIso(cursor);
+        if(cursor && isBusinessDayIso(cursor, includeSaturday)) left -= 1;
+      }
+      return cursor || '';
+    }
+    function collectBusinessDaysBetween(startExclusiveIso, endExclusiveIso, includeSaturday){
+      const out = [];
+      let cursor = nextDayIso(startExclusiveIso);
+      while(cursor && cursor < endExclusiveIso){
+        if(isBusinessDayIso(cursor, includeSaturday)) out.push(cursor);
+        cursor = nextDayIso(cursor);
+      }
+      return out;
     }
 
     
@@ -2971,12 +3044,176 @@ function getDefaultPermissions(role){
       els.deliveryAlertButton.setAttribute('data-tooltip-tone', tone);
     }
 
+    function computeDeliveryTimingEntries(){
+      const sourceOrders = (Array.isArray(state.deliverySupport && state.deliverySupport.orders) ? state.deliverySupport.orders : []).slice().sort(compareDeliveryOrders);
+      const dailyByDate = buildProjectedGoodByDate();
+      const byReper = Object.create(null);
+      sourceOrders.forEach(order => {
+        const deliveryIso = trimText(order && order.dataLivrare);
+        const reperKey = getCanonicalDeliveryReperKey(order && order.reper);
+        const qty = Math.max(0, Math.round(toNumber(order && order.cantitate)));
+        if(!deliveryIso || !reperKey || qty <= 0) return;
+        if(state.activeYear && String(order.an || deliveryIso.slice(0,4)) !== String(state.activeYear)) return;
+        (byReper[reperKey] = byReper[reperKey] || []).push(order);
+      });
+      const entries = [];
+      Object.keys(byReper).forEach(reperKey => {
+        const orders = byReper[reperKey].slice().sort(compareDeliveryOrders);
+        orders.forEach(order => {
+          const deliveryIso = trimText(order && order.dataLivrare);
+          const required = Math.max(0, Math.round(toNumber(order && order.cantitate)));
+          if(!deliveryIso || required <= 0) return;
+          const snapshot = findInventarForjatSnapshot(order && order.reper, deliveryIso);
+          const priorCommitted = Math.max(0, Math.round(toNumber(getPreviousCommittedDeliveryQty(order, orders, snapshot && snapshot.endIso))));
+          const getAvailBy = (readyIso) => {
+            const gross = Math.max(0, Math.round(toNumber(snapshot.qty))) + Math.max(0, Math.round(toNumber(sumProjectedGood(dailyByDate, order && order.reper, snapshot.endIso, readyIso))));
+            return Math.max(0, gross - priorCommitted);
+          };
+          const readyNormalIso = subtractBusinessDaysIso(deliveryIso, 3, false);
+          const readyWithSaturdayIso = subtractBusinessDaysIso(deliveryIso, 3, true);
+          const warningIso = subtractBusinessDaysIso(deliveryIso, 5, false);
+          const availNormal = getAvailBy(readyNormalIso);
+          const availWithSaturday = getAvailBy(readyWithSaturdayIso);
+          const saturdayDates = collectBusinessDaysBetween(readyWithSaturdayIso, deliveryIso, true).filter(dateIso => isSaturdayIso(dateIso) && !isHolidayIso(dateIso));
+          let status = 'ok';
+          let shortageQty = 0;
+          let suggestedDeliveryIso = '';
+          if(availNormal >= required){
+            status = 'ok';
+          }else if(availWithSaturday >= required && saturdayDates.length){
+            status = 'saturday';
+            shortageQty = Math.max(0, required - availNormal);
+          }else{
+            status = 'reschedule';
+            shortageQty = Math.max(0, required - availNormal);
+            let candidateReadyIso = TODAY_ISO;
+            let foundReadyIso = false;
+            const lastRowIso = (Array.isArray(state.rows) && state.rows.length) ? trimText(state.rows[state.rows.length - 1].data) : '';
+            if(snapshot && snapshot.endIso && snapshot.endIso > candidateReadyIso) candidateReadyIso = snapshot.endIso;
+            if(getAvailBy(candidateReadyIso) >= required){
+              foundReadyIso = true;
+            }else{
+              let cursor = candidateReadyIso;
+              const stopIso = lastRowIso || addBusinessDaysIso(deliveryIso, 45, false);
+              let safe = 0;
+              while(cursor && cursor <= stopIso && safe < 500){
+                cursor = nextDayIso(cursor);
+                safe += 1;
+                if(!cursor) break;
+                if(getAvailBy(cursor) >= required){
+                  candidateReadyIso = cursor;
+                  foundReadyIso = true;
+                  break;
+                }
+              }
+            }
+            suggestedDeliveryIso = foundReadyIso && candidateReadyIso ? addBusinessDaysIso(candidateReadyIso, 3, false) : '';
+          }
+          const needsImmediateAttention = warningIso && TODAY_ISO >= warningIso && status !== 'ok';
+          entries.push({
+            id: trimText(order && order.id),
+            reper: trimText(order && order.reper),
+            nrTransport: trimText(order && order.nrTransport),
+            deliveryIso,
+            readyNormalIso,
+            readyWithSaturdayIso,
+            warningIso,
+            requiredQty: required,
+            snapshotQty: Math.max(0, Math.round(toNumber(snapshot.qty))),
+            priorCommitted,
+            availNormal,
+            availWithSaturday,
+            saturdayDates,
+            status,
+            shortageQty,
+            suggestedDeliveryIso,
+            needsImmediateAttention,
+            order
+          });
+        });
+      });
+      return entries.sort((a,b) => String(a.deliveryIso).localeCompare(String(b.deliveryIso), 'ro', {sensitivity:'base'}) || String(a.reper).localeCompare(String(b.reper), 'ro', {sensitivity:'base'}) || getDeliveryTransportNumber(a.nrTransport) - getDeliveryTransportNumber(b.nrTransport));
+    }
+
+    function buildDeliveryTimingHtml(summary){
+      const saturdayList = Array.isArray(summary && summary.saturday) ? summary.saturday : [];
+      const rescheduleList = Array.isArray(summary && summary.reschedule) ? summary.reschedule : [];
+      if(!saturdayList.length && !rescheduleList.length){
+        return '<div class="delivery-tip-title">Termen livrare • avans 3 zile lucrătoare</div><div class="delivery-tip-empty">Toate livrările sunt fezabile la termen, fără sâmbătă suplimentară și fără replanificare.</div>';
+      }
+      let html = '<div class="delivery-tip-title">Termen livrare • avans 3 zile lucrătoare</div>';
+      if(saturdayList.length){
+        html += '<div class="delivery-tip-section"><div class="delivery-tip-section-title ahead">Necesită sâmbătă • ' + escapeHtml(String(saturdayList.length)) + '</div><div class="delivery-tip-list">';
+        html += saturdayList.map(item => {
+          const saturdays = item.saturdayDates.map(isoToDisplay).join(', ');
+          return '<div class="delivery-tip-item">'
+            + '<div class="delivery-tip-line1">' + escapeHtml(item.reper + ' • livrare ' + isoToDisplay(item.deliveryIso)) + '</div>'
+            + '<div class="delivery-tip-line2">Ar fi nevoie de sâmbătă ' + escapeHtml(saturdays || '-') + ' pentru a putea livra comanda ' + escapeHtml(roMaybeNumber(item.requiredQty)) + ' buc.</div>'
+            + '<div class="delivery-tip-kv">'
+              + '<div class="delivery-tip-kv-row"><div class="delivery-tip-kv-label">Disponibil la termen</div><div class="delivery-tip-kv-value">' + escapeHtml(roMaybeNumber(item.availNormal) + ' buc') + '</div></div>'
+              + '<div class="delivery-tip-kv-row"><div class="delivery-tip-kv-label">Disponibil cu sâmbătă</div><div class="delivery-tip-kv-value">' + escapeHtml(roMaybeNumber(item.availWithSaturday) + ' buc') + '</div></div>'
+              + '<div class="delivery-tip-kv-row"><div class="delivery-tip-kv-label">Transport</div><div class="delivery-tip-kv-value">' + escapeHtml(item.nrTransport || '-') + '</div></div>'
+            + '</div>'
+          + '</div>';
+        }).join('');
+        html += '</div></div>';
+      }
+      if(rescheduleList.length){
+        html += '<div class="delivery-tip-section"><div class="delivery-tip-section-title late">Replanificare livrare • ' + escapeHtml(String(rescheduleList.length)) + '</div><div class="delivery-tip-list">';
+        html += rescheduleList.map(item => {
+          const lateText = item.needsImmediateAttention ? ' Atenție: ai intrat deja în fereastra D-5.' : '';
+          return '<div class="delivery-tip-item">'
+            + '<div class="delivery-tip-line1">' + escapeHtml(item.reper + ' • livrare ' + isoToDisplay(item.deliveryIso)) + '</div>'
+            + '<div class="delivery-tip-line2">Livrarea ar trebui replanificată mai târziu. Prima dată fezabilă estimată: ' + escapeHtml(item.suggestedDeliveryIso ? isoToDisplay(item.suggestedDeliveryIso) : '-') + '.' + escapeHtml(lateText) + '</div>'
+            + '<div class="delivery-tip-kv">'
+              + '<div class="delivery-tip-kv-row"><div class="delivery-tip-kv-label">Necesar</div><div class="delivery-tip-kv-value">' + escapeHtml(roMaybeNumber(item.requiredQty) + ' buc') + '</div></div>'
+              + '<div class="delivery-tip-kv-row"><div class="delivery-tip-kv-label">Disponibil la termen</div><div class="delivery-tip-kv-value">' + escapeHtml(roMaybeNumber(item.availNormal) + ' buc') + '</div></div>'
+              + '<div class="delivery-tip-kv-row"><div class="delivery-tip-kv-label">Lipsă</div><div class="delivery-tip-kv-value">' + escapeHtml(roMaybeNumber(item.shortageQty) + ' buc') + '</div></div>'
+              + '<div class="delivery-tip-kv-row"><div class="delivery-tip-kv-label">Prag avertizare</div><div class="delivery-tip-kv-value">' + escapeHtml(item.warningIso ? isoToDisplay(item.warningIso) : '-') + '</div></div>'
+              + '<div class="delivery-tip-kv-row"><div class="delivery-tip-kv-label">Transport</div><div class="delivery-tip-kv-value">' + escapeHtml(item.nrTransport || '-') + '</div></div>'
+            + '</div>'
+          + '</div>';
+        }).join('');
+        html += '</div></div>';
+      }
+      return html;
+    }
+
+    function updateDeliveryTimingIndicator(){
+      if(!els.deliveryTimingButton || !els.deliveryTimingText) return;
+      const summary = state.deliverySupport && state.deliverySupport.timingSummary ? state.deliverySupport.timingSummary : { tone:'ok', saturday:[], reschedule:[] };
+      const saturdayCount = Array.isArray(summary.saturday) ? summary.saturday.length : 0;
+      const rescheduleCount = Array.isArray(summary.reschedule) ? summary.reschedule.length : 0;
+      let tone = 'ok';
+      let text = 'Toate livrările sunt fezabile la termen';
+      if(rescheduleCount > 0){
+        tone = 'danger';
+        text = 'Replanificare livrare: ' + rescheduleCount;
+      }else if(saturdayCount > 0){
+        tone = 'warn';
+        text = 'Necesită sâmbătă: ' + saturdayCount;
+      }
+      els.deliveryTimingButton.className = 'delivery-alert-button is-' + tone;
+      els.deliveryTimingText.textContent = text;
+      els.deliveryTimingButton.setAttribute('data-tooltip-html', buildDeliveryTimingHtml(summary));
+      els.deliveryTimingButton.setAttribute('data-tooltip-tone', tone);
+    }
+
     function buildDeliveryFooterSummary(){
       try{
         const summary = state.deliverySupport && state.deliverySupport.alertSummary ? state.deliverySupport.alertSummary : { uncovered:[], count:0, shortageTotal:0 };
         const uncovered = Array.isArray(summary.uncovered) ? summary.uncovered : [];
-        if(!uncovered.length) return ' Comenzi livrare: toate comenzile lunare sunt acoperite.';
-        return ' Comenzi livrare neacoperite: ' + String(uncovered.length) + ' repere • lipsă totală ' + roMaybeNumber(Math.max(0, Math.round(toNumber(summary.shortageTotal)))) + ' buc.';
+        const timing = state.deliverySupport && state.deliverySupport.timingSummary ? state.deliverySupport.timingSummary : { saturday:[], reschedule:[] };
+        const saturdayCount = Array.isArray(timing.saturday) ? timing.saturday.length : 0;
+        const rescheduleCount = Array.isArray(timing.reschedule) ? timing.reschedule.length : 0;
+        let deliveryPart = '';
+        if(!uncovered.length) deliveryPart = ' Comenzi livrare: toate comenzile lunare sunt acoperite.';
+        else deliveryPart = ' Comenzi livrare neacoperite: ' + String(uncovered.length) + ' repere • lipsă totală ' + roMaybeNumber(Math.max(0, Math.round(toNumber(summary.shortageTotal)))) + ' buc.';
+        let timingPart = '';
+        if(rescheduleCount > 0) timingPart = ' Termen livrare: ' + String(rescheduleCount) + ' livrări trebuie replanificate mai târziu.';
+        else if(saturdayCount > 0) timingPart = ' Termen livrare: ' + String(saturdayCount) + ' livrări cer sâmbătă lucrătoare.';
+        else timingPart = ' Termen livrare: toate livrările sunt fezabile la termen.';
+        return deliveryPart + timingPart;
       }catch(error){
         console.warn('buildDeliveryFooterSummary', error);
         return ' Comenzi livrare: sumar indisponibil momentan.';
@@ -2987,18 +3224,29 @@ function getDefaultPermissions(role){
       try{
         const coverageEntries = buildMonthlyCoverageEntries();
         const uncovered = coverageEntries.filter(item => item.shortageQty > 0);
-        const summary = {
-          tone: uncovered.length > 0 ? 'late' : 'neutral',
+        const timingEntries = computeDeliveryTimingEntries();
+        const saturday = timingEntries.filter(item => item.status === 'saturday');
+        const reschedule = timingEntries.filter(item => item.status === 'reschedule');
+        const ok = timingEntries.filter(item => item.status === 'ok');
+        state.deliverySupport.alertSummary = {
+          tone: uncovered.length > 0 ? 'late' : 'ok',
           uncovered,
           count: uncovered.length,
           shortageTotal: uncovered.reduce((sum, item) => sum + Math.max(0, Math.round(toNumber(item && item.shortageQty))), 0)
         };
-        state.deliverySupport.alertSummary = summary;
+        state.deliverySupport.timingSummary = {
+          tone: reschedule.length ? 'danger' : (saturday.length ? 'warn' : 'ok'),
+          ok, saturday, reschedule,
+          count: timingEntries.length
+        };
         updateDeliveryIndicator();
+        updateDeliveryTimingIndicator();
       }catch(error){
         console.error('rebuildDeliveryAlerts', error);
-        state.deliverySupport.alertSummary = { tone:'neutral', uncovered:[], count:0, shortageTotal:0 };
+        state.deliverySupport.alertSummary = { tone:'ok', uncovered:[], count:0, shortageTotal:0 };
+        state.deliverySupport.timingSummary = { tone:'ok', ok:[], saturday:[], reschedule:[], count:0 };
         updateDeliveryIndicator();
+        updateDeliveryTimingIndicator();
       }
     }
     function ensureDeliveryIndicatorTooltip(){
@@ -3011,6 +3259,7 @@ function getDefaultPermissions(role){
       document.body.appendChild(deliveryTooltipEl);
       return deliveryTooltipEl;
     }
+    let deliveryTooltipAnchorEl = null;
     let deliveryTooltipHideTimer = null;
     function clearDeliveryTooltipHideTimer(){
       if(deliveryTooltipHideTimer){
@@ -3034,8 +3283,8 @@ function getDefaultPermissions(role){
       deliveryTooltipHideTimer = setTimeout(doHide, 180);
     }
     function positionDeliveryIndicatorTooltip(){
-      if(!deliveryTooltipVisible || !deliveryTooltipEl || !els.deliveryAlertButton) return;
-      const rect = els.deliveryAlertButton.getBoundingClientRect();
+      if(!deliveryTooltipVisible || !deliveryTooltipEl || !deliveryTooltipAnchorEl) return;
+      const rect = deliveryTooltipAnchorEl.getBoundingClientRect();
       const gap = 10;
       const margin = 12;
       const vw = window.innerWidth || document.documentElement.clientWidth || 0;
@@ -3056,7 +3305,7 @@ function getDefaultPermissions(role){
       const html = els.deliveryAlertButton.getAttribute('data-tooltip-html');
       if(!html) return;
       const tip = ensureDeliveryIndicatorTooltip();
-      const tone = trimText(els.deliveryAlertButton.getAttribute('data-tooltip-tone'));
+      const tone = trimText(anchor.getAttribute('data-tooltip-tone'));
       tip.innerHTML = html;
       tip.className = 'delivery-floating-tooltip' + (tone ? (' is-' + tone) : '');
       tip.hidden = false;
