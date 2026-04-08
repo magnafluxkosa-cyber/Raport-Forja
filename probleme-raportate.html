@@ -771,6 +771,7 @@
 
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="./rf-config.js"></script>
+  <script src="./auth-common.js"></script>
   <script>
     const PAGE_KEY = "probleme-raportate";
     const DOC_KEYS = ["probleme-raportate", "probleme_raportate", "Probleme Raportate"];
@@ -1042,6 +1043,32 @@
         });
       }
       return state.supabase;
+    }
+
+    async function writeDocumentCompat(docKey, payload) {
+      if (!state.supabase) throw new Error("Supabase indisponibil");
+      const ts = payload && payload.updated_at ? payload.updated_at : nowIso();
+      const attempts = [
+        { doc_key: docKey, content: payload, data: payload, updated_at: ts },
+        { doc_key: docKey, content: payload, updated_at: ts },
+        { doc_key: docKey, data: payload, updated_at: ts }
+      ];
+
+      let lastError = null;
+      for (const row of attempts) {
+        try {
+          const { error } = await state.supabase
+            .from("rf_documents")
+            .upsert(row, { onConflict: "doc_key" });
+          if (!error) return true;
+          lastError = error;
+        } catch (error) {
+          lastError = error;
+        }
+      }
+
+      if (lastError) throw lastError;
+      throw new Error("Nu am putut salva documentul în cloud.");
     }
 
     function goToDashboard() {
@@ -1934,20 +1961,11 @@
       setCloudStatus("Cloud: se sincronizează...", "warning");
 
       const payload = currentPayload();
-      const row = {
-        doc_key: PAGE_KEY,
-        content: payload,
-        updated_at: payload.updated_at
-      };
 
       try {
-        const { error } = await state.supabase
-          .from("rf_documents")
-          .upsert(row, { onConflict: "doc_key" });
-
-        if (error) throw error;
-
+        await writeDocumentCompat(PAGE_KEY, payload);
         state.cloudUpdatedAt = payload.updated_at;
+        state.loadedFromCloud = true;
         state.dirty = false;
         state.source = "cloud";
         setModeStatus("Sursă: cloud", "success");
@@ -2274,7 +2292,9 @@
 
       setInterval(checkRemoteChanges, CLOUD_REFRESH_MS);
       if (navigator.onLine) {
-        setCloudStatus(state.supabase ? "Cloud: pregătit" : "Cloud: indisponibil", state.supabase ? "success" : "danger");
+        if (!state.loadedFromCloud && !state.cloudUpdatedAt) {
+          setCloudStatus(state.supabase ? "Cloud: pregătit" : "Cloud: indisponibil", state.supabase ? "success" : "danger");
+        }
       } else {
         setCloudStatus("Cloud: offline, cache local activ", "danger");
       }
