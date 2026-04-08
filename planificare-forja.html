@@ -3108,6 +3108,17 @@ function getDefaultPermissions(role){
       }
       return d.toISOString().slice(0,10);
     }
+    function addWorkingDaysIsoCustom(iso, days, allowSaturday){
+      if(!iso || !days) return iso;
+      let d = new Date(iso + 'T00:00:00');
+      let remaining = Math.max(0, Math.round(toNumber(days)));
+      while(remaining > 0){
+        d.setDate(d.getDate() + 1);
+        const curIso = d.toISOString().slice(0,10);
+        if(isWorkingDayIso(curIso, !!allowSaturday)) remaining -= 1;
+      }
+      return d.toISOString().slice(0,10);
+    }
     function nextCandidateDeliveryIso(startIso){
       let d = new Date(startIso + 'T00:00:00');
       for(let i = 0; i < 120; i += 1){
@@ -3196,42 +3207,48 @@ function getDefaultPermissions(role){
 
         reperOrders.forEach(order => {
           const required = Math.max(0, Math.round(toNumber(order && order.cantitate)));
-          const strictDeadlineIso = subtractWorkingDaysIsoCustom(order.dataLivrare, 3, false);
-          const satDeadlineIso = subtractWorkingDaysIsoCustom(order.dataLivrare, 3, true);
+          const targetCumulative = committedQty + required;
+          const readyIso = findCompletionDateForRequiredCumulative(supply.timeline, targetCumulative);
+          const requestedDeliveryIso = trimText(order && order.dataLivrare);
 
+          const strictPossibleDeliveryIso = readyIso ? addWorkingDaysIsoCustom(readyIso, 3, false) : '';
+          const saturdayPossibleDeliveryIso = readyIso ? addWorkingDaysIsoCustom(readyIso, 3, true) : '';
+
+          const strictDeadlineIso = requestedDeliveryIso ? subtractWorkingDaysIsoCustom(requestedDeliveryIso, 3, false) : '';
           const strictCum = getCumulativeQtyAtDate(supply.timeline, strictDeadlineIso);
           const strictAvailable = Math.max(0, strictCum - committedQty);
-          if(strictAvailable >= required){
+
+          const isStrictOk = !!strictPossibleDeliveryIso && !!requestedDeliveryIso && strictPossibleDeliveryIso <= requestedDeliveryIso;
+          if(isStrictOk){
             committedQty += required;
             return;
           }
 
-          const satCum = getCumulativeQtyAtDate(supply.timeline, satDeadlineIso);
-          const satAvailable = Math.max(0, satCum - committedQty);
-          const saturdayNeeded = satDeadlineIso && satDeadlineIso !== strictDeadlineIso && isSaturdayIso(satDeadlineIso) && !isHolidayIso(satDeadlineIso);
-
-          const targetCumulative = committedQty + required;
-          const readyIso = findCompletionDateForRequiredCumulative(supply.timeline, targetCumulative);
-          const recommendedIso = getNextWorkingDeliveryDate(readyIso);
+          const saturdayNeeded = !!saturdayPossibleDeliveryIso
+            && !!strictPossibleDeliveryIso
+            && saturdayPossibleDeliveryIso < strictPossibleDeliveryIso
+            && !!requestedDeliveryIso
+            && saturdayPossibleDeliveryIso <= requestedDeliveryIso;
 
           const item = {
             id: trimText(order && order.id) || ('sched-' + Math.random().toString(36).slice(2)),
             reper: trimText(order && order.reper),
             nrTransport: trimText(order && order.nrTransport),
-            dataLivrare: trimText(order && order.dataLivrare),
+            dataLivrare: requestedDeliveryIso,
             cantitate: required,
             strictDeadlineIso,
             strictAvailable,
             shortage: Math.max(0, required - strictAvailable),
-            type: 'late',
+            type: saturdayNeeded ? 'saturday' : 'late',
             saturdayIso: '',
-            recommendedIso: recommendedIso || '',
-            readyIso: readyIso || ''
+            recommendedIso: strictPossibleDeliveryIso || '',
+            readyIso: readyIso || '',
+            strictPossibleDeliveryIso: strictPossibleDeliveryIso || '',
+            saturdayPossibleDeliveryIso: saturdayPossibleDeliveryIso || ''
           };
 
-          if(saturdayNeeded && satAvailable >= required){
-            item.type = 'saturday';
-            item.saturdayIso = satDeadlineIso;
+          if(saturdayNeeded){
+            item.saturdayIso = saturdayPossibleDeliveryIso;
           }
           warnings.push(item);
           committedQty += required;
@@ -3243,7 +3260,7 @@ function getDefaultPermissions(role){
     function buildScheduleAlertHtml(summary){
       const warnings = Array.isArray(summary && summary.warnings) ? summary.warnings : [];
       if(!warnings.length){
-        return '<div class="delivery-tip-title">Avertizări termen livrare</div><div class="delivery-tip-empty">Toate livrările sunt fezabile la termen cu regula de 3 zile lucrătoare înainte de livrare.</div>';
+        return '<div class="delivery-tip-title">Avertizări termen livrare</div><div class="delivery-tip-empty">Toate livrările sunt fezabile la termen, calculat din momentul în care piesele sunt gata plus 3 zile lucrătoare până la livrare.</div>';
       }
       let html = '<div class="delivery-tip-title">Avertizări termen livrare</div>';
       html += '<div class="delivery-tip-section"><div class="delivery-tip-section-title late">Avertizări • ' + escapeHtml(String(warnings.length)) + '</div><div class="delivery-tip-list">';
@@ -3252,10 +3269,10 @@ function getDefaultPermissions(role){
           ? (escapeHtml(formatDeliveryWarningLabel(item)) + ' — poate fi livrată doar dacă se lucrează sâmbătă')
           : (escapeHtml(formatDeliveryWarningLabel(item)) + ' — livrarea ar trebui replanificată');
         const detail1 = item.type === 'saturday'
-          ? ('Ar fi nevoie de sâmbătă ' + escapeHtml(String(isoToDisplay(item.saturdayIso))) + ' pentru a putea livra comanda.')
+          ? ('Livrarea este posibilă doar dacă se consideră și sâmbăta. Prima dată posibilă cu sâmbătă inclusă: ' + escapeHtml(item.saturdayIso ? isoToDisplay(item.saturdayIso) : 'nedeterminată'))
           : ('Livrarea ar trebui replanificată pentru data: ' + escapeHtml(item.recommendedIso ? isoToDisplay(item.recommendedIso) : 'nedeterminată'));
-        const detail2 = 'Disponibil până la termen: ' + escapeHtml(roMaybeNumber(item.strictAvailable)) + ' buc • Necesar: ' + escapeHtml(roMaybeNumber(item.cantitate)) + ' buc • Lipsă: ' + escapeHtml(roMaybeNumber(item.shortage)) + ' buc';
-        const detail3 = item.type === 'late' ? ('Piesele vor fi gata în data de: ' + escapeHtml(item.readyIso ? isoToDisplay(item.readyIso) : 'nedeterminată')) : '';
+        const detail2 = 'Disponibil până la termenul cerut: ' + escapeHtml(roMaybeNumber(item.strictAvailable)) + ' buc • Necesar: ' + escapeHtml(roMaybeNumber(item.cantitate)) + ' buc • Lipsă: ' + escapeHtml(roMaybeNumber(item.shortage)) + ' buc';
+        const detail3 = 'Piesele vor fi gata în data de: ' + escapeHtml(item.readyIso ? isoToDisplay(item.readyIso) : 'nedeterminată') + ' • Prima dată posibilă pentru livrare cu regula de 3 zile: ' + escapeHtml(item.strictPossibleDeliveryIso ? isoToDisplay(item.strictPossibleDeliveryIso) : 'nedeterminată');
         return '<div class="delivery-tip-item">'
           + '<div class="delivery-tip-line1">' + title + '</div>'
           + '<div class="delivery-tip-line2">' + detail1 + '</div>'
