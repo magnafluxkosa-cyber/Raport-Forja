@@ -3122,27 +3122,45 @@ function getDefaultPermissions(role){
       const transportPart = transport ? (' • Transport ' + transport) : '';
       return trimText(order && order.reper) + transportPart + ' • ' + trimText(isoToDisplay(order && order.dataLivrare));
     }
-    function getAvailableQtyForOrderByDeadline(order, deadlineIso, scopedOrders, dailyByDate){
-      const snapshot = findInventarForjatSnapshot(order && order.reper, order && order.dataLivrare);
-      const priorCommitted = Math.max(0, Math.round(toNumber(getPreviousCommittedDeliveryQty(order, scopedOrders, snapshot && snapshot.endIso))));
-      const gross = snapshot.qty + sumProjectedGood(dailyByDate, order && order.reper, snapshot.endIso, deadlineIso);
-      return {
-        snapshotQty: Math.max(0, Math.round(toNumber(snapshot && snapshot.qty))),
-        priorCommitted,
-        availableQty: Math.max(0, Math.round(toNumber(gross)) - priorCommitted)
-      };
-    }
-    function findFirstFeasibleDeliveryDate(order, scopedOrders, dailyByDate){
-      let candidateIso = trimText(order && order.dataLivrare);
-      for(let i = 0; i < 45; i += 1){
-        candidateIso = nextCandidateDeliveryIso(candidateIso);
-        if(!candidateIso) break;
-        const deadlineIso = subtractWorkingDaysIsoCustom(candidateIso, 1, false);
-        const metrics = getAvailableQtyForOrderByDeadline({ ...order, dataLivrare:candidateIso }, deadlineIso, scopedOrders, dailyByDate);
-        const required = Math.max(0, Math.round(toNumber(order && order.cantitate)));
-        if(metrics.availableQty >= required){
-          return candidateIso;
+    function getProjectedSupplyTimelineForReper(reper, deliveryIso, dailyByDate){
+      const snapshot = findInventarForjatSnapshot(reper, deliveryIso);
+      const timeline = [{ iso: snapshot.endIso || '', qty: Math.max(0, Math.round(toNumber(snapshot && snapshot.qty))) }];
+      const reperKey = getCanonicalDeliveryReperKey(reper);
+      const dates = Object.keys(dailyByDate || {}).sort();
+      dates.forEach(dateIso => {
+        const addQty = Math.max(0, Math.round(toNumber(dailyByDate[dateIso] && dailyByDate[dateIso][reperKey])));
+        if(addQty > 0){
+          timeline.push({ iso: dateIso, qty: addQty });
         }
+      });
+      return { snapshotQty: Math.max(0, Math.round(toNumber(snapshot && snapshot.qty))), snapshotEndIso: snapshot.endIso || '', timeline };
+    }
+    function getCumulativeQtyAtDate(timeline, endIso){
+      let total = 0;
+      (Array.isArray(timeline) ? timeline : []).forEach(item => {
+        const iso = trimText(item && item.iso);
+        if(iso && endIso && iso > endIso) return;
+        total += Math.max(0, Math.round(toNumber(item && item.qty)));
+      });
+      return total;
+    }
+    function findCompletionDateForRequiredCumulative(timeline, targetQty){
+      let total = 0;
+      for(const item of (Array.isArray(timeline) ? timeline : [])){
+        total += Math.max(0, Math.round(toNumber(item && item.qty)));
+        if(total >= targetQty){
+          return trimText(item && item.iso) || '';
+        }
+      }
+      return '';
+    }
+    function getNextWorkingDeliveryDate(readyIso){
+      if(!readyIso) return '';
+      let d = new Date(readyIso + 'T00:00:00');
+      for(let i = 0; i < 60; i += 1){
+        d.setDate(d.getDate() + 1);
+        const iso = d.toISOString().slice(0,10);
+        if(isWorkingDayIso(iso, false)) return iso;
       }
       return '';
     }
@@ -3164,40 +3182,63 @@ function getDefaultPermissions(role){
 
       const dailyByDate = buildProjectedGoodByDate();
       const warnings = [];
-
+      const ordersByReper = Object.create(null);
       sourceOrders.forEach(order => {
-        const required = Math.max(0, Math.round(toNumber(order && order.cantitate)));
-        const strictDeadlineIso = subtractWorkingDaysIsoCustom(order.dataLivrare, 1, false);
-        const satDeadlineIso = subtractWorkingDaysIsoCustom(order.dataLivrare, 1, true);
-        const strictMetrics = getAvailableQtyForOrderByDeadline(order, strictDeadlineIso, sourceOrders, dailyByDate);
-        if(strictMetrics.availableQty >= required) return;
-
-        const satMetrics = getAvailableQtyForOrderByDeadline(order, satDeadlineIso, sourceOrders, dailyByDate);
-        const saturdayNeeded = satDeadlineIso && satDeadlineIso !== strictDeadlineIso && isSaturdayIso(satDeadlineIso) && !isHolidayIso(satDeadlineIso);
-        const item = {
-          id: trimText(order && order.id) || ('sched-' + Math.random().toString(36).slice(2)),
-          reper: trimText(order && order.reper),
-          nrTransport: trimText(order && order.nrTransport),
-          dataLivrare: trimText(order && order.dataLivrare),
-          cantitate: required,
-          strictDeadlineIso,
-          strictAvailable: strictMetrics.availableQty,
-          shortage: Math.max(0, required - strictMetrics.availableQty),
-          type: 'late',
-          saturdayIso: '',
-          recommendedIso: ''
-        };
-
-        if(saturdayNeeded && satMetrics.availableQty >= required){
-          item.type = 'saturday';
-          item.saturdayIso = satDeadlineIso;
-        } else {
-          item.recommendedIso = findFirstFeasibleDeliveryDate(order, sourceOrders, dailyByDate);
-        }
-        warnings.push(item);
+        const reperKey = getCanonicalDeliveryReperKey(order && order.reper);
+        if(!reperKey) return;
+        (ordersByReper[reperKey] = ordersByReper[reperKey] || []).push(order);
       });
 
-      return warnings;
+      Object.keys(ordersByReper).forEach(reperKey => {
+        const reperOrders = ordersByReper[reperKey].slice().sort(compareDeliveryOrders);
+        const supply = getProjectedSupplyTimelineForReper(reperOrders[0] && reperOrders[0].reper, reperOrders[reperOrders.length - 1] && reperOrders[reperOrders.length - 1].dataLivrare, dailyByDate);
+        let committedQty = 0;
+
+        reperOrders.forEach(order => {
+          const required = Math.max(0, Math.round(toNumber(order && order.cantitate)));
+          const strictDeadlineIso = subtractWorkingDaysIsoCustom(order.dataLivrare, 1, false);
+          const satDeadlineIso = subtractWorkingDaysIsoCustom(order.dataLivrare, 1, true);
+
+          const strictCum = getCumulativeQtyAtDate(supply.timeline, strictDeadlineIso);
+          const strictAvailable = Math.max(0, strictCum - committedQty);
+          if(strictAvailable >= required){
+            committedQty += required;
+            return;
+          }
+
+          const satCum = getCumulativeQtyAtDate(supply.timeline, satDeadlineIso);
+          const satAvailable = Math.max(0, satCum - committedQty);
+          const saturdayNeeded = satDeadlineIso && satDeadlineIso !== strictDeadlineIso && isSaturdayIso(satDeadlineIso) && !isHolidayIso(satDeadlineIso);
+
+          const targetCumulative = committedQty + required;
+          const readyIso = findCompletionDateForRequiredCumulative(supply.timeline, targetCumulative);
+          const recommendedIso = getNextWorkingDeliveryDate(readyIso);
+
+          const item = {
+            id: trimText(order && order.id) || ('sched-' + Math.random().toString(36).slice(2)),
+            reper: trimText(order && order.reper),
+            nrTransport: trimText(order && order.nrTransport),
+            dataLivrare: trimText(order && order.dataLivrare),
+            cantitate: required,
+            strictDeadlineIso,
+            strictAvailable,
+            shortage: Math.max(0, required - strictAvailable),
+            type: 'late',
+            saturdayIso: '',
+            recommendedIso: recommendedIso || '',
+            readyIso: readyIso || ''
+          };
+
+          if(saturdayNeeded && satAvailable >= required){
+            item.type = 'saturday';
+            item.saturdayIso = satDeadlineIso;
+          }
+          warnings.push(item);
+          committedQty += required;
+        });
+      });
+
+      return warnings.sort((a, b) => compareDeliveryOrders(a, b));
     }
     function buildScheduleAlertHtml(summary){
       const warnings = Array.isArray(summary && summary.warnings) ? summary.warnings : [];
@@ -3214,10 +3255,12 @@ function getDefaultPermissions(role){
           ? ('Ar fi nevoie de sâmbătă ' + escapeHtml(String(isoToDisplay(item.saturdayIso))) + ' pentru a putea livra comanda.')
           : ('Livrarea ar trebui replanificată pentru data: ' + escapeHtml(item.recommendedIso ? isoToDisplay(item.recommendedIso) : 'nedeterminată'));
         const detail2 = 'Disponibil până la termen: ' + escapeHtml(roMaybeNumber(item.strictAvailable)) + ' buc • Necesar: ' + escapeHtml(roMaybeNumber(item.cantitate)) + ' buc • Lipsă: ' + escapeHtml(roMaybeNumber(item.shortage)) + ' buc';
+        const detail3 = item.type === 'late' ? ('Piesele vor fi gata în data de: ' + escapeHtml(item.readyIso ? isoToDisplay(item.readyIso) : 'nedeterminată')) : '';
         return '<div class="delivery-tip-item">'
           + '<div class="delivery-tip-line1">' + title + '</div>'
           + '<div class="delivery-tip-line2">' + detail1 + '</div>'
           + '<div class="delivery-tip-line2">' + detail2 + '</div>'
+          + (detail3 ? ('<div class="delivery-tip-line2">' + detail3 + '</div>') : '')
           + '</div>';
       }).join('');
       html += '</div></div>';
