@@ -406,7 +406,7 @@
             <span id="deliveryAlertText">Toate comenzile lunare sunt acoperite</span>
           </div>
         </div>
-        <div class="hint" id="hintText">Drag rapid pe celule pentru selecție • dublu click pentru editare • Shift+click pentru interval • Ctrl+click / Ctrl+drag pentru selecții separate.</div>
+                <div class="hint" id="hintText">Drag rapid pe celule pentru selecție • dublu click pentru editare • Shift+click pentru interval • Ctrl+click / Ctrl+drag pentru selecții separate.</div>
       </div>
 
       <div class="tableWrap" id="tableWrap">
@@ -540,7 +540,7 @@
       deliveryReadyByCell: Object.create(null),
       hoveredRowId: '',
       selectedRowId: '',
-      deliverySupport: { orders:[], inventarRows:[], ordersSource:'-', inventarSource:'-', ok:false, alertSummary:{ late:0, ahead:0, tone:'neutral', overdueLate:[], futureLate:[], futureAhead:[] } },
+      deliverySupport: { orders:[], inventarRows:[], ordersSource:'-', inventarSource:'-', ok:false, alertSummary:{ tone:'neutral', uncovered:[], count:0, shortageTotal:0 } },
       sessionId: getPlanSessionId(),
       remoteLocks: Object.create(null),
       activeCellLockKey: '',
@@ -2864,36 +2864,102 @@ function getDefaultPermissions(role){
       const values = Array.from(seen);
       return values.length ? values.join(', ') : '-';
     }
-    function buildDeliveryAlertItemHtml(item){
-      const monthLabel = trimText(item && item.monthLabel) || '-';
-      const detailText = 'Mai trebuie planificate ' + roMaybeNumber(Math.max(0, Math.round(toNumber(item && item.shortageQty)))) + ' buc pentru reperul ' + (trimText(item && item.reper) || '-') + '.';
-      return '<div class="delivery-tip-item">'
-        + '<div class="delivery-tip-line1">' + escapeHtml(detailText) + '</div>'
-        + '<div class="delivery-tip-line2">Lună: ' + escapeHtml(monthLabel) + '</div>'
-        + '<div class="delivery-tip-kv">'
-          + '<div class="delivery-tip-kv-row"><div class="delivery-tip-kv-label">Reper</div><div class="delivery-tip-kv-value">' + escapeHtml(item && item.reper || '-') + '</div></div>'
-          + '<div class="delivery-tip-kv-row"><div class="delivery-tip-kv-label">Comenzi lună</div><div class="delivery-tip-kv-value">' + escapeHtml(roMaybeNumber(Math.max(0, Math.round(toNumber(item && item.requiredQty)))) + ' buc') + '</div></div>'
-          + '<div class="delivery-tip-kv-row"><div class="delivery-tip-kv-label">Stoc final luna anterioară</div><div class="delivery-tip-kv-value">' + escapeHtml(roMaybeNumber(Math.max(0, Math.round(toNumber(item && item.snapshotQty)))) + ' buc') + '</div></div>'
-          + '<div class="delivery-tip-kv-row"><div class="delivery-tip-kv-label">Planificat / realizat în lună</div><div class="delivery-tip-kv-value">' + escapeHtml(roMaybeNumber(Math.max(0, Math.round(toNumber(item && item.plannedQty)))) + ' buc') + '</div></div>'
-          + '<div class="delivery-tip-kv-row"><div class="delivery-tip-kv-label">Acoperit total</div><div class="delivery-tip-kv-value">' + escapeHtml(roMaybeNumber(Math.max(0, Math.round(toNumber(item && item.coveredQty)))) + ' buc') + '</div></div>'
-          + '<div class="delivery-tip-kv-row"><div class="delivery-tip-kv-label">Neacoperit</div><div class="delivery-tip-kv-value">' + escapeHtml(roMaybeNumber(Math.max(0, Math.round(toNumber(item && item.shortageQty)))) + ' buc') + '</div></div>'
-        + '</div>'
-        + '</div>';
+
+    function buildMonthlyCoverageEntries(){
+      const sourceOrders = Array.isArray(state.deliverySupport && state.deliverySupport.orders) ? state.deliverySupport.orders : [];
+      const grouped = Object.create(null);
+      sourceOrders.forEach(order => {
+        const deliveryIso = trimText(order && order.dataLivrare);
+        const reperRaw = trimText(order && order.reper).toUpperCase();
+        const reperKey = getCanonicalDeliveryReperKey(order && order.reper);
+        const qty = Math.max(0, Math.round(toNumber(order && order.cantitate)));
+        const year = Number(order && order.an) || (deliveryIso ? Number(String(deliveryIso).slice(0, 4)) : 0);
+        const monthNum = getDeliveryOrderMonthNumber(order);
+        if(!deliveryIso || !reperKey || qty <= 0 || !year || !monthNum) return;
+        if(state.activeYear && String(year) !== String(state.activeYear)) return;
+        const monthIso = String(year) + '-' + String(monthNum).padStart(2, '0');
+        const key = [String(year), String(monthNum), reperKey].join('|');
+        if(!grouped[key]) grouped[key] = {
+          key,
+          an: year,
+          lunaNum: monthNum,
+          monthIso,
+          reper: reperRaw || reperKey,
+          reperKey,
+          requiredQty: 0,
+          orders: []
+        };
+        grouped[key].requiredQty += qty;
+        grouped[key].orders.push(order);
+      });
+
+      const contributionRows = getDeliveryContributionRows();
+      const byReper = Object.create(null);
+      contributionRows.forEach(item => {
+        (byReper[item.reperKey] = byReper[item.reperKey] || []).push(item);
+      });
+
+      const entries = Object.values(grouped).sort((a, b) =>
+        String(a.monthIso).localeCompare(String(b.monthIso), 'ro', { sensitivity:'base' }) ||
+        String(a.reper).localeCompare(String(b.reper), 'ro', { sensitivity:'base' })
+      ).map(group => {
+        const monthStartIso = group.monthIso + '-01';
+        const monthEndIso = endOfMonthIso(group.an, group.lunaNum);
+        const snapshot = findInventarForjatSnapshot(group.reper, monthStartIso);
+        const snapshotQty = Math.max(0, Math.round(toNumber(snapshot && snapshot.qty)));
+        const relevantItems = (byReper[group.reperKey] || []).filter(item => item.rowIso >= monthStartIso && item.rowIso <= monthEndIso);
+        const planQty = relevantItems.reduce((sum, item) => sum + Math.max(0, Math.round(toNumber(item && item.qty))), 0);
+        const coveredQty = snapshotQty + planQty;
+        const shortageQty = Math.max(0, group.requiredQty - coveredQty);
+        return {
+          key: group.key,
+          an: group.an,
+          lunaNum: group.lunaNum,
+          luna: getMonthName(group.lunaNum),
+          monthIso: group.monthIso,
+          reper: group.reper,
+          reperKey: group.reperKey,
+          requiredQty: Math.max(0, Math.round(group.requiredQty)),
+          snapshotQty,
+          plannedQty: planQty,
+          coveredQty,
+          shortageQty,
+          orders: group.orders.slice().sort(compareDeliveryOrders)
+        };
+      });
+      return entries;
     }
+
     function buildDeliveryIndicatorHtml(summary){
       const uncovered = Array.isArray(summary && summary.uncovered) ? summary.uncovered : [];
       if(!uncovered.length){
-        return '<div class="delivery-tip-title">Comenzi neacoperite în planificare</div><div class="delivery-tip-empty">Toate comenzile lunare sunt acoperite cu stocul final din luna anterioară și cu cantitățile planificate / realizate din luna curentă.</div>';
+        return '<div class="delivery-tip-title">Comenzi neacoperite în planificare</div><div class="delivery-tip-empty">Toate comenzile lunare sunt acoperite cu stocul final din luna anterioară și cu cantitățile realizate / planificate din luna curentă.</div>';
       }
       let html = '<div class="delivery-tip-title">Comenzi neacoperite în planificare</div>';
-      html += '<div class="delivery-tip-section"><div class="delivery-tip-section-title late">Repere cu lipsă • ' + escapeHtml(String(uncovered.length)) + '</div><div class="delivery-tip-list">' + uncovered.map(item => buildDeliveryAlertItemHtml(item)).join('') + '</div></div>';
+      html += '<div class="delivery-tip-section"><div class="delivery-tip-section-title late">Repere neacoperite • ' + escapeHtml(String(uncovered.length)) + '</div><div class="delivery-tip-list">';
+      html += uncovered.map(item => {
+        const transportLabels = (Array.isArray(item.orders) ? item.orders : []).map(order => trimText(order && order.nrTransport)).filter(Boolean);
+        const transportText = transportLabels.length ? transportLabels.join(', ') : '-';
+        return '<div class="delivery-tip-item">'
+          + '<div class="delivery-tip-line1">' + escapeHtml(String(item.reper || '-')) + ' — Mai trebuie planificate ' + escapeHtml(roMaybeNumber(item.shortageQty)) + ' buc</div>'
+          + '<div class="delivery-tip-line2">' + escapeHtml(item.luna || '-') + ' ' + escapeHtml(String(item.an || '')) + ' • Transporturi: ' + escapeHtml(transportText) + '</div>'
+          + '<div class="delivery-tip-kv">'
+            + '<div class="delivery-tip-kv-row"><div class="delivery-tip-kv-label">Comandă lunară</div><div class="delivery-tip-kv-value">' + escapeHtml(roMaybeNumber(item.requiredQty) + ' buc') + '</div></div>'
+            + '<div class="delivery-tip-kv-row"><div class="delivery-tip-kv-label">Stoc început lună</div><div class="delivery-tip-kv-value">' + escapeHtml(roMaybeNumber(item.snapshotQty) + ' buc') + '</div></div>'
+            + '<div class="delivery-tip-kv-row"><div class="delivery-tip-kv-label">Planificat / realizat lună</div><div class="delivery-tip-kv-value">' + escapeHtml(roMaybeNumber(item.plannedQty) + ' buc') + '</div></div>'
+            + '<div class="delivery-tip-kv-row"><div class="delivery-tip-kv-label">Acoperit total</div><div class="delivery-tip-kv-value">' + escapeHtml(roMaybeNumber(item.coveredQty) + ' buc') + '</div></div>'
+            + '<div class="delivery-tip-kv-row"><div class="delivery-tip-kv-label">Lipsă</div><div class="delivery-tip-kv-value">' + escapeHtml(roMaybeNumber(item.shortageQty) + ' buc') + '</div></div>'
+          + '</div>'
+        + '</div>';
+      }).join('');
+      html += '</div></div>';
       return html;
     }
+
     function updateDeliveryIndicator(){
       if(!els.deliveryAlertButton || !els.deliveryAlertText) return;
       const summary = state.deliverySupport && state.deliverySupport.alertSummary ? state.deliverySupport.alertSummary : { tone:'neutral', uncovered:[], count:0, shortageTotal:0 };
-      const uncovered = Array.isArray(summary.uncovered) ? summary.uncovered : [];
-      const count = uncovered.length;
+      const count = Math.max(0, Math.round(toNumber(summary.count)));
       const shortageTotal = Math.max(0, Math.round(toNumber(summary.shortageTotal)));
       const tone = count > 0 ? 'late' : 'neutral';
       els.deliveryAlertButton.className = 'delivery-alert-button is-' + tone;
@@ -2902,81 +2968,30 @@ function getDefaultPermissions(role){
       els.deliveryAlertButton.setAttribute('data-tooltip-html', buildDeliveryIndicatorHtml(summary));
       els.deliveryAlertButton.setAttribute('data-tooltip-tone', tone);
     }
+
     function buildDeliveryFooterSummary(){
       try{
-        const summary = state.deliverySupport && state.deliverySupport.alertSummary ? state.deliverySupport.alertSummary : { uncovered:[], shortageTotal:0 };
+        const summary = state.deliverySupport && state.deliverySupport.alertSummary ? state.deliverySupport.alertSummary : { uncovered:[], count:0, shortageTotal:0 };
         const uncovered = Array.isArray(summary.uncovered) ? summary.uncovered : [];
-        if(!uncovered.length) return ' Comenzi lunare: toate sunt acoperite în planificare.';
-        return ' Comenzi lunare neacoperite: ' + String(uncovered.length) + ' repere • lipsă totală ' + roMaybeNumber(Math.max(0, Math.round(toNumber(summary.shortageTotal)))) + ' buc.';
+        if(!uncovered.length) return ' Comenzi livrare: toate comenzile lunare sunt acoperite.';
+        return ' Comenzi livrare neacoperite: ' + String(uncovered.length) + ' repere • lipsă totală ' + roMaybeNumber(Math.max(0, Math.round(toNumber(summary.shortageTotal)))) + ' buc.';
       }catch(error){
         console.warn('buildDeliveryFooterSummary', error);
-        return ' Comenzi lunare: sumar indisponibil momentan.';
+        return ' Comenzi livrare: sumar indisponibil momentan.';
       }
     }
+
     function rebuildDeliveryAlerts(){
       try{
-        const sourceOrders = Array.isArray(state.deliverySupport && state.deliverySupport.orders) ? state.deliverySupport.orders : [];
-        const grouped = Object.create(null);
-        sourceOrders.forEach(order => {
-          const deliveryIso = trimText(order && order.dataLivrare);
-          const reperRaw = trimText(order && order.reper).toUpperCase();
-          const reperKey = getCanonicalDeliveryReperKey(order && order.reper);
-          const qty = Math.max(0, Math.round(toNumber(order && order.cantitate)));
-          const year = Number(order && order.an) || (deliveryIso ? Number(deliveryIso.slice(0,4)) : 0);
-          const monthNum = getDeliveryOrderMonthNumber(order);
-          if(!deliveryIso || !reperKey || qty <= 0 || !year || !monthNum) return;
-          if(state.activeYear && String(year) !== String(state.activeYear)) return;
-          const key = [String(year), String(monthNum), reperKey].join('|');
-          if(!grouped[key]) grouped[key] = {
-            key,
-            an: year,
-            lunaNum: monthNum,
-            monthIso: String(year) + '-' + String(monthNum).padStart(2,'0'),
-            monthLabel: monthIsoToRoLabel(String(year) + '-' + String(monthNum).padStart(2,'0')),
-            reper: reperRaw || reperKey,
-            reperKey,
-            requiredQty: 0
-          };
-          grouped[key].requiredQty += qty;
-        });
-        const contributionRows = getDeliveryContributionRows();
-        const byReper = Object.create(null);
-        contributionRows.forEach(item => {
-          (byReper[item.reperKey] = byReper[item.reperKey] || []).push(item);
-        });
-        const uncovered = [];
-        Object.values(grouped).forEach(group => {
-          const monthStartIso = group.monthIso + '-01';
-          const monthEndIso = endOfMonthIso(group.an, group.lunaNum);
-          const snapshot = findInventarForjatSnapshot(group.reper, monthStartIso);
-          const snapshotQty = Math.max(0, Math.round(toNumber(snapshot && snapshot.qty)));
-          const relevantItems = (byReper[group.reperKey] || []).filter(item => item.rowIso >= monthStartIso && item.rowIso <= monthEndIso);
-          const plannedQty = relevantItems.reduce((sum, item) => sum + Math.max(0, Math.round(toNumber(item && item.qty))), 0);
-          const coveredQty = snapshotQty + plannedQty;
-          const shortageQty = Math.max(0, Math.round(toNumber(group.requiredQty)) - coveredQty);
-          if(shortageQty > 0){
-            uncovered.push({
-              monthIso: group.monthIso,
-              monthLabel: group.monthLabel,
-              an: group.an,
-              lunaNum: group.lunaNum,
-              reper: group.reper,
-              reperKey: group.reperKey,
-              requiredQty: Math.max(0, Math.round(toNumber(group.requiredQty))),
-              snapshotQty,
-              plannedQty,
-              coveredQty,
-              shortageQty
-            });
-          }
-        });
-        uncovered.sort((a,b) => String(a.monthIso).localeCompare(String(b.monthIso), 'ro', { sensitivity:'base' }) || String(a.reper).localeCompare(String(b.reper), 'ro', { sensitivity:'base' }));
-        state.deliverySupport.alertSummary = {
-          tone: uncovered.length ? 'late' : 'neutral',
+        const coverageEntries = buildMonthlyCoverageEntries();
+        const uncovered = coverageEntries.filter(item => item.shortageQty > 0);
+        const summary = {
+          tone: uncovered.length > 0 ? 'late' : 'neutral',
           uncovered,
           count: uncovered.length,
           shortageTotal: uncovered.reduce((sum, item) => sum + Math.max(0, Math.round(toNumber(item && item.shortageQty))), 0)
         };
+        state.deliverySupport.alertSummary = summary;
         updateDeliveryIndicator();
       }catch(error){
         console.error('rebuildDeliveryAlerts', error);
@@ -2984,7 +2999,7 @@ function getDefaultPermissions(role){
         updateDeliveryIndicator();
       }
     }
-    function ensureDeliveryIndicatorTooltip(){{
+    function ensureDeliveryIndicatorTooltip(){
       if(deliveryTooltipEl) return deliveryTooltipEl;
       deliveryTooltipEl = document.createElement('div');
       deliveryTooltipEl.className = 'delivery-floating-tooltip';
