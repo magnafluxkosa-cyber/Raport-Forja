@@ -2635,6 +2635,7 @@ function getDefaultPermissions(role){
     let deliveryTooltipVisible = false;
     let deliveryTermTooltipEl = null;
     let deliveryTermTooltipVisible = false;
+    let deliveryTermTooltipHideTimer = null;
     function normalizeDeliveryOrderRow(row, index){
       const obj = Array.isArray(row) ? {
         an: arrayCell(row, 0, 0),
@@ -3074,7 +3075,7 @@ function getDefaultPermissions(role){
       positionDeliveryIndicatorTooltip();
     }
 
-    function getCurrentMonthFilteredOrdersForTermAlert(){
+    function getCurrentTermOrders(){
       const currentMonthIso = TODAY_ISO.slice(0,7);
       return (Array.isArray(state.deliverySupport && state.deliverySupport.orders) ? state.deliverySupport.orders : [])
         .slice()
@@ -3087,37 +3088,37 @@ function getDefaultPermissions(role){
           return String(deliveryIso).slice(0,7) >= currentMonthIso;
         });
     }
-    function buildReperSupplyTimeline(reper, lastDeliveryIso){
-      const snapshot = findInventarForjatSnapshot(reper, lastDeliveryIso);
-      const byDate = Object.create(null);
-      const startQty = Math.max(0, Math.round(toNumber(snapshot && snapshot.qty)));
-      byDate[snapshot.endIso || '0000-00-00'] = startQty;
+    function getCurrentTheoreticalStockForReper(reper){
+      const snapshot = findInventarForjatSnapshot(reper, TODAY_ISO);
+      let qty = Math.max(0, Math.round(toNumber(snapshot && snapshot.qty)));
+      const reperKey = getCanonicalDeliveryReperKey(reper);
       getDeliveryContributionRows().forEach(item => {
-        if(getCanonicalDeliveryReperKey(item.reper) !== getCanonicalDeliveryReperKey(reper)) return;
-        const iso = trimText(item.rowIso);
-        if(!iso) return;
-        byDate[iso] = Math.max(0, Math.round(toNumber(byDate[iso]) + toNumber(item.qty)));
+        if(item.reperKey !== reperKey) return;
+        if(!item.rowIso || item.rowIso >= TODAY_ISO) return;
+        qty += Math.max(0, Math.round(toNumber(item.qty)));
       });
-      return Object.keys(byDate).sort().map(iso => ({
-        iso,
-        qty: Math.max(0, Math.round(toNumber(byDate[iso])))
-      }));
+      (Array.isArray(state.deliverySupport && state.deliverySupport.orders) ? state.deliverySupport.orders : []).forEach(order => {
+        if(getCanonicalDeliveryReperKey(order && order.reper) !== reperKey) return;
+        const deliveryIso = trimText(order && order.dataLivrare);
+        if(!deliveryIso || deliveryIso >= TODAY_ISO) return;
+        qty -= Math.max(0, Math.round(toNumber(order && order.cantitate)));
+      });
+      return Math.max(0, Math.round(qty));
     }
-    function findReadyDateForTargetQty(timeline, targetQty){
-      let cumulative = 0;
-      for(const entry of (Array.isArray(timeline) ? timeline : [])){
-        cumulative += Math.max(0, Math.round(toNumber(entry && entry.qty)));
-        if(cumulative >= targetQty){
-          return trimText(entry && entry.iso) || '';
-        }
-      }
-      return '';
+    function getFutureSupplyEventsForReper(reper){
+      const reperKey = getCanonicalDeliveryReperKey(reper);
+      const map = Object.create(null);
+      getDeliveryContributionRows().forEach(item => {
+        if(item.reperKey !== reperKey) return;
+        if(!item.rowIso || item.rowIso < TODAY_ISO) return;
+        map[item.rowIso] = Math.max(0, Math.round(toNumber(map[item.rowIso]) + toNumber(item.qty)));
+      });
+      return Object.keys(map).sort().map(iso => ({ iso, qty: Math.max(0, Math.round(toNumber(map[iso]))) }));
     }
     function buildDeliveryTermWarnings(){
-      const orders = getCurrentMonthFilteredOrdersForTermAlert();
+      const orders = getCurrentTermOrders();
       const warnings = [];
       const grouped = Object.create(null);
-
       orders.forEach(order => {
         const reperKey = getCanonicalDeliveryReperKey(order && order.reper);
         if(!reperKey) return;
@@ -3126,35 +3127,50 @@ function getDefaultPermissions(role){
 
       Object.keys(grouped).forEach(reperKey => {
         const reperOrders = grouped[reperKey].slice().sort(compareDeliveryOrders);
-        const lastDeliveryIso = trimText(reperOrders[reperOrders.length - 1] && reperOrders[reperOrders.length - 1].dataLivrare);
-        const timeline = buildReperSupplyTimeline(reperOrders[0] && reperOrders[0].reper, lastDeliveryIso);
-        let committedQty = 0;
+        const reperLabel = trimText(reperOrders[0] && reperOrders[0].reper);
+        const baseStock = getCurrentTheoreticalStockForReper(reperLabel);
+        const events = getFutureSupplyEventsForReper(reperLabel);
+        let cumulativeDemand = 0;
 
         reperOrders.forEach(order => {
           const requiredQty = Math.max(0, Math.round(toNumber(order && order.cantitate)));
           const requestedDeliveryIso = trimText(order && order.dataLivrare);
-          const targetQty = committedQty + requiredQty;
-          const readyIso = findReadyDateForTargetQty(timeline, targetQty);
-          const earliestDeliveryIso = readyIso ? addWorkingDaysIso(readyIso, 3) : '';
-          const isLate = !earliestDeliveryIso || !requestedDeliveryIso || earliestDeliveryIso > requestedDeliveryIso;
+          cumulativeDemand += requiredQty;
 
-          if(isLate){
+          let readyIso = '';
+          let cumulativeSupply = baseStock;
+
+          if(cumulativeDemand <= baseStock){
+            readyIso = '';
+          }else{
+            for(const ev of events){
+              cumulativeSupply += Math.max(0, Math.round(toNumber(ev && ev.qty)));
+              if(cumulativeSupply >= cumulativeDemand){
+                readyIso = trimText(ev && ev.iso);
+                break;
+              }
+            }
+          }
+
+          const earliestDeliveryIso = readyIso ? addWorkingDaysInclusiveIso(readyIso, 3) : requestedDeliveryIso;
+          const late = !earliestDeliveryIso || !requestedDeliveryIso || earliestDeliveryIso > requestedDeliveryIso;
+
+          if(late){
             warnings.push({
               id: trimText(order && order.id) || ('term-' + Math.random().toString(36).slice(2)),
-              reper: trimText(order && order.reper),
+              reper: reperLabel,
               nrTransport: trimText(order && order.nrTransport),
               requestedDeliveryIso,
               requiredQty,
-              committedQtyBefore: committedQty,
-              readyIso: readyIso || '',
-              earliestDeliveryIso: earliestDeliveryIso || ''
+              readyIso: readyIso || TODAY_ISO,
+              earliestDeliveryIso: earliestDeliveryIso || '',
+              baseStock
             });
           }
-          committedQty += requiredQty;
         });
       });
 
-      return warnings.sort((a, b) =>
+      return warnings.sort((a,b) =>
         String(a.requestedDeliveryIso || '').localeCompare(String(b.requestedDeliveryIso || ''), 'ro', { sensitivity:'base' }) ||
         String(a.reper || '').localeCompare(String(b.reper || ''), 'ro', { sensitivity:'base' }) ||
         String(a.nrTransport || '').localeCompare(String(b.nrTransport || ''), 'ro', { sensitivity:'base' })
@@ -3163,15 +3179,15 @@ function getDefaultPermissions(role){
     function buildDeliveryTermIndicatorHtml(summary){
       const warnings = Array.isArray(summary && summary.warnings) ? summary.warnings : [];
       if(!warnings.length){
-        return '<div class="delivery-tip-title">Avertizări termen livrare</div><div class="delivery-tip-empty">Toate livrările din luna actuală în sus sunt fezabile. Data de livrare este calculată din momentul în care piesele sunt gata, plus 3 zile lucrătoare.</div>';
+        return '<div class="delivery-tip-title">Avertizări termen livrare</div><div class="delivery-tip-empty">Toate livrările din luna actuală în sus sunt fezabile. Calculul pornește din stocul teoretic curent, apoi adaugă piesele care mai sunt planificate, iar când piesele sunt gata se adaugă încă 3 zile lucrătoare până la livrare.</div>';
       }
       let html = '<div class="delivery-tip-title">Avertizări termen livrare</div>';
       html += '<div class="delivery-tip-section"><div class="delivery-tip-section-title late">Livrări de replanificat • ' + escapeHtml(String(warnings.length)) + '</div><div class="delivery-tip-list">';
       html += warnings.map(item => {
-        const transportText = trimText(item && item.nrTransport) ? ('Transport ' + trimText(item.nrTransport) + ' • ') : '';
+        const transport = trimText(item && item.nrTransport) ? ('Transport ' + trimText(item.nrTransport) + ' • ') : '';
         return '<div class="delivery-tip-item">'
-          + '<div class="delivery-tip-line1">' + escapeHtml(transportText + trimText(item.reper) + ' • livrare cerută ' + isoToDisplay(item.requestedDeliveryIso)) + '</div>'
-          + '<div class="delivery-tip-line2">Cantitate comandă: ' + escapeHtml(roMaybeNumber(item.requiredQty)) + ' buc</div>'
+          + '<div class="delivery-tip-line1">' + escapeHtml(transport + trimText(item.reper) + ' • livrare cerută ' + isoToDisplay(item.requestedDeliveryIso)) + '</div>'
+          + '<div class="delivery-tip-line2">Cantitate comandă: ' + escapeHtml(roMaybeNumber(item.requiredQty)) + ' buc • Stoc teoretic curent: ' + escapeHtml(roMaybeNumber(item.baseStock)) + ' buc</div>'
           + '<div class="delivery-tip-line2">Piesele vor fi gata în data de: ' + escapeHtml(item.readyIso ? isoToDisplay(item.readyIso) : 'nedeterminată') + '</div>'
           + '<div class="delivery-tip-line2">Livrarea ar trebui replanificată pentru data: ' + escapeHtml(item.earliestDeliveryIso ? isoToDisplay(item.earliestDeliveryIso) : 'nedeterminată') + '</div>'
           + '</div>';
@@ -3181,7 +3197,7 @@ function getDefaultPermissions(role){
     }
     function updateDeliveryTermIndicator(){
       if(!els.deliveryTermAlertButton || !els.deliveryTermAlertText) return;
-      const summary = state.deliverySupport && state.deliverySupport.termSummary ? state.deliverySupport.termSummary : { warnings:[], count:0 };
+      const summary = state.deliverySupport && state.deliverySupport.termSummary ? state.deliverySupport.termSummary : { tone:'neutral', warnings:[], count:0 };
       const count = Math.max(0, Math.round(toNumber(summary.count)));
       const tone = count > 0 ? 'late' : 'ok';
       els.deliveryTermAlertButton.className = 'delivery-alert-button is-' + tone;
@@ -3192,11 +3208,7 @@ function getDefaultPermissions(role){
     function rebuildDeliveryTermAlerts(){
       try{
         const warnings = buildDeliveryTermWarnings();
-        state.deliverySupport.termSummary = {
-          tone: warnings.length ? 'late' : 'ok',
-          warnings,
-          count: warnings.length
-        };
+        state.deliverySupport.termSummary = { tone: warnings.length ? 'late' : 'ok', warnings, count: warnings.length };
         updateDeliveryTermIndicator();
       }catch(error){
         console.error('rebuildDeliveryTermAlerts', error);
@@ -3214,7 +3226,6 @@ function getDefaultPermissions(role){
       document.body.appendChild(deliveryTermTooltipEl);
       return deliveryTermTooltipEl;
     }
-    let deliveryTermTooltipHideTimer = null;
     function clearDeliveryTermTooltipHideTimer(){
       if(deliveryTermTooltipHideTimer){
         clearTimeout(deliveryTermTooltipHideTimer);
@@ -3591,10 +3602,12 @@ function getDefaultPermissions(role){
       add(y + '-01-24', 'Ziua Unirii Principatelor Române');
       const easter = computeOrthodoxEaster(y);
       const goodFriday = new Date(easter.getTime()); goodFriday.setUTCDate(goodFriday.getUTCDate() - 2);
+      const holySaturday = new Date(easter.getTime()); holySaturday.setUTCDate(holySaturday.getUTCDate() - 1);
       const easterMonday = new Date(easter.getTime()); easterMonday.setUTCDate(easterMonday.getUTCDate() + 1);
       const pentecostSunday = new Date(easter.getTime()); pentecostSunday.setUTCDate(pentecostSunday.getUTCDate() + 49);
       const pentecostMonday = new Date(easter.getTime()); pentecostMonday.setUTCDate(pentecostMonday.getUTCDate() + 50);
       add(fmtIsoFromDate(goodFriday), 'Vinerea Mare');
+      add(fmtIsoFromDate(holySaturday), 'Sâmbăta Mare');
       add(fmtIsoFromDate(easter), 'Paștele ortodox');
       add(fmtIsoFromDate(easterMonday), 'A doua zi de Paște');
       add(y + '-05-01', 'Ziua Muncii');
@@ -3609,7 +3622,6 @@ function getDefaultPermissions(role){
       HOLIDAY_CACHE[y] = map;
       return map;
     }
-
     function isHolidayIso(iso){
       if(!iso) return false;
       const year = Number(String(iso).slice(0,4));
@@ -3623,14 +3635,14 @@ function getDefaultPermissions(role){
       const day = d.getDay();
       return day !== 0 && day !== 6;
     }
-    function addWorkingDaysIso(iso, days){
+    function addWorkingDaysInclusiveIso(iso, days){
       if(!iso) return '';
-      let d = new Date(iso + 'T00:00:00');
       let remaining = Math.max(0, Math.round(toNumber(days)));
+      let d = new Date(iso + 'T00:00:00');
       while(remaining > 0){
-        d.setDate(d.getDate() + 1);
         const curIso = d.toISOString().slice(0,10);
         if(isWorkingDayIso(curIso)) remaining -= 1;
+        if(remaining > 0) d.setDate(d.getDate() + 1);
       }
       return d.toISOString().slice(0,10);
     }
