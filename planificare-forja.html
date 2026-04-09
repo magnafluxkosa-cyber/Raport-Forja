@@ -3127,6 +3127,7 @@ function getDefaultPermissions(role){
       const orders = getCurrentTermOrders();
       const warnings = [];
       const grouped = Object.create(null);
+
       orders.forEach(order => {
         const reperKey = getCanonicalDeliveryReperKey(order && order.reper);
         if(!reperKey) return;
@@ -3136,49 +3137,80 @@ function getDefaultPermissions(role){
       Object.keys(grouped).forEach(reperKey => {
         const reperOrders = grouped[reperKey].slice().sort(compareDeliveryOrders);
         const reperLabel = trimText(reperOrders[0] && reperOrders[0].reper);
-        const baseStock = getCurrentTheoreticalStockForReper(reperLabel);
-        const events = getFutureSupplyEventsForReper(reperLabel);
-        let cumulativeDemand = 0;
+        let stockLeft = getCurrentTheoreticalStockForReper(reperLabel);
+        const events = getFutureSupplyEventsForReper(reperLabel).map(ev => ({
+          iso: ev.iso,
+          qtyLeft: Math.max(0, Math.round(toNumber(ev.qty))),
+          rowNo: ev.rowNo,
+          machineIndex: ev.machineIndex,
+          machine: ev.machine,
+          sourceType: ev.sourceType
+        }));
+        let eventIndex = 0;
 
         reperOrders.forEach(order => {
           const requiredQty = Math.max(0, Math.round(toNumber(order && order.cantitate)));
           const requestedDeliveryIso = trimText(order && order.dataLivrare);
-          cumulativeDemand += requiredQty;
-
+          let need = requiredQty;
+          let usedStockQty = 0;
+          let usedPlannedQty = 0;
           let readyIso = '';
-          let cumulativeSupply = baseStock;
+          const usedRows = [];
 
-          if(cumulativeDemand <= baseStock){
-            readyIso = '';
-          }else{
-            for(const ev of events){
-              cumulativeSupply += Math.max(0, Math.round(toNumber(ev && ev.qty)));
-              if(cumulativeSupply >= cumulativeDemand){
-                readyIso = trimText(ev && ev.iso);
-                break;
-              }
-            }
+          if(stockLeft > 0 && need > 0){
+            const takeStock = Math.min(stockLeft, need);
+            stockLeft -= takeStock;
+            need -= takeStock;
+            usedStockQty += takeStock;
           }
 
-          const earliestDeliveryIso = readyIso ? addWorkingDaysInclusiveIso(readyIso, 3) : requestedDeliveryIso;
-          const late = !earliestDeliveryIso || !requestedDeliveryIso || earliestDeliveryIso > requestedDeliveryIso;
+          while(need > 0 && eventIndex < events.length){
+            const ev = events[eventIndex];
+            if(ev.qtyLeft <= 0){
+              eventIndex += 1;
+              continue;
+            }
+            const take = Math.min(ev.qtyLeft, need);
+            ev.qtyLeft -= take;
+            need -= take;
+            usedPlannedQty += take;
+            readyIso = ev.iso;
+            usedRows.push({
+              iso: ev.iso,
+              qty: take,
+              machine: ev.machine,
+              sourceType: ev.sourceType
+            });
+            if(ev.qtyLeft <= 0) eventIndex += 1;
+          }
 
-          if(late){
+          const shortageQty = Math.max(0, need);
+          const fullyCovered = shortageQty === 0;
+          const needsPlannedPieces = usedPlannedQty > 0;
+          const earliestDeliveryIso = fullyCovered
+            ? (needsPlannedPieces ? addWorkingDaysAfterIso(readyIso, 3) : requestedDeliveryIso)
+            : '';
+
+          const isLate = !fullyCovered || !requestedDeliveryIso || (needsPlannedPieces && earliestDeliveryIso > requestedDeliveryIso);
+          if(isLate){
             warnings.push({
               id: trimText(order && order.id) || ('term-' + Math.random().toString(36).slice(2)),
               reper: reperLabel,
               nrTransport: trimText(order && order.nrTransport),
               requestedDeliveryIso,
               requiredQty,
-              readyIso: readyIso || TODAY_ISO,
+              usedStockQty,
+              usedPlannedQty,
+              shortageQty,
+              readyIso: readyIso || '',
               earliestDeliveryIso: earliestDeliveryIso || '',
-              baseStock
+              usedRows
             });
           }
         });
       });
 
-      return warnings.sort((a,b) =>
+      return warnings.sort((a, b) =>
         String(a.requestedDeliveryIso || '').localeCompare(String(b.requestedDeliveryIso || ''), 'ro', { sensitivity:'base' }) ||
         String(a.reper || '').localeCompare(String(b.reper || ''), 'ro', { sensitivity:'base' }) ||
         String(a.nrTransport || '').localeCompare(String(b.nrTransport || ''), 'ro', { sensitivity:'base' })
@@ -3187,17 +3219,26 @@ function getDefaultPermissions(role){
     function buildDeliveryTermIndicatorHtml(summary){
       const warnings = Array.isArray(summary && summary.warnings) ? summary.warnings : [];
       if(!warnings.length){
-        return '<div class="delivery-tip-title">Avertizări termen livrare</div><div class="delivery-tip-empty">Toate livrările din luna actuală în sus sunt fezabile. Calculul pornește din stocul teoretic curent, apoi adaugă piesele care mai sunt planificate, iar când piesele sunt gata se adaugă încă 3 zile lucrătoare până la livrare.</div>';
+        return '<div class="delivery-tip-title">Avertizări termen livrare</div><div class="delivery-tip-empty">Toate livrările din luna actuală în sus sunt fezabile. Calculul este făcut reper cu reper, comandă cu comandă, consumând mai întâi stocul teoretic curent și apoi cantitățile planificate / realizate rând cu rând.</div>';
       }
       let html = '<div class="delivery-tip-title">Avertizări termen livrare</div>';
-      html += '<div class="delivery-tip-section"><div class="delivery-tip-section-title late">Livrări de replanificat • ' + escapeHtml(String(warnings.length)) + '</div><div class="delivery-tip-list">';
+      html += '<div class="delivery-tip-line2" style="margin:0 0 8px 0;">Calculat reper cu reper, comandă cu comandă, consumând stocul curent și apoi planificarea rămasă rând cu rând.</div>';
+      html += '<div class="delivery-tip-section"><div class="delivery-tip-section-title late">Livrări în risc • ' + escapeHtml(String(warnings.length)) + '</div><div class="delivery-tip-list">';
       html += warnings.map(item => {
         const transport = trimText(item && item.nrTransport) ? ('Transport ' + trimText(item.nrTransport) + ' • ') : '';
+        const rowsText = (Array.isArray(item.usedRows) ? item.usedRows : []).map(row => {
+          const src = trimText(row && row.sourceType) ? (' (' + trimText(row.sourceType) + ')') : '';
+          return isoToDisplay(row && row.iso) + ': ' + roMaybeNumber(row && row.qty) + ' buc' + src;
+        }).join(' • ');
+        const line4 = item.shortageQty > 0
+          ? ('În planificarea actuală lipsesc încă ' + escapeHtml(roMaybeNumber(item.shortageQty)) + ' buc pentru această comandă.')
+          : ('Livrarea ar trebui replanificată pentru data: ' + escapeHtml(item.earliestDeliveryIso ? isoToDisplay(item.earliestDeliveryIso) : 'nedeterminată'));
         return '<div class="delivery-tip-item">'
           + '<div class="delivery-tip-line1">' + escapeHtml(transport + trimText(item.reper) + ' • livrare cerută ' + isoToDisplay(item.requestedDeliveryIso)) + '</div>'
-          + '<div class="delivery-tip-line2">Cantitate comandă: ' + escapeHtml(roMaybeNumber(item.requiredQty)) + ' buc • Stoc teoretic curent: ' + escapeHtml(roMaybeNumber(item.baseStock)) + ' buc</div>'
-          + '<div class="delivery-tip-line2">Piesele vor fi gata în data de: ' + escapeHtml(item.readyIso ? isoToDisplay(item.readyIso) : 'nedeterminată') + '</div>'
-          + '<div class="delivery-tip-line2">Livrarea ar trebui replanificată pentru data: ' + escapeHtml(item.earliestDeliveryIso ? isoToDisplay(item.earliestDeliveryIso) : 'nedeterminată') + '</div>'
+          + '<div class="delivery-tip-line2">Cantitate comandă: ' + escapeHtml(roMaybeNumber(item.requiredQty)) + ' buc • Din stoc curent: ' + escapeHtml(roMaybeNumber(item.usedStockQty)) + ' buc • Din planificare: ' + escapeHtml(roMaybeNumber(item.usedPlannedQty)) + ' buc</div>'
+          + '<div class="delivery-tip-line2">Piesele pentru această comandă vor fi gata în data de: ' + escapeHtml(item.readyIso ? isoToDisplay(item.readyIso) : 'nedeterminată') + '</div>'
+          + '<div class="delivery-tip-line2">' + line4 + '</div>'
+          + (rowsText ? ('<div class="delivery-tip-line2">Rânduri folosite din planificare: ' + escapeHtml(rowsText) + '</div>') : '')
           + '</div>';
       }).join('');
       html += '</div></div>';
@@ -3651,6 +3692,17 @@ function getDefaultPermissions(role){
         const curIso = d.toISOString().slice(0,10);
         if(isWorkingDayIso(curIso)) remaining -= 1;
         if(remaining > 0) d.setDate(d.getDate() + 1);
+      }
+      return d.toISOString().slice(0,10);
+    }
+    function addWorkingDaysAfterIso(iso, days){
+      if(!iso) return '';
+      let remaining = Math.max(0, Math.round(toNumber(days)));
+      let d = new Date(iso + 'T00:00:00');
+      while(remaining > 0){
+        d.setDate(d.getDate() + 1);
+        const curIso = d.toISOString().slice(0,10);
+        if(isWorkingDayIso(curIso)) remaining -= 1;
       }
       return d.toISOString().slice(0,10);
     }
