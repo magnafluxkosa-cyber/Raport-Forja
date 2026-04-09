@@ -1223,11 +1223,12 @@
 
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="./rf-config.js"></script>
+  <script src="./auth-common.js"></script>
   <script>
     const PAGE_KEY = "probleme-raportate";
     const DOC_KEYS = ["probleme-raportate", "probleme_raportate", "Probleme Raportate"];
     const LOCAL_KEY = "rf-probleme-raportate-cache-v2";
-    const FORJATE_DOC_KEYS = ["forjate", "FORJATE", "Forjate", "raport-forjate", "pagina-forjate", "foaia-forjate", "forjate.html"];
+    const FORJATE_DOC_KEYS = ["forjate", "FORJATE", "Forjate", "raport-forjate", "pagina-forjate", "foaia-forjate", "forjate.html", "forjate-2026", "forjate_2026", "FORJATE_2026", "forjate2026"];
     const FORJATE_LOCAL_KEYS = ["rf-forjate-cache-v2", "rf-forjate-cache-v1", "rf-forjate-cache", "forjate-cache"];
     const CLOUD_REFRESH_MS = 45000;
     const SAVE_DEBOUNCE_MS = 12000;
@@ -1762,24 +1763,55 @@
       if (!state.supabase || !state.user) return state.forjateRows;
 
       try {
-        const { data, error } = await state.supabase
+        const merged = [];
+        const seen = new Set();
+
+        const pushRows = (rows) => {
+          (rows || []).forEach(row => {
+            const key = [
+              normalizeDateValue(row.data),
+              normalizeText(row.schimbul),
+              normalizeText(row.utilaj),
+              normalizeText(row.reper)
+            ].join("|");
+            if (!row.data || !row.schimbul || !row.utilaj || !row.reper) return;
+            if (seen.has(key)) return;
+            seen.add(key);
+            merged.push(row);
+          });
+        };
+
+        const exactRes = await state.supabase
           .from("rf_documents")
           .select("*")
           .in("doc_key", FORJATE_DOC_KEYS)
           .order("updated_at", { ascending: false })
-          .limit(8);
+          .limit(20);
 
-        if (error) throw error;
-
-        if (Array.isArray(data) && data.length) {
-          for (const doc of data) {
+        if (!exactRes.error && Array.isArray(exactRes.data)) {
+          exactRes.data.forEach(doc => {
             const payload = doc?.content || doc?.data || doc;
-            const extracted = rowsFromForjatePayload(payload);
-            if (extracted.length) {
-              state.forjateRows = extracted;
-              return state.forjateRows;
-            }
-          }
+            pushRows(rowsFromForjatePayload(payload));
+          });
+        }
+
+        const fuzzyRes = await state.supabase
+          .from("rf_documents")
+          .select("*")
+          .ilike("doc_key", "%forjate%")
+          .order("updated_at", { ascending: false })
+          .limit(40);
+
+        if (!fuzzyRes.error && Array.isArray(fuzzyRes.data)) {
+          fuzzyRes.data.forEach(doc => {
+            const payload = doc?.content || doc?.data || doc;
+            pushRows(rowsFromForjatePayload(payload));
+          });
+        }
+
+        if (merged.length) {
+          state.forjateRows = merged;
+          return state.forjateRows;
         }
       } catch (error) {
         console.warn("forjate cloud lookup", error);
@@ -2714,7 +2746,7 @@
       dom.modal.setAttribute("aria-hidden", "false");
       setTimeout(() => {
         dom.form.an.focus();
-        if (!row) void autoFillReperFromForjate(false);
+        if (!row) void autoFillReperFromForjate(true);
       }, 30);
     }
 
@@ -2794,8 +2826,14 @@
       }
 
       try {
-        const { data: sessionData } = await supabase.auth.getSession();
-        state.user = sessionData?.session?.user || null;
+        if (window.ERPAuth && typeof window.ERPAuth.getSession === "function") {
+          const session = await window.ERPAuth.getSession();
+          state.user = session?.user || null;
+        }
+        if (!state.user) {
+          const { data: sessionData } = await supabase.auth.getSession();
+          state.user = sessionData?.session?.user || null;
+        }
       } catch (error) {
         console.error("getSession", error);
       }
@@ -2988,6 +3026,44 @@ async function resolvePagePermissions() {
       return false;
     }
 
+    async function writeDocumentCompat(payload, keyCandidates) {
+      if (!state.supabase) throw new Error("Clientul Supabase nu este inițializat.");
+      const keys = Array.from(new Set((keyCandidates || []).filter(Boolean).map(v => String(v).trim()).filter(Boolean)));
+      const primaryKey = keys[0] || PAGE_KEY;
+      let lastError = null;
+
+      const variants = [
+        { doc_key: primaryKey, content: payload, updated_at: payload.updated_at },
+        { doc_key: primaryKey, data: payload, updated_at: payload.updated_at },
+        { doc_key: primaryKey, content: payload, data: payload, updated_at: payload.updated_at }
+      ];
+
+      for (const row of variants) {
+        try {
+          const { data, error } = await state.supabase
+            .from("rf_documents")
+            .upsert(row, { onConflict: "doc_key" })
+            .select("doc_key,updated_at")
+            .limit(1);
+
+          if (error) {
+            lastError = error;
+            continue;
+          }
+
+          const doc = Array.isArray(data) && data[0] ? data[0] : {};
+          return {
+            doc_key: doc.doc_key || primaryKey,
+            updated_at: doc.updated_at || payload.updated_at
+          };
+        } catch (error) {
+          lastError = error;
+        }
+      }
+
+      throw lastError || new Error("Nu s-a putut salva compatibil în rf_documents.");
+    }
+
     async function saveCloud(force = false) {
       if (!state.supabase || !state.user) return false;
       if (state.syncInFlight) return false;
@@ -3096,16 +3172,11 @@ async function resolvePagePermissions() {
             if (await tryInsert(key)) break;
           }
         }
-        if (!saved && !lastError) {
-          const { error } = await state.supabase
-            .from("rf_documents")
-            .upsert({ doc_key: keyCandidates[0] || PAGE_KEY, content: payload, updated_at: payload.updated_at }, { onConflict: "doc_key" });
-          if (error) lastError = error;
-          else {
-            state.cloudDocKey = keyCandidates[0] || PAGE_KEY;
-            state.cloudUpdatedAt = payload.updated_at;
-            saved = true;
-          }
+        if (!saved) {
+          const compat = await writeDocumentCompat(payload, keyCandidates);
+          state.cloudDocKey = compat.doc_key || keyCandidates[0] || PAGE_KEY;
+          state.cloudUpdatedAt = compat.updated_at || payload.updated_at;
+          saved = true;
         }
         if (!saved) throw lastError || new Error("Nu s-a putut salva în rf_documents.");
 
@@ -3117,7 +3188,8 @@ async function resolvePagePermissions() {
         return true;
       } catch (error) {
         console.error("saveCloud", error);
-        setCloudStatus("Cloud: salvare eșuată, ai cache local", "danger");
+        const msg = String(error && (error.message || error.details || error.hint || error.code) || "salvare eșuată").trim();
+        setCloudStatus("Cloud: " + msg, "danger");
         return false;
       } finally {
         state.syncInFlight = false;
@@ -3288,7 +3360,7 @@ async function resolvePagePermissions() {
       dom.btnResetForm.addEventListener("click", () => {
         dom.editForm.reset();
         setDefaultFormValues();
-        void autoFillReperFromForjate(false);
+        void autoFillReperFromForjate(true);
       });
       dom.btnDelete.addEventListener("click", deleteSelected);
       dom.btnExport.addEventListener("click", exportExcel);
