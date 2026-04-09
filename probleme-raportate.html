@@ -1228,7 +1228,7 @@
     const PAGE_KEY = "probleme-raportate";
     const DOC_KEYS = ["probleme-raportate", "probleme_raportate", "Probleme Raportate"];
     const LOCAL_KEY = "rf-probleme-raportate-cache-v2";
-    const FORJATE_DOC_KEYS = ["forjate", "FORJATE", "Forjate", "raport-forjate", "pagina-forjate", "foaia-forjate", "forjate.html"];
+    const FORJATE_DOC_KEYS = ["forjate", "FORJATE", "Forjate", "raport-forjate", "pagina-forjate", "foaia-forjate", "forjate.html", "forjate-2026", "forjate_2026", "FORJATE_2026", "forjate2026"];
     const FORJATE_LOCAL_KEYS = ["rf-forjate-cache-v2", "rf-forjate-cache-v1", "rf-forjate-cache", "forjate-cache"];
     const CLOUD_REFRESH_MS = 45000;
     const SAVE_DEBOUNCE_MS = 12000;
@@ -1763,24 +1763,55 @@
       if (!state.supabase || !state.user) return state.forjateRows;
 
       try {
-        const { data, error } = await state.supabase
+        const merged = [];
+        const seen = new Set();
+
+        const pushRows = (rows) => {
+          (rows || []).forEach(row => {
+            const key = [
+              normalizeDateValue(row.data),
+              normalizeText(row.schimbul),
+              normalizeText(row.utilaj),
+              normalizeText(row.reper)
+            ].join("|");
+            if (!row.data || !row.schimbul || !row.utilaj || !row.reper) return;
+            if (seen.has(key)) return;
+            seen.add(key);
+            merged.push(row);
+          });
+        };
+
+        const exactRes = await state.supabase
           .from("rf_documents")
           .select("*")
           .in("doc_key", FORJATE_DOC_KEYS)
           .order("updated_at", { ascending: false })
-          .limit(8);
+          .limit(20);
 
-        if (error) throw error;
-
-        if (Array.isArray(data) && data.length) {
-          for (const doc of data) {
+        if (!exactRes.error && Array.isArray(exactRes.data)) {
+          exactRes.data.forEach(doc => {
             const payload = doc?.content || doc?.data || doc;
-            const extracted = rowsFromForjatePayload(payload);
-            if (extracted.length) {
-              state.forjateRows = extracted;
-              return state.forjateRows;
-            }
-          }
+            pushRows(rowsFromForjatePayload(payload));
+          });
+        }
+
+        const fuzzyRes = await state.supabase
+          .from("rf_documents")
+          .select("*")
+          .ilike("doc_key", "%forjate%")
+          .order("updated_at", { ascending: false })
+          .limit(40);
+
+        if (!fuzzyRes.error && Array.isArray(fuzzyRes.data)) {
+          fuzzyRes.data.forEach(doc => {
+            const payload = doc?.content || doc?.data || doc;
+            pushRows(rowsFromForjatePayload(payload));
+          });
+        }
+
+        if (merged.length) {
+          state.forjateRows = merged;
+          return state.forjateRows;
         }
       } catch (error) {
         console.warn("forjate cloud lookup", error);
@@ -1797,56 +1828,26 @@
         return { preferred: [], all: [] };
       }
 
-      const matchesFor = rows => {
-        const all = uniqueSorted(rows.map(row => String(row.reper ?? "").trim()).filter(Boolean));
+      const normalizeMatches = rows => {
+        const cleanRows = (rows || []).filter(row =>
+          normalizeDateValue(row.data) === dateKey &&
+          normalizeText(row.utilaj) === utilajKey &&
+          String(row.reper ?? "").trim()
+        );
         const preferred = shiftKey
-          ? uniqueSorted(rows
+          ? uniqueSorted(cleanRows
               .filter(row => String(row.schimbul ?? "").trim() === shiftKey)
               .map(row => String(row.reper ?? "").trim())
               .filter(Boolean))
           : [];
+        const all = uniqueSorted(cleanRows.map(row => String(row.reper ?? "").trim()).filter(Boolean));
         return { preferred, all };
       };
 
-      const exactMatches = state.forjateRows.filter(row =>
-        normalizeDateValue(row.data) === dateKey &&
-        normalizeText(row.utilaj) === utilajKey &&
-        String(row.reper ?? "").trim()
-      );
+      const exact = normalizeMatches(state.forjateRows);
+      if (exact.preferred.length || exact.all.length) return exact;
 
-      if (exactMatches.length) {
-        return matchesFor(exactMatches);
-      }
-
-      const datedCandidates = state.forjateRows.filter(row =>
-        normalizeText(row.utilaj) === utilajKey &&
-        String(row.reper ?? "").trim() &&
-        normalizeDateValue(row.data) &&
-        normalizeDateValue(row.data) <= dateKey
-      );
-
-      if (!datedCandidates.length) {
-        return { preferred: [], all: [] };
-      }
-
-      let pool = datedCandidates;
-      if (shiftKey) {
-        const shiftCandidates = datedCandidates.filter(row => String(row.schimbul ?? "").trim() === shiftKey);
-        if (shiftCandidates.length) pool = shiftCandidates;
-      }
-
-      const latestDate = pool
-        .map(row => normalizeDateValue(row.data))
-        .filter(Boolean)
-        .sort()
-        .slice(-1)[0];
-
-      if (!latestDate) {
-        return { preferred: [], all: [] };
-      }
-
-      const latestRows = pool.filter(row => normalizeDateValue(row.data) === latestDate);
-      return matchesFor(latestRows);
+      return { preferred: [], all: [] };
     }
 
     function applyFormReperOptions(repere, preferred = []) {
@@ -1856,7 +1857,6 @@
       const cleanRepere = uniqueSorted([...(matchedRepere || []), ...(fullRepere || [])]);
       if (!cleanRepere.length) return false;
 
-      const previousValue = String(dom.form.reper.value ?? "").trim();
       fillFormSelect(dom.form.reper, cleanRepere, true);
 
       const setIfPresent = (value) => {
@@ -1870,18 +1870,6 @@
 
       if (preferredRepere.length === 1 && setIfPresent(preferredRepere[0])) return true;
       if (matchedRepere.length === 1 && setIfPresent(matchedRepere[0])) return true;
-
-      if (preferredRepere.length > 1) {
-        dom.form.reper.value = "";
-        return true;
-      }
-
-      if (matchedRepere.length > 1) {
-        dom.form.reper.value = "";
-        return true;
-      }
-
-      if (setIfPresent(previousValue)) return true;
 
       dom.form.reper.value = "";
       return true;
