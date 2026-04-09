@@ -473,6 +473,16 @@
     const DEBITARI_FLOW_DOC_BASE_KEYS = ['debitate','debitari','debitate_otel','debitari_otel','DEBITATE','DEBITARI'];
     const DELIVERY_DOC_KEY = 'comenzi-livrare';
     const DELIVERY_DOC_ALIASES = ['comenzi-livrare','comenzi livrare'];
+    const DELIVERY_TRANSPORT_SOURCES = [
+      { docKeys:['zale-106-1625-26','106-1625-26'], truck:2200, fields:[{ reper:'106-1625', key:'forjat_2307' }, { reper:'106-1626', key:'forjat_2308' }] },
+      { docKeys:['zale-229-6909-10','229-6909-10'], truck:2200, fields:[{ reper:'229-6909', key:'forjat_2307' }, { reper:'229-6910', key:'forjat_2308' }] },
+      { docKeys:['zale-248-2307-08','248-2307-08'], truck:1650, fields:[{ reper:'248-2307', key:'forjat_2307' }, { reper:'248-2308', key:'forjat_2308' }] },
+      { docKeys:['zale-378-8241-42','378-8241-42'], truck:1650, fields:[{ reper:'378-8241', key:'forjat_2307' }, { reper:'378-8242', key:'forjat_2308' }] },
+      { docKeys:['zale-417-3595-96','417-3595-96'], truck:2200, fields:[{ reper:'417-3595', key:'forjat_2307' }, { reper:'417-3596', key:'forjat_2308' }] },
+      { docKeys:['zale-418-2091-92','418-2091-92'], truck:1650, fields:[{ reper:'418-2091', key:'forjat_2307' }, { reper:'418-2092', key:'forjat_2308' }] },
+      { docKeys:['zale-503-0761-62','503-0761-62'], truck:1210, fields:[{ reper:'503-0761', key:'forjat_2307' }, { reper:'503-0762', key:'forjat_2308' }] },
+      { docKeys:['zale-9k-6628-29','9k-6628-29'], truck:3600, fields:[{ reper:'9K-6628', key:'forjat_2307' }, { reper:'9K-6629', key:'forjat_2308' }] }
+    ];
     const FORJAT_INV_BASE_KEYS = ['inventar-forjat','inventar_forjat','inventar-forjate','inventar_forjate','inventar-piese-forjate','inventar_piese_forjate','stoc-forjate','stoc_forjate'];
     const LOCK_DOC_KEY = 'planificare-forja:locks';
     const PLAN_SYNC_CHANNEL_TOPIC = 'planificare-forja-sync';
@@ -2267,6 +2277,7 @@ function getDefaultPermissions(role){
       const debitari = await loadDebitariEntries(targetYear);
       const forjateFlow = await loadForjateDailyMovements(targetYear);
       const deliveryOrders = await loadDeliveryOrders();
+      const deliveryTransports = await loadDeliveryTransportForecastRows();
       const inventarForjat = await loadInventarForjatRows(targetYear);
 
       const notes = [];
@@ -2277,6 +2288,7 @@ function getDefaultPermissions(role){
       notes.push('Debitări: ' + (debitari.source || '-'));
       notes.push('Forjate: ' + (forjateFlow.source || '-'));
       notes.push('Comenzi livrare: ' + (deliveryOrders.source || '-'));
+      notes.push('Forecast transporturi: ' + (deliveryTransports.source || '-'));
       notes.push('Inventar forjat: ' + (inventarForjat.source || '-'));
 
       state.deliverySupport = {
@@ -2704,6 +2716,57 @@ function getDefaultPermissions(role){
       if(!picked) return { rows:[], source:'comenzi-livrare lipsă', ok:false };
       const rows = extractRowsPayload(picked.content || picked.data).map(normalizeDeliveryOrderRow).filter(row => row.reper && row.dataLivrare && row.cantitate > 0);
       return { rows, source:picked.doc_key || DELIVERY_DOC_KEY, ok:rows.length > 0 };
+    }
+
+    function normalizeDeliveryTransportForecastRow(row, config, index){
+      const obj = Array.isArray(row) ? {
+        an: row[0],
+        luna: row[1],
+        data_livrarii: row[2],
+        nr_transport: row[3],
+        forjat_2307: row[4],
+        forjat_2308: row[5]
+      } : (row || {});
+      const deliveryIso = displayToIso(pick(obj, ['data_livrarii','data_livrare','dataLivrare','data'])) || trimText(pick(obj, ['data_livrarii','data_livrare','dataLivrare','data']));
+      const transport = trimText(pick(obj, ['nr_transport','nrTransport','transport','nr']));
+      const an = Number(pick(obj, ['an','AN','year'])) || (deliveryIso ? Number(String(deliveryIso).slice(0,4)) : 0);
+      const rows = [];
+      (config.fields || []).forEach((fieldDef, pos) => {
+        const available = Math.max(0, Math.round(toNumber(obj[fieldDef.key])));
+        rows.push({
+          id: 'transport-' + index + '-' + pos + '-' + Math.random().toString(36).slice(2),
+          an,
+          reper: trimText(fieldDef.reper).toUpperCase(),
+          nrTransport: transport,
+          dataLivrare: deliveryIso,
+          availableQty: available,
+          requiredQty: Math.max(0, Math.round(toNumber(config.truck))),
+          sourceDoc: config.docKeys[0] || ''
+        });
+      });
+      return rows;
+    }
+    async function loadDeliveryTransportForecastRows(){
+      if(!state.supabase) return { rows:[], source:'-', ok:false };
+      const rows = [];
+      const usedSources = [];
+      for(const config of DELIVERY_TRANSPORT_SOURCES){
+        const docs = await queryDocsByKeys(config.docKeys || []);
+        const picked = (() => {
+          for(const key of (config.docKeys || [])){
+            const doc = docs.find(item => item.doc_key === key && extractRowsPayload(item.content || item.data).length);
+            if(doc) return doc;
+          }
+          return docs.find(item => extractRowsPayload(item.content || item.data).length) || docs[0] || null;
+        })();
+        if(!picked) continue;
+        usedSources.push(picked.doc_key || (config.docKeys && config.docKeys[0]) || '');
+        extractRowsPayload(picked.content || picked.data).forEach((row, rowIndex) => {
+          rows.extend(normalizeDeliveryTransportForecastRow(row, config, rowIndex));
+        });
+      }
+      const clean = rows.filter(row => row.reper && row.dataLivrare && row.requiredQty > 0);
+      return { rows: clean, source: usedSources.filter(Boolean).join(', '), ok: clean.length > 0 };
     }
     async function loadInventarForjatRows(year){
       if(!state.supabase) return { rows:[], source:'-', ok:false };
@@ -3176,6 +3239,67 @@ function getDefaultPermissions(role){
       return '';
     }
     function buildScheduleWarningEntries(){
+      const dailyByDate = buildProjectedGoodByDate();
+      const warnings = [];
+      const authoritativeRows = (Array.isArray(state.deliverySupport && state.deliverySupport.transportRows) ? state.deliverySupport.transportRows : [])
+        .slice()
+        .sort(compareDeliveryOrders)
+        .filter(row => {
+          const year = Number(row && row.an) || (trimText(row && row.dataLivrare) ? Number(String(row.dataLivrare).slice(0,4)) : 0);
+          if(state.activeYear && String(year) !== String(state.activeYear)) return false;
+          const deliveryIso = trimText(row && row.dataLivrare);
+          if(!deliveryIso) return false;
+          if(String(year) === CURRENT_YEAR){
+            const month = Number(String(deliveryIso).slice(5,7)) || 0;
+            if(month < CURRENT_MONTH_INDEX) return false;
+          }
+          return true;
+        });
+      const coveredRepers = new Set();
+      const rowsByReper = Object.create(null);
+      authoritativeRows.forEach(row => {
+        const reperKey = getCanonicalDeliveryReperKey(row && row.reper);
+        if(!reperKey) return;
+        coveredRepers.add(reperKey);
+        (rowsByReper[reperKey] = rowsByReper[reperKey] || []).push(row);
+      });
+      Object.keys(rowsByReper).forEach(reperKey => {
+        const reperRows = rowsByReper[reperKey].slice().sort(compareDeliveryOrders);
+        const futureTimeline = Object.keys(dailyByDate || {}).sort().filter(dateIso => dateIso >= TODAY_ISO).map(dateIso => ({
+          iso: dateIso,
+          qty: Math.max(0, Math.round(toNumber(dailyByDate[dateIso] && dailyByDate[dateIso][reperKey])))
+        })).filter(item => item.qty > 0);
+        let committedFuture = 0;
+        reperRows.forEach(row => {
+          const required = Math.max(0, Math.round(toNumber(row && row.requiredQty)));
+          const availableNow = Math.max(0, Math.round(toNumber(row && row.availableQty)));
+          if(availableNow >= required) return;
+          const shortage = Math.max(0, required - availableNow);
+          const targetFuture = committedFuture + shortage;
+          const readyIso = findCompletionDateForRequiredCumulative(futureTimeline, targetFuture);
+          const strictPossibleDeliveryIso = readyIso ? addWorkingDaysIsoCustom(readyIso, 3, false) : '';
+          const saturdayPossibleDeliveryIso = readyIso ? addWorkingDaysIsoCustom(readyIso, 3, true) : '';
+          const requestedDeliveryIso = trimText(row && row.dataLivrare);
+          const saturdayNeeded = !!saturdayPossibleDeliveryIso && !!requestedDeliveryIso && saturdayPossibleDeliveryIso <= requestedDeliveryIso && (!strictPossibleDeliveryIso || strictPossibleDeliveryIso > requestedDeliveryIso);
+          warnings.push({
+            id: trimText(row && row.id) || ('sched-' + Math.random().toString(36).slice(2)),
+            reper: trimText(row && row.reper),
+            nrTransport: trimText(row && row.nrTransport),
+            dataLivrare: requestedDeliveryIso,
+            cantitate: required,
+            strictDeadlineIso: requestedDeliveryIso ? subtractWorkingDaysIsoCustom(requestedDeliveryIso, 3, false) : '',
+            strictAvailable: availableNow,
+            shortage,
+            type: saturdayNeeded ? 'saturday' : 'late',
+            saturdayIso: saturdayNeeded ? saturdayPossibleDeliveryIso : '',
+            recommendedIso: strictPossibleDeliveryIso || '',
+            readyIso: readyIso || '',
+            strictPossibleDeliveryIso: strictPossibleDeliveryIso || '',
+            saturdayPossibleDeliveryIso: saturdayPossibleDeliveryIso || ''
+          });
+          committedFuture += shortage;
+        });
+      });
       const sourceOrders = (Array.isArray(state.deliverySupport && state.deliverySupport.orders) ? state.deliverySupport.orders : [])
         .slice()
         .sort(compareDeliveryOrders)
@@ -3188,49 +3312,34 @@ function getDefaultPermissions(role){
             const month = Number(String(deliveryIso).slice(5,7)) || 0;
             if(month < CURRENT_MONTH_INDEX) return false;
           }
+          const reperKey = getCanonicalDeliveryReperKey(order && order.reper);
+          if(reperKey && coveredRepers.has(reperKey)) return false;
           return true;
         });
-
-      const dailyByDate = buildProjectedGoodByDate();
-      const warnings = [];
       const ordersByReper = Object.create(null);
       sourceOrders.forEach(order => {
         const reperKey = getCanonicalDeliveryReperKey(order && order.reper);
         if(!reperKey) return;
         (ordersByReper[reperKey] = ordersByReper[reperKey] || []).push(order);
       });
-
       Object.keys(ordersByReper).forEach(reperKey => {
         const reperOrders = ordersByReper[reperKey].slice().sort(compareDeliveryOrders);
         const supply = getProjectedSupplyTimelineForReper(reperOrders[0] && reperOrders[0].reper, reperOrders[reperOrders.length - 1] && reperOrders[reperOrders.length - 1].dataLivrare, dailyByDate);
         let committedQty = 0;
-
         reperOrders.forEach(order => {
           const required = Math.max(0, Math.round(toNumber(order && order.cantitate)));
           const targetCumulative = committedQty + required;
           const readyIso = findCompletionDateForRequiredCumulative(supply.timeline, targetCumulative);
           const requestedDeliveryIso = trimText(order && order.dataLivrare);
-
           const strictPossibleDeliveryIso = readyIso ? addWorkingDaysIsoCustom(readyIso, 3, false) : '';
           const saturdayPossibleDeliveryIso = readyIso ? addWorkingDaysIsoCustom(readyIso, 3, true) : '';
-
           const strictDeadlineIso = requestedDeliveryIso ? subtractWorkingDaysIsoCustom(requestedDeliveryIso, 3, false) : '';
           const strictCum = getCumulativeQtyAtDate(supply.timeline, strictDeadlineIso);
           const strictAvailable = Math.max(0, strictCum - committedQty);
-
           const isStrictOk = !!strictPossibleDeliveryIso && !!requestedDeliveryIso && strictPossibleDeliveryIso <= requestedDeliveryIso;
-          if(isStrictOk){
-            committedQty += required;
-            return;
-          }
-
-          const saturdayNeeded = !!saturdayPossibleDeliveryIso
-            && !!strictPossibleDeliveryIso
-            && saturdayPossibleDeliveryIso < strictPossibleDeliveryIso
-            && !!requestedDeliveryIso
-            && saturdayPossibleDeliveryIso <= requestedDeliveryIso;
-
-          const item = {
+          if(isStrictOk){ committedQty += required; return; }
+          const saturdayNeeded = !!saturdayPossibleDeliveryIso && !!strictPossibleDeliveryIso && saturdayPossibleDeliveryIso < strictPossibleDeliveryIso && !!requestedDeliveryIso && saturdayPossibleDeliveryIso <= requestedDeliveryIso;
+          warnings.push({
             id: trimText(order && order.id) || ('sched-' + Math.random().toString(36).slice(2)),
             reper: trimText(order && order.reper),
             nrTransport: trimText(order && order.nrTransport),
@@ -3240,22 +3349,16 @@ function getDefaultPermissions(role){
             strictAvailable,
             shortage: Math.max(0, required - strictAvailable),
             type: saturdayNeeded ? 'saturday' : 'late',
-            saturdayIso: '',
+            saturdayIso: saturdayNeeded ? saturdayPossibleDeliveryIso : '',
             recommendedIso: strictPossibleDeliveryIso || '',
             readyIso: readyIso || '',
             strictPossibleDeliveryIso: strictPossibleDeliveryIso || '',
             saturdayPossibleDeliveryIso: saturdayPossibleDeliveryIso || ''
-          };
-
-          if(saturdayNeeded){
-            item.saturdayIso = saturdayPossibleDeliveryIso;
-          }
-          warnings.push(item);
+          });
           committedQty += required;
         });
       });
-
-      return warnings.sort((a, b) => compareDeliveryOrders(a, b));
+      return warnings.sort(compareDeliveryOrders);
     }
     function buildScheduleAlertHtml(summary){
       const warnings = Array.isArray(summary && summary.warnings) ? summary.warnings : [];
