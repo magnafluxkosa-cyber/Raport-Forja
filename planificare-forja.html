@@ -408,6 +408,12 @@
             <span id="deliveryAlertText">Toate comenzile lunare sunt acoperite</span>
           </div>
         </div>
+        <div class="delivery-alert-anchor">
+          <div class="delivery-alert-button is-neutral" id="deliveryTermAlertButton" tabindex="0" aria-label="Avertizări termen livrare">
+            <span class="delivery-alert-dot" aria-hidden="true"></span>
+            <span id="deliveryTermAlertText">Livrări la termen OK (3 zile)</span>
+          </div>
+        </div>
                 <div class="hint" id="hintText">Drag rapid pe celule pentru selecție • dublu click pentru editare • Shift+click pentru interval • Ctrl+click / Ctrl+drag pentru selecții separate.</div>
       </div>
 
@@ -503,6 +509,8 @@
       repereList: document.getElementById('repereList'),
       deliveryAlertButton: document.getElementById('deliveryAlertButton'),
       deliveryAlertText: document.getElementById('deliveryAlertText'),
+      deliveryTermAlertButton: document.getElementById('deliveryTermAlertButton'),
+      deliveryTermAlertText: document.getElementById('deliveryTermAlertText'),
       selectionStats: null
     };
 
@@ -542,7 +550,7 @@
       deliveryReadyByCell: Object.create(null),
       hoveredRowId: '',
       selectedRowId: '',
-      deliverySupport: { orders:[], inventarRows:[], ordersSource:'-', inventarSource:'-', ok:false, alertSummary:{ tone:'neutral', uncovered:[], count:0, shortageTotal:0 } },
+      deliverySupport: { orders:[], inventarRows:[], ordersSource:'-', inventarSource:'-', ok:false, alertSummary:{ tone:'neutral', uncovered:[], count:0, shortageTotal:0 }, termSummary:{ tone:'neutral', warnings:[], count:0 } },
       sessionId: getPlanSessionId(),
       remoteLocks: Object.create(null),
       activeCellLockKey: '',
@@ -2625,6 +2633,8 @@ function getDefaultPermissions(role){
     }
     let deliveryTooltipEl = null;
     let deliveryTooltipVisible = false;
+    let deliveryTermTooltipEl = null;
+    let deliveryTermTooltipVisible = false;
     function normalizeDeliveryOrderRow(row, index){
       const obj = Array.isArray(row) ? {
         an: arrayCell(row, 0, 0),
@@ -3063,6 +3073,200 @@ function getDefaultPermissions(role){
       deliveryTooltipVisible = true;
       positionDeliveryIndicatorTooltip();
     }
+
+    function getCurrentMonthFilteredOrdersForTermAlert(){
+      const currentMonthIso = TODAY_ISO.slice(0,7);
+      return (Array.isArray(state.deliverySupport && state.deliverySupport.orders) ? state.deliverySupport.orders : [])
+        .slice()
+        .sort(compareDeliveryOrders)
+        .filter(order => {
+          const deliveryIso = trimText(order && order.dataLivrare);
+          if(!deliveryIso) return false;
+          const year = Number(order && order.an) || Number(String(deliveryIso).slice(0,4));
+          if(state.activeYear && String(year) !== String(state.activeYear)) return false;
+          return String(deliveryIso).slice(0,7) >= currentMonthIso;
+        });
+    }
+    function buildReperSupplyTimeline(reper, lastDeliveryIso){
+      const snapshot = findInventarForjatSnapshot(reper, lastDeliveryIso);
+      const byDate = Object.create(null);
+      const startQty = Math.max(0, Math.round(toNumber(snapshot && snapshot.qty)));
+      byDate[snapshot.endIso || '0000-00-00'] = startQty;
+      getDeliveryContributionRows().forEach(item => {
+        if(getCanonicalDeliveryReperKey(item.reper) !== getCanonicalDeliveryReperKey(reper)) return;
+        const iso = trimText(item.rowIso);
+        if(!iso) return;
+        byDate[iso] = Math.max(0, Math.round(toNumber(byDate[iso]) + toNumber(item.qty)));
+      });
+      return Object.keys(byDate).sort().map(iso => ({
+        iso,
+        qty: Math.max(0, Math.round(toNumber(byDate[iso])))
+      }));
+    }
+    function findReadyDateForTargetQty(timeline, targetQty){
+      let cumulative = 0;
+      for(const entry of (Array.isArray(timeline) ? timeline : [])){
+        cumulative += Math.max(0, Math.round(toNumber(entry && entry.qty)));
+        if(cumulative >= targetQty){
+          return trimText(entry && entry.iso) || '';
+        }
+      }
+      return '';
+    }
+    function buildDeliveryTermWarnings(){
+      const orders = getCurrentMonthFilteredOrdersForTermAlert();
+      const warnings = [];
+      const grouped = Object.create(null);
+
+      orders.forEach(order => {
+        const reperKey = getCanonicalDeliveryReperKey(order && order.reper);
+        if(!reperKey) return;
+        (grouped[reperKey] = grouped[reperKey] || []).push(order);
+      });
+
+      Object.keys(grouped).forEach(reperKey => {
+        const reperOrders = grouped[reperKey].slice().sort(compareDeliveryOrders);
+        const lastDeliveryIso = trimText(reperOrders[reperOrders.length - 1] && reperOrders[reperOrders.length - 1].dataLivrare);
+        const timeline = buildReperSupplyTimeline(reperOrders[0] && reperOrders[0].reper, lastDeliveryIso);
+        let committedQty = 0;
+
+        reperOrders.forEach(order => {
+          const requiredQty = Math.max(0, Math.round(toNumber(order && order.cantitate)));
+          const requestedDeliveryIso = trimText(order && order.dataLivrare);
+          const targetQty = committedQty + requiredQty;
+          const readyIso = findReadyDateForTargetQty(timeline, targetQty);
+          const earliestDeliveryIso = readyIso ? addWorkingDaysIso(readyIso, 3) : '';
+          const isLate = !earliestDeliveryIso || !requestedDeliveryIso || earliestDeliveryIso > requestedDeliveryIso;
+
+          if(isLate){
+            warnings.push({
+              id: trimText(order && order.id) || ('term-' + Math.random().toString(36).slice(2)),
+              reper: trimText(order && order.reper),
+              nrTransport: trimText(order && order.nrTransport),
+              requestedDeliveryIso,
+              requiredQty,
+              committedQtyBefore: committedQty,
+              readyIso: readyIso || '',
+              earliestDeliveryIso: earliestDeliveryIso || ''
+            });
+          }
+          committedQty += requiredQty;
+        });
+      });
+
+      return warnings.sort((a, b) =>
+        String(a.requestedDeliveryIso || '').localeCompare(String(b.requestedDeliveryIso || ''), 'ro', { sensitivity:'base' }) ||
+        String(a.reper || '').localeCompare(String(b.reper || ''), 'ro', { sensitivity:'base' }) ||
+        String(a.nrTransport || '').localeCompare(String(b.nrTransport || ''), 'ro', { sensitivity:'base' })
+      );
+    }
+    function buildDeliveryTermIndicatorHtml(summary){
+      const warnings = Array.isArray(summary && summary.warnings) ? summary.warnings : [];
+      if(!warnings.length){
+        return '<div class="delivery-tip-title">Avertizări termen livrare</div><div class="delivery-tip-empty">Toate livrările din luna actuală în sus sunt fezabile. Data de livrare este calculată din momentul în care piesele sunt gata, plus 3 zile lucrătoare.</div>';
+      }
+      let html = '<div class="delivery-tip-title">Avertizări termen livrare</div>';
+      html += '<div class="delivery-tip-section"><div class="delivery-tip-section-title late">Livrări de replanificat • ' + escapeHtml(String(warnings.length)) + '</div><div class="delivery-tip-list">';
+      html += warnings.map(item => {
+        const transportText = trimText(item && item.nrTransport) ? ('Transport ' + trimText(item.nrTransport) + ' • ') : '';
+        return '<div class="delivery-tip-item">'
+          + '<div class="delivery-tip-line1">' + escapeHtml(transportText + trimText(item.reper) + ' • livrare cerută ' + isoToDisplay(item.requestedDeliveryIso)) + '</div>'
+          + '<div class="delivery-tip-line2">Cantitate comandă: ' + escapeHtml(roMaybeNumber(item.requiredQty)) + ' buc</div>'
+          + '<div class="delivery-tip-line2">Piesele vor fi gata în data de: ' + escapeHtml(item.readyIso ? isoToDisplay(item.readyIso) : 'nedeterminată') + '</div>'
+          + '<div class="delivery-tip-line2">Livrarea ar trebui replanificată pentru data: ' + escapeHtml(item.earliestDeliveryIso ? isoToDisplay(item.earliestDeliveryIso) : 'nedeterminată') + '</div>'
+          + '</div>';
+      }).join('');
+      html += '</div></div>';
+      return html;
+    }
+    function updateDeliveryTermIndicator(){
+      if(!els.deliveryTermAlertButton || !els.deliveryTermAlertText) return;
+      const summary = state.deliverySupport && state.deliverySupport.termSummary ? state.deliverySupport.termSummary : { warnings:[], count:0 };
+      const count = Math.max(0, Math.round(toNumber(summary.count)));
+      const tone = count > 0 ? 'late' : 'ok';
+      els.deliveryTermAlertButton.className = 'delivery-alert-button is-' + tone;
+      els.deliveryTermAlertText.textContent = count > 0 ? ('Livrări de replanificat: ' + String(count)) : 'Livrări la termen OK (3 zile)';
+      els.deliveryTermAlertButton.setAttribute('data-tooltip-html', buildDeliveryTermIndicatorHtml(summary));
+      els.deliveryTermAlertButton.setAttribute('data-tooltip-tone', tone);
+    }
+    function rebuildDeliveryTermAlerts(){
+      try{
+        const warnings = buildDeliveryTermWarnings();
+        state.deliverySupport.termSummary = {
+          tone: warnings.length ? 'late' : 'ok',
+          warnings,
+          count: warnings.length
+        };
+        updateDeliveryTermIndicator();
+      }catch(error){
+        console.error('rebuildDeliveryTermAlerts', error);
+        state.deliverySupport.termSummary = { tone:'neutral', warnings:[], count:0 };
+        updateDeliveryTermIndicator();
+      }
+    }
+    function ensureDeliveryTermTooltip(){
+      if(deliveryTermTooltipEl) return deliveryTermTooltipEl;
+      deliveryTermTooltipEl = document.createElement('div');
+      deliveryTermTooltipEl.className = 'delivery-floating-tooltip';
+      deliveryTermTooltipEl.hidden = true;
+      deliveryTermTooltipEl.addEventListener('mouseenter', showDeliveryTermTooltip);
+      deliveryTermTooltipEl.addEventListener('mouseleave', () => hideDeliveryTermTooltip(false));
+      document.body.appendChild(deliveryTermTooltipEl);
+      return deliveryTermTooltipEl;
+    }
+    let deliveryTermTooltipHideTimer = null;
+    function clearDeliveryTermTooltipHideTimer(){
+      if(deliveryTermTooltipHideTimer){
+        clearTimeout(deliveryTermTooltipHideTimer);
+        deliveryTermTooltipHideTimer = null;
+      }
+    }
+    function hideDeliveryTermTooltip(force){
+      if(!deliveryTermTooltipEl) return;
+      clearDeliveryTermTooltipHideTimer();
+      const doHide = () => {
+        deliveryTermTooltipVisible = false;
+        deliveryTermTooltipEl.hidden = true;
+        deliveryTermTooltipEl.style.left = '-9999px';
+        deliveryTermTooltipEl.style.top = '-9999px';
+      };
+      if(force){
+        doHide();
+        return;
+      }
+      deliveryTermTooltipHideTimer = setTimeout(doHide, 180);
+    }
+    function positionDeliveryTermTooltip(){
+      if(!deliveryTermTooltipVisible || !deliveryTermTooltipEl || !els.deliveryTermAlertButton) return;
+      const rect = els.deliveryTermAlertButton.getBoundingClientRect();
+      const gap = 10;
+      const margin = 12;
+      const vw = window.innerWidth || document.documentElement.clientWidth || 0;
+      const vh = window.innerHeight || document.documentElement.clientHeight || 0;
+      const tipRect = deliveryTermTooltipEl.getBoundingClientRect();
+      let left = rect.right - tipRect.width;
+      if(left < margin) left = margin;
+      if(left + tipRect.width > vw - margin) left = vw - tipRect.width - margin;
+      let top = rect.bottom + gap;
+      if(top + tipRect.height > vh - margin) top = rect.top - tipRect.height - gap;
+      if(top < margin) top = margin;
+      deliveryTermTooltipEl.style.left = Math.round(left) + 'px';
+      deliveryTermTooltipEl.style.top = Math.round(top) + 'px';
+    }
+    function showDeliveryTermTooltip(){
+      if(!els.deliveryTermAlertButton) return;
+      clearDeliveryTermTooltipHideTimer();
+      const html = els.deliveryTermAlertButton.getAttribute('data-tooltip-html');
+      if(!html) return;
+      const tip = ensureDeliveryTermTooltip();
+      const tone = trimText(els.deliveryTermAlertButton.getAttribute('data-tooltip-tone'));
+      tip.innerHTML = html;
+      tip.className = 'delivery-floating-tooltip' + (tone ? (' is-' + tone) : '');
+      tip.hidden = false;
+      deliveryTermTooltipVisible = true;
+      positionDeliveryTermTooltip();
+    }
+
     function rebuildStockCalculations(){
       state.stockCalcByCell = Object.create(null);
 
@@ -3404,6 +3608,31 @@ function getDefaultPermissions(role){
       add(y + '-12-26', 'A doua zi de Crăciun');
       HOLIDAY_CACHE[y] = map;
       return map;
+    }
+
+    function isHolidayIso(iso){
+      if(!iso) return false;
+      const year = Number(String(iso).slice(0,4));
+      const holidays = getHolidaysForYear(year);
+      return !!holidays[iso];
+    }
+    function isWorkingDayIso(iso){
+      if(!iso) return false;
+      if(isHolidayIso(iso)) return false;
+      const d = new Date(iso + 'T00:00:00');
+      const day = d.getDay();
+      return day !== 0 && day !== 6;
+    }
+    function addWorkingDaysIso(iso, days){
+      if(!iso) return '';
+      let d = new Date(iso + 'T00:00:00');
+      let remaining = Math.max(0, Math.round(toNumber(days)));
+      while(remaining > 0){
+        d.setDate(d.getDate() + 1);
+        const curIso = d.toISOString().slice(0,10);
+        if(isWorkingDayIso(curIso)) remaining -= 1;
+      }
+      return d.toISOString().slice(0,10);
     }
     function getRowHighlight(row){
       const cls = [];
@@ -3995,6 +4224,11 @@ function getDefaultPermissions(role){
         console.error('rebuildDeliveryAlerts', error);
       }
       try{
+        rebuildDeliveryTermAlerts();
+      }catch(error){
+        console.error('rebuildDeliveryTermAlerts', error);
+      }
+      try{
         rebuildDeliveryReadyMarkers();
       }catch(error){
         console.error('rebuildDeliveryReadyMarkers', error);
@@ -4366,6 +4600,7 @@ function getDefaultPermissions(role){
       window.addEventListener('resize', function(){
         if(activePlanTooltipCell) positionPlanTooltip(activePlanTooltipCell);
         if(deliveryTooltipVisible) positionDeliveryIndicatorTooltip();
+        if(deliveryTermTooltipVisible) positionDeliveryTermTooltip();
       });
       document.addEventListener('visibilitychange', function(){
         if(document.visibilityState === 'hidden') savePersistedUiState(captureUiState());
@@ -4393,12 +4628,32 @@ function getDefaultPermissions(role){
           }
         });
       }
+      if(els.deliveryTermAlertButton){
+        els.deliveryTermAlertButton.addEventListener('mouseenter', showDeliveryTermTooltip);
+        els.deliveryTermAlertButton.addEventListener('mouseleave', () => hideDeliveryTermTooltip(false));
+        els.deliveryTermAlertButton.addEventListener('focus', showDeliveryTermTooltip);
+        els.deliveryTermAlertButton.addEventListener('blur', () => hideDeliveryTermTooltip(false));
+        els.deliveryTermAlertButton.addEventListener('click', (event) => {
+          event.preventDefault();
+          if(deliveryTermTooltipVisible){
+            hideDeliveryTermTooltip(true);
+          } else {
+            showDeliveryTermTooltip();
+          }
+        });
+      }
       document.addEventListener('click', (event) => {
-        if(!deliveryTooltipVisible || !deliveryTooltipEl || !els.deliveryAlertButton) return;
         const target = event.target;
-        if(els.deliveryAlertButton.contains(target)) return;
-        if(deliveryTooltipEl.contains(target)) return;
-        hideDeliveryIndicatorTooltip(true);
+        if(deliveryTooltipVisible && deliveryTooltipEl && els.deliveryAlertButton){
+          if(!els.deliveryAlertButton.contains(target) && !deliveryTooltipEl.contains(target)){
+            hideDeliveryIndicatorTooltip(true);
+          }
+        }
+        if(deliveryTermTooltipVisible && deliveryTermTooltipEl && els.deliveryTermAlertButton){
+          if(!els.deliveryTermAlertButton.contains(target) && !deliveryTermTooltipEl.contains(target)){
+            hideDeliveryTermTooltip(true);
+          }
+        }
       });
       if(deliveryTooltipEl){
         deliveryTooltipEl.addEventListener('mouseenter', showDeliveryIndicatorTooltip);
