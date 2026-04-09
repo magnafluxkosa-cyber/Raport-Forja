@@ -1223,12 +1223,11 @@
 
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="./rf-config.js"></script>
-  <script src="./auth-common.js"></script>
   <script>
     const PAGE_KEY = "probleme-raportate";
     const DOC_KEYS = ["probleme-raportate", "probleme_raportate", "Probleme Raportate"];
     const LOCAL_KEY = "rf-probleme-raportate-cache-v2";
-    const FORJATE_DOC_KEYS = ["forjate", "FORJATE", "Forjate", "raport-forjate", "pagina-forjate", "foaia-forjate", "forjate.html", "forjate-2026", "forjate_2026", "FORJATE_2026", "forjate2026"];
+    const FORJATE_DOC_KEYS = ["forjate", "FORJATE", "Forjate", "raport-forjate", "pagina-forjate", "foaia-forjate", "forjate.html"];
     const FORJATE_LOCAL_KEYS = ["rf-forjate-cache-v2", "rf-forjate-cache-v1", "rf-forjate-cache", "forjate-cache"];
     const CLOUD_REFRESH_MS = 45000;
     const SAVE_DEBOUNCE_MS = 12000;
@@ -1763,55 +1762,24 @@
       if (!state.supabase || !state.user) return state.forjateRows;
 
       try {
-        const merged = [];
-        const seen = new Set();
-
-        const pushRows = (rows) => {
-          (rows || []).forEach(row => {
-            const key = [
-              normalizeDateValue(row.data),
-              normalizeText(row.schimbul),
-              normalizeText(row.utilaj),
-              normalizeText(row.reper)
-            ].join("|");
-            if (!row.data || !row.schimbul || !row.utilaj || !row.reper) return;
-            if (seen.has(key)) return;
-            seen.add(key);
-            merged.push(row);
-          });
-        };
-
-        const exactRes = await state.supabase
+        const { data, error } = await state.supabase
           .from("rf_documents")
           .select("*")
           .in("doc_key", FORJATE_DOC_KEYS)
           .order("updated_at", { ascending: false })
-          .limit(20);
+          .limit(8);
 
-        if (!exactRes.error && Array.isArray(exactRes.data)) {
-          exactRes.data.forEach(doc => {
+        if (error) throw error;
+
+        if (Array.isArray(data) && data.length) {
+          for (const doc of data) {
             const payload = doc?.content || doc?.data || doc;
-            pushRows(rowsFromForjatePayload(payload));
-          });
-        }
-
-        const fuzzyRes = await state.supabase
-          .from("rf_documents")
-          .select("*")
-          .ilike("doc_key", "%forjate%")
-          .order("updated_at", { ascending: false })
-          .limit(40);
-
-        if (!fuzzyRes.error && Array.isArray(fuzzyRes.data)) {
-          fuzzyRes.data.forEach(doc => {
-            const payload = doc?.content || doc?.data || doc;
-            pushRows(rowsFromForjatePayload(payload));
-          });
-        }
-
-        if (merged.length) {
-          state.forjateRows = merged;
-          return state.forjateRows;
+            const extracted = rowsFromForjatePayload(payload);
+            if (extracted.length) {
+              state.forjateRows = extracted;
+              return state.forjateRows;
+            }
+          }
         }
       } catch (error) {
         console.warn("forjate cloud lookup", error);
@@ -1828,50 +1796,49 @@
         return { preferred: [], all: [] };
       }
 
-      const normalizeMatches = rows => {
-        const cleanRows = (rows || []).filter(row =>
-          normalizeDateValue(row.data) === dateKey &&
-          normalizeText(row.utilaj) === utilajKey &&
-          String(row.reper ?? "").trim()
-        );
-        const preferred = shiftKey
-          ? uniqueSorted(cleanRows
-              .filter(row => String(row.schimbul ?? "").trim() === shiftKey)
-              .map(row => String(row.reper ?? "").trim())
-              .filter(Boolean))
-          : [];
-        const all = uniqueSorted(cleanRows.map(row => String(row.reper ?? "").trim()).filter(Boolean));
-        return { preferred, all };
-      };
+      const baseMatches = state.forjateRows.filter(row =>
+        normalizeDateValue(row.data) === dateKey &&
+        normalizeText(row.utilaj) === utilajKey &&
+        String(row.reper ?? "").trim()
+      );
 
-      const exact = normalizeMatches(state.forjateRows);
-      if (exact.preferred.length || exact.all.length) return exact;
+      if (!baseMatches.length) {
+        return { preferred: [], all: [] };
+      }
 
-      return { preferred: [], all: [] };
+      const all = uniqueSorted(baseMatches.map(row => String(row.reper ?? "").trim()).filter(Boolean));
+      const preferred = shiftKey
+        ? uniqueSorted(baseMatches
+            .filter(row => String(row.schimbul ?? "").trim() === shiftKey)
+            .map(row => String(row.reper ?? "").trim())
+            .filter(Boolean))
+        : [];
+
+      return { preferred, all };
     }
 
     function applyFormReperOptions(repere, preferred = []) {
-      const matchedRepere = uniqueSorted((repere || []).filter(Boolean));
-      const preferredRepere = uniqueSorted((preferred || []).filter(Boolean));
-      const fullRepere = buildOptionSources().repere || [];
-      const cleanRepere = uniqueSorted([...(matchedRepere || []), ...(fullRepere || [])]);
+      const cleanRepere = uniqueSorted((repere || []).filter(Boolean));
       if (!cleanRepere.length) return false;
 
+      const previousValue = String(dom.form.reper.value ?? "").trim();
       fillFormSelect(dom.form.reper, cleanRepere, true);
 
-      const setIfPresent = (value) => {
-        const next = String(value ?? "").trim();
-        if (!next) return false;
-        const found = cleanRepere.find(item => normalizeText(item) === normalizeText(next));
-        if (!found) return false;
-        dom.form.reper.value = found;
+      if (previousValue && cleanRepere.some(item => normalizeText(item) === normalizeText(previousValue))) {
+        dom.form.reper.value = previousValue;
         return true;
-      };
+      }
 
-      if (preferredRepere.length === 1 && setIfPresent(preferredRepere[0])) return true;
-      if (matchedRepere.length === 1 && setIfPresent(matchedRepere[0])) return true;
+      if (preferred.length === 1) {
+        dom.form.reper.value = preferred[0];
+        return true;
+      }
 
-      dom.form.reper.value = "";
+      if (cleanRepere.length === 1) {
+        dom.form.reper.value = cleanRepere[0];
+        return true;
+      }
+
       return true;
     }
 
@@ -1883,19 +1850,9 @@
       const utilajValue = dom.form.utilaj.value;
       if (!dateValue || !utilajValue) return;
 
-      await ensureForjateRowsLoaded(true);
+      await ensureForjateRowsLoaded(forceCloud);
       const matchSet = getRepereFromForjateRows(dateValue, utilajValue, schimbulValue);
-      if (!matchSet.all.length) {
-        const fullRepere = buildOptionSources().repere || [];
-        const previousValue = String(dom.form.reper.value ?? "").trim();
-        fillFormSelect(dom.form.reper, fullRepere, true);
-        if (previousValue && fullRepere.some(item => normalizeText(item) === normalizeText(previousValue))) {
-          dom.form.reper.value = previousValue;
-        } else {
-          dom.form.reper.value = "";
-        }
-        return;
-      }
+      if (!matchSet.all.length) return;
 
       applyFormReperOptions(matchSet.all, matchSet.preferred);
     }
@@ -2757,7 +2714,7 @@
       dom.modal.setAttribute("aria-hidden", "false");
       setTimeout(() => {
         dom.form.an.focus();
-        if (!row) void autoFillReperFromForjate(true);
+        if (!row) void autoFillReperFromForjate(false);
       }, 30);
     }
 
@@ -2837,14 +2794,8 @@
       }
 
       try {
-        if (window.ERPAuth && typeof window.ERPAuth.getSession === "function") {
-          const session = await window.ERPAuth.getSession();
-          state.user = session?.user || null;
-        }
-        if (!state.user) {
-          const { data: sessionData } = await supabase.auth.getSession();
-          state.user = sessionData?.session?.user || null;
-        }
+        const { data: sessionData } = await supabase.auth.getSession();
+        state.user = sessionData?.session?.user || null;
       } catch (error) {
         console.error("getSession", error);
       }
@@ -3037,44 +2988,6 @@ async function resolvePagePermissions() {
       return false;
     }
 
-    async function writeDocumentCompat(payload, keyCandidates) {
-      if (!state.supabase) throw new Error("Clientul Supabase nu este inițializat.");
-      const keys = Array.from(new Set((keyCandidates || []).filter(Boolean).map(v => String(v).trim()).filter(Boolean)));
-      const primaryKey = keys[0] || PAGE_KEY;
-      let lastError = null;
-
-      const variants = [
-        { doc_key: primaryKey, content: payload, updated_at: payload.updated_at },
-        { doc_key: primaryKey, data: payload, updated_at: payload.updated_at },
-        { doc_key: primaryKey, content: payload, data: payload, updated_at: payload.updated_at }
-      ];
-
-      for (const row of variants) {
-        try {
-          const { data, error } = await state.supabase
-            .from("rf_documents")
-            .upsert(row, { onConflict: "doc_key" })
-            .select("doc_key,updated_at")
-            .limit(1);
-
-          if (error) {
-            lastError = error;
-            continue;
-          }
-
-          const doc = Array.isArray(data) && data[0] ? data[0] : {};
-          return {
-            doc_key: doc.doc_key || primaryKey,
-            updated_at: doc.updated_at || payload.updated_at
-          };
-        } catch (error) {
-          lastError = error;
-        }
-      }
-
-      throw lastError || new Error("Nu s-a putut salva compatibil în rf_documents.");
-    }
-
     async function saveCloud(force = false) {
       if (!state.supabase || !state.user) return false;
       if (state.syncInFlight) return false;
@@ -3183,11 +3096,16 @@ async function resolvePagePermissions() {
             if (await tryInsert(key)) break;
           }
         }
-        if (!saved) {
-          const compat = await writeDocumentCompat(payload, keyCandidates);
-          state.cloudDocKey = compat.doc_key || keyCandidates[0] || PAGE_KEY;
-          state.cloudUpdatedAt = compat.updated_at || payload.updated_at;
-          saved = true;
+        if (!saved && !lastError) {
+          const { error } = await state.supabase
+            .from("rf_documents")
+            .upsert({ doc_key: keyCandidates[0] || PAGE_KEY, content: payload, updated_at: payload.updated_at }, { onConflict: "doc_key" });
+          if (error) lastError = error;
+          else {
+            state.cloudDocKey = keyCandidates[0] || PAGE_KEY;
+            state.cloudUpdatedAt = payload.updated_at;
+            saved = true;
+          }
         }
         if (!saved) throw lastError || new Error("Nu s-a putut salva în rf_documents.");
 
@@ -3199,8 +3117,7 @@ async function resolvePagePermissions() {
         return true;
       } catch (error) {
         console.error("saveCloud", error);
-        const msg = String(error && (error.message || error.details || error.hint || error.code) || "salvare eșuată").trim();
-        setCloudStatus("Cloud: " + msg, "danger");
+        setCloudStatus("Cloud: salvare eșuată, ai cache local", "danger");
         return false;
       } finally {
         state.syncInFlight = false;
@@ -3371,7 +3288,7 @@ async function resolvePagePermissions() {
       dom.btnResetForm.addEventListener("click", () => {
         dom.editForm.reset();
         setDefaultFormValues();
-        void autoFillReperFromForjate(true);
+        void autoFillReperFromForjate(false);
       });
       dom.btnDelete.addEventListener("click", deleteSelected);
       dom.btnExport.addEventListener("click", exportExcel);
