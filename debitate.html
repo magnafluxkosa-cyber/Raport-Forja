@@ -165,7 +165,17 @@
   overflow-wrap: break-word;
   word-break: break-word;
 }
-
+.warnWrap{ max-height: 320px; }
+.warnTable{ table-layout: auto; }
+.warnTable th, .warnTable td{ font-size:11px; }
+.warnTable th:nth-child(4), .warnTable th:nth-child(5), .warnTable th:nth-child(6), .warnTable th:nth-child(7),
+.warnTable td:nth-child(4), .warnTable td:nth-child(5), .warnTable td:nth-child(6), .warnTable td:nth-child(7){
+  text-align:right;
+  font-variant-numeric: tabular-nums;
+}
+.warnTable td.bad{ background:#fee2e2; color:#991b1b; font-weight:900; }
+.warnTable td.ok{ background:#dcfce7; color:#166534; font-weight:900; }
+.warnHint{ margin-top:8px; font-size:12px; font-weight:800; color:#475569; }
 
     table{
       border-collapse: collapse;
@@ -675,6 +685,30 @@ function goDashboard(){ window.location.href='index.html'; }
           </table>
         </div>
       </div>
+
+      <div class="card">
+        <div class="cardTitle">Avertizare pe Sarjă (Stoc inițial + Intrări vs Debitate)</div>
+        <div class="note">Folosește același An/Lună din sumarul de mai sus. Verificarea este pe combinația <b>Sarjă + Diametru + Calitate</b>. Disponibil = <b>stoc inițial din luna anterioară</b> + <b>intrări în luna selectată</b>. Sunt afișate doar pozițiile unde <b>debitatul depășește disponibilul</b>.</div>
+        <div id="sarjaWarnHint" class="warnHint">Selectează luna din sumar pentru a verifica sarjele.</div>
+        <div class="sumWrap warnWrap">
+          <table class="sumTable warnTable">
+            <thead>
+              <tr>
+                <th>Sarjă</th>
+                <th>Diametru</th>
+                <th>Calitate</th>
+                <th>Stoc inițial</th>
+                <th>Intrări</th>
+                <th>Debitat</th>
+                <th>Lipsă</th>
+              </tr>
+            </thead>
+            <tbody id="sarjaWarnBody">
+              <tr><td colspan="7" class="center">Selectează Anul și Luna pentru verificare.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
     </div>
     <!-- Modal Adaugă rând -->
 
@@ -846,9 +880,17 @@ function goDashboard(){ window.location.href='index.html'; }
 
   // ===== HELPERE (din Excel) =====
   const HELPERS_KEY = "RF_HELPERS_v1";
+  const INTRARI_LOCAL_PREFIX = "INTRARI_OTEL_autosave_year_v2_";
+  const INTRARI_CLOUD_PREFIX = "intrari-otel:";
+  const INVENTAR_CACHE_KEY = "rf_inventar_otel_master_cache_v2";
+  const INVENTAR_DOC_KEYS = ["stoc-initial-otel","stoc_initial_otel","inventar-otel","inventar_otel","inventar-otel-initial","inventar_otel_initial"];
+  const SARJA_ALERT_TOLERANCE_KG = 1;
   let _helpers = null;
   let _mapRepDebitare = null;
   let _operatoriDebitareCloud = [];
+  let _intrariYearCache = {};
+  let _inventarRowsCache = null;
+  let _sarjaWarnReqSeq = 0;
 
   function addUniqueLabel(setLike, value){
     const v = (value ?? "").toString().trim();
@@ -1579,6 +1621,7 @@ function setAutofillReadonly(isReadonly){
         autoScrollBottom = true;
         renderBody();
         refreshSummaryTable();
+      refreshSarjaWarningTable();
       });
 
       wrap.appendChild(lab);
@@ -1813,8 +1856,282 @@ function setAutofillReadonly(isReadonly){
       tr.append(td1,td2,td3,td4,td5);
       body.appendChild(tr);
     }
+    refreshSarjaWarningTable();
   }
 
+
+  function normalizeMatchToken(v){
+    return stripDia(v).toUpperCase().replace(/\s+/g, "");
+  }
+
+  function intrariYearStorageKey(year){
+    return INTRARI_LOCAL_PREFIX + (normalizeYearValue(year) || String(CURRENT_YEAR));
+  }
+
+  function intrariYearDocKey(year){
+    return INTRARI_CLOUD_PREFIX + (normalizeYearValue(year) || String(CURRENT_YEAR));
+  }
+
+  function maybeArray(v){
+    return Array.isArray(v) ? v : [];
+  }
+
+  function extractRowsGeneric(doc){
+    if (!doc) return [];
+    const candidates = [doc.content, doc.data, doc.payload];
+    for (const candidate of candidates){
+      if (Array.isArray(candidate)) return candidate;
+      if (candidate && typeof candidate === "object"){
+        if (Array.isArray(candidate.rows)) return candidate.rows;
+        if (Array.isArray(candidate.items)) return candidate.items;
+        if (Array.isArray(candidate.data)) return candidate.data;
+        if (Array.isArray(candidate.records)) return candidate.records;
+        if (Array.isArray(candidate.values)) return candidate.values;
+      }
+    }
+    return [];
+  }
+
+  function loadIntrariRowsLocal(year){
+    if (!CAN_STORE) return [];
+    try{
+      const raw = localStorage.getItem(intrariYearStorageKey(year));
+      if (!raw) return [];
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed?.rows) ? parsed.rows : [];
+    }catch(_e){
+      return [];
+    }
+  }
+
+  async function ensureIntrariYearLoaded(year, options={}){
+    const y = normalizeYearValue(year) || String(CURRENT_YEAR);
+    if (Array.isArray(_intrariYearCache[y])) return _intrariYearCache[y];
+
+    const localRows = loadIntrariRowsLocal(y);
+    if (localRows.length) _intrariYearCache[y] = localRows;
+
+    if (options.preferCloud === false || !window.__SUPA__){
+      return _intrariYearCache[y] || [];
+    }
+
+    try{
+      const doc = await rfReadDocumentCompat(window.__SUPA__, intrariYearDocKey(y));
+      const cloudRows = maybeArray(doc?.payload?.rows || extractRowsGeneric(doc?.row || doc?.payload || doc));
+      if (cloudRows.length){
+        _intrariYearCache[y] = cloudRows;
+        return cloudRows;
+      }
+    }catch(_e){}
+
+    return _intrariYearCache[y] || [];
+  }
+
+  function normalizeInventarRowLite(row, index){
+    if (Array.isArray(row)){
+      const padded = row.slice(0, 8);
+      while (padded.length < 8) padded.push("");
+      return {
+        id: padded[8] || ("inv_" + index),
+        an: normalizeYearValue(padded[0]),
+        luna: monthLower(padded[1]),
+        codIntern: (padded[2] ?? "").toString().trim(),
+        cantitateKg: parseNumberRO(padded[3]),
+        diametru: normalizeDiam(padded[4]),
+        calitate: (padded[5] ?? "").toString().trim(),
+        sarjaMaterial: (padded[6] ?? "").toString().trim(),
+        furnizor: (padded[7] ?? "").toString().trim()
+      };
+    }
+    const obj = row && typeof row === "object" ? row : {};
+    return {
+      id: (obj.id ?? obj._id ?? ("inv_" + index)).toString(),
+      an: normalizeYearValue(obj.an ?? obj.year ?? obj.AN ?? obj.Year),
+      luna: monthLower(obj.luna ?? obj.month ?? obj.Luna ?? obj.Month),
+      codIntern: (obj.codIntern ?? obj.codInternOtel ?? obj.cod ?? obj["COD CAT"] ?? "").toString().trim(),
+      cantitateKg: parseNumberRO(obj.cantitateKg ?? obj.cantitate ?? obj.kg ?? obj["Stoc Otel (Kg)"] ?? obj["stoc initial"]),
+      diametru: normalizeDiam(obj.diametru ?? obj["Diametru oțel"] ?? obj["Dimensiune OTEL"] ?? obj["Diametru"]),
+      calitate: (obj.calitate ?? obj["Calitate Oțel"] ?? obj["Calitate Otel"] ?? obj["Calitate"] ?? "").toString().trim(),
+      sarjaMaterial: (obj.sarjaMaterial ?? obj.sarja ?? obj["SARJA FURNIZOR"] ?? obj["sarja material"] ?? "").toString().trim(),
+      furnizor: (obj.furnizor ?? obj["FURNIZOR"] ?? "").toString().trim()
+    };
+  }
+
+  function loadInventarRowsLocal(){
+    if (!CAN_STORE) return [];
+    try{
+      const raw = localStorage.getItem(INVENTAR_CACHE_KEY);
+      if (!raw) return [];
+      const parsed = JSON.parse(raw);
+      const rows = Array.isArray(parsed?.rows) ? parsed.rows : [];
+      return rows.map((row, idx) => normalizeInventarRowLite(row, idx));
+    }catch(_e){
+      return [];
+    }
+  }
+
+  async function ensureInventarLoaded(options={}){
+    if (Array.isArray(_inventarRowsCache)) return _inventarRowsCache;
+
+    const localRows = loadInventarRowsLocal();
+    if (localRows.length) _inventarRowsCache = localRows;
+
+    if (options.preferCloud === false || !window.__SUPA__){
+      return _inventarRowsCache || [];
+    }
+
+    try{
+      const { data, error } = await window.__SUPA__.from('rf_documents').select('*').in('doc_key', INVENTAR_DOC_KEYS);
+      if (error) throw error;
+      const docs = Array.isArray(data) ? data : [];
+      let picked = null;
+      for (const key of INVENTAR_DOC_KEYS){
+        const doc = docs.find(x => x.doc_key === key && extractRowsGeneric(x).length);
+        if (doc){ picked = doc; break; }
+      }
+      if (!picked) picked = docs.find(x => INVENTAR_DOC_KEYS.includes(x.doc_key)) || null;
+      const rows = extractRowsGeneric(picked).map((row, idx) => normalizeInventarRowLite(row, idx));
+      if (rows.length){
+        _inventarRowsCache = rows;
+        return rows;
+      }
+    }catch(_e){}
+
+    return _inventarRowsCache || [];
+  }
+
+  function getPrevMonthInfo(year, monthName){
+    const yy = Number(normalizeYearValue(year) || CURRENT_YEAR);
+    const idx = MONTHS_RO.indexOf(monthLower(monthName));
+    if (idx < 0) return null;
+    if (idx === 0) return { year: String(yy - 1), month: MONTHS_RO[11] };
+    return { year: String(yy), month: MONTHS_RO[idx - 1] };
+  }
+
+  function addSarjaBucket(map, key, seed){
+    if (!map.has(key)) map.set(key, { ...seed });
+    return map.get(key);
+  }
+
+  function buildSarjaWarningItems(year, monthValue, intrariRows, inventarRows, debitRows){
+    const month = monthLower(monthValue);
+    const prev = getPrevMonthInfo(year, month);
+    const bucket = new Map();
+
+    const prevYear = normalizeYearValue(prev?.year);
+    const prevMonth = monthLower(prev?.month);
+
+    inventarRows.forEach((row, idx) => {
+      const r = normalizeInventarRowLite(row, idx);
+      if (normalizeYearValue(r.an) !== prevYear) return;
+      if (monthLower(r.luna) !== prevMonth) return;
+      const sarja = (r.sarjaMaterial ?? "").toString().trim();
+      const diam = normalizeDiam(r.diametru);
+      const cal = (r.calitate ?? "").toString().trim();
+      if (!sarja || !diam || !cal) return;
+      const key = `${normalizeMatchToken(sarja)}|||${normalizeMatchToken(diam)}|||${normalizeMatchToken(cal)}`;
+      const entry = addSarjaBucket(bucket, key, { sarja, diam, cal, stocInitialKg:0, intrariKg:0, debitatKg:0, lipsaKg:0 });
+      const kg = Number.isFinite(Number(r.cantitateKg)) ? Number(r.cantitateKg) : parseNumberRO(r.cantitateKg);
+      entry.stocInitialKg += Number.isFinite(kg) ? kg : 0;
+    });
+
+    maybeArray(intrariRows).forEach((row) => {
+      const r = Array.isArray(row) ? row : [];
+      const rowMonth = monthLower(r[1]);
+      if (rowMonth !== month) return;
+      const sarja = (r[6] ?? "").toString().trim();
+      const diam = normalizeDiam(r[3]);
+      const cal = (r[4] ?? "").toString().trim();
+      if (!sarja || !diam || !cal) return;
+      const key = `${normalizeMatchToken(sarja)}|||${normalizeMatchToken(diam)}|||${normalizeMatchToken(cal)}`;
+      const entry = addSarjaBucket(bucket, key, { sarja, diam, cal, stocInitialKg:0, intrariKg:0, debitatKg:0, lipsaKg:0 });
+      const kg = parseNumberRO(r[7]);
+      entry.intrariKg += Number.isFinite(kg) ? kg : 0;
+    });
+
+    debitRows.forEach((r) => {
+      if (monthLower(r.luna) !== month) return;
+      const sarja = (r.sarja ?? "").toString().trim();
+      const diam = normalizeDiam(r.diametru);
+      const cal = (r.calitate ?? "").toString().trim();
+      if (!sarja || !diam || !cal) return;
+      const key = `${normalizeMatchToken(sarja)}|||${normalizeMatchToken(diam)}|||${normalizeMatchToken(cal)}`;
+      const entry = addSarjaBucket(bucket, key, { sarja, diam, cal, stocInitialKg:0, intrariKg:0, debitatKg:0, lipsaKg:0 });
+      const kg = Number.isFinite(Number(r.totalKg)) ? Number(r.totalKg) : parseNumberRO(r.totalKg);
+      entry.debitatKg += Number.isFinite(kg) ? kg : 0;
+    });
+
+    const out = [];
+    bucket.forEach((entry) => {
+      const disponibil = entry.stocInitialKg + entry.intrariKg;
+      const lipsa = entry.debitatKg - disponibil;
+      if (lipsa > SARJA_ALERT_TOLERANCE_KG){
+        out.push({ ...entry, disponibilKg: disponibil, lipsaKg: lipsa });
+      }
+    });
+
+    out.sort((a,b) => b.lipsaKg - a.lipsaKg || b.debitatKg - a.debitatKg || a.sarja.localeCompare(b.sarja, 'ro'));
+    return { items: out, prev };
+  }
+
+  async function refreshSarjaWarningTable(){
+    const body = $("sarjaWarnBody");
+    const hint = $("sarjaWarnHint");
+    const y = ($("sumYear")?.value || "").trim();
+    const m = monthLower(($("sumMonth")?.value || "").trim());
+    if (!body || !hint) return;
+
+    const reqId = ++_sarjaWarnReqSeq;
+
+    if (!y){
+      hint.textContent = "Selectează anul din sumar pentru a verifica sarjele.";
+      body.innerHTML = '<tr><td colspan="7" class="center">Selectează Anul pentru verificare.</td></tr>';
+      return;
+    }
+    if (!m){
+      hint.textContent = "Selectează luna din sumar. Verificarea folosește stocul inițial din luna anterioară.";
+      body.innerHTML = '<tr><td colspan="7" class="center">Selectează Luna pentru verificare.</td></tr>';
+      return;
+    }
+
+    body.innerHTML = '<tr><td colspan="7" class="center">Se verifică sarjele...</td></tr>';
+
+    const intrariRows = await ensureIntrariYearLoaded(y, { preferCloud:true });
+    const inventarRows = await ensureInventarLoaded({ preferCloud:true });
+    if (reqId !== _sarjaWarnReqSeq) return;
+
+    const debitRows = getRowsForYear(y).filter(r => String(r.an ?? "").trim() === y);
+    const result = buildSarjaWarningItems(y, m, intrariRows, inventarRows, debitRows);
+    const prevLabel = result.prev ? `${result.prev.month} ${result.prev.year}` : "luna anterioară";
+    hint.textContent = `Verificare pentru ${m} ${y}. Stoc inițial folosit: ${prevLabel}.`;
+
+    if (!result.items.length){
+      body.innerHTML = '<tr><td colspan="7" class="center">Nu există sarje unde debitatul depășește disponibilul pe selecția curentă.</td></tr>';
+      return;
+    }
+
+    body.innerHTML = "";
+    result.items.forEach(it => {
+      const tr = document.createElement("tr");
+      const cells = [
+        it.sarja || "(gol)",
+        it.diam || "(gol)",
+        it.cal || "(gol)",
+        fmtIntDots(it.stocInitialKg),
+        fmtIntDots(it.intrariKg),
+        fmtIntDots(it.debitatKg),
+        fmtIntDots(it.lipsaKg)
+      ];
+      cells.forEach((val, idx) => {
+        const td = document.createElement("td");
+        td.textContent = val;
+        if (idx >= 3) td.classList.add("num");
+        if (idx === 6) td.classList.add("bad");
+        tr.appendChild(td);
+      });
+      body.appendChild(tr);
+    });
+  }
 
   function renderBody(){
     const body = $("body");
@@ -2472,6 +2789,7 @@ function setAutofillReadonly(isReadonly){
     refreshSummaryUI(true);
     renderBody();
     refreshSummaryTable();
+    refreshSarjaWarningTable();
   }
 
   (function init(){
@@ -2498,8 +2816,9 @@ function setAutofillReadonly(isReadonly){
       }
       refreshSummaryUI(true);
       refreshSummaryTable();
+      refreshSarjaWarningTable();
     });
-    if (_sm) _sm.addEventListener("change", () => { refreshSummaryTable(); });
+    if (_sm) _sm.addEventListener("change", () => { refreshSummaryTable(); refreshSarjaWarningTable(); });
 
     // inițializează helperele (repere/utilaje) pentru autocomplete + autofill
     buildHelperMaps();
@@ -2521,6 +2840,7 @@ function setAutofillReadonly(isReadonly){
     rows.sort((a,b)=> (a.data||"").localeCompare(b.data||""));
     autoScrollBottom = true;
     render();
+    refreshSarjaWarningTable();
     // resave normalized
     if (rows.length) scheduleSave();
   })();
@@ -2753,6 +3073,7 @@ function setAutofillReadonly(isReadonly){
       refreshFilterUI(true);
       refreshSummaryUI(true);
       refreshSummaryTable();
+      refreshSarjaWarningTable();
     }
     return true;
   }
@@ -2919,6 +3240,7 @@ function setAutofillReadonly(isReadonly){
     if ($("sumYear") && !$("sumYear").value) $("sumYear").value = normalizeYearValue(activeYear) || String(CURRENT_YEAR);
     if (typeof render === "function") render();
     refreshSummaryTable();
+    refreshSarjaWarningTable();
 
     subscribeActiveYear();
     await pullYear(activeYear);
