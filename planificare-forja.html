@@ -3176,7 +3176,33 @@ function getDefaultPermissions(role){
         const missingRules = [];
         let relevantRowsCount = 0;
         let totalShortageKg = 0;
-        state.rows.forEach(row => {
+
+        const steelRows = Array.isArray(state.stockSupport.steelRows) ? state.stockSupport.steelRows : [];
+        const debitatRows = Array.isArray(state.stockSupport.debitatRows) ? state.stockSupport.debitatRows : [];
+        const intrariRows = Array.isArray(state.stockSupport.intrariRows) ? state.stockSupport.intrariRows : [];
+        const debitariRows = Array.isArray(state.stockSupport.debitariRows) ? state.stockSupport.debitariRows : [];
+        const forjateRows = Array.isArray(state.stockSupport.forjateRows) ? state.stockSupport.forjateRows : [];
+
+        function findLatestSnapshotEnd(rows, refIso){
+          let best = '';
+          (rows || []).forEach(row => {
+            const eom = endOfMonthIso(row && row.an, row && row.lunaNum);
+            if(eom && eom < refIso && (!best || eom > best)) best = eom;
+          });
+          return best;
+        }
+
+        function addDailyDelta(container, dateIso, key, delta){
+          const cleanDate = trimText(dateIso);
+          const cleanKey = trimText(key);
+          const value = toNumber(delta);
+          if(!cleanDate || !cleanKey || !value) return;
+          container[cleanDate] = container[cleanDate] || Object.create(null);
+          container[cleanDate][cleanKey] = toNumber(container[cleanDate][cleanKey]) + value;
+        }
+
+        const planItems = [];
+        (Array.isArray(state.rows) ? state.rows : []).forEach((row, index) => {
           const rowIso = trimText(row && row.data);
           const bucket = getRollingTwoWeekBucket(rowIso);
           if(!bucket) return;
@@ -3186,16 +3212,172 @@ function getDefaultPermissions(role){
             const planBuc = Math.max(0, Math.round(toNumber(slot && slot.planificat)));
             if(!reper || planBuc <= 0) return;
             relevantRowsCount += 1;
-            const calc = state.stockCalcByCell[cellCalcKey(row.id, machine)] || null;
-            if(!calc || trimText(calc.mode) === 'error'){
-              missingRules.push({ dateIso: rowIso, machine, reper, note: trimText(calc && calc.note) || 'Regulă helper lipsă sau invalidă pentru calculul de oțel.' });
+            planItems.push({ row, index, rowIso, machine, reper, planBuc, bucket });
+          });
+        });
+
+        const snapEndSteel = findLatestSnapshotEnd(steelRows, TODAY_ISO);
+        const snapEndDeb = findLatestSnapshotEnd(debitatRows, TODAY_ISO);
+
+        if(!snapEndSteel || !snapEndDeb){
+          const missing = [];
+          if(!snapEndSteel) missing.push('stoc oțel');
+          if(!snapEndDeb) missing.push('stoc debitat');
+          const tone = relevantRowsCount > 0 ? 'late' : 'neutral';
+          setSteel2WeekAlertSummary({
+            tone,
+            totalShortageKg:0,
+            relevantRowsCount,
+            weeks:[
+              { index:0, key:'week-1', title:'Săptămâna 1', label:'Săptămâna 1', startIso:TODAY_ISO, endIso:currentWeekEndIso, totalShortageKg:0, specItems:[] },
+              { index:1, key:'week-2', title:'Săptămâna 2', label:'Săptămâna 2', startIso:nextWeekStartIso, endIso:windowEndIso, totalShortageKg:0, specItems:[] }
+            ].filter(item => !!item.startIso && !!item.endIso),
+            missingRules: relevantRowsCount > 0 ? [{ dateIso:TODAY_ISO, machine:'-', reper:'-', note:'Nu pot calcula alerta de oțel deoarece lipsește snapshot-ul din inventar pentru ' + missing.join(' + ') + ' înainte de ziua curentă.' }] : [],
+            windowStartIso:TODAY_ISO,
+            windowEndIso
+          });
+          return;
+        }
+
+        const steelStock = Object.create(null);
+        const debStock = Object.create(null);
+
+        steelRows.forEach(row => {
+          const eom = endOfMonthIso(row && row.an, row && row.lunaNum);
+          if(eom !== snapEndSteel) return;
+          if(!row.diametru || !row.calitate) return;
+          const specKey = buildSpecKey(row.diametru, row.calitate);
+          steelStock[specKey] = toNumber(steelStock[specKey]) + toNumber(row.cantitateKg);
+        });
+        debitatRows.forEach(row => {
+          const eom = endOfMonthIso(row && row.an, row && row.lunaNum);
+          if(eom !== snapEndDeb) return;
+          if(!row.reper) return;
+          const repKey = normalizeReperLoose(row.reper);
+          debStock[repKey] = toNumber(debStock[repKey]) + toNumber(row.cantitateBuc);
+        });
+
+        const fromIsoSteel = nextDayIso(snapEndSteel) || snapEndSteel;
+        const fromIsoDeb = nextDayIso(snapEndDeb) || snapEndDeb;
+        const steelDeltaByDate = Object.create(null);
+        const debDeltaByDate = Object.create(null);
+
+        intrariRows.forEach(row => {
+          if(!row.data || row.data < fromIsoSteel || row.data > windowEndIso) return;
+          if(!row.diametru || !row.calitate || toNumber(row.cantitateKg) === 0) return;
+          addDailyDelta(steelDeltaByDate, row.data, buildSpecKey(row.diametru, row.calitate), toNumber(row.cantitateKg));
+        });
+
+        debitariRows.forEach(row => {
+          if(!row.data || row.data > windowEndIso) return;
+          const repKey = normalizeReperLoose(row.reper);
+          if(row.data >= fromIsoDeb && repKey && toNumber(row.cantitateBuc) !== 0){
+            addDailyDelta(debDeltaByDate, row.data, repKey, toNumber(row.cantitateBuc));
+          }
+          if(row.data >= fromIsoSteel && row.diametru && row.calitate && toNumber(row.totalKgDebitat) !== 0){
+            addDailyDelta(steelDeltaByDate, row.data, buildSpecKey(row.diametru, row.calitate), -toNumber(row.totalKgDebitat));
+          }
+        });
+
+        const dictHasReal = Object.create(null);
+        const dictRealBuc = Object.create(null);
+        forjateRows.forEach(row => {
+          if(!row.data || row.data > windowEndIso) return;
+          if(!row.machine || !row.reper) return;
+          const keyReal = buildRealizedKey(row.data, row.machine, row.reper);
+          if(toNumber(row.realizatBuc) > 0){
+            dictHasReal[keyReal] = true;
+            dictRealBuc[keyReal] = Math.max(0, Math.round(toNumber(dictRealBuc[keyReal]) + toNumber(row.realizatBuc)));
+          }
+          if(row.data < fromIsoDeb) return;
+          const cons = Math.max(0, Math.round(toNumber(row.realizatBuc) + toNumber(row.rebutBuc)));
+          if(cons > 0){
+            const helper = resolvePlanningHelper(row.reper);
+            const repDeb = helper.originReper || normalizeReperLoose(row.reper);
+            if(repDeb) addDailyDelta(debDeltaByDate, row.data, repDeb, -cons);
+          }
+        });
+
+        const planByDate = Object.create(null);
+        planItems.forEach(item => {
+          planByDate[item.rowIso] = planByDate[item.rowIso] || [];
+          planByDate[item.rowIso].push(item);
+        });
+        Object.keys(planByDate).forEach(dateIso => {
+          planByDate[dateIso].sort((a,b) => {
+            const ar = Number(a.row && a.row.row_no || 0);
+            const br = Number(b.row && b.row.row_no || 0);
+            if(ar !== br) return ar - br;
+            const machineDiff = MACHINE_ORDER.indexOf(a.machine) - MACHINE_ORDER.indexOf(b.machine);
+            if(machineDiff !== 0) return machineDiff;
+            return a.index - b.index;
+          });
+        });
+
+        const allDates = Array.from(new Set([].concat(
+          Object.keys(planByDate),
+          Object.keys(steelDeltaByDate),
+          Object.keys(debDeltaByDate)
+        ))).filter(dateIso => {
+          const cleanIso = trimText(dateIso);
+          return cleanIso >= minIsoDate(fromIsoSteel, fromIsoDeb) && cleanIso <= windowEndIso;
+        }).sort();
+
+        function applyDailyDeltas(dateIso){
+          const steel = steelDeltaByDate[dateIso] || null;
+          if(steel){
+            Object.keys(steel).forEach(specKey => {
+              steelStock[specKey] = toNumber(steelStock[specKey]) + toNumber(steel[specKey]);
+            });
+          }
+          const deb = debDeltaByDate[dateIso] || null;
+          if(deb){
+            Object.keys(deb).forEach(repKey => {
+              debStock[repKey] = toNumber(debStock[repKey]) + toNumber(deb[repKey]);
+            });
+          }
+        }
+
+        allDates.forEach(dateIso => {
+          applyDailyDeltas(dateIso);
+          if(dateIso < TODAY_ISO) return;
+          const items = planByDate[dateIso] || [];
+          items.forEach(item => {
+            const machine = item.machine;
+            const reperForjat = item.reper;
+            const planBuc = item.planBuc;
+            const keyReal = buildRealizedKey(dateIso, machine, reperForjat);
+            const hasReal = !!dictHasReal[keyReal];
+            if(hasReal) return;
+
+            const helper = resolvePlanningHelper(reperForjat);
+            const reperDeb = helper.originReper || normalizeReperLoose(reperForjat);
+            const specKey = helper.diametru && helper.calitate ? buildSpecKey(helper.diametru, helper.calitate) : '';
+            const kgBuc = Math.max(0, toNumber(helper.kgBuc));
+            if(!reperDeb || !specKey || kgBuc <= 0){
+              missingRules.push({ dateIso, machine, reper: reperForjat, note:'Regulă helper lipsă sau invalidă pentru calculul de oțel.' });
               return;
             }
-            if(trimText(calc.mode) === 'real') return;
-            const shortageKg = Math.max(0, toNumber(calc.needSteelKg) - Math.max(0, toNumber(calc.beforeSteelKg)));
+
+            const stDebInainte = Math.max(0, toNumber(debStock[reperDeb]));
+            const stOtelInainte = Math.max(0, toNumber(steelStock[specKey]));
+
+            if(stDebInainte >= planBuc){
+              debStock[reperDeb] = stDebInainte - planBuc;
+              return;
+            }
+
+            const deficitDeb = Math.max(0, planBuc - stDebInainte);
+            const needSteelKg = deficitDeb * kgBuc;
+            const shortageKg = Math.max(0, needSteelKg - stOtelInainte);
+
+            debStock[reperDeb] = 0;
+            steelStock[specKey] = Math.max(0, stOtelInainte - needSteelKg);
+
             if(shortageKg <= 0) return;
-            const helper = resolvePlanningHelper(reper);
-            const specKey = helper && helper.diametru && helper.calitate ? buildSpecKey(helper.diametru, helper.calitate) : (trimText(calc.specLabel) || ('spec|' + reper));
+
+            const bucket = item.bucket || getRollingTwoWeekBucket(dateIso);
+            if(!bucket) return;
             let weekEntry = weekMap[bucket.key];
             if(!weekEntry){
               weekEntry = weekMap[bucket.key] = { key: bucket.key, index: bucket.index, label: bucket.label, startIso: bucket.startIso, endIso: bucket.endIso, totalShortageKg:0, specMap:Object.create(null) };
@@ -3205,11 +3387,12 @@ function getDefaultPermissions(role){
               specEntry = weekEntry.specMap[specKey] = { specKey, diametru: helper.diametru || '', calitate: helper.calitate || '', shortageKg:0, details:[] };
             }
             specEntry.shortageKg += shortageKg;
-            specEntry.details.push({ dateIso: rowIso, machine, reper, planBuc, shortageKg });
+            specEntry.details.push({ dateIso, machine, reper: reperForjat, planBuc, shortageKg });
             weekEntry.totalShortageKg += shortageKg;
             totalShortageKg += shortageKg;
           });
         });
+
         const weeks = [
           { index:0, key:'week-1', title:'Săptămâna 1', startIso:TODAY_ISO, endIso: currentWeekEndIso },
           { index:1, key:'week-2', title:'Săptămâna 2', startIso: nextWeekStartIso, endIso: windowEndIso }
@@ -3222,6 +3405,7 @@ function getDefaultPermissions(role){
           }
           return { key: base.key, index: base.index, title: base.title, label: base.title + ' • ' + isoToDisplay(base.startIso) + ' – ' + isoToDisplay(base.endIso), startIso: base.startIso, endIso: base.endIso, totalShortageKg:0, specItems:[] };
         });
+
         const tone = totalShortageKg > 0 ? 'late' : (missingRules.length ? 'late' : (relevantRowsCount > 0 ? 'ok' : 'neutral'));
         setSteel2WeekAlertSummary({ tone, totalShortageKg, relevantRowsCount, weeks, missingRules, windowStartIso:TODAY_ISO, windowEndIso });
       }catch(error){
