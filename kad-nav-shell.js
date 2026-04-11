@@ -113,7 +113,8 @@
     ]},
     { key:'group-resurse-umane', label:'RESURSE UMANE', sections:[
       { key:'resurse-umane-pontaje', label:'Pontaje', links:[
-        { key:'pontaj-forja', label:'PONTAJ FORJA', href:'pontaj-forja.html' }
+        { key:'pontaj-forja', label:'PONTAJ FORJA', href:'pontaj-forja.html' },
+        { key:'pontaj-prelucrari-mecanice', label:'PONTAJ PRELUCRARI MECANICE', href:'pontaj-prelucrari-mecanice.html' }
       ]}
     ]},
     { key:'group-sdv', label:'SDV', sections:[
