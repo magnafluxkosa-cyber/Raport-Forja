@@ -350,26 +350,62 @@ async function rfLookupRoleCompat(client, session){
     return { role:"viewer", email: session?.user?.email || "" };
   }
 }
-async function rfGetPageAclCompat(client, pageKey, role){
+function rfNormalizePageKey(value){
+  return String(value || '').trim().toLowerCase().replace(/\.html$/i, '');
+}
+function rfBoolOrNull(value){
+  if (value === true || value === false) return value;
+  if (value == null) return null;
+  const s = String(value).trim().toLowerCase();
+  if (["true","1","da","yes"].includes(s)) return true;
+  if (["false","0","nu","no"].includes(s)) return false;
+  return null;
+}
+async function rfFindUserPagePermission(client, pageKey, user){
+  if(!client || !user) return null;
+  const normalizedPageKey = rfNormalizePageKey(pageKey);
+  const email = String(user.email || '').trim().toLowerCase();
+  const userId = String(user.id || '').trim();
+
+  async function pull(column, value){
+    if(!value) return null;
+    try{
+      const res = await client.from('user_page_permissions')
+        .select('page_key,can_view,can_add,can_edit,can_delete,can_export,can_import,updated_at,email,user_id')
+        .eq(column, value)
+        .limit(300);
+      const rows = Array.isArray(res && res.data) ? res.data : [];
+      const match = rows.find((row)=> rfNormalizePageKey(row && row.page_key) === normalizedPageKey);
+      return match || null;
+    }catch(_e){
+      return null;
+    }
+  }
+
+  return await pull('email', email) || await pull('user_id', userId);
+}
+async function rfGetPageAclCompat(client, pageKey, role, user){
+  const normalizedPageKey = rfNormalizePageKey(pageKey);
   const fallback = {
-    can_view:true,
-    can_edit_data: role === "admin" || role === "editor" || role === "operator",
-    show_import_buttons: role === "admin" || role === "editor" || role === "operator",
-    show_add_buttons: role === "admin" || role === "editor" || role === "operator",
-    show_delete_buttons: role === "admin" || role === "editor",
-    show_reset_buttons: role === "admin" || role === "editor",
-    can_export:true,
-    can_filter:true,
-    can_sync_cloud:true
+    can_view:false,
+    can_edit_data:false,
+    show_import_buttons:false,
+    show_add_buttons:false,
+    show_delete_buttons:false,
+    show_reset_buttons:false,
+    can_export:false,
+    can_filter:false,
+    can_sync_cloud:false
   };
+
   try{
     if(window.ERPAuth && typeof window.ERPAuth.getPageAccess === 'function'){
-      const access = await window.ERPAuth.getPageAccess(pageKey);
+      const access = await window.ERPAuth.getPageAccess(normalizedPageKey);
       const perms = access && access.permissions ? access.permissions : null;
       if(perms){
-        const canView = perms.can_view !== false;
-        const canEdit = !!(perms.can_add === true || perms.can_edit === true || perms.can_import === true);
-        const canDelete = !!(perms.can_delete === true || perms.can_edit === true);
+        const canView = rfBoolOrNull(perms.can_view) !== false;
+        const canEdit = !!(rfBoolOrNull(perms.can_add) === true || rfBoolOrNull(perms.can_edit) === true || rfBoolOrNull(perms.can_import) === true);
+        const canDelete = !!(rfBoolOrNull(perms.can_delete) === true || rfBoolOrNull(perms.can_edit) === true);
         return {
           can_view: canView,
           can_edit_data: canView && canEdit,
@@ -377,35 +413,77 @@ async function rfGetPageAclCompat(client, pageKey, role){
           show_add_buttons: canView && canEdit,
           show_delete_buttons: canView && canDelete,
           show_reset_buttons: canView && canDelete,
-          can_export: true,
-          can_filter: true,
+          can_export: canView,
+          can_filter: canView,
           can_sync_cloud: canView
         };
       }
     }
   }catch(_e){}
-  if(!client) return fallback;
+
+  if(!client || !user) return fallback;
+
+  const explicitUserRule = await rfFindUserPagePermission(client, normalizedPageKey, user);
+  if(explicitUserRule){
+    const canView = rfBoolOrNull(explicitUserRule.can_view) !== false;
+    const canEdit = !!(rfBoolOrNull(explicitUserRule.can_add) === true || rfBoolOrNull(explicitUserRule.can_edit) === true || rfBoolOrNull(explicitUserRule.can_import) === true);
+    const canDelete = !!(rfBoolOrNull(explicitUserRule.can_delete) === true || rfBoolOrNull(explicitUserRule.can_edit) === true);
+    const canExport = rfBoolOrNull(explicitUserRule.can_export);
+    return {
+      can_view: canView,
+      can_edit_data: canView && canEdit,
+      show_import_buttons: canView && canEdit,
+      show_add_buttons: canView && canEdit,
+      show_delete_buttons: canView && canDelete,
+      show_reset_buttons: canView && canDelete,
+      can_export: canView && (canExport !== false),
+      can_filter: canView,
+      can_sync_cloud: canView
+    };
+  }
+
   try{
-    const pp = await client.from("page_permissions").select("*").eq("page_key", pageKey).eq("role", role).maybeSingle();
+    const pp = await client.from('page_permissions').select('*').eq('page_key', normalizedPageKey).eq('role', role).maybeSingle();
     if(!pp?.error && pp?.data){
       const row = pp.data;
+      const canView = rfBoolOrNull(row.can_view) !== false;
+      const canEdit = !!(rfBoolOrNull(row.can_add) === true || rfBoolOrNull(row.can_edit) === true || rfBoolOrNull(row.can_import) === true || role === 'admin');
+      const canDelete = !!(rfBoolOrNull(row.can_delete) === true || rfBoolOrNull(row.can_edit) === true || role === 'admin');
       return {
-        can_view: row.can_view !== false,
-        can_edit_data: !!(row.can_add || row.can_edit || row.can_delete || role === "admin"),
-        show_import_buttons: !!(row.can_add || row.can_edit || role === "admin"),
-        show_add_buttons: !!(row.can_add || row.can_edit || role === "admin"),
-        show_delete_buttons: !!(row.can_delete || row.can_edit || role === "admin"),
-        show_reset_buttons: !!(row.can_delete || row.can_edit || role === "admin"),
-        can_export: true,
-        can_filter: true,
-        can_sync_cloud: row.can_view !== false
+        can_view: canView,
+        can_edit_data: canView && canEdit,
+        show_import_buttons: canView && canEdit,
+        show_add_buttons: canView && canEdit,
+        show_delete_buttons: canView && canDelete,
+        show_reset_buttons: canView && canDelete,
+        can_export: canView,
+        can_filter: canView,
+        can_sync_cloud: canView
       };
     }
   }catch(_e){}
+
   try{
-    const acl = await client.from("rf_acl").select("*").eq("page_key", pageKey).eq("role", role).maybeSingle();
-    if(!acl?.error && acl?.data) return Object.assign({}, fallback, acl.data);
+    const acl = await client.from('rf_acl').select('*').eq('page_key', normalizedPageKey).eq('role', role).maybeSingle();
+    if(!acl?.error && acl?.data){
+      const row = acl.data;
+      const canView = rfBoolOrNull(row.can_view) !== false;
+      const canEdit = !!(rfBoolOrNull(row.can_add) === true || rfBoolOrNull(row.can_edit) === true || rfBoolOrNull(row.can_import) === true || role === 'admin');
+      const canDelete = !!(rfBoolOrNull(row.can_delete) === true || rfBoolOrNull(row.can_edit) === true || role === 'admin');
+      return {
+        can_view: canView,
+        can_edit_data: canView && canEdit,
+        show_import_buttons: canView && canEdit,
+        show_add_buttons: canView && canEdit,
+        show_delete_buttons: canView && canDelete,
+        show_reset_buttons: canView && canDelete,
+        can_export: canView,
+        can_filter: canView,
+        can_sync_cloud: canView
+      };
+    }
   }catch(_e){}
+
   return fallback;
 }
 </script>
@@ -2444,11 +2522,12 @@ async function cloudSyncNow(){
 async function rfGetMyRole(supa){
   const { data: s } = await supa.auth.getSession();
   const sess = s?.session;
-  if(!sess) return { role:"viewer", email:"" };
-  return await rfLookupRoleCompat(supa, sess);
+  if(!sess || !sess.user) return { role:"viewer", email:"", user:null };
+  const resolved = await rfLookupRoleCompat(supa, sess);
+  return { role: resolved.role || "viewer", email: resolved.email || "", user: sess.user };
 }
-async function rfGetAcl(supa, pageKey, role){
-  return await rfGetPageAclCompat(supa, pageKey, role);
+async function rfGetAcl(supa, pageKey, role, user){
+  return await rfGetPageAclCompat(supa, pageKey, role, user);
 }
 function rfApplyAclToUi(acl){
   const map = { import:"show_import_buttons", add:"show_add_buttons", delete:"show_delete_buttons", reset:"show_reset_buttons",
@@ -2462,6 +2541,9 @@ function rfApplyAclToUi(acl){
   });
   document.querySelectorAll("[data-edit]").forEach(el=>{
     try{ el.disabled = !acl.can_edit_data; }catch(_e){}
+  });
+  document.querySelectorAll('td[contenteditable="true"]').forEach(el=>{
+    if(!acl.can_edit_data) el.setAttribute('contenteditable', 'false');
   });
 }
 function rfShowDeniedInline(pageTitle, message){
@@ -2483,10 +2565,27 @@ function rfMarkAclReady(){
   root.classList.remove("acl-pending", "acl-denied");
   root.classList.add("acl-ready");
 }
+async function rfWaitForAclClient(timeoutMs){
+  const startedAt = Date.now();
+  while(Date.now() - startedAt < timeoutMs){
+    const existing = window.__rfCloud && window.__rfCloud.client;
+    if(existing) return existing;
+    await new Promise(resolve => setTimeout(resolve, 120));
+  }
+  if(window.supabase && typeof window.supabase.createClient === 'function'){
+    const cfg = rfResolveSupabaseConfig();
+    return window.supabase.createClient(cfg.url, cfg.key);
+  }
+  return null;
+}
 async function rfBootAcl({ supa, pageKey, onRoleBadge }){
   const me = await rfGetMyRole(supa);
-  const acl = await rfGetAcl(supa, pageKey, me.role);
-  if(!acl.can_view){
+  if(!me.user){
+    rfShowDeniedInline('NumeralKOD', 'Nu ești autentificat sau nu ai acces în această foaie.');
+    return null;
+  }
+  const acl = await rfGetAcl(supa, pageKey, me.role, me.user);
+  if(!acl || acl.can_view !== true){
     rfShowDeniedInline('NumeralKOD', 'Nu ai acces în această foaie. Cere acces de la admin.');
     return null;
   }
@@ -2498,16 +2597,16 @@ async function rfBootAcl({ supa, pageKey, onRoleBadge }){
 
 window.addEventListener("load", async ()=>{
   try{
-    const supa = window.__rfCloud && window.__rfCloud.client;
+    const supa = await rfWaitForAclClient(4000);
     if(!supa){
-      rfMarkAclReady();
+      rfShowDeniedInline('NumeralKOD', 'Nu am putut verifica accesul la această foaie.');
       return;
     }
     const boot = await rfBootAcl({ supa, pageKey:"numeralkod", onRoleBadge:(role,email)=>{ /* optional */ } });
     if(!boot) return;
   }catch(e){
     console.warn("ACL boot", e);
-    rfMarkAclReady();
+    rfShowDeniedInline('NumeralKOD', 'Nu am putut verifica accesul la această foaie.');
   }
 });
 </script>
