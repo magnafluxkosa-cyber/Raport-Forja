@@ -711,6 +711,103 @@
         return false;
       }
 
+      function normalizeAclPageKey(value){
+        return String(value || '').trim().toLowerCase().replace(/\.html$/i, '');
+      }
+
+      async function readLatestAclMirror(sb){
+        if (!sb) return null;
+        try {
+          const res = await sb.from('rf_documents')
+            .select('content,data,updated_at')
+            .eq('doc_key', 'dashboard_acl_v1')
+            .order('updated_at', { ascending:false })
+            .limit(20);
+          const rows = Array.isArray(res && res.data) ? res.data : [];
+          for (const row of rows) {
+            if (row && row.content && typeof row.content === 'object') return row.content;
+            if (row && row.data && typeof row.data === 'object') return row.data;
+          }
+        } catch (_e) {}
+        return null;
+      }
+
+      function buildAclPermissions(row){
+        return {
+          can_view: permissionFlag(row && row.can_view),
+          can_add: permissionFlag(row && row.can_add),
+          can_edit: permissionFlag(row && row.can_edit),
+          can_delete: permissionFlag(row && row.can_delete),
+          can_export: permissionFlag(row && row.can_export),
+          can_import: permissionFlag(row && row.can_import)
+        };
+      }
+
+      async function loadExplicitPagePermissions(){
+        const user = state.auth && state.auth.user ? state.auth.user : null;
+        const sb = window.ERPAuth && typeof window.ERPAuth.getSupabaseClient === 'function' ? window.ERPAuth.getSupabaseClient() : null;
+        const map = new Map();
+        if (!user || !sb) return map;
+        const userId = String(user.id || '').trim();
+        const email = String(user.email || '').trim().toLowerCase();
+        const pushRows = (rows) => {
+          (Array.isArray(rows) ? rows : []).forEach((row) => {
+            const key = normalizeAclPageKey(row && row.page_key);
+            if (!key) return;
+            map.set(key, buildAclPermissions(row));
+          });
+        };
+        const selectCols = 'page_key,can_view,can_add,can_edit,can_delete,can_export,can_import';
+        try {
+          if (userId) {
+            const res = await sb.from('user_page_permissions').select(selectCols).eq('user_id', userId).limit(5000);
+            if (!res.error) pushRows(res.data);
+          }
+        } catch (_e) {}
+        try {
+          if (email) {
+            const res = await sb.from('user_page_permissions').select(selectCols).ilike('email', email).limit(5000);
+            if (!res.error) pushRows(res.data);
+          }
+        } catch (_e) {}
+        const mirror = await readLatestAclMirror(sb);
+        if (mirror && typeof mirror === 'object' && email) {
+          const roots = [mirror.user_permissions, mirror.user_grants];
+          roots.forEach((root) => {
+            const userRoot = root && typeof root === 'object' ? root[email] : null;
+            if (!userRoot || typeof userRoot !== 'object') return;
+            Object.keys(userRoot).forEach((key) => {
+              const normalized = normalizeAclPageKey(key);
+              if (!normalized) return;
+              map.set(normalized, buildAclPermissions(userRoot[key]));
+            });
+          });
+        }
+        return map;
+      }
+
+      async function applyStrictAclOverrides(){
+        const explicitMap = await loadExplicitPagePermissions();
+        const explicit = explicitMap.get(normalizeAclPageKey(PAGE_KEY));
+        if (explicit) {
+          state.pageAccess = Object.assign({}, state.pageAccess || {}, {
+            allowed: explicit.can_view === true,
+            permissions: explicit,
+            strictUserAcl: true,
+            source: 'pontaj explicit acl'
+          });
+          return;
+        }
+        if (explicitMap.size) {
+          state.pageAccess = Object.assign({}, state.pageAccess || {}, {
+            allowed: false,
+            permissions: { can_view:false, can_add:false, can_edit:false, can_delete:false, can_export:false, can_import:false },
+            strictUserAcl: true,
+            source: 'pontaj explicit acl missing'
+          });
+        }
+      }
+
       function persistViewState(){
         try {
           localStorage.setItem(VIEW_KEY, JSON.stringify({
@@ -847,7 +944,7 @@
       function canWrite(){
         const perms = pagePermissions();
         if (perms) return permissionFlag(perms.can_edit);
-        return ['admin','editor','operator'].includes(currentRole());
+        return false;
       }
       function canEdit(){
         return canWrite();
@@ -855,7 +952,7 @@
       function canDelete(){
         const perms = pagePermissions();
         if (perms) return permissionFlag(perms.can_delete);
-        return ['admin','editor','operator'].includes(currentRole());
+        return false;
       }
 
       function setChip(el, text, kind){
@@ -1890,6 +1987,13 @@ function monthIndexFromName(value){
             const operatorId = input.getAttribute('data-operator-id');
             const shift = input.getAttribute('data-shift');
             const dateIso = input.getAttribute('data-date');
+            if (!canEdit()) {
+              const lockedValue = getCellValue(operatorId, shift, dateIso);
+              input.value = lockedValue;
+              applyInputStyle(input, lockedValue);
+              input.disabled = true;
+              return;
+            }
             let value = toStr(input.value).toUpperCase();
             if (value && !CODES.includes(value)) {
               const numeric = value.replace(',', '.');
