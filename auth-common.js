@@ -130,6 +130,46 @@
     return String(value || '').trim().toLowerCase().replace(/\.html$/i, '');
   }
 
+  function getCurrentPageKey(){
+    try {
+      const path = window.location.pathname || '';
+      const name = path.split('/').pop() || '';
+      return normalizePageKey(name || 'index.html');
+    } catch (_) {
+      return 'index';
+    }
+  }
+
+  function shouldPrehideCurrentPage(){
+    const pageKey = getCurrentPageKey();
+    return Boolean(pageKey && !['login','index'].includes(pageKey));
+  }
+
+  function ensurePrehideStyle(){
+    if(document.getElementById('rf-auth-prehide-style')) return;
+    const style = document.createElement('style');
+    style.id = 'rf-auth-prehide-style';
+    style.textContent = '' +
+      'html[data-rf-prehide="1"] body{visibility:hidden !important;}' +
+      'html[data-rf-prehide="1"] body > *{visibility:hidden !important;}' +
+      'html[data-rf-denied="1"] body{visibility:visible !important;}';
+    (document.head || document.documentElement).appendChild(style);
+  }
+
+  function prehideProtectedPage(){
+    if(!shouldPrehideCurrentPage()) return;
+    ensurePrehideStyle();
+    try { document.documentElement.setAttribute('data-rf-prehide', '1'); } catch (_) {}
+  }
+
+  function showProtectedPage(){
+    try {
+      document.documentElement.removeAttribute('data-rf-prehide');
+      document.documentElement.removeAttribute('data-rf-denied');
+    } catch (_) {}
+  }
+
+
   function defaultPermissionsForRole(role){
     const cleanRole = String(role || 'viewer').toLowerCase();
     const canWrite = ['admin','editor','operator'].includes(cleanRole);
@@ -231,6 +271,8 @@
     const safeMessage = String(message || 'Nu ai acces în această pagină.');
     const mount = () => {
       if(!document.body) return false;
+      try { document.documentElement.setAttribute('data-rf-denied', '1'); } catch (_) {}
+      showProtectedPage();
       document.body.innerHTML = '' +
         '<div style="min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px;background:#c8def0;font-family:Arial,Helvetica,sans-serif;color:#0d2240;">' +
           '<div style="width:min(640px,100%);background:#d7e6f4;border:2px solid #1b1b1b;border-radius:18px;padding:28px;box-shadow:0 1px 0 rgba(0,0,0,.06);text-align:center;">' +

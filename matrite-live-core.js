@@ -47,14 +47,46 @@
   function sb(){
     return window.ERPAuth && typeof window.ERPAuth.getSupabaseClient === 'function' ? window.ERPAuth.getSupabaseClient() : null;
   }
+  function applyViewOnlyMatrite(){
+    const allow = (node) => !!(node && (node.closest('.back-btn') || node.closest('a[href]')));
+    document.documentElement.setAttribute('data-acl-viewonly', '1');
+    document.querySelectorAll('input, textarea, select, button').forEach(el => {
+      if(allow(el)) return;
+      try { el.disabled = true; } catch(_) {}
+      try { el.readOnly = true; } catch(_) {}
+      el.setAttribute('aria-disabled', 'true');
+      el.style.pointerEvents = 'none';
+      el.classList.add('acl-view-only');
+    });
+    const stop = (ev) => {
+      const t = ev.target;
+      if(allow(t)) return;
+      const blocked = !!(t && (t.matches('input, textarea, select, button') || (t.closest && t.closest('input, textarea, select, button'))));
+      if(blocked){
+        ev.preventDefault();
+        ev.stopPropagation();
+        ev.stopImmediatePropagation && ev.stopImmediatePropagation();
+      }
+    };
+    ['beforeinput','input','change','paste','drop','submit','keydown','click'].forEach(type => document.addEventListener(type, stop, true));
+  }
+
   async function requirePage(pageKey){
     if(window.ERPAuth && typeof window.ERPAuth.requireAuth === 'function'){
       const auth = await window.ERPAuth.requireAuth({ next: location.pathname.split('/').pop(), redirectToLogin: true });
       const access = await window.ERPAuth.getPageAccess(pageKey, { user: auth.user, role: auth.role });
-      if(access && access.permissions && access.permissions.can_view === false){
-        alert('Nu ai acces în această pagină.');
-        location.href = 'index.html';
+      const perms = access && access.permissions ? access.permissions : null;
+      if(access && (access.allowed === false || (perms && perms.can_view === false))){
+        if(window.ERPAuth && typeof window.ERPAuth.renderAccessDeniedPage === 'function'){
+          window.ERPAuth.renderAccessDeniedPage(pageKey, access && access.message ? access.message : 'Nu ai acces în această pagină.');
+        }
         throw new Error('Fără acces');
+      }
+      if(window.ERPAuth && typeof window.ERPAuth.showProtectedPage === 'function'){
+        window.ERPAuth.showProtectedPage();
+      }
+      if(perms && perms.can_view === true && perms.can_edit === false){
+        applyViewOnlyMatrite();
       }
       return { auth, access };
     }
