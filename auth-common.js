@@ -383,7 +383,7 @@
   }
 
   function buildLoginUrl(next){
-    const loginUrl = new URL('./', window.location.href);
+    const loginUrl = new URL('login.html', window.location.href);
     if(next){
       loginUrl.searchParams.set('next', next);
     }
@@ -413,7 +413,7 @@
   }
 
   async function signOut(options){
-    const settings = Object.assign({ redirectTo: './' }, options || {});
+    const settings = Object.assign({ redirectTo: 'login.html' }, options || {});
 
     try {
       const sb = getSupabaseClient();

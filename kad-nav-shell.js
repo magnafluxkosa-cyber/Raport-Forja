@@ -510,7 +510,7 @@
       logoutBtn.addEventListener('click', async function(){
         try{
           if(window.ERPAuth && typeof window.ERPAuth.signOut === 'function'){
-            await window.ERPAuth.signOut({ redirectTo:'./' });
+            await window.ERPAuth.signOut({ redirectTo:'login.html' });
             return;
           }
         }catch(_){ }
@@ -519,7 +519,7 @@
             await window.__SUPA__.auth.signOut();
           }
         }catch(_){ }
-        window.location.href = './';
+        window.location.href = 'login.html';
       });
     }
 
