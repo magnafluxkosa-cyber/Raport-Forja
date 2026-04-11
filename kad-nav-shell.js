@@ -1,4 +1,3 @@
-
 (function(){
   'use strict';
 
@@ -25,8 +24,18 @@
     }
   }
 
+  function normalizeKey(value){
+    return String(value || '').trim().toLowerCase();
+  }
+
+  function normalizePageKey(value){
+    return normalizeKey(value).replace(/\.html$/i, '');
+  }
+
   var hiddenSet = getHiddenSet();
   var currentKey = currentPath.replace(/\.html$/i,'');
+  var filteredMenu = [];
+  var currentMatch = null;
 
   var MENU = [
     {
@@ -112,7 +121,7 @@
       ]}
     ]},
     { key:'group-resurse-umane', label:'RESURSE UMANE', sections:[
-      { key:'resurse-umane-links', label:'Pontaje', links:[
+      { key:'resurse-umane-pontaje', label:'Pontaje', links:[
         { key:'pontaj-forja', label:'PONTAJ FORJA', href:'pontaj-forja.html' }
       ]}
     ]},
@@ -128,6 +137,111 @@
     { key:'helper-data', label:'HELPER-DATA', href:'helper-data.html' },
     { key:'helper-acl', label:'HELPER-ACL', href:'helper-acl.html' }
   ];
+
+  function collectPageKeys(items, target){
+    target = target || [];
+    (items || []).forEach(function(item){
+      if(item && item.href && item.key) target.push(normalizePageKey(item.key));
+      if(item && Array.isArray(item.sections)){
+        item.sections.forEach(function(section){
+          (section.links || []).forEach(function(link){
+            if(link && link.href && link.key) target.push(normalizePageKey(link.key));
+          });
+        });
+      }
+    });
+    return target;
+  }
+
+  async function resolvePageVisibility(){
+    var result = Object.create(null);
+    var keys = Array.from(new Set(collectPageKeys(MENU))).filter(Boolean);
+    keys.forEach(function(key){ result[key] = true; });
+    try{
+      if(!window.ERPAuth || typeof window.ERPAuth.getCurrentUserWithRole !== 'function' || typeof window.ERPAuth.getSupabaseClient !== 'function') return result;
+      var auth = await window.ERPAuth.getCurrentUserWithRole();
+      var user = auth && auth.user ? auth.user : null;
+      var role = normalizeKey(auth && auth.role || 'viewer');
+      if(!user) return result;
+      var adminEmail = normalizeKey(window.ERPAuth.ADMIN_EMAIL || '');
+      var userEmail = normalizeKey(user.email || '');
+      if(adminEmail && userEmail === adminEmail) return result;
+      var sb = window.ERPAuth.getSupabaseClient();
+      if(!sb) return result;
+
+      var strictRows = [];
+      if(userEmail){
+        try{
+          var strictByEmail = await sb.from('user_page_permissions').select('page_key,can_view,can_add,can_edit,can_delete,can_export,can_import').eq('email', userEmail).limit(5000);
+          if(strictByEmail && !strictByEmail.error && Array.isArray(strictByEmail.data)) strictRows = strictRows.concat(strictByEmail.data);
+        }catch(_){ }
+      }
+      var userId = String(user.id || '').trim();
+      if(userId){
+        try{
+          var strictById = await sb.from('user_page_permissions').select('page_key,can_view,can_add,can_edit,can_delete,can_export,can_import').eq('user_id', userId).limit(5000);
+          if(strictById && !strictById.error && Array.isArray(strictById.data)) strictRows = strictRows.concat(strictById.data);
+        }catch(_){ }
+      }
+
+      var strictMap = new Map();
+      strictRows.forEach(function(row){
+        var key = normalizePageKey(row && row.page_key);
+        if(!key) return;
+        strictMap.set(key, row && row.can_view === true);
+      });
+      if(strictMap.size){
+        keys.forEach(function(key){ result[key] = strictMap.get(key) === true; });
+        return result;
+      }
+
+      var roleMap = new Map();
+      if(role){
+        try{
+          var roleRes = await sb.from('page_permissions').select('page_key,can_view').eq('role', role).limit(5000);
+          if(roleRes && !roleRes.error && Array.isArray(roleRes.data)){
+            roleRes.data.forEach(function(row){
+              var key = normalizePageKey(row && row.page_key);
+              if(!key) return;
+              roleMap.set(key, row && row.can_view === true);
+            });
+          }
+        }catch(_){ }
+      }
+      if(roleMap.size){
+        keys.forEach(function(key){
+          if(roleMap.has(key)) result[key] = roleMap.get(key) === true;
+        });
+      }
+    }catch(_){ }
+    return result;
+  }
+
+  function filterMenuWithAcl(items, pageVisibility){
+    var hasPageVisibility = !!(pageVisibility && Object.keys(pageVisibility).length);
+    return (items || []).map(function(item){
+      if(!item || !isVisibleKey(item.key)) return null;
+      var clone = Object.assign({}, item);
+      if(item.href){
+        var pageKey = normalizePageKey(item.key || item.href);
+        if(hasPageVisibility && pageVisibility[pageKey] !== true) return null;
+        return clone;
+      }
+      if(Array.isArray(item.sections)){
+        clone.sections = item.sections.map(function(section){
+          var s = Object.assign({}, section);
+          s.links = (section.links || []).filter(function(link){
+            if(!link || !isVisibleKey(link.key)) return false;
+            var pageKey = normalizePageKey(link.key || link.href);
+            return !hasPageVisibility || pageVisibility[pageKey] === true;
+          });
+          return s.links.length ? s : null;
+        }).filter(Boolean);
+        if(!clone.sections.length) return null;
+      }
+      return clone;
+    }).filter(Boolean);
+  }
 
   function escapeHtml(str){
     return String(str == null ? '' : str)
@@ -170,8 +284,6 @@
     return null;
   }
 
-  var filteredMenu = filterMenu(MENU);
-  var currentMatch = findMatch(filteredMenu);
 
   function getCurrentLabel(){
     return currentMatch ? currentMatch.label : (document.title || currentKey || 'K.A.D');
@@ -194,14 +306,14 @@
     if(link.disabled || !link.href){
       return '<span class="kad-shell-link'+active+'" aria-disabled="true">'+escapeHtml(link.label)+'</span>';
     }
-    return '<a class="kad-shell-link'+active+'" href="'+escapeHtml(link.href)+'">'+escapeHtml(link.label)+'</a>';
+    return '<a class="kad-shell-link'+active+'" data-page-key="'+escapeHtml(link.key || '')+'" href="'+escapeHtml(link.href)+'">'+escapeHtml(link.label)+'</a>';
   }
 
   function buildItem(item){
     var active = itemContainsCurrent(item) ? ' is-active' : '';
     if(item.href){
       return '<div class="kad-shell-item'+active+'" data-item-key="'+escapeHtml(item.key || '')+'">'
-        + '<a class="kad-shell-main" href="'+escapeHtml(item.href)+'"><span class="kad-shell-main-label">'+escapeHtml(item.label)+'</span></a>'
+        + '<a class="kad-shell-main" data-page-key="'+escapeHtml(item.key || '')+'" href="'+escapeHtml(item.href)+'"><span class="kad-shell-main-label">'+escapeHtml(item.label)+'</span></a>'
         + '</div>';
     }
     return '<div class="kad-shell-item'+active+'" data-item-key="'+escapeHtml(item.key || '')+'" data-has-submenu="1">'
@@ -426,8 +538,11 @@
     }
   }
 
-  function mount(){
-    if(document.getElementById('kadNavShellRoot')) return;
+  async function mount(){
+    var pageVisibility = await resolvePageVisibility();
+    filteredMenu = filterMenuWithAcl(MENU, pageVisibility);
+    currentMatch = findMatch(filteredMenu);
+    if(!filteredMenu.length || document.getElementById('kadNavShellRoot')) return;
     ensureContentWrapper();
     var root = document.createElement('div');
     root.id = 'kadNavShellRoot';
@@ -556,7 +671,7 @@
   }
 
   if(document.readyState === 'loading'){
-    document.addEventListener('DOMContentLoaded', mount, { once:true });
+    document.addEventListener('DOMContentLoaded', function(){ mount(); }, { once:true });
   } else {
     mount();
   }
