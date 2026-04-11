@@ -273,7 +273,7 @@
       [els.filterMaterial, els.filterReper].forEach(el => el.addEventListener('input', renderAll));
       els.btnReload.addEventListener('click', async () => { await loadDocs(); await loadSupportDocs(); renderAll(); });
       els.btnSaveAll.addEventListener('click', saveAll);
-      els.btnLogout.addEventListener('click', async () => { try{ await window.ERPAuth.signOut(); }catch(_e){} window.location.href='login.html'; });
+      els.btnLogout.addEventListener('click', async () => { try{ await window.ERPAuth.signOut(); }catch(_e){} window.location.href='./'; });
       els.btnImportMapping.addEventListener('click', () => els.fileMapping.click());
       els.btnImportOrders.addEventListener('click', () => els.fileOrders.click());
       els.btnImportStock.addEventListener('click', () => els.fileStock.click());
