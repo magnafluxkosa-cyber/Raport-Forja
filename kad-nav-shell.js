@@ -111,7 +111,11 @@
         { key:'mrc-comenzi-saptamanale', label:'COMENZI SĂPTĂMÂNALE', href:'mrc-comenzi-saptamanale.html' }
       ]}
     ]},
-,
+    { key:'group-resurse-umane', label:'RESURSE UMANE', sections:[
+      { key:'resurse-umane-links', label:'Pontaje', links:[
+        { key:'pontaj-forja', label:'PONTAJ FORJA', href:'pontaj-forja.html' }
+      ]}
+    ]},
     { key:'group-sdv', label:'SDV', sections:[
       { key:'sdv-links', label:'Pagini', links:[
         { key:'stoc-matrite', label:'STOC MATRIȚE', href:'stoc-matrite.html' },
