@@ -2,6 +2,16 @@
 (function(){
   'use strict';
 
+  function ensureRegistry(next){
+    if (window.RF_APP_REGISTRY) { next(); return; }
+    var script = document.createElement('script');
+    script.src = './rf-app-registry.js';
+    script.onload = function(){ next(); };
+    script.onerror = function(){ next(); };
+    document.head.appendChild(script);
+  }
+
+  function start(){
   var currentPath = (window.location.pathname.split('/').pop() || '').toLowerCase();
   if(!currentPath || currentPath === 'index.html' || currentPath === 'login.html') return;
 
@@ -28,107 +38,10 @@
   var hiddenSet = getHiddenSet();
   var currentKey = currentPath.replace(/\.html$/i,'');
 
-  var MENU = [
-    {
-      key:'group-forja', label:'FORJĂ', sections:[
-        { key:'forja-rapoarte', label:'Rapoarte', links:[
-          { key:'numeralkod', label:'NUMERALKOD', href:'numeralkod.html' },
-          { key:'intrari-otel', label:'INTRĂRI OȚEL', href:'intrari-otel.html' },
-          { key:'debitate', label:'DEBITATE', href:'debitate.html' },
-          { key:'forjate', label:'FORJATE', href:'forjate.html' },
-          { key:'eficienta', label:'EFICIENȚĂ', href:'eficienta.html' },
-          { key:'program-utilaje', label:'PROGRAM UTILAJE', href:'program-utilaje.html' }
-        ]},
-        { key:'forja-zale', label:'Urmărire zale', links:[
-          { key:'livrari-zale', label:'LIVRĂRI ZALE', href:'livrari-zale.html' },
-          { key:'centralizator-livrari-zale', label:'CENTRALIZATOR LIVRĂRI', href:'centralizator-livrari-zale.html' },
-          { key:'zale-9k-6628-29', label:'9K-6628/29', href:'zale-9k-6628-29.html' },
-          { key:'zale-229-6909-10', label:'229-6909/10', href:'zale-229-6909-10.html' },
-          { key:'zale-503-0761-62', label:'503-0761/62', href:'zale-503-0761-62.html' },
-          { key:'zale-106-1625-26', label:'106-1625/26', href:'zale-106-1625-26.html' },
-          { key:'zale-378-8241-42', label:'378-8241/42', href:'zale-378-8241-42.html' },
-          { key:'zale-248-2307-08', label:'248-2307/08', href:'zale-248-2307-08.html' },
-          { key:'zale-417-3595-96', label:'417-3595/96', href:'zale-417-3595-96.html' },
-          { key:'zale-418-2091-92', label:'418-2091/92', href:'zale-418-2091-92.html' },
-          { key:'ambalare-9k-6628-29', label:'AMBALARE 9K-6628/29', href:'ambalare-9k-6628-29.html' },
-          { key:'ambalare-229-6909-10', label:'AMBALARE 229-6909/10', href:'ambalare-229-6909-10.html' },
-          { key:'ambalare-503-0761-62', label:'AMBALARE 503-0761/62', href:'ambalare-503-0761-62.html' },
-          { key:'ambalare-106-1625-26', label:'AMBALARE 106-1625/26', href:'ambalare-106-1625-26.html' },
-          { key:'ambalare-378-8241-42', label:'AMBALARE 378-8241/42', href:'ambalare-378-8241-42.html' },
-          { key:'ambalare-248-2307-08', label:'AMBALARE 248-2307/08', href:'ambalare-248-2307-08.html' },
-          { key:'ambalare-417-3595-96', label:'AMBALARE 417-3595/96', href:'ambalare-417-3595-96.html' },
-          { key:'ambalare-418-2091-92', label:'AMBALARE 418-2091/92', href:'ambalare-418-2091-92.html' }
-        ]},
-        { key:'forja-inventar', label:'Inventar', links:[
-          { key:'inventar-otel', label:'INVENTAR OȚEL', href:'inventar-otel.html' },
-          { key:'inventar-debitat', label:'INVENTAR DEBITAT', href:'inventar-debitat.html' },
-          { key:'inventar-forjat', label:'INVENTAR FORJAT', href:'inventar-forjat.html' },
-          { key:'stoc-initial-otel', label:'STOC INIȚIAL OȚEL', href:'stoc-initial-otel.html' },
-          { key:'stoc-ramas-teoretic', label:'STOC RĂMAS TEORETIC', href:'stoc-ramas-teoretic.html' }
-        ]}
-      ]
-    },
-    { key:'group-prelucrari', label:'PRELUCRĂRI MECANICE', sections:[
-      { key:'prelucrari-links', label:'Pagini', links:[
-        { key:'plan-livrari', label:'PLAN LIVRĂRI', href:'plan-livrari.html' },
-        { key:'planificare-prelucrari', label:'PLANIFICARE PRELUCRĂRI', href:'planificare-prelucrari.html' },
-        { key:'inventar-prelucrari', label:'INVENTAR PRELUCRĂRI', href:'inventar-prelucrari.html' }
-      ]}
-    ]},
-    { key:'group-tratament-termic', label:'TRATAMENT TERMIC', sections:[
-      { key:'tratament-termic-links', label:'Pagini', links:[
-        { key:'tratament-termic-rapoarte', label:'RAPOARTE', href:'tratament-termic-rapoarte.html' },
-        { key:'tratament-termic-probleme', label:'PROBLEME T.T', href:'tratament-termic-probleme.html' },
-        { key:'tratament-termic-fise-tehnologice', label:'FIȘE TEHNOLOGICE', href:'tratament-termic-fise-tehnologice.html' },
-        { key:'tratament-termic-documente', label:'RAPOARTE EXCEL / WORD', href:'tratament-termic-documente.html' }
-      ]}
-    ]},
-    { key:'group-calitate', label:'CALITATE', sections:[
-      { key:'calitate-links', label:'Pagini', links:[
-        { key:'magnaflux', label:'MAGNAFLUX', href:'magnaflux.html' },
-        { key:'rebut', label:'REBUT', href:'rebut.html' },
-        { key:'rebut-pm', label:'REBUT PM', href:'rebut-pm.html' },
-        { key:'rebut-pm-helper', label:'REBUT PM HELPER', href:'rebut-pm-helper.html' },
-        { key:'magnaflux-calendar', label:'CALENDAR MAGNAFLUX', href:'magnaflux-calendar.html' },
-        { key:'calendar-operatori', label:'CALENDAR OPERATORI', href:'calendar-operatori.html' }
-      ]}
-    ]},
-    { key:'group-probleme-imbunatatire', label:'PROBLEME · ÎMBUNĂTĂȚIRI', sections:[
-      { key:'probleme-links', label:'Pagini', links:[
-        { key:'probleme-raportate', label:'PROBLEME RAPORTATE', href:'probleme-raportate.html' },
-        { key:'urmarire-actiuni-progres', label:'URMĂRIRE ACȚIUNI ȘI PROGRES', href:'urmarire-actiuni-progres.html' },
-        { key:'imbunatatire-continua', label:'ÎMBUNĂTĂȚIRE CONTINUĂ', href:'imbunatatire-continua.html' },
-        { key:'investitii', label:'INVESTIȚII', href:'investitii.html' }
-      ]}
-    ]},
-    { key:'kpi', label:'KPI', href:'kpi.html' },
-    { key:'group-planificari', label:'PLANIFICĂRI', sections:[
-      { key:'planificari-links', label:'Pagini', links:[
-        { key:'planificare-forja', label:'PLANIFICARE FORJĂ', href:'planificare-forja.html' },
-        { key:'comenzi-livrare', label:'COMENZI LIVRARE', href:'comenzi-livrare.html' },
-        { key:'mrc-necesar-otel', label:'MRC / NECESAR OȚEL', href:'mrc-necesar-otel.html' },
-        { key:'mrc-comenzi-otel', label:'COMENZI OȚEL', href:'mrc-comenzi-otel.html' },
-        { key:'mrc-comenzi-saptamanale', label:'COMENZI SĂPTĂMÂNALE', href:'mrc-comenzi-saptamanale.html' }
-      ]}
-    ]},
-    { key:'group-resurse-umane', label:'RESURSE UMANE', sections:[
-      { key:'resurse-umane-pontaje', label:'Pontaje', links:[
-        { key:'pontaj-forja', label:'PONTAJ FORJA', href:'pontaj-forja.html' },
-        { key:'pontaj-prelucrari-mecanice', label:'PONTAJ PRELUCRARI MECANICE', href:'pontaj-prelucrari-mecanice.html' }
-      ]}
-    ]},
-    { key:'group-sdv', label:'SDV', sections:[
-      { key:'sdv-links', label:'Pagini', links:[
-        { key:'stoc-matrite', label:'STOC MATRIȚE', href:'stoc-matrite.html' },
-        { key:'urmarire-matrite', label:'URMĂRIRE MATRIȚE', href:'urmarire-matrite.html' },
-        { key:'progres-matrite', label:'PROGRES MATRIȚE', href:'progres-matrite.html' },
-        { key:'utilaje-matrite', label:'UTILAJE MATRIȚE', href:'utilaje-matrite.html' },
-        { key:'repere-matrite', label:'REPERE MATRIȚE', href:'repere-matrite.html' }
-      ]}
-    ]},
-    { key:'helper-data', label:'HELPER-DATA', href:'helper-data.html' },
-    { key:'helper-acl', label:'HELPER-ACL', href:'helper-acl.html' }
-  ];
+  var MENU = (window.RF_APP_REGISTRY && typeof window.RF_APP_REGISTRY.getSideMenu === 'function')
+    ? window.RF_APP_REGISTRY.getSideMenu()
+    : [];
+
 
   function escapeHtml(str){
     return String(str == null ? '' : str)
@@ -561,4 +474,9 @@
   } else {
     mount();
   }
+
+
+  }
+
+  ensureRegistry(start);
 })();
