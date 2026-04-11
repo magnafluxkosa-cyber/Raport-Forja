@@ -636,6 +636,80 @@
         }
       };
 
+      const INDEX_VISIBILITY_KEYS = ['pontaj-forja','group-resurse-umane','group-resurse-umane-pontaje'];
+
+      function parseHiddenIndexPayload(raw){
+        if (!raw) return null;
+        try {
+          const data = JSON.parse(raw);
+          if (!data || typeof data !== 'object') return null;
+          const hidden = Array.isArray(data.hidden) ? data.hidden.map((value) => String(value || '').trim()) : [];
+          return {
+            hidden,
+            email: String(data.email || '').trim().toLowerCase(),
+            user_id: String(data.user_id || '').trim()
+          };
+        } catch (_) {
+          return null;
+        }
+      }
+
+      function readStoredHiddenIndexPayload(){
+        const candidates = [];
+        try { candidates.push(window.sessionStorage ? sessionStorage.getItem('rf_hidden_index_buttons') : ''); } catch (_) {}
+        try { candidates.push(window.localStorage ? localStorage.getItem('rf_hidden_index_buttons') : ''); } catch (_) {}
+        for (let i = 0; i < candidates.length; i += 1) {
+          const parsed = parseHiddenIndexPayload(candidates[i]);
+          if (parsed) return parsed;
+        }
+        return null;
+      }
+
+      async function loadHiddenIndexKeysForCurrentUser(){
+        const user = state.auth && state.auth.user ? state.auth.user : null;
+        if (!user) return new Set();
+        const userId = String(user.id || '').trim();
+        const email = String(user.email || '').trim().toLowerCase();
+
+        const stored = readStoredHiddenIndexPayload();
+        if (stored && ((stored.user_id && stored.user_id === userId) || (stored.email && stored.email === email))) {
+          return new Set((stored.hidden || []).filter(Boolean));
+        }
+
+        const sb = window.ERPAuth && typeof window.ERPAuth.getSupabaseClient === 'function' ? window.ERPAuth.getSupabaseClient() : null;
+        if (!sb) return new Set();
+
+        const tryRead = async (query) => {
+          try {
+            const res = await query;
+            if (res && !res.error && Array.isArray(res.data) && res.data.length) {
+              const rows = res.data.slice().sort((a, b) => String((b && b.updated_at) || '').localeCompare(String((a && a.updated_at) || '')));
+              const first = rows[0] || null;
+              return new Set(Array.isArray(first && first.hidden_buttons) ? first.hidden_buttons.map((value) => String(value || '').trim()).filter(Boolean) : []);
+            }
+          } catch (_) {}
+          return null;
+        };
+
+        let hidden = null;
+        if (userId) hidden = await tryRead(sb.from('user_index_visibility').select('user_id,email,hidden_buttons,updated_at').eq('user_id', userId).order('updated_at', { ascending:false }).limit(20));
+        if (!hidden && email) hidden = await tryRead(sb.from('user_index_visibility').select('user_id,email,hidden_buttons,updated_at').eq('email', email).order('updated_at', { ascending:false }).limit(20));
+        return hidden || new Set();
+      }
+
+      async function enforceDirectAclVisibility(){
+        const hiddenKeys = await loadHiddenIndexKeysForCurrentUser();
+        const denied = INDEX_VISIBILITY_KEYS.some((key) => hiddenKeys.has(key));
+        if (!denied) return true;
+        if (window.ERPAuth && typeof window.ERPAuth.renderAccessDeniedPage === 'function') {
+          window.ERPAuth.renderAccessDeniedPage('Pontaj Forja', 'Nu ai acces în această foaie. Cere acces de la admin.');
+        } else {
+          alert('Nu ai acces în această foaie.');
+          window.location.href = 'index.html';
+        }
+        return false;
+      }
+
       function toStr(value){ return String(value == null ? '' : value).trim(); }
       function normalizeText(value){ return toStr(value).replace(/\s+/g, ' ').toUpperCase(); }
       function toNumber(value){
@@ -2046,6 +2120,8 @@
           }
           setChip(els.chipAuth, 'Autentificare: activă', 'ok');
           setChip(els.chipRole, 'Cont: ' + (window.ERPAuth.roleLabel ? window.ERPAuth.roleLabel(auth.role) : auth.role), 'ok');
+          const visibilityOk = await enforceDirectAclVisibility();
+          if (!visibilityOk) return false;
           setReadonlyMode(!canEdit());
           return true;
         } catch (error) {
