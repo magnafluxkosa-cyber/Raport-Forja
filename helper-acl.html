@@ -127,6 +127,9 @@
                 <div class="section-title">Status cont și prezență live</div>
                 <div class="section-sub">Poți lăsa contul activ, îl poți bloca sau bana. În dreapta vezi online live, pagina curentă și ultimul semnal primit.</div>
               </div>
+              <div class="section-actions">
+                <button class="btn secondary" type="button" id="btnPurgeGhost">Șterge cont fantomă</button>
+              </div>
             </div>
             <div class="section-body">
               <div class="account-grid">
@@ -206,11 +209,11 @@
     const qs = (s) => document.querySelector(s);
     const qsa = (s) => Array.from(document.querySelectorAll(s));
     const els = {
-      authStatus: qs('#authStatus'), authSub: qs('#authSub'), userStatus: qs('#userStatus'), userSub: qs('#userSub'), countStatus: qs('#countStatus'), countSub: qs('#countSub'), saveStatus: qs('#saveStatus'), saveSub: qs('#saveSub'), userList: qs('#userList'), txtSearch: qs('#txtSearch'), permissionGroups: qs('#permissionGroups'), pageGroups: qs('#pageGroups'), selectedTitle: qs('#selectedTitle'), btnReload: qs('#btnReload'), btnSave: qs('#btnSave'), btnCheckAll: qs('#btnCheckAll'), btnHideAll: qs('#btnHideAll'), btnPageAll: qs('#btnPageAll'), btnPageNone: qs('#btnPageNone'), btnLogout: qs('#btnLogout'), selAccountStatus: qs('#selAccountStatus'), txtAccountNote: qs('#txtAccountNote'), accountStatusText: qs('#accountStatusText'), liveOnlineText: qs('#liveOnlineText'), livePageText: qs('#livePageText'), liveSeenText: qs('#liveSeenText')
+      authStatus: qs('#authStatus'), authSub: qs('#authSub'), userStatus: qs('#userStatus'), userSub: qs('#userSub'), countStatus: qs('#countStatus'), countSub: qs('#countSub'), saveStatus: qs('#saveStatus'), saveSub: qs('#saveSub'), userList: qs('#userList'), txtSearch: qs('#txtSearch'), permissionGroups: qs('#permissionGroups'), pageGroups: qs('#pageGroups'), selectedTitle: qs('#selectedTitle'), btnReload: qs('#btnReload'), btnSave: qs('#btnSave'), btnCheckAll: qs('#btnCheckAll'), btnHideAll: qs('#btnHideAll'), btnPageAll: qs('#btnPageAll'), btnPageNone: qs('#btnPageNone'), btnLogout: qs('#btnLogout'), btnPurgeGhost: qs('#btnPurgeGhost'), selAccountStatus: qs('#selAccountStatus'), txtAccountNote: qs('#txtAccountNote'), accountStatusText: qs('#accountStatusText'), liveOnlineText: qs('#liveOnlineText'), livePageText: qs('#livePageText'), liveSeenText: qs('#liveSeenText')
     };
     const cfg = window.RF_CONFIG || {};
     const sb = (cfg.SUPABASE_URL && cfg.SUPABASE_ANON_KEY && window.supabase) ? window.supabase.createClient(cfg.SUPABASE_URL, cfg.SUPABASE_ANON_KEY, { auth:{ persistSession:true, autoRefreshToken:true, detectSessionInUrl:true } }) : null;
-    const state = { session:null, users:[], selectedEmail:'', doc:{ users:{} }, pageRules:{}, accountAccess:{}, presence:{}, dirty:false, access:{ can_view:true, can_add:true, can_edit:true, can_delete:true } };
+    const state = { session:null, users:[], selectedEmail:'', doc:{ users:{} }, pageRules:{}, accountAccess:{}, presence:{}, authUserEmails:new Set(), hasCanonicalAuthList:false, dirty:false, access:{ can_view:true, can_add:true, can_edit:true, can_delete:true } };
     function canAclEdit(){ return !!(state.access && (state.access.can_edit === true || state.access.can_add === true)); }
     function applyAclReadOnly(){ const ro = !canAclEdit(); document.body.classList.toggle('acl-view-only', ro); try{ els.btnSave.disabled = ro; }catch(_e){} qsa('input[type="checkbox"], #txtSearch').forEach(el=>{ try{ if(el.id !== 'txtSearch') el.disabled = ro; }catch(_e){} }); ['btnCheckAll','btnHideAll','btnPageAll','btnPageNone','selAccountStatus','txtAccountNote'].forEach(id=>{ try{ if(els[id]) els[id].disabled = ro; }catch(_e){} }); if(ro){ els.saveSub.textContent = 'Contul curent are doar drept de vizualizare pe această pagină.'; } }
 
@@ -218,6 +221,8 @@
     function normalizeEmail(v){ return String(v || '').trim().toLowerCase(); }
     function normalizeKey(v){ return String(v || '').trim().replace(/\.html$/i,'').toLowerCase(); }
     function safeId(email){ const at = String(email || '').indexOf('@'); return at > 0 ? String(email).slice(0, at).toUpperCase() : String(email || '').toUpperCase(); }
+    function isAuthCanonicalEmail(email){ return state.authUserEmails instanceof Set && state.authUserEmails.has(normalizeEmail(email)); }
+    function selectedUser(){ return state.users.find(u => u.email === state.selectedEmail) || null; }
     function accountKeys(userOrEmail){
       const email = typeof userOrEmail === 'string' ? userOrEmail : (userOrEmail && userOrEmail.email) || '';
       const userId = typeof userOrEmail === 'object' && userOrEmail ? String(userOrEmail.user_id || userOrEmail.id || '').trim() : '';
@@ -487,7 +492,8 @@
       };
 
       const adminUsers = await fetchAdminUsers();
-      const hasCanonicalAuthList = Array.isArray(adminUsers) && adminUsers.length > 0;
+      state.authUserEmails = new Set((Array.isArray(adminUsers) ? adminUsers : []).map(user => normalizeEmail(user && user.email)).filter(Boolean));
+      state.hasCanonicalAuthList = state.authUserEmails.size > 0;
       adminUsers.forEach(user => add(user.email, { role:user.role || '', user_id:user.user_id || user.id || '', source:'auth-users' }));
 
       const queries = [
@@ -501,20 +507,29 @@
             res.data.forEach(row => {
               const email = normalizeEmail(row && row.email);
               if (!email) return;
-              if (hasCanonicalAuthList && !found.has(email)) return;
+              if (state.hasCanonicalAuthList && !isAuthCanonicalEmail(email)) return;
               add(email, { role: row.role || '', user_id: row.user_id || row.id || '', source: q.table });
             });
           }
         } catch (_) {}
       }
-      if (state.session && state.session.user && state.session.user.email) add(state.session.user.email, { user_id: state.session.user.id || '', source:'session' });
-      state.users = Array.from(found.values()).sort((a,b) => a.email.localeCompare(b.email));
+
+      if (!state.hasCanonicalAuthList && state.session && state.session.user && state.session.user.email) {
+        add(state.session.user.email, { user_id: state.session.user.id || '', source:'session' });
+      } else if (state.hasCanonicalAuthList && state.session && state.session.user && state.session.user.email && isAuthCanonicalEmail(state.session.user.email)) {
+        add(state.session.user.email, { user_id: state.session.user.id || '', source:'session' });
+      }
+
+      state.users = Array.from(found.values())
+        .filter(user => !state.hasCanonicalAuthList || isAuthCanonicalEmail(user.email))
+        .sort((a,b) => a.email.localeCompare(b.email));
+
       if (state.selectedEmail && !state.users.some(u => u.email === state.selectedEmail)) state.selectedEmail = '';
       if (!state.selectedEmail && state.users.length) state.selectedEmail = state.users[0].email;
       setStatus(els.countStatus, String(state.users.length), state.users.length ? 'ok' : 'warn');
       els.countSub.textContent = state.users.length
-        ? (hasCanonicalAuthList ? 'Lista de conturi vine din Auth și ignoră conturile șterse rămase în tabele vechi.' : 'Lista de conturi este pregătită.')
-        : (hasCanonicalAuthList ? 'Nu există conturi active în Auth.' : 'Nu am găsit conturi în tabelele publice.');
+        ? (state.hasCanonicalAuthList ? 'Lista de conturi vine strict din Auth. Conturile șterse din Auth nu mai apar.' : 'Lista de conturi este pregătită din tabelele publice.')
+        : (state.hasCanonicalAuthList ? 'Nu există conturi active în Auth.' : 'Nu am găsit conturi în tabelele publice.');
     }
 
 
@@ -640,6 +655,133 @@
       await loadAccountAccess();
     }
 
+    function renderPurgeGhostButton(){
+      if (!els.btnPurgeGhost) return;
+      const selected = selectedUser();
+      const selfEmail = normalizeEmail(state.session && state.session.user && state.session.user.email);
+      const isSelf = !!(selected && normalizeEmail(selected.email) === selfEmail);
+      els.btnPurgeGhost.disabled = !selected || !canAclEdit() || isSelf;
+      if (!selected) {
+        els.btnPurgeGhost.textContent = 'Șterge cont fantomă';
+        els.btnPurgeGhost.title = 'Selectează mai întâi un cont.';
+        return;
+      }
+      const isCanonical = state.hasCanonicalAuthList ? isAuthCanonicalEmail(selected.email) : null;
+      if (isCanonical === false) {
+        els.btnPurgeGhost.textContent = 'Șterge cont fantomă';
+        els.btnPurgeGhost.title = 'Contul nu există în Auth și poate fi curățat din tabelele auxiliare.';
+      } else if (state.hasCanonicalAuthList) {
+        els.btnPurgeGhost.textContent = 'Curăță urme cont';
+        els.btnPurgeGhost.title = isSelf ? 'Nu poți curăța contul cu care ești logat.' : 'Folosește doar dacă acest cont a fost deja șters din Auth, dar au rămas urme în tabele.';
+      } else {
+        els.btnPurgeGhost.textContent = 'Curăță cont din tabele';
+        els.btnPurgeGhost.title = isSelf ? 'Nu poți curăța contul cu care ești logat.' : 'Folosește această opțiune doar pentru conturi deja șterse din Supabase Auth.';
+      }
+    }
+
+    async function deleteWhere(table, filters){
+      try {
+        let query = sb.from(table).delete();
+        filters.forEach(filter => {
+          if (!filter || !filter.column) return;
+          if (filter.op === 'neq') query = query.neq(filter.column, filter.value);
+          else query = query.eq(filter.column, filter.value);
+        });
+        const res = await query;
+        return !(res && res.error);
+      } catch (_e) {
+        return false;
+      }
+    }
+
+    function removeUserKeysFromDocUsers(usersObj, selected){
+      const next = Object.assign({}, usersObj || {});
+      accountKeys(selected).forEach(key => { delete next[key]; });
+      return next;
+    }
+
+    async function purgeSelectedGhost(){
+      if (!canAclEdit()) return;
+      const selected = selectedUser();
+      if (!selected) return;
+      const selfEmail = normalizeEmail(state.session && state.session.user && state.session.user.email);
+      if (normalizeEmail(selected.email) === selfEmail) {
+        alert('Nu poți șterge urmele contului cu care ești logat.');
+        return;
+      }
+      const canonicalHint = state.hasCanonicalAuthList
+        ? (isAuthCanonicalEmail(selected.email) ? 'Contul apare încă în lista Auth. Curățarea se folosește doar dacă l-ai șters deja din Auth și au rămas urme în tabele.' : 'Contul nu mai există în Auth și poate fi curățat din tabelele auxiliare.')
+        : 'Nu pot confirma din pagină lista Auth. Folosește această opțiune doar dacă ai șters deja contul din Supabase Auth.';
+      const ok = window.confirm('Confirmi curățarea urmelor pentru contul:\n\n' + selected.email + '\n\n' + canonicalHint + '\n\nSe vor încerca ștergeri din tabelele auxiliare și din mirrourile din rf_documents.');
+      if (!ok) return;
+
+      const email = normalizeEmail(selected.email);
+      const userId = String(selected.user_id || '').trim();
+      const tableResults = [];
+      tableResults.push(await deleteWhere('user_index_visibility', [{ column:'email', value:email }]));
+      tableResults.push(await deleteWhere('user_page_permissions', [{ column:'email', value:email }]));
+      tableResults.push(await deleteWhere('user_account_access', [{ column:'email', value:email }]));
+      tableResults.push(await deleteWhere('rf_acl', [{ column:'email', value:email }]));
+      tableResults.push(await deleteWhere('profiles', [{ column:'email', value:email }]));
+      if (userId) {
+        tableResults.push(await deleteWhere('user_index_visibility', [{ column:'user_id', value:userId }]));
+        tableResults.push(await deleteWhere('user_page_permissions', [{ column:'user_id', value:userId }]));
+        tableResults.push(await deleteWhere('user_account_access', [{ column:'user_id', value:userId }]));
+        tableResults.push(await deleteWhere('profiles', [{ column:'user_id', value:userId }]));
+      }
+
+      const docsSaved = [];
+      const direct = await readDocByKey('index_button_visibility_v1') || {};
+      if (direct && typeof direct === 'object') {
+        const next = Object.assign({}, direct, { users: removeUserKeysFromDocUsers(direct.users || {}, selected), updated_at:new Date().toISOString() });
+        docsSaved.push(await writeDocByKey('index_button_visibility_v1', next));
+      }
+
+      const accessMirror = await readDocByKey('user_account_access_v1') || {};
+      if (accessMirror && typeof accessMirror === 'object') {
+        const users = Object.assign({}, (accessMirror.users && typeof accessMirror.users === 'object') ? accessMirror.users : {});
+        accountKeys(selected).forEach(key => { delete users[key]; });
+        delete users[email];
+        const next = Object.assign({}, accessMirror, { users, updated_at:new Date().toISOString() });
+        docsSaved.push(await writeDocByKey('user_account_access_v1', next));
+      }
+
+      const dashboard = await readDocByKey('dashboard_acl_v1') || {};
+      if (dashboard && typeof dashboard === 'object') {
+        const hidden = removeUserKeysFromDocUsers(dashboard.hidden_index_buttons_by_user || {}, selected);
+        const perms = Object.assign({}, (dashboard.user_permissions && typeof dashboard.user_permissions === 'object') ? dashboard.user_permissions : {});
+        const grants = Object.assign({}, (dashboard.user_grants && typeof dashboard.user_grants === 'object') ? dashboard.user_grants : {});
+        accountKeys(selected).concat([email]).forEach(key => { delete perms[key]; delete grants[key]; });
+        const next = Object.assign({}, dashboard, {
+          hidden_index_buttons_by_user: hidden,
+          user_permissions: perms,
+          user_grants: grants,
+          updated_at:new Date().toISOString()
+        });
+        docsSaved.push(await writeDocByKey('dashboard_acl_v1', next));
+      }
+
+      state.pageRules[email] = {};
+      delete state.pageRules[email];
+      delete state.accountAccess[email];
+      accountKeys(selected).forEach(key => {
+        if (state.doc && state.doc.users) delete state.doc.users[key];
+        if (state.accountAccess) delete state.accountAccess[key];
+      });
+      state.users = state.users.filter(u => normalizeEmail(u.email) !== email);
+      if (state.selectedEmail === email) state.selectedEmail = state.users.length ? state.users[0].email : '';
+      renderUsers();
+      renderPermissions();
+      renderPurgeGhostButton();
+
+      const docsOk = docsSaved.some(result => result && result.ok);
+      const tableOk = tableResults.some(Boolean);
+      setStatus(els.saveStatus, docsOk || tableOk ? 'Curățat' : 'Parțial', docsOk || tableOk ? 'ok' : 'warn');
+      els.saveSub.textContent = (docsOk || tableOk)
+        ? 'Am eliminat contul din lista Helper ACL și am curățat urmele găsite în tabele/mirrouri.'
+        : 'Nu am putut confirma ștergerea din toate sursele. Dacă încă apare, trebuie curățat și backend-ul/edge function-ul care livrează lista de useri.';
+    }
+
     function renderUsers(){
       const term = normalizeEmail(els.txtSearch.value);
       const rows = state.users.filter(u => !term || u.email.includes(term) || u.label.toLowerCase().includes(term));
@@ -650,6 +792,7 @@
         return `<button class="user-item${u.email===state.selectedEmail?' active':''}" type="button" data-email="${u.email}"><div class="user-item-top"><div class="name">${u.label}</div><div class="user-badges"><span class="user-chip ${live ? 'online' : 'offline'}"><span class="dot"></span>${live ? 'Online' : 'Offline'}</span><span class="user-chip ${statusKey}">${statusLabel(statusKey)}</span></div></div><div class="meta">${u.email}${u.role ? ' • ' + u.role : ''}${u.user_id ? ' • ' + u.user_id.slice(0,8) : ''}${live ? ' • ' + pageLabelFromPresence(live) : ''}</div></button>`;
       }).join('') : '<div class="empty">Nu am găsit conturi după filtrul introdus.</div>';
       qsa('.user-item[data-email]').forEach(btn => btn.addEventListener('click', async () => { state.selectedEmail = btn.getAttribute('data-email') || ''; renderUsers(); renderPermissions(); }));
+      renderPurgeGhostButton();
     }
 
     function renderPermissions(){
@@ -672,6 +815,7 @@
       qsa('input[type="checkbox"][data-kind="page-view"]').forEach(chk => chk.addEventListener('change', onPageCheckboxChange));
       qsa('input[type="checkbox"][data-kind="page-edit"]').forEach(chk => chk.addEventListener('change', onPageCheckboxChange));
       renderAccountSection();
+      renderPurgeGhostButton();
       applyAclReadOnly();
     }
 
@@ -861,6 +1005,7 @@
     els.btnPageAll.addEventListener('click', () => setAllPages('all'));
     els.btnPageNone.addEventListener('click', () => setAllPages('view'));
     els.btnLogout.addEventListener('click', async () => { try { await sb.auth.signOut(); } catch (_) {} window.location.href = 'login.html'; });
+    if (els.btnPurgeGhost) els.btnPurgeGhost.addEventListener('click', purgeSelectedGhost);
     init();
   })();
   </script>
