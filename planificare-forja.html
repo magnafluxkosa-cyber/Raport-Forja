@@ -527,7 +527,7 @@
       <div class="generator-header">
         <div>
           <div class="generator-title" id="generatorTitle">Generator plan propus</div>
-          <div class="generator-subtitle">Introdu reperele și cantitatea finală cerută. Generatorul propune un draft separat, fără să modifice planificarea live până la confirmare.</div>
+          <div class="generator-subtitle">Introdu reperele și cantitatea finală cerută. Data de livrare manuală este opțională: dacă o lași goală, generatorul calculează automat o dată estimată. Draftul rămâne separat până la confirmare.</div>
         </div>
         <button class="btn secondary" type="button" id="btnGeneratorClose">Închide</button>
       </div>
@@ -548,7 +548,7 @@
           <div class="generator-request-head">
             <div>Reper</div>
             <div>Cantitate finală</div>
-            <div>Data livrare</div>
+            <div>Data livrare manuală</div>
             <div></div>
           </div>
           <div id="generatorRequests"></div>
@@ -1781,6 +1781,18 @@
         readyIso = addDaysIso(readyIso, -1);
       }
       return readyIso;
+    }
+    function addGeneratorPlanDays(startIso, days){
+      let iso = trimText(startIso);
+      let remaining = Math.max(0, Math.round(toNumber(days || 0)));
+      if(!iso) return '';
+      while(remaining > 0){
+        iso = addDaysIso(iso, 1);
+        if(!iso) break;
+        if(isSundayIso(iso) || isHolidayIso(iso)) continue;
+        remaining -= 1;
+      }
+      return iso;
     }
     function diffDaysIso(startIso, endIso){
       const a = trimText(startIso);
@@ -4966,6 +4978,26 @@ function getDefaultPermissions(role){
       });
       return { qty, slotCount };
     }
+    function getGeneratorAssignedFinishIso(requestKey, reper, rows){
+      const cleanRequestKey = trimText(requestKey);
+      const targetReper = normUpper(reper);
+      let finishIso = '';
+      const requestMap = state.generator && state.generator.cellRequestMap ? state.generator.cellRequestMap : Object.create(null);
+      (Array.isArray(rows) ? rows : []).forEach(row => {
+        const rowIso = trimText(row && row.data);
+        if(!rowIso) return;
+        MACHINE_ORDER.forEach(machine => {
+          const cellKey = getGeneratorCellKey(row && row.id, machine);
+          if(requestMap[cellKey] !== cleanRequestKey) return;
+          const slot = row && row.slots ? row.slots[machine] : null;
+          const planQty = Math.max(0, Math.round(toNumber(slot && slot.planificat)));
+          if(planQty <= 0) return;
+          if(targetReper && normUpper(slot && slot.reper) !== targetReper) return;
+          if(!finishIso || rowIso > finishIso) finishIso = rowIso;
+        });
+      });
+      return finishIso;
+    }
     function buildGeneratorPlanProfile(reper){
       const target = normUpper(reper);
       const machineStats = Object.create(null);
@@ -5206,13 +5238,27 @@ function getDefaultPermissions(role){
     }
     function findOrCreateGeneratorRowForDateMachine(rows, targetDate, machine, currentReper, currentTemplateQty, year, month){
       const usage = getGeneratorDateUsage(rows, targetDate, machine, currentReper, currentTemplateQty, year, month);
-      if(usage.sameReperRowIndex >= 0) return { rowIndex: usage.sameReperRowIndex, usage, isNew:false };
-      if(usage.emptyRowIndex >= 0) return { rowIndex: usage.emptyRowIndex, usage, isNew:false };
+      if(usage.sameReperRowIndex >= 0){
+        if(Math.max(0, Math.round(toNumber(usage.maxQty || 0))) <= 0 && Math.max(0, Math.round(toNumber(usage.sameReperPlanQty || 0))) <= 0){
+          return { rowIndex:-1, usage, isNew:false };
+        }
+        return { rowIndex: usage.sameReperRowIndex, usage, isNew:false };
+      }
+      if(usage.emptyRowIndex >= 0){
+        if(Math.max(0, Math.round(toNumber(usage.maxQty || 0))) <= 0) return { rowIndex:-1, usage, isNew:false };
+        return { rowIndex: usage.emptyRowIndex, usage, isNew:false };
+      }
+      if(Math.max(0, Math.round(toNumber(usage.maxQty || 0))) <= 0) return { rowIndex:-1, usage, isNew:false };
       const range = getGeneratorDateRangeForMachine(rows, machine, targetDate);
       if(range.lastIndex < 0) return { rowIndex:-1, usage, isNew:false };
       const newRow = buildGeneratorSplitRow(rows[range.lastIndex]);
       rows.splice(range.lastIndex + 1, 0, newRow);
-      return { rowIndex: range.lastIndex + 1, usage:getGeneratorDateUsage(rows, targetDate, machine, currentReper, currentTemplateQty, year, month), isNew:true };
+      const nextUsage = getGeneratorDateUsage(rows, targetDate, machine, currentReper, currentTemplateQty, year, month);
+      if(Math.max(0, Math.round(toNumber(nextUsage.maxQty || 0))) <= 0){
+        rows.splice(range.lastIndex + 1, 1);
+        return { rowIndex:-1, usage, isNew:false };
+      }
+      return { rowIndex: range.lastIndex + 1, usage:nextUsage, isNew:true };
     }
     function getGeneratorCandidateDateIndexes(rows, machine, options){
       const opts = options && typeof options === 'object' ? options : {};
@@ -5247,7 +5293,8 @@ function getDefaultPermissions(role){
         merged[requestKey].qty += qty;
       });
       return Object.values(merged).map(item => {
-        item.readyByIso = item.deliveryIso ? getGeneratorReadyByIso(item.deliveryIso, 2) : '';
+        item.manualDeliveryIso = item.deliveryIso || '';
+        item.readyByIso = item.manualDeliveryIso ? getGeneratorReadyByIso(item.manualDeliveryIso, 2) : '';
         return item;
       }).sort((a,b) => {
         const ra = trimText(a.readyByIso) || '9999-12-31';
@@ -5298,7 +5345,7 @@ function getDefaultPermissions(role){
         return '<div class="generator-request-row" data-request-id="' + escapeHtml(item.id) + '">' +
           '<input type="text" list="repereList" data-generator-request-field="reper" value="' + escapeHtml(item.reper || '') + '" placeholder="ex: 418-2091">' +
           '<input type="number" min="0" step="1" data-generator-request-field="qty" value="' + escapeHtml(item.qty || '') + '" placeholder="0">' +
-          '<input type="text" inputmode="numeric" data-generator-request-field="delivery" value="' + escapeHtml(isoToDisplay(item.deliveryIso || '')) + '" placeholder="zz.ll.aaaa">' +
+          '<input type="text" inputmode="numeric" data-generator-request-field="delivery" value="' + escapeHtml(isoToDisplay(item.deliveryIso || '')) + '" placeholder="manual sau gol pentru automat">' +
           '<button class="generator-remove" type="button" data-generator-remove="' + escapeHtml(item.id) + '"' + (state.generator.requests.length <= 1 ? ' disabled' : '') + ' title="Șterge rândul">×</button>' +
         '</div>';
       }).join('');
@@ -5360,6 +5407,8 @@ function getDefaultPermissions(role){
       if(summary.machineLabel) details.push(summary.machineLabel);
       if(summary.templateQty > 0) details.push('model ' + roNumber(summary.templateQty) + '/zi');
       if(summary.avgRealQty > 0) details.push('medie ' + roNumber(summary.avgRealQty) + '/zi');
+      if(summary.manualDeliveryIso) details.push('livrare manuală');
+      else if(summary.autoDeliveryIso) details.push('livrare automată');
       if(summary.readyByIso) details.push('gata până la ' + isoToDisplay(summary.readyByIso));
       return '<tr>' +
         '<td class="left">' + escapeHtml(summary.reper) + '</td>' +
@@ -5400,7 +5449,11 @@ function getDefaultPermissions(role){
       state.generator.summary = requests.map(req => {
         const profile = buildGeneratorProfile(req.reper, state.activeYear, state.generator.month);
         const assigned = getGeneratorAssignedTotals(req.requestKey || req.id, req.reper, draftRows);
-        const relevantSourceRows = req.readyByIso ? getRowsUpToIso(sourceRows, req.readyByIso) : sourceRows;
+        const finishIso = getGeneratorAssignedFinishIso(req.requestKey || req.id, req.reper, draftRows);
+        const autoDeliveryIso = !req.manualDeliveryIso && finishIso ? addGeneratorPlanDays(finishIso, 2) : '';
+        const deliveryIsoUsed = req.manualDeliveryIso || autoDeliveryIso || '';
+        const readyByIsoUsed = req.manualDeliveryIso ? (req.readyByIso || '') : (finishIso || '');
+        const relevantSourceRows = readyByIsoUsed ? getRowsUpToIso(sourceRows, readyByIsoUsed) : sourceRows;
         const alreadyPlannedQty = sumPlannedQtyForReper(relevantSourceRows, req.reper);
         const draftQty = Math.max(0, Math.round(assigned.qty || 0));
         const slotCount = Math.max(0, Math.round(assigned.slotCount || 0));
@@ -5411,7 +5464,7 @@ function getDefaultPermissions(role){
         const recommendedSlots = recommendedBase > 0 ? Math.ceil(req.qty / recommendedBase) : 0;
         const extraSafeSlots = recommendedSlots > 0 ? Math.max(0, recommendedSlots - slotCount) : 0;
         const uncoveredQty = Math.max(0, req.qty - draftQty);
-        return { reper:req.reper, deliveryIso:req.deliveryIso || '', readyByIso:req.readyByIso || '', requestQty:req.qty, alreadyPlannedQty, draftQty, slotCount, templateQty, avgRealQty, recommendedSlots, extraSafeSlots, uncoveredQty, hasHistory:!!profile.hasHistory, machineLabel };
+        return { reper:req.reper, deliveryIso:deliveryIsoUsed, manualDeliveryIso:req.manualDeliveryIso || '', autoDeliveryIso:autoDeliveryIso || '', readyByIso:readyByIsoUsed || '', finishIso:finishIso || '', requestQty:req.qty, alreadyPlannedQty, draftQty, slotCount, templateQty, avgRealQty, recommendedSlots, extraSafeSlots, uncoveredQty, hasHistory:!!profile.hasHistory, machineLabel };
       });
       renderGeneratorSummary();
       return state.generator.summary;
