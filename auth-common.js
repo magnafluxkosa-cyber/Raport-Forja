@@ -384,6 +384,78 @@
 
 
   async function getAccountStatus(user){
+    const email = normalizeEmail(user && user.email);
+    const userId = String(user && user.id || '').trim();
+    if(!user || (!email && !userId)){
+      return { is_active:true, is_banned:false, note:'', ban_reason:'' };
+    }
+
+    function normalizeStatusRow(row){
+      if(!row || typeof row !== 'object'){
+        return null;
+      }
+      const note = String(row.note || row.ban_reason || '').trim();
+      return {
+        is_active: row.is_active !== false,
+        is_banned: row.is_banned === true,
+        note: note,
+        ban_reason: note,
+        email: normalizeEmail(row.email || email),
+        user_id: String(row.user_id || userId || '').trim()
+      };
+    }
+
+    try {
+      const sb = getSupabaseClient();
+      if(userId){
+        const byUserId = await maybeSelect(
+          sb.from('user_account_access')
+            .select('user_id,email,is_active,is_banned,note')
+            .eq('user_id', userId)
+            .maybeSingle()
+        );
+        const normalizedByUserId = normalizeStatusRow(byUserId);
+        if(normalizedByUserId){
+          return normalizedByUserId;
+        }
+      }
+      if(email){
+        const byEmail = await maybeSelect(
+          sb.from('user_account_access')
+            .select('user_id,email,is_active,is_banned,note')
+            .ilike('email', email)
+            .maybeSingle()
+        );
+        const normalizedByEmail = normalizeStatusRow(byEmail);
+        if(normalizedByEmail){
+          return normalizedByEmail;
+        }
+      }
+
+      const mirror = await readLatestRfDocument(sb, 'user_account_access_v1');
+      if(mirror && mirror.users && typeof mirror.users === 'object'){
+        const direct = normalizeStatusRow(mirror.users[email] || mirror.users[userId] || null);
+        if(direct){
+          return direct;
+        }
+        const entries = Object.keys(mirror.users);
+        for(let i = 0; i < entries.length; i += 1){
+          const key = entries[i];
+          const row = mirror.users[key];
+          const rowEmail = normalizeEmail(row && row.email);
+          const rowUserId = String(row && row.user_id || '').trim();
+          if((email && rowEmail === email) || (userId && rowUserId === userId)){
+            const normalizedMirror = normalizeStatusRow(row);
+            if(normalizedMirror){
+              return normalizedMirror;
+            }
+          }
+        }
+      }
+    } catch (_) {
+      // fallback safe open when status source is unavailable
+    }
+
     return { is_active:true, is_banned:false, note:'', ban_reason:'' };
   }
 
@@ -735,5 +807,149 @@
   }
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start, { once:true });
+  else start();
+})();
+
+
+/* LIVE USER PRESENCE */
+(function(){
+  'use strict';
+
+  const CHANNEL_NAME = 'rf-online-users';
+  const HEARTBEAT_MS = 25000;
+  let started = false;
+  let channel = null;
+  let timer = null;
+  let lastSignature = '';
+  let tabId = null;
+
+  function getTabId(){
+    if(tabId) return tabId;
+    tabId = 'tab-' + Math.random().toString(36).slice(2, 10) + '-' + Date.now().toString(36);
+    return tabId;
+  }
+
+  function normalizeEmail(value){ return String(value || '').trim().toLowerCase(); }
+
+  function pageKey(){
+    try {
+      const path = window.location.pathname || '';
+      const name = path.split('/').pop() || 'index.html';
+      return String(name).replace(/\.html$/i, '').toLowerCase() || 'index';
+    } catch (_) {
+      return 'index';
+    }
+  }
+
+  function pageHref(){
+    try {
+      const path = window.location.pathname || '';
+      return path.split('/').pop() || 'index.html';
+    } catch (_) {
+      return 'index.html';
+    }
+  }
+
+  async function getUser(){
+    try {
+      if(!window.ERPAuth || typeof window.ERPAuth.getSession !== 'function') return null;
+      const session = await window.ERPAuth.getSession();
+      return session && session.user ? session.user : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function buildMeta(user){
+    const email = normalizeEmail(user && user.email);
+    const userId = String(user && user.id || '').trim();
+    const key = pageKey();
+    const href = pageHref();
+    const title = String(document.title || key || href || '').trim();
+    return {
+      email: email,
+      user_id: userId,
+      page_key: key,
+      page_href: href,
+      page_title: title,
+      tab_id: getTabId(),
+      is_hidden: document.hidden === true,
+      last_seen: new Date().toISOString()
+    };
+  }
+
+  function signatureFor(meta){
+    return [meta.email, meta.user_id, meta.page_key, meta.page_href, meta.tab_id, meta.is_hidden ? '1' : '0'].join('|');
+  }
+
+  async function trackNow(force){
+    try {
+      const user = await getUser();
+      if(!user || !channel) return;
+      const meta = buildMeta(user);
+      const signature = signatureFor(meta);
+      if(!force && signature === lastSignature && document.hidden === true) return;
+      lastSignature = signature;
+      await channel.track(meta);
+    } catch (_) {}
+  }
+
+  async function untrackNow(){
+    try {
+      if(channel && typeof channel.untrack === 'function') {
+        await channel.untrack();
+      }
+    } catch (_) {}
+  }
+
+  async function start(){
+    if(started) return;
+    started = true;
+    try {
+      if(!window.ERPAuth || typeof window.ERPAuth.getSupabaseClient !== 'function') return;
+      const user = await getUser();
+      if(!user) return;
+      const sb = window.ERPAuth.getSupabaseClient();
+      const presenceKey = normalizeEmail(user.email) || String(user.id || '') || getTabId();
+      channel = sb.channel(CHANNEL_NAME, { config: { presence: { key: presenceKey } } });
+      channel.subscribe(async function(status){
+        if(status === 'SUBSCRIBED'){
+          await trackNow(true);
+          try { if(timer) clearInterval(timer); } catch (_) {}
+          timer = window.setInterval(function(){ trackNow(false); }, HEARTBEAT_MS);
+        }
+      });
+
+      window.addEventListener('focus', function(){ trackNow(true); });
+      window.addEventListener('pageshow', function(){ trackNow(true); });
+      document.addEventListener('visibilitychange', function(){ trackNow(true); });
+      window.addEventListener('pagehide', function(){ untrackNow(); });
+      window.addEventListener('beforeunload', function(){ untrackNow(); });
+    } catch (_) {}
+  }
+
+  function stop(){
+    try { if(timer) clearInterval(timer); } catch (_) {}
+    timer = null;
+    untrackNow();
+    try {
+      if(channel && window.ERPAuth && typeof window.ERPAuth.getSupabaseClient === 'function') {
+        window.ERPAuth.getSupabaseClient().removeChannel(channel);
+      }
+    } catch (_) {}
+    channel = null;
+    started = false;
+  }
+
+  if(window.ERPAuth){
+    const originalSignOut = window.ERPAuth.signOut;
+    window.ERPAuth.stopLivePresence = stop;
+    window.ERPAuth.signOut = async function(options){
+      stop();
+      return originalSignOut.call(this, options);
+    };
+  }
+
+  if(document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start, { once:true });
   else start();
 })();
