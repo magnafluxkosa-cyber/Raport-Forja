@@ -2389,6 +2389,92 @@ function getDefaultPermissions(role){
       };
     }
 
+    function buildTransportRulesFromRawRules(rules){
+      return (Array.isArray(rules) ? rules : []).map(rule => {
+        const qtyByReper = Object.create(null);
+        Object.keys(rule && rule.qtyByReper || {}).forEach(reper => {
+          const key = getCanonicalDeliveryReperKey(reper) || normalizeDeliveryReperLoose(reper);
+          const qty = Math.max(0, Math.round(toNumber(rule.qtyByReper[reper])));
+          if(key && qty > 0) qtyByReper[key] = qty;
+        });
+        return {
+          id: trimText(rule && rule.id) || ('transport-' + Math.random().toString(36).slice(2)),
+          title: trimText(rule && rule.title) || '-',
+          qtyByReper,
+          reperKeys: Object.keys(qtyByReper)
+        };
+      }).filter(rule => rule.reperKeys.length);
+    }
+    function buildTransportRulesFromHelperRows(rows){
+      const sortedRows = (Array.isArray(rows) ? rows.slice() : []).sort((a, b) => {
+        const orderA = Math.max(0, Math.round(toNumber(pick(a, ['ordine','ORDINE','sort_order','SORT_ORDER','sortOrder','order_index']) || 0)));
+        const orderB = Math.max(0, Math.round(toNumber(pick(b, ['ordine','ORDINE','sort_order','SORT_ORDER','sortOrder','order_index']) || 0)));
+        if(orderA !== orderB) return orderA - orderB;
+        const idA = Math.max(0, Math.round(toNumber(pick(a, ['id','ID','row_no','nr']) || 0)));
+        const idB = Math.max(0, Math.round(toNumber(pick(b, ['id','ID','row_no','nr']) || 0)));
+        return idA - idB;
+      });
+      const groups = Object.create(null);
+      let currentGroupLabel = '';
+      sortedRows.forEach((row, index) => {
+        if(!isTruthyActive(pick(row, ['activ','ACTIV','is_active','IS_ACTIVE','active','ACTIVE']))) return;
+        const reperRaw = trimText(pick(row, ['reper','REPER','reper_individual','REPER_INDIVIDUAL','item_key','ITEM_KEY']));
+        if(!reperRaw) return;
+        let groupLabel = trimText(pick(row, ['grup_reper','GRUP_REPER','group_reper','GROUP_REPER','grup','GRUP','group','GROUP']));
+        if(groupLabel) currentGroupLabel = groupLabel;
+        else if(currentGroupLabel) groupLabel = currentGroupLabel;
+        else groupLabel = reperRaw;
+        const qty = Math.max(0, Math.round(toNumber(pick(row, ['cantitate_transport','CANTITATE_TRANSPORT','qty_transport','QTY_TRANSPORT','cantitate','CANTITATE']) || 0)));
+        if(qty <= 0) return;
+        const reperKey = getCanonicalDeliveryReperKey(reperRaw) || normalizeDeliveryReperLoose(reperRaw);
+        if(!reperKey) return;
+        const groupKey = normalizeDeliveryReperLoose(groupLabel || reperRaw) || reperKey;
+        if(!groups[groupKey]){
+          groups[groupKey] = {
+            id: 'helper-' + groupKey.toLowerCase(),
+            title: trimText(groupLabel) || reperRaw,
+            qtyByReper: Object.create(null),
+            reperKeys: [],
+            order: index
+          };
+        }
+        if(!Object.prototype.hasOwnProperty.call(groups[groupKey].qtyByReper, reperKey)){
+          groups[groupKey].reperKeys.push(reperKey);
+        }
+        groups[groupKey].qtyByReper[reperKey] = qty;
+      });
+      return Object.values(groups)
+        .sort((a, b) => Math.max(0, Math.round(toNumber(a.order || 0))) - Math.max(0, Math.round(toNumber(b.order || 0))))
+        .map(group => ({
+          id: group.id,
+          title: trimText(group.title) || '-',
+          qtyByReper: group.qtyByReper,
+          reperKeys: Array.isArray(group.reperKeys) ? group.reperKeys.slice() : Object.keys(group.qtyByReper || {})
+        }))
+        .filter(rule => Array.isArray(rule.reperKeys) && rule.reperKeys.length);
+    }
+    async function loadTransportRulesFromHelper(forceRefresh){
+      if(!forceRefresh && Array.isArray(state.generator.transportRulesCache) && state.generator.transportRulesCache.length){
+        return state.generator.transportRulesCache;
+      }
+      let rules = [];
+      try{
+        if(state.supabase){
+          const res = await state.supabase.from('rf_helper_repere_ambalare').select('*');
+          if(res.error) throw res.error;
+          rules = buildTransportRulesFromHelperRows(res.data || []);
+        }
+      }catch(err){
+        console.error('Nu am putut încărca regulile de transport din helper-data:', err);
+        rules = [];
+      }
+      if(!rules.length){
+        rules = buildTransportRulesFromRawRules(TRANSPORT_TRUCK_RULES);
+      }
+      state.generator.transportRulesCache = rules;
+      return rules;
+    }
+
     async function loadSteelStock(forceRefresh){
       if(!state.supabase) return { map:Object.create(null), rows:[], source:'-', ok:false, period:'', baseYear:0, baseMonth:0, startIso:'', startLabel:'' };
       const docs = await queryDocsByKeys(STEEL_DOC_KEYS);
@@ -5355,9 +5441,10 @@ function getDefaultPermissions(role){
       if(!state.generator.month){ state.generator.month = String(state.activeYear || '') === CURRENT_YEAR ? (TODAY.getMonth() + 1) : 1; }
       renderGeneratorMonthOptions();
     }
-    function openGeneratorModal(){
+    async function openGeneratorModal(){
       if(!state.canEdit) return;
       ensureGeneratorDefaults();
+      await loadTransportRulesFromHelper(true);
       state.generator.isOpen = true;
       if(els.generatorBackdrop){ els.generatorBackdrop.classList.add('is-open'); els.generatorBackdrop.setAttribute('aria-hidden','false'); }
       renderGeneratorRequests();
@@ -5433,15 +5520,7 @@ function getDefaultPermissions(role){
     }
     function getNormalizedTransportRules(){
       if(Array.isArray(state.generator.transportRulesCache) && state.generator.transportRulesCache.length) return state.generator.transportRulesCache;
-      state.generator.transportRulesCache = TRANSPORT_TRUCK_RULES.map(rule => {
-        const qtyByReper = Object.create(null);
-        Object.keys(rule && rule.qtyByReper || {}).forEach(reper => {
-          const key = getCanonicalDeliveryReperKey(reper) || normalizeDeliveryReperLoose(reper);
-          const qty = Math.max(0, Math.round(toNumber(rule.qtyByReper[reper])));
-          if(key && qty > 0) qtyByReper[key] = qty;
-        });
-        return { id:trimText(rule && rule.id) || ('transport-' + Math.random().toString(36).slice(2)), title:trimText(rule && rule.title) || '-', qtyByReper, reperKeys:Object.keys(qtyByReper) };
-      }).filter(rule => rule.reperKeys.length);
+      state.generator.transportRulesCache = buildTransportRulesFromRawRules(TRANSPORT_TRUCK_RULES);
       return state.generator.transportRulesCache;
     }
     function getTransportRuleForReper(reper){
@@ -5676,7 +5755,8 @@ function getDefaultPermissions(role){
       renderGeneratorDeliverySummary();
       return state.generator.summary;
     }
-    function generateDraftPlan(){
+    async function generateDraftPlan(){
+      await loadTransportRulesFromHelper(true);
       const year = String(state.activeYear || '');
       const month = Number(state.generator.month || 0);
       const requests = normalizeGeneratorRequests(state.generator.requests);
@@ -6324,10 +6404,10 @@ function addRow(){
         await refreshLiveAndSupport(true, uiState);
       });
       els.btnSave.addEventListener('click', function(){ saveNow(); });
-      if(els.btnGenerator) els.btnGenerator.addEventListener('click', function(){ openGeneratorModal(); });
+      if(els.btnGenerator) els.btnGenerator.addEventListener('click', async function(){ await openGeneratorModal(); });
       if(els.btnGeneratorClose) els.btnGeneratorClose.addEventListener('click', function(){ closeGeneratorModal(); });
       if(els.btnGeneratorCancel) els.btnGeneratorCancel.addEventListener('click', function(){ closeGeneratorModal(); });
-      if(els.btnGeneratorRegenerate) els.btnGeneratorRegenerate.addEventListener('click', function(){ generateDraftPlan(); });
+      if(els.btnGeneratorRegenerate) els.btnGeneratorRegenerate.addEventListener('click', async function(){ await generateDraftPlan(); });
       if(els.btnGeneratorApply) els.btnGeneratorApply.addEventListener('click', function(){ applyGeneratorDraft(); });
       if(els.btnGeneratorAddRequest) els.btnGeneratorAddRequest.addEventListener('click', function(){
         state.generator.requests.push(buildDefaultGeneratorRequest(''));
