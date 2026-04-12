@@ -5093,9 +5093,15 @@ function getDefaultPermissions(role){
       if(isGeneratorHolidayRow(row)) return false;
       return isGeneratorSaturdayRow(row);
     }
-    function getLastOccupiedRowIndexForMachine(rows, machine){
+    function getLastOccupiedRowIndexForMachine(rows, machine, options){
+      const opts = options && typeof options === 'object' ? options : {};
+      const maxIso = trimText(opts.maxIso);
+      const minIso = trimText(opts.minIso);
       let lastIndex = -1;
       (Array.isArray(rows) ? rows : []).forEach((row, index) => {
+        const rowIso = trimText(row && row.data);
+        if(minIso && rowIso && rowIso < minIso) return;
+        if(maxIso && rowIso && rowIso > maxIso) return;
         const slot = row && row.slots ? (row.slots[machine] || normalizePlanSlot()) : normalizePlanSlot();
         if(trimText(slot.reper) || Math.max(0, Math.round(toNumber(slot.planificat))) > 0){
           lastIndex = index;
@@ -5396,8 +5402,8 @@ function getDefaultPermissions(role){
         const assigned = getGeneratorAssignedTotals(req.requestKey || req.id, req.reper, draftRows);
         const relevantSourceRows = req.readyByIso ? getRowsUpToIso(sourceRows, req.readyByIso) : sourceRows;
         const alreadyPlannedQty = sumPlannedQtyForReper(relevantSourceRows, req.reper);
-        const draftQty = assigned.qty || sumPlannedQtyForReper(req.readyByIso ? getRowsUpToIso(draftRows, req.readyByIso) : draftRows, req.reper);
-        const slotCount = assigned.slotCount || countPlannedSlotsForReper(req.readyByIso ? getRowsUpToIso(draftRows, req.readyByIso) : draftRows, req.reper);
+        const draftQty = Math.max(0, Math.round(assigned.qty || 0));
+        const slotCount = Math.max(0, Math.round(assigned.slotCount || 0));
         const machineLabel = profile.machineOrder[0] || '';
         const templateQty = machineLabel ? Math.max(0, Math.round((profile.planProfile[machineLabel] && profile.planProfile[machineLabel].modeQty) || profile.bestTemplateQty || 0)) : Math.max(0, Math.round(profile.bestTemplateQty || 0));
         const avgRealQty = machineLabel ? Math.max(0, Math.round((profile.actualProfile[machineLabel] && profile.actualProfile[machineLabel].reliableAvgQty) || (profile.actualProfile[machineLabel] && profile.actualProfile[machineLabel].avgQty) || profile.bestActualAvg || 0)) : Math.max(0, Math.round(profile.bestActualAvg || 0));
@@ -5425,14 +5431,11 @@ function getDefaultPermissions(role){
       const generatedCellKeys = Object.create(null);
       const cellRequestMap = Object.create(null);
       state.generator.templateQtyCache = Object.create(null);
-      const cumulativeDemandByReper = Object.create(null);
 
       requests.forEach(req => {
         const reperKey = normUpper(req.reper);
-        cumulativeDemandByReper[reperKey] = (cumulativeDemandByReper[reperKey] || 0) + Math.max(0, req.qty);
         const deadlineIso = trimText(req.readyByIso);
-        const currentRowsUpToDeadline = deadlineIso ? getRowsUpToIso(draftRows, deadlineIso) : draftRows;
-        let remaining = Math.max(0, cumulativeDemandByReper[reperKey] - sumPlannedQtyForReper(currentRowsUpToDeadline, req.reper));
+        let remaining = Math.max(0, Math.round(toNumber(req.qty)));
         if(remaining <= 0) return;
 
         const profile = buildGeneratorProfile(req.reper, year, month);
@@ -5445,7 +5448,7 @@ function getDefaultPermissions(role){
           const templateQty = Math.max(0, Math.round(planStat.modeQty || actualStat.reliableAvgQty || actualStat.avgQty || profile.bestTemplateQty || profile.bestActualAvg || 0));
           if(templateQty <= 0) continue;
 
-          let lastOccupiedIndex = getLastOccupiedRowIndexForMachine(draftRows, machine);
+          let lastOccupiedIndex = getLastOccupiedRowIndexForMachine(draftRows, machine, { maxIso: deadlineIso || '' });
 
           const phaseConfigs = [
             { includeSaturday:false },
@@ -5501,11 +5504,12 @@ function getDefaultPermissions(role){
       const draftRows = Array.isArray(state.generator.draftRows) ? state.generator.draftRows : [];
       if(!draftRows.length){ window.alert('Generează mai întâi draftul pe care vrei să-l aplici.'); return; }
       const year = String(state.activeYear || '');
-      const draftMap = new Map(draftRows.map(row => [String(row.id), normalizePlanRow(row, 0)]));
-      state.rows = reindexRowsInDisplayOrder(sortRowsStable(state.rows.map(row => {
-        if(String(row && row.an || '') !== year) return row;
-        return draftMap.get(String(row.id)) || row;
-      })));
+      const nextRows = [];
+      (Array.isArray(state.rows) ? state.rows : []).forEach(row => {
+        if(String(row && row.an || '') !== year) nextRows.push(normalizePlanRow(row, 0));
+      });
+      draftRows.forEach(row => { nextRows.push(normalizePlanRow(row, 0)); });
+      state.rows = reindexRowsInDisplayOrder(sortRowsStable(nextRows));
       renderFilters();
       updateRepereDatalist();
       state.hasPendingLocalChanges = true;
