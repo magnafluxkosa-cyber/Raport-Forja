@@ -456,6 +456,8 @@
 </style>
 
 <link rel="stylesheet" href="./kad-nav-shell.css">
+<style id="rf-helper-data-acl-prehide">html[data-rf-prehide="1"] body{visibility:hidden !important;}html[data-rf-prehide="1"] body > *{visibility:hidden !important;}html[data-rf-denied="1"] body{visibility:visible !important;}</style>
+<script>document.documentElement.setAttribute('data-rf-prehide','1');</script>
 </head>
 <body>
   <div class="app">
@@ -466,8 +468,7 @@
       </div>
       <div class="top-actions">
         <a class="btn secondary" href="index.html">Înapoi la Index</a>
-        <a class="btn secondary" href="helper-acl.html">Permisiuni conturi</a>
-        <button class="btn soft" id="btnReload" type="button">Reîncarcă</button>
+                <button class="btn soft" id="btnReload" type="button">Reîncarcă</button>
         <button class="btn" id="btnSync" type="button">Sync cloud</button>
         <button class="btn secondary" id="btnLogout" type="button">Logout</button>
       </div>
@@ -582,6 +583,7 @@
 
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="rf-config.js"></script>
+  <script src="auth-common.js"></script>
   <script>
     (function(){
       'use strict';
@@ -704,6 +706,13 @@
 
       function updateFooter(text){
         els.footerInfo.textContent = text;
+      }
+
+      function showPage(){
+        try {
+          document.documentElement.removeAttribute('data-rf-prehide');
+          document.documentElement.removeAttribute('data-rf-denied');
+        } catch (_) {}
       }
 
       function escapeHtml(value){
@@ -1445,8 +1454,12 @@
       }
 
       function renderRoleState(){
-        setStatus(els.roleStatus, 'acces total', 'ok');
-        els.roleSub.textContent = 'Toate conturile autentificate au acces complet în helper-data.';
+        const roleText = String(state.role || 'viewer').toLowerCase();
+        const canWrite = !!state.canEdit;
+        setStatus(els.roleStatus, roleText || '-', canWrite ? 'ok' : 'warn');
+        els.roleSub.textContent = canWrite
+          ? 'Contul curent poate modifica helper-data.'
+          : 'Contul curent are doar drept de vizualizare în helper-data.';
       }
 
       function renderAll(){
@@ -1506,14 +1519,61 @@
       }
 
       async function determineRole(uid, email) {
-        return 'admin';
+        try {
+          if (window.ERPAuth && typeof window.ERPAuth.resolveUserRole === 'function') {
+            return String(await window.ERPAuth.resolveUserRole({ id: uid || '', email: email || '' }) || 'viewer').toLowerCase();
+          }
+        } catch (_) {}
+
+        const fromProfiles = await getRoleFromProfiles(uid, email);
+        if (fromProfiles) return String(fromProfiles).toLowerCase();
+
+        const fromAcl = await getRoleFromAcl(email);
+        if (fromAcl) return String(fromAcl).toLowerCase();
+
+        return 'viewer';
       }
 
       async function ensureSession(){
         try {
+          if (window.ERPAuth && typeof window.ERPAuth.requireAuth === 'function') {
+            const auth = await window.ERPAuth.requireAuth({ next: 'helper-data.html', redirectToLogin: true });
+            if (!auth || !auth.user) {
+              return false;
+            }
+
+            state.session = auth.session || { user: auth.user };
+            state.user = auth.user;
+            state.email = state.user && state.user.email ? String(state.user.email).toLowerCase() : '';
+            state.role = String(auth.role || 'viewer').toLowerCase();
+
+            const access = await window.ERPAuth.getPageAccess('helper-data', { user: auth.user, role: state.role });
+            const perms = access && access.permissions ? access.permissions : null;
+            if (perms) {
+              if (perms.can_view === false) {
+                setStatus(els.authStatus, 'Acces restricționat', 'err');
+                els.authSub.textContent = 'Nu ai acces în helper-data.';
+                setStatus(els.roleStatus, state.role || '-', 'err');
+                els.roleSub.textContent = 'Accesul la helper-data este blocat pentru acest cont.';
+                updateFooter('Acces blocat în helper-data.');
+                if (window.ERPAuth && typeof window.ERPAuth.renderAccessDeniedPage === 'function') {
+                  window.ERPAuth.renderAccessDeniedPage('HELPER-DATA', 'Nu ai acces în această pagină. Cere acces de la administrator.');
+                }
+                return false;
+              }
+              state.canEdit = !!(perms.can_edit === true || perms.can_add === true || perms.can_delete === true || perms.can_import === true);
+            } else {
+              state.canEdit = ['admin','editor','operator'].includes(state.role);
+            }
+
+            renderAuthState();
+            renderRoleState();
+            showPage();
+            return true;
+          }
+
           const response = await supabase.auth.getSession();
           const session = response && response.data ? response.data.session : null;
-
           state.session = session;
           state.user = session ? session.user : null;
           state.email = state.user && state.user.email ? String(state.user.email).toLowerCase() : '';
@@ -1528,23 +1588,10 @@
             return false;
           }
 
-
-state.role = await determineRole(state.user ? state.user.id : '', state.email);
-state.canEdit = ['admin','editor','operator'].includes(String(state.role || '').toLowerCase());
-try {
-  if (window.ERPAuth && typeof window.ERPAuth.getPageAccess === 'function') {
-    const access = await window.ERPAuth.getPageAccess('helper-data', { user: state.user, role: state.role });
-    const perms = access && access.permissions ? access.permissions : null;
-    if (perms) {
-      if (perms.can_view === false) {
-        window.location.href = 'index.html';
-        return false;
-      }
-      state.canEdit = !!(perms.can_edit === true || perms.can_add === true || perms.can_delete === true || perms.can_import === true);
-    }
-  }
-} catch (_e) {}
+          state.role = await determineRole(state.user ? state.user.id : '', state.email);
+          state.canEdit = ['admin','editor','operator'].includes(String(state.role || '').toLowerCase());
           renderRoleState();
+          showPage();
           return true;
         } catch (error) {
           setStatus(els.authStatus, 'Eroare', 'err');
