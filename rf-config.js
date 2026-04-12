@@ -1197,17 +1197,32 @@ function getControlCatalogForPage(pageKey) {
         if (!document.body) return false;
         var pageName = PAGE_MAP[String(pageKey || '').trim()] || String(pageKey || '').trim() || 'această pagină';
         var safeMessage = String(message || 'Nu ai acces în această pagină.');
-        document.body.innerHTML = '' +
-          '<div style="min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px;background:#c8def0;font-family:Arial,Helvetica,sans-serif;color:#0d2240;">' +
-            '<div style="width:min(640px,100%);background:#d7e6f4;border:2px solid #1b1b1b;border-radius:18px;padding:28px;box-shadow:0 1px 0 rgba(0,0,0,.06);text-align:center;">' +
-              '<div style="font-size:32px;font-weight:800;line-height:1.1;margin:0 0 12px;">Acces restricționat</div>' +
-              '<div style="font-size:18px;font-weight:700;margin:0 0 10px;">' + pageName + '</div>' +
-              '<div style="font-size:16px;line-height:1.5;margin:0 0 22px;">' + safeMessage + '</div>' +
-              '<div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap;">' +
-                '<a href="login.html" style="text-decoration:none;display:inline-flex;align-items:center;justify-content:center;min-height:46px;padding:0 18px;border:2px solid #1b1b1b;border-radius:12px;background:#fff;color:#0d2240;font-weight:700;">Schimbă utilizatorul</a>' +
-              '</div>' +
-            '</div>' +
-          '</div>' ;
+        var outer = document.createElement('div');
+        outer.setAttribute('style', 'min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px;background:#c8def0;font-family:Arial,Helvetica,sans-serif;color:#0d2240;');
+        var card = document.createElement('div');
+        card.setAttribute('style', 'width:min(640px,100%);background:#d7e6f4;border:2px solid #1b1b1b;border-radius:18px;padding:28px;box-shadow:0 1px 0 rgba(0,0,0,.06);text-align:center;');
+        var title = document.createElement('div');
+        title.setAttribute('style', 'font-size:32px;font-weight:800;line-height:1.1;margin:0 0 12px;');
+        title.textContent = 'Acces restricționat';
+        var page = document.createElement('div');
+        page.setAttribute('style', 'font-size:18px;font-weight:700;margin:0 0 10px;');
+        page.textContent = pageName;
+        var msg = document.createElement('div');
+        msg.setAttribute('style', 'font-size:16px;line-height:1.5;margin:0 0 22px;');
+        msg.textContent = safeMessage;
+        var actions = document.createElement('div');
+        actions.setAttribute('style', 'display:flex;gap:12px;justify-content:center;flex-wrap:wrap;');
+        var switchUser = document.createElement('a');
+        switchUser.href = 'login.html';
+        switchUser.setAttribute('style', 'text-decoration:none;display:inline-flex;align-items:center;justify-content:center;min-height:46px;padding:0 18px;border:2px solid #1b1b1b;border-radius:12px;background:#fff;color:#0d2240;font-weight:700;');
+        switchUser.textContent = 'Schimbă utilizatorul';
+        actions.appendChild(switchUser);
+        card.appendChild(title);
+        card.appendChild(page);
+        card.appendChild(msg);
+        card.appendChild(actions);
+        outer.appendChild(card);
+        document.body.replaceChildren(outer);
         return true;
       } catch (_) {
         return false;
@@ -1857,6 +1872,7 @@ async function applyDomPermissions(pageKey, root, options) {
   window.RF_ACL.defaultPageAccessFromRole = defaultPageAccessFromRole;
   window.RF_ACL.resolvePageAccess = resolvePageAccess;
   window.RF_ACL.canViewPage = canViewPage;
+  window.RF_ACL.renderAccessDeniedPage = renderAccessDeniedPage;
 
   if (!window.__RF_AUTO_ACL_GUARD__) {
     window.__RF_AUTO_ACL_GUARD__ = true;

@@ -480,3 +480,286 @@
 
   ensureRegistry(start);
 })();
+
+
+(function(){
+  'use strict';
+  if (window.__RF_SECURITY_HARDENING__) return;
+  window.__RF_SECURITY_HARDENING__ = true;
+
+  var PAGE_KEY = (function(){
+    try {
+      var path = window.location.pathname || '';
+      var name = path.split('/').pop() || 'index.html';
+      return String(name).replace(/\.html$/i, '').toLowerCase() || 'index';
+    } catch (_) {
+      return 'index';
+    }
+  })();
+
+  var PAGE_CONFIGS = {
+    'stoc-matrite': {
+      disableSelectors: ['#btnSave', '.manualSel', '.hInp', '.rowEditInp', '.rowEditSel', '.rowBtn', 'tr[data-row-open]'],
+      allowSelectors: ['#selReper', '#btnRefresh', '.back-btn', '.actions a', '#repereList']
+    },
+    'utilaje-matrite': {
+      disableSelectors: ['#btnSave', 'input[data-i]'],
+      allowSelectors: ['.back-btn', '.actions a']
+    }
+  };
+
+  function ensurePendingStyle(){
+    if (document.getElementById('rf-security-pending-style')) return;
+    var style = document.createElement('style');
+    style.id = 'rf-security-pending-style';
+    style.textContent = '' +
+      'html.rf-security-pending body{visibility:hidden !important;}' +
+      'html.rf-security-pending body > *{visibility:hidden !important;}' +
+      'html.rf-security-ready body{visibility:visible !important;}';
+    (document.head || document.documentElement).appendChild(style);
+  }
+
+  function setPending(enabled){
+    try {
+      ensurePendingStyle();
+      if (!document.documentElement) return;
+      if (enabled) {
+        document.documentElement.classList.add('rf-security-pending');
+        document.documentElement.classList.remove('rf-security-ready');
+      } else {
+        document.documentElement.classList.remove('rf-security-pending');
+        document.documentElement.classList.add('rf-security-ready');
+      }
+    } catch (_) {}
+  }
+
+  if (PAGE_KEY !== 'index' && PAGE_KEY !== 'login') setPending(true);
+
+  function escapeHtml(value){
+    return String(value == null ? '' : value)
+      .replace(/&/g,'&amp;')
+      .replace(/</g,'&lt;')
+      .replace(/>/g,'&gt;')
+      .replace(/"/g,'&quot;')
+      .replace(/'/g,'&#39;');
+  }
+
+  function getPageLabel(){
+    try {
+      if (window.RF_ACL && window.RF_ACL.PAGE_MAP && window.RF_ACL.PAGE_MAP[PAGE_KEY]) return String(window.RF_ACL.PAGE_MAP[PAGE_KEY]);
+      var title = String(document.title || '').trim();
+      if (title) return title.replace(/\s*-\s*K\.A\.D\s*$/i, '').trim() || title;
+    } catch (_) {}
+    return PAGE_KEY;
+  }
+
+  function getClient(){
+    try {
+      if (window.ERPAuth && typeof window.ERPAuth.getSupabaseClient === 'function') return window.ERPAuth.getSupabaseClient();
+    } catch (_) {}
+    try {
+      if (typeof window.createRfSupabaseClient === 'function') return window.createRfSupabaseClient();
+    } catch (_) {}
+    try {
+      if (window.supabase && typeof window.supabase.createClient === 'function' && window.RF_CONFIG && window.RF_CONFIG.SUPABASE_URL && window.RF_CONFIG.SUPABASE_ANON_KEY) {
+        return window.supabase.createClient(window.RF_CONFIG.SUPABASE_URL, window.RF_CONFIG.SUPABASE_ANON_KEY, {
+          auth: { persistSession:true, autoRefreshToken:true, detectSessionInUrl:true }
+        });
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  function buildLoginHref(){
+    try {
+      if (window.ERPAuth && typeof window.ERPAuth.buildLoginUrl === 'function') {
+        return window.ERPAuth.buildLoginUrl((PAGE_KEY || 'index') + '.html');
+      }
+    } catch (_) {}
+    try {
+      var url = new URL('login.html', window.location.href);
+      url.searchParams.set('next', (PAGE_KEY || 'index') + '.html');
+      return url.toString();
+    } catch (_) {
+      return 'login.html';
+    }
+  }
+
+  function showDenied(message){
+    setPending(false);
+    try {
+      if (window.ERPAuth && typeof window.ERPAuth.renderAccessDeniedPage === 'function') {
+        window.ERPAuth.renderAccessDeniedPage(getPageLabel(), message || 'Nu ai permisiune de vizualizare pentru această pagină.');
+        return;
+      }
+    } catch (_) {}
+    try {
+      if (window.RF_ACL && typeof window.RF_ACL.renderAccessDeniedPage === 'function') {
+        window.RF_ACL.renderAccessDeniedPage(PAGE_KEY, message || 'Nu ai permisiune de vizualizare pentru această pagină.');
+        return;
+      }
+    } catch (_) {}
+    if (!document.body) return;
+    document.body.innerHTML = '' +
+      '<div style="min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px;background:#c8def0;font-family:Arial,Helvetica,sans-serif;color:#0d2240;">' +
+        '<div style="width:min(640px,100%);background:#d7e6f4;border:2px solid #1b1b1b;border-radius:18px;padding:28px;box-shadow:0 1px 0 rgba(0,0,0,.06);text-align:center;">' +
+          '<div style="font-size:32px;font-weight:800;line-height:1.1;margin:0 0 12px;">Acces restricționat</div>' +
+          '<div style="font-size:18px;font-weight:700;margin:0 0 10px;">' + escapeHtml(getPageLabel()) + '</div>' +
+          '<div style="font-size:16px;line-height:1.5;margin:0 0 22px;">' + escapeHtml(message || 'Nu ai permisiune de vizualizare pentru această pagină.') + '</div>' +
+          '<div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap;">' +
+            '<a href="' + escapeHtml(buildLoginHref()) + '" style="text-decoration:none;display:inline-flex;align-items:center;justify-content:center;min-height:46px;padding:0 18px;border:2px solid #1b1b1b;border-radius:12px;background:#fff;color:#0d2240;font-weight:700;">Login</a>' +
+          '</div>' +
+        '</div>' +
+      '</div>';
+  }
+
+  function isLikelyFilter(el, config){
+    if (!el) return false;
+    try {
+      if (el.closest && el.closest('[data-acl-filter]')) return true;
+    } catch (_) {}
+    try {
+      var allow = config && Array.isArray(config.allowSelectors) ? config.allowSelectors : [];
+      for (var i = 0; i < allow.length; i += 1) {
+        if (allow[i] && el.matches && el.matches(allow[i])) return true;
+        if (allow[i] && el.closest && el.closest(allow[i])) return true;
+      }
+    } catch (_) {}
+    var s = [el.id || '', el.name || '', el.className || '', (el.getAttribute && el.getAttribute('placeholder')) || '', (el.getAttribute && el.getAttribute('aria-label')) || ''].join(' ').toLowerCase();
+    return /(filter|search|find|sort|view|refresh|sel|select|reper|utilaj|luna|an|month|year|cauta|căuta|filtr|lookup|vizual)/.test(s);
+  }
+
+  function isMutationTrigger(el, config){
+    if (!el) return false;
+    try {
+      var disable = config && Array.isArray(config.disableSelectors) ? config.disableSelectors : [];
+      for (var i = 0; i < disable.length; i += 1) {
+        if (disable[i] && el.matches && el.matches(disable[i])) return true;
+        if (disable[i] && el.closest && el.closest(disable[i])) return true;
+      }
+    } catch (_) {}
+    var txt = [el.textContent || '', el.value || '', el.id || '', el.className || '', (el.getAttribute && el.getAttribute('title')) || '', (el.getAttribute && el.getAttribute('aria-label')) || ''].join(' ').trim();
+    return /(save|salveaz|adaug|import|sterg|șterg|delete|reset|clear|restore|upload|nou|new|edit|modific|actualiz|actualizeaz|remove|trash|sterge|ștergere)/i.test(txt);
+  }
+
+  function markDisabled(el){
+    if (!el) return;
+    try { el.disabled = true; } catch (_) {}
+    try { el.readOnly = true; } catch (_) {}
+    try { el.setAttribute('data-acl-disabled', '1'); } catch (_) {}
+    try { el.style.pointerEvents = 'none'; } catch (_) {}
+    try { el.style.opacity = '0.45'; } catch (_) {}
+  }
+
+  function applyViewOnly(config){
+    if (window.__RF_VIEW_ONLY_GUARDS__) return;
+    window.__RF_VIEW_ONLY_GUARDS__ = true;
+    window.__CAN_EDIT__ = false;
+    document.documentElement.setAttribute('data-acl-viewonly', '1');
+
+    var selectors = 'button,input[type="button"],input[type="submit"],label.btn,a.btn,.btn,.icon-btn';
+    Array.prototype.slice.call(document.querySelectorAll(selectors)).forEach(function(el){
+      if (isLikelyFilter(el, config)) return;
+      if (isMutationTrigger(el, config)) markDisabled(el);
+    });
+
+    Array.prototype.slice.call(document.querySelectorAll('input,textarea,select')).forEach(function(el){
+      if (isLikelyFilter(el, config)) return;
+      markDisabled(el);
+    });
+
+    Array.prototype.slice.call(document.querySelectorAll('[contenteditable="true"]')).forEach(function(el){
+      if (isLikelyFilter(el, config)) return;
+      try { el.setAttribute('contenteditable', 'false'); } catch (_) {}
+      markDisabled(el);
+    });
+
+    function prevent(e){
+      var t = e && e.target ? e.target : null;
+      if (!t) return;
+      if (isLikelyFilter(t, config)) return;
+      if (isMutationTrigger(t, config) || t.matches && t.matches('[contenteditable="true"],input,textarea,select,[data-acl-disabled="1"]') || t.closest && t.closest('[contenteditable="true"],[data-acl-disabled="1"]')) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
+        return false;
+      }
+    }
+
+    function preventTyping(e){
+      var t = e && e.target ? e.target : null;
+      if (!t || isLikelyFilter(t, config)) return;
+      var isField = !!(t.matches && t.matches('input,textarea,select,[contenteditable="true"]')) || !!(t.closest && t.closest('[contenteditable="true"]'));
+      if (!isField) return;
+      var key = String(e.key || '');
+      if (/^(Tab|Escape|Shift|Control|Alt|Meta|ArrowLeft|ArrowRight|ArrowUp|ArrowDown|Home|End|PageUp|PageDown)$/.test(key)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
+      return false;
+    }
+
+    ['beforeinput','paste','drop','submit','click','dblclick'].forEach(function(ev){ document.addEventListener(ev, prevent, true); });
+    document.addEventListener('keydown', preventTyping, true);
+  }
+
+  async function resolveAccess(){
+    var client = getClient();
+    if (!client || !window.RF_ACL || typeof window.RF_ACL.resolvePageAccess !== 'function') {
+      return { ok:false, reason:'acl-unavailable' };
+    }
+    try {
+      var access = await window.RF_ACL.resolvePageAccess(PAGE_KEY, { client: client });
+      return { ok:true, access: access };
+    } catch (error) {
+      return { ok:false, reason:'resolve-failed', error:error };
+    }
+  }
+
+  async function enforce(){
+    if (PAGE_KEY === 'index' || PAGE_KEY === 'login') {
+      setPending(false);
+      return;
+    }
+
+    var config = PAGE_CONFIGS[PAGE_KEY] || {};
+    var result = await resolveAccess();
+    if (!result.ok || !result.access) {
+      showDenied('Accesul nu a putut fi validat în siguranță.');
+      return;
+    }
+
+    var access = result.access;
+    var perms = access.permissions || access;
+    var canView = !!(access.allowed !== false && perms && perms.can_view !== false);
+    var canEdit = !!(perms && (perms.can_edit === true || perms.can_add === true || perms.can_import === true || access.can_edit === true));
+
+    window.__PAGE_ACCESS__ = perms;
+    window.__CAN_VIEW__ = canView;
+    window.__CAN_EDIT__ = canEdit;
+
+    if (!canView) {
+      if (String(access.source || '') === 'no session') {
+        try {
+          window.location.replace(buildLoginHref());
+          return;
+        } catch (_) {}
+      }
+      showDenied(access.message || 'Nu ai permisiune de vizualizare pentru această pagină.');
+      return;
+    }
+
+    setPending(false);
+    try {
+      if (window.ERPAuth && typeof window.ERPAuth.showProtectedPage === 'function') window.ERPAuth.showProtectedPage();
+    } catch (_) {}
+
+    if (!canEdit) applyViewOnly(config);
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', function(){ enforce(); }, { once:true });
+  } else {
+    enforce();
+  }
+})();

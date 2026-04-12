@@ -15,6 +15,15 @@
     return String(value || '').trim().toLowerCase();
   }
 
+  function escapeHtml(value){
+    return String(value == null ? '' : value)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
   function safeGetItem(key){
     try { return localStorage.getItem(key); } catch (_) { return null; }
   }
@@ -273,17 +282,32 @@
       if(!document.body) return false;
       try { document.documentElement.setAttribute('data-rf-denied', '1'); } catch (_) {}
       showProtectedPage();
-      document.body.innerHTML = '' +
-        '<div style="min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px;background:#c8def0;font-family:Arial,Helvetica,sans-serif;color:#0d2240;">' +
-          '<div style="width:min(640px,100%);background:#d7e6f4;border:2px solid #1b1b1b;border-radius:18px;padding:28px;box-shadow:0 1px 0 rgba(0,0,0,.06);text-align:center;">' +
-            '<div style="font-size:32px;font-weight:800;line-height:1.1;margin:0 0 12px;">Acces restricționat</div>' +
-            '<div style="font-size:18px;font-weight:700;margin:0 0 10px;">' + safePage + '</div>' +
-            '<div style="font-size:16px;line-height:1.5;margin:0 0 22px;">' + safeMessage + '</div>' +
-            '<div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap;">' +
-              '<a href="index.html" style="text-decoration:none;display:inline-flex;align-items:center;justify-content:center;min-height:46px;padding:0 18px;border:2px solid #1b1b1b;border-radius:12px;background:#fff;color:#0d2240;font-weight:700;">Înapoi la dashboard</a>' +
-            '</div>' +
-          '</div>' +
-        '</div>';
+      const outer = document.createElement('div');
+      outer.setAttribute('style', 'min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px;background:#c8def0;font-family:Arial,Helvetica,sans-serif;color:#0d2240;');
+      const card = document.createElement('div');
+      card.setAttribute('style', 'width:min(640px,100%);background:#d7e6f4;border:2px solid #1b1b1b;border-radius:18px;padding:28px;box-shadow:0 1px 0 rgba(0,0,0,.06);text-align:center;');
+      const h1 = document.createElement('div');
+      h1.setAttribute('style', 'font-size:32px;font-weight:800;line-height:1.1;margin:0 0 12px;');
+      h1.textContent = 'Acces restricționat';
+      const page = document.createElement('div');
+      page.setAttribute('style', 'font-size:18px;font-weight:700;margin:0 0 10px;');
+      page.textContent = safePage;
+      const msg = document.createElement('div');
+      msg.setAttribute('style', 'font-size:16px;line-height:1.5;margin:0 0 22px;');
+      msg.textContent = safeMessage;
+      const actions = document.createElement('div');
+      actions.setAttribute('style', 'display:flex;gap:12px;justify-content:center;flex-wrap:wrap;');
+      const back = document.createElement('a');
+      back.href = 'index.html';
+      back.setAttribute('style', 'text-decoration:none;display:inline-flex;align-items:center;justify-content:center;min-height:46px;padding:0 18px;border:2px solid #1b1b1b;border-radius:12px;background:#fff;color:#0d2240;font-weight:700;');
+      back.textContent = 'Înapoi la dashboard';
+      actions.appendChild(back);
+      card.appendChild(h1);
+      card.appendChild(page);
+      card.appendChild(msg);
+      card.appendChild(actions);
+      outer.appendChild(card);
+      document.body.replaceChildren(outer);
       return true;
     };
     if(!mount()){
@@ -677,7 +701,10 @@
     canAccess,
     getPageAccess,
     buildLoginUrl,
-    renderAccessDeniedPage
+    renderAccessDeniedPage,
+    prehideProtectedPage,
+    showProtectedPage,
+    escapeHtml
   };
 })();
 
