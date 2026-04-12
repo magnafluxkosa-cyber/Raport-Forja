@@ -4951,7 +4951,7 @@ function getDefaultPermissions(role){
       const target = normUpper(reper);
       const rows = Array.isArray(state.stockSupport && state.stockSupport.forjateRows) ? state.stockSupport.forjateRows : [];
       const machineStats = Object.create(null);
-      MACHINE_ORDER.forEach(machine => { machineStats[machine] = { machine, days:0, totalQty:0, avgQty:0 }; });
+      MACHINE_ORDER.forEach(machine => { machineStats[machine] = { machine, days:0, totalQty:0, avgQty:0, dayValues:[], reliableAvgQty:0 }; });
       const prevMonth = month === 1 ? 12 : month - 1;
       const prevYear = month === 1 ? (Number(year) - 1) : Number(year);
       function ingest(list){
@@ -4961,6 +4961,7 @@ function getDefaultPermissions(role){
           if(!machine || !machineStats[machine]) return;
           const qty = Math.max(0, Math.round(toNumber(item && item.realizatBuc)));
           if(qty <= 0) return;
+          machineStats[machine].dayValues.push(qty);
           machineStats[machine].days += 1;
           machineStats[machine].totalQty += qty;
         });
@@ -4970,31 +4971,98 @@ function getDefaultPermissions(role){
       if(prevRows.length) ingest(prevRows);
       else if(yearRowsBeforeMonth.length) ingest(yearRowsBeforeMonth);
       else ingest(rows);
-      Object.values(machineStats).forEach(stat => { stat.avgQty = stat.days ? Math.round(stat.totalQty / stat.days) : 0; });
+      Object.values(machineStats).forEach(stat => {
+        stat.avgQty = stat.days ? Math.round(stat.totalQty / stat.days) : 0;
+      });
       return machineStats;
     }
     function buildGeneratorProfile(reper, year, month){
       const planProfile = buildGeneratorPlanProfile(reper);
       const actualProfile = buildGeneratorActualProfile(reper, year, month);
+      MACHINE_ORDER.forEach(machine => {
+        const planStat = planProfile[machine] || { modeQty:0, avgQty:0, count:0 };
+        const actualStat = actualProfile[machine] || { dayValues:[], avgQty:0 };
+        const templateHint = Math.max(0, Math.round(planStat.modeQty || planStat.avgQty || 0));
+        const values = Array.isArray(actualStat.dayValues) ? actualStat.dayValues.slice() : [];
+        const hardFloor = templateHint > 0 ? Math.max(100, Math.round(templateHint * 0.35)) : 100;
+        let filtered = values.filter(value => value >= hardFloor);
+        if(!filtered.length && templateHint > 0){
+          filtered = values.filter(value => value >= Math.max(1, Math.round(templateHint * 0.15)));
+        }
+        if(!filtered.length) filtered = values.slice();
+        let reliableAvg = filtered.length ? Math.round(filtered.reduce((sum, value) => sum + value, 0) / filtered.length) : Math.max(0, Math.round(actualStat.avgQty || 0));
+        if(templateHint > 0 && reliableAvg > 0 && reliableAvg < Math.round(templateHint * 0.35)){
+          reliableAvg = templateHint;
+        }
+        actualStat.reliableAvgQty = reliableAvg;
+        actualStat.reliableDays = filtered.length;
+        actualProfile[machine] = actualStat;
+      });
       const machineOrder = MACHINE_ORDER.slice().sort((a,b) => {
         const pa = planProfile[a] || { count:0, totalQty:0 };
         const pb = planProfile[b] || { count:0, totalQty:0 };
-        const aa = actualProfile[a] || { days:0, totalQty:0 };
-        const ab = actualProfile[b] || { days:0, totalQty:0 };
+        const aa = actualProfile[a] || { reliableDays:0, totalQty:0, reliableAvgQty:0 };
+        const ab = actualProfile[b] || { reliableDays:0, totalQty:0, reliableAvgQty:0 };
         if(pb.count !== pa.count) return pb.count - pa.count;
-        if(ab.days !== aa.days) return ab.days - aa.days;
+        if((ab.reliableDays || 0) !== (aa.reliableDays || 0)) return (ab.reliableDays || 0) - (aa.reliableDays || 0);
         if(pb.totalQty !== pa.totalQty) return pb.totalQty - pa.totalQty;
+        if((ab.reliableAvgQty || 0) !== (aa.reliableAvgQty || 0)) return (ab.reliableAvgQty || 0) - (aa.reliableAvgQty || 0);
         if(ab.totalQty !== aa.totalQty) return ab.totalQty - aa.totalQty;
         return MACHINE_ORDER.indexOf(a) - MACHINE_ORDER.indexOf(b);
       }).filter(machine => {
         const p = planProfile[machine] || { count:0, modeQty:0 };
-        const a = actualProfile[machine] || { days:0, avgQty:0 };
-        return p.count > 0 || a.days > 0 || p.modeQty > 0 || a.avgQty > 0;
+        const a = actualProfile[machine] || { days:0, avgQty:0, reliableAvgQty:0 };
+        return p.count > 0 || a.days > 0 || p.modeQty > 0 || a.avgQty > 0 || a.reliableAvgQty > 0;
       });
       const firstMachine = machineOrder[0] || '';
-      const bestTemplateQty = firstMachine ? Math.max(0, Math.round((planProfile[firstMachine] && planProfile[firstMachine].modeQty) || (actualProfile[firstMachine] && actualProfile[firstMachine].avgQty) || 0)) : 0;
-      const bestActualAvg = firstMachine ? Math.max(0, Math.round((actualProfile[firstMachine] && actualProfile[firstMachine].avgQty) || 0)) : 0;
+      const bestTemplateQty = firstMachine ? Math.max(0, Math.round((planProfile[firstMachine] && planProfile[firstMachine].modeQty) || (actualProfile[firstMachine] && actualProfile[firstMachine].reliableAvgQty) || (actualProfile[firstMachine] && actualProfile[firstMachine].avgQty) || 0)) : 0;
+      const bestActualAvg = firstMachine ? Math.max(0, Math.round((actualProfile[firstMachine] && actualProfile[firstMachine].reliableAvgQty) || (actualProfile[firstMachine] && actualProfile[firstMachine].avgQty) || 0)) : 0;
       return { machineOrder, planProfile, actualProfile, bestTemplateQty, bestActualAvg, hasHistory: !!(machineOrder.length || bestTemplateQty > 0 || bestActualAvg > 0) };
+    }
+    function isGeneratorSaturdayRow(row){
+      return norm(row && row.zi || getWeekdayLabel(row && row.data)) === norm('Sâmbătă');
+    }
+    function isGeneratorSundayRow(row){
+      return norm(row && row.zi || getWeekdayLabel(row && row.data)) === norm('Duminică');
+    }
+    function isGeneratorHolidayRow(row){
+      return !!(row && row.data && isHolidayIso(row.data));
+    }
+    function isGeneratorWeekdayCandidate(row){
+      if(!row || !row.data) return false;
+      if(isGeneratorHolidayRow(row)) return false;
+      if(isGeneratorSundayRow(row)) return false;
+      if(isGeneratorSaturdayRow(row)) return false;
+      return true;
+    }
+    function isGeneratorSaturdayCandidate(row){
+      if(!row || !row.data) return false;
+      if(isGeneratorHolidayRow(row)) return false;
+      return isGeneratorSaturdayRow(row);
+    }
+    function getLastOccupiedRowIndexForMachine(rows, machine){
+      let lastIndex = -1;
+      (Array.isArray(rows) ? rows : []).forEach((row, index) => {
+        const slot = row && row.slots ? (row.slots[machine] || normalizePlanSlot()) : normalizePlanSlot();
+        if(trimText(slot.reper) || Math.max(0, Math.round(toNumber(slot.planificat))) > 0){
+          lastIndex = index;
+        }
+      });
+      return lastIndex;
+    }
+    function getGeneratorPlacementIndexes(rows, machine, options){
+      const opts = options && typeof options === 'object' ? options : {};
+      const allowSaturday = opts.allowSaturday === true;
+      const startAfterIndex = Number.isFinite(Number(opts.startAfterIndex)) ? Number(opts.startAfterIndex) : getLastOccupiedRowIndexForMachine(rows, machine);
+      const indexes = [];
+      for(let i = Math.max(-1, startAfterIndex) + 1; i < (Array.isArray(rows) ? rows.length : 0); i += 1){
+        const row = rows[i];
+        if(!(allowSaturday ? isGeneratorSaturdayCandidate(row) : isGeneratorWeekdayCandidate(row))) continue;
+        const slot = row && row.slots ? (row.slots[machine] || normalizePlanSlot()) : normalizePlanSlot();
+        if(trimText(slot.reper) || Math.max(0, Math.round(toNumber(slot.planificat))) > 0) continue;
+        indexes.push(i);
+      }
+      return indexes;
     }
     function normalizeGeneratorRequests(requests){
       const merged = Object.create(null);
@@ -5133,8 +5201,9 @@ function getDefaultPermissions(role){
         const slotCount = countPlannedSlotsForReper(draftRows, req.reper);
         const machineLabel = profile.machineOrder[0] || '';
         const templateQty = machineLabel ? Math.max(0, Math.round((profile.planProfile[machineLabel] && profile.planProfile[machineLabel].modeQty) || profile.bestTemplateQty || 0)) : Math.max(0, Math.round(profile.bestTemplateQty || 0));
-        const avgRealQty = machineLabel ? Math.max(0, Math.round((profile.actualProfile[machineLabel] && profile.actualProfile[machineLabel].avgQty) || profile.bestActualAvg || 0)) : Math.max(0, Math.round(profile.bestActualAvg || 0));
-        const recommendedSlots = avgRealQty > 0 ? Math.ceil(req.qty / avgRealQty) : 0;
+        const avgRealQty = machineLabel ? Math.max(0, Math.round((profile.actualProfile[machineLabel] && profile.actualProfile[machineLabel].reliableAvgQty) || (profile.actualProfile[machineLabel] && profile.actualProfile[machineLabel].avgQty) || profile.bestActualAvg || 0)) : Math.max(0, Math.round(profile.bestActualAvg || 0));
+        const recommendedBase = avgRealQty > 0 ? avgRealQty : templateQty;
+        const recommendedSlots = recommendedBase > 0 ? Math.ceil(req.qty / recommendedBase) : 0;
         const extraSafeSlots = recommendedSlots > 0 ? Math.max(0, recommendedSlots - slotCount) : 0;
         const uncoveredQty = Math.max(0, req.qty - draftQty);
         return { reper:req.reper, requestQty:req.qty, alreadyPlannedQty, draftQty, slotCount, templateQty, avgRealQty, recommendedSlots, extraSafeSlots, uncoveredQty, hasHistory:!!profile.hasHistory, machineLabel };
@@ -5158,22 +5227,40 @@ function getDefaultPermissions(role){
         const machineOrder = profile.machineOrder.length ? profile.machineOrder.slice() : MACHINE_ORDER.slice();
         let remaining = Math.max(0, req.qty - sumPlannedQtyForReper(draftRows, req.reper));
         if(remaining <= 0) return;
-        for(let i=0; i<draftRows.length && remaining > 0; i += 1){
-          const row = draftRows[i];
-          for(let j=0; j<machineOrder.length && remaining > 0; j += 1){
-            const machine = machineOrder[j];
+        for(let machineIndex = 0; machineIndex < machineOrder.length && remaining > 0; machineIndex += 1){
+          const machine = machineOrder[machineIndex];
+          const planStat = profile.planProfile[machine] || { modeQty:0 };
+          const actualStat = profile.actualProfile[machine] || { reliableAvgQty:0, avgQty:0 };
+          const templateQty = Math.max(0, Math.round(planStat.modeQty || actualStat.reliableAvgQty || actualStat.avgQty || profile.bestTemplateQty || profile.bestActualAvg || 0));
+          if(templateQty <= 0) continue;
+          let lastOccupiedIndex = getLastOccupiedRowIndexForMachine(draftRows, machine);
+          const weekdayIndexes = getGeneratorPlacementIndexes(draftRows, machine, { allowSaturday:false, startAfterIndex:lastOccupiedIndex });
+          for(let idx = 0; idx < weekdayIndexes.length && remaining > 0; idx += 1){
+            const rowIndex = weekdayIndexes[idx];
+            const row = draftRows[rowIndex];
             const slot = row.slots[machine] || normalizePlanSlot({});
-            if(trimText(slot.reper) || Math.max(0, Math.round(toNumber(slot.planificat))) > 0) continue;
-            const planStat = profile.planProfile[machine] || { modeQty:0 };
-            const actualStat = profile.actualProfile[machine] || { avgQty:0 };
-            const templateQty = Math.max(0, Math.round(planStat.modeQty || actualStat.avgQty || profile.bestTemplateQty || profile.bestActualAvg || 0));
-            if(templateQty <= 0) continue;
             const qty = Math.min(remaining, templateQty);
             slot.reper = req.reper;
             slot.planificat = qty;
             row.slots[machine] = normalizePlanSlot(slot);
             generatedCellKeys[getGeneratorCellKey(row.id, machine)] = true;
             remaining -= qty;
+            lastOccupiedIndex = rowIndex;
+          }
+          if(remaining > 0){
+            const saturdayIndexes = getGeneratorPlacementIndexes(draftRows, machine, { allowSaturday:true, startAfterIndex:lastOccupiedIndex });
+            for(let idx = 0; idx < saturdayIndexes.length && remaining > 0; idx += 1){
+              const rowIndex = saturdayIndexes[idx];
+              const row = draftRows[rowIndex];
+              const slot = row.slots[machine] || normalizePlanSlot({});
+              const qty = Math.min(remaining, templateQty);
+              slot.reper = req.reper;
+              slot.planificat = qty;
+              row.slots[machine] = normalizePlanSlot(slot);
+              generatedCellKeys[getGeneratorCellKey(row.id, machine)] = true;
+              remaining -= qty;
+              lastOccupiedIndex = rowIndex;
+            }
           }
         }
       });
