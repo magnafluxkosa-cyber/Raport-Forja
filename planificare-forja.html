@@ -5103,19 +5103,128 @@ function getDefaultPermissions(role){
       });
       return lastIndex;
     }
-    function getGeneratorPlacementIndexes(rows, machine, options){
+    function getGeneratorTemplateQtyForMachineReper(reper, machine, year, month){
+      const cleanReper = trimText(reper).toUpperCase();
+      const cleanMachine = trimText(machine);
+      const key = [cleanReper, cleanMachine, String(year || ''), String(month || '')].join('||');
+      const cache = state.generator.templateQtyCache || (state.generator.templateQtyCache = Object.create(null));
+      if(Object.prototype.hasOwnProperty.call(cache, key)) return cache[key];
+      let qty = 0;
+      if(cleanReper && cleanMachine){
+        const profile = buildGeneratorProfile(cleanReper, year, month);
+        const planStat = profile.planProfile[cleanMachine] || { modeQty:0 };
+        const actualStat = profile.actualProfile[cleanMachine] || { reliableAvgQty:0, avgQty:0 };
+        qty = Math.max(0, Math.round(planStat.modeQty || actualStat.reliableAvgQty || actualStat.avgQty || profile.bestTemplateQty || profile.bestActualAvg || 0));
+      }
+      cache[key] = qty;
+      return qty;
+    }
+    function buildGeneratorSplitRow(baseRow){
+      const ref = baseRow || {};
+      return normalizePlanRow({
+        id: 'row-' + Date.now() + '-' + Math.random().toString(36).slice(2),
+        row_no: Number(ref.row_no || 0) + 0.01,
+        an: Number(ref.an || state.activeYear || CURRENT_YEAR),
+        luna: trimText(ref.luna) || getMonthName(Number(trimText(ref.data).slice(5,7)) || 1),
+        data: trimText(ref.data) || '',
+        zi: trimText(ref.zi) || getWeekdayLabel(trimText(ref.data)),
+        slots: MACHINE_ORDER.reduce((acc, machine) => {
+          acc[machine] = normalizePlanSlot({});
+          return acc;
+        }, {})
+      }, 0);
+    }
+    function getGeneratorDateRangeForMachine(rows, machine, targetDate){
+      let firstIndex = -1;
+      let lastIndex = -1;
+      (Array.isArray(rows) ? rows : []).forEach((row, index) => {
+        if(trimText(row && row.data) !== targetDate) return;
+        if(firstIndex < 0) firstIndex = index;
+        lastIndex = index;
+      });
+      return { firstIndex, lastIndex };
+    }
+    function getGeneratorDateUsage(rows, targetDate, machine, currentReper, currentTemplateQty, year, month){
+      const cleanDate = trimText(targetDate);
+      const cleanReper = normUpper(currentReper);
+      const templateQty = Math.max(0, Math.round(toNumber(currentTemplateQty)));
+      const minutesPerPiece = templateQty > 0 ? (480 / templateQty) : 0;
+      let usedMinutes = 0;
+      let hasAnySegment = false;
+      let sameReperRowIndex = -1;
+      let sameReperPlanQty = 0;
+      let emptyRowIndex = -1;
+      (Array.isArray(rows) ? rows : []).forEach((row, index) => {
+        if(trimText(row && row.data) !== cleanDate) return;
+        const slot = row && row.slots ? (row.slots[machine] || normalizePlanSlot()) : normalizePlanSlot();
+        const planQty = Math.max(0, Math.round(toNumber(slot && slot.planificat)));
+        const slotReper = normUpper(slot && slot.reper);
+        if(planQty <= 0 || !slotReper){
+          if(emptyRowIndex < 0) emptyRowIndex = index;
+          return;
+        }
+        hasAnySegment = true;
+        let slotTemplateQty = 0;
+        if(slotReper === cleanReper && templateQty > 0){
+          slotTemplateQty = templateQty;
+          if(planQty < templateQty && sameReperRowIndex < 0){
+            sameReperRowIndex = index;
+            sameReperPlanQty = planQty;
+          }
+        }else{
+          slotTemplateQty = getGeneratorTemplateQtyForMachineReper(slotReper, machine, year, month);
+        }
+        let slotMinutes = 0;
+        if(slotTemplateQty > 0){
+          slotMinutes = planQty * (480 / slotTemplateQty);
+        }else{
+          slotMinutes = planQty > 0 ? 480 : 0;
+        }
+        usedMinutes += Math.min(480, slotMinutes);
+      });
+      const canExtendSameReper = sameReperRowIndex >= 0 && minutesPerPiece > 0 && usedMinutes < 480;
+      let availableMinutes = Math.max(0, 480 - usedMinutes);
+      if(hasAnySegment && !canExtendSameReper){
+        availableMinutes = Math.max(0, availableMinutes - 105);
+      }
+      const maxQty = minutesPerPiece > 0 ? Math.floor(availableMinutes / minutesPerPiece) : 0;
+      return {
+        usedMinutes,
+        availableMinutes,
+        maxQty,
+        hasAnySegment,
+        sameReperRowIndex,
+        sameReperPlanQty,
+        emptyRowIndex
+      };
+    }
+    function findOrCreateGeneratorRowForDateMachine(rows, targetDate, machine, currentReper, currentTemplateQty, year, month){
+      const usage = getGeneratorDateUsage(rows, targetDate, machine, currentReper, currentTemplateQty, year, month);
+      if(usage.sameReperRowIndex >= 0) return { rowIndex: usage.sameReperRowIndex, usage, isNew:false };
+      if(usage.emptyRowIndex >= 0) return { rowIndex: usage.emptyRowIndex, usage, isNew:false };
+      const range = getGeneratorDateRangeForMachine(rows, machine, targetDate);
+      if(range.lastIndex < 0) return { rowIndex:-1, usage, isNew:false };
+      const newRow = buildGeneratorSplitRow(rows[range.lastIndex]);
+      rows.splice(range.lastIndex + 1, 0, newRow);
+      return { rowIndex: range.lastIndex + 1, usage:getGeneratorDateUsage(rows, targetDate, machine, currentReper, currentTemplateQty, year, month), isNew:true };
+    }
+    function getGeneratorCandidateDateIndexes(rows, machine, options){
       const opts = options && typeof options === 'object' ? options : {};
-      const allowSaturday = opts.allowSaturday === true;
+      const includeSaturday = opts.includeSaturday === true;
       const startAfterIndex = Number.isFinite(Number(opts.startAfterIndex)) ? Number(opts.startAfterIndex) : getLastOccupiedRowIndexForMachine(rows, machine);
+      const startIndex = Math.max(0, startAfterIndex);
       const deadlineIso = trimText(opts.deadlineIso);
+      const seen = Object.create(null);
       const indexes = [];
-      for(let i = Math.max(-1, startAfterIndex) + 1; i < (Array.isArray(rows) ? rows.length : 0); i += 1){
+      for(let i = startIndex; i < (Array.isArray(rows) ? rows.length : 0); i += 1){
         const row = rows[i];
         const rowIso = trimText(row && row.data);
-        if(deadlineIso && rowIso && rowIso > deadlineIso) break;
-        if(!(allowSaturday ? isGeneratorSaturdayCandidate(row) : isGeneratorWeekdayCandidate(row))) continue;
-        const slot = row && row.slots ? (row.slots[machine] || normalizePlanSlot()) : normalizePlanSlot();
-        if(trimText(slot.reper) || Math.max(0, Math.round(toNumber(slot.planificat))) > 0) continue;
+        if(!rowIso) continue;
+        if(deadlineIso && rowIso > deadlineIso) break;
+        if(seen[rowIso]) continue;
+        const valid = includeSaturday ? (isGeneratorWeekdayCandidate(row) || isGeneratorSaturdayCandidate(row)) : isGeneratorWeekdayCandidate(row);
+        if(!valid) continue;
+        seen[rowIso] = true;
         indexes.push(i);
       }
       return indexes;
@@ -5315,54 +5424,72 @@ function getDefaultPermissions(role){
       const draftRows = clonePlanRows(yearRowsBase);
       const generatedCellKeys = Object.create(null);
       const cellRequestMap = Object.create(null);
+      state.generator.templateQtyCache = Object.create(null);
+      const cumulativeDemandByReper = Object.create(null);
+
       requests.forEach(req => {
+        const reperKey = normUpper(req.reper);
+        cumulativeDemandByReper[reperKey] = (cumulativeDemandByReper[reperKey] || 0) + Math.max(0, req.qty);
+        const deadlineIso = trimText(req.readyByIso);
+        const currentRowsUpToDeadline = deadlineIso ? getRowsUpToIso(draftRows, deadlineIso) : draftRows;
+        let remaining = Math.max(0, cumulativeDemandByReper[reperKey] - sumPlannedQtyForReper(currentRowsUpToDeadline, req.reper));
+        if(remaining <= 0) return;
+
         const profile = buildGeneratorProfile(req.reper, year, month);
         const machineOrder = profile.machineOrder.length ? profile.machineOrder.slice() : MACHINE_ORDER.slice();
-        let remaining = Math.max(0, req.qty);
+
         for(let machineIndex = 0; machineIndex < machineOrder.length && remaining > 0; machineIndex += 1){
           const machine = machineOrder[machineIndex];
           const planStat = profile.planProfile[machine] || { modeQty:0 };
           const actualStat = profile.actualProfile[machine] || { reliableAvgQty:0, avgQty:0 };
           const templateQty = Math.max(0, Math.round(planStat.modeQty || actualStat.reliableAvgQty || actualStat.avgQty || profile.bestTemplateQty || profile.bestActualAvg || 0));
           if(templateQty <= 0) continue;
+
           let lastOccupiedIndex = getLastOccupiedRowIndexForMachine(draftRows, machine);
-          const deadlineIso = trimText(req.readyByIso);
-          const weekdayIndexes = getGeneratorPlacementIndexes(draftRows, machine, { allowSaturday:false, startAfterIndex:lastOccupiedIndex, deadlineIso });
-          for(let idx = 0; idx < weekdayIndexes.length && remaining > 0; idx += 1){
-            const rowIndex = weekdayIndexes[idx];
-            const row = draftRows[rowIndex];
-            const slot = row.slots[machine] || normalizePlanSlot({});
-            const qty = Math.min(remaining, templateQty);
-            slot.reper = req.reper;
-            slot.planificat = qty;
-            row.slots[machine] = normalizePlanSlot(slot);
-            const cellKey = getGeneratorCellKey(row.id, machine);
-            generatedCellKeys[cellKey] = true;
-            cellRequestMap[cellKey] = req.requestKey || req.id;
-            remaining -= qty;
-            lastOccupiedIndex = rowIndex;
-          }
-          if(remaining > 0){
-            const saturdayIndexes = getGeneratorPlacementIndexes(draftRows, machine, { allowSaturday:true, startAfterIndex:lastOccupiedIndex, deadlineIso });
-            for(let idx = 0; idx < saturdayIndexes.length && remaining > 0; idx += 1){
-              const rowIndex = saturdayIndexes[idx];
-              const row = draftRows[rowIndex];
+
+          const phaseConfigs = [
+            { includeSaturday:false },
+            { includeSaturday:true }
+          ];
+
+          for(let phaseIndex = 0; phaseIndex < phaseConfigs.length && remaining > 0; phaseIndex += 1){
+            const dateIndexes = getGeneratorCandidateDateIndexes(draftRows, machine, { includeSaturday:phaseConfigs[phaseIndex].includeSaturday, startAfterIndex:lastOccupiedIndex, deadlineIso });
+            for(let idx = 0; idx < dateIndexes.length && remaining > 0; idx += 1){
+              const anchorIndex = dateIndexes[idx];
+              const anchorRow = draftRows[anchorIndex];
+              const targetDate = trimText(anchorRow && anchorRow.data);
+              if(!targetDate) continue;
+
+              const placement = findOrCreateGeneratorRowForDateMachine(draftRows, targetDate, machine, req.reper, templateQty, year, month);
+              if(placement.rowIndex < 0) continue;
+              const usage = placement.usage || getGeneratorDateUsage(draftRows, targetDate, machine, req.reper, templateQty, year, month);
+              const maxQtyForDate = Math.max(0, Math.round(usage.maxQty || 0));
+              if(maxQtyForDate <= 0) continue;
+
+              const row = draftRows[placement.rowIndex];
               const slot = row.slots[machine] || normalizePlanSlot({});
-              const qty = Math.min(remaining, templateQty);
+              const existingQty = Math.max(0, Math.round(toNumber(slot.planificat)));
+              const sameReper = normUpper(slot.reper) === reperKey || !trimText(slot.reper);
+              if(!sameReper && existingQty > 0) continue;
+
+              const qty = Math.min(remaining, maxQtyForDate);
+              if(qty <= 0) continue;
+
               slot.reper = req.reper;
-              slot.planificat = qty;
+              slot.planificat = existingQty + qty;
               row.slots[machine] = normalizePlanSlot(slot);
               const cellKey = getGeneratorCellKey(row.id, machine);
               generatedCellKeys[cellKey] = true;
               cellRequestMap[cellKey] = req.requestKey || req.id;
               remaining -= qty;
-              lastOccupiedIndex = rowIndex;
+              lastOccupiedIndex = placement.rowIndex;
             }
           }
         }
       });
+
       state.generator.sourceRows = clonePlanRows(yearRowsBase);
-      state.generator.draftRows = draftRows;
+      state.generator.draftRows = reindexRowsInDisplayOrder(sortRowsStable(draftRows));
       state.generator.generatedCellKeys = generatedCellKeys;
       state.generator.cellRequestMap = cellRequestMap;
       state.generator.lastGeneratedAt = nowIso();
