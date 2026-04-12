@@ -5347,6 +5347,83 @@ function getDefaultPermissions(role){
         emptyRowIndex
       };
     }
+    function getGeneratorPlannedQtyOnDateMachine(rows, targetDate, machine){
+      const cleanDate = trimText(targetDate);
+      const cleanMachine = trimText(machine);
+      let total = 0;
+      (Array.isArray(rows) ? rows : []).forEach(row => {
+        if(trimText(row && row.data) !== cleanDate) return;
+        const slot = row && row.slots ? (row.slots[cleanMachine] || normalizePlanSlot()) : normalizePlanSlot();
+        total += Math.max(0, Math.round(toNumber(slot && slot.planificat)));
+      });
+      return total;
+    }
+    function getGeneratorMachineAdvanceSnapshot(rows, machine, options){
+      const cleanMachine = trimText(machine);
+      const opts = options && typeof options === 'object' ? options : {};
+      const maxIso = trimText(opts.maxIso);
+      const occupiedDates = new Set();
+      let totalQty = 0;
+      let lastIndex = -1;
+      (Array.isArray(rows) ? rows : []).forEach((row, index) => {
+        const rowIso = trimText(row && row.data);
+        if(maxIso && rowIso && rowIso > maxIso) return;
+        const slot = row && row.slots ? (row.slots[cleanMachine] || normalizePlanSlot()) : normalizePlanSlot();
+        const qty = Math.max(0, Math.round(toNumber(slot && slot.planificat)));
+        if(qty <= 0 || !trimText(slot && slot.reper)) return;
+        totalQty += qty;
+        lastIndex = index;
+        if(rowIso) occupiedDates.add(rowIso);
+      });
+      return { lastIndex, occupiedDays: occupiedDates.size, totalQty };
+    }
+    function compareGeneratorMachineAdvance(left, right){
+      const a = left || { lastIndex:-1, occupiedDays:0, totalQty:0 };
+      const b = right || { lastIndex:-1, occupiedDays:0, totalQty:0 };
+      if(a.lastIndex !== b.lastIndex) return a.lastIndex - b.lastIndex;
+      if(a.occupiedDays !== b.occupiedDays) return a.occupiedDays - b.occupiedDays;
+      if(a.totalQty !== b.totalQty) return a.totalQty - b.totalQty;
+      return 0;
+    }
+    function getGeneratorChinaSecondaryDecision(rows, targetDate, deadlineIso){
+      const qtyChina = getGeneratorPlannedQtyOnDateMachine(rows, targetDate, '5 T CHINA');
+      const qty25 = getGeneratorPlannedQtyOnDateMachine(rows, targetDate, '2,5 T');
+      const qty3br = getGeneratorPlannedQtyOnDateMachine(rows, targetDate, '3 T BR');
+      const snap25 = getGeneratorMachineAdvanceSnapshot(rows, '2,5 T', { maxIso: deadlineIso || '' });
+      const snap3br = getGeneratorMachineAdvanceSnapshot(rows, '3 T BR', { maxIso: deadlineIso || '' });
+      const compare = compareGeneratorMachineAdvance(snap25, snap3br);
+      let blocked = '';
+      if(compare > 0) blocked = '2,5 T';
+      else if(compare < 0) blocked = '3 T BR';
+      else if(qty25 > 0 && qty3br <= 0) blocked = '3 T BR';
+      else if(qty3br > 0 && qty25 <= 0) blocked = '2,5 T';
+      else blocked = '3 T BR';
+      return {
+        hasChina: qtyChina > 0,
+        qtyChina,
+        qty25,
+        qty3br,
+        blocked,
+        allowed: blocked === '2,5 T' ? '3 T BR' : '2,5 T'
+      };
+    }
+    function canUseGeneratorDateMachineByChinaRule(rows, targetDate, machine, deadlineIso){
+      const cleanMachine = trimText(machine);
+      if(cleanMachine !== '5 T CHINA' && cleanMachine !== '2,5 T' && cleanMachine !== '3 T BR') return true;
+      const decision = getGeneratorChinaSecondaryDecision(rows, targetDate, deadlineIso);
+      if(cleanMachine === '5 T CHINA'){
+        if(decision.qty25 > 0 && decision.qty3br > 0) return false;
+        if(decision.qty25 > 0) return decision.allowed === '2,5 T';
+        if(decision.qty3br > 0) return decision.allowed === '3 T BR';
+        return true;
+      }
+      if(!decision.hasChina) return true;
+      const thisQty = cleanMachine === '2,5 T' ? decision.qty25 : decision.qty3br;
+      const otherQty = cleanMachine === '2,5 T' ? decision.qty3br : decision.qty25;
+      if(otherQty > 0 && thisQty <= 0) return false;
+      if(decision.blocked === cleanMachine && thisQty <= 0) return false;
+      return true;
+    }
     function findOrCreateGeneratorRowForDateMachine(rows, targetDate, machine, currentReper, currentTemplateQty, year, month){
       const usage = getGeneratorDateUsage(rows, targetDate, machine, currentReper, currentTemplateQty, year, month);
       if(usage.sameReperRowIndex >= 0){
@@ -5881,6 +5958,7 @@ function getDefaultPermissions(role){
               if(!anchorRow) continue;
               if(isGeneratorHolidayRow(anchorRow) || isGeneratorSundayRow(anchorRow)) continue;
               if(!phaseConfigs[phaseIndex].includeSaturday && isGeneratorSaturdayRow(anchorRow)) continue;
+              if(!canUseGeneratorDateMachineByChinaRule(draftRows, targetDate, machine, deadlineIso)) continue;
 
               const placement = findOrCreateGeneratorRowForDateMachine(draftRows, targetDate, machine, req.reper, templateQty, year, month);
               if(placement.rowIndex < 0) continue;
