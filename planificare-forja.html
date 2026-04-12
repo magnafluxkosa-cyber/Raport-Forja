@@ -562,6 +562,11 @@
           <div id="generatorSummary" class="generator-summary-empty">Generează mai întâi un draft pentru luna selectată.</div>
         </div>
 
+        <div class="generator-summary-panel">
+          <div class="generator-section-title">Livrări propuse automat</div>
+          <div id="generatorDeliverySummary" class="generator-summary-empty">Generatorul de livrare apare după ce există un draft valid.</div>
+        </div>
+
         <div class="generator-preview-panel">
           <div class="generator-preview-top">
             <div class="generator-section-title">Draft propus înainte de aplicare</div>
@@ -604,6 +609,12 @@
     const MACHINE_ORDER = ['5 T CHINA','MP','1,25 T','2,5 T','3 T BR','3 T ZR'];
     const MONTHS = ['Ianuarie','Februarie','Martie','Aprilie','Mai','Iunie','Iulie','August','Septembrie','Octombrie','Noiembrie','Decembrie'];
     const WEEKDAYS = ['Duminică','Luni','Marți','Miercuri','Joi','Vineri','Sâmbătă'];
+    const TRANSPORT_TRUCK_RULES = [
+      { id:'grp-417-3595-3596', title:'417-3595 + 417-3596', qtyByReper:{ '417-3595':2200, '417-3596':2200 } },
+      { id:'grp-248-2307-2308', title:'248-2307 + 248-2308', qtyByReper:{ '248-2307':1650, '248-2308':1650 } },
+      { id:'grp-229-6909-6910', title:'229-6909 + 229-6910', qtyByReper:{ '229-6909':2200, '229-6910':2200 } },
+      { id:'grp-9k-6628-6629', title:'9K-6628 + 9K-6629', qtyByReper:{ '9K-6628':3600, '9K-6629':3600 } }
+    ];
     const HOLIDAY_CACHE = Object.create(null);
     const HELPERS_LS_KEY = 'RF_HELPERS_v1';
     const TODAY = new Date();
@@ -644,6 +655,7 @@
       generatorMonthSelect: document.getElementById('generatorMonthSelect'),
       generatorRequests: document.getElementById('generatorRequests'),
       generatorSummary: document.getElementById('generatorSummary'),
+      generatorDeliverySummary: document.getElementById('generatorDeliverySummary'),
       generatorPreviewHead: document.getElementById('generatorPreviewHead'),
       generatorPreviewBody: document.getElementById('generatorPreviewBody'),
       btnGeneratorAddRequest: document.getElementById('btnGeneratorAddRequest'),
@@ -760,8 +772,10 @@
         generatedCellKeys: Object.create(null),
         cellRequestMap: Object.create(null),
         sourceRows: [],
+        deliverySummary: [],
         lastGeneratedAt: '',
-        recalcTimer: null
+        recalcTimer: null,
+        transportRulesCache: null
       }
     };
 
@@ -5260,14 +5274,29 @@ function getDefaultPermissions(role){
       }
       return { rowIndex: range.lastIndex + 1, usage:nextUsage, isNew:true };
     }
-    function getGeneratorCandidateDateIndexes(rows, machine, options){
+    function isGeneratorRowCompletelyEmpty(row){
+      if(!row || !row.slots) return true;
+      return MACHINE_ORDER.every(machine => {
+        const slot = row.slots[machine] || normalizePlanSlot({});
+        return !trimText(slot.reper) && Math.max(0, Math.round(toNumber(slot.planificat))) <= 0 && Math.max(0, Math.round(toNumber(slot.realizat_live || slot.realizat_seed || 0))) <= 0;
+      });
+    }
+    function cleanupGeneratorDraftRows(rows, sourceRows){
+      const sourceIds = new Set((Array.isArray(sourceRows) ? sourceRows : []).map(row => String(row && row.id || '')));
+      return (Array.isArray(rows) ? rows : []).filter(row => {
+        const rowId = String(row && row.id || '');
+        if(sourceIds.has(rowId)) return true;
+        return !isGeneratorRowCompletelyEmpty(row);
+      });
+    }
+    function getGeneratorCandidateDates(rows, machine, options){
       const opts = options && typeof options === 'object' ? options : {};
       const includeSaturday = opts.includeSaturday === true;
       const startAfterIndex = Number.isFinite(Number(opts.startAfterIndex)) ? Number(opts.startAfterIndex) : getLastOccupiedRowIndexForMachine(rows, machine);
       const startIndex = Math.max(0, startAfterIndex);
       const deadlineIso = trimText(opts.deadlineIso);
       const seen = Object.create(null);
-      const indexes = [];
+      const dates = [];
       for(let i = startIndex; i < (Array.isArray(rows) ? rows.length : 0); i += 1){
         const row = rows[i];
         const rowIso = trimText(row && row.data);
@@ -5277,9 +5306,9 @@ function getDefaultPermissions(role){
         const valid = includeSaturday ? (isGeneratorWeekdayCandidate(row) || isGeneratorSaturdayCandidate(row)) : isGeneratorWeekdayCandidate(row);
         if(!valid) continue;
         seen[rowIso] = true;
-        indexes.push(i);
+        dates.push(rowIso);
       }
-      return indexes;
+      return dates;
     }
     function normalizeGeneratorRequests(requests){
       const merged = Object.create(null);
@@ -5332,6 +5361,7 @@ function getDefaultPermissions(role){
       if(els.generatorBackdrop){ els.generatorBackdrop.classList.add('is-open'); els.generatorBackdrop.setAttribute('aria-hidden','false'); }
       renderGeneratorRequests();
       renderGeneratorSummary();
+      renderGeneratorDeliverySummary();
       renderGeneratorPreview();
     }
     function closeGeneratorModal(){
@@ -5400,6 +5430,180 @@ function getDefaultPermissions(role){
       }).join('');
       setTimeout(scrollGeneratorPreviewToFirstGenerated, 30);
     }
+    function getNormalizedTransportRules(){
+      if(Array.isArray(state.generator.transportRulesCache) && state.generator.transportRulesCache.length) return state.generator.transportRulesCache;
+      state.generator.transportRulesCache = TRANSPORT_TRUCK_RULES.map(rule => {
+        const qtyByReper = Object.create(null);
+        Object.keys(rule && rule.qtyByReper || {}).forEach(reper => {
+          const key = getCanonicalDeliveryReperKey(reper) || normalizeDeliveryReperLoose(reper);
+          const qty = Math.max(0, Math.round(toNumber(rule.qtyByReper[reper])));
+          if(key && qty > 0) qtyByReper[key] = qty;
+        });
+        return { id:trimText(rule && rule.id) || ('transport-' + Math.random().toString(36).slice(2)), title:trimText(rule && rule.title) || '-', qtyByReper, reperKeys:Object.keys(qtyByReper) };
+      }).filter(rule => rule.reperKeys.length);
+      return state.generator.transportRulesCache;
+    }
+    function getTransportRuleForReper(reper){
+      const key = getCanonicalDeliveryReperKey(reper) || normalizeDeliveryReperLoose(reper);
+      if(!key) return null;
+      return getNormalizedTransportRules().find(rule => Object.prototype.hasOwnProperty.call(rule.qtyByReper, key)) || null;
+    }
+    function buildGeneratorTransportGroups(requests){
+      const groups = Object.create(null);
+      (Array.isArray(requests) ? requests : []).forEach(req => {
+        const reperKey = getCanonicalDeliveryReperKey(req && req.reper) || normalizeDeliveryReperLoose(req && req.reper);
+        if(!reperKey) return;
+        const rule = getTransportRuleForReper(req && req.reper);
+        const groupId = rule ? ('rule|' + rule.id) : ('single|' + reperKey);
+        if(!groups[groupId]) groups[groupId] = { id:groupId, rule:rule || null, title:rule ? rule.title : trimText(req && req.reper), requestKeys:[], requestQtyByReper:Object.create(null), requestRepers:Object.create(null) };
+        groups[groupId].requestKeys.push(req.requestKey || req.id);
+        groups[groupId].requestQtyByReper[reperKey] = Math.max(0, Math.round(toNumber(groups[groupId].requestQtyByReper[reperKey] || 0))) + Math.max(0, Math.round(toNumber(req && req.qty)));
+        groups[groupId].requestRepers[reperKey] = trimText(req && req.reper).toUpperCase();
+      });
+      return Object.values(groups);
+    }
+    function getGeneratedQtyByReperForRequestKeys(requestKeys, rows){
+      const keySet = new Set((Array.isArray(requestKeys) ? requestKeys : []).map(value => trimText(value)));
+      const requestMap = state.generator && state.generator.cellRequestMap ? state.generator.cellRequestMap : Object.create(null);
+      const result = Object.create(null);
+      (Array.isArray(rows) ? rows : []).forEach(row => {
+        MACHINE_ORDER.forEach(machine => {
+          const cellKey = getGeneratorCellKey(row && row.id, machine);
+          if(!keySet.has(trimText(requestMap[cellKey]))) return;
+          const slot = row && row.slots ? (row.slots[machine] || normalizePlanSlot()) : normalizePlanSlot();
+          const qty = Math.max(0, Math.round(toNumber(slot && slot.planificat)));
+          const reperKey = getCanonicalDeliveryReperKey(slot && slot.reper) || normalizeDeliveryReperLoose(slot && slot.reper);
+          if(!reperKey || qty <= 0) return;
+          result[reperKey] = Math.max(0, Math.round(toNumber(result[reperKey] || 0))) + qty;
+        });
+      });
+      return result;
+    }
+    function getGeneratedDailyQtyByReperForRequestKeys(requestKeys, rows){
+      const keySet = new Set((Array.isArray(requestKeys) ? requestKeys : []).map(value => trimText(value)));
+      const requestMap = state.generator && state.generator.cellRequestMap ? state.generator.cellRequestMap : Object.create(null);
+      const byDate = Object.create(null);
+      (Array.isArray(rows) ? rows : []).forEach(row => {
+        const rowIso = trimText(row && row.data);
+        if(!rowIso) return;
+        MACHINE_ORDER.forEach(machine => {
+          const cellKey = getGeneratorCellKey(row && row.id, machine);
+          if(!keySet.has(trimText(requestMap[cellKey]))) return;
+          const slot = row && row.slots ? (row.slots[machine] || normalizePlanSlot()) : normalizePlanSlot();
+          const qty = Math.max(0, Math.round(toNumber(slot && slot.planificat)));
+          const reperKey = getCanonicalDeliveryReperKey(slot && slot.reper) || normalizeDeliveryReperLoose(slot && slot.reper);
+          if(!reperKey || qty <= 0) return;
+          if(!byDate[rowIso]) byDate[rowIso] = Object.create(null);
+          byDate[rowIso][reperKey] = Math.max(0, Math.round(toNumber(byDate[rowIso][reperKey] || 0))) + qty;
+        });
+      });
+      return Object.keys(byDate).sort().map(dateIso => ({ dateIso, qtyByReper: byDate[dateIso] }));
+    }
+    function getNextTransportNumberForRule(rule){
+      const ruleRepers = new Set(Array.isArray(rule && rule.reperKeys) ? rule.reperKeys : []);
+      let maxTransport = 0;
+      (Array.isArray(state.deliverySupport && state.deliverySupport.orders) ? state.deliverySupport.orders : []).forEach(order => {
+        const reperKey = getCanonicalDeliveryReperKey(order && order.reper) || normalizeDeliveryReperLoose(order && order.reper);
+        if(!ruleRepers.has(reperKey)) return;
+        maxTransport = Math.max(maxTransport, getDeliveryTransportNumber(order && order.nrTransport));
+      });
+      return Math.max(1, maxTransport + 1);
+    }
+    function buildGeneratorDeliverySummary(requests, draftRows){
+      const groups = buildGeneratorTransportGroups(requests);
+      const items = [];
+      groups.forEach(group => {
+        if(!group.rule){
+          items.push({ type:'warning', title:group.title, note:'Nu există regulă de transport definită pentru acest reper în generator.' });
+          return;
+        }
+        const rule = group.rule;
+        const missingReq = rule.reperKeys.filter(key => Math.max(0, Math.round(toNumber(group.requestQtyByReper[key] || 0))) <= 0);
+        if(missingReq.length){
+          items.push({ type:'warning', title:rule.title, note:'Transportul complet nu poate fi calculat până nu există cerere pentru toate reperele din grup.' });
+          return;
+        }
+        const generatedQty = getGeneratedQtyByReperForRequestKeys(group.requestKeys, draftRows);
+        const requestTransportCount = Math.min.apply(null, rule.reperKeys.map(key => Math.floor(Math.max(0, Math.round(toNumber(group.requestQtyByReper[key] || 0))) / Math.max(1, Math.round(toNumber(rule.qtyByReper[key] || 0))))));
+        const generatedTransportCount = Math.min.apply(null, rule.reperKeys.map(key => Math.floor(Math.max(0, Math.round(toNumber(generatedQty[key] || 0))) / Math.max(1, Math.round(toNumber(rule.qtyByReper[key] || 0))))));
+        const deliveryCount = Math.max(0, Math.min(requestTransportCount, generatedTransportCount));
+        const nextTransport = getNextTransportNumberForRule(rule);
+        const daily = getGeneratedDailyQtyByReperForRequestKeys(group.requestKeys, draftRows);
+        const cumulative = Object.create(null);
+        rule.reperKeys.forEach(key => { cumulative[key] = 0; });
+        let builtCount = 0;
+        daily.forEach(entry => {
+          rule.reperKeys.forEach(key => { cumulative[key] = Math.max(0, Math.round(toNumber(cumulative[key] || 0))) + Math.max(0, Math.round(toNumber(entry.qtyByReper && entry.qtyByReper[key] || 0))); });
+          while(builtCount < deliveryCount && rule.reperKeys.every(key => cumulative[key] >= ((builtCount + 1) * Math.max(1, Math.round(toNumber(rule.qtyByReper[key] || 0)))))){
+            const transportNo = nextTransport + builtCount;
+            const finishIso = entry.dateIso;
+            const deliveryIso = addGeneratorPlanDays(finishIso, 2);
+            const qtyLabel = rule.reperKeys.map(key => (group.requestRepers[key] || key) + ': ' + roNumber(rule.qtyByReper[key])).join(' • ');
+            items.push({ type:'transport', title:rule.title, transportNo, finishIso, deliveryIso, qtyLabel, note:'Livrare propusă la 2 zile după finalizarea completă a transportului.' });
+            builtCount += 1;
+          }
+        });
+        const pendingCount = Math.max(0, requestTransportCount - builtCount);
+        const remainderBits = rule.reperKeys.map(key => {
+          const reqQty = Math.max(0, Math.round(toNumber(group.requestQtyByReper[key] || 0)));
+          const plannedQty = Math.max(0, Math.round(toNumber(generatedQty[key] || 0)));
+          const targetQty = deliveryCount * Math.max(1, Math.round(toNumber(rule.qtyByReper[key] || 0)));
+          const remainingReq = Math.max(0, reqQty - targetQty);
+          const remainingPlanned = Math.max(0, plannedQty - targetQty);
+          return (group.requestRepers[key] || key) + ' req=' + roNumber(remainingReq) + ' / plan=' + roNumber(remainingPlanned);
+        });
+        if(!deliveryCount){
+          items.push({ type:'warning', title:rule.title, note:'Încă nu există un transport complet planificat. ' + remainderBits.join(' • ') });
+        }else if(pendingCount > 0){
+          items.push({ type:'warning', title:rule.title, note:'Mai rămân ' + pendingCount + ' transport(e) incomplete după ultimele cantități generate. ' + remainderBits.join(' • ') });
+        }
+      });
+      items.sort((a,b) => {
+        if(a.type !== b.type) return a.type === 'transport' ? -1 : 1;
+        if(a.type === 'transport'){
+          const da = trimText(a.deliveryIso) || '9999-12-31';
+          const db = trimText(b.deliveryIso) || '9999-12-31';
+          if(da !== db) return da.localeCompare(db);
+          return Math.max(0, Math.round(toNumber(a.transportNo || 0))) - Math.max(0, Math.round(toNumber(b.transportNo || 0)));
+        }
+        return String(a.title || '').localeCompare(String(b.title || ''), 'ro', { sensitivity:'base', numeric:true });
+      });
+      return items;
+    }
+    function buildGeneratorDeliverySummaryRow(item){
+      if(item.type !== 'transport'){
+        return '<tr>' +
+          '<td class="left">' + escapeHtml(item.title || '-') + '</td>' +
+          '<td>—</td>' +
+          '<td class="left">—</td>' +
+          '<td>—</td>' +
+          '<td>—</td>' +
+          '<td class="left generator-muted">' + escapeHtml(item.note || '—') + '</td>' +
+          '<td><span class="generator-status-chip warn">Avertizare</span></td>' +
+        '</tr>';
+      }
+      return '<tr>' +
+        '<td class="left">' + escapeHtml(item.title || '-') + '</td>' +
+        '<td>' + escapeHtml(item.transportNo ? String(item.transportNo) : '—') + '</td>' +
+        '<td class="left">' + escapeHtml(item.qtyLabel || '—') + '</td>' +
+        '<td>' + escapeHtml(item.finishIso ? isoToDisplay(item.finishIso) : '—') + '</td>' +
+        '<td>' + escapeHtml(item.deliveryIso ? isoToDisplay(item.deliveryIso) : '—') + '</td>' +
+        '<td class="left generator-muted">' + escapeHtml(item.note || '—') + '</td>' +
+        '<td><span class="generator-status-chip ok">OK</span></td>' +
+      '</tr>';
+    }
+    function renderGeneratorDeliverySummary(){
+      if(!els.generatorDeliverySummary) return;
+      const list = Array.isArray(state.generator.deliverySummary) ? state.generator.deliverySummary : [];
+      if(!list.length){
+        els.generatorDeliverySummary.className = 'generator-summary-empty';
+        els.generatorDeliverySummary.innerHTML = 'Generatorul de livrare apare după ce există un draft valid și reguli de transport pentru reperele introduse.';
+        return;
+      }
+      els.generatorDeliverySummary.className = '';
+      els.generatorDeliverySummary.innerHTML = '<table class="generator-summary-table"><thead><tr><th class="left">Grup livrare</th><th>Transport</th><th class="left">Cantități / transport</th><th>Gata la</th><th>Livrare propusă</th><th class="left">Observație</th><th>Status</th></tr></thead><tbody>' + list.map(buildGeneratorDeliverySummaryRow).join('') + '</tbody></table>';
+    }
+
     function buildGeneratorSummaryRow(summary){
       const statusClass = summary.uncoveredQty > 0 ? 'bad' : (summary.extraSafeSlots > 0 || !summary.hasHistory ? 'warn' : 'ok');
       const statusLabel = summary.uncoveredQty > 0 ? ('Lipsă ' + roNumber(summary.uncoveredQty) + ' buc') : (summary.extraSafeSlots > 0 ? ('+' + summary.extraSafeSlots + ' zile sig.') : (summary.hasHistory ? 'OK' : 'Fără istoric'));
@@ -5466,7 +5670,9 @@ function getDefaultPermissions(role){
         const uncoveredQty = Math.max(0, req.qty - draftQty);
         return { reper:req.reper, deliveryIso:deliveryIsoUsed, manualDeliveryIso:req.manualDeliveryIso || '', autoDeliveryIso:autoDeliveryIso || '', readyByIso:readyByIsoUsed || '', finishIso:finishIso || '', requestQty:req.qty, alreadyPlannedQty, draftQty, slotCount, templateQty, avgRealQty, recommendedSlots, extraSafeSlots, uncoveredQty, hasHistory:!!profile.hasHistory, machineLabel };
       });
+      state.generator.deliverySummary = buildGeneratorDeliverySummary(requests, draftRows);
       renderGeneratorSummary();
+      renderGeneratorDeliverySummary();
       return state.generator.summary;
     }
     function generateDraftPlan(){
@@ -5509,12 +5715,12 @@ function getDefaultPermissions(role){
           ];
 
           for(let phaseIndex = 0; phaseIndex < phaseConfigs.length && remaining > 0; phaseIndex += 1){
-            const dateIndexes = getGeneratorCandidateDateIndexes(draftRows, machine, { includeSaturday:phaseConfigs[phaseIndex].includeSaturday, startAfterIndex:lastOccupiedIndex, deadlineIso });
-            for(let idx = 0; idx < dateIndexes.length && remaining > 0; idx += 1){
-              const anchorIndex = dateIndexes[idx];
-              const anchorRow = draftRows[anchorIndex];
-              const targetDate = trimText(anchorRow && anchorRow.data);
+            const candidateDates = getGeneratorCandidateDates(draftRows, machine, { includeSaturday:phaseConfigs[phaseIndex].includeSaturday, startAfterIndex:lastOccupiedIndex, deadlineIso });
+            for(let idx = 0; idx < candidateDates.length && remaining > 0; idx += 1){
+              const targetDate = trimText(candidateDates[idx]);
               if(!targetDate) continue;
+              const anchorRow = (Array.isArray(draftRows) ? draftRows : []).find(row => trimText(row && row.data) === targetDate) || null;
+              if(!anchorRow) continue;
               if(isGeneratorHolidayRow(anchorRow) || isGeneratorSundayRow(anchorRow)) continue;
               if(!phaseConfigs[phaseIndex].includeSaturday && isGeneratorSaturdayRow(anchorRow)) continue;
 
@@ -5548,8 +5754,9 @@ function getDefaultPermissions(role){
         }
       });
 
+      const cleanedDraftRows = cleanupGeneratorDraftRows(draftRows, yearRowsBase);
       state.generator.sourceRows = clonePlanRows(yearRowsBase);
-      state.generator.draftRows = reindexRowsInDisplayOrder(sortRowsStable(draftRows));
+      state.generator.draftRows = reindexRowsInDisplayOrder(sortRowsStable(cleanedDraftRows));
       state.generator.generatedCellKeys = generatedCellKeys;
       state.generator.cellRequestMap = cellRequestMap;
       state.generator.lastGeneratedAt = nowIso();
@@ -6132,9 +6339,11 @@ function addRow(){
         state.generator.month = Number(this.value || 0) || 0;
         state.generator.draftRows = [];
         state.generator.summary = [];
+        state.generator.deliverySummary = [];
         state.generator.generatedCellKeys = Object.create(null);
         state.generator.cellRequestMap = Object.create(null);
         renderGeneratorSummary();
+        renderGeneratorDeliverySummary();
         renderGeneratorPreview();
       });
       if(els.generatorRequests) els.generatorRequests.addEventListener('input', function(event){
