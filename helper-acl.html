@@ -395,6 +395,86 @@
       }
     }
 
+    async function getSessionAccessToken(){
+      try {
+        const session = state.session && state.session.access_token ? state.session : null;
+        if (session && session.access_token) return session.access_token;
+      } catch (_e) {}
+      try {
+        const res = await sb.auth.getSession();
+        const session = res && res.data && res.data.session ? res.data.session : null;
+        return session && session.access_token ? session.access_token : '';
+      } catch (_e) {
+        return '';
+      }
+    }
+
+    function normalizeAdminUsersPayload(payload){
+      const raw = Array.isArray(payload)
+        ? payload
+        : Array.isArray(payload && payload.users)
+          ? payload.users
+          : Array.isArray(payload && payload.data)
+            ? payload.data
+            : Array.isArray(payload && payload.items)
+              ? payload.items
+              : [];
+      const found = new Map();
+      raw.forEach(row => {
+        const email = normalizeEmail(row && (row.email || row.user_email || row.mail));
+        if (!email) return;
+        const prev = found.get(email) || { email, label:safeId(email), role:'', source:['auth-users'], user_id:'' };
+        const nextRole = row && (row.role || row.app_role || row.user_role || '');
+        const nextId = row && (row.user_id || row.id || row.uid || '');
+        if (nextRole && !prev.role) prev.role = String(nextRole);
+        if (nextId && !prev.user_id) prev.user_id = String(nextId);
+        prev.source = Array.from(new Set((prev.source || []).concat(['auth-users'])));
+        found.set(email, prev);
+      });
+      return Array.from(found.values());
+    }
+
+    async function fetchAdminUsers(){
+      const token = await getSessionAccessToken();
+      const baseUrl = String((cfg && cfg.SUPABASE_URL) || '').replace(/\/$/, '');
+      const attempts = [];
+
+      if (sb && sb.functions && typeof sb.functions.invoke === 'function') {
+        attempts.push(async () => {
+          const res = await sb.functions.invoke('admin-control', { body:{ action:'list-users' } });
+          if (res && !res.error) return normalizeAdminUsersPayload(res.data);
+          return [];
+        });
+      }
+
+      if (baseUrl && token) {
+        const headers = { 'Authorization':'Bearer ' + token, 'Content-Type':'application/json' };
+        attempts.push(async () => {
+          const res = await fetch(baseUrl + '/functions/v1/admin-control/list-users', { method:'GET', headers });
+          if (!res.ok) return [];
+          return normalizeAdminUsersPayload(await res.json());
+        });
+        attempts.push(async () => {
+          const res = await fetch(baseUrl + '/functions/v1/admin-control?action=list-users', { method:'GET', headers });
+          if (!res.ok) return [];
+          return normalizeAdminUsersPayload(await res.json());
+        });
+        attempts.push(async () => {
+          const res = await fetch(baseUrl + '/functions/v1/admin-control', { method:'POST', headers, body: JSON.stringify({ action:'list-users' }) });
+          if (!res.ok) return [];
+          return normalizeAdminUsersPayload(await res.json());
+        });
+      }
+
+      for (const attempt of attempts){
+        try {
+          const users = await attempt();
+          if (Array.isArray(users) && users.length) return users;
+        } catch (_e) {}
+      }
+      return [];
+    }
+
     async function loadUsers(){
       const found = new Map();
       const add = (email, extra={}) => {
@@ -405,24 +485,36 @@
         if (extra.source) prev.source = Array.from(new Set(prev.source.concat([extra.source])));
         found.set(email, prev);
       };
+
+      const adminUsers = await fetchAdminUsers();
+      const hasCanonicalAuthList = Array.isArray(adminUsers) && adminUsers.length > 0;
+      adminUsers.forEach(user => add(user.email, { role:user.role || '', user_id:user.user_id || user.id || '', source:'auth-users' }));
+
       const queries = [
         { table:'profiles', select:'email,role,user_id,id' },
-        { table:'rf_acl', select:'email,role' },
-        { table:'user_account_access', select:'email,user_id,is_active,is_banned,note,updated_at' }
+        { table:'rf_acl', select:'email,role' }
       ];
       for (const q of queries){
         try {
           const res = await sb.from(q.table).select(q.select).limit(1000);
           if (!res.error && Array.isArray(res.data)) {
-            res.data.forEach(row => add(row.email, { role: row.role || '', user_id: row.user_id || row.id || '', source: q.table }));
+            res.data.forEach(row => {
+              const email = normalizeEmail(row && row.email);
+              if (!email) return;
+              if (hasCanonicalAuthList && !found.has(email)) return;
+              add(email, { role: row.role || '', user_id: row.user_id || row.id || '', source: q.table });
+            });
           }
         } catch (_) {}
       }
       if (state.session && state.session.user && state.session.user.email) add(state.session.user.email, { user_id: state.session.user.id || '', source:'session' });
       state.users = Array.from(found.values()).sort((a,b) => a.email.localeCompare(b.email));
+      if (state.selectedEmail && !state.users.some(u => u.email === state.selectedEmail)) state.selectedEmail = '';
       if (!state.selectedEmail && state.users.length) state.selectedEmail = state.users[0].email;
       setStatus(els.countStatus, String(state.users.length), state.users.length ? 'ok' : 'warn');
-      els.countSub.textContent = state.users.length ? 'Lista de conturi este pregătită.' : 'Nu am găsit conturi în tabelele publice.';
+      els.countSub.textContent = state.users.length
+        ? (hasCanonicalAuthList ? 'Lista de conturi vine din Auth și ignoră conturile șterse rămase în tabele vechi.' : 'Lista de conturi este pregătită.')
+        : (hasCanonicalAuthList ? 'Nu există conturi active în Auth.' : 'Nu am găsit conturi în tabelele publice.');
     }
 
 
