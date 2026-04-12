@@ -235,6 +235,7 @@
 
     function statusKeyFromRow(row){ if (row && row.is_banned === true) return 'banned'; if (row && row.is_active === false) return 'blocked'; return 'active'; }
     function statusLabel(statusKey){ return statusKey === 'banned' ? 'Banat' : (statusKey === 'blocked' ? 'Blocat' : 'Activ'); }
+    function accountStamp(row){ return String(row && row.updated_at || '').trim(); }
     function normalizeAccountAccessRow(row){
       const clean = row && typeof row === 'object' ? row : {};
       return {
@@ -245,6 +246,17 @@
         note: String(clean.note || clean.ban_reason || '').trim(),
         updated_at: String(clean.updated_at || '').trim()
       };
+    }
+    function mergeAccountAccessRow(row){
+      const normalized = normalizeAccountAccessRow(row);
+      if (!normalized.email) return;
+      const key = normalized.email;
+      const prev = state.accountAccess[key] ? normalizeAccountAccessRow(state.accountAccess[key]) : null;
+      if (!prev) { state.accountAccess[key] = normalized; return; }
+      const prevStamp = accountStamp(prev);
+      const nextStamp = accountStamp(normalized);
+      if (!prevStamp && nextStamp) { state.accountAccess[key] = normalized; return; }
+      if (nextStamp && nextStamp >= prevStamp) { state.accountAccess[key] = normalized; return; }
     }
     function currentAccountAccess(email){
       const key = normalizeEmail(email || state.selectedEmail);
@@ -419,11 +431,7 @@
       try {
         const res = await sb.from('user_account_access').select('email,user_id,is_active,is_banned,note,updated_at').limit(2000);
         if (!res.error && Array.isArray(res.data)) {
-          res.data.forEach(row => {
-            const normalized = normalizeAccountAccessRow(row);
-            if (!normalized.email) return;
-            state.accountAccess[normalized.email] = normalized;
-          });
+          res.data.forEach(row => mergeAccountAccessRow(row));
         }
       } catch (_) {}
       const mirror = await readDocByKey('user_account_access_v1');
@@ -431,8 +439,7 @@
         Object.keys(mirror.users).forEach(key => {
           const normalized = normalizeAccountAccessRow(mirror.users[key]);
           if (!normalized.email) normalized.email = normalizeEmail(key);
-          if (!normalized.email || state.accountAccess[normalized.email]) return;
-          state.accountAccess[normalized.email] = normalized;
+          mergeAccountAccessRow(normalized);
         });
       }
     }
@@ -694,7 +701,16 @@
       let accountOk = false, accountErr = null;
       try {
         const accountPayload = { email, user_id: selected.user_id || null, is_active: accessRow.is_active !== false, is_banned: accessRow.is_banned === true, note: accessRow.note || '', updated_at: stamp };
-        const accountRes = await sb.from('user_account_access').upsert(accountPayload, { onConflict:'email' });
+        let accountRes = await sb.from('user_account_access').upsert(accountPayload, { onConflict:'email' });
+        if (accountRes && accountRes.error) {
+          let delByEmail = await sb.from('user_account_access').delete().eq('email', email);
+          if (delByEmail && delByEmail.error) throw delByEmail.error;
+          if (selected.user_id) {
+            let delByUser = await sb.from('user_account_access').delete().eq('user_id', selected.user_id).neq('email', email);
+            if (delByUser && delByUser.error) throw delByUser.error;
+          }
+          accountRes = await sb.from('user_account_access').insert(accountPayload);
+        }
         if (accountRes && accountRes.error) throw accountRes.error;
         accountOk = true;
       } catch (err) { accountErr = err; }

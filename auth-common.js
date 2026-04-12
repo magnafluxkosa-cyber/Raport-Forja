@@ -387,7 +387,7 @@
     const email = normalizeEmail(user && user.email);
     const userId = String(user && user.id || '').trim();
     if(!user || (!email && !userId)){
-      return { is_active:true, is_banned:false, note:'', ban_reason:'' };
+      return { is_active:true, is_banned:false, note:'', ban_reason:'', updated_at:'' };
     }
 
     function normalizeStatusRow(row){
@@ -401,62 +401,82 @@
         note: note,
         ban_reason: note,
         email: normalizeEmail(row.email || email),
-        user_id: String(row.user_id || userId || '').trim()
+        user_id: String(row.user_id || userId || '').trim(),
+        updated_at: String(row.updated_at || '').trim()
       };
+    }
+
+    function rowMatchesUser(row){
+      if(!row) return false;
+      const rowEmail = normalizeEmail(row.email);
+      const rowUserId = String(row.user_id || '').trim();
+      return (!!email && rowEmail === email) || (!!userId && rowUserId === userId);
+    }
+
+    function pickLatest(rows){
+      let best = null;
+      (Array.isArray(rows) ? rows : []).forEach(function(row){
+        const normalized = normalizeStatusRow(row);
+        if(!normalized || !rowMatchesUser(normalized)) return;
+        const currentStamp = String(best && best.updated_at || '');
+        const nextStamp = String(normalized.updated_at || '');
+        if(!best || (nextStamp && nextStamp >= currentStamp)){
+          best = normalized;
+        }
+      });
+      return best;
     }
 
     try {
       const sb = getSupabaseClient();
+      const candidates = [];
       if(userId){
         const byUserId = await maybeSelect(
           sb.from('user_account_access')
-            .select('user_id,email,is_active,is_banned,note')
+            .select('user_id,email,is_active,is_banned,note,updated_at')
             .eq('user_id', userId)
-            .maybeSingle()
+            .order('updated_at', { ascending:false })
+            .limit(50)
         );
-        const normalizedByUserId = normalizeStatusRow(byUserId);
-        if(normalizedByUserId){
-          return normalizedByUserId;
-        }
+        if(Array.isArray(byUserId)) candidates.push.apply(candidates, byUserId);
       }
       if(email){
         const byEmail = await maybeSelect(
           sb.from('user_account_access')
-            .select('user_id,email,is_active,is_banned,note')
+            .select('user_id,email,is_active,is_banned,note,updated_at')
             .ilike('email', email)
-            .maybeSingle()
+            .order('updated_at', { ascending:false })
+            .limit(50)
         );
-        const normalizedByEmail = normalizeStatusRow(byEmail);
-        if(normalizedByEmail){
-          return normalizedByEmail;
-        }
+        if(Array.isArray(byEmail)) candidates.push.apply(candidates, byEmail);
       }
 
       const mirror = await readLatestRfDocument(sb, 'user_account_access_v1');
       if(mirror && mirror.users && typeof mirror.users === 'object'){
-        const direct = normalizeStatusRow(mirror.users[email] || mirror.users[userId] || null);
-        if(direct){
-          return direct;
-        }
-        const entries = Object.keys(mirror.users);
-        for(let i = 0; i < entries.length; i += 1){
-          const key = entries[i];
+        Object.keys(mirror.users).forEach(function(key){
           const row = mirror.users[key];
-          const rowEmail = normalizeEmail(row && row.email);
-          const rowUserId = String(row && row.user_id || '').trim();
-          if((email && rowEmail === email) || (userId && rowUserId === userId)){
-            const normalizedMirror = normalizeStatusRow(row);
-            if(normalizedMirror){
-              return normalizedMirror;
-            }
+          const normalized = normalizeStatusRow(row || {});
+          if(!normalized){
+            return;
           }
-        }
+          if(!normalized.email){
+            normalized.email = normalizeEmail(key);
+          }
+          if(rowMatchesUser(normalized)){
+            candidates.push(normalized);
+          }
+        });
+      }
+
+      const best = pickLatest(candidates);
+      if(best){
+        return best;
       }
     } catch (_) {
       // fallback safe open when status source is unavailable
     }
 
-    return { is_active:true, is_banned:false, note:'', ban_reason:'' };
+    return { is_active:true, is_banned:false, note:'', ban_reason:'', updated_at:'' };
   }
 
   async function getSession(){
@@ -513,6 +533,30 @@
     try {
       const authState = await getCurrentUserWithRole();
       if(authState){
+        const status = authState.accountStatus || {};
+        const isBlocked = status.is_active === false || status.is_banned === true;
+        if(isBlocked){
+          const note = String(status.note || status.ban_reason || '').trim();
+          const message = status.is_banned === true
+            ? ('Contul tău este banat.' + (note ? ' Motiv: ' + note : ''))
+            : ('Contul tău este blocat.' + (note ? ' Motiv: ' + note : ''));
+          try {
+            const sb = getSupabaseClient();
+            await sb.auth.signOut();
+          } catch (_) {}
+          clearUserState();
+          if(settings.redirectToLogin){
+            const loginUrl = new URL(buildLoginUrl(settings.next));
+            loginUrl.searchParams.set('account', status.is_banned === true ? 'banned' : 'blocked');
+            if(note){
+              loginUrl.searchParams.set('reason', note.slice(0, 300));
+            }
+            window.location.href = loginUrl.toString();
+            return null;
+          }
+          renderAccessDeniedPage('Cont restricționat', message);
+          return null;
+        }
         return authState;
       }
     } catch (_) {
@@ -948,6 +992,48 @@
       stop();
       return originalSignOut.call(this, options);
     };
+  }
+
+  if(document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start, { once:true });
+  else start();
+})();
+
+/* ACCOUNT STATUS LIVE ENFORCER */
+(function(){
+  'use strict';
+
+  let timer = null;
+  let running = false;
+
+  async function checkNow(){
+    try {
+      if(!window.ERPAuth || typeof window.ERPAuth.getCurrentUserWithRole !== 'function') return;
+      const authState = await window.ERPAuth.getCurrentUserWithRole();
+      if(!authState || !authState.user) return;
+      const status = authState.accountStatus || {};
+      if(status.is_banned === true || status.is_active === false){
+        const note = String(status.note || status.ban_reason || '').trim();
+        const loginUrl = new URL(window.ERPAuth.buildLoginUrl(window.location.pathname.split('/').pop() || 'index.html'), window.location.href);
+        loginUrl.searchParams.set('account', status.is_banned === true ? 'banned' : 'blocked');
+        if(note) loginUrl.searchParams.set('reason', note.slice(0, 300));
+        try { await window.ERPAuth.signOut({ redirectTo: loginUrl.toString() }); } catch (_) { window.location.href = loginUrl.toString(); }
+      }
+    } catch (_) {}
+  }
+
+  function start(){
+    if(running) return;
+    running = true;
+    checkNow();
+    timer = window.setInterval(checkNow, 20000);
+    window.addEventListener('focus', checkNow);
+    document.addEventListener('visibilitychange', function(){ if(document.hidden !== true) checkNow(); });
+  }
+
+  function stop(){
+    try { if(timer) clearInterval(timer); } catch (_) {}
+    timer = null;
+    running = false;
   }
 
   if(document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start, { once:true });
