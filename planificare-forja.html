@@ -759,7 +759,7 @@
         summary: [],
         generatedCellKeys: Object.create(null),
         cellRequestMap: Object.create(null),
-        sourceMonthRows: [],
+        sourceRows: [],
         lastGeneratedAt: '',
         recalcTimer: null
       }
@@ -4894,6 +4894,22 @@ function getDefaultPermissions(role){
         return Number(iso.slice(5,7)) === cleanMonth;
       });
     }
+    function getRowsForYear(rows, year){
+      const cleanYear = String(year || '');
+      return (Array.isArray(rows) ? rows : []).filter(row => {
+        if(cleanYear && String(row && row.an || '') !== cleanYear) return false;
+        const iso = trimText(row && row.data);
+        return /^\d{4}-\d{2}-\d{2}$/.test(iso);
+      });
+    }
+    function getRowsUpToIso(rows, endIso){
+      const cleanEnd = trimText(endIso);
+      if(!cleanEnd) return Array.isArray(rows) ? rows.slice() : [];
+      return (Array.isArray(rows) ? rows : []).filter(row => {
+        const iso = trimText(row && row.data);
+        return !iso || iso <= cleanEnd;
+      });
+    }
     function clonePlanRows(rows){
       return (Array.isArray(rows) ? rows : []).map((row, index) => normalizePlanRow({
         id: row.id,
@@ -5179,12 +5195,26 @@ function getDefaultPermissions(role){
     function buildGeneratorPreviewHeader(){
       return '\n        <tr>\n          <th class="sticky1" rowspan="2"><div class="cell-static">AN</div></th>\n          <th class="sticky2" rowspan="2"><div class="cell-static">DATA</div></th>\n          <th class="sticky3" rowspan="2"><div class="cell-static">ZI</div></th>\n          ' + MACHINE_ORDER.map(machine => '<th class="group group-end" colspan="3"><div class="cell-static">' + escapeHtml(machine) + '</div></th>').join('') + '\n        </tr>\n        <tr>\n          ' + MACHINE_ORDER.map(() => '\n            <th><div class="cell-static">REPER</div></th>\n            <th><div class="cell-static">PLANIFICAT</div></th>\n            <th class="group-end"><div class="cell-static">REALIZAT</div></th>\n          ').join('') + '\n        </tr>';
     }
+    function scrollGeneratorPreviewToFirstGenerated(){
+      if(!els.generatorPreviewBody) return;
+      const firstCellKey = Object.keys(state.generator.generatedCellKeys || Object.create(null))[0] || '';
+      if(!firstCellKey) return;
+      const rowId = trimText(firstCellKey.split('||')[0]);
+      if(!rowId) return;
+      const rowEl = els.generatorPreviewBody.querySelector('[data-generator-preview-row="' + cssEscape(rowId) + '"]');
+      if(!rowEl) return;
+      const wrap = (els.generatorPreviewBody.closest && els.generatorPreviewBody.closest('.generator-preview-wrap')) || null;
+      if(!wrap) return;
+      const top = Math.max(0, rowEl.offsetTop - 84);
+      if(typeof wrap.scrollTo === 'function') wrap.scrollTo({ top, behavior:'smooth' });
+      else wrap.scrollTop = top;
+    }
     function renderGeneratorPreview(){
       if(!els.generatorPreviewHead || !els.generatorPreviewBody) return;
       els.generatorPreviewHead.innerHTML = buildGeneratorPreviewHeader();
       const rows = Array.isArray(state.generator.draftRows) ? state.generator.draftRows : [];
       if(!rows.length){
-        els.generatorPreviewBody.innerHTML = '<tr><td colspan="21"><div class="empty">Nu există încă draft generat pentru luna selectată.</div></td></tr>';
+        els.generatorPreviewBody.innerHTML = '<tr><td colspan="21"><div class="empty">Nu există încă draft generat pentru anul selectat.</div></td></tr>';
         return;
       }
       const generatedMap = state.generator.generatedCellKeys || Object.create(null);
@@ -5206,6 +5236,7 @@ function getDefaultPermissions(role){
           '<td class="sticky2"><div class="cell-static">' + escapeHtml(isoToDisplay(row.data)) + '</div></td>' +
           '<td class="sticky3"><div class="cell-static">' + escapeHtml(trimText(row.zi || getWeekdayLabel(row.data))) + '</div></td>' + cells + '</tr>';
       }).join('');
+      setTimeout(scrollGeneratorPreviewToFirstGenerated, 30);
     }
     function buildGeneratorSummaryRow(summary){
       const statusClass = summary.uncoveredQty > 0 ? 'bad' : (summary.extraSafeSlots > 0 || !summary.hasHistory ? 'warn' : 'ok');
@@ -5244,19 +5275,20 @@ function getDefaultPermissions(role){
       els.generatorSummary.innerHTML = '<table class="generator-summary-table"><thead><tr><th class="left">Reper</th><th>Livrare</th><th>Gata până la</th><th>Cerut</th><th>Deja în plan</th><th>Total draft</th><th>Zile-slot draft</th><th>Model / zi</th><th>Medie reală / zi</th><th>Zile recomandate</th><th>Siguranță</th><th class="left">Observație</th><th>Status</th></tr></thead><tbody>' + list.map(buildGeneratorSummaryRow).join('') + '</tbody></table>';
       const warnings = list.filter(item => item.uncoveredQty > 0 || item.extraSafeSlots > 0 || !item.hasHistory);
       if(els.generatorFooterNote){
-        els.generatorFooterNote.textContent = warnings.length ? ('Draft generat pentru ' + getMonthName(state.generator.month) + ' ' + String(state.activeYear || '') + '. Verifică avertizările înainte de aplicare.') : ('Draftul pentru ' + getMonthName(state.generator.month) + ' ' + String(state.activeYear || '') + ' arată acoperit după regulile generatorului.');
+        els.generatorFooterNote.textContent = warnings.length ? ('Draft generat pentru întregul plan din anul ' + String(state.activeYear || '') + ', cu prioritate pentru livrările din ' + getMonthName(state.generator.month) + '. Verifică avertizările înainte de aplicare.') : ('Draftul pentru întregul plan din anul ' + String(state.activeYear || '') + ' arată acoperit după regulile generatorului.');
       }
     }
     function recomputeGeneratorSummary(){
       const requests = normalizeGeneratorRequests(state.generator.requests);
-      const monthRowsBase = getRowsForYearMonth(state.rows, state.activeYear, state.generator.month);
-      const draftRows = Array.isArray(state.generator.draftRows) && state.generator.draftRows.length ? state.generator.draftRows : clonePlanRows(monthRowsBase);
+      const sourceRows = Array.isArray(state.generator.sourceRows) && state.generator.sourceRows.length ? state.generator.sourceRows : getRowsForYear(state.rows, state.activeYear);
+      const draftRows = Array.isArray(state.generator.draftRows) && state.generator.draftRows.length ? state.generator.draftRows : clonePlanRows(sourceRows);
       state.generator.summary = requests.map(req => {
         const profile = buildGeneratorProfile(req.reper, state.activeYear, state.generator.month);
         const assigned = getGeneratorAssignedTotals(req.requestKey || req.id, req.reper, draftRows);
-        const alreadyPlannedQty = sumPlannedQtyForReper(monthRowsBase, req.reper);
-        const draftQty = assigned.qty || sumPlannedQtyForReper(draftRows, req.reper);
-        const slotCount = assigned.slotCount || countPlannedSlotsForReper(draftRows, req.reper);
+        const relevantSourceRows = req.readyByIso ? getRowsUpToIso(sourceRows, req.readyByIso) : sourceRows;
+        const alreadyPlannedQty = sumPlannedQtyForReper(relevantSourceRows, req.reper);
+        const draftQty = assigned.qty || sumPlannedQtyForReper(req.readyByIso ? getRowsUpToIso(draftRows, req.readyByIso) : draftRows, req.reper);
+        const slotCount = assigned.slotCount || countPlannedSlotsForReper(req.readyByIso ? getRowsUpToIso(draftRows, req.readyByIso) : draftRows, req.reper);
         const machineLabel = profile.machineOrder[0] || '';
         const templateQty = machineLabel ? Math.max(0, Math.round((profile.planProfile[machineLabel] && profile.planProfile[machineLabel].modeQty) || profile.bestTemplateQty || 0)) : Math.max(0, Math.round(profile.bestTemplateQty || 0));
         const avgRealQty = machineLabel ? Math.max(0, Math.round((profile.actualProfile[machineLabel] && profile.actualProfile[machineLabel].reliableAvgQty) || (profile.actualProfile[machineLabel] && profile.actualProfile[machineLabel].avgQty) || profile.bestActualAvg || 0)) : Math.max(0, Math.round(profile.bestActualAvg || 0));
@@ -5276,9 +5308,11 @@ function getDefaultPermissions(role){
       if(!year){ window.alert('Selectează mai întâi anul din planificare.'); return; }
       if(month < 1 || month > 12){ window.alert('Selectează luna pentru draft.'); return; }
       if(!requests.length){ window.alert('Introdu cel puțin un reper cu o cantitate finală mai mare ca 0.'); return; }
-      const monthRowsBase = getRowsForYearMonth(state.rows, year, month);
+      const yearRowsBase = getRowsForYear(state.rows, year);
+      if(!yearRowsBase.length){ window.alert('Nu există rânduri disponibile în planificare pentru anul selectat.'); return; }
+      const monthRowsBase = getRowsForYearMonth(yearRowsBase, year, month);
       if(!monthRowsBase.length){ window.alert('Nu există rânduri disponibile în planificare pentru luna selectată.'); return; }
-      const draftRows = clonePlanRows(monthRowsBase);
+      const draftRows = clonePlanRows(yearRowsBase);
       const generatedCellKeys = Object.create(null);
       const cellRequestMap = Object.create(null);
       requests.forEach(req => {
@@ -5327,7 +5361,7 @@ function getDefaultPermissions(role){
           }
         }
       });
-      state.generator.sourceMonthRows = clonePlanRows(monthRowsBase);
+      state.generator.sourceRows = clonePlanRows(yearRowsBase);
       state.generator.draftRows = draftRows;
       state.generator.generatedCellKeys = generatedCellKeys;
       state.generator.cellRequestMap = cellRequestMap;
@@ -5339,13 +5373,10 @@ function getDefaultPermissions(role){
       if(!state.canEdit) return;
       const draftRows = Array.isArray(state.generator.draftRows) ? state.generator.draftRows : [];
       if(!draftRows.length){ window.alert('Generează mai întâi draftul pe care vrei să-l aplici.'); return; }
-      const month = Number(state.generator.month || 0);
       const year = String(state.activeYear || '');
       const draftMap = new Map(draftRows.map(row => [String(row.id), normalizePlanRow(row, 0)]));
       state.rows = reindexRowsInDisplayOrder(sortRowsStable(state.rows.map(row => {
-        const iso = trimText(row && row.data);
         if(String(row && row.an || '') !== year) return row;
-        if(Number(iso.slice(5,7)) !== month) return row;
         return draftMap.get(String(row.id)) || row;
       })));
       renderFilters();
