@@ -5260,14 +5260,29 @@ function getDefaultPermissions(role){
       }
       return { rowIndex: range.lastIndex + 1, usage:nextUsage, isNew:true };
     }
-    function getGeneratorCandidateDateIndexes(rows, machine, options){
+    function isGeneratorRowCompletelyEmpty(row){
+      if(!row || !row.slots) return true;
+      return MACHINE_ORDER.every(machine => {
+        const slot = row.slots[machine] || normalizePlanSlot({});
+        return !trimText(slot.reper) && Math.max(0, Math.round(toNumber(slot.planificat))) <= 0 && Math.max(0, Math.round(toNumber(slot.realizat_live || slot.realizat_seed || 0))) <= 0;
+      });
+    }
+    function cleanupGeneratorDraftRows(rows, sourceRows){
+      const sourceIds = new Set((Array.isArray(sourceRows) ? sourceRows : []).map(row => String(row && row.id || '')));
+      return (Array.isArray(rows) ? rows : []).filter(row => {
+        const rowId = String(row && row.id || '');
+        if(sourceIds.has(rowId)) return true;
+        return !isGeneratorRowCompletelyEmpty(row);
+      });
+    }
+    function getGeneratorCandidateDates(rows, machine, options){
       const opts = options && typeof options === 'object' ? options : {};
       const includeSaturday = opts.includeSaturday === true;
       const startAfterIndex = Number.isFinite(Number(opts.startAfterIndex)) ? Number(opts.startAfterIndex) : getLastOccupiedRowIndexForMachine(rows, machine);
       const startIndex = Math.max(0, startAfterIndex);
       const deadlineIso = trimText(opts.deadlineIso);
       const seen = Object.create(null);
-      const indexes = [];
+      const dates = [];
       for(let i = startIndex; i < (Array.isArray(rows) ? rows.length : 0); i += 1){
         const row = rows[i];
         const rowIso = trimText(row && row.data);
@@ -5277,9 +5292,9 @@ function getDefaultPermissions(role){
         const valid = includeSaturday ? (isGeneratorWeekdayCandidate(row) || isGeneratorSaturdayCandidate(row)) : isGeneratorWeekdayCandidate(row);
         if(!valid) continue;
         seen[rowIso] = true;
-        indexes.push(i);
+        dates.push(rowIso);
       }
-      return indexes;
+      return dates;
     }
     function normalizeGeneratorRequests(requests){
       const merged = Object.create(null);
@@ -5509,12 +5524,12 @@ function getDefaultPermissions(role){
           ];
 
           for(let phaseIndex = 0; phaseIndex < phaseConfigs.length && remaining > 0; phaseIndex += 1){
-            const dateIndexes = getGeneratorCandidateDateIndexes(draftRows, machine, { includeSaturday:phaseConfigs[phaseIndex].includeSaturday, startAfterIndex:lastOccupiedIndex, deadlineIso });
-            for(let idx = 0; idx < dateIndexes.length && remaining > 0; idx += 1){
-              const anchorIndex = dateIndexes[idx];
-              const anchorRow = draftRows[anchorIndex];
-              const targetDate = trimText(anchorRow && anchorRow.data);
+            const candidateDates = getGeneratorCandidateDates(draftRows, machine, { includeSaturday:phaseConfigs[phaseIndex].includeSaturday, startAfterIndex:lastOccupiedIndex, deadlineIso });
+            for(let idx = 0; idx < candidateDates.length && remaining > 0; idx += 1){
+              const targetDate = trimText(candidateDates[idx]);
               if(!targetDate) continue;
+              const anchorRow = (Array.isArray(draftRows) ? draftRows : []).find(row => trimText(row && row.data) === targetDate) || null;
+              if(!anchorRow) continue;
               if(isGeneratorHolidayRow(anchorRow) || isGeneratorSundayRow(anchorRow)) continue;
               if(!phaseConfigs[phaseIndex].includeSaturday && isGeneratorSaturdayRow(anchorRow)) continue;
 
@@ -5548,8 +5563,9 @@ function getDefaultPermissions(role){
         }
       });
 
+      const cleanedDraftRows = cleanupGeneratorDraftRows(draftRows, yearRowsBase);
       state.generator.sourceRows = clonePlanRows(yearRowsBase);
-      state.generator.draftRows = reindexRowsInDisplayOrder(sortRowsStable(draftRows));
+      state.generator.draftRows = reindexRowsInDisplayOrder(sortRowsStable(cleanedDraftRows));
       state.generator.generatedCellKeys = generatedCellKeys;
       state.generator.cellRequestMap = cellRequestMap;
       state.generator.lastGeneratedAt = nowIso();
