@@ -1,7 +1,7 @@
 (function(){
   'use strict';
 
-  const ADMIN_EMAIL = 'forja.editor@gmail.com';
+  const ADMIN_EMAIL = '';
   const STORAGE = {
     userId: 'rf_user_id',
     userEmail: 'rf_user_email',
@@ -650,7 +650,7 @@
     const fallbackPermissions = defaultPermissionsForRole(cleanRole);
     const sb = getSupabaseClient();
 
-    if(user && normalizeEmail(user.email) !== ADMIN_EMAIL){
+    if(user){
       const strictMap = await loadUserPermissionMap(sb, user);
       if(strictMap && strictMap.size){
         const matched = strictMap.get(settings.pageKey) || { can_view:false, can_add:false, can_edit:false, can_delete:false, can_export:false, can_import:false };
@@ -667,33 +667,15 @@
     }
 
     if(window.RF_ACL && typeof window.RF_ACL.resolvePageAccess === 'function'){
-      try {
-        const access = await window.RF_ACL.resolvePageAccess(settings.pageKey, {
-          client: sb,
-          user,
-          role
-        });
-        return Object.assign({ user, role: access && access.role ? access.role : cleanRole }, access || {});
-      } catch (_err) {
-        return {
-          allowed:false,
-          user,
-          role:cleanRole,
-          permissions:{ can_view:false, can_add:false, can_edit:false, can_delete:false, can_export:false, can_import:false },
-          source:'acl error deny',
-          message:'Verificarea permisiunilor a eșuat. Acces blocat implicit.'
-        };
-      }
+      const access = await window.RF_ACL.resolvePageAccess(settings.pageKey, {
+        client: sb,
+        user,
+        role
+      });
+      return Object.assign({ user, role: access && access.role ? access.role : cleanRole }, access || {});
     }
 
-    return {
-      allowed:false,
-      user,
-      role:cleanRole,
-      permissions:{ can_view:false, can_add:false, can_edit:false, can_delete:false, can_export:false, can_import:false },
-      source:'deny by default',
-      message:'Nu ai acces în această foaie. Cere acces de la admin.'
-    };
+    return { allowed:true, user, role:cleanRole, permissions:fallbackPermissions, source:'role fallback' };
   }
 
   window.ERPAuth = {

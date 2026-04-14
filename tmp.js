@@ -124,8 +124,19 @@
       }
 
       async function resolveRole(user){
-      return user ? 'admin' : 'viewer';
-    }
+    if(!user) return 'viewer';
+    try{
+      const client = (typeof APP !== 'undefined' && APP && APP.supa)
+        || (typeof createSupabaseClient === 'function' ? await createSupabaseClient() : null)
+        || (window.ERPAuth && typeof window.ERPAuth.getSupabaseClient === 'function' ? window.ERPAuth.getSupabaseClient() : null)
+        || null;
+      if(window.RF_ACL && typeof window.RF_ACL.resolveRole === 'function'){
+        const resolved = await window.RF_ACL.resolveRole(client, user);
+        return String((resolved && resolved.role) || 'viewer').trim().toLowerCase();
+      }
+    }catch(_e){}
+    return 'viewer';
+  }
 
       function buildRedirectUrl(){
         return './index.html';

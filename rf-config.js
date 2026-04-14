@@ -223,7 +223,7 @@ function getControlCatalogForPage(pageKey) {
     APP_NAME: 'K.A.D',
     SUPABASE_URL: 'https://addlybnigrywqowpbhvd.supabase.co',
     SUPABASE_ANON_KEY: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFkZGx5Ym5pZ3J5d3Fvd3BiaHZkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzI2NjY2NjQsImV4cCI6MjA4ODI0MjY2NH0.VjbSKs7G_5T7GhdrjT8dtj2HCF6Az9KYfkpkSE7JTo4',
-    ADMIN_EMAIL: 'forja.editor@gmail.com',
+    ADMIN_EMAIL: '',
     DEFAULT_PAGES: PAGE_LIST.map(function (page) { return page.page_key; }),
     pages: clonePages()
   });
@@ -1781,7 +1781,7 @@ async function applyDomPermissions(pageKey, root, options) {
     var mirror = await readDashboardAclMirror(client);
     var roleDecisions = collectAclDecisions({ pageKey:key, href:href, role:role, email:email, userPermissionMap:null, permissionMap:permissionMap, mirror:mirror });
 
-    var rolePermissions = { can_view:false, can_add:false, can_edit:false, can_delete:false, can_export:false, can_import:false };
+    var rolePermissions = defaultPageAccessFromRole(role, key);
     var roleExplicitTrue = false;
     var roleExplicitFalse = false;
     roleDecisions.forEach(function (entry) {
@@ -1791,12 +1791,14 @@ async function applyDomPermissions(pageKey, root, options) {
       if (permissionEntry.can_view === false) roleExplicitFalse = true;
     });
 
-    var allowed = roleExplicitTrue === true && roleExplicitFalse !== true;
+    var allowed = rolePermissions.can_view !== false;
+    if (roleExplicitFalse) allowed = false;
+    else if (roleExplicitTrue) allowed = true;
 
     return {
       allowed: allowed,
       role: role,
-      source: roleExplicitFalse ? 'role acl explicit false' : (roleExplicitTrue ? 'role acl explicit true' : 'deny by default'),
+      source: roleExplicitFalse ? 'role acl explicit false' : (roleExplicitTrue ? 'role acl explicit true' : 'role fallback'),
       message: allowed ? '' : 'Nu ai acces în această foaie. Cere acces de la admin.',
       permissions: rolePermissions,
       email: email,
@@ -1875,7 +1877,7 @@ async function applyDomPermissions(pageKey, root, options) {
       var pageKey = INITIAL_PAGE_KEY || inferPageKey(window.location.pathname);
       try {
         if (!window.supabase || typeof window.supabase.createClient !== 'function') {
-          renderAccessDeniedPage(pageKey, 'Verificarea ACL a eșuat. Acces blocat implicit.');
+          setAclPendingState(false);
           return;
         }
         if (!pageKey || pageKey === 'index' || pageKey === 'login') {
@@ -1891,7 +1893,7 @@ async function applyDomPermissions(pageKey, root, options) {
         try { sessionStorage.setItem('rf_acl_denied_message', result.message || 'Nu ai acces în această foaie.'); } catch (_) {}
         renderAccessDeniedPage(pageKey, result.message || 'Nu ai acces în această pagină. Doar adminul are acces sau trebuie să primești permisiune.');
       } catch (_) {
-        renderAccessDeniedPage(pageKey, 'Verificarea ACL a eșuat. Acces blocat implicit.');
+        setAclPendingState(false);
       }
     });
   }
@@ -3319,21 +3321,9 @@ async function applyDomPermissions(pageKey, root, options) {
     if (pageKey === 'login') return;
     if (!pageKey || !originalResolvePageAccess) return;
     var client = window.createRfSupabaseClient ? window.createRfSupabaseClient() : null;
-    if (!client) {
-      renderAccessDeniedPage(pageKey, 'Verificarea ACL a eșuat. Acces blocat implicit.');
-      return;
-    }
-    var pageAccess = null;
-    try {
-      pageAccess = await originalResolvePageAccess(pageKey, { client: client });
-    } catch (_) {
-      renderAccessDeniedPage(pageKey, 'Verificarea ACL a eșuat. Acces blocat implicit.');
-      return;
-    }
-    if (!pageAccess || pageAccess.allowed !== true) {
-      renderAccessDeniedPage(pageKey, (pageAccess && pageAccess.message) || 'Nu ai acces în această foaie. Cere acces de la admin.');
-      return;
-    }
+    if (!client) return;
+    var pageAccess = await originalResolvePageAccess(pageKey, { client: client });
+    if (!pageAccess || pageAccess.allowed !== true) return;
     await RF.applyDomPermissions(pageKey, document, { client: client, pageAccess: pageAccess });
     installEventGuards();
     window.__RF_ACL_PAGE_BOOT__ = {

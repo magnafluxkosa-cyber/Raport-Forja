@@ -114,7 +114,7 @@
         const cfg = window.RF_CONFIG || {};
         const url = cfg.SUPABASE_URL || window.SUPABASE_URL || '';
         const key = cfg.SUPABASE_ANON_KEY || window.SUPABASE_ANON_KEY || '';
-        const adminEmail = String(cfg.ADMIN_EMAIL || window.ADMIN_EMAIL || 'forja.editor@gmail.com').toLowerCase();
+        const adminEmail = String(cfg.ADMIN_EMAIL || window.ADMIN_EMAIL || '').toLowerCase();
         return { url, key, adminEmail };
       }
 
@@ -226,8 +226,16 @@
       }
 
       async function resolveRole(user){
-      return user ? 'admin' : 'viewer';
-    }
+        if (!user) return { role:'viewer', source:'no-user' };
+        try {
+          if (window.RF_ACL && typeof window.RF_ACL.resolveRole === 'function') {
+            const resolved = await window.RF_ACL.resolveRole(sb, user);
+            if (resolved && typeof resolved === 'object') return resolved;
+            return { role:String(resolved || 'viewer').trim().toLowerCase(), source:'rf-acl' };
+          }
+        } catch (_) {}
+        return { role:'viewer', source:'fallback viewer' };
+      }
 
       async function loadUserPermissionMap(user){
         if (!sb || !user || !(window.RF_ACL && typeof window.RF_ACL.loadUserPermissionMap === 'function')) return null;
