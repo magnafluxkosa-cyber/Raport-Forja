@@ -379,10 +379,6 @@
       return safeGetItem(STORAGE.userRole) || 'viewer';
     }
 
-    if(email === ADMIN_EMAIL){
-      return 'admin';
-    }
-
     const sb = getSupabaseClient();
     const attempts = [
       () => tryRoleFromMirror(sb, email),
@@ -671,15 +667,33 @@
     }
 
     if(window.RF_ACL && typeof window.RF_ACL.resolvePageAccess === 'function'){
-      const access = await window.RF_ACL.resolvePageAccess(settings.pageKey, {
-        client: sb,
-        user,
-        role
-      });
-      return Object.assign({ user, role: access && access.role ? access.role : cleanRole }, access || {});
+      try {
+        const access = await window.RF_ACL.resolvePageAccess(settings.pageKey, {
+          client: sb,
+          user,
+          role
+        });
+        return Object.assign({ user, role: access && access.role ? access.role : cleanRole }, access || {});
+      } catch (_err) {
+        return {
+          allowed:false,
+          user,
+          role:cleanRole,
+          permissions:{ can_view:false, can_add:false, can_edit:false, can_delete:false, can_export:false, can_import:false },
+          source:'acl error deny',
+          message:'Verificarea permisiunilor a eșuat. Acces blocat implicit.'
+        };
+      }
     }
 
-    return { allowed:true, user, role:cleanRole, permissions:fallbackPermissions, source:'role fallback' };
+    return {
+      allowed:false,
+      user,
+      role:cleanRole,
+      permissions:{ can_view:false, can_add:false, can_edit:false, can_delete:false, can_export:false, can_import:false },
+      source:'deny by default',
+      message:'Nu ai acces în această foaie. Cere acces de la admin.'
+    };
   }
 
   window.ERPAuth = {

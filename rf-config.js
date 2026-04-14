@@ -1242,9 +1242,6 @@ function getControlCatalogForPage(pageKey) {
 
   async function resolveRole(client, user) {
     var email = safeLower(user && user.email);
-    if (email && email === safeLower(CONFIG.ADMIN_EMAIL)) {
-      return { role: 'admin', source: 'admin hardcoded' };
-    }
     if (!client || !user || !user.id) {
       return { role: 'viewer', source: 'fallback viewer' };
     }
@@ -1784,7 +1781,7 @@ async function applyDomPermissions(pageKey, root, options) {
     var mirror = await readDashboardAclMirror(client);
     var roleDecisions = collectAclDecisions({ pageKey:key, href:href, role:role, email:email, userPermissionMap:null, permissionMap:permissionMap, mirror:mirror });
 
-    var rolePermissions = defaultPageAccessFromRole(role, key);
+    var rolePermissions = { can_view:false, can_add:false, can_edit:false, can_delete:false, can_export:false, can_import:false };
     var roleExplicitTrue = false;
     var roleExplicitFalse = false;
     roleDecisions.forEach(function (entry) {
@@ -1794,14 +1791,12 @@ async function applyDomPermissions(pageKey, root, options) {
       if (permissionEntry.can_view === false) roleExplicitFalse = true;
     });
 
-    var allowed = rolePermissions.can_view !== false;
-    if (roleExplicitFalse) allowed = false;
-    else if (roleExplicitTrue) allowed = true;
+    var allowed = roleExplicitTrue === true && roleExplicitFalse !== true;
 
     return {
       allowed: allowed,
       role: role,
-      source: roleExplicitFalse ? 'role acl explicit false' : (roleExplicitTrue ? 'role acl explicit true' : 'role fallback'),
+      source: roleExplicitFalse ? 'role acl explicit false' : (roleExplicitTrue ? 'role acl explicit true' : 'deny by default'),
       message: allowed ? '' : 'Nu ai acces în această foaie. Cere acces de la admin.',
       permissions: rolePermissions,
       email: email,
@@ -1880,7 +1875,7 @@ async function applyDomPermissions(pageKey, root, options) {
       var pageKey = INITIAL_PAGE_KEY || inferPageKey(window.location.pathname);
       try {
         if (!window.supabase || typeof window.supabase.createClient !== 'function') {
-          setAclPendingState(false);
+          renderAccessDeniedPage(pageKey, 'Verificarea ACL a eșuat. Acces blocat implicit.');
           return;
         }
         if (!pageKey || pageKey === 'index' || pageKey === 'login') {
@@ -1896,7 +1891,7 @@ async function applyDomPermissions(pageKey, root, options) {
         try { sessionStorage.setItem('rf_acl_denied_message', result.message || 'Nu ai acces în această foaie.'); } catch (_) {}
         renderAccessDeniedPage(pageKey, result.message || 'Nu ai acces în această pagină. Doar adminul are acces sau trebuie să primești permisiune.');
       } catch (_) {
-        setAclPendingState(false);
+        renderAccessDeniedPage(pageKey, 'Verificarea ACL a eșuat. Acces blocat implicit.');
       }
     });
   }
@@ -3324,9 +3319,21 @@ async function applyDomPermissions(pageKey, root, options) {
     if (pageKey === 'login') return;
     if (!pageKey || !originalResolvePageAccess) return;
     var client = window.createRfSupabaseClient ? window.createRfSupabaseClient() : null;
-    if (!client) return;
-    var pageAccess = await originalResolvePageAccess(pageKey, { client: client });
-    if (!pageAccess || pageAccess.allowed !== true) return;
+    if (!client) {
+      renderAccessDeniedPage(pageKey, 'Verificarea ACL a eșuat. Acces blocat implicit.');
+      return;
+    }
+    var pageAccess = null;
+    try {
+      pageAccess = await originalResolvePageAccess(pageKey, { client: client });
+    } catch (_) {
+      renderAccessDeniedPage(pageKey, 'Verificarea ACL a eșuat. Acces blocat implicit.');
+      return;
+    }
+    if (!pageAccess || pageAccess.allowed !== true) {
+      renderAccessDeniedPage(pageKey, (pageAccess && pageAccess.message) || 'Nu ai acces în această foaie. Cere acces de la admin.');
+      return;
+    }
     await RF.applyDomPermissions(pageKey, document, { client: client, pageAccess: pageAccess });
     installEventGuards();
     window.__RF_ACL_PAGE_BOOT__ = {
