@@ -124,19 +124,29 @@
       }
 
       async function resolveRole(user){
-    if(!user) return 'viewer';
-    try{
-      const client = (typeof APP !== 'undefined' && APP && APP.supa)
-        || (typeof createSupabaseClient === 'function' ? await createSupabaseClient() : null)
-        || (window.ERPAuth && typeof window.ERPAuth.getSupabaseClient === 'function' ? window.ERPAuth.getSupabaseClient() : null)
-        || null;
-      if(window.RF_ACL && typeof window.RF_ACL.resolveRole === 'function'){
-        const resolved = await window.RF_ACL.resolveRole(client, user);
-        return String((resolved && resolved.role) || 'viewer').trim().toLowerCase();
+        if(!user) return 'viewer';
+        const email = String(user.email || '').trim().toLowerCase();
+        try {
+          const mirror = await readRoleMirror();
+          const roles = mirror && mirror.roles && typeof mirror.roles === 'object' ? mirror.roles : null;
+          const mirrored = roles && (roles[email] || roles[email.toLowerCase()]);
+          if(mirrored) return String(mirrored).trim().toLowerCase();
+        } catch(_) {}
+        const attempts = [
+          () => sb.from('profiles').select('role').eq('user_id', user.id).maybeSingle(),
+          () => sb.from('profiles').select('role').eq('id', user.id).maybeSingle(),
+          () => sb.from('profiles').select('role').eq('email', email).maybeSingle(),
+          () => sb.from('rf_acl').select('role').eq('email', email).maybeSingle()
+        ];
+        for (const attempt of attempts) {
+          try {
+            const res = await attempt();
+            const role = String(res && res.data && res.data.role || '').trim().toLowerCase();
+            if (role) return role;
+          } catch(_) {}
+        }
+        return 'viewer';
       }
-    }catch(_e){}
-    return 'viewer';
-  }
 
       function buildRedirectUrl(){
         return './index.html';
