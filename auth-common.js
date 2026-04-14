@@ -164,7 +164,7 @@
 
   function shouldPrehideCurrentPage(){
     const pageKey = getCurrentPageKey();
-    return Boolean(pageKey && !['login','index'].includes(pageKey));
+    return Boolean(pageKey && pageKey !== 'login');
   }
 
   function ensurePrehideStyle(){
@@ -741,6 +741,58 @@
     showProtectedPage,
     escapeHtml
   };
+
+  prehideProtectedPage();
+
+  async function bootstrapSharedPageGuard(){
+    if(window.__RF_SHARED_PAGE_GUARD_BOOT__) return;
+    window.__RF_SHARED_PAGE_GUARD_BOOT__ = true;
+
+    const pageKey = getCurrentPageKey();
+    if(!pageKey || pageKey === 'login'){
+      showProtectedPage();
+      return;
+    }
+
+    try {
+      const authState = await requireAuth({ redirectToLogin:true, next:getCurrentPageName() });
+      if(!authState){
+        return;
+      }
+
+      let access = null;
+      try {
+        if(window.RF_ACL && typeof window.RF_ACL.resolvePageAccess === 'function'){
+          access = await window.RF_ACL.resolvePageAccess(pageKey, {
+            client: getSupabaseClient(),
+            user: authState.user,
+            role: authState.role
+          });
+        } else {
+          access = await getPageAccess(pageKey, { user: authState.user, role: authState.role });
+        }
+      } catch (_aclError) {
+        access = {
+          allowed:false,
+          message:'Accesul a fost blocat implicit. Verificarea ACL nu a răspuns corect.',
+          permissions:{ can_view:false, can_add:false, can_edit:false, can_delete:false, can_export:false, can_import:false }
+        };
+      }
+
+      const blocked = !access || access.allowed === false || (access.permissions && access.permissions.can_view === false);
+      if(blocked){
+        renderAccessDeniedPage(pageKey, (access && access.message) || 'Nu ai acces în această pagină.');
+        return;
+      }
+
+      showProtectedPage();
+    } catch (_guardError) {
+      clearUserState();
+      window.location.href = buildLoginUrl(getCurrentPageName());
+    }
+  }
+
+  bootstrapSharedPageGuard();
 })();
 
 
