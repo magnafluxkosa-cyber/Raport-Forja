@@ -25,11 +25,47 @@
     if(scaleObserver) return;
     scaleObserver = new MutationObserver(() => {
       enforceUnscaledTables();
+      wrapFreeTables();
+      neutralizeStickyInsideScroll();
     });
-    document.querySelectorAll('.table-fit').forEach((el) => {
-      try{
-        scaleObserver.observe(el, { attributes:true, attributeFilter:['style','class'] });
-      }catch(_err){}
+    try{
+      scaleObserver.observe(document.documentElement || document.body, { childList:true, subtree:true, attributes:true, attributeFilter:['style','class'] });
+    }catch(_err){}
+  }
+
+  function isInsideExistingScrollWrap(table){
+    return !!table.closest('.rf-mobile-table-scroll, .table-wrap, .tableWrap, .tablewrap, .sumWrap, .summaryWrap, .sideTableWrap, .matrix-wrap, .ranking-wrap, .mini-table, .table-panel, .table-shell, .table-card, .sideTable');
+  }
+
+  function shouldWrapTable(table){
+    if(!table || !table.parentElement) return false;
+    if(isInsideExistingScrollWrap(table)) return false;
+    if(table.closest('#kadNavShellRoot, .modal, .modalBody, .modal-body, .pm-modal, .pm-modal-body, .modal-content, .kad-shell')) return false;
+    return true;
+  }
+
+  function wrapFreeTables(){
+    if(!document.body || !document.body.classList.contains('rf-mobile')) return;
+    document.querySelectorAll('table').forEach((table) => {
+      if(!shouldWrapTable(table)) return;
+      const parent = table.parentElement;
+      if(!parent) return;
+      const wrapper = document.createElement('div');
+      wrapper.className = 'rf-mobile-table-scroll';
+      parent.insertBefore(wrapper, table);
+      wrapper.appendChild(table);
+    });
+  }
+
+  function neutralizeStickyInsideScroll(){
+    if(!document.body || !document.body.classList.contains('rf-mobile')) return;
+    document.querySelectorAll('.rf-mobile-table-scroll, .table-wrap, .tableWrap, .tablewrap, .sumWrap, .summaryWrap, .sideTableWrap, .matrix-wrap, .ranking-wrap, .mini-table, .table-panel, .table-shell, .table-card, .sideTable').forEach((root) => {
+      root.querySelectorAll('*').forEach((el) => {
+        const pos = window.getComputedStyle(el).position;
+        if(pos === 'sticky'){
+          el.setAttribute('data-rf-mobile-sticky', '1');
+        }
+      });
     });
   }
 
@@ -44,6 +80,8 @@
     document.body.classList.toggle('rf-mobile', isMobileViewport());
     updateViewportVars();
     enforceUnscaledTables();
+    wrapFreeTables();
+    neutralizeStickyInsideScroll();
     attachScaleObserver();
     dispatchMobileLayoutEvent();
   }
