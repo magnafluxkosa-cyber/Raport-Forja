@@ -122,19 +122,17 @@
     safeRemoveItem(STORAGE.loginAt);
   }
 
-  function getCachedRoleForUser(user){
-    const email = normalizeEmail(user && user.email);
-    const userId = String(user && user.id || '').trim();
-    const cachedEmail = normalizeEmail(safeGetItem(STORAGE.userEmail));
-    const cachedUserId = String(safeGetItem(STORAGE.userId) || '').trim();
-    const cachedRole = String(safeGetItem(STORAGE.userRole) || '').trim().toLowerCase();
-    if(!cachedRole) return '';
-    const allowed = ['admin','editor','operator','viewer'];
-    if(!allowed.includes(cachedRole)) return '';
-    if((email && cachedEmail && email === cachedEmail) || (userId && cachedUserId && userId === cachedUserId)){
-      return cachedRole;
-    }
-    return '';
+  function readStoredRoleForUser(user){
+    if(!user) return '';
+    const storedEmail = normalizeEmail(safeGetItem(STORAGE.userEmail));
+    const storedUserId = String(safeGetItem(STORAGE.userId) || '').trim();
+    const currentEmail = normalizeEmail(user.email);
+    const currentUserId = String(user.id || '').trim();
+    const storedRole = String(safeGetItem(STORAGE.userRole) || '').trim().toLowerCase();
+    const sameUser = (!!currentEmail && storedEmail === currentEmail) || (!!currentUserId && storedUserId === currentUserId);
+    if(!sameUser) return '';
+    if(!['viewer','operator','editor','admin'].includes(storedRole)) return '';
+    return storedRole === 'admin' ? '' : storedRole;
   }
 
   async function maybeSelect(builder){
@@ -391,10 +389,24 @@
   async function resolveUserRole(user){
     const email = normalizeEmail(user && user.email);
     if(!user){
-      return 'viewer';
+      const cachedGuestRole = String(safeGetItem(STORAGE.userRole) || '').trim().toLowerCase();
+      return ['viewer','operator','editor'].includes(cachedGuestRole) ? cachedGuestRole : 'viewer';
     }
 
     const sb = getSupabaseClient();
+
+    if(window.RF_ACL && typeof window.RF_ACL.resolveRole === 'function'){
+      try {
+        const resolved = await window.RF_ACL.resolveRole(sb, user);
+        const aclRole = String(resolved && resolved.role || '').trim().toLowerCase();
+        if(['viewer','operator','editor','admin'].includes(aclRole)){
+          return aclRole;
+        }
+      } catch (_) {
+        // continue with compatibility lookups
+      }
+    }
+
     const attempts = [
       () => tryRoleFromMirror(sb, email),
       () => tryRoleFromProfilesByUserId(sb, user.id),
@@ -405,8 +417,8 @@
 
     for(const attempt of attempts){
       try {
-        const role = await attempt();
-        if(role){
+        const role = String(await attempt() || '').trim().toLowerCase();
+        if(['viewer','operator','editor','admin'].includes(role)){
           return role;
         }
       } catch (_) {
@@ -414,7 +426,12 @@
       }
     }
 
-    return getCachedRoleForUser(user) || 'viewer';
+    const storedRole = readStoredRoleForUser(user);
+    if(storedRole){
+      return storedRole;
+    }
+
+    return 'viewer';
   }
 
 
@@ -528,6 +545,13 @@
     if(!session || !session.user){
       clearUserState();
       return null;
+    }
+    const currentEmail = normalizeEmail(session.user.email);
+    const currentUserId = String(session.user.id || '').trim();
+    const storedEmail = normalizeEmail(safeGetItem(STORAGE.userEmail));
+    const storedUserId = String(safeGetItem(STORAGE.userId) || '').trim();
+    if((storedEmail && currentEmail && storedEmail !== currentEmail) || (storedUserId && currentUserId && storedUserId !== currentUserId)){
+      clearUserState();
     }
     const status = await getAccountStatus(session.user);
     const role = await resolveUserRole(session.user);
@@ -665,7 +689,7 @@
     const fallbackPermissions = defaultPermissionsForRole(cleanRole);
     const sb = getSupabaseClient();
 
-    if(user && normalizeEmail(user.email) !== ADMIN_EMAIL){
+    if(user){
       const strictMap = await loadUserPermissionMap(sb, user);
       if(strictMap && strictMap.size){
         const matched = strictMap.get(settings.pageKey) || { can_view:false, can_add:false, can_edit:false, can_delete:false, can_export:false, can_import:false };
