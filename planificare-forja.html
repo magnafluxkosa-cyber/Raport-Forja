@@ -1154,12 +1154,10 @@
       return !!lock && trimText(lock.session_id) === trimText(state.sessionId);
     }
     function getOtherLock(rowId, machine, field){
-      const lock = state.remoteLocks[cellFieldKey(rowId, machine, field)] || null;
-      if(lock && !isCurrentSessionLock(lock) && !isLockExpired(lock)) return lock;
       return null;
     }
     function lockOwnerLabel(lock){
-      return trimText(lock && (lock.owner_email || lock.owner_name || lock.session_id)) || 'alt editor';
+      return '';
     }
     function buildLockPayload(map){
       return {
@@ -1173,100 +1171,39 @@
       if(!els.planBody) return;
       const inputs = els.planBody.querySelectorAll('.cell-input[data-row-id][data-machine][data-field]');
       inputs.forEach(input => {
-        const rowId = trimText(input.dataset.rowId);
-        const machine = trimText(input.dataset.machine);
-        const field = trimText(input.dataset.field);
-        const otherLock = getOtherLock(rowId, machine, field);
-        const shouldDisable = !state.canEdit || !!otherLock;
-        input.disabled = shouldDisable;
-        input.classList.toggle('cell-locked-other', !!otherLock);
+        input.disabled = !state.canEdit;
+        input.classList.remove('cell-locked-other');
         const td = input.closest('td');
-        const baseTitle = !!otherLock ? ('Editat acum de ' + lockOwnerLabel(otherLock)) : '';
         if(td){
-          td.classList.toggle('cell-locked', !!otherLock);
-          if(otherLock){
-            td.setAttribute('data-lock-message', 'Editat de alt editor');
-            td.setAttribute('title', baseTitle);
-          }else{
-            td.removeAttribute('data-lock-message');
-            td.removeAttribute('title');
-          }
+          td.classList.remove('cell-locked');
+          td.removeAttribute('data-lock-message');
+          td.removeAttribute('title');
         }
-        if(baseTitle) input.title = baseTitle;
-        else input.removeAttribute('title');
+        input.removeAttribute('title');
       });
       updateRowActionUi();
     }
     async function fetchLockSnapshot(){
-      const doc = await readDocumentCompat(LOCK_DOC_KEY);
-      const payload = doc && (doc.content || doc.data) ? (doc.content || doc.data) : null;
       return {
-        map: locksArrayToMap(payload && payload.locks),
-        updatedAt: trimText(payload && payload.updated_at || doc && doc.updated_at || '')
+        map: {},
+        updatedAt: ''
       };
     }
     async function persistLockMap(map){
-      const payload = buildLockPayload(map);
-      await writeDocumentCompat(LOCK_DOC_KEY, payload);
-      state.remoteLocks = pruneExpiredLocksMap(map || {});
-      state.lockUpdatedAt = payload.updated_at;
+      state.remoteLocks = {};
+      state.lockUpdatedAt = '';
       applyCellLockUi();
     }
     async function refreshRemoteLocks(forceRender){
-      if(state.lockSyncBusy || !state.supabase) return;
-      state.lockSyncBusy = true;
-      try{
-        const snap = await fetchLockSnapshot();
-        const nextMap = pruneExpiredLocksMap(snap.map);
-        const prevSig = JSON.stringify(Object.keys(state.remoteLocks).sort().map(key => [key, state.remoteLocks[key] && state.remoteLocks[key].session_id, state.remoteLocks[key] && state.remoteLocks[key].expires_at]));
-        const nextSig = JSON.stringify(Object.keys(nextMap).sort().map(key => [key, nextMap[key] && nextMap[key].session_id, nextMap[key] && nextMap[key].expires_at]));
-        state.remoteLocks = nextMap;
-        state.lockUpdatedAt = snap.updatedAt || state.lockUpdatedAt;
-        if(forceRender || prevSig != nextSig) applyCellLockUi();
-      }catch(error){
-        console.error('refreshRemoteLocks', error);
-      }finally{
-        state.lockSyncBusy = false;
-      }
+      state.remoteLocks = {};
+      state.lockUpdatedAt = '';
+      if(forceRender) applyCellLockUi();
     }
     async function acquireCellLock(rowId, machine, field){
-      if(!state.canEdit || !state.supabase) return false;
-      const key = cellFieldKey(rowId, machine, field);
-      if(state.activeCellLockKey && state.activeCellLockKey !== key){
-        await releaseCurrentCellLock({ silent:true, skipSave:true });
-      }
-      const snap = await fetchLockSnapshot();
-      const map = pruneExpiredLocksMap(snap.map);
-      const existing = map[key];
-      if(existing && !isCurrentSessionLock(existing)){
-        state.remoteLocks = map;
-        applyCellLockUi();
-        els.cloudSub.textContent = 'Câmpul este editat acum de ' + lockOwnerLabel(existing) + '.';
-        return false;
-      }
-      const now = nowIso();
-      const expires = new Date(Date.now() + LOCK_TTL_MS).toISOString();
-      map[key] = normalizeLockRow({
-        key, rowId, machine, field,
-        session_id: state.sessionId,
-        owner_email: trimText(state.user && state.user.email),
-        owner_name: trimText(state.user && (state.user.email || state.user.id || 'editor')),
-        updated_at: now,
-        expires_at: expires
-      });
-      await persistLockMap(map);
-      const verify = await fetchLockSnapshot();
-      const finalMap = pruneExpiredLocksMap(verify.map);
-      state.remoteLocks = finalMap;
-      state.lockUpdatedAt = verify.updatedAt || state.lockUpdatedAt;
-      const finalLock = finalMap[key];
-      const ok = !!(finalLock && isCurrentSessionLock(finalLock));
-      if(ok){
-        state.activeCellLockKey = key;
-        startLockHeartbeat();
-      }
+      if(!state.canEdit) return false;
+      state.activeCellLockKey = cellFieldKey(rowId, machine, field);
       applyCellLockUi();
-      return ok;
+      return true;
     }
     async function releaseCurrentCellLock(options){
       const opts = options && typeof options === 'object' ? options : {};
@@ -1275,61 +1212,17 @@
         clearInterval(state.lockHeartbeatTimer);
         state.lockHeartbeatTimer = null;
       }
-      if(!key || !state.supabase){
-        state.activeCellLockKey = '';
-        return;
-      }
-      try{
-        const snap = await fetchLockSnapshot();
-        const map = pruneExpiredLocksMap(snap.map);
-        const existing = map[key];
-        if(existing && isCurrentSessionLock(existing)) delete map[key];
-        await persistLockMap(map);
-      }catch(error){
-        console.error('releaseCurrentCellLock', error);
-      }finally{
-        if(state.activeCellLockKey === key) state.activeCellLockKey = '';
-        if(!opts.skipSave && state.hasPendingLocalChanges) queueSave(250);
-        if(!opts.silent) applyCellLockUi();
-      }
+      if(state.activeCellLockKey === key) state.activeCellLockKey = '';
+      state.remoteLocks = {};
+      state.lockUpdatedAt = '';
+      if(!opts.skipSave && state.hasPendingLocalChanges) queueSave(250);
+      if(!opts.silent) applyCellLockUi();
     }
     function startLockHeartbeat(){
       if(state.lockHeartbeatTimer){
         clearInterval(state.lockHeartbeatTimer);
         state.lockHeartbeatTimer = null;
       }
-      if(!state.activeCellLockKey) return;
-      state.lockHeartbeatTimer = setInterval(async function(){
-        if(document.visibilityState === 'hidden') return;
-        const key = trimText(state.activeCellLockKey);
-        if(!key || !state.supabase) return;
-        try{
-          const snap = await fetchLockSnapshot();
-          const map = pruneExpiredLocksMap(snap.map);
-          const existing = map[key];
-          if(existing && !isCurrentSessionLock(existing)){
-            state.activeCellLockKey = '';
-            applyCellLockUi();
-            return;
-          }
-          const parsed = parseCellFieldKey(key);
-          map[key] = normalizeLockRow({
-            ...(existing || {}),
-            key,
-            rowId: parsed.rowId,
-            machine: parsed.machine,
-            field: parsed.field,
-            session_id: state.sessionId,
-            owner_email: trimText(state.user && state.user.email),
-            owner_name: trimText(state.user && (state.user.email || state.user.id || 'editor')),
-            updated_at: nowIso(),
-            expires_at: new Date(Date.now() + LOCK_TTL_MS).toISOString()
-          });
-          await persistLockMap(map);
-        }catch(error){
-          console.error('lockHeartbeat', error);
-        }
-      }, LOCK_HEARTBEAT_MS);
     }
     function scheduleRemotePlanApply(sourceLabel){
       if(state.planSyncBusy || !state.supabase) return;
@@ -1388,7 +1281,6 @@
           try{ state.supabase.removeChannel(state.planDbChannel); }catch(_removeErr){}
         }
         const docFilter = 'doc_key=eq.' + DOC_KEY;
-        const lockFilter = 'doc_key=eq.' + LOCK_DOC_KEY;
         const channel = state.supabase.channel(PLAN_DB_SYNC_CHANNEL_TOPIC);
         const handlePlanChange = function(payload){
           const row = payload && (payload.new || payload.old) ? (payload.new || payload.old) : {};
@@ -1396,16 +1288,9 @@
           if(remoteUpdated && state.updatedAt && String(remoteUpdated) <= String(state.updatedAt)) return;
           scheduleRemotePlanApply('Cloud sincronizat instant');
         };
-        const handleLockChange = function(){
-          if(document.visibilityState === 'hidden') return;
-          refreshRemoteLocks(false).catch(error => console.error('planificare-forja.refreshRemoteLocks.realtime', error));
-        };
         channel
           .on('postgres_changes', { event:'INSERT', schema:'public', table:'rf_documents', filter: docFilter }, handlePlanChange)
-          .on('postgres_changes', { event:'UPDATE', schema:'public', table:'rf_documents', filter: docFilter }, handlePlanChange)
-          .on('postgres_changes', { event:'INSERT', schema:'public', table:'rf_documents', filter: lockFilter }, handleLockChange)
-          .on('postgres_changes', { event:'UPDATE', schema:'public', table:'rf_documents', filter: lockFilter }, handleLockChange)
-          .on('postgres_changes', { event:'DELETE', schema:'public', table:'rf_documents', filter: lockFilter }, handleLockChange);
+          .on('postgres_changes', { event:'UPDATE', schema:'public', table:'rf_documents', filter: docFilter }, handlePlanChange);
         channel.subscribe(function(status){
           if(status === 'CHANNEL_ERROR'){
             console.warn('initPlanDatabaseSync.CHANNEL_ERROR');
