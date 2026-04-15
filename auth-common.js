@@ -738,6 +738,78 @@
 })();
 
 
+
+(function(){
+  'use strict';
+
+  function pageIsReadonly(){
+    try{
+      if(window.__CAN_EDIT__ === false) return true;
+      if(window.__PAGE_ACCESS__ && window.__PAGE_ACCESS__.can_edit === false) return true;
+      if(document.body && document.body.classList.contains('readonly')) return true;
+      if(document.documentElement && document.documentElement.classList.contains('readonly')) return true;
+    }catch(_e){}
+    return false;
+  }
+
+  function hasMutatingHints(el){
+    const s = [el.id, el.name, el.className, el.getAttribute('data-role'), el.getAttribute('data-acl'), el.getAttribute('aria-label'), el.textContent, el.value, el.placeholder]
+      .map(v => String(v || '').toLowerCase()).join(' ');
+    return /(save|salv|delete|sterg|remove|adaug|add|new|nou|edit|import|upload|sync|submit|actualize|update|pick|pdf|fisier|file|drop)/.test(s);
+  }
+
+  function isLikelyFilterControl(el){
+    if(!el || !el.matches) return false;
+    if(el.matches('[data-acl-filter], .th-filter, .th-filter-select, #filterRow input, #filterRow select')) return true;
+    if(el.closest('[data-acl-filter], .filters, .filtersBar, .filter-row, #filterRow, .toolbar-filters, .table-filters, .search-box, .searchbar')) return true;
+    const s = [el.id, el.name, el.className, el.getAttribute('data-role'), el.getAttribute('data-acl'), el.getAttribute('aria-label'), el.placeholder]
+      .map(v => String(v || '').toLowerCase()).join(' ');
+    if(hasMutatingHints(el)) return false;
+    return /(filter|filtru|search|căut|caut|find|sort|reper|utilaj|luna|lună|an|year|month|operator|schimb|shift|data|date|transport|lada|ladă|matrita|matriță|cod|status|depart|prioritate|responsabil|stadiu|openonly|deschis)/.test(s);
+  }
+
+  function unlockReadonlyFilters(root){
+    if(!pageIsReadonly()) return;
+    const scope = root && root.querySelectorAll ? root : document;
+    const nodes = scope.querySelectorAll('input, select, textarea, button');
+    nodes.forEach(function(el){
+      if(!isLikelyFilterControl(el)) return;
+      if(el.type === 'file' || el.type === 'hidden') return;
+      try{ el.disabled = false; }catch(_e){}
+      if(el.tagName === 'INPUT' || el.tagName === 'TEXTAREA'){
+        try{ if(!el.hasAttribute('readonly')) el.readOnly = false; }catch(_e){}
+      }
+      try{ el.style.pointerEvents = ''; }catch(_e){}
+      try{ if(el.style.opacity === '0.45') el.style.opacity = ''; }catch(_e){}
+      el.setAttribute('data-viewer-filter-enabled', '1');
+    });
+  }
+
+  function installReadonlyFilterUnlock(){
+    const run = function(root){ try{ unlockReadonlyFilters(root); }catch(_e){} };
+    if(document.readyState === 'loading'){
+      document.addEventListener('DOMContentLoaded', function(){ run(document); }, { once:true });
+    } else {
+      run(document);
+    }
+    let obs = null;
+    try{
+      obs = new MutationObserver(function(mutations){
+        for(const m of mutations){
+          if(m.type === 'attributes' && m.target){ run(m.target.parentNode || document); }
+          if(m.addedNodes && m.addedNodes.length){ m.addedNodes.forEach(function(n){ if(n && n.nodeType === 1) run(n); }); }
+        }
+      });
+      obs.observe(document.documentElement || document.body, { subtree:true, childList:true, attributes:true, attributeFilter:['disabled','class','style'] });
+    }catch(_e){}
+    window.setInterval(function(){ run(document); }, 800);
+  }
+
+  window.ERPAuth = window.ERPAuth || {};
+  window.ERPAuth.unlockReadonlyFilters = unlockReadonlyFilters;
+  installReadonlyFilterUnlock();
+})();
+
 /* INDEX VISIBILITY SHARED SYNC */
 (function(){
   'use strict';
