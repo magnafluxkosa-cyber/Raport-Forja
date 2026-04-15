@@ -325,7 +325,53 @@
     if(candidate.code!==current.code) return candidate.code>current.code;
     return candidate.date>current.date;
   }
-  function extractRows(payload){ if(!payload) return []; if(Array.isArray(payload)) return payload.filter(v=>v&&typeof v==='object'); if(typeof payload!=='object') return []; const preferred=['rows','data','items','records','values','content','table']; for(const key of preferred){ if(Array.isArray(payload[key])) return payload[key].filter(v=>v&&typeof v==='object'); } const arrays=Object.values(payload).filter(v=>Array.isArray(v)); if(arrays.length===1) return arrays[0].filter(v=>v&&typeof v==='object'); if(arrays.length>1) return arrays.flat().filter(v=>v&&typeof v==='object'); return []; }
+  function extractRows(payload){
+    if(!payload) return [];
+    if(Array.isArray(payload)) return payload.filter(v=>v && (typeof v==='object' || Array.isArray(v)));
+    if(typeof payload!=='object') return [];
+    const directKeys=['rows','data','items','records','values','content','table','entries','result'];
+    for(const key of directKeys){
+      if(Array.isArray(payload[key])) return payload[key].filter(v=>v && (typeof v==='object' || Array.isArray(v)));
+    }
+    const nestedKeys=['payload','doc','document','sheet','body'];
+    for(const key of nestedKeys){
+      const nested=payload[key];
+      if(nested && typeof nested==='object'){
+        const rows=extractRows(nested);
+        if(rows.length) return rows;
+      }
+    }
+    const arrays=Object.values(payload).filter(v=>Array.isArray(v));
+    if(arrays.length===1) return arrays[0].filter(v=>v && (typeof v==='object' || Array.isArray(v)));
+    if(arrays.length>1) return arrays.flat().filter(v=>v && (typeof v==='object' || Array.isArray(v)));
+    return [];
+  }
+  function extractHelperArrays(payload){
+    const result={forjate:[],debitare:[]};
+    const visited=new Set();
+    function visit(node){
+      if(!node || typeof node!=='object') return;
+      if(visited.has(node)) return;
+      visited.add(node);
+      const entries=Array.isArray(node) ? node.entries() : Object.entries(node);
+      for(const [rawKey,value] of entries){
+        const key=String(rawKey||'').toLowerCase();
+        if(Array.isArray(value)){
+          if(/reper.*forjat|forjat.*reper|repere_forjate|helper_repere_forjate/.test(key)){
+            result.forjate.push(...value);
+            continue;
+          }
+          if(/reper.*debit|debit.*reper|repere_debitare|helper_repere_debitare/.test(key)){
+            result.debitare.push(...value);
+            continue;
+          }
+        }
+        if(value && typeof value==='object') visit(value);
+      }
+    }
+    visit(payload);
+    return result;
+  }
   function setError(msg){ els.errorBox.style.display=msg?'block':'none'; els.errorBox.textContent=msg||''; }
   function updatePeriodCard(){ const y=trimText(els.filterYear.value), m=trimText(els.filterMonth.value); const monthLabel=m?MONTHS_RO[Number(m)]||'':'Toate lunile'; els.periodStatus.textContent=y?(m?monthLabel+' '+y:y):'Toți anii'; els.periodSub.textContent=y?(m?'Calcul lunar: stoc început + mișcări din luna selectată.':'Calcul pe tot anul selectat.'):'Calcul pe toate datele disponibile.'; }
   function saveFilterState(){ try{ localStorage.setItem(STORAGE_KEY, JSON.stringify({y:trimText(els.filterYear.value),m:trimText(els.filterMonth.value),r:els.filterReper.value||'',d:els.filterDiam.value||'',c:els.filterCal.value||''})); }catch(_e){} }
@@ -384,9 +430,33 @@
     }catch(err){ els.authStatus.textContent='Fără sesiune'; els.authSub.textContent=trimText(err&&err.message)||'Autentificarea nu a putut fi confirmată.'; }
   }
 
-  async function readExactDocs(keys){ if(!state.supabase||!keys.length) return []; try{ const res=await state.supabase.from('rf_documents').select('*').in('doc_key',keys); if(res && !res.error && Array.isArray(res.data)) return res.data; }catch(_e){} return []; }
-  async function readPrefixDocs(prefix){ if(!state.supabase||!prefix) return []; try{ const res=await state.supabase.from('rf_documents').select('*').like('doc_key', prefix+'%'); if(res && !res.error && Array.isArray(res.data)) return res.data; }catch(_e){} return []; }
-  async function loadBucket(bucket,exactKeys,prefixes){ const docs=[]; const seen=new Set(); const exactList=await readExactDocs(exactKeys||[]); const prefList=[]; for(const prefix of (prefixes||[])){ const list=await readPrefixDocs(prefix); list.forEach(doc=>prefList.push(doc)); } const hasYearDocs=prefList.some(doc=>{ const key=String(doc&&doc.doc_key||''); return key && !key.endsWith(':index'); }); const legacyRoots=new Set((exactKeys||[]).filter(key=>{ const s=String(key||''); return s && !s.includes(':'); })); const merged=[...(hasYearDocs ? exactList.filter(doc=>!legacyRoots.has(String(doc&&doc.doc_key||''))) : exactList), ...prefList]; merged.forEach(doc=>{ if(doc&&doc.doc_key&&!seen.has(doc.doc_key)){seen.add(doc.doc_key); docs.push(doc);} }); return docs; }
+  async function readExactDocs(keys){
+    if(!state.supabase||!keys.length) return [];
+    try{
+      const res=await state.supabase.from('rf_documents').select('doc_key,content,data,updated_at').in('doc_key',keys);
+      if(res && !res.error && Array.isArray(res.data)) return res.data;
+    }catch(_e){}
+    return [];
+  }
+  async function readPrefixDocs(prefix){
+    if(!state.supabase||!prefix) return [];
+    try{
+      const res=await state.supabase.from('rf_documents').select('doc_key,content,data,updated_at').like('doc_key', prefix+'%');
+      if(res && !res.error && Array.isArray(res.data)) return res.data;
+    }catch(_e){}
+    return [];
+  }
+  async function loadBucket(bucket,exactKeys,prefixes){
+    const docs=[], seen=new Set();
+    const tasks=[readExactDocs(exactKeys||[])].concat((prefixes||[]).map(prefix=>readPrefixDocs(prefix)));
+    const [exactList, ...prefixLists]=await Promise.all(tasks);
+    const prefList=prefixLists.flat();
+    const hasYearDocs=prefList.some(doc=>{ const key=String(doc&&doc.doc_key||''); return key && !key.endsWith(':index'); });
+    const legacyRoots=new Set((exactKeys||[]).filter(key=>{ const s=String(key||''); return s && !s.includes(':'); }));
+    const merged=[...(hasYearDocs ? (exactList||[]).filter(doc=>!legacyRoots.has(String(doc&&doc.doc_key||''))) : (exactList||[])), ...prefList];
+    merged.forEach(doc=>{ if(doc&&doc.doc_key&&!seen.has(doc.doc_key)){seen.add(doc.doc_key); docs.push(doc);} });
+    return docs;
+  }
   function collectRowsFromDocs(docs){ const rows=[]; let latest=null; (docs||[]).forEach(doc=>{ const payload=(doc&&((doc.content&&typeof doc.content==='object')?doc.content:(doc.data&&typeof doc.data==='object')?doc.data:doc))||null; extractRows(payload).forEach(r=>rows.push(r)); const updated=doc&&doc.updated_at?new Date(doc.updated_at):null; if(updated && !Number.isNaN(updated.getTime()) && (!latest || updated>latest)) latest=updated; }); return {rows,latest}; }
   async function tryReadTableRows(tableName){
     if(!state.supabase || !tableName) return null;
@@ -396,7 +466,7 @@
     }catch(_e){}
     return null;
   }
-  async function loadHelperTables(){
+  async function loadHelperTables(helperDocs){
     const out={forjate:[],debitare:[],source:'rf_documents'};
     const forjateTables=['rf_helper_repere_forjate','helper_repere_forjate'];
     const debitareTables=['rf_helper_repere_debitare','helper_repere_debitare'];
@@ -408,6 +478,23 @@
       const rows=await tryReadTableRows(tableName);
       if(rows){ out.debitare=rows.filter(isActiveRow); out.source='helper_tables'; break; }
     }
+    if((!out.forjate.length || !out.debitare.length) && Array.isArray(helperDocs) && helperDocs.length){
+      const docsForjate=[], docsDebitare=[];
+      helperDocs.forEach(doc=>{
+        const payload=(doc&&((doc.content&&typeof doc.content==='object')?doc.content:(doc.data&&typeof doc.data==='object')?doc.data:doc))||null;
+        const extracted=extractHelperArrays(payload);
+        docsForjate.push(...(extracted.forjate||[]));
+        docsDebitare.push(...(extracted.debitare||[]));
+      });
+      if(!out.forjate.length && docsForjate.length){
+        out.forjate=docsForjate.map(row=>normalizeBucketRow('helper', row)).filter(Boolean).filter(isActiveRow);
+        out.source='rf_documents_helper';
+      }
+      if(!out.debitare.length && docsDebitare.length){
+        out.debitare=docsDebitare.map(row=>normalizeBucketRow('helper', row)).filter(Boolean).filter(isActiveRow);
+        out.source=out.source==='rf_documents_helper' ? 'rf_documents_helper' : 'rf_documents_helper';
+      }
+    }
     return out;
   }
 
@@ -418,16 +505,22 @@
       const {rows,latest}=collectRowsFromDocs(docs);
       return {
         bucket,
+        docs,
         rows:dedupeBucketRows(bucket,(rows||[]).map(row=>normalizeBucketRow(bucket,row)).filter(Boolean)),
         latest
       };
     }));
     let latestOverall=null;
-    results.forEach(({bucket,rows,latest})=>{
+    let helperDocs=[];
+    results.forEach(({bucket,rows,latest,docs})=>{
       state.raw[bucket]=rows;
+      if(bucket==='helper') helperDocs=docs || [];
       if(latest && (!latestOverall || latest>latestOverall)) latestOverall=latest;
     });
-    state.helperTables = await loadHelperTables();
+    state.helperTables = await loadHelperTables(helperDocs);
+    if((!state.raw.helper || !state.raw.helper.length) && ((state.helperTables.forjate||[]).length || (state.helperTables.debitare||[]).length)){
+      state.raw.helper=[...(state.helperTables.forjate||[]), ...(state.helperTables.debitare||[])];
+    }
     state.updatedAt=latestOverall;
     const found=buckets.filter(key=>state.raw[key].length).map(key=>key+': '+state.raw[key].length);
     if((state.helperTables.debitare||[]).length || (state.helperTables.forjate||[]).length){
