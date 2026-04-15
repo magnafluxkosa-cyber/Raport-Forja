@@ -626,7 +626,7 @@
       }
     } catch (_) {}
     var s = [el.id || '', el.name || '', el.className || '', (el.getAttribute && el.getAttribute('placeholder')) || '', (el.getAttribute && el.getAttribute('aria-label')) || ''].join(' ').toLowerCase();
-    return /(filter|search|find|sort|view|refresh|sel|select|reper|utilaj|luna|an|month|year|cauta|căuta|filtr|lookup|vizual)/.test(s);
+    return /(filter|search|find|sort|view|refresh|sel|select|reper|utilaj|luna|an|month|year|cauta|căuta|filtr|lookup|vizual|data|date|transport|lada|ladă|cod|matrita|matriță|operator|schimb|shift|serie|sarja|șarja|nr)/.test(s);
   }
 
   function isMutationTrigger(el, config){
