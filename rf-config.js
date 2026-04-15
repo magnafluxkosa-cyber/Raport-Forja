@@ -223,7 +223,7 @@ function getControlCatalogForPage(pageKey) {
     APP_NAME: 'K.A.D',
     SUPABASE_URL: 'https://addlybnigrywqowpbhvd.supabase.co',
     SUPABASE_ANON_KEY: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFkZGx5Ym5pZ3J5d3Fvd3BiaHZkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzI2NjY2NjQsImV4cCI6MjA4ODI0MjY2NH0.VjbSKs7G_5T7GhdrjT8dtj2HCF6Az9KYfkpkSE7JTo4',
-    ADMIN_EMAIL: 'forja.editor@gmail.com',
+    ADMIN_EMAIL: '',
     DEFAULT_PAGES: PAGE_LIST.map(function (page) { return page.page_key; }),
     pages: clonePages()
   });
@@ -1823,11 +1823,9 @@ async function applyDomPermissions(pageKey, root, options) {
   window.ERP_FORJA_CONFIG = window.ERP_FORJA_CONFIG || {};
   window.ERP_FORJA_CONFIG.SUPABASE_URL = CONFIG.SUPABASE_URL;
   window.ERP_FORJA_CONFIG.SUPABASE_ANON_KEY = CONFIG.SUPABASE_ANON_KEY;
-  window.ERP_FORJA_CONFIG.ADMIN_EMAIL = CONFIG.ADMIN_EMAIL;
   window.__ERP_FORJA_CONFIG__ = window.ERP_FORJA_CONFIG;
   window.RF_SUPABASE_URL = CONFIG.SUPABASE_URL;
   window.RF_SUPABASE_ANON_KEY = CONFIG.SUPABASE_ANON_KEY;
-  window.RF_ADMIN_EMAIL = CONFIG.ADMIN_EMAIL;
   window.RF_PAGES = clonePages();
   window.RF_THEME = window.RF_THEME || {};
   window.RF_THEME.storageKey = THEME_STORAGE_KEY;
