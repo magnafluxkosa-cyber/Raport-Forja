@@ -1,7 +1,7 @@
 (function(){
   'use strict';
 
-  const ADMIN_EMAIL = 'forja.editor@gmail.com';
+  const ADMIN_EMAIL = normalizeEmail(((window.ERP_FORJA_CONFIG || window.__ERP_FORJA_CONFIG__ || {}).ADMIN_EMAIL) || '');
   const STORAGE = {
     userId: 'rf_user_id',
     userEmail: 'rf_user_email',
@@ -122,17 +122,8 @@
     safeRemoveItem(STORAGE.loginAt);
   }
 
-  function readStoredRoleForUser(user){
-    if(!user) return '';
-    const storedEmail = normalizeEmail(safeGetItem(STORAGE.userEmail));
-    const storedUserId = String(safeGetItem(STORAGE.userId) || '').trim();
-    const currentEmail = normalizeEmail(user.email);
-    const currentUserId = String(user.id || '').trim();
-    const storedRole = String(safeGetItem(STORAGE.userRole) || '').trim().toLowerCase();
-    const sameUser = (!!currentEmail && storedEmail === currentEmail) || (!!currentUserId && storedUserId === currentUserId);
-    if(!sameUser) return '';
-    if(!['viewer','operator','editor','admin'].includes(storedRole)) return '';
-    return storedRole === 'admin' ? '' : storedRole;
+  function readStoredRoleForUser(_user){
+    return '';
   }
 
   async function maybeSelect(builder){
@@ -389,8 +380,7 @@
   async function resolveUserRole(user){
     const email = normalizeEmail(user && user.email);
     if(!user){
-      const cachedGuestRole = String(safeGetItem(STORAGE.userRole) || '').trim().toLowerCase();
-      return ['viewer','operator','editor'].includes(cachedGuestRole) ? cachedGuestRole : 'viewer';
+      return 'viewer';
     }
 
     const sb = getSupabaseClient();
@@ -424,11 +414,6 @@
       } catch (_) {
         // fallback compat
       }
-    }
-
-    const storedRole = readStoredRoleForUser(user);
-    if(storedRole){
-      return storedRole;
     }
 
     return 'viewer';
@@ -714,7 +699,16 @@
       return Object.assign({ user, role: access && access.role ? access.role : cleanRole }, access || {});
     }
 
-    return { allowed:true, user, role:cleanRole, permissions:fallbackPermissions, source:'role fallback' };
+    const openPage = ['login','index'].includes(settings.pageKey);
+    const deniedPermissions = { can_view:false, can_add:false, can_edit:false, can_delete:false, can_export:false, can_import:false };
+    return {
+      allowed: openPage ? fallbackPermissions.can_view === true : false,
+      user,
+      role: cleanRole,
+      permissions: openPage ? fallbackPermissions : deniedPermissions,
+      source: openPage ? 'open page fallback' : 'deny by default fallback',
+      message: openPage ? '' : 'ACL indisponibil. Acces blocat preventiv.'
+    };
   }
 
   window.ERPAuth = {

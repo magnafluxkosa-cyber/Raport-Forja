@@ -3136,7 +3136,7 @@ async function applyDomPermissions(pageKey, root, options) {
     var pageAccess = options && options.pageAccess ? options.pageAccess : (originalResolvePageAccess ? await originalResolvePageAccess(pageKey, options) : { permissions:{} });
     var res = originalResolveControlAccess
       ? await originalResolveControlAccess(pageKey, controlKey, Object.assign({}, options || {}, { pageAccess: pageAccess }))
-      : { control_key: controlKey, can_view: true, can_use: true, can_edit: true, source: 'fallback' };
+      : { control_key: controlKey, can_view: false, can_use: false, can_edit: false, source: 'deny by default fallback' };
     var source = String(res && res.source || '');
     var explicitUser = /user control permissions|admin/i.test(source);
     if (!explicitUser) {
