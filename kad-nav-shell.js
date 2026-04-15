@@ -619,6 +619,10 @@
       if (el.closest && el.closest('[data-acl-filter]')) return true;
     } catch (_) {}
     try {
+      if (el.matches && el.matches('.summary-select,.th-filter,.th-filter-select,.filter-input,.filter-select,.search-input,.search-select')) return true;
+      if (el.closest && el.closest('.summary-toolbar-controls,.filters,.filter-bar,.toolbar-filters,.table-filters,.top-filters,.search-bar,.search-controls')) return true;
+    } catch (_) {}
+    try {
       var allow = config && Array.isArray(config.allowSelectors) ? config.allowSelectors : [];
       for (var i = 0; i < allow.length; i += 1) {
         if (allow[i] && el.matches && el.matches(allow[i])) return true;
@@ -626,7 +630,7 @@
       }
     } catch (_) {}
     var s = [el.id || '', el.name || '', el.className || '', (el.getAttribute && el.getAttribute('placeholder')) || '', (el.getAttribute && el.getAttribute('aria-label')) || ''].join(' ').toLowerCase();
-    return /(filter|search|find|sort|view|refresh|sel|select|reper|utilaj|luna|an|month|year|cauta|căuta|filtr|lookup|vizual|data|date|transport|lada|ladă|cod|matrita|matriță|operator|schimb|shift|serie|sarja|șarja|nr)/.test(s);
+    return /(filter|search|find|sort|view|refresh|sel|select|reper|utilaj|luna|lun[ăa]|an|month|year|cauta|căuta|filtr|lookup|vizual|furnizor|supplier|vendor|provider|transport|lada|lad[ăa]|cod|matrita|matri[țt]a|operator|schimb|shift|status)/.test(s);
   }
 
   function isMutationTrigger(el, config){
