@@ -614,11 +614,6 @@
     const LEGACY_DOC_KEY = 'forjate';
     const FORJATE_DOC_PREFIX = 'forjate:';
     const TABLE_UI_STORAGE_KEY = 'planificare-forja:table-ui:v1';
-    const DOC_CACHE_STORAGE_KEY = 'planificare-forja:doc-cache:v1';
-    const DOC_CACHE_TTL_MS = 90 * 1000;
-    const SUPPORT_CACHE_TTL_MS = 3 * 60 * 1000;
-    const PROGRESSIVE_RENDER_THRESHOLD = 45;
-    const PROGRESSIVE_RENDER_CHUNK_SIZE = 60;
     const MACHINE_ORDER = ['5 T CHINA','MP','1,25 T','2,5 T','3 T BR','3 T ZR'];
     const MONTHS = ['Ianuarie','Februarie','Martie','Aprilie','Mai','Iunie','Iulie','August','Septembrie','Octombrie','Noiembrie','Decembrie'];
     const WEEKDAYS = ['Duminică','Luni','Marți','Miercuri','Joi','Vineri','Sâmbătă'];
@@ -1840,115 +1835,22 @@ function getDefaultPermissions(role){
       }
       return trimText(role || 'viewer') || 'viewer';
     }
-
-    function getDocCacheBucket(){
-      try{
-        const raw = sessionStorage.getItem(DOC_CACHE_STORAGE_KEY);
-        if(!raw) return Object.create(null);
-        const parsed = JSON.parse(raw);
-        return parsed && typeof parsed === 'object' ? parsed : Object.create(null);
-      }catch(_e){
-        return Object.create(null);
-      }
-    }
-    function saveDocCacheBucket(bucket){
-      try{ sessionStorage.setItem(DOC_CACHE_STORAGE_KEY, JSON.stringify(bucket || {})); }catch(_e){}
-    }
-    function getDocCacheEntry(docKey, ttlMs){
-      const key = trimText(docKey);
-      if(!key) return null;
-      const ttl = Math.max(0, Number(ttlMs) || DOC_CACHE_TTL_MS);
-      const now = Date.now();
-      const memEntry = state.docCacheMemory && state.docCacheMemory[key];
-      if(memEntry && memEntry.savedAt && (now - Number(memEntry.savedAt) <= ttl) && memEntry.data){
-        return memEntry.data;
-      }
-      const bucket = getDocCacheBucket();
-      const entry = bucket[key];
-      if(entry && entry.savedAt && (now - Number(entry.savedAt) <= ttl) && entry.data){
-        state.docCacheMemory[key] = entry;
-        return entry.data;
-      }
-      return null;
-    }
-    function setDocCacheEntry(docKey, data){
-      const key = trimText(docKey);
-      if(!key || !data) return;
-      const entry = { savedAt: Date.now(), data };
-      if(!state.docCacheMemory) state.docCacheMemory = Object.create(null);
-      state.docCacheMemory[key] = entry;
-      const bucket = getDocCacheBucket();
-      bucket[key] = entry;
-      const keys = Object.keys(bucket);
-      if(keys.length > 40){
-        keys.sort((a,b) => Number((bucket[a] && bucket[a].savedAt) || 0) - Number((bucket[b] && bucket[b].savedAt) || 0));
-        while(keys.length > 40){
-          const oldest = keys.shift();
-          if(oldest) delete bucket[oldest];
-        }
-      }
-      saveDocCacheBucket(bucket);
-    }
-    function invalidateDocCacheKeys(keys){
-      const list = Array.isArray(keys) ? keys.map(trimText).filter(Boolean) : [trimText(keys)].filter(Boolean);
-      if(!list.length) return;
-      const bucket = getDocCacheBucket();
-      list.forEach(key => {
-        if(state.docCacheMemory && state.docCacheMemory[key]) delete state.docCacheMemory[key];
-        if(bucket[key]) delete bucket[key];
-      });
-      saveDocCacheBucket(bucket);
-    }
-    async function readDocumentCompat(docKey, options){
+    async function readDocumentCompat(docKey){
       if(!state.supabase) return null;
-      const opts = options && typeof options === 'object' ? options : {};
-      const cacheTtl = Number(opts.cacheTtlMs);
-      const ttlMs = Number.isFinite(cacheTtl) ? cacheTtl : DOC_CACHE_TTL_MS;
-      const bypassCache = opts.bypassCache === true;
-      if(!bypassCache){
-        const cached = getDocCacheEntry(docKey, ttlMs);
-        if(cached) return cached;
-      }
       try{
         const res = await state.supabase.from('rf_documents').select('*').eq('doc_key', docKey).maybeSingle();
-        if(!res.error && res.data){
-          setDocCacheEntry(docKey, res.data);
-          return res.data;
-        }
+        if(!res.error && res.data) return res.data;
       }catch(_e){}
       return null;
     }
-    async function queryDocsByKeys(keys, options){
+    async function queryDocsByKeys(keys){
       const unique = Array.from(new Set((keys || []).map(trimText).filter(Boolean)));
       if(!unique.length || !state.supabase) return [];
-      const opts = options && typeof options === 'object' ? options : {};
-      const cacheTtl = Number(opts.cacheTtlMs);
-      const ttlMs = Number.isFinite(cacheTtl) ? cacheTtl : DOC_CACHE_TTL_MS;
-      const bypassCache = opts.bypassCache === true;
-      const out = [];
-      const missing = [];
-      unique.forEach(key => {
-        if(!bypassCache){
-          const cached = getDocCacheEntry(key, ttlMs);
-          if(cached){
-            out.push(cached);
-            return;
-          }
-        }
-        missing.push(key);
-      });
-      if(missing.length){
-        try{
-          const res = await state.supabase.from('rf_documents').select('*').in('doc_key', missing);
-          if(!res.error && Array.isArray(res.data)){
-            res.data.forEach(item => {
-              if(item && item.doc_key) setDocCacheEntry(item.doc_key, item);
-              out.push(item);
-            });
-          }
-        }catch(_e){}
-      }
-      return out;
+      try{
+        const res = await state.supabase.from('rf_documents').select('*').in('doc_key', unique);
+        if(!res.error && Array.isArray(res.data)) return res.data;
+      }catch(_e){}
+      return [];
     }
     async function writeDocumentCompat(docKey, payload){
       if(!state.supabase) throw new Error('Supabase indisponibil');
@@ -1967,7 +1869,6 @@ function getDefaultPermissions(role){
         }, { onConflict:'doc_key' });
       }
       if(res && res.error) throw res.error;
-      invalidateDocCacheKeys(docKey);
       return true;
     }
     function pickDefaultYear(){
@@ -2228,7 +2129,7 @@ function getDefaultPermissions(role){
     }
     async function ensureLegacyLoaded(){
       if(state.legacyLoaded) return;
-      const doc = await readDocumentCompat(LEGACY_DOC_KEY, { cacheTtlMs: SUPPORT_CACHE_TTL_MS });
+      const doc = await readDocumentCompat(LEGACY_DOC_KEY);
       if(doc && (doc.content || doc.data)){
         const payload = doc.content || doc.data;
         const rows = extractRowsPayload(payload);
@@ -2249,7 +2150,7 @@ function getDefaultPermissions(role){
       if(state.attemptedForjateYears.has(cleanYear)) return;
       state.attemptedForjateYears.add(cleanYear);
 
-      const doc = await getSupportDoc(FORJATE_DOC_PREFIX + cleanYear, forceRefresh);
+      const doc = await readDocumentCompat(FORJATE_DOC_PREFIX + cleanYear);
       if(doc && (doc.content || doc.data)){
         const payload = doc.content || doc.data;
         const rows = extractRowsPayload(payload);
@@ -2528,7 +2429,7 @@ function getDefaultPermissions(role){
     async function loadDebitatStock(year){
       if(!state.supabase) return { map:Object.create(null), rows:[], source:'-', ok:false, period:'', baseYear:0, baseMonth:0, startIso:'', startLabel:'' };
       const keys = buildDebitatKeysForYear(year);
-      const docs = await getSupportDocs(keys, forceRefresh);
+      const docs = await queryDocsByKeys(keys);
       const picked = (() => {
         for(const key of keys){
           const doc = docs.find(item => item.doc_key === key && extractRowsPayload(item.content || item.data).length);
@@ -2565,7 +2466,7 @@ function getDefaultPermissions(role){
     async function loadIntrariOtelEntries(year){
       if(!state.supabase) return { byDate:Object.create(null), rows:[], source:'-', ok:false };
       const keys = buildFlowDocKeys(INTRARI_OTEL_DOC_BASE_KEYS, year);
-      const docs = await getSupportDocs(keys, forceRefresh);
+      const docs = await queryDocsByKeys(keys);
       const picked = (() => {
         for(const key of keys){
           const doc = docs.find(item => item.doc_key === key && extractRowsPayload(item.content || item.data).length);
@@ -2591,7 +2492,7 @@ function getDefaultPermissions(role){
     async function loadDebitariEntries(year){
       if(!state.supabase) return { byDate:Object.create(null), steelByDate:Object.create(null), rows:[], source:'-', ok:false };
       const keys = buildFlowDocKeys(DEBITARI_FLOW_DOC_BASE_KEYS, year);
-      const docs = await getSupportDocs(keys, forceRefresh);
+      const docs = await queryDocsByKeys(keys);
       const picked = (() => {
         for(const key of keys){
           const doc = docs.find(item => item.doc_key === key && extractRowsPayload(item.content || item.data).length);
@@ -2621,13 +2522,13 @@ function getDefaultPermissions(role){
       const src = picked.doc_key || 'debitate';
       return { byDate, steelByDate, rows, source: src, ok:rows.length > 0, count:rows.length };
     }
-    async function loadForjateDailyMovements(year, forceRefresh){
+    async function loadForjateDailyMovements(year){
       if(!state.supabase) return { rows:[], source:'-', ok:false };
       const cleanYear = trimText(year);
       let doc = null;
-      if(cleanYear) doc = await getSupportDoc(FORJATE_DOC_PREFIX + cleanYear, forceRefresh);
+      if(cleanYear) doc = await readDocumentCompat(FORJATE_DOC_PREFIX + cleanYear);
       if(!(doc && (doc.content || doc.data))){
-        doc = await getSupportDoc(LEGACY_DOC_KEY, forceRefresh);
+        doc = await readDocumentCompat(LEGACY_DOC_KEY);
       }
       if(!(doc && (doc.content || doc.data))){
         return { rows:[], source:'forjate lipsă', ok:false };
@@ -2639,13 +2540,6 @@ function getDefaultPermissions(role){
       return { rows, source: src, ok: rows.length > 0 };
     }
 
-
-    async function getSupportDoc(docKey, forceRefresh){
-      return readDocumentCompat(docKey, { bypassCache: !!forceRefresh, cacheTtlMs: SUPPORT_CACHE_TTL_MS });
-    }
-    async function getSupportDocs(keys, forceRefresh){
-      return queryDocsByKeys(keys, { bypassCache: !!forceRefresh, cacheTtlMs: SUPPORT_CACHE_TTL_MS });
-    }
     async function refreshSupportData(forceRefresh){
       await loadHelperMaps(forceRefresh);
       const targetYear = state.activeYear || CURRENT_YEAR;
@@ -2653,9 +2547,9 @@ function getDefaultPermissions(role){
       const debitat = await loadDebitatStock(targetYear);
       const intrari = await loadIntrariOtelEntries(targetYear);
       const debitari = await loadDebitariEntries(targetYear);
-      const forjateFlow = await loadForjateDailyMovements(targetYear, forceRefresh);
-      const deliveryOrders = await loadDeliveryOrders(forceRefresh);
-      const inventarForjat = await loadInventarForjatRows(targetYear, forceRefresh);
+      const forjateFlow = await loadForjateDailyMovements(targetYear);
+      const deliveryOrders = await loadDeliveryOrders();
+      const inventarForjat = await loadInventarForjatRows(targetYear);
 
       const notes = [];
       notes.push('Helper: ' + (state.helperMaps.source || '-'));
@@ -3085,9 +2979,9 @@ function getDefaultPermissions(role){
       });
       return Array.from(new Set(keys));
     }
-    async function loadDeliveryOrders(forceRefresh){
+    async function loadDeliveryOrders(){
       if(!state.supabase) return { rows:[], source:'-', ok:false };
-      const docs = await getSupportDocs(DELIVERY_DOC_ALIASES, forceRefresh);
+      const docs = await queryDocsByKeys(DELIVERY_DOC_ALIASES);
       const picked = (() => {
         for(const key of DELIVERY_DOC_ALIASES){
           const doc = docs.find(item => item.doc_key === key && extractRowsPayload(item.content || item.data).length);
@@ -3099,10 +2993,10 @@ function getDefaultPermissions(role){
       const rows = extractRowsPayload(picked.content || picked.data).map(normalizeDeliveryOrderRow).filter(row => row.reper && row.dataLivrare && row.cantitate > 0);
       return { rows, source:picked.doc_key || DELIVERY_DOC_KEY, ok:rows.length > 0 };
     }
-    async function loadInventarForjatRows(year, forceRefresh){
+    async function loadInventarForjatRows(year){
       if(!state.supabase) return { rows:[], source:'-', ok:false };
       const keys = buildForjatInventarKeys(year);
-      const docs = await getSupportDocs(keys, forceRefresh);
+      const docs = await queryDocsByKeys(keys);
       const picked = docs.find(item => extractRowsPayload(item.content || item.data).length) || null;
       if(!picked) return { rows:[], source:'inventar-forjat lipsă', ok:false };
       const rows = [];
@@ -4368,11 +4262,44 @@ function getDefaultPermissions(role){
         ? ('Ultima sincronizare plan: ' + formatDateTime(state.updatedAt))
         : 'Încă nu există document cloud pentru planificare.';
     }
+    function renderTable(preserveUi){
+      const overrideUiState = state.pendingUiStateOverride ? normalizeUiStateSnap(state.pendingUiStateOverride) : null;
+      state.pendingUiStateOverride = null;
+      const uiState = overrideUiState || (preserveUi ? captureUiState() : null);
+      let rows = [];
+      try{
+        rows = getFilteredRows();
+      }catch(error){
+        console.error('renderTable.getFilteredRows', error);
+        rows = Array.isArray(state.rows) ? state.rows.slice() : [];
+      }
+      if(state.selectedRowId && !rows.some(row => String(row.id) === String(state.selectedRowId))){
+        state.selectedRowId = '';
+      }
+      try{
+        updateStatusCards(rows);
+      }catch(error){
+        console.error('renderTable.updateStatusCards', error);
+        try{
+          els.modePill.textContent = 'Model Excel';
+          els.filterValue.textContent = state.activeYear || '-';
+          els.filterSub.textContent = rows.length + ' rânduri afișate';
+          els.totalValue.textContent = '0 / 0';
+          els.totalSub.textContent = 'Planificat / Realizat';
+        }catch(_e){}
+      }
+      if(!rows.length){
+        state.selectedRowId = '';
+        els.planBody.innerHTML = '<tr><td colspan="21"><div class="empty">Nu există rânduri pentru filtrul curent.</div></td></tr>';
+        decorateSelectablePlanCells();
+        clearMultiCellSelection();
+        restoreUiState(uiState);
+        updateRowActionUi();
+        return;
+      }
 
-    function renderTableRowsChunk(rows, startIndex, endIndex){
       const rowHtml = [];
-      for(let idx = startIndex; idx < endIndex; idx += 1){
-        const row = rows[idx];
+      rows.forEach((row, idx) => {
         try{
           const highlight = getRowHighlight(row);
           const dateTitle = highlight.holiday ? (' title="' + escapeHtml(highlight.holiday) + '"') : '';
@@ -4388,6 +4315,7 @@ function getDefaultPermissions(role){
             const mask = getDuplicateMask(rows, idx, machine);
             const tdPlanClass = calc && calc.status === 'partial' ? 'plan-stock-partial' : (calc && calc.status === 'empty' ? 'plan-stock-empty' : '');
             const tdReperClass = calc && (calc.status === 'partial' || calc.status === 'empty') ? 'reper-stock-alert' : '';
+            const deliveryTooltip = readyItems.length ? buildDeliveryReadySectionHtml(readyItems, { standalone:true }) : '';
             const combinedTooltipHtml = buildCombinedPlanTooltipHtml((calc && calc.tooltip) ? calc.tooltip : '', readyItems);
             const tooltipTone = (calc && (calc.status === 'partial' || calc.status === 'empty')) ? 'alert' : 'ok';
             const slotCoveredClass = readyItems.length ? ' slot-month-covered' : '';
@@ -4418,84 +4346,15 @@ function getDefaultPermissions(role){
             <td colspan="18"><div class="empty">Rând indisponibil momentan.</div></td>
           </tr>`);
         }
-      }
-      return rowHtml.join('');
-    }
-    function finalizeRenderedTable(uiState){
+      });
+      els.planBody.innerHTML = rowHtml.join('');
       decorateSelectablePlanCells();
       clearMultiCellSelection();
-      restoreUiState(uiState || null);
+      restoreUiState(uiState);
       syncSelectedRowUi();
-      updateRowActionUi();
       requestAnimationFrame(() => {
         try{ applyCellLockUi(); }catch(error){ console.error('renderTable.applyCellLockUi', error); }
       });
-    }
-    function renderTable(preserveUi){
-      const overrideUiState = state.pendingUiStateOverride ? normalizeUiStateSnap(state.pendingUiStateOverride) : null;
-      state.pendingUiStateOverride = null;
-      const uiState = overrideUiState || (preserveUi ? captureUiState() : null);
-      let rows = [];
-      try{
-        rows = getFilteredRows();
-      }catch(error){
-        console.error('renderTable.getFilteredRows', error);
-        rows = Array.isArray(state.rows) ? state.rows.slice() : [];
-      }
-      const renderToken = ++state.renderToken;
-      if(state.selectedRowId && !rows.some(row => String(row.id) === String(state.selectedRowId))){
-        state.selectedRowId = '';
-      }
-      try{
-        updateStatusCards(rows);
-      }catch(error){
-        console.error('renderTable.updateStatusCards', error);
-        try{
-          els.modePill.textContent = 'Model Excel';
-          els.filterValue.textContent = state.activeYear || '-';
-          els.filterSub.textContent = rows.length + ' rânduri afișate';
-          els.totalValue.textContent = '0 / 0';
-          els.totalSub.textContent = 'Planificat / Realizat';
-        }catch(_e){}
-      }
-      if(!rows.length){
-        state.selectedRowId = '';
-        els.planBody.innerHTML = '<tr><td colspan="21"><div class="empty">Nu există rânduri pentru filtrul curent.</div></td></tr>';
-        finalizeRenderedTable(uiState);
-        return;
-      }
-
-      if(rows.length <= PROGRESSIVE_RENDER_THRESHOLD){
-        els.planBody.innerHTML = renderTableRowsChunk(rows, 0, rows.length);
-        finalizeRenderedTable(uiState);
-        return;
-      }
-
-      const firstEnd = Math.min(rows.length, PROGRESSIVE_RENDER_CHUNK_SIZE);
-      els.planBody.innerHTML = renderTableRowsChunk(rows, 0, firstEnd);
-      updateRowActionUi();
-      let cursor = firstEnd;
-      const appendChunk = function(){
-        if(renderToken !== state.renderToken) return;
-        const nextEnd = Math.min(rows.length, cursor + PROGRESSIVE_RENDER_CHUNK_SIZE);
-        const html = renderTableRowsChunk(rows, cursor, nextEnd);
-        if(html) els.planBody.insertAdjacentHTML('beforeend', html);
-        cursor = nextEnd;
-        if(cursor < rows.length){
-          if(typeof requestAnimationFrame === 'function'){
-            requestAnimationFrame(appendChunk);
-          }else{
-            setTimeout(appendChunk, 0);
-          }
-          return;
-        }
-        finalizeRenderedTable(uiState);
-      };
-      if(typeof requestAnimationFrame === 'function'){
-        requestAnimationFrame(appendChunk);
-      }else{
-        setTimeout(appendChunk, 0);
-      }
     }
 
 
@@ -6329,12 +6188,10 @@ function addRow(){
         try{ await refreshLiveAndSupport(false, uiSnap); }catch(error){ console.error('boot.refreshLiveAndSupport', error); }
         try{ await refreshRemoteLocks(true); }catch(error){ console.error('boot.refreshRemoteLocks', error); }
       };
-      if(typeof window !== 'undefined' && typeof window.requestIdleCallback === 'function'){
-        window.requestIdleCallback(function(){ runner(); }, { timeout: 900 });
-      }else if(typeof requestAnimationFrame === 'function'){
-        requestAnimationFrame(function(){ setTimeout(runner, 80); });
+      if(typeof requestAnimationFrame === 'function'){
+        requestAnimationFrame(function(){ setTimeout(runner, 0); });
       }else{
-        setTimeout(runner, 80);
+        setTimeout(runner, 0);
       }
     }
 
