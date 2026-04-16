@@ -11,6 +11,110 @@
 
   let supabaseClient = null;
 
+  const AUTH_CACHE = {
+    session: null,
+    authState: null,
+    role: new Map(),
+    account: new Map(),
+    permissions: new Map(),
+    pageAccess: new Map()
+  };
+
+  const AUTH_CACHE_TTL = {
+    session: 10000,
+    authState: 15000,
+    role: 120000,
+    account: 30000,
+    permissions: 45000,
+    pageAccess: 15000
+  };
+
+  function nowMs(){
+    return Date.now();
+  }
+
+  function buildAuthCacheKey(parts){
+    return (Array.isArray(parts) ? parts : [parts]).map(function(part){
+      return String(part == null ? '' : part).trim().toLowerCase();
+    }).join('::');
+  }
+
+  function getUserCacheKey(user){
+    return buildAuthCacheKey([user && user.id, normalizeEmail(user && user.email)]);
+  }
+
+  function readMemoryCache(bucket, key){
+    const store = AUTH_CACHE[bucket];
+    if(!store){ return null; }
+    const entry = store instanceof Map ? store.get(key) : store;
+    if(!entry || !entry.expiresAt || entry.expiresAt <= nowMs()){
+      if(store instanceof Map){ store.delete(key); }
+      else if(bucket in AUTH_CACHE){ AUTH_CACHE[bucket] = null; }
+      return null;
+    }
+    return entry.value;
+  }
+
+  function writeMemoryCache(bucket, key, value, ttl){
+    const expiresAt = nowMs() + Math.max(1000, Number(ttl) || 0);
+    const entry = { value, expiresAt };
+    const store = AUTH_CACHE[bucket];
+    if(store instanceof Map){
+      store.set(key, entry);
+    } else if(bucket in AUTH_CACHE){
+      AUTH_CACHE[bucket] = entry;
+    }
+    return value;
+  }
+
+  function readSessionJson(key, ttl){
+    try {
+      const raw = sessionStorage.getItem(key);
+      if(!raw) return null;
+      const parsed = JSON.parse(raw);
+      if(!parsed || typeof parsed !== 'object') return null;
+      const expiresAt = Number(parsed.expiresAt || 0);
+      if(!expiresAt || expiresAt <= nowMs()){
+        sessionStorage.removeItem(key);
+        return null;
+      }
+      if(ttl && parsed.savedAt && (nowMs() - Number(parsed.savedAt || 0) > ttl)){
+        sessionStorage.removeItem(key);
+        return null;
+      }
+      return parsed.value;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function writeSessionJson(key, value, ttl){
+    try {
+      sessionStorage.setItem(key, JSON.stringify({
+        savedAt: nowMs(),
+        expiresAt: nowMs() + Math.max(1000, Number(ttl) || 0),
+        value
+      }));
+    } catch (_) {}
+    return value;
+  }
+
+  function clearAuthRuntimeCache(){
+    AUTH_CACHE.session = null;
+    AUTH_CACHE.authState = null;
+    AUTH_CACHE.role.clear();
+    AUTH_CACHE.account.clear();
+    AUTH_CACHE.permissions.clear();
+    AUTH_CACHE.pageAccess.clear();
+    try {
+      Object.keys(sessionStorage).forEach(function(key){
+        if(/^rf_auth_cache:/i.test(key)){
+          sessionStorage.removeItem(key);
+        }
+      });
+    } catch (_) {}
+  }
+
   function normalizeEmail(value){
     return String(value || '').trim().toLowerCase();
   }
@@ -120,6 +224,7 @@
     safeRemoveItem(STORAGE.userEmail);
     safeRemoveItem(STORAGE.userRole);
     safeRemoveItem(STORAGE.loginAt);
+    clearAuthRuntimeCache();
   }
 
   function readStoredRoleForUser(_user){
@@ -239,6 +344,19 @@
     const userId = String(user && user.id || '').trim();
     if(!sb || (!email && !userId)) return map;
 
+    const cacheKey = buildAuthCacheKey(['perm-map', userId, email]);
+    const cachedMemory = readMemoryCache('permissions', cacheKey);
+    if(cachedMemory && typeof cachedMemory === 'object'){
+      Object.keys(cachedMemory).forEach(function(key){ map.set(key, cachedMemory[key]); });
+      return map;
+    }
+    const cachedSession = readSessionJson('rf_auth_cache:' + cacheKey, AUTH_CACHE_TTL.permissions);
+    if(cachedSession && typeof cachedSession === 'object'){
+      writeMemoryCache('permissions', cacheKey, cachedSession, AUTH_CACHE_TTL.permissions);
+      Object.keys(cachedSession).forEach(function(key){ map.set(key, cachedSession[key]); });
+      return map;
+    }
+
     const pushRows = (rows) => {
       (Array.isArray(rows) ? rows : []).forEach(row => {
         const key = normalizePageKey(row && row.page_key);
@@ -276,6 +394,10 @@
       });
     });
 
+    const serialized = {};
+    map.forEach(function(value, key){ serialized[key] = value; });
+    writeMemoryCache('permissions', cacheKey, serialized, AUTH_CACHE_TTL.permissions);
+    writeSessionJson('rf_auth_cache:' + cacheKey, serialized, AUTH_CACHE_TTL.permissions);
     return map;
   }
 
@@ -383,6 +505,13 @@
       return 'viewer';
     }
 
+    const cacheKey = buildAuthCacheKey(['role', user && user.id, email]);
+    const cachedRole = readMemoryCache('role', cacheKey) || readSessionJson('rf_auth_cache:' + cacheKey, AUTH_CACHE_TTL.role);
+    if(cachedRole){
+      writeMemoryCache('role', cacheKey, cachedRole, AUTH_CACHE_TTL.role);
+      return String(cachedRole).trim().toLowerCase();
+    }
+
     const sb = getSupabaseClient();
 
     if(window.RF_ACL && typeof window.RF_ACL.resolveRole === 'function'){
@@ -390,6 +519,8 @@
         const resolved = await window.RF_ACL.resolveRole(sb, user);
         const aclRole = String(resolved && resolved.role || '').trim().toLowerCase();
         if(['viewer','operator','editor','admin'].includes(aclRole)){
+          writeMemoryCache('role', cacheKey, aclRole, AUTH_CACHE_TTL.role);
+          writeSessionJson('rf_auth_cache:' + cacheKey, aclRole, AUTH_CACHE_TTL.role);
           return aclRole;
         }
       } catch (_) {
@@ -409,6 +540,8 @@
       try {
         const role = String(await attempt() || '').trim().toLowerCase();
         if(['viewer','operator','editor','admin'].includes(role)){
+          writeMemoryCache('role', cacheKey, role, AUTH_CACHE_TTL.role);
+          writeSessionJson('rf_auth_cache:' + cacheKey, role, AUTH_CACHE_TTL.role);
           return role;
         }
       } catch (_) {
@@ -416,6 +549,8 @@
       }
     }
 
+    writeMemoryCache('role', cacheKey, 'viewer', AUTH_CACHE_TTL.role);
+    writeSessionJson('rf_auth_cache:' + cacheKey, 'viewer', AUTH_CACHE_TTL.role);
     return 'viewer';
   }
 
@@ -425,6 +560,13 @@
     const userId = String(user && user.id || '').trim();
     if(!user || (!email && !userId)){
       return { is_active:true, is_banned:false, note:'', ban_reason:'', updated_at:'' };
+    }
+
+    const cacheKey = buildAuthCacheKey(['account', userId, email]);
+    const cachedStatus = readMemoryCache('account', cacheKey) || readSessionJson('rf_auth_cache:' + cacheKey, AUTH_CACHE_TTL.account);
+    if(cachedStatus && typeof cachedStatus === 'object'){
+      writeMemoryCache('account', cacheKey, cachedStatus, AUTH_CACHE_TTL.account);
+      return cachedStatus;
     }
 
     function normalizeStatusRow(row){
@@ -507,29 +649,43 @@
 
       const best = pickLatest(candidates);
       if(best){
+        writeMemoryCache('account', cacheKey, best, AUTH_CACHE_TTL.account);
+        writeSessionJson('rf_auth_cache:' + cacheKey, best, AUTH_CACHE_TTL.account);
         return best;
       }
     } catch (_) {
       // fallback safe open when status source is unavailable
     }
 
-    return { is_active:true, is_banned:false, note:'', ban_reason:'', updated_at:'' };
+    const fallbackStatus = { is_active:true, is_banned:false, note:'', ban_reason:'', updated_at:'' };
+    writeMemoryCache('account', cacheKey, fallbackStatus, AUTH_CACHE_TTL.account);
+    writeSessionJson('rf_auth_cache:' + cacheKey, fallbackStatus, AUTH_CACHE_TTL.account);
+    return fallbackStatus;
   }
 
   async function getSession(){
+    const cached = readMemoryCache('session', 'current');
+    if(cached !== null){
+      return cached;
+    }
     const sb = getSupabaseClient();
     const { data, error } = await sb.auth.getSession();
     if(error){
       throw error;
     }
-    return data && data.session ? data.session : null;
+    return writeMemoryCache('session', 'current', (data && data.session ? data.session : null), AUTH_CACHE_TTL.session);
   }
 
   async function getCurrentUserWithRole(){
+    const cachedAuthState = readMemoryCache('authState', 'current');
+    if(cachedAuthState !== null){
+      return cachedAuthState;
+    }
+
     const session = await getSession();
     if(!session || !session.user){
       clearUserState();
-      return null;
+      return writeMemoryCache('authState', 'current', null, AUTH_CACHE_TTL.authState);
     }
     const currentEmail = normalizeEmail(session.user.email);
     const currentUserId = String(session.user.id || '').trim();
@@ -542,12 +698,12 @@
     const role = await resolveUserRole(session.user);
     persistUserState(session.user, role);
 
-    return {
+    return writeMemoryCache('authState', 'current', {
       session,
       user: session.user,
       role,
       accountStatus: status
-    };
+    }, AUTH_CACHE_TTL.authState);
   }
 
   function getCurrentPageName(){
@@ -630,7 +786,12 @@
 
   function onAuthStateChange(callback){
     const sb = getSupabaseClient();
-    return sb.auth.onAuthStateChange(callback);
+    return sb.auth.onAuthStateChange(function(event, session){
+      clearAuthRuntimeCache();
+      if(typeof callback === 'function'){
+        return callback(event, session);
+      }
+    });
   }
 
   function roleLabel(role){
@@ -660,6 +821,12 @@
     let user = settings.user || null;
     let role = settings.role || '';
 
+    const preKey = buildAuthCacheKey(['page-access', settings.pageKey, role, user && user.id, user && user.email]);
+    const preCached = readMemoryCache('pageAccess', preKey);
+    if(preCached && typeof preCached === 'object'){
+      return preCached;
+    }
+
     if(!user){
       const authState = await getCurrentUserWithRole();
       user = authState && authState.user ? authState.user : null;
@@ -671,6 +838,11 @@
     }
 
     const cleanRole = String(role || 'viewer').toLowerCase();
+    const cacheKey = buildAuthCacheKey(['page-access', settings.pageKey, cleanRole, user && user.id, user && user.email]);
+    const cachedAccess = readMemoryCache('pageAccess', cacheKey);
+    if(cachedAccess && typeof cachedAccess === 'object'){
+      return cachedAccess;
+    }
     const fallbackPermissions = defaultPermissionsForRole(cleanRole);
     const sb = getSupabaseClient();
 
@@ -678,7 +850,7 @@
       const strictMap = await loadUserPermissionMap(sb, user);
       if(strictMap && strictMap.size){
         const matched = strictMap.get(settings.pageKey) || { can_view:false, can_add:false, can_edit:false, can_delete:false, can_export:false, can_import:false };
-        return {
+        return writeMemoryCache('pageAccess', cacheKey, {
           allowed: matched.can_view === true,
           user,
           role: cleanRole,
@@ -686,7 +858,7 @@
           source: 'user_page_permissions strict',
           strictUserAcl: true,
           message: matched.can_view === true ? '' : 'Nu ai acces în această foaie. Cere acces de la admin.'
-        };
+        }, AUTH_CACHE_TTL.pageAccess);
       }
     }
 
@@ -696,19 +868,19 @@
         user,
         role
       });
-      return Object.assign({ user, role: access && access.role ? access.role : cleanRole }, access || {});
+      return writeMemoryCache('pageAccess', cacheKey, Object.assign({ user, role: access && access.role ? access.role : cleanRole }, access || {}), AUTH_CACHE_TTL.pageAccess);
     }
 
     const openPage = ['login','index'].includes(settings.pageKey);
     const deniedPermissions = { can_view:false, can_add:false, can_edit:false, can_delete:false, can_export:false, can_import:false };
-    return {
+    return writeMemoryCache('pageAccess', cacheKey, {
       allowed: openPage ? fallbackPermissions.can_view === true : false,
       user,
       role: cleanRole,
       permissions: openPage ? fallbackPermissions : deniedPermissions,
       source: openPage ? 'open page fallback' : 'deny by default fallback',
       message: openPage ? '' : 'ACL indisponibil. Acces blocat preventiv.'
-    };
+    }, AUTH_CACHE_TTL.pageAccess);
   }
 
   window.ERPAuth = {
@@ -722,6 +894,7 @@
     getAccountStatus,
     persistUserState,
     clearUserState,
+    clearAuthRuntimeCache,
     requireAuth,
     signOut,
     onAuthStateChange,
