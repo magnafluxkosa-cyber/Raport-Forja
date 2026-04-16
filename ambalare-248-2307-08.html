@@ -880,10 +880,27 @@ function findBestDessinSuffix(reper, deliveryDisplay, mrcRows, mrcMapRows){
   });
   return Array.from(counts.entries()).sort((a,b) => (b[1].best - a[1].best) || (b[1].count - a[1].count) || a[0].localeCompare(b[0]))[0]?.[0] || '';
 }
-function buildCouleeText(sarje, deliveryDisplay){
+function buildSarjaQtyEntries(rows, codeToSarje){
+  const totals = new Map();
+  (rows || []).forEach(row => {
+    const code = toStr(row && row.cod_cat).toUpperCase();
+    const qty = toInt(row && row.buc);
+    if(!code || qty <= 0) return;
+    const linkedSarje = uniqueNonEmpty(codeToSarje.get(code) || []);
+    const bucket = linkedSarje.length === 1 ? linkedSarje[0] : (linkedSarje.join('/') || code);
+    totals.set(bucket, (totals.get(bucket) || 0) + qty);
+  });
+  return Array.from(totals.entries()).map(([sarja, quantity]) => ({ sarja, quantity }));
+}
+function buildCouleeText(sarje, deliveryDisplay, sarjaEntries){
+  const yy = (displayToIso(deliveryDisplay) || '').slice(2,4);
+  const entries = (sarjaEntries || []).filter(entry => toStr(entry && entry.sarja) && toInt(entry && entry.quantity) > 0);
+  if(entries.length){
+    const body = entries.map(entry => `${entry.sarja} (${toInt(entry.quantity)})`).join(' / ');
+    return yy ? `${yy}/${body}` : body;
+  }
   const distinctSarje = uniqueNonEmpty(sarje);
   if(!distinctSarje.length) return '-';
-  const yy = (displayToIso(deliveryDisplay) || '').slice(2,4);
   return yy ? `${yy}/${distinctSarje.join('/')}` : distinctSarje.join('/');
 }
 
@@ -909,6 +926,7 @@ function buildLabelPayloads(transport, transportRows, intrariRows, zaleRows, mrc
     const qty = rows.reduce((sum, row) => sum + toInt(row.buc), 0);
     const codCatList = uniqueNonEmpty(rows.map(row => toStr(row.cod_cat).toUpperCase()));
     const sarje = uniqueNonEmpty(codCatList.flatMap(code => codeToSarje.get(code) || []));
+    const sarjaBreakdown = buildSarjaQtyEntries(rows, codeToSarje);
     const matrite = uniqueNonEmpty(rows.map(row => row.cod_matrita.toUpperCase()));
     const suffix = findBestDessinSuffix(reper, deliveryDate, mrcRows, mrcMapRows);
     return {
@@ -920,7 +938,8 @@ function buildLabelPayloads(transport, transportRows, intrariRows, zaleRows, mrc
       quantity: qty,
       codCats: codCatList,
       sarje,
-      couleeText: buildCouleeText(sarje, deliveryDate),
+      sarjaBreakdown,
+      couleeText: buildCouleeText(sarje, deliveryDate, sarjaBreakdown),
       matrite,
       clientLabel: toStr(clientLabel) || LABELS_FIXED.clientCountry,
       deliveryDate
@@ -949,6 +968,29 @@ function fitSingleLine(doc, text, maxW, baseSize, minSize){
   let size = baseSize;
   while(size > (minSize || 7) && doc.getTextWidth(t) > maxW){ size -= 0.3; doc.setFontSize(size); }
   return { text:t, size };
+}
+function fitWrappedText(doc, text, maxW, maxLines, baseSize, minSize){
+  const limit = Math.max(1, toInt(maxLines) || 1);
+  const rawText = toStr(text) || '-';
+  let size = baseSize;
+  let lines = [rawText];
+  while(size > (minSize || 7)) {
+    doc.setFontSize(size);
+    lines = doc.splitTextToSize(rawText, maxW);
+    if(lines.length <= limit) break;
+    size -= 0.25;
+  }
+  doc.setFontSize(size);
+  lines = doc.splitTextToSize(rawText, maxW);
+  if(lines.length > limit){
+    lines = lines.slice(0, limit);
+    let last = toStr(lines[limit - 1]).trim();
+    while(last && doc.getTextWidth(last + '…') > maxW){
+      last = last.slice(0, -1).trim();
+    }
+    lines[limit - 1] = (last || toStr(lines[limit - 1]).trim()) + '…';
+  }
+  return { lines, size };
 }
 function drawLabelPdf(doc, label, originX, originY){
   const x = originX;
@@ -1018,9 +1060,11 @@ function drawLabelPdf(doc, label, originX, originY){
   doc.text(fit.text, rightValX, row1Y + 0.1);
 
   const sarjaText = toStr(label.couleeText) || '-';
-  fit = fitSingleLine(doc, sarjaText, rightValueMax, 11.5, 8.2);
-  doc.setFontSize(fit.size);
-  doc.text(fit.text, rightValX, row2Y + 0.2);
+  const sarjaFit = fitWrappedText(doc, sarjaText, rightValueMax, 2, 11.5, 7.0);
+  doc.setFontSize(sarjaFit.size);
+  const sarjaLineHeight = Math.max(3.3, sarjaFit.size * 0.34 + 0.65);
+  const sarjaStartY = row2Y + (sarjaFit.lines.length > 1 ? -1.5 : 0.2);
+  sarjaFit.lines.forEach((line, idx) => doc.text(toStr(line), rightValX, sarjaStartY + idx * sarjaLineHeight));
 
   const catsText = (label.codCats && label.codCats.length ? label.codCats.join('/') : '-');
   fit = fitSingleLine(doc, catsText, 26, 13.0, 9.0);
