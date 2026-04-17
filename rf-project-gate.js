@@ -1,127 +1,199 @@
-(function (window, document) {
+(function (window) {
   'use strict';
 
-  var CONFIG = window.RF_PROJECT_GATE_CONFIG || {};
-  var ERP = window.ERP_FORJA_CONFIG || window.__ERP_FORJA_CONFIG__ || {};
-  var form = document.getElementById('gateForm');
-  var pinInput = document.getElementById('pinInput');
-  var continueBtn = document.getElementById('continueBtn');
-  var statusBox = document.getElementById('statusBox');
+  var STORAGE_KEY = 'rf_project_gate_access';
+  var SESSION_KEY = 'rf_project_gate_access_session';
+  var DEFAULT_TTL_HOURS = 12;
+  var DEFAULT_CONFIG = {
+    defaultTtlHours: 12,
+    projects: [
+      {
+        projectKey: 'kad',
+        label: 'ERP Forja / K.A.D',
+        pin: '2580',
+        destination: 'login.html',
+        description: 'PIN-ul principal pentru proiectul ERP Forja / K.A.D.',
+        destinationLabel: 'Login K.A.D'
+      },
+      {
+        projectKey: 'proiect-2',
+        label: 'Proiect 2',
+        pin: '7412',
+        destination: 'proiect-2/index.html',
+        description: 'Exemplu pregătit pentru un proiect viitor. Schimbă eticheta, PIN-ul și destinația.',
+        destinationLabel: 'proiect-2/index.html'
+      },
+      {
+        projectKey: 'proiect-3',
+        label: 'Proiect 3',
+        pin: '9631',
+        destination: 'proiect-3/index.html',
+        description: 'Al treilea slot pregătit pentru alt proiect sau alt portal.',
+        destinationLabel: 'proiect-3/index.html'
+      }
+    ]
+  };
 
-  function setStatus(message, kind) {
-    if (!statusBox) return;
-    statusBox.textContent = String(message || '\u00a0');
-    statusBox.className = 'status' + (kind ? ' ' + kind : '');
+  function safeParse(raw) {
+    if (!raw) return null;
+    try { return JSON.parse(raw); } catch (_) { return null; }
+  }
+
+  function safeGet(store, key) {
+    try { return store.getItem(key); } catch (_) { return null; }
+  }
+
+  function safeSet(store, key, value) {
+    try { store.setItem(key, value); } catch (_) {}
+  }
+
+  function safeRemove(store, key) {
+    try { store.removeItem(key); } catch (_) {}
+  }
+
+  function nowMs() {
+    return Date.now();
+  }
+
+  function normalizeValue(value) {
+    return String(value == null ? '' : value).trim();
   }
 
   function normalizePin(value) {
-    var raw = String(value || '').trim();
-    if (CONFIG.pinMaskDigitsOnly) raw = raw.replace(/\D+/g, '');
-    return raw;
+    return normalizeValue(value).replace(/\s+/g, '');
   }
 
-  function getFunctionUrl() {
-    var url = String(ERP.SUPABASE_URL || '').trim().replace(/\/$/, '');
-    var fn = String(CONFIG.functionName || '').trim();
-    if (!url || !fn) throw new Error('Configurația pentru gateway lipsește.');
-    return url + '/functions/v1/' + fn;
-  }
-
-  function getAnonKey() {
-    var key = String(ERP.SUPABASE_ANON_KEY || '').trim();
-    if (!key) throw new Error('Lipsește cheia anon pentru Supabase.');
-    return key;
-  }
-
-  function getNextPath(serverPath) {
-    var params = new URLSearchParams(window.location.search || '');
-    var next = String(params.get('next') || '').trim();
-    if (next && !/^https?:/i.test(next) && next.indexOf('//') !== 0) return next;
-    return String(serverPath || CONFIG.defaultNext || 'login.html');
-  }
-
-  function storeToken(token, meta) {
-    var payload = {
-      token: String(token || ''),
-      project_key: String(meta && meta.project_key || ''),
-      redirect_path: String(meta && meta.redirect_path || ''),
-      expires_at: Number(meta && meta.expires_at || 0)
+  function normalizeProject(project, fallbackIndex) {
+    var normalizedKey = normalizeValue(project && project.projectKey).toLowerCase();
+    return {
+      projectKey: normalizedKey || ('project-' + String(fallbackIndex || 0)),
+      label: normalizeValue(project && project.label) || ('Proiect ' + String(fallbackIndex || 0)),
+      pin: normalizePin(project && project.pin),
+      destination: normalizeValue(project && project.destination) || 'login.html',
+      description: normalizeValue(project && project.description),
+      destinationLabel: normalizeValue(project && project.destinationLabel) || normalizeValue(project && project.destination) || 'Destinație proiect'
     };
-    try {
-      var serialized = JSON.stringify(payload);
-      sessionStorage.setItem(CONFIG.storageKey, serialized);
-      if (CONFIG.keepTokenInLocalStorage) localStorage.setItem(CONFIG.storageKey, serialized);
-    } catch (_) {}
   }
 
-  function setLoading(flag) {
-    if (!continueBtn || !pinInput) return;
-    continueBtn.disabled = !!flag;
-    pinInput.disabled = !!flag;
-    continueBtn.textContent = flag ? 'Se verifică...' : 'Continuă';
+  function ensureConfig() {
+    var cfg = window.RF_PROJECT_GATE_CONFIG || DEFAULT_CONFIG;
+    var projects = Array.isArray(cfg.projects) ? cfg.projects.slice() : [];
+    if (!projects.length) projects = DEFAULT_CONFIG.projects.slice();
+    return {
+      defaultTtlHours: Number(cfg.defaultTtlHours) > 0 ? Number(cfg.defaultTtlHours) : DEFAULT_TTL_HOURS,
+      projects: projects.map(function (project, index) {
+        return normalizeProject(project, index + 1);
+      }).filter(function (project) {
+        return project.projectKey && project.pin && project.destination;
+      })
+    };
   }
 
-  async function verifyPin(pin) {
-    var controller = new AbortController();
-    var timer = window.setTimeout(function () { controller.abort(); }, Number(CONFIG.requestTimeoutMs || 12000));
-    try {
-      var response = await fetch(getFunctionUrl(), {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'apikey': getAnonKey(),
-          'Authorization': 'Bearer ' + getAnonKey()
-        },
-        body: JSON.stringify({ op: 'verify', pin: pin }),
-        signal: controller.signal
-      });
-
-      var json = null;
-      try { json = await response.json(); } catch (_) { json = null; }
-      if (!response.ok || !json || json.ok !== true) {
-        throw new Error(json && json.error || 'PIN invalid.');
-      }
-      return json;
-    } finally {
-      window.clearTimeout(timer);
+  function readStoredAccess() {
+    var payload = safeParse(safeGet(window.sessionStorage, SESSION_KEY)) || safeParse(safeGet(window.localStorage, STORAGE_KEY));
+    if (!payload || typeof payload !== 'object') return null;
+    var expiresAt = Number(payload.expiresAt || 0);
+    if (!expiresAt || expiresAt <= nowMs()) {
+      clearAccess();
+      return null;
     }
+    return payload;
   }
 
-  if (!form || !pinInput) return;
+  function clearAccess() {
+    safeRemove(window.sessionStorage, SESSION_KEY);
+    safeRemove(window.localStorage, STORAGE_KEY);
+  }
 
-  form.addEventListener('submit', async function (event) {
-    event.preventDefault();
-    var pin = normalizePin(pinInput.value);
-    if (!pin) {
-      setStatus('Introdu PIN-ul.', 'error');
-      pinInput.focus();
-      return;
+  function storeAccess(project) {
+    var cfg = ensureConfig();
+    var ttlHours = cfg.defaultTtlHours;
+    var grantedAt = nowMs();
+    var expiresAt = grantedAt + ttlHours * 60 * 60 * 1000;
+    var payload = {
+      projectKey: project.projectKey,
+      label: project.label,
+      destination: project.destination,
+      destinationLabel: project.destinationLabel,
+      grantedAt: grantedAt,
+      expiresAt: expiresAt
+    };
+    var raw = JSON.stringify(payload);
+    safeSet(window.sessionStorage, SESSION_KEY, raw);
+    safeSet(window.localStorage, STORAGE_KEY, raw);
+    return payload;
+  }
+
+  function getProjectByPin(pin) {
+    var normalizedPin = normalizePin(pin);
+    if (!normalizedPin) return null;
+    var cfg = ensureConfig();
+    for (var i = 0; i < cfg.projects.length; i += 1) {
+      if (cfg.projects[i].pin === normalizedPin) return cfg.projects[i];
     }
+    return null;
+  }
 
-    try {
-      setLoading(true);
-      setStatus('Se verifică accesul...', '');
-      var data = await verifyPin(pin);
-      storeToken(data.token, data);
-      setStatus('PIN valid. Redirecționare...', 'ok');
-      window.location.replace(getNextPath(data.redirect_path));
-    } catch (error) {
-      setStatus(error && error.message ? error.message : 'PIN invalid.', 'error');
-      pinInput.select();
-    } finally {
-      setLoading(false);
+  function getProject(projectKey) {
+    var cleanKey = normalizeValue(projectKey).toLowerCase();
+    if (!cleanKey) return null;
+    var cfg = ensureConfig();
+    for (var i = 0; i < cfg.projects.length; i += 1) {
+      if (cfg.projects[i].projectKey === cleanKey) return cfg.projects[i];
     }
-  });
+    return null;
+  }
 
-  pinInput.addEventListener('input', function () {
-    setStatus('\u00a0', '');
-    if (CONFIG.pinMaskDigitsOnly) {
-      var clean = normalizePin(pinInput.value);
-      if (clean !== pinInput.value) pinInput.value = clean;
-    }
-  });
+  function listProjects() {
+    return ensureConfig().projects.slice();
+  }
 
-  window.setTimeout(function () {
-    try { pinInput.focus(); } catch (_) {}
-  }, 50);
-})(window, document);
+  function hasAccess(projectKey) {
+    var access = readStoredAccess();
+    var cleanKey = normalizeValue(projectKey).toLowerCase();
+    return Boolean(access && cleanKey && access.projectKey === cleanKey);
+  }
+
+  function buildGateUrl(expectedProjectKey, next) {
+    var parts = ['access-gate.html'];
+    var query = [];
+    if (expectedProjectKey) query.push('project=' + encodeURIComponent(normalizeValue(expectedProjectKey).toLowerCase()));
+    if (next) query.push('next=' + encodeURIComponent(normalizeValue(next)));
+    if (query.length) parts.push('?' + query.join('&'));
+    return parts.join('');
+  }
+
+  function redirectToGate(expectedProjectKey, next) {
+    var target = buildGateUrl(expectedProjectKey, next);
+    try { window.location.replace(target); }
+    catch (_) { window.location.href = target; }
+  }
+
+  function requireAccess(projectKey, next) {
+    if (hasAccess(projectKey)) return true;
+    redirectToGate(projectKey, next);
+    return false;
+  }
+
+  function resolvePin(pin) {
+    var project = getProjectByPin(pin);
+    if (!project) return { ok: false, reason: 'PIN invalid' };
+    var access = storeAccess(project);
+    return { ok: true, project: project, access: access };
+  }
+
+  window.RFProjectGate = {
+    normalizePin: normalizePin,
+    getConfig: ensureConfig,
+    getProjectByPin: getProjectByPin,
+    getProject: getProject,
+    listProjects: listProjects,
+    readStoredAccess: readStoredAccess,
+    clearAccess: clearAccess,
+    hasAccess: hasAccess,
+    requireAccess: requireAccess,
+    resolvePin: resolvePin,
+    redirectToGate: redirectToGate,
+    buildGateUrl: buildGateUrl
+  };
+})(window);
