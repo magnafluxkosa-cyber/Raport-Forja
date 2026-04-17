@@ -4,6 +4,35 @@
   var STORAGE_KEY = 'rf_project_gate_access';
   var SESSION_KEY = 'rf_project_gate_access_session';
   var DEFAULT_TTL_HOURS = 12;
+  var DEFAULT_CONFIG = {
+    defaultTtlHours: 12,
+    projects: [
+      {
+        projectKey: 'kad',
+        label: 'ERP Forja / K.A.D',
+        pin: '2580',
+        destination: 'login.html',
+        description: 'PIN-ul principal pentru proiectul ERP Forja / K.A.D.',
+        destinationLabel: 'Login K.A.D'
+      },
+      {
+        projectKey: 'proiect-2',
+        label: 'Proiect 2',
+        pin: '7412',
+        destination: 'proiect-2/index.html',
+        description: 'Exemplu pregătit pentru un proiect viitor. Schimbă eticheta, PIN-ul și destinația.',
+        destinationLabel: 'proiect-2/index.html'
+      },
+      {
+        projectKey: 'proiect-3',
+        label: 'Proiect 3',
+        pin: '9631',
+        destination: 'proiect-3/index.html',
+        description: 'Al treilea slot pregătit pentru alt proiect sau alt portal.',
+        destinationLabel: 'proiect-3/index.html'
+      }
+    ]
+  };
 
   function safeParse(raw) {
     if (!raw) return null;
@@ -34,19 +63,26 @@
     return normalizeValue(value).replace(/\s+/g, '');
   }
 
+  function normalizeProject(project, fallbackIndex) {
+    var normalizedKey = normalizeValue(project && project.projectKey).toLowerCase();
+    return {
+      projectKey: normalizedKey || ('project-' + String(fallbackIndex || 0)),
+      label: normalizeValue(project && project.label) || ('Proiect ' + String(fallbackIndex || 0)),
+      pin: normalizePin(project && project.pin),
+      destination: normalizeValue(project && project.destination) || 'login.html',
+      description: normalizeValue(project && project.description),
+      destinationLabel: normalizeValue(project && project.destinationLabel) || normalizeValue(project && project.destination) || 'Destinație proiect'
+    };
+  }
+
   function ensureConfig() {
-    var cfg = window.RF_PROJECT_GATE_CONFIG || {};
+    var cfg = window.RF_PROJECT_GATE_CONFIG || DEFAULT_CONFIG;
     var projects = Array.isArray(cfg.projects) ? cfg.projects.slice() : [];
+    if (!projects.length) projects = DEFAULT_CONFIG.projects.slice();
     return {
       defaultTtlHours: Number(cfg.defaultTtlHours) > 0 ? Number(cfg.defaultTtlHours) : DEFAULT_TTL_HOURS,
-      projects: projects.map(function (project) {
-        return {
-          projectKey: normalizeValue(project && project.projectKey).toLowerCase(),
-          label: normalizeValue(project && project.label),
-          pin: normalizePin(project && project.pin),
-          destination: normalizeValue(project && project.destination) || 'login.html',
-          description: normalizeValue(project && project.description)
-        };
+      projects: projects.map(function (project, index) {
+        return normalizeProject(project, index + 1);
       }).filter(function (project) {
         return project.projectKey && project.pin && project.destination;
       })
@@ -78,6 +114,7 @@
       projectKey: project.projectKey,
       label: project.label,
       destination: project.destination,
+      destinationLabel: project.destinationLabel,
       grantedAt: grantedAt,
       expiresAt: expiresAt
     };
@@ -105,6 +142,10 @@
       if (cfg.projects[i].projectKey === cleanKey) return cfg.projects[i];
     }
     return null;
+  }
+
+  function listProjects() {
+    return ensureConfig().projects.slice();
   }
 
   function hasAccess(projectKey) {
@@ -146,6 +187,7 @@
     getConfig: ensureConfig,
     getProjectByPin: getProjectByPin,
     getProject: getProject,
+    listProjects: listProjects,
     readStoredAccess: readStoredAccess,
     clearAccess: clearAccess,
     hasAccess: hasAccess,
