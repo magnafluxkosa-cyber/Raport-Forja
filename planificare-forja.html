@@ -2802,93 +2802,62 @@ function getDefaultPermissions(role){
         contributionRows.forEach(item => {
           (byReper[item.reperKey] = byReper[item.reperKey] || []).push(item);
         });
-        const groupsByReper = Object.create(null);
-        Object.values(grouped).forEach(group => {
-          (groupsByReper[group.reperKey] = groupsByReper[group.reperKey] || []).push(group);
-        });
-        Object.keys(groupsByReper).forEach(reperKey => {
-          const groupsForReper = groupsByReper[reperKey].slice().sort((a,b) =>
-            String(a.monthIso).localeCompare(String(b.monthIso), 'ro', { sensitivity:'base' }) ||
-            Number(a.lunaNum || 0) - Number(b.lunaNum || 0) ||
-            String(a.reper).localeCompare(String(b.reper), 'ro', { sensitivity:'base' })
-          );
-          if(!groupsForReper.length) return;
-          const firstGroup = groupsForReper[0];
-          const firstMonthStartIso = firstGroup.monthIso + '-01';
-          const firstSnapshot = findInventarForjatSnapshot(firstGroup.reper, firstMonthStartIso);
-          const baseSnapshotQty = Math.max(0, Math.round(toNumber(firstSnapshot && firstSnapshot.qty)));
-          const allItems = (byReper[reperKey] || []).slice().sort((a,b) =>
-            String(a.rowIso).localeCompare(String(b.rowIso), 'ro', { sensitivity:'base' }) ||
-            Number(a.rowNo || 0) - Number(b.rowNo || 0) ||
-            Number(a.machineIndex || 0) - Number(b.machineIndex || 0)
-          );
-          let availableCarry = baseSnapshotQty;
-          let itemIndex = 0;
-          groupsForReper.forEach(group => {
-            const monthStartIso = group.monthIso + '-01';
-            const monthEndIso = endOfMonthIso(group.an, group.lunaNum);
-            let markerItem = null;
-            let readyFromStock = false;
-            let availableBeforeCell = Math.max(0, Math.round(toNumber(availableCarry)));
-            let availableAfterCell = availableBeforeCell;
-            let usedFromCell = 0;
-            while(itemIndex < allItems.length && String(allItems[itemIndex].rowIso) < monthStartIso){
-              availableCarry += Math.max(0, Math.round(toNumber(allItems[itemIndex] && allItems[itemIndex].qty)));
-              itemIndex += 1;
-            }
-            if(availableCarry >= group.requiredQty){
-              readyFromStock = true;
-              markerItem = allItems[itemIndex] || allItems[itemIndex - 1] || null;
-            }else{
-              let scanIndex = itemIndex;
-              let rollingAvailable = Math.max(0, Math.round(toNumber(availableCarry)));
-              while(scanIndex < allItems.length){
-                const item = allItems[scanIndex];
-                if(String(item.rowIso) > monthEndIso) break;
-                const qty = Math.max(0, Math.round(toNumber(item && item.qty)));
-                const rawBefore = rollingAvailable;
-                rollingAvailable += qty;
-                if(rollingAvailable >= group.requiredQty){
-                  markerItem = item;
-                  availableBeforeCell = Math.max(0, Math.round(toNumber(rawBefore)));
-                  availableAfterCell = Math.max(0, Math.round(toNumber(rollingAvailable)));
-                  usedFromCell = Math.min(qty, Math.max(0, group.requiredQty - availableBeforeCell));
-                  availableCarry = rollingAvailable - group.requiredQty;
-                  itemIndex = scanIndex + 1;
-                  break;
-                }
-                scanIndex += 1;
+        Object.values(grouped).sort((a,b) => String(a.monthIso).localeCompare(String(b.monthIso), 'ro', { sensitivity:'base' }) || String(a.reper).localeCompare(String(b.reper), 'ro', { sensitivity:'base' })).forEach(group => {
+          const monthStartIso = group.monthIso + '-01';
+          const monthEndIso = endOfMonthIso(group.an, group.lunaNum);
+          const snapshot = findInventarForjatSnapshot(group.reper, monthStartIso);
+          const snapshotQty = Math.max(0, Math.round(toNumber(snapshot && snapshot.qty)));
+          const relevantItems = (byReper[group.reperKey] || []).filter(item => item.rowIso >= monthStartIso && item.rowIso <= monthEndIso);
+          const totalByMonth = snapshotQty + relevantItems.reduce((sum, item) => sum + Math.max(0, Math.round(toNumber(item && item.qty))), 0);
+          if(totalByMonth < group.requiredQty) return;
+          let rawRunning = snapshotQty;
+          let markerItem = null;
+          let readyFromStock = false;
+          let availableBeforeCell = Math.max(0, Math.round(toNumber(rawRunning)));
+          let availableAfterCell = availableBeforeCell;
+          let usedFromCell = 0;
+          if(rawRunning >= group.requiredQty){
+            readyFromStock = true;
+            markerItem = relevantItems[0] || null;
+          }else{
+            for(const item of relevantItems){
+              const rawBefore = rawRunning;
+              rawRunning += Math.max(0, Math.round(toNumber(item && item.qty)));
+              if(rawRunning >= group.requiredQty){
+                markerItem = item;
+                availableBeforeCell = Math.max(0, Math.round(toNumber(rawBefore)));
+                availableAfterCell = Math.max(0, Math.round(toNumber(rawRunning)));
+                usedFromCell = Math.min(Math.max(0, Math.round(toNumber(item && item.qty))), Math.max(0, group.requiredQty - availableBeforeCell));
+                break;
               }
-              if(!markerItem) return;
             }
-            if(!markerItem) return;
-            if(readyFromStock){
-              availableBeforeCell = Math.max(0, Math.round(toNumber(availableCarry)));
-              availableAfterCell = availableBeforeCell;
-              usedFromCell = 0;
-              availableCarry = Math.max(0, availableCarry - group.requiredQty);
-            }
-            const cellKey = cellCalcKey(markerItem.rowId, markerItem.machine);
-            const readyItem = {
-              monthIso: group.monthIso,
-              reper: group.reper,
-              reperKey: group.reperKey,
-              machine: markerItem.machine,
-              readyDateIso: markerItem.rowIso,
-              requiredQty: Math.max(0, Math.round(toNumber(group.requiredQty))),
-              snapshotQty: baseSnapshotQty,
-              snapshotEndIso: trimText(firstSnapshot && firstSnapshot.endIso),
-              sourceType: readyFromStock ? 'stoc' : markerItem.sourceType,
-              readyFromStock,
-              availableBeforeCell,
-              availableAfterCell,
-              usedFromCell,
-              remainingAfterReady: Math.max(0, availableCarry),
-              remainingByDelivery: Math.max(0, availableCarry),
-              isMonthlyCoverage: true
-            };
-            (state.deliveryReadyByCell[cellKey] = state.deliveryReadyByCell[cellKey] || []).push(readyItem);
-          });
+          }
+          if(!markerItem) return;
+          if(readyFromStock){
+            availableBeforeCell = snapshotQty;
+            availableAfterCell = snapshotQty;
+            usedFromCell = 0;
+          }
+          const cellKey = cellCalcKey(markerItem.rowId, markerItem.machine);
+          const readyItem = {
+            monthIso: group.monthIso,
+            reper: group.reper,
+            reperKey: group.reperKey,
+            machine: markerItem.machine,
+            readyDateIso: markerItem.rowIso,
+            requiredQty: Math.max(0, Math.round(toNumber(group.requiredQty))),
+            snapshotQty,
+            snapshotEndIso: trimText(snapshot && snapshot.endIso),
+            sourceType: readyFromStock ? 'stoc' : markerItem.sourceType,
+            readyFromStock,
+            availableBeforeCell,
+            availableAfterCell,
+            usedFromCell,
+            remainingAfterReady: Math.max(0, availableAfterCell - group.requiredQty),
+            remainingByDelivery: Math.max(0, totalByMonth - group.requiredQty),
+            isMonthlyCoverage: true
+          };
+          (state.deliveryReadyByCell[cellKey] = state.deliveryReadyByCell[cellKey] || []).push(readyItem);
         });
       }catch(error){
         console.error('rebuildDeliveryReadyMarkers', error);
