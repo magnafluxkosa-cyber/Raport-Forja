@@ -2802,32 +2802,19 @@ function getDefaultPermissions(role){
         contributionRows.forEach(item => {
           (byReper[item.reperKey] = byReper[item.reperKey] || []).push(item);
         });
-        const carryByReper = Object.create(null);
-        const snapshotByReper = Object.create(null);
-        Object.values(grouped).sort((a,b) =>
-          String(a.reper).localeCompare(String(b.reper), 'ro', { sensitivity:'base' }) ||
-          String(a.monthIso).localeCompare(String(b.monthIso), 'ro', { sensitivity:'base' })
-        ).forEach(group => {
+        Object.values(grouped).sort((a,b) => String(a.monthIso).localeCompare(String(b.monthIso), 'ro', { sensitivity:'base' }) || String(a.reper).localeCompare(String(b.reper), 'ro', { sensitivity:'base' })).forEach(group => {
           const monthStartIso = group.monthIso + '-01';
           const monthEndIso = endOfMonthIso(group.an, group.lunaNum);
+          const snapshot = findInventarForjatSnapshot(group.reper, monthStartIso);
+          const snapshotQty = Math.max(0, Math.round(toNumber(snapshot && snapshot.qty)));
           const relevantItems = (byReper[group.reperKey] || []).filter(item => item.rowIso >= monthStartIso && item.rowIso <= monthEndIso);
-          if(!Object.prototype.hasOwnProperty.call(carryByReper, group.reperKey)){
-            const snapshot = findInventarForjatSnapshot(group.reper, monthStartIso);
-            snapshotByReper[group.reperKey] = snapshot || null;
-            carryByReper[group.reperKey] = Math.max(0, Math.round(toNumber(snapshot && snapshot.qty)));
-          }
-          const openingQty = Math.max(0, Math.round(toNumber(carryByReper[group.reperKey] || 0)));
-          const monthProducedQty = relevantItems.reduce((sum, item) => sum + Math.max(0, Math.round(toNumber(item && item.qty))), 0);
-          const cumulativeAvailable = openingQty + monthProducedQty;
-          if(cumulativeAvailable < group.requiredQty){
-            carryByReper[group.reperKey] = cumulativeAvailable;
-            return;
-          }
-          let rawRunning = openingQty;
+          const totalByMonth = snapshotQty + relevantItems.reduce((sum, item) => sum + Math.max(0, Math.round(toNumber(item && item.qty))), 0);
+          if(totalByMonth < group.requiredQty) return;
+          let rawRunning = snapshotQty;
           let markerItem = null;
           let readyFromStock = false;
-          let availableBeforeCell = openingQty;
-          let availableAfterCell = openingQty;
+          let availableBeforeCell = Math.max(0, Math.round(toNumber(rawRunning)));
+          let availableAfterCell = availableBeforeCell;
           let usedFromCell = 0;
           if(rawRunning >= group.requiredQty){
             readyFromStock = true;
@@ -2845,36 +2832,32 @@ function getDefaultPermissions(role){
               }
             }
           }
-          if(!markerItem && !readyFromStock) return;
-          const snapshot = snapshotByReper[group.reperKey] || null;
+          if(!markerItem) return;
           if(readyFromStock){
-            availableBeforeCell = openingQty;
-            availableAfterCell = openingQty;
+            availableBeforeCell = snapshotQty;
+            availableAfterCell = snapshotQty;
             usedFromCell = 0;
           }
-          if(markerItem){
-            const cellKey = cellCalcKey(markerItem.rowId, markerItem.machine);
-            const readyItem = {
-              monthIso: group.monthIso,
-              reper: group.reper,
-              reperKey: group.reperKey,
-              machine: markerItem.machine,
-              readyDateIso: markerItem.rowIso,
-              requiredQty: Math.max(0, Math.round(toNumber(group.requiredQty))),
-              snapshotQty: openingQty,
-              snapshotEndIso: trimText(snapshot && snapshot.endIso),
-              sourceType: readyFromStock ? 'stoc' : markerItem.sourceType,
-              readyFromStock,
-              availableBeforeCell,
-              availableAfterCell,
-              usedFromCell,
-              remainingAfterReady: Math.max(0, availableAfterCell - group.requiredQty),
-              remainingByDelivery: Math.max(0, cumulativeAvailable - group.requiredQty),
-              isMonthlyCoverage: true
-            };
-            (state.deliveryReadyByCell[cellKey] = state.deliveryReadyByCell[cellKey] || []).push(readyItem);
-          }
-          carryByReper[group.reperKey] = Math.max(0, cumulativeAvailable - group.requiredQty);
+          const cellKey = cellCalcKey(markerItem.rowId, markerItem.machine);
+          const readyItem = {
+            monthIso: group.monthIso,
+            reper: group.reper,
+            reperKey: group.reperKey,
+            machine: markerItem.machine,
+            readyDateIso: markerItem.rowIso,
+            requiredQty: Math.max(0, Math.round(toNumber(group.requiredQty))),
+            snapshotQty,
+            snapshotEndIso: trimText(snapshot && snapshot.endIso),
+            sourceType: readyFromStock ? 'stoc' : markerItem.sourceType,
+            readyFromStock,
+            availableBeforeCell,
+            availableAfterCell,
+            usedFromCell,
+            remainingAfterReady: Math.max(0, availableAfterCell - group.requiredQty),
+            remainingByDelivery: Math.max(0, totalByMonth - group.requiredQty),
+            isMonthlyCoverage: true
+          };
+          (state.deliveryReadyByCell[cellKey] = state.deliveryReadyByCell[cellKey] || []).push(readyItem);
         });
       }catch(error){
         console.error('rebuildDeliveryReadyMarkers', error);
@@ -3215,25 +3198,19 @@ function getDefaultPermissions(role){
         (byReper[item.reperKey] = byReper[item.reperKey] || []).push(item);
       });
 
-      const entries = [];
-      const carryByReper = Object.create(null);
-      Object.values(grouped).sort((a, b) =>
-        String(a.reper).localeCompare(String(b.reper), 'ro', { sensitivity:'base' }) ||
-        String(a.monthIso).localeCompare(String(b.monthIso), 'ro', { sensitivity:'base' })
-      ).forEach(group => {
+      const entries = Object.values(grouped).sort((a, b) =>
+        String(a.monthIso).localeCompare(String(b.monthIso), 'ro', { sensitivity:'base' }) ||
+        String(a.reper).localeCompare(String(b.reper), 'ro', { sensitivity:'base' })
+      ).map(group => {
         const monthStartIso = group.monthIso + '-01';
         const monthEndIso = endOfMonthIso(group.an, group.lunaNum);
-        if(!Object.prototype.hasOwnProperty.call(carryByReper, group.reperKey)){
-          const snapshot = findInventarForjatSnapshot(group.reper, monthStartIso);
-          carryByReper[group.reperKey] = Math.max(0, Math.round(toNumber(snapshot && snapshot.qty)));
-        }
-        const openingQty = Math.max(0, Math.round(toNumber(carryByReper[group.reperKey] || 0)));
+        const snapshot = findInventarForjatSnapshot(group.reper, monthStartIso);
+        const snapshotQty = Math.max(0, Math.round(toNumber(snapshot && snapshot.qty)));
         const relevantItems = (byReper[group.reperKey] || []).filter(item => item.rowIso >= monthStartIso && item.rowIso <= monthEndIso);
         const planQty = relevantItems.reduce((sum, item) => sum + Math.max(0, Math.round(toNumber(item && item.qty))), 0);
-        const coveredQty = openingQty + planQty;
+        const coveredQty = snapshotQty + planQty;
         const shortageQty = Math.max(0, group.requiredQty - coveredQty);
-        const remainingQty = Math.max(0, coveredQty - group.requiredQty);
-        entries.push({
+        return {
           key: group.key,
           an: group.an,
           lunaNum: group.lunaNum,
@@ -3242,14 +3219,12 @@ function getDefaultPermissions(role){
           reper: group.reper,
           reperKey: group.reperKey,
           requiredQty: Math.max(0, Math.round(group.requiredQty)),
-          snapshotQty: openingQty,
+          snapshotQty,
           plannedQty: planQty,
           coveredQty,
           shortageQty,
-          remainingQty,
           orders: group.orders.slice().sort(compareDeliveryOrders)
-        });
-        carryByReper[group.reperKey] = remainingQty;
+        };
       });
       return entries;
     }
