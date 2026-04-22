@@ -2783,7 +2783,7 @@ function getDefaultPermissions(role){
           if(!deliveryIso || !reperKey || qty <= 0 || !year || !monthNum) return;
           if(state.activeYear && String(year) !== String(state.activeYear)) return;
           const monthIso = String(year) + '-' + String(monthNum).padStart(2,'0');
-          const key = [reperKey, String(year), String(monthNum)].join('|');
+          const key = [String(year), String(monthNum), reperKey].join('|');
           if(!grouped[key]) grouped[key] = {
             key,
             an: year,
@@ -2797,81 +2797,62 @@ function getDefaultPermissions(role){
           grouped[key].requiredQty += qty;
           grouped[key].orders.push(order);
         });
-
         const contributionRows = getDeliveryContributionRows();
         const byReper = Object.create(null);
         contributionRows.forEach(item => {
           (byReper[item.reperKey] = byReper[item.reperKey] || []).push(item);
         });
-        Object.keys(byReper).forEach(reperKey => {
-          byReper[reperKey].sort((a,b) => String(a.rowIso).localeCompare(String(b.rowIso), 'ro', { sensitivity:'base' }) || Number(a.rowNo || 0) - Number(b.rowNo || 0) || Number(a.machineIndex || 0) - Number(b.machineIndex || 0));
-        });
-
-        const groupsByReper = Object.create(null);
-        Object.values(grouped).forEach(group => {
-          (groupsByReper[group.reperKey] = groupsByReper[group.reperKey] || []).push(group);
-        });
-
-        Object.keys(groupsByReper).forEach(reperKey => {
-          const groupsForReper = groupsByReper[reperKey].slice().sort((a,b) => String(a.monthIso).localeCompare(String(b.monthIso), 'ro', { sensitivity:'base' }));
-          const rowsForReper = (byReper[reperKey] || []).slice();
-          if(!groupsForReper.length) return;
-
-          let cursorIndex = 0;
-          let runningAvailable = null;
-          let lastMarkerItem = null;
-          let lastSnapshotQty = 0;
-          let lastSnapshotEndIso = '';
-
-          groupsForReper.forEach(group => {
-            const monthStartIso = group.monthIso + '-01';
+        const carryByReper = Object.create(null);
+        const snapshotByReper = Object.create(null);
+        Object.values(grouped).sort((a,b) =>
+          String(a.reper).localeCompare(String(b.reper), 'ro', { sensitivity:'base' }) ||
+          String(a.monthIso).localeCompare(String(b.monthIso), 'ro', { sensitivity:'base' })
+        ).forEach(group => {
+          const monthStartIso = group.monthIso + '-01';
+          const monthEndIso = endOfMonthIso(group.an, group.lunaNum);
+          const relevantItems = (byReper[group.reperKey] || []).filter(item => item.rowIso >= monthStartIso && item.rowIso <= monthEndIso);
+          if(!Object.prototype.hasOwnProperty.call(carryByReper, group.reperKey)){
             const snapshot = findInventarForjatSnapshot(group.reper, monthStartIso);
-            const snapshotQty = Math.max(0, Math.round(toNumber(snapshot && snapshot.qty)));
-            const snapshotEndIso = trimText(snapshot && snapshot.endIso);
-
-            if(runningAvailable == null){
-              runningAvailable = snapshotQty;
-              lastSnapshotQty = snapshotQty;
-              lastSnapshotEndIso = snapshotEndIso;
-            }
-
-            const requiredQty = Math.max(0, Math.round(toNumber(group.requiredQty)));
-            if(requiredQty <= 0) return;
-
-            let markerItem = null;
-            let readyFromStock = false;
-            let availableBeforeCell = Math.max(0, Math.round(toNumber(runningAvailable)));
-            let availableAfterCell = availableBeforeCell;
-            let usedFromCell = 0;
-            let rawBefore = availableBeforeCell;
-
-            if(runningAvailable >= requiredQty){
-              readyFromStock = true;
-              markerItem = lastMarkerItem || rowsForReper[Math.min(cursorIndex, Math.max(0, rowsForReper.length - 1))] || rowsForReper[0] || null;
-            }else{
-              while(cursorIndex < rowsForReper.length){
-                const item = rowsForReper[cursorIndex++];
-                if(!item) continue;
-                rawBefore = Math.max(0, Math.round(toNumber(runningAvailable)));
-                runningAvailable += Math.max(0, Math.round(toNumber(item && item.qty)));
-                if(runningAvailable >= requiredQty){
-                  markerItem = item;
-                  availableBeforeCell = rawBefore;
-                  availableAfterCell = Math.max(0, Math.round(toNumber(runningAvailable)));
-                  usedFromCell = Math.min(Math.max(0, Math.round(toNumber(item && item.qty))), Math.max(0, requiredQty - availableBeforeCell));
-                  break;
-                }
+            snapshotByReper[group.reperKey] = snapshot || null;
+            carryByReper[group.reperKey] = Math.max(0, Math.round(toNumber(snapshot && snapshot.qty)));
+          }
+          const openingQty = Math.max(0, Math.round(toNumber(carryByReper[group.reperKey] || 0)));
+          const monthProducedQty = relevantItems.reduce((sum, item) => sum + Math.max(0, Math.round(toNumber(item && item.qty))), 0);
+          const cumulativeAvailable = openingQty + monthProducedQty;
+          if(cumulativeAvailable < group.requiredQty){
+            carryByReper[group.reperKey] = cumulativeAvailable;
+            return;
+          }
+          let rawRunning = openingQty;
+          let markerItem = null;
+          let readyFromStock = false;
+          let availableBeforeCell = openingQty;
+          let availableAfterCell = openingQty;
+          let usedFromCell = 0;
+          if(rawRunning >= group.requiredQty){
+            readyFromStock = true;
+            markerItem = relevantItems[0] || null;
+          }else{
+            for(const item of relevantItems){
+              const rawBefore = rawRunning;
+              rawRunning += Math.max(0, Math.round(toNumber(item && item.qty)));
+              if(rawRunning >= group.requiredQty){
+                markerItem = item;
+                availableBeforeCell = Math.max(0, Math.round(toNumber(rawBefore)));
+                availableAfterCell = Math.max(0, Math.round(toNumber(rawRunning)));
+                usedFromCell = Math.min(Math.max(0, Math.round(toNumber(item && item.qty))), Math.max(0, group.requiredQty - availableBeforeCell));
+                break;
               }
             }
-
-            if(!markerItem) return;
-            if(readyFromStock){
-              availableBeforeCell = Math.max(0, Math.round(toNumber(runningAvailable)));
-              availableAfterCell = availableBeforeCell;
-              usedFromCell = 0;
-            }
-
-            const remainingAfterReady = Math.max(0, Math.round(toNumber(runningAvailable)) - requiredQty);
+          }
+          if(!markerItem && !readyFromStock) return;
+          const snapshot = snapshotByReper[group.reperKey] || null;
+          if(readyFromStock){
+            availableBeforeCell = openingQty;
+            availableAfterCell = openingQty;
+            usedFromCell = 0;
+          }
+          if(markerItem){
             const cellKey = cellCalcKey(markerItem.rowId, markerItem.machine);
             const readyItem = {
               monthIso: group.monthIso,
@@ -2879,25 +2860,21 @@ function getDefaultPermissions(role){
               reperKey: group.reperKey,
               machine: markerItem.machine,
               readyDateIso: markerItem.rowIso,
-              requiredQty,
-              snapshotQty: runningAvailable === snapshotQty ? snapshotQty : lastSnapshotQty,
-              snapshotEndIso: snapshotEndIso || lastSnapshotEndIso,
+              requiredQty: Math.max(0, Math.round(toNumber(group.requiredQty))),
+              snapshotQty: openingQty,
+              snapshotEndIso: trimText(snapshot && snapshot.endIso),
               sourceType: readyFromStock ? 'stoc' : markerItem.sourceType,
               readyFromStock,
               availableBeforeCell,
               availableAfterCell,
               usedFromCell,
-              remainingAfterReady,
-              remainingByDelivery: remainingAfterReady,
+              remainingAfterReady: Math.max(0, availableAfterCell - group.requiredQty),
+              remainingByDelivery: Math.max(0, cumulativeAvailable - group.requiredQty),
               isMonthlyCoverage: true
             };
             (state.deliveryReadyByCell[cellKey] = state.deliveryReadyByCell[cellKey] || []).push(readyItem);
-
-            runningAvailable = remainingAfterReady;
-            lastMarkerItem = markerItem;
-            lastSnapshotQty = snapshotQty;
-            lastSnapshotEndIso = snapshotEndIso;
-          });
+          }
+          carryByReper[group.reperKey] = Math.max(0, cumulativeAvailable - group.requiredQty);
         });
       }catch(error){
         console.error('rebuildDeliveryReadyMarkers', error);
@@ -3238,19 +3215,25 @@ function getDefaultPermissions(role){
         (byReper[item.reperKey] = byReper[item.reperKey] || []).push(item);
       });
 
-      const entries = Object.values(grouped).sort((a, b) =>
-        String(a.monthIso).localeCompare(String(b.monthIso), 'ro', { sensitivity:'base' }) ||
-        String(a.reper).localeCompare(String(b.reper), 'ro', { sensitivity:'base' })
-      ).map(group => {
+      const entries = [];
+      const carryByReper = Object.create(null);
+      Object.values(grouped).sort((a, b) =>
+        String(a.reper).localeCompare(String(b.reper), 'ro', { sensitivity:'base' }) ||
+        String(a.monthIso).localeCompare(String(b.monthIso), 'ro', { sensitivity:'base' })
+      ).forEach(group => {
         const monthStartIso = group.monthIso + '-01';
         const monthEndIso = endOfMonthIso(group.an, group.lunaNum);
-        const snapshot = findInventarForjatSnapshot(group.reper, monthStartIso);
-        const snapshotQty = Math.max(0, Math.round(toNumber(snapshot && snapshot.qty)));
+        if(!Object.prototype.hasOwnProperty.call(carryByReper, group.reperKey)){
+          const snapshot = findInventarForjatSnapshot(group.reper, monthStartIso);
+          carryByReper[group.reperKey] = Math.max(0, Math.round(toNumber(snapshot && snapshot.qty)));
+        }
+        const openingQty = Math.max(0, Math.round(toNumber(carryByReper[group.reperKey] || 0)));
         const relevantItems = (byReper[group.reperKey] || []).filter(item => item.rowIso >= monthStartIso && item.rowIso <= monthEndIso);
         const planQty = relevantItems.reduce((sum, item) => sum + Math.max(0, Math.round(toNumber(item && item.qty))), 0);
-        const coveredQty = snapshotQty + planQty;
+        const coveredQty = openingQty + planQty;
         const shortageQty = Math.max(0, group.requiredQty - coveredQty);
-        return {
+        const remainingQty = Math.max(0, coveredQty - group.requiredQty);
+        entries.push({
           key: group.key,
           an: group.an,
           lunaNum: group.lunaNum,
@@ -3259,12 +3242,14 @@ function getDefaultPermissions(role){
           reper: group.reper,
           reperKey: group.reperKey,
           requiredQty: Math.max(0, Math.round(group.requiredQty)),
-          snapshotQty,
+          snapshotQty: openingQty,
           plannedQty: planQty,
           coveredQty,
           shortageQty,
+          remainingQty,
           orders: group.orders.slice().sort(compareDeliveryOrders)
-        };
+        });
+        carryByReper[group.reperKey] = remainingQty;
       });
       return entries;
     }
