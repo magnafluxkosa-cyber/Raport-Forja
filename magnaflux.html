@@ -1001,6 +1001,7 @@
               <label for="defectFilterMonth">Luna</label>
               <select class="defect-filter-select" id="defectFilterMonth"></select>
             </div>
+            <button class="btn summary-export-btn" id="btnExportDefectFilter">Export Excel</button>
           </div>
         </div>
         <div class="defect-filter-table-wrap">
@@ -1285,6 +1286,7 @@
         defectFilterInput: document.getElementById('defectFilterInput'),
         defectFilterYear: document.getElementById('defectFilterYear'),
         defectFilterMonth: document.getElementById('defectFilterMonth'),
+        btnExportDefectFilter: document.getElementById('btnExportDefectFilter'),
         defectFilterList: document.getElementById('defectFilterList'),
         defectFilterBody: document.getElementById('defectFilterBody'),
         defectFilterEmpty: document.getElementById('defectFilterEmpty'),
@@ -3179,6 +3181,162 @@ ${Array.isArray(metaRows) && metaRows.length ? `<h4>Filtre</h4>${htmlTableFromRo
         renderDefectFilterSummary(getRowsForDefectFilter());
       }
 
+      function buildDefectFilterItems(rows){
+        const requested = String(el.defectFilterInput ? el.defectFilterInput.value || '' : '').trim();
+        const defectKey = resolveDefectFilterKey(requested);
+        if(!requested || !defectKey){
+          return { requested, defectKey, items: [], total: 0, label: requested ? requested.toUpperCase() : '' };
+        }
+        const grouped = new Map();
+        (Array.isArray(rows) ? rows : []).forEach(row => {
+          const qty = Math.max(0, Number(row[defectKey] || 0));
+          if(!qty) return;
+          const code = resolveRowCode(row);
+          const ref = code ? (state.intrariLookup.get(code) || {}) : {};
+          const sarja = String(ref.sarja || '').trim() || '—';
+          const numeralKod = code || String(row.numeral_kod || '').trim() || '—';
+          const data = row.data || '';
+          const luna = row.luna || monthNameFromIso(data) || '';
+          const reper = String(row.reper || '').trim() || '—';
+          const key = [data, luna, reper, numeralKod, sarja].join('||');
+          const current = grouped.get(key) || { data, luna, reper, numeralKod, sarja, total:0 };
+          current.total += qty;
+          grouped.set(key, current);
+        });
+        const items = Array.from(grouped.values()).sort((a,b) => {
+          const dateDiff = String(a.data || '').localeCompare(String(b.data || ''));
+          if(dateDiff) return dateDiff;
+          const reperDiff = String(a.reper || '').localeCompare(String(b.reper || ''), 'ro', { sensitivity:'base' });
+          if(reperDiff) return reperDiff;
+          const kodDiff = String(a.numeralKod || '').localeCompare(String(b.numeralKod || ''), 'ro', { sensitivity:'base' });
+          if(kodDiff) return kodDiff;
+          return String(a.sarja || '').localeCompare(String(b.sarja || ''), 'ro', { sensitivity:'base' });
+        });
+        const total = items.reduce((sum, item) => sum + Number(item.total || 0), 0);
+        const label = (DEFECT_FILTER_COLUMNS.find(col => col.key === defectKey) || {}).label || requested.toUpperCase();
+        return { requested, defectKey, items, total, label };
+      }
+
+      function styleDefectFilterExportWorksheet(ws, rowCount){
+        const border = excelBorder('#000000');
+        const headerFont = { name:'Arial', sz:12, bold:true, color:{ rgb:'10283C' } };
+        const bodyFont = { name:'Arial', sz:12, color:{ rgb:'10283C' } };
+        const totalFont = { name:'Arial', sz:12, bold:true, color:{ rgb:'10283C' } };
+        const headers = ['Data','Luna','Reper','Numeral KOD','Sarja','Suma defect'];
+        headers.forEach((_header, cIdx) => {
+          const ref = XLSX.utils.encode_cell({ r:0, c:cIdx });
+          if(!ws[ref]) return;
+          ws[ref].s = {
+            font: headerFont,
+            fill: excelFill('#dbeaf7'),
+            border,
+            alignment: { horizontal: cIdx === 5 ? 'right' : 'left', vertical:'center', wrapText:true }
+          };
+        });
+        for(let r = 1; r <= rowCount; r += 1){
+          for(let c = 0; c < headers.length; c += 1){
+            const ref = XLSX.utils.encode_cell({ r, c });
+            if(!ws[ref]) continue;
+            const isTotal = r === rowCount;
+            ws[ref].s = {
+              font: isTotal ? totalFont : bodyFont,
+              fill: excelFill(isTotal ? '#edf6ff' : '#ffffff'),
+              border,
+              alignment: { horizontal: c === 5 ? 'right' : 'left', vertical:'center', wrapText:true }
+            };
+          }
+        }
+        ws['!cols'] = [
+          { wpx: 105 },
+          { wpx: 115 },
+          { wpx: 150 },
+          { wpx: 120 },
+          { wpx: 130 },
+          { wpx: 110 }
+        ];
+        ws['!rows'] = [{ hpx: 32 }, ...Array.from({ length: rowCount }, () => ({ hpx: 30 }))];
+        ws['!autofilter'] = { ref: `A1:F${Math.max(rowCount + 1, 1)}` };
+      }
+
+      async function exportDefectFilterExcel(){
+        try{
+          await loadRowsForDefectFilter();
+          const built = buildDefectFilterItems(getRowsForDefectFilter());
+          if(!built.requested){
+            return showToast('Scrie defectul înainte de export.');
+          }
+          if(!built.defectKey){
+            return showToast('Defectul scris nu există în tabel.');
+          }
+          if(!built.items.length){
+            return showToast('Nu există date de exportat pentru filtrarea curentă.');
+          }
+
+          const rows = built.items.map(item => ({
+            'Data': isoDateToRo(item.data),
+            'Luna': item.luna || '',
+            'Reper': item.reper || '—',
+            'Numeral KOD': item.numeralKod || '—',
+            'Sarja': item.sarja || '—',
+            'Suma defect': Number(item.total || 0)
+          }));
+          rows.push({
+            'Data': '',
+            'Luna': '',
+            'Reper': '',
+            'Numeral KOD': '',
+            'Sarja': `Total ${String(built.label || built.requested).toUpperCase()}`,
+            'Suma defect': Number(built.total || 0)
+          });
+
+          const yearLabel = el.defectFilterYear && el.defectFilterYear.value !== 'all' ? el.defectFilterYear.value : 'toți anii';
+          const monthLabel = el.defectFilterMonth && el.defectFilterMonth.value !== 'all' ? el.defectFilterMonth.value : 'toate lunile';
+          const metaRows = [
+            { Câmp:'Pagină', Valoare:'MAGNAFLUX' },
+            { Câmp:'Tip tabel', Valoare:'Filtrare defecte' },
+            { Câmp:'Defect', Valoare:String(built.label || built.requested).toUpperCase() },
+            { Câmp:'An', Valoare:yearLabel },
+            { Câmp:'Lună', Valoare:monthLabel },
+            { Câmp:'Total defect', Valoare:Number(built.total || 0) },
+            { Câmp:'Exportat la', Valoare:new Date().toLocaleString('ro-RO') }
+          ];
+
+          try{
+            const XLSX = await ensureXlsxStyleLib();
+            const headers = ['Data','Luna','Reper','Numeral KOD','Sarja','Suma defect'];
+            const ws = XLSX.utils.json_to_sheet(rows, { header:headers });
+            styleDefectFilterExportWorksheet(ws, rows.length);
+            const wb = XLSX.utils.book_new();
+            XLSX.utils.book_append_sheet(wb, ws, 'FILTRARE DEFECT');
+            const wsInfo = XLSX.utils.json_to_sheet(metaRows, { header:['Câmp','Valoare'] });
+            wsInfo['!cols'] = [{ wpx: 160 }, { wpx: 360 }];
+            const infoRange = XLSX.utils.decode_range(wsInfo['!ref'] || 'A1:B1');
+            for(let r = infoRange.s.r; r <= infoRange.e.r; r += 1){
+              for(let c = infoRange.s.c; c <= infoRange.e.c; c += 1){
+                const ref = XLSX.utils.encode_cell({ r, c });
+                if(!wsInfo[ref]) continue;
+                wsInfo[ref].s = {
+                  font: { name:'Arial', sz:12, bold:r === 0, color:{ rgb:'10283C' } },
+                  fill: excelFill(r === 0 ? '#dbeaf7' : '#ffffff'),
+                  border: excelBorder('#000000'),
+                  alignment: { horizontal:'left', vertical:'center', wrapText:true }
+                };
+              }
+            }
+            XLSX.utils.book_append_sheet(wb, wsInfo, 'INFO');
+            const safeDefect = String(built.label || built.requested).replace(/[^a-z0-9]+/gi, '_').replace(/^_+|_+$/g, '') || 'defect';
+            XLSX.writeFile(wb, `magnaflux_filtrare_defect_${safeDefect}_${new Date().toISOString().slice(0,10)}.xlsx`);
+          }catch(err){
+            console.error('Export filtrare defect Excel failed:', err);
+            exportRowsAsExcelCompatibleHtml(rows, `magnaflux_filtrare_defect_${new Date().toISOString().slice(0,10)}`, metaRows, 'MAGNAFLUX · Filtrare defecte');
+            showToast('Export Excel realizat în mod compatibil.');
+          }
+        }catch(err){
+          console.error('Export defect filter failed:', err);
+          showToast('Exportul pentru filtrare defecte nu a reușit.');
+        }
+      }
+
       function renderDefectFilterSummary(rows){
         if(!el.defectFilterBody || !el.defectFilterInput) return;
         const requested = String(el.defectFilterInput.value || '').trim();
@@ -4151,6 +4309,7 @@ ${Array.isArray(metaRows) && metaRows.length ? `<h4>Filtre</h4>${htmlTableFromRo
         el.defectFilterInput.addEventListener('input', () => refreshDefectFilterSummary());
         if(el.defectFilterYear) el.defectFilterYear.addEventListener('change', () => refreshDefectFilterSummary());
         if(el.defectFilterMonth) el.defectFilterMonth.addEventListener('change', () => refreshDefectFilterSummary());
+        if(el.btnExportDefectFilter) el.btnExportDefectFilter.addEventListener('click', exportDefectFilterExcel);
         el.btnExportKodFl.addEventListener('click', exportKodFlSummaryExcel);
         el.btnCalendar.addEventListener('click', () => window.location.href = 'magnaflux-calendar.html');
         [['supplier1', el.supplier1Select, 'supplier'], ['supplier1', el.supplier1Year, 'year'], ['supplier1', el.supplier1Month, 'month'], ['supplier2', el.supplier2Select, 'supplier'], ['supplier2', el.supplier2Year, 'year'], ['supplier2', el.supplier2Month, 'month']].forEach(([slot, node, key]) => {
