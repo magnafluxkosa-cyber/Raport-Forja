@@ -15,7 +15,7 @@
         {
           type:'group', key:'group-forja', label:'FORJĂ', panelId:'subForja', panelMode:'tabs', sections:[
             { key:'group-forja-rapoarte', buttonKey:'group-forja-rapoarte', label:'RAPOARTE', sectionId:'forjaRapoarte', layout:'subgrid', items:[
-              page('numeralkod','NUMERALKOD'), page('intrari-otel','INTRĂRI OȚEL'), page('debitate','DEBITATE'), page('forjate','FORJATE'), page('eficienta','EFICIENȚĂ'), page('program-utilaje','PROGRAM UTILAJE')
+              page('raport-forja','Raport forja'), page('numeralkod','NUMERALKOD'), page('intrari-otel','INTRĂRI OȚEL'), page('debitate','DEBITATE'), page('forjate','FORJATE'), page('eficienta','EFICIENȚĂ'), page('program-utilaje','PROGRAM UTILAJE')
             ]},
             { key:'group-forja-zale', buttonKey:'group-forja-zale', label:'URMĂRIRE ZALE', sectionId:'forjaZale', layout:'zale-columns', leadItems:[
               page('livrari-zale','LIVRĂRI ZALE'), page('centralizator-livrari-zale','CENTRALIZATOR LIVRĂRI')
@@ -44,7 +44,7 @@
     helperAcl: {
       buttonGroups: [],
       pageGroups: [
-        { key:'forja-pages', label:'Foi FORJĂ', items:[ ['numeralkod','NUMERALKOD'],['intrari-otel','INTRĂRI OȚEL'],['debitate','DEBITATE'],['forjate','FORJATE'],['eficienta','EFICIENȚĂ'],['program-utilaje','PROGRAM UTILAJE'],['stoc-initial-otel','STOC INIȚIAL OȚEL'],['inventar-otel','INVENTAR OȚEL'],['inventar-debitat','INVENTAR DEBITAT'],['inventar-forjat','INVENTAR FORJAT'] ] },
+        { key:'forja-pages', label:'Foi FORJĂ', items:[ ['raport-forja','Raport forja'],['numeralkod','NUMERALKOD'],['intrari-otel','INTRĂRI OȚEL'],['debitate','DEBITATE'],['forjate','FORJATE'],['eficienta','EFICIENȚĂ'],['program-utilaje','PROGRAM UTILAJE'],['stoc-initial-otel','STOC INIȚIAL OȚEL'],['inventar-otel','INVENTAR OȚEL'],['inventar-debitat','INVENTAR DEBITAT'],['inventar-forjat','INVENTAR FORJAT'] ] },
         { key:'prelucrari-pages', label:'Foi PRELUCRĂRI MECANICE', items:[ ['plan-livrari','PLAN LIVRĂRI'],['planificare-prelucrari','PLANIFICARE PRELUCRĂRI'],['inventar-prelucrari','INVENTAR PRELUCRĂRI'] ] },
         { key:'zale-pages', label:'Foi ZALE / AMBALARE', items:[ ['livrari-zale','URMĂRIRE ZALE'],['centralizator-livrari-zale','CENTRALIZATOR LIVRĂRI'],['stoc-ramas-teoretic','STOC RĂMAS TEORETIC'],['zale-9k-6628-29','ZALE 9K-6628/29'],['zale-229-6909-10','ZALE 229-6909/10'],['zale-503-0761-62','ZALE 503-0761/62'],['zale-106-1625-26','ZALE 106-1625/26'],['zale-378-8241-42','ZALE 378-8241/42'],['zale-248-2307-08','ZALE 248-2307/08'],['zale-417-3595-96','ZALE 417-3595/96'],['zale-418-2091-92','ZALE 418-2091/92'],['ambalare-9k-6628-29','AMBALARE 9K-6628/29'],['ambalare-229-6909-10','AMBALARE 229-6909/10'],['ambalare-503-0761-62','AMBALARE 503-0761/62'],['ambalare-106-1625-26','AMBALARE 106-1625/26'],['ambalare-378-8241-42','AMBALARE 378-8241/42'],['ambalare-248-2307-08','AMBALARE 248-2307/08'],['ambalare-417-3595-96','AMBALARE 417-3595/96'],['ambalare-418-2091-92','AMBALARE 418-2091/92'] ] },
         { key:'quality-pages', label:'Calitate / Rebut', items:[ ['magnaflux','MAGNAFLUX'],['magnaflux-calendar','MAGNAFLUX CALENDAR'],['rebut','REBUT'],['rebut-pm','REBUT PM'],['rebut-pm-helper','REBUT PM HELPER'],['calendar-operatori','CALENDAR OPERATORI'] ] },
