@@ -8,12 +8,12 @@
     defaultTtlHours: 12,
     projects: [
       {
-        projectKey: '',
-        label: 'ERP Forja / ',
+        projectKey: 'kad',
+        label: 'ERP Forja / K.A.D',
         pin: '2580',
         destination: 'login.html',
-        description: 'PIN-ul principal pentru proiectul ERP Forja / .',
-        destinationLabel: 'Login '
+        description: 'PIN-ul principal pentru proiectul ERP Forja / K.A.D.',
+        destinationLabel: 'Login K.A.D'
       },
       {
         projectKey: 'proiect-2',

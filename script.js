@@ -3,8 +3,8 @@
       'use strict';
 
       const DOC_KEY = 'tratament-termic-rapoarte';
-      const LOCAL_KEY = '_tratament_termic_rapoarte_v2';
-      const LEGACY_LOCAL_KEY = '_tratament_termic_rapoarte_v1';
+      const LOCAL_KEY = 'kad_tratament_termic_rapoarte_v2';
+      const LEGACY_LOCAL_KEY = 'kad_tratament_termic_rapoarte_v1';
       const SAVE_DEBOUNCE_MS = 250;
       const MONTHS = [
         'Ianuarie', 'Februarie', 'Martie', 'Aprilie', 'Mai', 'Iunie',

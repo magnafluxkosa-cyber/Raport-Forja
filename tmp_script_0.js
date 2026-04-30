@@ -276,7 +276,7 @@
       els.btnLogout.addEventListener('click', async () => { try{ await window.ERPAuth.signOut(); }catch(_e){} window.location.href='login.html'; });
       els.btnImportMapping.addEventListener('click', () => els.fileMapping.click());
       els.btnImportOrders.addEventListener('click', () => els.fileOrders.click());
-      els.btnImportStocdEventListener('click', () => els.fileStock.click());
+      els.btnImportStock.addEventListener('click', () => els.fileStock.click());
       els.fileMapping.addEventListener('change', async function(){
         const file = this.files && this.files[0]; if(!file || !state.canEdit) return;
         const workbook = await readWorkbook(file);
@@ -291,14 +291,14 @@
         const imported = MRC.importCustomerOrdersFromWorkbook(workbook, state.maps || {});
         state.customerOrders = state.customerOrders.concat(imported); state.dirty.orders = true; renderAll(); this.value='';
       });
-      els.fileStocdEventListener('change', async function(){
+      els.fileStock.addEventListener('change', async function(){
         const file = this.files && this.files[0]; if(!file || !state.canEdit) return;
         const workbook = await readWorkbook(file);
         const imported = MRC.importOpeningStockFromWorkbook(workbook, state.maps || {});
         state.openingStocks = state.openingStocks.concat(imported); state.dirty.stock = true; renderAll(); this.value='';
       });
       els.btnExportOrders.addEventListener('click', () => exportRowsToXlsx(state.customerOrders, 'mrc-customer-orders.xlsx'));
-      els.btnExportStocdEventListener('click', () => exportRowsToXlsx(state.openingStocks, 'mrc-opening-stock.xlsx'));
+      els.btnExportStock.addEventListener('click', () => exportRowsToXlsx(state.openingStocks, 'mrc-opening-stock.xlsx'));
       els.btnAddSteel.addEventListener('click', addSteelRow);
       els.btnExportSteel.addEventListener('click', () => exportRowsToXlsx(state.steelOrders, 'mrc-steel-purchase-orders.xlsx'));
       els.btnSaveSteel.addEventListener('click', async () => { if(!state.canEdit) return; await saveDoc('steel', state.steelOrders.map(ensureSteelOrderWeek)); await loadDocs(); renderAll(); });
