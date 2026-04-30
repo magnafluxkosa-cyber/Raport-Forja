@@ -5,7 +5,7 @@
   const table = document.querySelector('.excel-sheet');
   if(!table) return;
 
-  const STORAGE_KEY = cfg.storageKey || ('kad-prelucrari-grid:' + (location.pathname.split('/').pop() || document.title || 'page'));
+  const STORAGE_KEY = cfg.storageKey || ('-prelucrari-grid:' + (location.pathname.split('/').pop() || document.title || 'page'));
   const ENABLE_HOLIDAYS = !!cfg.enableHolidayHighlight;
   const editableSelector = '.excel-sheet td, .excel-sheet th';
 
@@ -257,7 +257,7 @@
   async function init(){
     annotateGrid();
     const canEdit = await resolveCanEdit();
-    window.__KAD_PRELUCRARI_CAN_EDIT__ = canEdit;
+    window.___PRELUCRARI_CAN_EDIT__ = canEdit;
     makeEditable(canEdit);
     highlightHolidayColumns();
   }

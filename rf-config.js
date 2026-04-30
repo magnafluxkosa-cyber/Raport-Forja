@@ -4,6 +4,7 @@
   var PAGE_LIST = [
     { page_key: 'index', page_name: 'Dashboard / Index' },
     { page_key: 'login', page_name: 'Login' },
+    { page_key: 'access-gate', page_name: 'Access Gate / PIN Portal' },
     { page_key: 'group-forja', page_name: 'Grup / Forjă' },
     { page_key: 'group-prelucrari', page_name: 'Grup / Prelucrări mecanice' },
     { page_key: 'group-tratament-termic', page_name: 'Grup / Tratament termic' },
@@ -220,109 +221,13 @@ function getControlCatalogForPage(pageKey) {
   }
 
   var CONFIG = Object.freeze({
-    APP_NAME: 'K.A.D',
+    APP_NAME: '',
     SUPABASE_URL: 'https://addlybnigrywqowpbhvd.supabase.co',
     SUPABASE_ANON_KEY: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFkZGx5Ym5pZ3J5d3Fvd3BiaHZkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzI2NjY2NjQsImV4cCI6MjA4ODI0MjY2NH0.VjbSKs7G_5T7GhdrjT8dtj2HCF6Az9KYfkpkSE7JTo4',
     ADMIN_EMAIL: '',
     DEFAULT_PAGES: PAGE_LIST.map(function (page) { return page.page_key; }),
     pages: clonePages()
   });
-
-  function appendResourceHint(rel, href, asValue) {
-    if (!href) return;
-    try {
-      var absolute = new URL(href, window.location.href).href;
-      var key = 'rf-hint:' + rel + ':' + absolute + ':' + (asValue || '');
-      if (document.head && document.head.querySelector('link[data-rf-key="' + key.replace(/"/g, '\"') + '"]')) return;
-      var link = document.createElement('link');
-      link.rel = rel;
-      link.href = absolute;
-      if (asValue) link.as = asValue;
-      link.crossOrigin = 'anonymous';
-      link.setAttribute('data-rf-key', key);
-      (document.head || document.documentElement).appendChild(link);
-    } catch (_) {}
-  }
-
-  function installGlobalResourceHints() {
-    if (window.__RF_RESOURCE_HINTS_INSTALLED__) return;
-    window.__RF_RESOURCE_HINTS_INSTALLED__ = true;
-    appendResourceHint('dns-prefetch', 'https://cdn.jsdelivr.net');
-    appendResourceHint('preconnect', 'https://cdn.jsdelivr.net');
-    if (CONFIG && CONFIG.SUPABASE_URL) {
-      appendResourceHint('dns-prefetch', CONFIG.SUPABASE_URL);
-      appendResourceHint('preconnect', CONFIG.SUPABASE_URL);
-    }
-  }
-
-  function installGlobalLinkPrefetch() {
-    if (window.__RF_LINK_PREFETCH_INSTALLED__) return;
-    window.__RF_LINK_PREFETCH_INSTALLED__ = true;
-
-    var prefetched = new Set();
-
-    function normalizePrefetchHref(value) {
-      if (!value) return '';
-      try {
-        var url = new URL(value, window.location.href);
-        if (url.origin !== window.location.origin) return '';
-        if (!/\.html$/i.test(url.pathname)) return '';
-        url.hash = '';
-        return url.href;
-      } catch (_) {
-        return '';
-      }
-    }
-
-    function prefetchHref(href) {
-      var normalized = normalizePrefetchHref(href);
-      if (!normalized || prefetched.has(normalized) || normalized === window.location.href.split('#')[0]) return;
-      prefetched.add(normalized);
-      appendResourceHint('prefetch', normalized, 'document');
-    }
-
-    function anchorFromEventTarget(target) {
-      if (!target || !target.closest) return null;
-      return target.closest('a[href]');
-    }
-
-    document.addEventListener('pointerenter', function (event) {
-      var anchor = anchorFromEventTarget(event.target);
-      if (anchor) prefetchHref(anchor.getAttribute('href'));
-    }, true);
-
-    document.addEventListener('touchstart', function (event) {
-      var anchor = anchorFromEventTarget(event.target);
-      if (anchor) prefetchHref(anchor.getAttribute('href'));
-    }, { capture: true, passive: true });
-
-    document.addEventListener('mousedown', function (event) {
-      var anchor = anchorFromEventTarget(event.target);
-      if (anchor) prefetchHref(anchor.getAttribute('href'));
-    }, true);
-
-    function prefetchLikelyLinks() {
-      var anchors = Array.prototype.slice.call(document.querySelectorAll('a[href]'));
-      var count = 0;
-      for (var i = 0; i < anchors.length && count < 8; i += 1) {
-        var anchor = anchors[i];
-        if (!anchor || anchor.offsetParent === null) continue;
-        var href = normalizePrefetchHref(anchor.getAttribute('href'));
-        if (!href) continue;
-        prefetchHref(href);
-        count += 1;
-      }
-    }
-
-    if ('requestIdleCallback' in window) {
-      window.requestIdleCallback(prefetchLikelyLinks, { timeout: 1200 });
-    } else {
-      window.setTimeout(prefetchLikelyLinks, 700);
-    }
-  }
-
-  installGlobalResourceHints();
-  installGlobalLinkPrefetch();
 
   var THEME_STORAGE_KEY = 'rf_theme_palette';
   var DEFAULT_THEME_KEY = 'blue';

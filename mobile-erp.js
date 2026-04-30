@@ -40,7 +40,7 @@
   function shouldWrapTable(table){
     if(!table || !table.parentElement) return false;
     if(isInsideExistingScrollWrap(table)) return false;
-    if(table.closest('#kadNavShellRoot, .modal, .modalBody, .modal-body, .pm-modal, .pm-modal-body, .modal-content, .kad-shell')) return false;
+    if(table.closest('#NavShellRoot, .modal, .modalBody, .modal-body, .pm-modal, .pm-modal-body, .modal-content, .-shell')) return false;
     return true;
   }
 

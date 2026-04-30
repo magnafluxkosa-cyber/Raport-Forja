@@ -1,11 +1,11 @@
 (function(){
-  const STYLE_ID = 'kad-global-logo-style';
-  const LOGO_CLASS = 'kad-inline-logo';
-  const LOGO_SRC = './kad-forge-logo.jpeg';
+  const STYLE_ID = '-global-logo-style';
+  const LOGO_CLASS = '-inline-logo';
+  const LOGO_SRC = './-forge-logo.jpeg';
 
   function hostAlreadyBranded(host){
     const text = (host && host.textContent ? host.textContent : '').replace(/\s+/g, ' ').trim().toUpperCase();
-    return text.includes('K.A.D') || text.includes('KAD');
+    return text.includes('') || text.includes('');
   }
 
   function makeLogo(iconOnly){
@@ -14,18 +14,18 @@
     box.setAttribute('aria-hidden', 'true');
 
     const badge = document.createElement('div');
-    badge.className = 'kad-inline-badge';
+    badge.className = '-inline-badge';
 
     const img = document.createElement('img');
     img.src = LOGO_SRC;
-    img.alt = 'K.A.D';
+    img.alt = '';
     img.decoding = 'async';
     img.loading = 'eager';
     badge.appendChild(img);
 
     const word = document.createElement('div');
-    word.className = 'kad-inline-wordmark';
-    word.textContent = 'K.A.D';
+    word.className = '-inline-wordmark';
+    word.textContent = '';
 
     box.appendChild(badge);
     box.appendChild(word);
@@ -57,10 +57,10 @@
       .${LOGO_CLASS}.is-icon-only{
         padding:8px;
       }
-      .${LOGO_CLASS}.is-icon-only .kad-inline-wordmark{
+      .${LOGO_CLASS}.is-icon-only .-inline-wordmark{
         display:none;
       }
-      .${LOGO_CLASS} .kad-inline-badge{
+      .${LOGO_CLASS} .-inline-badge{
         width:52px;
         height:52px;
         flex:0 0 52px;
@@ -78,7 +78,7 @@
         object-fit:cover;
         display:block;
       }
-      .${LOGO_CLASS} .kad-inline-wordmark{
+      .${LOGO_CLASS} .-inline-wordmark{
         font-size:24px;
         line-height:1;
         font-weight:900;
@@ -88,30 +88,30 @@
         white-space:nowrap;
       }
 
-      .kad-logo-titlehost{
+      .-logo-titlehost{
         display:flex !important;
         align-items:center !important;
         gap:14px !important;
         min-width:0;
       }
-      .kad-logo-titletext{
+      .-logo-titletext{
         min-width:0;
         display:flex;
         flex-direction:column;
         gap:4px;
       }
 
-      .kad-logo-striphost{
+      .-logo-striphost{
         gap:12px !important;
       }
 
-      .kad-logo-barhost{
+      .-logo-barhost{
         display:flex !important;
         align-items:center !important;
         justify-content:space-between !important;
         gap:12px !important;
       }
-      .kad-logo-actionpack{
+      .-logo-actionpack{
         min-width:0;
         flex:1 1 auto;
         display:flex;
@@ -126,22 +126,22 @@
           gap:10px;
           padding:7px 12px 7px 8px;
         }
-        .${LOGO_CLASS} .kad-inline-badge{
+        .${LOGO_CLASS} .-inline-badge{
           width:46px;
           height:46px;
           flex-basis:46px;
         }
-        .${LOGO_CLASS} .kad-inline-wordmark{
+        .${LOGO_CLASS} .-inline-wordmark{
           font-size:20px;
           letter-spacing:.15em;
         }
-        .kad-logo-titlehost{
+        .-logo-titlehost{
           gap:10px !important;
         }
-        .kad-logo-barhost{
+        .-logo-barhost{
           align-items:flex-start !important;
         }
-        .kad-logo-actionpack{
+        .-logo-actionpack{
           flex:1 1 100%;
           justify-content:flex-start;
         }
@@ -152,12 +152,12 @@
           gap:8px;
           padding:6px 10px 6px 7px;
         }
-        .${LOGO_CLASS} .kad-inline-badge{
+        .${LOGO_CLASS} .-inline-badge{
           width:40px;
           height:40px;
           flex-basis:40px;
         }
-        .${LOGO_CLASS} .kad-inline-wordmark{
+        .${LOGO_CLASS} .-inline-wordmark{
           font-size:17px;
           letter-spacing:.12em;
         }
@@ -241,11 +241,11 @@
   }
 
   function injectTitleHost(host){
-    if (!host || host.dataset.kadLogoDone === '1') return;
+    if (!host || host.dataset.LogoDone === '1') return;
 
     const logo = makeLogo(hostAlreadyBranded(host));
     const textWrap = document.createElement('div');
-    textWrap.className = 'kad-logo-titletext';
+    textWrap.className = '-logo-titletext';
 
     while (host.firstChild) {
       textWrap.appendChild(host.firstChild);
@@ -253,25 +253,25 @@
 
     host.appendChild(logo);
     host.appendChild(textWrap);
-    host.classList.add('kad-logo-titlehost');
-    host.dataset.kadLogoDone = '1';
+    host.classList.add('-logo-titlehost');
+    host.dataset.LogoDone = '1';
   }
 
   function injectStripHost(host){
-    if (!host || host.dataset.kadLogoDone === '1') return;
+    if (!host || host.dataset.LogoDone === '1') return;
 
     const logo = makeLogo(hostAlreadyBranded(host));
     host.insertBefore(logo, host.firstChild);
-    host.classList.add('kad-logo-striphost');
-    host.dataset.kadLogoDone = '1';
+    host.classList.add('-logo-striphost');
+    host.dataset.LogoDone = '1';
   }
 
   function injectBarHost(host){
-    if (!host || host.dataset.kadLogoDone === '1') return;
+    if (!host || host.dataset.LogoDone === '1') return;
 
     const logo = makeLogo(hostAlreadyBranded(host));
     const pack = document.createElement('div');
-    pack.className = 'kad-logo-actionpack';
+    pack.className = '-logo-actionpack';
 
     while (host.firstChild) {
       pack.appendChild(host.firstChild);
@@ -279,8 +279,8 @@
 
     host.appendChild(logo);
     host.appendChild(pack);
-    host.classList.add('kad-logo-barhost');
-    host.dataset.kadLogoDone = '1';
+    host.classList.add('-logo-barhost');
+    host.dataset.LogoDone = '1';
   }
 
   function inject(){

@@ -88,7 +88,7 @@
   var currentMatch = findMatch(filteredMenu);
 
   function getCurrentLabel(){
-    return currentMatch ? currentMatch.label : (document.title || currentKey || 'K.A.D');
+    return currentMatch ? currentMatch.label : (document.title || currentKey || '');
   }
 
   function itemContainsCurrent(item){
@@ -106,29 +106,29 @@
   function linkHtml(link){
     var active = (link.key === currentKey || (link.href && link.href.toLowerCase() === currentPath)) ? ' is-active' : '';
     if(link.disabled || !link.href){
-      return '<span class="kad-shell-link'+active+'" aria-disabled="true">'+escapeHtml(link.label)+'</span>';
+      return '<span class="-shell-link'+active+'" aria-disabled="true">'+escapeHtml(link.label)+'</span>';
     }
-    return '<a class="kad-shell-link'+active+'" href="'+escapeHtml(link.href)+'">'+escapeHtml(link.label)+'</a>';
+    return '<a class="-shell-link'+active+'" href="'+escapeHtml(link.href)+'">'+escapeHtml(link.label)+'</a>';
   }
 
   function buildItem(item){
     var active = itemContainsCurrent(item) ? ' is-active' : '';
     if(item.href){
-      return '<div class="kad-shell-item'+active+'" data-item-key="'+escapeHtml(item.key || '')+'">'
-        + '<a class="kad-shell-main" href="'+escapeHtml(item.href)+'"><span class="kad-shell-main-label">'+escapeHtml(item.label)+'</span></a>'
+      return '<div class="-shell-item'+active+'" data-item-key="'+escapeHtml(item.key || '')+'">'
+        + '<a class="-shell-main" href="'+escapeHtml(item.href)+'"><span class="-shell-main-label">'+escapeHtml(item.label)+'</span></a>'
         + '</div>';
     }
-    return '<div class="kad-shell-item'+active+'" data-item-key="'+escapeHtml(item.key || '')+'" data-has-submenu="1">'
-      + '<button class="kad-shell-main" type="button" aria-expanded="false">'
-      + '<span class="kad-shell-main-label">'+escapeHtml(item.label)+'</span><span class="kad-shell-main-caret" aria-hidden="true"></span>'
+    return '<div class="-shell-item'+active+'" data-item-key="'+escapeHtml(item.key || '')+'" data-has-submenu="1">'
+      + '<button class="-shell-main" type="button" aria-expanded="false">'
+      + '<span class="-shell-main-label">'+escapeHtml(item.label)+'</span><span class="-shell-main-caret" aria-hidden="true"></span>'
       + '</button></div>';
   }
 
   function ensureContentWrapper(){
-    var existing = document.querySelector('.kad-shell-page-content');
+    var existing = document.querySelector('.-shell-page-content');
     if(existing) return existing;
     var wrapper = document.createElement('div');
-    wrapper.className = 'kad-shell-page-content';
+    wrapper.className = '-shell-page-content';
     var nodes = [];
     Array.prototype.slice.call(document.body.childNodes).forEach(function(node){
       if(node.nodeType === 1){
@@ -160,11 +160,11 @@
 
   function renderSubpanel(item){
     if(!item || !item.sections) return '';
-    return '<div class="kad-shell-subtitle">'+escapeHtml(item.label)+'</div>'
+    return '<div class="-shell-subtitle">'+escapeHtml(item.label)+'</div>'
       + item.sections.map(function(section){
-          return '<section class="kad-shell-section">'
-            + '<div class="kad-shell-section-label">'+escapeHtml(section.label)+'</div>'
-            + '<div class="kad-shell-link-grid">'+(section.links || []).map(linkHtml).join('')+'</div>'
+          return '<section class="-shell-section">'
+            + '<div class="-shell-section-label">'+escapeHtml(section.label)+'</div>'
+            + '<div class="-shell-link-grid">'+(section.links || []).map(linkHtml).join('')+'</div>'
             + '</section>';
         }).join('');
   }
@@ -253,7 +253,7 @@
     var list = document.querySelectorAll(selectors);
     for(var i=0;i<list.length;i++){
       var el = list[i];
-      if(excludeInsideShell && el.closest && el.closest('#kadNavShellRoot')) continue;
+      if(excludeInsideShell && el.closest && el.closest('#NavShellRoot')) continue;
       if(isVisible(el)) return el;
     }
     return null;
@@ -294,20 +294,20 @@
       shine1 = { r:255, g:255, b:255, a:0.34 };
       shine2 = { r:196, g:178, b:241, a:0.18 };
       shadow = '0 20px 46px rgba(58,41,96,.18)';
-      root.style.setProperty('--kad-shell-bg', rgba(shellBg, 0.94));
-      root.style.setProperty('--kad-shell-bg-2', rgba(shellBg2, 0.97));
-      root.style.setProperty('--kad-shell-border', rgba(border, 0.26));
-      root.style.setProperty('--kad-shell-divider', rgba(divider, 0.18));
-      root.style.setProperty('--kad-shell-text', rgba(shellText, 1));
-      root.style.setProperty('--kad-shell-muted', rgba(muted, 0.68));
-      root.style.setProperty('--kad-shell-surface', rgba(surface, 0.72));
-      root.style.setProperty('--kad-shell-surface-hover', rgba(surfaceHover, 0.9));
-      root.style.setProperty('--kad-shell-surface-border', rgba(surfaceBorder, 0.2));
-      root.style.setProperty('--kad-shell-caret', rgba(caret, 0.82));
-      root.style.setProperty('--kad-shell-scroll', rgba(scroll, 0.26));
-      root.style.setProperty('--kad-shell-shine-1', rgba(shine1, 1));
-      root.style.setProperty('--kad-shell-shine-2', rgba(shine2, 1));
-      root.style.setProperty('--kad-shell-shadow', shadow);
+      root.style.setProperty('---shell-bg', rgba(shellBg, 0.94));
+      root.style.setProperty('---shell-bg-2', rgba(shellBg2, 0.97));
+      root.style.setProperty('---shell-border', rgba(border, 0.26));
+      root.style.setProperty('---shell-divider', rgba(divider, 0.18));
+      root.style.setProperty('---shell-text', rgba(shellText, 1));
+      root.style.setProperty('---shell-muted', rgba(muted, 0.68));
+      root.style.setProperty('---shell-surface', rgba(surface, 0.72));
+      root.style.setProperty('---shell-surface-hover', rgba(surfaceHover, 0.9));
+      root.style.setProperty('---shell-surface-border', rgba(surfaceBorder, 0.2));
+      root.style.setProperty('---shell-caret', rgba(caret, 0.82));
+      root.style.setProperty('---shell-scroll', rgba(scroll, 0.26));
+      root.style.setProperty('---shell-shine-1', rgba(shine1, 1));
+      root.style.setProperty('---shell-shine-2', rgba(shine2, 1));
+      root.style.setProperty('---shell-shadow', shadow);
     } else {
       shellText = luminance(text) < 0.45 ? { r:236, g:242, b:255, a:1 } : text;
       shellBg = mix(base, accentBase, 0.16);
@@ -323,37 +323,37 @@
       shine1 = { r:255, g:255, b:255, a:0.14 };
       shine2 = { r:255, g:255, b:255, a:0.05 };
       shadow = '0 18px 42px rgba(0,0,0,.28)';
-      root.style.setProperty('--kad-shell-bg', rgba(shellBg, 0.9));
-      root.style.setProperty('--kad-shell-bg-2', rgba(shellBg2, 0.95));
-      root.style.setProperty('--kad-shell-border', rgba(border, 0.24));
-      root.style.setProperty('--kad-shell-divider', rgba(divider, 0.14));
-      root.style.setProperty('--kad-shell-text', rgba(shellText, 1));
-      root.style.setProperty('--kad-shell-muted', rgba(muted, 0.72));
-      root.style.setProperty('--kad-shell-surface', rgba(surface, 0.22));
-      root.style.setProperty('--kad-shell-surface-hover', rgba(surfaceHover, 0.32));
-      root.style.setProperty('--kad-shell-surface-border', rgba(surfaceBorder, 0.22));
-      root.style.setProperty('--kad-shell-caret', rgba(caret, 0.84));
-      root.style.setProperty('--kad-shell-scroll', rgba(scroll, 0.24));
-      root.style.setProperty('--kad-shell-shine-1', rgba(shine1, 1));
-      root.style.setProperty('--kad-shell-shine-2', rgba(shine2, 1));
-      root.style.setProperty('--kad-shell-shadow', shadow);
+      root.style.setProperty('---shell-bg', rgba(shellBg, 0.9));
+      root.style.setProperty('---shell-bg-2', rgba(shellBg2, 0.95));
+      root.style.setProperty('---shell-border', rgba(border, 0.24));
+      root.style.setProperty('---shell-divider', rgba(divider, 0.14));
+      root.style.setProperty('---shell-text', rgba(shellText, 1));
+      root.style.setProperty('---shell-muted', rgba(muted, 0.72));
+      root.style.setProperty('---shell-surface', rgba(surface, 0.22));
+      root.style.setProperty('---shell-surface-hover', rgba(surfaceHover, 0.32));
+      root.style.setProperty('---shell-surface-border', rgba(surfaceBorder, 0.22));
+      root.style.setProperty('---shell-caret', rgba(caret, 0.84));
+      root.style.setProperty('---shell-scroll', rgba(scroll, 0.24));
+      root.style.setProperty('---shell-shine-1', rgba(shine1, 1));
+      root.style.setProperty('---shell-shine-2', rgba(shine2, 1));
+      root.style.setProperty('---shell-shadow', shadow);
     }
   }
 
   function mount(){
-    if(document.getElementById('kadNavShellRoot')) return;
+    if(document.getElementById('NavShellRoot')) return;
     ensureContentWrapper();
     var root = document.createElement('div');
-    root.id = 'kadNavShellRoot';
-    root.innerHTML = '<div class="kad-shell-edge-sensor" aria-hidden="true"></div>'
-      + '<aside class="kad-shell" aria-label="Navigare K.A.D">'
-      + '<div class="kad-shell-peek-label">MENIU</div>'
-      + '<div class="kad-shell-header"><div class="kad-shell-mini">K.A.D · Navigare</div><div class="kad-shell-brand">K.A.D</div><div class="kad-shell-current">'+escapeHtml(getCurrentLabel())+'</div></div>'
-      + '<div class="kad-shell-layout"><nav class="kad-shell-navcol">'+filteredMenu.map(buildItem).join('')+'</nav><div class="kad-shell-subpanel"></div></div>'
-      + '<div class="kad-shell-footer"><button type="button" class="kad-shell-logout">Logout</button><div class="kad-shell-note">click pe marginea stângă</div></div>'
+    root.id = 'NavShellRoot';
+    root.innerHTML = '<div class="-shell-edge-sensor" aria-hidden="true"></div>'
+      + '<aside class="-shell" aria-label="Navigare ">'
+      + '<div class="-shell-peek-label">MENIU</div>'
+      + '<div class="-shell-header"><div class="-shell-mini"> · Navigare</div><div class="-shell-brand"></div><div class="-shell-current">'+escapeHtml(getCurrentLabel())+'</div></div>'
+      + '<div class="-shell-layout"><nav class="-shell-navcol">'+filteredMenu.map(buildItem).join('')+'</nav><div class="-shell-subpanel"></div></div>'
+      + '<div class="-shell-footer"><button type="button" class="-shell-logout">Logout</button><div class="-shell-note">click pe marginea stângă</div></div>'
       + '</aside>';
     document.body.appendChild(root);
-    document.body.classList.add('kad-shell-mounted');
+    document.body.classList.add('-shell-mounted');
     applyAdaptivePalette();
     bind(root);
     window.setTimeout(applyAdaptivePalette, 80);
@@ -361,14 +361,14 @@
   }
 
   function bind(root){
-    var shell = root.querySelector('.kad-shell');
-    var sensor = root.querySelector('.kad-shell-edge-sensor');
-    var subpanel = root.querySelector('.kad-shell-subpanel');
-    var items = Array.prototype.slice.call(root.querySelectorAll('.kad-shell-item'));
+    var shell = root.querySelector('.-shell');
+    var sensor = root.querySelector('.-shell-edge-sensor');
+    var subpanel = root.querySelector('.-shell-subpanel');
+    var items = Array.prototype.slice.call(root.querySelectorAll('.-shell-item'));
     var activeItem = null;
 
-    function openShell(){ root.classList.add('is-open'); document.body.classList.add('kad-shell-open'); }
-    function closeShell(){ hideSubmenu(); root.classList.remove('is-open'); document.body.classList.remove('kad-shell-open'); }
+    function openShell(){ root.classList.add('is-open'); document.body.classList.add('-shell-open'); }
+    function closeShell(){ hideSubmenu(); root.classList.remove('is-open'); document.body.classList.remove('-shell-open'); }
     function toggleShell(){
       if(root.classList.contains('is-open')){
         closeShell();
@@ -378,24 +378,24 @@
     }
     function hideSubmenu(){
       activeItem = null;
-      items.forEach(function(item){ item.classList.remove('is-open'); var btn = item.querySelector('button.kad-shell-main'); if(btn) btn.setAttribute('aria-expanded','false'); });
+      items.forEach(function(item){ item.classList.remove('is-open'); var btn = item.querySelector('button.-shell-main'); if(btn) btn.setAttribute('aria-expanded','false'); });
       root.classList.remove('has-submenu');
-      document.body.classList.remove('kad-shell-submenu');
+      document.body.classList.remove('-shell-submenu');
       subpanel.innerHTML = '';
-      document.body.style.removeProperty('--kad-shell-panel-width');
+      document.body.style.removeProperty('---shell-panel-width');
     }
     function showSubmenu(item, data){
       if(!item || !data || !data.sections){ hideSubmenu(); return; }
       activeItem = item;
-      items.forEach(function(entry){ if(entry !== item){ entry.classList.remove('is-open'); var btn = entry.querySelector('button.kad-shell-main'); if(btn) btn.setAttribute('aria-expanded','false'); } });
+      items.forEach(function(entry){ if(entry !== item){ entry.classList.remove('is-open'); var btn = entry.querySelector('button.-shell-main'); if(btn) btn.setAttribute('aria-expanded','false'); } });
       item.classList.add('is-open');
-      var btn = item.querySelector('button.kad-shell-main');
+      var btn = item.querySelector('button.-shell-main');
       if(btn) btn.setAttribute('aria-expanded','true');
       subpanel.innerHTML = renderSubpanel(data);
       var width = estimatePanelWidth(data);
-      document.body.style.setProperty('--kad-shell-panel-width', width + 'px');
+      document.body.style.setProperty('---shell-panel-width', width + 'px');
       root.classList.add('has-submenu');
-      document.body.classList.add('kad-shell-submenu');
+      document.body.classList.add('-shell-submenu');
     }
 
     sensor.addEventListener('click', function(ev){
@@ -407,7 +407,7 @@
     items.forEach(function(item){
       var key = item.getAttribute('data-item-key');
       var data = filteredMenu.find(function(entry){ return entry.key === key; });
-      var main = item.querySelector('.kad-shell-main');
+      var main = item.querySelector('.-shell-main');
       if(!main) return;
       if(item.getAttribute('data-has-submenu') === '1'){
         main.addEventListener('click', function(ev){
@@ -423,7 +423,7 @@
       }
     });
 
-    var logoutBtn = root.querySelector('.kad-shell-logout');
+    var logoutBtn = root.querySelector('.-shell-logout');
     if(logoutBtn){
       logoutBtn.addEventListener('click', async function(){
         try{
@@ -458,7 +458,7 @@
       if(activeItem){
         var key = activeItem.getAttribute('data-item-key');
         var data = filteredMenu.find(function(entry){ return entry.key === key; });
-        if(data) document.body.style.setProperty('--kad-shell-panel-width', estimatePanelWidth(data) + 'px');
+        if(data) document.body.style.setProperty('---shell-panel-width', estimatePanelWidth(data) + 'px');
       }
     });
 
