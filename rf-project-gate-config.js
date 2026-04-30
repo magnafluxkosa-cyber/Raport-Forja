@@ -3,11 +3,11 @@ window.RF_PROJECT_GATE_CONFIG = {
   projects: [
     {
       projectKey: 'kad',
-      label: 'ERP Forja / K.A.D',
+      label: 'ERP Forja',
       pin: '2580',
       destination: 'login.html',
-      description: 'PIN-ul principal pentru proiectul ERP Forja / K.A.D.',
-      destinationLabel: 'Login K.A.D'
+      description: 'PIN-ul principal pentru proiectul ERP Forja.',
+      destinationLabel: 'Login'
     },
     {
       projectKey: 'proiect-2',
