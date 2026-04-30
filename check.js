@@ -3,7 +3,7 @@
 
       const DOC_KEY = 'tratament-termic-fise-tehnologice';
       const FILE_DOC_PREFIX = 'tratament-termic-fise-tehnologice:file:';
-      const LOCAL_KEY = 'kad_tratament_termic_fise_tehnologice_v1';
+      const LOCAL_KEY = '_tratament_termic_fise_tehnologice_v1';
       const MAX_FILE_SIZE_MB = 8;
       const STORAGE_BUCKET = 'tt-fise-tehnologice';
       const STORAGE_PATH_PREFIX = 'fise';

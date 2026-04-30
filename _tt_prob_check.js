@@ -2,7 +2,7 @@
       'use strict';
 
       const DOC_KEY = 'tratament-termic-probleme';
-      const LOCAL_KEY = 'kad_tratament_termic_probleme_v1';
+      const LOCAL_KEY = '_tratament_termic_probleme_v1';
       const SAVE_DEBOUNCE_MS = 250;
       const MONTHS = [
         'Ianuarie', 'Februarie', 'Martie', 'Aprilie', 'Mai', 'Iunie',
