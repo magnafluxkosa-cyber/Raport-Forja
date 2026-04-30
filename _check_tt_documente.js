@@ -3,7 +3,7 @@
 
       const DOC_KEY = 'tratament-termic-documente';
       const FILE_DOC_PREFIX = 'tratament-termic-documente:file:';
-      const LOCAL_KEY = ':' + DOC_KEY;
+      const LOCAL_KEY = 'kad:' + DOC_KEY;
       const ALLOWED_EXTENSIONS = ['xls', 'xlsx', 'doc', 'docx'];
       const MIME_LABELS = {
         'application/vnd.ms-excel': 'Excel',
