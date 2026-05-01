@@ -1723,6 +1723,9 @@ async function applyDomPermissions(pageKey, root, options) {
     }
 
     if (!user) {
+      if (key === 'index') {
+        return { allowed:true, role:'viewer', source:'guest index', permissions:{ can_view:true, can_add:false, can_edit:false, can_delete:false, can_export:false, can_import:false } };
+      }
       return { allowed:false, role:'viewer', source:'no session', message:'Autentifică-te pentru a intra în această foaie.', permissions:{ can_view:false, can_add:false, can_edit:false, can_delete:false, can_export:false, can_import:false } };
     }
 
