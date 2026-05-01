@@ -512,6 +512,12 @@
 
       let supabase = null;
       let loadingTimer = null;
+      let loginBusy = false;
+      let loginLockTimer = null;
+
+      const LOGIN_LOCK_KEY = 'rf_login_lock_state_v1';
+      const LOGIN_MAX_ATTEMPTS = 3;
+      const LOGIN_LOCK_MS = 15 * 60 * 1000;
 
       function setStatus(message, type){
         statusBox.textContent = message;
@@ -523,13 +529,149 @@
         metaInfo.textContent = message || '';
       }
 
+      function readLoginLockState(){
+        try {
+          const raw = localStorage.getItem(LOGIN_LOCK_KEY);
+          if(!raw) return { attempts: 0, lockedUntil: 0 };
+          const state = JSON.parse(raw);
+          const attempts = Math.max(0, Number(state && state.attempts) || 0);
+          const lockedUntil = Math.max(0, Number(state && state.lockedUntil) || 0);
+          if(lockedUntil && lockedUntil <= Date.now()){
+            clearLoginLock(false);
+            return { attempts: 0, lockedUntil: 0 };
+          }
+          return { attempts, lockedUntil };
+        } catch(_) {
+          clearLoginLock(false);
+          return { attempts: 0, lockedUntil: 0 };
+        }
+      }
+
+      function saveLoginLockState(state){
+        try {
+          localStorage.setItem(LOGIN_LOCK_KEY, JSON.stringify({
+            attempts: Math.max(0, Number(state && state.attempts) || 0),
+            lockedUntil: Math.max(0, Number(state && state.lockedUntil) || 0),
+            updatedAt: Date.now()
+          }));
+        } catch(_) {}
+      }
+
+      function clearLoginLock(showMessage){
+        try { localStorage.removeItem(LOGIN_LOCK_KEY); } catch(_) {}
+        if(loginLockTimer){
+          clearInterval(loginLockTimer);
+          loginLockTimer = null;
+        }
+        if(showMessage){
+          setStatus('Blocarea a expirat. Poți încerca din nou.', 'ok');
+          setMeta('Introdu ID și parolă.');
+        }
+      }
+
+      function getActiveLoginLock(){
+        const state = readLoginLockState();
+        if(state.lockedUntil && state.lockedUntil > Date.now()) return state;
+        return null;
+      }
+
+      function isLoginLocked(){
+        return !!getActiveLoginLock();
+      }
+
+      function formatLockRemaining(ms){
+        const totalSeconds = Math.max(0, Math.ceil(ms / 1000));
+        const minutes = Math.floor(totalSeconds / 60);
+        const seconds = totalSeconds % 60;
+        if(minutes <= 0) return seconds + ' secunde';
+        return minutes + ' minute și ' + String(seconds).padStart(2, '0') + ' secunde';
+      }
+
+      function setLoginControlsDisabled(disabled){
+        loginBtn.disabled = disabled;
+        emailInput.disabled = disabled;
+        passwordInput.disabled = disabled;
+        togglePasswordBtn.disabled = disabled;
+      }
+
+      function showLoginLockMessage(activeLock){
+        const state = activeLock || getActiveLoginLock();
+        if(!state) return false;
+        const remaining = state.lockedUntil - Date.now();
+        setStatus('Login blocat temporar. Mai încearcă peste ' + formatLockRemaining(remaining) + '.', 'error');
+        setMeta('Ai introdus ID sau parolă greșită de 3 ori. Blocarea rămâne activă și după refresh.');
+        return true;
+      }
+
+      function startLoginLockCountdown(){
+        if(loginLockTimer){
+          clearInterval(loginLockTimer);
+          loginLockTimer = null;
+        }
+        const active = getActiveLoginLock();
+        if(!active) return;
+        loginLockTimer = setInterval(function(){
+          const stillActive = getActiveLoginLock();
+          if(!stillActive){
+            if(loginLockTimer){
+              clearInterval(loginLockTimer);
+              loginLockTimer = null;
+            }
+            if(!loginBusy){
+              setLoginControlsDisabled(false);
+              clearLoginLock(true);
+            }
+            return;
+          }
+          showLoginLockMessage(stillActive);
+        }, 1000);
+      }
+
+      function applyLoginLockUi(){
+        const active = getActiveLoginLock();
+        if(active){
+          setLoginControlsDisabled(true);
+          showLoginLockMessage(active);
+          startLoginLockCountdown();
+          return true;
+        }
+        if(!loginBusy){
+          setLoginControlsDisabled(false);
+        }
+        return false;
+      }
+
+      function recordWrongLoginAttempt(){
+        const state = readLoginLockState();
+        const attempts = Math.min(LOGIN_MAX_ATTEMPTS, (Number(state.attempts) || 0) + 1);
+
+        if(attempts >= LOGIN_MAX_ATTEMPTS){
+          const lockedUntil = Date.now() + LOGIN_LOCK_MS;
+          saveLoginLockState({ attempts: LOGIN_MAX_ATTEMPTS, lockedUntil });
+          applyLoginLockUi();
+          return { locked: true, attempts: LOGIN_MAX_ATTEMPTS, remainingAttempts: 0 };
+        }
+
+        saveLoginLockState({ attempts, lockedUntil: 0 });
+        const remainingAttempts = LOGIN_MAX_ATTEMPTS - attempts;
+        setStatus('ID sau parolă greșită.', 'error');
+        setMeta('Încercare greșită ' + attempts + '/' + LOGIN_MAX_ATTEMPTS + '. Mai ai ' + remainingAttempts + ' încercări.');
+        return { locked: false, attempts, remainingAttempts };
+      }
+
+      function isInvalidCredentialsError(error){
+        const msg = String(error && error.message || error || '').toLowerCase();
+        return msg.indexOf('invalid login credentials') !== -1;
+      }
+
       function setLoading(isLoading, message){
-        loginBtn.disabled = isLoading;
-        emailInput.disabled = isLoading;
-        passwordInput.disabled = isLoading;
-        togglePasswordBtn.disabled = isLoading;
+        loginBusy = !!isLoading;
+        const locked = !isLoading && isLoginLocked();
+        setLoginControlsDisabled(!!isLoading || locked);
         if(isLoading){
           setStatus(message || 'Autentificare în curs...', '');
+        } else if(locked){
+          applyLoginLockUi();
         }
       }
 
@@ -797,6 +939,10 @@
       form.addEventListener('submit', async function(event){
         event.preventDefault();
 
+        if(applyLoginLockUi()){
+          return;
+        }
+
         const email = normalizeEmail(emailInput.value);
         const password = String(passwordInput.value || '');
 
@@ -835,6 +981,8 @@
             }
           }
 
+          clearLoginLock(false);
+
           safeSetLocal('rf_uid', user.id || '');
           safeSetLocal('rf_email', resolved.email || email);
           safeSetLocal('rf_role', resolved.role || 'viewer');
@@ -853,17 +1001,25 @@
           window.location.href = buildRedirectUrl();
         } catch (error) {
           console.error('Login error:', error);
-          setStatus(getFriendlyError(error), 'error');
-          setMeta('Dacă eroarea persistă, verifică rf-config.js, conexiunea la Supabase și consola browserului.');
+          if(isInvalidCredentialsError(error)){
+            recordWrongLoginAttempt();
+          } else {
+            setStatus(getFriendlyError(error), 'error');
+            setMeta('Dacă eroarea persistă, verifică rf-config.js, conexiunea la Supabase și consola browserului.');
+          }
         } finally {
           setLoading(false);
         }
       });
 
+      applyLoginLockUi();
+
       try {
         supabase = initClient();
-        setMeta('Conexiune pregătită.');
-        redirectIfSessionExists();
+        setMeta(isLoginLocked() ? metaInfo.textContent : 'Conexiune pregătită.');
+        if(!isLoginLocked()){
+          redirectIfSessionExists();
+        }
       } catch (error) {
         console.error('Supabase init error:', error);
         setStatus(getFriendlyError(error), 'error');
