@@ -143,6 +143,43 @@
     return String(value || '').trim().toLowerCase().replace(/\.html$/i, '');
   }
 
+  function pageTitleFromDom(pageKey){
+    try {
+      const h1 = document.querySelector('h1');
+      const title = String((h1 && h1.textContent) || document.title || pageKey || '').replace(/\s+-\s+K\.A\.D\s*$/i, '').replace(/\s+/g, ' ').trim();
+      return title || pageKey;
+    } catch (_) {
+      return pageKey || '';
+    }
+  }
+
+  async function registerAclPage(pageKey, label){
+    const key = normalizePageKey(pageKey || getCurrentPageName());
+    if(!key || ['login','index'].includes(key)) return;
+    let sb = null;
+    try { sb = getSupabaseClient(); } catch (_) { return; }
+    if(!sb) return;
+    try {
+      const stamp = new Date().toISOString();
+      const current = await sb.from('rf_documents').select('content,data,updated_at').eq('doc_key','rf_acl_page_registry_v1').maybeSingle();
+      const base = current && current.data ? (current.data.content || current.data.data || {}) : {};
+      const pages = Array.isArray(base.pages) ? base.pages.slice() : [];
+      const exists = pages.some(p => normalizePageKey(p && p.key) === key);
+      if(!exists){
+        pages.push({
+          key,
+          label: String(label || pageTitleFromDom(key) || key).trim(),
+          href: key + '.html',
+          group: 'Pagini detectate automat',
+          detected_at: stamp
+        });
+        pages.sort((a,b)=>String(a.label||a.key).localeCompare(String(b.label||b.key),'ro'));
+        const payload = Object.assign({}, base, { app:'RF_ACL_PAGE_REGISTRY', version:1, pages, updated_at:stamp });
+        await sb.from('rf_documents').upsert({ doc_key:'rf_acl_page_registry_v1', content:payload, updated_at:stamp }, { onConflict:'doc_key' });
+      }
+    } catch (_) {}
+  }
+
   function getCurrentPageKey(){
     try {
       const path = window.location.pathname || '';
@@ -657,6 +694,7 @@
 
   async function getPageAccess(pageKey, options){
     const settings = Object.assign({ pageKey: normalizePageKey(pageKey || getCurrentPageName()) }, options || {});
+    registerAclPage(settings.pageKey, settings.label || settings.title);
     let user = settings.user || null;
     let role = settings.role || '';
 
@@ -729,6 +767,7 @@
     roleClass,
     canAccess,
     getPageAccess,
+    registerAclPage,
     buildLoginUrl,
     renderAccessDeniedPage,
     prehideProtectedPage,
