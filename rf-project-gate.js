@@ -1,9 +1,16 @@
 (function (window) {
   'use strict';
 
+  var VERSION = '20260501-pinlock2';
   var STORAGE_KEY = 'rf_project_gate_access';
   var SESSION_KEY = 'rf_project_gate_access_session';
   var DEFAULT_TTL_HOURS = 12;
+  var DEFAULT_PIN_SECURITY = {
+    maxFailedAttempts: 3,
+    lockMinutes: 15,
+    attemptsStorageKey: 'rf_project_gate_pin_attempts',
+    lockStorageKey: 'rf_project_gate_pin_lock'
+  };
   var DEFAULT_CONFIG = {
     defaultTtlHours: 12,
     projects: [
@@ -87,6 +94,101 @@
         return project.projectKey && project.pin && project.destination;
       })
     };
+  }
+
+
+  function getPinSecurityConfig() {
+    var cfg = window.RF_PROJECT_GATE_CONFIG || DEFAULT_CONFIG;
+    var pinSecurity = cfg.pinSecurity || {};
+    var maxFailedAttempts = Number(pinSecurity.maxFailedAttempts);
+    var lockMinutes = Number(pinSecurity.lockMinutes);
+
+    return {
+      maxFailedAttempts: maxFailedAttempts > 0 ? Math.floor(maxFailedAttempts) : DEFAULT_PIN_SECURITY.maxFailedAttempts,
+      lockMinutes: lockMinutes > 0 ? lockMinutes : DEFAULT_PIN_SECURITY.lockMinutes,
+      attemptsStorageKey: normalizeValue(pinSecurity.attemptsStorageKey) || DEFAULT_PIN_SECURITY.attemptsStorageKey,
+      lockStorageKey: normalizeValue(pinSecurity.lockStorageKey) || DEFAULT_PIN_SECURITY.lockStorageKey
+    };
+  }
+
+  function readJsonFromStorage(key) {
+    return safeParse(safeGet(window.localStorage, key)) || safeParse(safeGet(window.sessionStorage, key));
+  }
+
+  function writeJsonToStorage(key, payload) {
+    var raw = JSON.stringify(payload || {});
+    safeSet(window.localStorage, key, raw);
+    safeSet(window.sessionStorage, key, raw);
+  }
+
+  function removeJsonFromStorage(key) {
+    safeRemove(window.localStorage, key);
+    safeRemove(window.sessionStorage, key);
+  }
+
+  function getPinLockState() {
+    var cfg = getPinSecurityConfig();
+    var attemptsData = readJsonFromStorage(cfg.attemptsStorageKey) || {};
+    var lockData = readJsonFromStorage(cfg.lockStorageKey) || {};
+    var failedAttempts = Math.max(0, Number(attemptsData.failedAttempts || lockData.failedAttempts || 0));
+    var lockedUntil = Number(lockData.lockedUntil || 0);
+
+    if (lockedUntil && lockedUntil <= nowMs()) {
+      clearPinFailures();
+      return {
+        locked: false,
+        failedAttempts: 0,
+        remainingAttempts: cfg.maxFailedAttempts,
+        lockedUntil: 0,
+        remainingMs: 0,
+        maxFailedAttempts: cfg.maxFailedAttempts,
+        lockMinutes: cfg.lockMinutes
+      };
+    }
+
+    return {
+      locked: Boolean(lockedUntil && lockedUntil > nowMs()),
+      failedAttempts: failedAttempts,
+      remainingAttempts: Math.max(0, cfg.maxFailedAttempts - failedAttempts),
+      lockedUntil: lockedUntil,
+      remainingMs: Math.max(0, lockedUntil - nowMs()),
+      maxFailedAttempts: cfg.maxFailedAttempts,
+      lockMinutes: cfg.lockMinutes
+    };
+  }
+
+  function recordFailedPinAttempt() {
+    var cfg = getPinSecurityConfig();
+    var current = getPinLockState();
+
+    if (current.locked) return current;
+
+    var failedAttempts = Math.max(0, Number(current.failedAttempts || 0)) + 1;
+    var attemptsPayload = {
+      failedAttempts: failedAttempts,
+      updatedAt: nowMs()
+    };
+
+    writeJsonToStorage(cfg.attemptsStorageKey, attemptsPayload);
+
+    if (failedAttempts >= cfg.maxFailedAttempts) {
+      var lockedUntil = nowMs() + cfg.lockMinutes * 60 * 1000;
+      var lockPayload = {
+        failedAttempts: failedAttempts,
+        lockedUntil: lockedUntil,
+        updatedAt: nowMs()
+      };
+      writeJsonToStorage(cfg.lockStorageKey, lockPayload);
+      return getPinLockState();
+    }
+
+    return getPinLockState();
+  }
+
+  function clearPinFailures() {
+    var cfg = getPinSecurityConfig();
+    removeJsonFromStorage(cfg.attemptsStorageKey);
+    removeJsonFromStorage(cfg.lockStorageKey);
   }
 
   function readStoredAccess() {
@@ -175,14 +277,31 @@
     return false;
   }
 
-  function resolvePin(pin) {
+  function resolvePin(pin, expectedProjectKey) {
+    var currentLock = getPinLockState();
+    if (currentLock.locked) {
+      return { ok: false, reason: 'blocked', lockState: currentLock };
+    }
+
     var project = getProjectByPin(pin);
-    if (!project) return { ok: false, reason: 'PIN invalid' };
+    if (!project) {
+      var invalidLockState = recordFailedPinAttempt();
+      return { ok: false, reason: invalidLockState.locked ? 'blocked' : 'PIN invalid', lockState: invalidLockState };
+    }
+
+    var expectedKey = normalizeValue(expectedProjectKey).toLowerCase();
+    if (expectedKey && project.projectKey !== expectedKey) {
+      var wrongProjectLockState = recordFailedPinAttempt();
+      return { ok: false, reason: wrongProjectLockState.locked ? 'blocked' : 'PIN-ul nu aparține acestui proiect.', lockState: wrongProjectLockState };
+    }
+
+    clearPinFailures();
     var access = storeAccess(project);
     return { ok: true, project: project, access: access };
   }
 
   window.RFProjectGate = {
+    version: VERSION,
     normalizePin: normalizePin,
     getConfig: ensureConfig,
     getProjectByPin: getProjectByPin,
@@ -190,6 +309,8 @@
     listProjects: listProjects,
     readStoredAccess: readStoredAccess,
     clearAccess: clearAccess,
+    getPinLockState: getPinLockState,
+    clearPinFailures: clearPinFailures,
     hasAccess: hasAccess,
     requireAccess: requireAccess,
     resolvePin: resolvePin,

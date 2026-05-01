@@ -1,5 +1,11 @@
 window.RF_PROJECT_GATE_CONFIG = {
   defaultTtlHours: 12,
+  pinSecurity: {
+    maxFailedAttempts: 3,
+    lockMinutes: 15,
+    attemptsStorageKey: 'rf_project_gate_pin_attempts',
+    lockStorageKey: 'rf_project_gate_pin_lock'
+  },
   projects: [
     {
       projectKey: 'kad',

@@ -5,8 +5,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Acces PIN</title>
   <meta name="theme-color" content="#0f172a" />
-  <script src="./rf-project-gate-config.js"></script>
-  <script src="./rf-project-gate.js"></script>
+  <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate" />
+  <meta http-equiv="Pragma" content="no-cache" />
+  <meta http-equiv="Expires" content="0" />
+  <script src="./rf-project-gate-config.js?v=20260501-pinlock2"></script>
+  <script src="./rf-project-gate.js?v=20260501-pinlock2"></script>
   <style>
     :root{
       --text:#ffffff;
@@ -173,6 +176,89 @@
       var expectedProject = String(params.get('project') || '').trim().toLowerCase();
       var next = String(params.get('next') || '').trim();
       var lockTimer = null;
+      var FALLBACK_ATTEMPTS_KEY = 'rf_project_gate_pin_attempts';
+      var FALLBACK_LOCK_KEY = 'rf_project_gate_pin_lock';
+
+      function getGate(){
+        return window.RFProjectGate || null;
+      }
+
+      function fallbackNow(){ return Date.now(); }
+
+      function fallbackParse(raw){
+        if (!raw) return null;
+        try { return JSON.parse(raw); } catch (_) { return null; }
+      }
+
+      function fallbackRead(key){
+        try {
+          return fallbackParse(window.localStorage.getItem(key)) || fallbackParse(window.sessionStorage.getItem(key));
+        } catch (_) {
+          return null;
+        }
+      }
+
+      function fallbackWrite(key, payload){
+        var raw = JSON.stringify(payload || {});
+        try { window.localStorage.setItem(key, raw); } catch (_) {}
+        try { window.sessionStorage.setItem(key, raw); } catch (_) {}
+      }
+
+      function fallbackRemove(key){
+        try { window.localStorage.removeItem(key); } catch (_) {}
+        try { window.sessionStorage.removeItem(key); } catch (_) {}
+      }
+
+      function fallbackClearPinFailures(){
+        fallbackRemove(FALLBACK_ATTEMPTS_KEY);
+        fallbackRemove(FALLBACK_LOCK_KEY);
+      }
+
+      function fallbackGetPinLockState(){
+        var attempts = fallbackRead(FALLBACK_ATTEMPTS_KEY) || {};
+        var lock = fallbackRead(FALLBACK_LOCK_KEY) || {};
+        var failedAttempts = Math.max(0, Number(attempts.failedAttempts || lock.failedAttempts || 0));
+        var lockedUntil = Number(lock.lockedUntil || 0);
+
+        if (lockedUntil && lockedUntil <= fallbackNow()) {
+          fallbackClearPinFailures();
+          return { locked:false, failedAttempts:0, remainingAttempts:3, lockedUntil:0, remainingMs:0, maxFailedAttempts:3, lockMinutes:15 };
+        }
+
+        return {
+          locked: Boolean(lockedUntil && lockedUntil > fallbackNow()),
+          failedAttempts: failedAttempts,
+          remainingAttempts: Math.max(0, 3 - failedAttempts),
+          lockedUntil: lockedUntil,
+          remainingMs: Math.max(0, lockedUntil - fallbackNow()),
+          maxFailedAttempts: 3,
+          lockMinutes: 15
+        };
+      }
+
+      function fallbackRecordFailedPinAttempt(){
+        var current = fallbackGetPinLockState();
+        if (current.locked) return current;
+
+        var failedAttempts = Math.max(0, Number(current.failedAttempts || 0)) + 1;
+        fallbackWrite(FALLBACK_ATTEMPTS_KEY, { failedAttempts: failedAttempts, updatedAt: fallbackNow() });
+
+        if (failedAttempts >= 3) {
+          fallbackWrite(FALLBACK_LOCK_KEY, {
+            failedAttempts: failedAttempts,
+            lockedUntil: fallbackNow() + 15 * 60 * 1000,
+            updatedAt: fallbackNow()
+          });
+        }
+
+        return fallbackGetPinLockState();
+      }
+
+      function getLockState(){
+        var activeGate = getGate();
+        if (activeGate && typeof activeGate.getPinLockState === 'function') return activeGate.getPinLockState();
+        return fallbackGetPinLockState();
+      }
 
       function setStatus(message, kind){
         statusBox.textContent = String(message || '.');
@@ -209,7 +295,7 @@
 
         if (lockTimer) window.clearInterval(lockTimer);
         lockTimer = window.setInterval(function(){
-          var current = gate && gate.getPinLockState ? gate.getPinLockState() : null;
+          var current = getLockState();
           if (!current || !current.locked) {
             window.clearInterval(lockTimer);
             lockTimer = null;
@@ -228,7 +314,7 @@
       }
 
       function checkInitialLock(){
-        var current = gate && gate.getPinLockState ? gate.getPinLockState() : null;
+        var current = getLockState();
         renderLock(current);
       }
 
@@ -256,14 +342,14 @@
       }
 
       clearBtn.addEventListener('click', function(){
-        try { gate && gate.clearAccess(); } catch (_) {}
+        try { var activeGate = getGate(); if (activeGate && activeGate.clearAccess) activeGate.clearAccess(); } catch (_) {}
         input.value = '';
         setStatus('', '');
         try { input.focus(); } catch (_) {}
       });
 
       input.addEventListener('input', function(){
-        var current = gate && gate.getPinLockState ? gate.getPinLockState() : null;
+        var current = getLockState();
         if (current && current.locked) {
           renderLock(current);
           return;
@@ -277,7 +363,7 @@
       form.addEventListener('submit', function(event){
         event.preventDefault();
 
-        var current = gate && gate.getPinLockState ? gate.getPinLockState() : null;
+        var current = getLockState();
         if (renderLock(current)) return;
 
         var rawPin = String(input.value || '').trim();
@@ -289,7 +375,10 @@
 
         setLoading(true);
         try {
-          var resolved = gate ? gate.resolvePin(rawPin, expectedProject) : { ok:false, reason:'PIN invalid' };
+          var activeGate = getGate();
+          var resolved = activeGate && typeof activeGate.resolvePin === 'function'
+            ? activeGate.resolvePin(rawPin, expectedProject)
+            : { ok:false, reason:'PIN invalid', lockState:fallbackRecordFailedPinAttempt() };
 
           if (!resolved || !resolved.ok || !resolved.project) {
             setLoading(false);
@@ -313,7 +402,7 @@
 
       checkInitialLock();
       try {
-        var initial = gate && gate.getPinLockState ? gate.getPinLockState() : null;
+        var initial = getLockState();
         if (!initial || !initial.locked) input.focus();
       } catch (_) {}
     })();
