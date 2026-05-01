@@ -212,7 +212,19 @@
     let PAGE_GROUPS = typeof REGISTRY.getHelperAclPageGroups === 'function'
       ? REGISTRY.getHelperAclPageGroups()
       : [];
+    function normalizeAclManagedKey(value){ return String(value || '').trim().toLowerCase().replace(/\.html$/i, ''); }
+    function pageKeyExists(key){ const k = normalizeAclManagedKey(key); return PAGE_GROUPS.some(group => (group.items || []).some(item => normalizeAclManagedKey(item && item[0]) === k)); }
+    function ensureManagedPage(key, label, groupLabel){
+      const cleanKey = normalizeAclManagedKey(key);
+      if(!cleanKey || ['login','index'].includes(cleanKey) || pageKeyExists(cleanKey)) return;
+      const labelText = String(label || cleanKey).replace(/-/g, ' ').replace(/\b\w/g, m => m.toUpperCase());
+      let group = PAGE_GROUPS.find(g => String(g.label || '') === String(groupLabel || 'Pagini noi / automate'));
+      if(!group){ group = { label: groupLabel || 'Pagini noi / automate', items: [] }; PAGE_GROUPS = PAGE_GROUPS.concat([group]); }
+      group.items.push([cleanKey, labelText]);
+    }
+    ensureManagedPage('pontaj-sef-echipa', 'Pontaj Șef Echipă', 'Resurse Umane');
     let MANAGED_PAGE_KEYS = Array.from(new Set(PAGE_GROUPS.flatMap(group => group.items.map(item => item[0]))));
+    function refreshManagedPageKeys(){ MANAGED_PAGE_KEYS = Array.from(new Set(PAGE_GROUPS.flatMap(group => group.items.map(item => item[0])))); }
 
     const qs = (s) => document.querySelector(s);
     const qsa = (s) => Array.from(document.querySelectorAll(s));
@@ -662,39 +674,6 @@
       return rows;
     }
 
-
-    function rebuildManagedPageKeys(){
-      MANAGED_PAGE_KEYS = Array.from(new Set(PAGE_GROUPS.flatMap(group => group.items.map(item => normalizeKey(item[0]))).filter(Boolean)));
-    }
-
-    function mergeAutoRegisteredPages(payload){
-      const rows = payload && Array.isArray(payload.pages) ? payload.pages : [];
-      if (!rows.length) { rebuildManagedPageKeys(); return; }
-      const existing = new Set(PAGE_GROUPS.flatMap(group => group.items.map(item => normalizeKey(item[0]))));
-      const add = [];
-      rows.forEach(row => {
-        const key = normalizeKey(row && row.key);
-        if (!key || existing.has(key) || key === 'login' || key === 'index') return;
-        existing.add(key);
-        add.push([key, String((row && row.label) || key).trim() || key]);
-      });
-      if (add.length) {
-        PAGE_GROUPS = PAGE_GROUPS.slice();
-        let group = PAGE_GROUPS.find(g => String(g.label || '') === 'Pagini detectate automat');
-        if (!group) {
-          group = { label:'Pagini detectate automat', items:[] };
-          PAGE_GROUPS.push(group);
-        }
-        group.items = group.items.concat(add).sort((a,b)=>String(a[1]).localeCompare(String(b[1]),'ro'));
-      }
-      rebuildManagedPageKeys();
-    }
-
-    async function loadAutoRegisteredPages(){
-      const payload = await readDocByKey('rf_acl_page_registry_v1');
-      mergeAutoRegisteredPages(payload);
-    }
-
     async function loadPageRules(){
       state.pageRules = {};
       try {
@@ -708,6 +687,29 @@
           });
         }
       } catch (_) {}
+    }
+
+    async function loadAutoRegisteredPages(){
+      try{
+        const auto = await readDocByKey('rf_auto_pages_v1');
+        const rows = auto && Array.isArray(auto.pages) ? auto.pages : [];
+        rows.forEach(row => {
+          const key = normalizeAclManagedKey(row && (row.page_key || row.key));
+          if(!key) return;
+          ensureManagedPage(key, row.label || row.title || key, row.group || 'Pagini noi / automate');
+        });
+      }catch(_e){}
+      try{
+        const res = await sb.from('user_page_permissions').select('page_key').limit(5000);
+        if(!res.error && Array.isArray(res.data)){
+          res.data.forEach(row => {
+            const key = normalizeAclManagedKey(row && row.page_key);
+            if(key) ensureManagedPage(key, key.replace(/-/g, ' ').replace(/\b\w/g, m => m.toUpperCase()), 'Pagini noi / automate');
+          });
+        }
+      }catch(_e){}
+      ensureManagedPage('pontaj-sef-echipa', 'Pontaj Șef Echipă', 'Resurse Umane');
+      refreshManagedPageKeys();
     }
 
     async function loadDoc(){
@@ -1109,7 +1111,6 @@
       }
 
       await loadUsers();
-      await loadAutoRegisteredPages();
       await loadPageRules();
       await loadAccountAccess();
       state.roleDrafts = {};
