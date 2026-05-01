@@ -172,6 +172,7 @@
       var params = new URLSearchParams(window.location.search);
       var expectedProject = String(params.get('project') || '').trim().toLowerCase();
       var next = String(params.get('next') || '').trim();
+      var lockTimer = null;
 
       function setStatus(message, kind){
         statusBox.textContent = String(message || '.');
@@ -183,6 +184,69 @@
         input.disabled = !!loading;
         clearBtn.disabled = !!loading;
         submitBtn.textContent = loading ? '...' : 'Continuă';
+      }
+
+      function pad2(value){
+        return String(value).padStart(2, '0');
+      }
+
+      function formatClock(ms){
+        var totalSeconds = Math.max(0, Math.ceil(Number(ms || 0) / 1000));
+        var minutes = Math.floor(totalSeconds / 60);
+        var seconds = totalSeconds % 60;
+        return pad2(minutes) + ':' + pad2(seconds);
+      }
+
+      function renderLock(lockState){
+        if (!lockState || !lockState.locked) return false;
+
+        var text = 'Ai introdus PIN greșit de 3 ori. Acces blocat pentru ' + formatClock(lockState.remainingMs) + '.';
+        setStatus(text, 'error');
+        input.disabled = true;
+        submitBtn.disabled = true;
+        clearBtn.disabled = true;
+        submitBtn.textContent = 'Blocat';
+
+        if (lockTimer) window.clearInterval(lockTimer);
+        lockTimer = window.setInterval(function(){
+          var current = gate && gate.getPinLockState ? gate.getPinLockState() : null;
+          if (!current || !current.locked) {
+            window.clearInterval(lockTimer);
+            lockTimer = null;
+            input.disabled = false;
+            submitBtn.disabled = false;
+            clearBtn.disabled = false;
+            submitBtn.textContent = 'Continuă';
+            setStatus('Blocarea a expirat. Poți încerca din nou.', 'ok');
+            try { input.focus(); } catch (_) {}
+            return;
+          }
+          setStatus('Ai introdus PIN greșit de 3 ori. Acces blocat pentru ' + formatClock(current.remainingMs) + '.', 'error');
+        }, 1000);
+
+        return true;
+      }
+
+      function checkInitialLock(){
+        var current = gate && gate.getPinLockState ? gate.getPinLockState() : null;
+        renderLock(current);
+      }
+
+      function showInvalidAttempt(lockState){
+        if (lockState && lockState.locked) {
+          renderLock(lockState);
+          return;
+        }
+
+        var remaining = lockState && typeof lockState.remainingAttempts === 'number'
+          ? lockState.remainingAttempts
+          : null;
+
+        if (remaining !== null && remaining > 0) {
+          setStatus('PIN invalid. Mai ai ' + remaining + ' încercări.', 'error');
+        } else {
+          setStatus('PIN invalid.', 'error');
+        }
       }
 
       function goToTarget(project){
@@ -199,6 +263,12 @@
       });
 
       input.addEventListener('input', function(){
+        var current = gate && gate.getPinLockState ? gate.getPinLockState() : null;
+        if (current && current.locked) {
+          renderLock(current);
+          return;
+        }
+
         var digits = String(input.value || '').replace(/\D+/g, '');
         if (digits !== input.value) input.value = digits;
         setStatus('', '');
@@ -206,27 +276,33 @@
 
       form.addEventListener('submit', function(event){
         event.preventDefault();
+
+        var current = gate && gate.getPinLockState ? gate.getPinLockState() : null;
+        if (renderLock(current)) return;
+
         var rawPin = String(input.value || '').trim();
         if (!rawPin) {
           setStatus('Introdu un PIN.', 'error');
           try { input.focus(); } catch (_) {}
           return;
         }
+
         setLoading(true);
         try {
-          var resolved = gate ? gate.resolvePin(rawPin) : { ok:false };
+          var resolved = gate ? gate.resolvePin(rawPin, expectedProject) : { ok:false, reason:'PIN invalid' };
+
           if (!resolved || !resolved.ok || !resolved.project) {
             setLoading(false);
-            setStatus('PIN invalid.', 'error');
-            input.select();
+
+            if (resolved && resolved.reason === 'blocked') {
+              renderLock(resolved.lockState);
+            } else {
+              showInvalidAttempt(resolved && resolved.lockState);
+              input.select();
+            }
             return;
           }
-          if (expectedProject && resolved.project.projectKey !== expectedProject) {
-            setLoading(false);
-            setStatus('PIN-ul nu aparține acestui proiect.', 'error');
-            input.select();
-            return;
-          }
+
           setStatus('', 'ok');
           goToTarget(resolved.project);
         } catch (error) {
@@ -235,7 +311,11 @@
         }
       });
 
-      try { input.focus(); } catch (_) {}
+      checkInitialLock();
+      try {
+        var initial = gate && gate.getPinLockState ? gate.getPinLockState() : null;
+        if (!initial || !initial.locked) input.focus();
+      } catch (_) {}
     })();
   </script>
 </body>
