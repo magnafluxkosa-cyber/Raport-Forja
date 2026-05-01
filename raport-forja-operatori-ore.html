@@ -28,6 +28,7 @@
         <div class="filters">
           <div class="field"><label>An</label><select id="yearFilter"></select></div>
           <div class="field"><label>Luna</label><select id="monthFilter"></select></div>
+          <div class="field"><label>Operator</label><select id="operatorFilter"><option value="TOATE">TOȚI</option></select></div>
           <button class="btn" id="btnRefresh">Actualizează</button><button class="btn" id="btnExport">Export Excel</button>
         </div>
         <div class="hint">Centralizarea citește operatorii salvați în Raport Forja și însumează orele pe operații pentru luna și anul selectat.</div>
@@ -35,43 +36,107 @@
       <section class="tableWrap"><div class="tableScroll"><table id="hoursTable"><thead id="thead"></thead><tbody id="tbody"></tbody></table><div id="empty" class="empty" style="display:none">Nu există ore raportate pentru filtrul selectat.</div></div></section>
     </div>
   </main>
-
-
-
 <script>
-document.addEventListener('DOMContentLoaded', function(){
-  const btn = document.getElementById('btnExport');
-  if(btn){
-    btn.onclick = function(){
+const RF_CONFIG=window.RF_CONFIG||{};const SUPABASE_URL=RF_CONFIG.SUPABASE_URL||'https://addlybnigrywqowpbhvd.supabase.co';const SUPABASE_ANON_KEY=RF_CONFIG.SUPABASE_ANON_KEY||'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJhZGRseWJuaWdyeXFvd3BiaHZkIiwicmVmIjoiYWRkbHlibmlncnl3cW93cGJodmQiLCJyb2xlIjoiYW5vbiIsImlhdCI6MTc3MjY2NjY2NCwiZXhwIjoyMDg4MjQyNjY0fQ.VjbSKs7G_5T7GhdrjT8dtj2HCF6Az9KYfkpkSE7JTo4';
+const PAGE_KEY='raport-forja-operatori-ore',DOC_TABLE='rf_documents',OPS_DOC='raport-forja-operatori';
+const MONTHS=['ianuarie','februarie','martie','aprilie','mai','iunie','iulie','august','septembrie','octombrie','noiembrie','decembrie'];
+const OPERATIONS=['Generator','Aplatizare','Laminor','Presa','Ciocanar','Ajutor Ciocanar','Debavurare','Calibrare','Marcare'];
+let sb=null,USER=null,ACCESS={can_view:false,can_add:false,can_edit:false,can_delete:false},REPORTS=[];
+const $=id=>document.getElementById(id);const clean=v=>String(v??'').replace(/\s+/g,' ').trim();
+function norm(s){return clean(s).toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^A-Z0-9]+/g,' ').replace(/\s+/g,' ').trim()}
+function fmt(n,d=2){return Number(n||0).toLocaleString('ro-RO',{minimumFractionDigits:d,maximumFractionDigits:d})}
+function toNum(v){if(v==null)return 0;let s=String(v).trim().replace(/\s/g,'');if(!s)return 0;if(s.includes(',')&&s.includes('.'))s=s.replace(/\./g,'').replace(',','.');else if(s.includes(','))s=s.replace(',','.');const n=Number(s);return isFinite(n)?n:0}
+function yearOf(r){return clean(r.an||r.AN||r.An)||yearFromDate(r.data||r.DATA||'')}
+function monthOf(r){const m=clean(r.luna||r.LUNA||r.Luna).toLowerCase();if(m)return normMonth(m);return monthFromDate(r.data||r.DATA||'')}
+function yearFromDate(v){const m=String(v||'').match(/(19|20)\d{2}/);return m?m[0]:''}
+function monthFromDate(v){let m=String(v||'').match(/^\d{1,2}[\.\/\-](\d{1,2})[\.\/\-](\d{4})$/);if(m)return MONTHS[Number(m[1])-1]||'';m=String(v||'').match(/^(\d{4})-(\d{1,2})-\d{1,2}$/);if(m)return MONTHS[Number(m[2])-1]||'';return''}
+function normMonth(v){const n=norm(v);const idx=MONTHS.findIndex(x=>norm(x)===n);return idx>=0?MONTHS[idx]:String(v||'').toLowerCase()}
+function opKey(v){const n=norm(v);if(n==='PRESA'||n==='PRESA')return 'Presa';const found=OPERATIONS.find(o=>norm(o)===n);return found||clean(v)}
+function setCloud(txt,cls){const p=$('cloudPill');p.textContent=txt;p.className='pill '+(cls||'')}function showLock(t,txt){$('main').style.display='none';$('lock').style.display='flex';$('lockTitle').textContent=t;$('lockText').textContent=txt}function showMain(){ $('lock').style.display='none';$('main').style.display='block'}
+function createClient(){if(!window.supabase)return null;if(window.__RF_SHARED_SUPABASE__)return window.__RF_SHARED_SUPABASE__;window.__RF_SHARED_SUPABASE__=window.supabase.createClient(SUPABASE_URL,SUPABASE_ANON_KEY,{auth:{persistSession:true,autoRefreshToken:true,detectSessionInUrl:true}});return window.__RF_SHARED_SUPABASE__}
+async function roleOf(user){const email=String(user.email||'').toLowerCase();for(const q of [()=>sb.from('profiles').select('role').eq('user_id',user.id).maybeSingle(),()=>sb.from('profiles').select('role').eq('id',user.id).maybeSingle(),()=>sb.from('rf_acl').select('role').eq('email',email).maybeSingle()]){try{const{data,error}=await q();if(!error&&data&&data.role)return String(data.role).toLowerCase()}catch(e){}}return'viewer'}
+function roleDefault(role){role=String(role||'').toLowerCase();if(['admin','editor','operator'].includes(role))return{can_view:true,can_add:true,can_edit:true,can_delete:true};if(role==='viewer')return{can_view:true,can_add:false,can_edit:false,can_delete:false};return{can_view:false,can_add:false,can_edit:false,can_delete:false}}
+async function pageAccess(role){let fb=roleDefault(role);try{const found=[];const email=String(USER.email||'').toLowerCase();for(const [col,val] of [['email',email],['user_id',USER.id]]){const{data,error}=await sb.from('user_page_permissions').select('page_key,can_view,can_add,can_edit,can_delete,can_import').eq(col,val).limit(500);if(!error&&Array.isArray(data))found.push(...data)}const m=found.find(r=>String(r.page_key||'').toLowerCase().replace(/\.html$/,'')===PAGE_KEY);if(m){const cv=m.can_view!==false;const ce=!!(m.can_edit||m.can_add||m.can_delete||m.can_import);return{can_view:cv,can_add:cv&&ce,can_edit:cv&&ce,can_delete:cv&&!!m.can_delete}}}catch(e){}return fb}
+function applyAccess(role){$('rolePill').textContent='rol: '+String(role||'').toUpperCase()+(USER?.email?' • '+USER.email:'')}
+async function detectCols(){const out=[];for(const c of ['content','data']){try{const{error}=await sb.from(DOC_TABLE).select(c).limit(1);if(!error)out.push(c)}catch(e){}}return out.length?out:['content']}let DOC_COLS=null;
+async function readDoc(k){DOC_COLS=DOC_COLS||await detectCols();const{data,error}=await sb.from(DOC_TABLE).select([...DOC_COLS,'updated_at'].join(',')).eq('doc_key',k).maybeSingle();if(error)throw error;return{payload:data?(data.content??data.data??{}):null,updated_at:data?.updated_at||''}}
+async function loadReports(){setCloud('Cloud: citesc date…','warn');const d=await readDoc(OPS_DOC);REPORTS=(d.payload&&Array.isArray(d.payload.rows))?d.payload.rows:[];buildFilters();populateOperatorFilter();renderTable();setCloud('Cloud: ON','ok')}
+function buildFilters(){const yf=$('yearFilter'),mf=$('monthFilter');const years=[...new Set(REPORTS.map(yearOf).filter(Boolean))].sort();const cy=String(new Date().getFullYear());if(!years.includes(cy))years.push(cy);years.sort();yf.innerHTML=years.map(y=>`<option value="${y}">${y}</option>`).join('');yf.value=years.includes(cy)?cy:years[years.length-1]||cy;const cm=MONTHS[new Date().getMonth()];mf.innerHTML=MONTHS.map(m=>`<option value="${m}">${m.toUpperCase()}</option>`).join('');mf.value=cm}
+function collectSummary(){const y=$('yearFilter').value,m=$('monthFilter').value;const opsSet=new Set(OPERATIONS);const rows=new Map();REPORTS.forEach(r=>{if(String(yearOf(r))!==String(y))return;if(norm(monthOf(r))!==norm(m))return;(Array.isArray(r.operatori)?r.operatori:[]).forEach(o=>{const name=clean(o.name||o.nume||o.operator);if(!name)return;const post=opKey(o.post||o.operatie||o.operație||o.functie||'');if(!post)return;opsSet.add(post);const h=toNum(o.hours||o.ore||o.timp);if(!h)return;const key=norm(name);if(!rows.has(key))rows.set(key,{name:name,vals:{},total:0});const rec=rows.get(key);rec.vals[post]=(rec.vals[post]||0)+h;rec.total+=h})});const ops=[...opsSet].sort((a,b)=>OPERATIONS.indexOf(a)-OPERATIONS.indexOf(b));const sorted=[...rows.values()].sort((a,b)=>a.name.localeCompare(b.name,'ro'));return{ops,rows:sorted}}
 
-      const table = document.getElementById('hoursTable');
-      const wb = XLSX.utils.book_new();
-      const ws = XLSX.utils.table_to_sheet(table, {raw:true});
+function fmtHour(n){
+  const x=Number(n||0);
+  if(!x)return '';
+  return x.toLocaleString('ro-RO',{minimumFractionDigits:0,maximumFractionDigits:2});
+}
+function populateOperatorFilter(){
+  const sel=$('operatorFilter');
+  if(!sel)return;
+  const current=sel.value||'TOATE';
+  const names=[...new Set(REPORTS.flatMap(r=>(Array.isArray(r.operatori)?r.operatori:[]).map(o=>clean(o.name||o.nume||o.operator))).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'ro'));
+  sel.innerHTML='<option value="TOATE">TOȚI</option>'+names.map(n=>`<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`).join('');
+  sel.value=names.includes(current)?current:'TOATE';
+}
+function filteredRows(rows){
+  const sel=$('operatorFilter');
+  const op=sel?sel.value:'TOATE';
+  if(!op||op==='TOATE')return rows;
+  return rows.filter(r=>r.name===op);
+}
+function exportExcelIdentic(){
+  if(!window.XLSX){alert('Librăria Excel nu este încărcată.');return;}
+  const base=collectSummary();
+  const ops=base.ops;
+  const rows=filteredRows(base.rows);
+  const aoa=[['Operator',...ops,'TOTAL ORE']];
+  rows.forEach(r=>aoa.push([r.name,...ops.map(o=>{const v=Number(r.vals[o]||0);return v?v:''}),Number(r.total||0)||'']));
+  const ws=XLSX.utils.aoa_to_sheet(aoa);
+  const range=XLSX.utils.decode_range(ws['!ref']);
 
-      // remove decimals
-      const range = XLSX.utils.decode_range(ws['!ref']);
-      for(let R=1; R<=range.e.r; R++){
-        for(let C=1; C<=range.e.c; C++){
-          const cell = XLSX.utils.encode_cell({r:R,c:C});
-          if(ws[cell] && ws[cell].v){
-            ws[cell].v = Number(ws[cell].v);
-            ws[cell].t = 'n';
-          }
-        }
+  ws['!cols']=[{wch:32},...ops.map(o=>({wch:Math.max(14,Math.min(24,String(o).length+4))})),{wch:18}];
+  ws['!freeze']={xSplit:0,ySplit:1};
+
+  const border={top:{style:'thin',color:{rgb:'9FB2C8'}},bottom:{style:'thin',color:{rgb:'9FB2C8'}},left:{style:'thin',color:{rgb:'9FB2C8'}},right:{style:'thin',color:{rgb:'9FB2C8'}}};
+  const headerFill={fgColor:{rgb:'CFE3F6'}};
+  const evenFill={fgColor:{rgb:'F8FAFC'}};
+  const totalFill={fgColor:{rgb:'EEF2FF'}};
+  const whiteFill={fgColor:{rgb:'FFFFFF'}};
+
+  for(let R=0;R<=range.e.r;R++){
+    for(let C=0;C<=range.e.c;C++){
+      const addr=XLSX.utils.encode_cell({r:R,c:C});
+      if(!ws[addr])ws[addr]={t:'s',v:''};
+      const isHeader=R===0;
+      const isTotal=C===range.e.c;
+      const isName=C===0;
+      const isEven=R>0 && R%2===0;
+      ws[addr].s={
+        font:{name:'Calibri',sz:13,bold:isHeader||isName||isTotal,color:{rgb:'001A33'}},
+        fill:isHeader?headerFill:(isTotal?totalFill:(isEven?evenFill:whiteFill)),
+        alignment:{horizontal:isHeader?'center':(isName?'left':'right'),vertical:'center'},
+        border:border
+      };
+      if(R>0 && C>0 && ws[addr].v!==''){
+        ws[addr].t='n';
+        ws[addr].z='0.##';
       }
-
-      // column widths similar to UI
-      ws['!cols'] = [{wch:25}, ...Array(range.e.c).fill({wch:15})];
-
-      // freeze header
-      ws['!freeze'] = {ySplit:1};
-
-      XLSX.utils.book_append_sheet(wb, ws, 'Ore');
-      XLSX.writeFile(wb, 'ore_operatori.xlsx');
     }
   }
-});
+
+  ws['!rows']=[{hpt:22},...rows.map(()=>({hpt:21}))];
+
+  const wb=XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb,ws,'Ore operatori');
+  XLSX.writeFile(wb,'ore_operatori_forja.xlsx');
+}
+
+function renderTable(){const data=collectSummary();const ops=data.ops;const rows=filteredRows(data.rows);$('thead').innerHTML='<tr><th>Operator</th>'+ops.map(o=>'<th>'+escapeHtml(o)+'</th>').join('')+'<th class="totalCol">TOTAL ORE</th></tr>';$('tbody').innerHTML=rows.map(r=>'<tr><td>'+escapeHtml(r.name)+'</td>'+ops.map(o=>'<td>'+fmtHour(r.vals[o]||0)+'</td>').join('')+'<td class="totalCol">'+fmtHour(r.total)+'</td></tr>').join('');$('empty').style.display=rows.length?'none':'block'}
+function escapeHtml(v){return String(v||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
+$('btnRefresh').onclick=renderTable;$('yearFilter').onchange=renderTable;$('monthFilter').onchange=renderTable;if($('operatorFilter'))$('operatorFilter').onchange=renderTable;if($('btnExport'))$('btnExport').onclick=exportExcelIdentic;
+(async function init(){sb=createClient();if(!sb){showLock('Config Supabase lipsă','Pagina nu poate porni fără Supabase.');return}const {data:{user}}=await sb.auth.getUser();if(!user){showLock('Nu ești autentificat','Revino în login și autentifică-te.');return}USER=user;const role=await roleOf(user);ACCESS=await pageAccess(role);if(!ACCESS.can_view){showLock('Acces restricționat','Contul tău nu are permisiunea să vizualizezi pagina ORE OPERATORI FORJĂ.');return}applyAccess(role);showMain();try{await loadReports()}catch(e){console.error(e);setCloud('Cloud: eroare','bad');$('empty').style.display='block';$('empty').textContent='Eroare la citirea datelor: '+(e.message||e)}})();
 </script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"></script>
+<script src="./kad-logo.js"></script><script src="./mobile-erp.js"></script>
 
 </body>
 </html>
