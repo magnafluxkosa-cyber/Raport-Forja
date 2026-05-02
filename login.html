@@ -370,6 +370,24 @@
       background:rgba(22,101,52,.18);
     }
 
+
+    .lock-warning{
+      margin:0 0 16px;
+      padding:10px 12px;
+      border:1.5px solid rgba(255,216,168,.42);
+      border-radius:14px;
+      background:rgba(255,152,47,.13);
+      color:#ffe4bd;
+      font-size:13px;
+      font-weight:800;
+      line-height:1.35;
+      text-align:center;
+    }
+
+    .lock-warning strong{
+      color:#ffffff;
+    }
+
     .meta{
       margin-top:10px;
       font-size:12px;
@@ -476,6 +494,8 @@
             </div>
           </div>
 
+          <div id="loginLockNotice" class="lock-warning"><strong>Atenție:</strong> dacă introduci ID-ul sau parola greșit de 3 ori, accesul la login se blochează 15 minute.</div>
+          <div id="adminMfaNotice" class="lock-warning"><strong>MFA admin:</strong> conturile cu rol admin trebuie să confirme codul de 6 cifre din aplicația Authenticator după login.</div>
           <button id="loginBtn" class="main-btn" type="submit">Autentificare</button>
           <div id="statusBox" class="status-box">Introdu ID și parolă</div>
           <div id="metaInfo" class="meta"></div>
@@ -497,6 +517,99 @@
       const statusBox = document.getElementById('statusBox');
       const metaInfo = document.getElementById('metaInfo');
 
+      const LOGIN_IP_LOCK_FN = 'rf-login-ip-lock';
+      let loginIpBlockedUntilMs = 0;
+      let loginIpBlockTimer = null;
+
+      function parseDateMs(value){
+        const ms = Date.parse(String(value || ''));
+        return Number.isFinite(ms) ? ms : 0;
+      }
+
+      function formatDuration(ms){
+        ms = Math.max(0, Number(ms || 0));
+        const totalSeconds = Math.ceil(ms / 1000);
+        const minutes = Math.floor(totalSeconds / 60);
+        const seconds = totalSeconds % 60;
+        if(minutes <= 0) return seconds + ' secunde';
+        return minutes + ' minute și ' + String(seconds).padStart(2, '0') + ' secunde';
+      }
+
+      function isLoginIpBlocked(){
+        return loginIpBlockedUntilMs && Date.now() < loginIpBlockedUntilMs;
+      }
+
+      function renderLoginIpBlockMessage(lockCode){
+        if(!isLoginIpBlocked()) return false;
+        const remaining = formatDuration(loginIpBlockedUntilMs - Date.now());
+        const codeText = lockCode ? (' Cod deblocare: ' + lockCode + '.') : '';
+        setStatus('Login blocat pentru acest IP. Mai poți încerca peste ' + remaining + '.' + codeText, 'error');
+        setMeta('Blocarea este pe IP și rămâne activă și după refresh. Pentru deblocare manuală, folosește codul deblocare în Supabase.');
+        return true;
+      }
+
+      function startLoginIpBlockCountdown(lockCode){
+        if(loginIpBlockTimer) clearInterval(loginIpBlockTimer);
+        renderLoginIpBlockMessage(lockCode);
+        loginIpBlockTimer = setInterval(function(){
+          if(!isLoginIpBlocked()){
+            clearInterval(loginIpBlockTimer);
+            loginIpBlockTimer = null;
+            loginIpBlockedUntilMs = 0;
+            setStatus('Blocarea a expirat. Poți încerca din nou autentificarea.', 'ok');
+            setMeta('Introdu ID și parolă. După 3 încercări greșite, accesul se blochează 15 minute.');
+            setLoading(false);
+            return;
+          }
+          renderLoginIpBlockMessage(lockCode);
+          setLoading(false);
+        }, 1000);
+      }
+
+      function applyLoginIpLockState(data){
+        if(!data || !data.blocked) return false;
+        const untilMs = parseDateMs(data.locked_until || data.lockedUntil);
+        loginIpBlockedUntilMs = untilMs || (Date.now() + 15 * 60 * 1000);
+        startLoginIpBlockCountdown(data.lock_code || data.lockCode || '');
+        setLoading(false);
+        return true;
+      }
+
+      async function callLoginIpLock(action, payload){
+        const url = String(cfg.supabaseUrl || '').replace(/\/+$/, '') + '/functions/v1/' + LOGIN_IP_LOCK_FN;
+        const response = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'apikey': cfg.supabaseAnonKey,
+            'Authorization': 'Bearer ' + cfg.supabaseAnonKey
+          },
+          body: JSON.stringify(Object.assign({ action: action }, payload || {}))
+        });
+
+        let data = null;
+        try { data = await response.json(); } catch(_) { data = {}; }
+        if(!response.ok){
+          const message = data && (data.message || data.error) ? (data.message || data.error) : 'Verificarea blocării IP a eșuat.';
+          throw new Error(message);
+        }
+        return data || {};
+      }
+
+      async function checkLoginIpLockOnLoad(){
+        try {
+          const data = await callLoginIpLock('check', {});
+          if(applyLoginIpLockState(data)) return true;
+          if(data && typeof data.attempts_remaining === 'number'){
+            setMeta('După 3 încercări greșite, login-ul se blochează 15 minute pentru IP-ul curent.');
+          }
+        } catch (error) {
+          console.warn('Login IP lock check unavailable:', error);
+          setMeta('Conexiune pregătită. Blocarea pe IP devine activă după publicarea Edge Function-ului rf-login-ip-lock.');
+        }
+        return false;
+      }
+
       const cfg = {
         supabaseUrl:
           window.RF_CONFIG?.SUPABASE_URL ||
@@ -512,12 +625,6 @@
 
       let supabase = null;
       let loadingTimer = null;
-      let loginBusy = false;
-      let loginLockTimer = null;
-
-      const LOGIN_LOCK_KEY = 'rf_login_lock_state_v1';
-      const LOGIN_MAX_ATTEMPTS = 3;
-      const LOGIN_LOCK_MS = 15 * 60 * 1000;
 
       function setStatus(message, type){
         statusBox.textContent = message;
@@ -529,149 +636,16 @@
         metaInfo.textContent = message || '';
       }
 
-      function readLoginLockState(){
-        try {
-          const raw = localStorage.getItem(LOGIN_LOCK_KEY);
-          if(!raw) return { attempts: 0, lockedUntil: 0 };
-          const state = JSON.parse(raw);
-          const attempts = Math.max(0, Number(state && state.attempts) || 0);
-          const lockedUntil = Math.max(0, Number(state && state.lockedUntil) || 0);
-          if(lockedUntil && lockedUntil <= Date.now()){
-            clearLoginLock(false);
-            return { attempts: 0, lockedUntil: 0 };
-          }
-          return { attempts, lockedUntil };
-        } catch(_) {
-          clearLoginLock(false);
-          return { attempts: 0, lockedUntil: 0 };
-        }
-      }
-
-      function saveLoginLockState(state){
-        try {
-          localStorage.setItem(LOGIN_LOCK_KEY, JSON.stringify({
-            attempts: Math.max(0, Number(state && state.attempts) || 0),
-            lockedUntil: Math.max(0, Number(state && state.lockedUntil) || 0),
-            updatedAt: Date.now()
-          }));
-        } catch(_) {}
-      }
-
-      function clearLoginLock(showMessage){
-        try { localStorage.removeItem(LOGIN_LOCK_KEY); } catch(_) {}
-        if(loginLockTimer){
-          clearInterval(loginLockTimer);
-          loginLockTimer = null;
-        }
-        if(showMessage){
-          setStatus('Blocarea a expirat. Poți încerca din nou.', 'ok');
-          setMeta('Introdu ID și parolă.');
-        }
-      }
-
-      function getActiveLoginLock(){
-        const state = readLoginLockState();
-        if(state.lockedUntil && state.lockedUntil > Date.now()) return state;
-        return null;
-      }
-
-      function isLoginLocked(){
-        return !!getActiveLoginLock();
-      }
-
-      function formatLockRemaining(ms){
-        const totalSeconds = Math.max(0, Math.ceil(ms / 1000));
-        const minutes = Math.floor(totalSeconds / 60);
-        const seconds = totalSeconds % 60;
-        if(minutes <= 0) return seconds + ' secunde';
-        return minutes + ' minute și ' + String(seconds).padStart(2, '0') + ' secunde';
-      }
-
-      function setLoginControlsDisabled(disabled){
-        loginBtn.disabled = disabled;
-        emailInput.disabled = disabled;
-        passwordInput.disabled = disabled;
-        togglePasswordBtn.disabled = disabled;
-      }
-
-      function showLoginLockMessage(activeLock){
-        const state = activeLock || getActiveLoginLock();
-        if(!state) return false;
-        const remaining = state.lockedUntil - Date.now();
-        setStatus('Login blocat temporar. Mai încearcă peste ' + formatLockRemaining(remaining) + '.', 'error');
-        setMeta('Ai introdus ID sau parolă greșită de 3 ori. Blocarea rămâne activă și după refresh.');
-        return true;
-      }
-
-      function startLoginLockCountdown(){
-        if(loginLockTimer){
-          clearInterval(loginLockTimer);
-          loginLockTimer = null;
-        }
-        const active = getActiveLoginLock();
-        if(!active) return;
-        loginLockTimer = setInterval(function(){
-          const stillActive = getActiveLoginLock();
-          if(!stillActive){
-            if(loginLockTimer){
-              clearInterval(loginLockTimer);
-              loginLockTimer = null;
-            }
-            if(!loginBusy){
-              setLoginControlsDisabled(false);
-              clearLoginLock(true);
-            }
-            return;
-          }
-          showLoginLockMessage(stillActive);
-        }, 1000);
-      }
-
-      function applyLoginLockUi(){
-        const active = getActiveLoginLock();
-        if(active){
-          setLoginControlsDisabled(true);
-          showLoginLockMessage(active);
-          startLoginLockCountdown();
-          return true;
-        }
-        if(!loginBusy){
-          setLoginControlsDisabled(false);
-        }
-        return false;
-      }
-
-      function recordWrongLoginAttempt(){
-        const state = readLoginLockState();
-        const attempts = Math.min(LOGIN_MAX_ATTEMPTS, (Number(state.attempts) || 0) + 1);
-
-        if(attempts >= LOGIN_MAX_ATTEMPTS){
-          const lockedUntil = Date.now() + LOGIN_LOCK_MS;
-          saveLoginLockState({ attempts: LOGIN_MAX_ATTEMPTS, lockedUntil });
-          applyLoginLockUi();
-          return { locked: true, attempts: LOGIN_MAX_ATTEMPTS, remainingAttempts: 0 };
-        }
-
-        saveLoginLockState({ attempts, lockedUntil: 0 });
-        const remainingAttempts = LOGIN_MAX_ATTEMPTS - attempts;
-        setStatus('ID sau parolă greșită.', 'error');
-        setMeta('Încercare greșită ' + attempts + '/' + LOGIN_MAX_ATTEMPTS + '. Mai ai ' + remainingAttempts + ' încercări.');
-        return { locked: false, attempts, remainingAttempts };
-      }
-
-      function isInvalidCredentialsError(error){
-        const msg = String(error && error.message || error || '').toLowerCase();
-        return msg.indexOf('invalid login credentials') !== -1;
-      }
-
       function setLoading(isLoading, message){
-        loginBusy = !!isLoading;
-        const locked = !isLoading && isLoginLocked();
-        setLoginControlsDisabled(!!isLoading || locked);
+        const blocked = isLoginIpBlocked();
+        loginBtn.disabled = isLoading || blocked;
+        emailInput.disabled = isLoading || blocked;
+        passwordInput.disabled = isLoading || blocked;
+        togglePasswordBtn.disabled = isLoading || blocked;
         if(isLoading){
           setStatus(message || 'Autentificare în curs...', '');
-        } else if(locked){
-          applyLoginLockUi();
+        } else if(blocked) {
+          renderLoginIpBlockMessage();
         }
       }
 
@@ -817,6 +791,55 @@
       }
 
 
+      function normalizeLocalPageUrl(url){
+        const raw = String(url || './index.html').trim() || './index.html';
+        return raw.replace(/^\.\//, '');
+      }
+
+      function buildMfaPageUrl(page, nextUrl){
+        const next = normalizeLocalPageUrl(nextUrl || buildRedirectUrl());
+        return './' + page + '?next=' + encodeURIComponent(next);
+      }
+
+      function isAdminRole(role){
+        return String(role || '').trim().toLowerCase() === 'admin';
+      }
+
+      async function getVerifiedTotpFactors(){
+        if(!supabase || !supabase.auth || !supabase.auth.mfa) return [];
+        const factors = await supabase.auth.mfa.listFactors();
+        if(factors.error) throw factors.error;
+        const list = factors.data && Array.isArray(factors.data.totp) ? factors.data.totp : [];
+        return list.filter(function(factor){
+          return String(factor && factor.status || '').toLowerCase() === 'verified';
+        });
+      }
+
+      async function getMfaCurrentLevel(){
+        if(!supabase || !supabase.auth || !supabase.auth.mfa || typeof supabase.auth.mfa.getAuthenticatorAssuranceLevel !== 'function'){
+          return '';
+        }
+        const aal = await supabase.auth.mfa.getAuthenticatorAssuranceLevel();
+        if(aal.error) throw aal.error;
+        return String(aal.data && aal.data.currentLevel || '').toLowerCase();
+      }
+
+      async function getAdminMfaRedirect(resolved, nextUrl){
+        if(!isAdminRole(resolved && resolved.role)) return '';
+        const next = nextUrl || buildRedirectUrl();
+        setMeta('Rol admin detectat. Se verifică MFA...');
+        const verifiedFactors = await getVerifiedTotpFactors();
+        if(!verifiedFactors.length){
+          return buildMfaPageUrl('mfa-setup.html', next);
+        }
+        const currentLevel = await getMfaCurrentLevel();
+        if(currentLevel !== 'aal2'){
+          return buildMfaPageUrl('mfa-verify.html', next);
+        }
+        return '';
+      }
+
+
 
       async function loadHiddenIndexButtonsForUser(user, resolved){
         if(!supabase || !user) return [];
@@ -880,8 +903,17 @@
           const { data } = await supabase.auth.getSession();
           if (data && data.session && data.session.user) {
             setStatus('Sesiune activă detectată. Redirecționare...', 'ok');
+            const user = data.session.user;
+            const resolved = await withTimeout(resolveRole(user), 12000, 'Citirea rolului');
+            const target = buildRedirectUrl();
+            const mfaRedirect = await getAdminMfaRedirect(resolved, target);
+            if(mfaRedirect){
+              setMeta('Rol admin detectat. Confirmă MFA pentru acces.');
+              window.location.replace(mfaRedirect);
+              return true;
+            }
             setMeta('Te trimitem automat în aplicație.');
-            window.location.replace(buildRedirectUrl());
+            window.location.replace(target);
             return true;
           }
         } catch (_) {}
@@ -939,7 +971,9 @@
       form.addEventListener('submit', async function(event){
         event.preventDefault();
 
-        if(applyLoginLockUi()){
+        if(isLoginIpBlocked()){
+          renderLoginIpBlockMessage();
+          setLoading(false);
           return;
         }
 
@@ -957,6 +991,13 @@
 
           supabase = supabase || initClient();
 
+          try {
+            const guardCheck = await callLoginIpLock('check', { email: email });
+            if(applyLoginIpLockState(guardCheck)) return;
+          } catch (guardError) {
+            console.warn('Login IP lock pre-check unavailable:', guardError);
+          }
+
           const authResult = await withTimeout(
             supabase.auth.signInWithPassword({ email, password }),
             15000,
@@ -964,6 +1005,18 @@
           );
 
           if(authResult.error){
+            const friendly = getFriendlyError(authResult.error);
+            try {
+              const failState = await callLoginIpLock('fail', { email: email, reason: friendly });
+              if(applyLoginIpLockState(failState)) return;
+              if(failState && typeof failState.attempts_remaining === 'number'){
+                setStatus(friendly + ' Încercări rămase până la blocare: ' + failState.attempts_remaining + '.', 'error');
+                setMeta('După 3 încercări greșite, acest IP va fi blocat 15 minute.');
+                return;
+              }
+            } catch (guardError) {
+              console.warn('Login IP lock fail register unavailable:', guardError);
+            }
             throw authResult.error;
           }
 
@@ -981,7 +1034,7 @@
             }
           }
 
-          clearLoginLock(false);
+          try { await callLoginIpLock('success', { email: email }); } catch (_) {}
 
           safeSetLocal('rf_uid', user.id || '');
           safeSetLocal('rf_email', resolved.email || email);
@@ -995,31 +1048,33 @@
 
           clearLogoutFlags();
 
+          const targetUrl = buildRedirectUrl();
+          const mfaRedirect = await getAdminMfaRedirect(resolved, targetUrl);
+          if(mfaRedirect){
+            setStatus('Autentificare reușită. MFA obligatoriu pentru admin.', 'ok');
+            setMeta('Rol detectat: admin. Continuă cu configurarea/verificarea MFA.');
+            window.location.href = mfaRedirect;
+            return;
+          }
+
           setStatus('Autentificare reușită. Redirecționare...', 'ok');
           setMeta('Rol detectat: ' + (resolved.role || 'viewer'));
 
-          window.location.href = buildRedirectUrl();
+          window.location.href = targetUrl;
         } catch (error) {
           console.error('Login error:', error);
-          if(isInvalidCredentialsError(error)){
-            recordWrongLoginAttempt();
-          } else {
-            setStatus(getFriendlyError(error), 'error');
-            setMeta('Dacă eroarea persistă, verifică rf-config.js, conexiunea la Supabase și consola browserului.');
-          }
+          setStatus(getFriendlyError(error), 'error');
+          setMeta('Dacă eroarea persistă, verifică rf-config.js, conexiunea la Supabase și consola browserului.');
         } finally {
           setLoading(false);
         }
       });
 
-      applyLoginLockUi();
-
       try {
         supabase = initClient();
-        setMeta(isLoginLocked() ? metaInfo.textContent : 'Conexiune pregătită.');
-        if(!isLoginLocked()){
-          redirectIfSessionExists();
-        }
+        setMeta('Conexiune pregătită.');
+        checkLoginIpLockOnLoad();
+        redirectIfSessionExists();
       } catch (error) {
         console.error('Supabase init error:', error);
         setStatus(getFriendlyError(error), 'error');

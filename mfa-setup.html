@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="ro">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Configurare MFA Admin</title>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="./rf-config.js"></script>
+  <style>
+    *{box-sizing:border-box}html,body{min-height:100%}body{margin:0;font-family:"Segoe UI",Calibri,Arial,sans-serif;background:#07111f;color:#eef6ff;display:flex;align-items:center;justify-content:center;padding:24px;position:relative;overflow:auto}body:before{content:"";position:fixed;inset:0;background:linear-gradient(135deg,rgba(4,10,22,.42),rgba(4,10,22,.78)),url('./kad-forge-logo.jpeg') center/cover no-repeat;z-index:-2}body:after{content:"";position:fixed;inset:0;background:radial-gradient(circle at 20% 22%,rgba(255,136,0,.22),transparent 24%),radial-gradient(circle at 84% 76%,rgba(71,184,255,.16),transparent 26%);z-index:-1}.card{width:min(560px,100%);border:1.5px solid rgba(255,255,255,.28);border-radius:28px;background:linear-gradient(180deg,rgba(7,18,34,.52),rgba(8,20,38,.36));box-shadow:0 28px 64px rgba(0,0,0,.38);backdrop-filter:blur(18px) saturate(150%);overflow:hidden}.head{padding:24px 28px 18px;text-align:center;border-bottom:1px solid rgba(255,255,255,.18);background:linear-gradient(180deg,rgba(255,255,255,.10),rgba(255,255,255,.04))}.eyebrow{margin:0 0 8px;color:#ffbd78;text-transform:uppercase;letter-spacing:.18em;font-size:12px;font-weight:800}h1{margin:0;font-size:30px}.subtitle{margin:10px 0 0;color:#dbe8f5}.body{padding:24px 28px 28px;display:flex;flex-direction:column;gap:16px}.info{padding:12px 14px;border:1px solid rgba(255,190,120,.55);border-radius:16px;background:rgba(255,152,47,.14);color:#ffe3b3;line-height:1.4;font-size:14px}.qrbox{display:flex;flex-direction:column;align-items:center;gap:10px;padding:16px;border:1px solid rgba(255,255,255,.22);border-radius:18px;background:rgba(255,255,255,.10)}.qrbox img{width:220px;height:220px;max-width:100%;background:#fff;border-radius:16px;padding:10px}.secret{word-break:break-all;text-align:center;color:#c8d9ec;font-size:12px}.field{display:flex;flex-direction:column;gap:8px}label{font-size:13px;font-weight:800;color:#dbe8f5}input{height:48px;border:0;border-radius:14px;background:#f5f8fc;color:#0f172a;padding:0 14px;font-size:22px;text-align:center;letter-spacing:.18em;font-weight:800}.actions{display:flex;gap:10px;flex-wrap:wrap}.btn{min-height:46px;border:0;border-radius:14px;padding:0 18px;font-size:15px;font-weight:900;cursor:pointer;background:#ff982f;color:#fffdf9;box-shadow:0 10px 20px rgba(0,0,0,.22)}.btn.secondary{background:rgba(255,255,255,.16);border:1px solid rgba(255,255,255,.28);color:#eef6ff}.btn:disabled{opacity:.58;cursor:not-allowed}.status{min-height:44px;border-radius:14px;padding:12px 14px;background:rgba(255,255,255,.14);color:#ffe3b3;font-weight:700;line-height:1.35}.status.ok{color:#dfffe7}.status.error{color:#ffd2d2}@media(max-width:560px){.card{border-radius:22px}.head,.body{padding-left:18px;padding-right:18px}.actions{flex-direction:column}.btn{width:100%}}
+  </style>
+</head>
+<body>
+  <main class="card">
+    <div class="head">
+      <p class="eyebrow">MFA ADMIN</p>
+      <h1>Configurare Authenticator</h1>
+      <p class="subtitle">Scanează codul QR cu Google Authenticator, Microsoft Authenticator, Authy sau 2FAS.</p>
+    </div>
+    <div class="body">
+      <div class="info">Această pagină este obligatorie doar pentru conturile cu rol <strong>admin</strong>. După activare, la fiecare login admin se cere codul de 6 cifre.</div>
+      <div class="qrbox" id="qrBox">
+        <div id="qrLoading">Se generează codul QR...</div>
+        <img id="qrImage" alt="QR MFA" hidden />
+        <div id="secretBox" class="secret" hidden></div>
+      </div>
+      <form id="mfaSetupForm" class="field">
+        <label for="code">Cod de 6 cifre din aplicația Authenticator</label>
+        <input id="code" inputmode="numeric" autocomplete="one-time-code" maxlength="8" placeholder="000000" />
+        <div class="actions">
+          <button id="verifyBtn" class="btn" type="submit">Activează MFA</button>
+          <button id="logoutBtn" class="btn secondary" type="button">Logout</button>
+        </div>
+      </form>
+      <div id="status" class="status">Așteaptă generarea codului QR.</div>
+    </div>
+  </main>
+
+  <script>
+    (function(){
+      const codeInput = document.getElementById('code');
+      const form = document.getElementById('mfaSetupForm');
+      const statusBox = document.getElementById('status');
+      const verifyBtn = document.getElementById('verifyBtn');
+      const logoutBtn = document.getElementById('logoutBtn');
+      const qrLoading = document.getElementById('qrLoading');
+      const qrImage = document.getElementById('qrImage');
+      const secretBox = document.getElementById('secretBox');
+      let supabaseClient = null;
+      let factorId = '';
+
+      const cfg = {
+        url: window.RF_CONFIG?.SUPABASE_URL || window.RF_CONFIG?.supabaseUrl || window.RF_SUPABASE_URL || 'https://addlybnigrywqowpbhvd.supabase.co',
+        key: window.RF_CONFIG?.SUPABASE_ANON_KEY || window.RF_CONFIG?.supabaseAnonKey || window.RF_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFkZGx5Ym5pZ3J5d3Fvd3BiaHZkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzI2NjY2NjQsImV4cCI6MjA4ODI0MjY2NH0.VjbSKs7G_5T7GhdrjT8dtj2HCF6Az9KYfkpkSE7JTo4'
+      };
+
+      function setStatus(message, type){
+        statusBox.textContent = message;
+        statusBox.classList.remove('ok','error');
+        if(type) statusBox.classList.add(type);
+      }
+      function normalizeEmail(value){ return String(value || '').trim().toLowerCase(); }
+      function getNext(){
+        const raw = String(new URLSearchParams(location.search).get('next') || 'index.html').trim();
+        if(raw && /^[a-z0-9\-_/]+\.html$/i.test(raw)) return './' + raw.replace(/^\.\//,'');
+        return './index.html';
+      }
+      function createClient(){
+        if(!window.supabase || typeof window.supabase.createClient !== 'function') throw new Error('Biblioteca Supabase nu s-a încărcat.');
+        return window.supabase.createClient(cfg.url, cfg.key, { auth:{ persistSession:true, autoRefreshToken:true, detectSessionInUrl:true } });
+      }
+      async function resolveRole(user){
+        if(!user || !user.id) return 'viewer';
+        const email = normalizeEmail(user.email);
+        const attempts = [
+          () => supabaseClient.from('profiles').select('role,email,user_id').eq('user_id', user.id).maybeSingle(),
+          () => supabaseClient.from('profiles').select('role,email,id').eq('id', user.id).maybeSingle(),
+          () => supabaseClient.from('profiles').select('role,email').eq('email', email).maybeSingle(),
+          () => supabaseClient.from('rf_acl').select('role,email').eq('email', email).maybeSingle()
+        ];
+        for(const run of attempts){
+          try{ const res = await run(); const role = String(res?.data?.role || '').trim().toLowerCase(); if(role) return role; }catch(_){ }
+        }
+        return 'viewer';
+      }
+      async function getVerifiedTotp(){
+        const factors = await supabaseClient.auth.mfa.listFactors();
+        if(factors.error) throw factors.error;
+        const list = Array.isArray(factors.data?.totp) ? factors.data.totp : [];
+        return list.filter(f => String(f?.status || '').toLowerCase() === 'verified');
+      }
+      async function redirectIfAlreadyReady(){
+        const verified = await getVerifiedTotp();
+        if(!verified.length) return false;
+        const aal = await supabaseClient.auth.mfa.getAuthenticatorAssuranceLevel();
+        if(!aal.error && String(aal.data?.currentLevel || '').toLowerCase() === 'aal2'){
+          location.replace(getNext());
+          return true;
+        }
+        location.replace('./mfa-verify.html?next=' + encodeURIComponent(getNext().replace(/^\.\//,'')));
+        return true;
+      }
+      async function enroll(){
+        setStatus('Se verifică sesiunea admin...');
+        supabaseClient = createClient();
+        const { data } = await supabaseClient.auth.getSession();
+        const session = data && data.session;
+        if(!session || !session.user){ location.replace('./login.html?next=mfa-setup.html'); return; }
+        const role = await resolveRole(session.user);
+        if(role !== 'admin'){ location.replace(getNext()); return; }
+        if(await redirectIfAlreadyReady()) return;
+        setStatus('Se generează factorul MFA...');
+        const enrolled = await supabaseClient.auth.mfa.enroll({ factorType:'totp', friendlyName:'KAD Admin' });
+        if(enrolled.error) throw enrolled.error;
+        factorId = enrolled.data && enrolled.data.id || '';
+        const qr = enrolled.data && enrolled.data.totp && enrolled.data.totp.qr_code || '';
+        const secret = enrolled.data && enrolled.data.totp && enrolled.data.totp.secret || '';
+        if(qr){ qrImage.src = qr; qrImage.hidden = false; }
+        qrLoading.hidden = true;
+        if(secret){ secretBox.textContent = 'Secret manual: ' + secret; secretBox.hidden = false; }
+        setStatus('Scanează QR-ul, apoi introdu codul de 6 cifre și apasă Activează MFA.');
+        codeInput.focus();
+      }
+      form.addEventListener('submit', async function(event){
+        event.preventDefault();
+        const code = String(codeInput.value || '').replace(/\s+/g,'').trim();
+        if(!factorId){ setStatus('Factorul MFA nu este pregătit încă.', 'error'); return; }
+        if(!/^\d{6}$/.test(code)){ setStatus('Introdu codul de 6 cifre din aplicația Authenticator.', 'error'); return; }
+        try{
+          verifyBtn.disabled = true;
+          setStatus('Se verifică MFA...');
+          const challenge = await supabaseClient.auth.mfa.challenge({ factorId });
+          if(challenge.error) throw challenge.error;
+          const verified = await supabaseClient.auth.mfa.verify({ factorId, challengeId: challenge.data.id, code });
+          if(verified.error) throw verified.error;
+          setStatus('MFA activat cu succes. Redirecționare...', 'ok');
+          location.replace(getNext());
+        }catch(error){
+          console.error('MFA setup error:', error);
+          setStatus(error && error.message ? error.message : 'Cod MFA invalid.', 'error');
+        }finally{ verifyBtn.disabled = false; }
+      });
+      logoutBtn.addEventListener('click', async function(){
+        try{ supabaseClient = supabaseClient || createClient(); await supabaseClient.auth.signOut(); }catch(_){ }
+        location.replace('./login.html?logout=1');
+      });
+      enroll().catch(function(error){
+        console.error('MFA enroll error:', error);
+        qrLoading.textContent = 'Nu s-a putut genera QR-ul.';
+        setStatus(error && error.message ? error.message : 'Eroare la configurarea MFA.', 'error');
+      });
+    })();
+  </script>
+</body>
+</html>
