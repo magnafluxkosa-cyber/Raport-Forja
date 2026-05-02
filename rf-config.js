@@ -1169,6 +1169,10 @@ function getControlCatalogForPage(pageKey) {
   }
 
   var INITIAL_PAGE_KEY = inferPageKey(window.location.pathname);
+  var AUTH_UTILITY_PAGE_KEYS = ['index', 'login', 'access-gate', 'mfa-setup', 'mfa-verify'];
+  function isAuthUtilityPage(pageKey) {
+    return AUTH_UTILITY_PAGE_KEYS.indexOf(String(pageKey || '').trim().toLowerCase()) !== -1;
+  }
 
   function ensureAclPendingStyle() {
     if (document.getElementById('rf-acl-pending-style')) return;
@@ -1237,7 +1241,7 @@ function getControlCatalogForPage(pageKey) {
     }
   }
 
-  if (INITIAL_PAGE_KEY && INITIAL_PAGE_KEY !== 'index' && INITIAL_PAGE_KEY !== 'login') {
+  if (INITIAL_PAGE_KEY && !isAuthUtilityPage(INITIAL_PAGE_KEY)) {
     setAclPendingState(true);
   }
 
@@ -1879,7 +1883,7 @@ async function applyDomPermissions(pageKey, root, options) {
           setAclPendingState(false);
           return;
         }
-        if (!pageKey || pageKey === 'index' || pageKey === 'login') {
+        if (!pageKey || isAuthUtilityPage(pageKey)) {
           setAclPendingState(false);
           return;
         }
