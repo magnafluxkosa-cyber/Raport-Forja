@@ -8,6 +8,20 @@
     ro:'Română', en:'English', fr:'Français', it:'Italiano', de:'Deutsch', hu:'Magyar'
   };
 
+  // Performance: cache traducerile pe text + limbă.
+  // Paginile mari de pontaj au mii de celule identice, iar fără cache traducerea reface
+  // aceleași regex-uri de foarte multe ori.
+  var TEXT_CACHE = Object.create(null);
+  var TEXT_CACHE_COUNT = 0;
+  var TEXT_CACHE_LIMIT = 6000;
+  function cacheGet(k){ return Object.prototype.hasOwnProperty.call(TEXT_CACHE, k) ? TEXT_CACHE[k] : null; }
+  function cacheSet(k, v){
+    if(TEXT_CACHE_COUNT > TEXT_CACHE_LIMIT){ TEXT_CACHE = Object.create(null); TEXT_CACHE_COUNT = 0; }
+    if(!Object.prototype.hasOwnProperty.call(TEXT_CACHE, k)) TEXT_CACHE_COUNT++;
+    TEXT_CACHE[k] = v;
+    return v;
+  }
+
   function normalizeLang(v){
     v = String(v || '').toLowerCase().trim();
     if(v.indexOf('rom') === 0 || v === 'ro-ro') return 'ro';
@@ -143,7 +157,7 @@
   addExact('An','An','Year','Année','Anno','Jahr','Év');
   addExact('Anul','Anul','Year','Année','Anno','Jahr','Év');
   addExact('ANUL','ANUL','YEAR','ANNÉE','ANNO','JAHR','ÉV');
-  addExact('AN','AN','AN','AN','AN','AN','AN');
+  addExact('AN','AN','YEAR','ANNÉE','ANNO','JAHR','ÉV');
   addExact('Luna','Luna','Month','Mois','Mese','Monat','Hónap');
   addExact('Lună','Lună','Month','Mois','Mese','Monat','Hónap');
   addExact('LUNA','LUNA','MONTH','MOIS','MESE','MONAT','HÓNAP');
@@ -506,8 +520,21 @@
           for(var j=0;j<idx;j++) if(key(arr[j].source)+'|'+lang === k) return false;
           return true;
         })
-        .sort(function(a,b){ return b.source.length - a.source.length; });
+        .sort(function(a,b){ return b.source.length - a.source.length; })
+        .map(function(it){
+          try{
+            it.isSingle = /^[\p{L}]+$/u.test(it.source);
+            var pattern = it.isSingle ? '(^|[^\\p{L}])(' + escapeRe(it.source) + ')(?=$|[^\\p{L}])' : '(' + escapeRe(it.source) + ')';
+            it.re = new RegExp(pattern, 'giu');
+          }catch(_){
+            it.isSingle = false;
+            it.re = null;
+          }
+          return it;
+        });
     });
+    TEXT_CACHE = Object.create(null);
+    TEXT_CACHE_COUNT = 0;
   }
 
   // Additional high-frequency fixed texts from ERP pages.
@@ -713,40 +740,6 @@
     buildTerms();
   })();
 
-
-  // Pontaj final fix: keep attendance codes unchanged, translate split/wrapped hour headers.
-  (function(){
-    var codeLock = ['AN','CO','CM','CFS','LP'];
-    codeLock.forEach(function(c){ addExact(c,c,c,c,c,c,c); });
-    var rows = [
-      ['Total ore lucrate','Total ore lucrate','Total hours worked','Total heures travaillées','Totale ore lavorate','Geleistete Stunden gesamt','Összes ledolgozott óra'],
-      ['TOTAL ORE LUCRATE','TOTAL ORE LUCRATE','TOTAL HOURS WORKED','TOTAL HEURES TRAVAILLÉES','TOTALE ORE LAVORATE','GELEISTETE STUNDEN GESAMT','ÖSSZES LEDOLGOZOTT ÓRA'],
-      ['Total ore','Total ore','Total hours','Total heures','Totale ore','Stunden gesamt','Összes óra'],
-      ['TOTAL ORE','TOTAL ORE','TOTAL HOURS','TOTAL HEURES','TOTALE ORE','STUNDEN GESAMT','ÖSSZES ÓRA'],
-      ['lucrate','lucrate','worked','travaillées','lavorate','geleistet','ledolgozott'],
-      ['Lucrate','Lucrate','Worked','Travaillées','Lavorate','Geleistet','Ledolgozott'],
-      ['LUCRATE','LUCRATE','WORKED','TRAVAILLÉES','LAVORATE','GELEISTET','LEDOLGOZOTT'],
-      ['Ore supl','Ore supl','Overtime hrs','Heures sup.','Ore straord.','Überstunden','Túlóra'],
-      ['ORE SUPL','ORE SUPL','OVERTIME HRS','HEURES SUP.','ORE STRAORD.','ÜBERSTUNDEN','TÚLÓRA'],
-      ['ore supl','ore supl','overtime hrs','heures sup.','ore straord.','Überstunden','túlóra'],
-      ['supl','supl','overtime','sup.','straord.','Überstunden','túlóra'],
-      ['Supl','Supl','Overtime','Sup.','Straord.','Überstunden','Túlóra'],
-      ['SUPL','SUPL','OVERTIME','SUP.','STRAORD.','ÜBERSTUNDEN','TÚLÓRA'],
-      ['Ore','Ore','Hours','Heures','Ore','Stunden','Órák'],
-      ['ORE','ORE','HOURS','HEURES','ORE','STUNDEN','ÓRÁK'],
-      ['ore','ore','hours','heures','ore','Stunden','órák']
-    ];
-    rows.forEach(function(r){ addExact.apply(null, r); });
-    var terms = [
-      ['total ore lucrate','total ore lucrate','total hours worked','total heures travaillées','totale ore lavorate','geleistete Stunden gesamt','összes ledolgozott óra'],
-      ['total ore','total ore','total hours','total heures','totale ore','Stunden gesamt','összes óra'],
-      ['ore supl','ore supl','overtime hrs','heures sup.','ore straord.','Überstunden','túlóra'],
-      ['lucrate','lucrate','worked','travaillées','lavorate','geleistet','ledolgozott']
-    ];
-    terms.forEach(function(r){ addTerm.apply(null, r); });
-    buildTerms();
-  })();
-
   function escapeRe(s){ return String(s).replace(/[.*+?^${}()|[\]\\]/g,'\\$&'); }
   function hasLower(s){ return /[a-zăâîșțéèêëàáâäçôöûüùúìíòóñáéíóúőű]/.test(String(s)); }
   function hasUpper(s){ return /[A-ZĂÂÎȘȚÉÈÊËÀÁÂÄÇÔÖÛÜÙÚÌÍÒÓÑÁÉÍÓÚŐŰ]/.test(String(s)); }
@@ -868,6 +861,9 @@
   function shouldSkipWholeText(text){
     var t = String(text || '').trim();
     if(!t) return true;
+    // Codurile de pontaj nu se traduc niciodată.
+    // Exemple: AN, CO, CM, CFS, LP trebuie să rămână exact așa în toate limbile.
+    if(/^(AN|CO|CM|CFS|LP)$/i.test(t)) return true;
     if(t.length > 2200) return true;
     if(!/[A-Za-zĂÂÎȘȚăâîșțÀ-ž]/.test(t)) return true;
     if(/^(https?:|mailto:|tel:)/i.test(t)) return true;
@@ -894,13 +890,11 @@
     terms.forEach(function(item){
       var src = item.source;
       var target = item.target;
-      if(!src || !target || src === target) return;
+      if(!src || !target || src === target || !item.re) return;
       if(item.ro && key(src) !== key(item.ro)) return;
-      var isSingle = /^[\p{L}]+$/u.test(src);
-      var pattern = isSingle ? '(^|[^\\p{L}])(' + escapeRe(src) + ')(?=$|[^\\p{L}])' : '(' + escapeRe(src) + ')';
-      var re = new RegExp(pattern, 'giu');
-      out = out.replace(re, function(){
-        if(isSingle){
+      item.re.lastIndex = 0;
+      out = out.replace(item.re, function(){
+        if(item.isSingle){
           var prefix = arguments[1] || '';
           var original = arguments[2] || src;
           return prefix + matchCase(original, target);
@@ -913,16 +907,21 @@
   }
 
   function translateText(text, lang){
-    var base = canonicalizeToRomanian(text);
-    if(shouldSkipWholeText(base)) return normalizeBrand(base);
+    lang = normalizeLang(lang || getLang());
+    var raw = String(text == null ? '' : text);
+    var ck = lang + '\u001f' + raw;
+    var cached = cacheGet(ck);
+    if(cached != null) return cached;
+    var base = canonicalizeToRomanian(raw);
+    if(shouldSkipWholeText(base)) return cacheSet(ck, normalizeBrand(base));
     var exact = translateExact(base, lang);
-    if(exact != null) return normalizeBrand(exact);
+    if(exact != null) return cacheSet(ck, normalizeBrand(exact));
     var leading = (String(base).match(/^\s*/) || [''])[0];
     var trailing = (String(base).match(/\s*$/) || [''])[0];
     var core = String(base).trim();
     var translated = replaceMonthsAndDays(core, lang);
     translated = applyTermReplacements(translated, lang);
-    return normalizeBrand(leading + translated + trailing);
+    return cacheSet(ck, normalizeBrand(leading + translated + trailing));
   }
 
   function shouldSkipNode(node){
@@ -980,14 +979,21 @@
   }
 
   var translating = false;
-  function translatePage(){
-    if(translating) return;
-    translating = true;
-    var lang = getLang();
-    window.KAD_CURRENT_LANGUAGE = lang;
-    try{ document.documentElement.setAttribute('lang', lang); }catch(_){ }
+
+  function translateSubtree(root, lang){
+    if(!root) return;
+    lang = normalizeLang(lang || getLang());
     try{
-      var walker = document.createTreeWalker(document.body || document.documentElement, NodeFilter.SHOW_TEXT, {
+      if(root.nodeType === 3){
+        translateTextNode(root, lang);
+        return;
+      }
+      if(root.nodeType !== 1 && root.nodeType !== 9 && root.nodeType !== 11) return;
+
+      if(root.nodeType === 1) translateAttributes(root, lang);
+
+      var walkerRoot = root.nodeType === 1 || root.nodeType === 9 || root.nodeType === 11 ? root : (document.body || document.documentElement);
+      var walker = document.createTreeWalker(walkerRoot, NodeFilter.SHOW_TEXT, {
         acceptNode:function(node){
           if(!node.nodeValue || !node.nodeValue.trim()) return NodeFilter.FILTER_REJECT;
           if(shouldSkipNode(node)) return NodeFilter.FILTER_REJECT;
@@ -997,8 +1003,21 @@
       var nodes = [];
       while(walker.nextNode()) nodes.push(walker.currentNode);
       nodes.forEach(function(n){ translateTextNode(n, lang); });
-      Array.prototype.slice.call(document.querySelectorAll('*')).forEach(function(el){ translateAttributes(el, lang); });
+
+      if(walkerRoot.querySelectorAll){
+        var all = walkerRoot.querySelectorAll('*');
+        for(var i=0;i<all.length;i++) translateAttributes(all[i], lang);
+      }
     }catch(_){ }
+  }
+
+  function translatePage(){
+    if(translating) return;
+    translating = true;
+    var lang = getLang();
+    window.KAD_CURRENT_LANGUAGE = lang;
+    try{ document.documentElement.setAttribute('lang', lang); }catch(_){ }
+    translateSubtree(document.body || document.documentElement, lang);
     translating = false;
   }
 
@@ -1060,9 +1079,32 @@
   }
 
   var scheduled = 0;
-  function schedule(){
+  var pendingRoots = [];
+  function addPendingRoot(root){
+    if(!root) return;
+    if(root.nodeType === 3 || root.nodeType === 1 || root.nodeType === 9 || root.nodeType === 11) pendingRoots.push(root);
+  }
+  function schedule(root){
+    addPendingRoot(root);
     if(scheduled) return;
-    scheduled = setTimeout(function(){ scheduled = 0; translatePage(); }, 80);
+    scheduled = setTimeout(function(){
+      scheduled = 0;
+      if(translating) return;
+      translating = true;
+      var lang = getLang();
+      window.KAD_CURRENT_LANGUAGE = lang;
+      try{ document.documentElement.setAttribute('lang', lang); }catch(_){ }
+      var roots = pendingRoots.splice(0, pendingRoots.length);
+      if(!roots.length) roots = [document.body || document.documentElement];
+      for(var i=0;i<roots.length;i++){
+        var r = roots[i];
+        if(!r) continue;
+        if(r.nodeType === 1 && r.id === 'kadLanguageBox') continue;
+        if(r.nodeType === 1 && r.closest && r.closest('#kadLanguageBox')) continue;
+        translateSubtree(r, lang);
+      }
+      translating = false;
+    }, 140);
   }
 
   function boot(){
@@ -1072,9 +1114,15 @@
       var obs = new MutationObserver(function(mutations){
         if(translating) return;
         for(var i=0;i<mutations.length;i++){
-          if(mutations[i].target && mutations[i].target.id === 'kadLanguageBox') continue;
-          schedule();
-          break;
+          var m = mutations[i];
+          if(m.target && (m.target.id === 'kadLanguageBox' || (m.target.closest && m.target.closest('#kadLanguageBox')))) continue;
+          if(m.type === 'childList'){
+            for(var j=0;j<m.addedNodes.length;j++) schedule(m.addedNodes[j]);
+          }else if(m.type === 'characterData'){
+            schedule(m.target);
+          }else if(m.type === 'attributes'){
+            schedule(m.target);
+          }
         }
       });
       obs.observe(document.body || document.documentElement, {subtree:true, childList:true, characterData:true, attributes:true, attributeFilter:['placeholder','title','aria-label','aria-description','alt','data-title','data-label','data-placeholder','data-tooltip','data-empty','data-status','data-original-title','value']});
