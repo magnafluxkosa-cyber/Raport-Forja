@@ -9,8 +9,6 @@
   var READY_ATTR = 'data-kad-security-ready';
   var DENIED_ATTR = 'data-kad-security-denied';
   var STORAGE_KEYS = ['rf_project_gate_access_session', 'rf_project_gate_access'];
-  var MFA_REQUIRED_PAGES = { 'helper-acl': true, 'helper-data': true };
-  var MFA_ENTRY_TTL_MS = 90 * 1000;
   var state = {
     allowed: false,
     ready: false,
@@ -26,9 +24,8 @@
       var style = document.createElement('style');
       style.id = 'kad-security-guard-style';
       style.textContent = '' +
-        'html[' + SECURITY_ATTR + '="1"] body{visibility:hidden!important;}' +
-        'html[' + SECURITY_ATTR + '="1"] body>*{visibility:hidden!important;}' +
-        'html[' + DENIED_ATTR + '="1"] body{visibility:visible!important;}' +
+        'html:not([' + READY_ATTR + '="1"]):not([' + DENIED_ATTR + '="1"]) body{display:none!important;visibility:hidden!important;opacity:0!important;}' +
+        'html:not([' + READY_ATTR + '="1"]):not([' + DENIED_ATTR + '="1"]) body>*{display:none!important;visibility:hidden!important;opacity:0!important;}' +
         'html.kad-readonly [contenteditable="true"]{user-select:text!important;}';
       (document.head || document.documentElement).appendChild(style);
     }
@@ -385,6 +382,68 @@
     return { allowed:rolePerm.can_view === true, role:role, permissions:rolePerm, accountStatus:status, source:'role acl strict', message:rolePerm.can_view === true ? '' : 'Nu ai acces în această pagină.' };
   }
 
+
+  function requiresFreshMfa(pageKey){
+    pageKey = normalizePageKey(pageKey);
+    return pageKey === 'helper-acl' || pageKey === 'helper-data';
+  }
+
+  function scopedMfaKeys(pageKey){
+    pageKey = normalizePageKey(pageKey);
+    var keys = ['rf_kad_mfa_entry_ok_' + pageKey];
+    if(pageKey === 'helper-acl') keys.push('rf_helper_acl_mfa_entry_ok');
+    if(pageKey === 'helper-data') keys.push('rf_helper_data_mfa_entry_ok');
+    return keys;
+  }
+
+  function readFreshMfaToken(pageKey){
+    var keys = scopedMfaKeys(pageKey);
+    var now = Date.now();
+    for(var i=0; i<keys.length; i+=1){
+      var value = 0;
+      try { value = Number(window.sessionStorage.getItem(keys[i]) || 0); } catch(_) { value = 0; }
+      if(value && now - value < 2 * 60 * 1000){
+        keys.forEach(function(k){ try { window.sessionStorage.removeItem(k); } catch(_) {} });
+        return true;
+      }
+    }
+    keys.forEach(function(k){ try { window.sessionStorage.removeItem(k); } catch(_) {} });
+    return false;
+  }
+
+  async function hasVerifiedTotpFactor(sb){
+    try {
+      if(!sb || !sb.auth || !sb.auth.mfa || typeof sb.auth.mfa.listFactors !== 'function') return false;
+      var factors = await sb.auth.mfa.listFactors();
+      if(factors && factors.error) return false;
+      var totp = factors && factors.data && Array.isArray(factors.data.totp) ? factors.data.totp : [];
+      return totp.some(function(f){ return String((f && f.status) || '').toLowerCase() === 'verified'; });
+    } catch(_) { return false; }
+  }
+
+  async function currentMfaLevelIsAal2(sb){
+    try {
+      if(!sb || !sb.auth || !sb.auth.mfa || typeof sb.auth.mfa.getAuthenticatorAssuranceLevel !== 'function') return false;
+      var aal = await sb.auth.mfa.getAuthenticatorAssuranceLevel();
+      if(aal && aal.error) return false;
+      return String(aal && aal.data && aal.data.currentLevel || '').toLowerCase() === 'aal2';
+    } catch(_) { return false; }
+  }
+
+  async function enforceFreshMfaForPage(sb, pageKey){
+    if(!requiresFreshMfa(pageKey)) return true;
+    var hasFactor = await hasVerifiedTotpFactor(sb);
+    if(!hasFactor){
+      redirect('mfa-setup.html', { next: currentFileName(), scope: normalizePageKey(pageKey) });
+      return false;
+    }
+    var hasFreshToken = readFreshMfaToken(pageKey);
+    var isAal2 = await currentMfaLevelIsAal2(sb);
+    if(hasFreshToken && isAal2) return true;
+    redirect('mfa-verify.html', { next: currentFileName(), force: '1', scope: normalizePageKey(pageKey) });
+    return false;
+  }
+
   function renderDenied(title, message){
     function mount(){
       if(!document.body) return false;
@@ -427,51 +486,6 @@
     var text = [el.id, el.name, el.className, el.getAttribute('aria-label'), el.title, el.textContent, el.value]
       .map(function(v){ return String(v || '').toLowerCase(); }).join(' ');
     return /salv|save|adaug|add\b|nou\b|new\b|edit|delete|sterg|șterg|remove|import|upload|submit|actualiz|update|cloud.*save|salvează/.test(text);
-  }
-
-
-  function mfaEntryKey(pageKey){
-    return 'rf_mfa_entry_ok_' + normalizePageKey(pageKey).replace(/[^a-z0-9_-]/g, '_');
-  }
-
-  function consumeMfaEntryFlag(pageKey){
-    var pk = normalizePageKey(pageKey);
-    var keys = [mfaEntryKey(pk)];
-    if(pk === 'helper-acl') keys.push('rf_helper_acl_mfa_entry_ok');
-    var now = Date.now();
-    var ok = false;
-    keys.forEach(function(k){
-      try {
-        var ts = Number(sessionStorage.getItem(k) || 0);
-        sessionStorage.removeItem(k);
-        if(ts && (now - ts) >= 0 && (now - ts) < MFA_ENTRY_TTL_MS) ok = true;
-      } catch(_) {}
-    });
-    return ok;
-  }
-
-  async function hasVerifiedTotpFactor(sb){
-    try {
-      var factors = await sb.auth.mfa.listFactors();
-      if(factors && factors.error) return false;
-      var totp = factors && factors.data && Array.isArray(factors.data.totp) ? factors.data.totp : [];
-      return totp.some(function(f){ return String((f && f.status) || '').toLowerCase() === 'verified'; });
-    } catch(_) { return false; }
-  }
-
-  async function requireMfaForPage(sb, pageKey){
-    pageKey = normalizePageKey(pageKey);
-    if(!MFA_REQUIRED_PAGES[pageKey]) return true;
-    if(consumeMfaEntryFlag(pageKey)) return true;
-    var next = currentFileName();
-    var scope = pageKey;
-    var verified = await hasVerifiedTotpFactor(sb);
-    if(!verified){
-      redirect('mfa-setup.html', { next: next, scope: scope });
-      return false;
-    }
-    redirect('mfa-verify.html', { next: next, force: '1', scope: scope });
-    return false;
   }
 
   function applyReadonly(permissions){
@@ -560,8 +574,8 @@
       return;
     }
 
-    var mfaOk = await runInternal(function(){ return requireMfaForPage(sb, pageKey); });
-    if(mfaOk !== true) return;
+    var mfaOk = await runInternal(function(){ return enforceFreshMfaForPage(sb, pageKey); });
+    if(!mfaOk) return;
 
     applyReadonly(access.permissions || {});
     markAllowed();
