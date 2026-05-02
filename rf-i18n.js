@@ -671,6 +671,8 @@
   function updateSelector(lang){
     var s = document.getElementById('kadLanguageSelect');
     if(s && s.value !== lang) s.value = lang;
+    var lbl = document.getElementById('kadLanguageLabel');
+    if(lbl) lbl.textContent = translateText('Limba', lang);
   }
 
   function ensureSelector(){
@@ -680,7 +682,7 @@
     var holder = document.createElement('div');
     holder.id = 'kadLanguageBox';
     holder.setAttribute('data-i18n-skip','1');
-    holder.innerHTML = '<label for="kadLanguageSelect">Limba</label><select id="kadLanguageSelect" aria-label="Limba"></select>';
+    holder.innerHTML = '<span id="kadLanguageLabel">Limba</span><select id="kadLanguageSelect" aria-label="Limba"></select>';
     var select = holder.querySelector('select');
     SUPPORTED.forEach(function(code){
       var opt = document.createElement('option');
@@ -691,9 +693,9 @@
     select.value = getLang();
     select.addEventListener('change', function(){ setLang(this.value); });
     var css = document.createElement('style');
-    css.textContent = '#kadLanguageBox{display:inline-flex;align-items:center;gap:10px;padding:10px 14px;border-radius:999px;background:rgba(255,255,255,.18);border:1px solid rgba(255,255,255,.35);font-weight:800;color:inherit}#kadLanguageBox select{border:0;background:transparent;color:inherit;font-weight:800;outline:0;cursor:pointer}#kadLanguageBox option{color:#111;background:#fff}';
+    css.textContent = '#kadLanguageBox{display:inline-flex;align-items:center;gap:10px;min-height:44px;padding:8px 14px;border-radius:999px;background:rgba(255,255,255,.18);border:1px solid rgba(255,255,255,.35);font-weight:800;color:inherit;white-space:nowrap;z-index:9999}#kadLanguageBox select{border:0;background:transparent;color:inherit;font-weight:800;outline:0;cursor:pointer}#kadLanguageBox option{color:#111;background:#fff}';
     document.head.appendChild(css);
-    var target = document.querySelector('.header .statusRow') || document.querySelector('.header') || document.querySelector('header') || document.body;
+    var target = document.querySelector('.topActions') || document.querySelector('.header .statusRow') || document.querySelector('.header') || document.querySelector('header') || document.body;
     if(target && target.appendChild) target.appendChild(holder);
   }
 
@@ -706,6 +708,7 @@
   function boot(){
     try{ ensureSelector(); }catch(_){ }
     translatePage();
+    try{ updateSelector(getLang()); }catch(_){}
     try{
       var obs = new MutationObserver(function(mutations){
         if(translating) return;
