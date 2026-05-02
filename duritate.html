@@ -165,52 +165,119 @@
       .trim()
       .toUpperCase();
   }
-  function findReperAndOperator(original){
-    const base = cleanName(original); const baseNorm = norm(base);
-    if(!baseNorm) return { operator_name:'', reper_complet:'', reper_short:'', sarja:'', status:'neidentificat', note:'Nume gol' };
+  function deriveReperKeys(reperValue){
+    const raw = String(reperValue || '').toUpperCase();
+    const keys = new Set();
+    const rn = norm(raw);
+    if(rn) keys.add(rn);
+
+    const groups = raw.match(/[A-Z0-9]+/g) || [];
+    for(const g of groups){
+      const gn = norm(g);
+      if(!gn) continue;
+      if(/^\d{3,}$/.test(gn)) keys.add(gn);              // ex: 2308 din 248-2308
+      if(/^\d+[A-Z]+$/.test(gn)) keys.add(gn);           // ex: 7G, 9K
+      if(/^[A-Z]+\d{3,}$/.test(gn)) keys.add(gn);        // ex: SKU140
+    }
+
+    const numericGroups = groups.map(norm).filter(g => /^\d{3,}$/.test(g));
+    if(numericGroups.length) keys.add(numericGroups[numericGroups.length - 1]);
+
+    // pentru repere de tip 9K-6628, 7G-0521 etc. păstrăm și primul grup digit+literă
+    const prefix = groups.map(norm).find(g => /^\d+[A-Z]+$/.test(g));
+    if(prefix) keys.add(prefix);
+
+    return [...keys].filter(Boolean).sort((a,b)=>b.length-a.length);
+  }
+
+  function getBestReperCandidate(base){
     const candidates = [];
+    const baseNorm = norm(base);
     for(const reper of state.repere){
-      const rn = reper.norm;
-      if(!rn) continue;
-      if(baseNorm === rn || baseNorm.includes(rn)) candidates.push({reper, token:rn, score:100});
-    }
-    const alnumGroups = base.toUpperCase().match(/[A-Z]*\d+[A-Z0-9-]*/g) || [];
-    const tokens = alnumGroups.map(norm).filter(Boolean).sort((a,b)=>b.length-a.length);
-    for(const token of tokens){
-      for(const reper of state.repere){
-        const rn = reper.norm; if(!rn) continue;
-        if(rn === token || rn.endsWith(token) || rn.startsWith(token) || token.endsWith(rn)) candidates.push({reper, token, score:rn===token?90:(rn.endsWith(token)?80:70)});
+      const keys = deriveReperKeys(reper.value);
+      for(const key of keys){
+        const loc = locateTokenInBase(base, key);
+        if(!loc) continue;
+        let score = 0;
+        if(key === reper.norm) score = 1000 + key.length;
+        else if(/^\d{3,}$/.test(key)) score = 850 + key.length;      // prioritar: terminație reper 2307/2308
+        else if(/^\d+[A-Z]+$/.test(key)) score = 760 + key.length;   // ex: 7G
+        else score = 650 + key.length;
+        candidates.push({ reper, key, loc, score });
+      }
+      if(reper.norm && baseNorm.includes(reper.norm)){
+        const loc = locateTokenInBase(base, reper.norm);
+        if(loc) candidates.push({ reper, key:reper.norm, loc, score:1100 + reper.norm.length });
       }
     }
-    const unique = [];
+
     const seen = new Set();
-    candidates.sort((a,b)=>b.score-a.score || b.reper.norm.length-a.reper.norm.length);
-    for(const c of candidates){ if(!seen.has(c.reper.value)){ unique.push(c); seen.add(c.reper.value); } }
-    if(!unique.length){
-      const op = base.replace(/[\s_\-\/]+$/,'').trim().toUpperCase();
-      return { operator_name:op, reper_complet:'', reper_short:tokens[0]||'', sarja:'', status:'neidentificat', note:'Reper negăsit în Helper Data' };
+    const unique = [];
+    candidates.sort((a,b)=>
+      b.score-a.score ||
+      a.loc.startIdx-b.loc.startIdx ||
+      b.key.length-a.key.length ||
+      b.reper.norm.length-a.reper.norm.length
+    );
+    for(const c of candidates){
+      const id = c.reper.value + '|' + c.key + '|' + c.loc.startIdx;
+      if(seen.has(id)) continue;
+      seen.add(id); unique.push(c);
     }
-    if(unique.length > 1 && unique[0].score === unique[1].score && unique[0].token === unique[1].token){
-      return { operator_name:'', reper_complet:unique.map(x=>x.reper.value).slice(0,3).join(' / '), reper_short:unique[0].token, sarja:'', status:'neclar', note:'Mai multe repere posibile' };
+    return unique;
+  }
+
+  function fallbackSplitName(base){
+    const m = String(base||'').match(/^(.*?)(\d{3,}|\d+[A-Z]+)(.*)$/i);
+    if(!m){
+      return { operator_name:String(base||'').trim().toUpperCase(), reper_complet:'', reper_short:'', sarja:'', status:'neidentificat', note:'Reper negăsit în Helper Data' };
     }
-    const best=unique[0];
-    const token = best.token || '';
-    let operator = '';
-    let sarja = '';
-    const loc = locateTokenInBase(base, token) || locateTokenInBase(base, best.reper.norm);
-    if(loc){
-      operator = base.slice(0, loc.startIdx);
-      sarja = cleanSarjaPart(base.slice(loc.endIdx));
-    }else{
-      operator = base;
-      const tokenParts = token.match(/[A-Z]+|\d+/g) || [token];
-      for(const part of tokenParts.sort((a,b)=>b.length-a.length)){
-        operator = operator.replace(new RegExp(part.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'),'i'),' ');
-      }
+    return {
+      operator_name:String(m[1]||'').replace(/[_\-\/]+/g,' ').replace(/\s+/g,' ').trim().toUpperCase(),
+      reper_complet:'',
+      reper_short:norm(m[2]),
+      sarja:cleanSarjaPart(m[3]),
+      status:'neidentificat',
+      note:'Reper negăsit în Helper Data'
+    };
+  }
+
+  function findReperAndOperator(original){
+    const base = cleanName(original);
+    const baseNorm = norm(base);
+    if(!baseNorm) return { operator_name:'', reper_complet:'', reper_short:'', sarja:'', status:'neidentificat', note:'Nume gol' };
+
+    const candidates = getBestReperCandidate(base);
+    if(!candidates.length) return fallbackSplitName(base);
+
+    const best = candidates[0];
+    const tied = candidates.filter(c => c.score === best.score && c.key === best.key && c.loc.startIdx === best.loc.startIdx);
+    const distinctRepere = [...new Set(tied.map(c=>c.reper.value))];
+    if(distinctRepere.length > 1){
+      return {
+        operator_name:'',
+        reper_complet:distinctRepere.slice(0,3).join(' / '),
+        reper_short:best.key,
+        sarja:'',
+        status:'neclar',
+        note:'Mai multe repere posibile pentru același cod scurt'
+      };
     }
+
+    let operator = base.slice(0, best.loc.startIdx);
+    let sarja = cleanSarjaPart(base.slice(best.loc.endIdx));
+
     operator = operator.replace(/[_\-\/]+/g,' ').replace(/\s+/g,' ').trim().toUpperCase();
-    if(norm(operator) === best.reper.norm) operator='';
-    return { operator_name:operator, reper_complet:best.reper.value, reper_short:token, sarja:sarja, status:'ok', note:'' };
+    if(norm(operator) === best.reper.norm) operator = '';
+
+    return {
+      operator_name:operator,
+      reper_complet:best.reper.value,
+      reper_short:best.key,
+      sarja:sarja,
+      status:'ok',
+      note:''
+    };
   }
 
   async function initSupabase(){
