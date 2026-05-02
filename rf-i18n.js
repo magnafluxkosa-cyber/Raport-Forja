@@ -691,6 +691,46 @@
     buildTerms();
   })();
 
+
+
+  // Human Resources / timesheet labels exact coverage.
+  (function(){
+    var hrExact = [
+      ['PONTAJE','PONTAJE','TIMESHEETS','POINTAGES','CARTELLINI','ZEITERFASSUNGEN','JELENLÉTI ÍVEK'],
+      ['Pontaje','Pontaje','Timesheets','Pointages','Cartellini','Zeiterfassungen','Jelenléti ívek'],
+      ['Pontaj','Pontaj','Timesheet','Pointage','Cartellino','Zeiterfassung','Jelenléti ív'],
+      ['PONTAJ','PONTAJ','TIMESHEET','POINTAGE','CARTELLINO','ZEITERFASSUNG','JELENLÉTI ÍV'],
+      ['PONTAJ FORJA','PONTAJ FORJĂ','FORGING TIMESHEET','POINTAGE FORGE','CARTELLINO FORGIATURA','SCHMIEDE-ZEITERFASSUNG','KOVÁCSOLÁSI JELENLÉTI ÍV'],
+      ['PONTAJ FORJĂ','PONTAJ FORJĂ','FORGING TIMESHEET','POINTAGE FORGE','CARTELLINO FORGIATURA','SCHMIEDE-ZEITERFASSUNG','KOVÁCSOLÁSI JELENLÉTI ÍV'],
+      ['Pontaj Forja','Pontaj Forjă','Forging timesheet','Pointage forge','Cartellino forgiatura','Schmiede-Zeiterfassung','Kovácsolási jelenléti ív'],
+      ['Pontaj Forjă','Pontaj Forjă','Forging timesheet','Pointage forge','Cartellino forgiatura','Schmiede-Zeiterfassung','Kovácsolási jelenléti ív'],
+      ['PONTAJ CTC','PONTAJ CTC','CTC TIMESHEET','POINTAGE CTC','CARTELLINO CTC','CTC-ZEITERFASSUNG','CTC JELENLÉTI ÍV'],
+      ['Pontaj CTC','Pontaj CTC','CTC timesheet','Pointage CTC','Cartellino CTC','CTC-Zeiterfassung','CTC jelenléti ív'],
+      ['PONTAJ PRELUCRARI MECANICE','PONTAJ PRELUCRĂRI MECANICE','MACHINING TIMESHEET','POINTAGE USINAGE MÉCANIQUE','CARTELLINO LAVORAZIONI MECCANICHE','BEARBEITUNGS-ZEITERFASSUNG','MEGMUNKÁLÁSI JELENLÉTI ÍV'],
+      ['PONTAJ PRELUCRĂRI MECANICE','PONTAJ PRELUCRĂRI MECANICE','MACHINING TIMESHEET','POINTAGE USINAGE MÉCANIQUE','CARTELLINO LAVORAZIONI MECCANICHE','BEARBEITUNGS-ZEITERFASSUNG','MEGMUNKÁLÁSI JELENLÉTI ÍV'],
+      ['Pontaj Prelucrari Mecanice','Pontaj Prelucrări Mecanice','Machining timesheet','Pointage usinage mécanique','Cartellino lavorazioni meccaniche','Bearbeitungs-Zeiterfassung','Megmunkálási jelenléti ív'],
+      ['Pontaj Prelucrări Mecanice','Pontaj Prelucrări Mecanice','Machining timesheet','Pointage usinage mécanique','Cartellino lavorazioni meccaniche','Bearbeitungs-Zeiterfassung','Megmunkálási jelenléti ív'],
+      ['PONTAJ MACHINING MECANICE','PONTAJ PRELUCRĂRI MECANICE','MACHINING TIMESHEET','POINTAGE USINAGE MÉCANIQUE','CARTELLINO LAVORAZIONI MECCANICHE','BEARBEITUNGS-ZEITERFASSUNG','MEGMUNKÁLÁSI JELENLÉTI ÍV'],
+      ['PONTAJ MACHINING MECHANICE','PONTAJ PRELUCRĂRI MECANICE','MACHINING TIMESHEET','POINTAGE USINAGE MÉCANIQUE','CARTELLINO LAVORAZIONI MECCANICHE','BEARBEITUNGS-ZEITERFASSUNG','MEGMUNKÁLÁSI JELENLÉTI ÍV'],
+      ['PONTAJ MACHINING','PONTAJ PRELUCRĂRI MECANICE','MACHINING TIMESHEET','POINTAGE USINAGE MÉCANIQUE','CARTELLINO LAVORAZIONI MECCANICHE','BEARBEITUNGS-ZEITERFASSUNG','MEGMUNKÁLÁSI JELENLÉTI ÍV'],
+      ['PONTAJ PRELUCRĂRI','PONTAJ PRELUCRĂRI MECANICE','MACHINING TIMESHEET','POINTAGE USINAGE MÉCANIQUE','CARTELLINO LAVORAZIONI MECCANICHE','BEARBEITUNGS-ZEITERFASSUNG','MEGMUNKÁLÁSI JELENLÉTI ÍV'],
+      ['PONTARE FORJA','PONTARE FORJĂ','FORGING TIMEKEEPING','POINTAGE FORGE','RILEVAZIONE PRESENZE FORGIATURA','SCHMIEDE-ZEITERFASSUNG','KOVÁCSOLÁSI IDŐNYILVÁNTARTÁS'],
+      ['PONTARE FORJĂ','PONTARE FORJĂ','FORGING TIMEKEEPING','POINTAGE FORGE','RILEVAZIONE PRESENZE FORGIATURA','SCHMIEDE-ZEITERFASSUNG','KOVÁCSOLÁSI IDŐNYILVÁNTARTÁS'],
+      ['PONTARE CTC','PONTARE CTC','CTC TIMEKEEPING','POINTAGE CTC','RILEVAZIONE PRESENZE CTC','CTC-ZEITERFASSUNG','CTC IDŐNYILVÁNTARTÁS'],
+      ['MACHINING MECANICE','PRELUCRĂRI MECANICE','MACHINING','USINAGE MÉCANIQUE','LAVORAZIONI MECCANICHE','MECHANISCHE BEARBEITUNG','MECHANIKAI MEGMUNKÁLÁS'],
+      ['MACHINING MECHANICE','PRELUCRĂRI MECANICE','MACHINING','USINAGE MÉCANIQUE','LAVORAZIONI MECCANICHE','MECHANISCHE BEARBEITUNG','MECHANIKAI MEGMUNKÁLÁS']
+    ];
+    hrExact.forEach(function(r){ addExact.apply(null, r); });
+    var hrTerms = [
+      ['pontaj','pontaj','timesheet','pointage','cartellino','Zeiterfassung','jelenléti ív'],
+      ['pontaje','pontaje','timesheets','pointages','cartellini','Zeiterfassungen','jelenléti ívek'],
+      ['pontare','pontare','timekeeping','pointage','rilevazione presenze','Zeiterfassung','időnyilvántartás'],
+      ['mecanice','mecanice','mechanical','mécaniques','meccaniche','mechanische','mechanikai']
+    ];
+    hrTerms.forEach(function(r){ addTerm.apply(null, r); });
+    buildTerms();
+  })();
+
   function replaceMonthsAndDays(text, lang){
     var out = String(text);
     SUPPORTED.forEach(function(srcLang){
