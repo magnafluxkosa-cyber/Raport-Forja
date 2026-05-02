@@ -632,6 +632,87 @@
     buildTerms();
   })();
 
+
+  // Timesheet / pontaj coverage: departments, day abbreviations and totals.
+  (function(){
+    var pontajExact = [
+      ['DEBITARI','DEBITARI','CUTTING','DÉBITAGE','TAGLIO','ZUSCHNITT','DARABOLÁS'],
+      ['Debitari','Debitari','Cutting','Débitage','Taglio','Zuschnitt','Darabolás'],
+      ['debitari','debitari','cutting','débitage','taglio','Zuschnitt','darabolás'],
+      ['DEBITARE','DEBITARE','CUTTING','DÉBITAGE','TAGLIO','ZUSCHNITT','DARABOLÁS'],
+      ['Debitare','Debitare','Cutting','Débitage','Taglio','Zuschnitt','Darabolás'],
+      ['SCULARIE','SCULĂRIE','TOOLROOM','OUTILLAGE','ATTREZZERIA','WERKZEUGBAU','SZERSZÁMMŰHELY'],
+      ['Sculărie','Sculărie','Toolroom','Outillage','Attrezzeria','Werkzeugbau','Szerszámműhely'],
+      ['Scularie','Sculărie','Toolroom','Outillage','Attrezzeria','Werkzeugbau','Szerszámműhely'],
+      ['CTC','CTC','QC','CQ','CQ','QS','MEO'],
+      ['CONTROL CALITATE','CONTROL CALITATE','QUALITY CONTROL','CONTRÔLE QUALITÉ','CONTROLLO QUALITÀ','QUALITÄTSKONTROLLE','MINŐSÉGELLENŐRZÉS'],
+      ['CONTROL TEHNIC DE CALITATE','CONTROL TEHNIC DE CALITATE','TECHNICAL QUALITY CONTROL','CONTRÔLE TECHNIQUE QUALITÉ','CONTROLLO TECNICO QUALITÀ','TECHNISCHE QUALITÄTSKONTROLLE','MŰSZAKI MINŐSÉGELLENŐRZÉS'],
+      ['MENTENANTA','MENTENANȚĂ','MAINTENANCE','MAINTENANCE','MANUTENZIONE','WARTUNG','KARBANTARTÁS'],
+      ['Mentenanta','Mentenanță','Maintenance','Maintenance','Manutenzione','Wartung','Karbantartás'],
+      ['AMBALARE','AMBALARE','PACKING','EMBALLAGE','IMBALLAGGIO','VERPACKUNG','CSOMAGOLÁS'],
+      ['MAGNAFLUX','MAGNAFLUX','MAGNAFLUX','MAGNAFLUX','MAGNAFLUX','MAGNAFLUX','MAGNAFLUX'],
+      ['Operators','Operatori','Operators','Opérateurs','Operatori','Bediener','Operátorok'],
+      ['Operatori','Operatori','Operators','Opérateurs','Operatori','Bediener','Operátorok'],
+      ['OPERATORS','OPERATORI','OPERATORS','OPÉRATEURS','OPERATORI','BEDIENER','OPERÁTOROK'],
+      ['Sch','Schimb','Shift','Équipe','Turno','Schicht','Műszak'],
+      ['SCH','SCHIMB','SHIFT','ÉQUIPE','TURNO','SCHICHT','MŰSZAK'],
+      ['Sch.','Sch.','Shift','Équipe','Turno','Schicht','Műszak'],
+      ['Total ore lucrate','Total ore lucrate','Total hours worked','Total heures travaillées','Totale ore lavorate','Geleistete Stunden gesamt','Összes ledolgozott óra'],
+      ['TOTAL ORE LUCRATE','TOTAL ORE LUCRATE','TOTAL HOURS WORKED','TOTAL HEURES TRAVAILLÉES','TOTALE ORE LAVORATE','GELEISTETE STUNDEN GESAMT','ÖSSZES LEDOLGOZOTT ÓRA'],
+      ['Ore suplimentare','Ore suplimentare','Overtime hours','Heures supplémentaires','Ore straordinarie','Überstunden','Túlórák'],
+      ['ORE SUPLIMENTARE','ORE SUPLIMENTARE','OVERTIME HOURS','HEURES SUPPLÉMENTAIRES','ORE STRAORDINARIE','ÜBERSTUNDEN','TÚLÓRÁK'],
+      ['Total ore suplimentare','Total ore suplimentare','Total overtime hours','Total heures supplémentaires','Totale ore straordinarie','Überstunden gesamt','Összes túlóra'],
+      ['TOTAL ORE SUPLIMENTARE','TOTAL ORE SUPLIMENTARE','TOTAL OVERTIME HOURS','TOTAL HEURES SUPPLÉMENTAIRES','TOTALE ORE STRAORDINARIE','ÜBERSTUNDEN GESAMT','ÖSSZES TÚLÓRA'],
+      ['Total ore schimb 1','Total ore schimb 1','Total shift 1 hours','Total heures équipe 1','Totale ore turno 1','Stunden Schicht 1 gesamt','1. műszak összes óra'],
+      ['Total ore schimb 2','Total ore schimb 2','Total shift 2 hours','Total heures équipe 2','Totale ore turno 2','Stunden Schicht 2 gesamt','2. műszak összes óra'],
+      ['Total ore schimb 3','Total ore schimb 3','Total shift 3 hours','Total heures équipe 3','Totale ore turno 3','Stunden Schicht 3 gesamt','3. műszak összes óra'],
+      ['Total ore sch. 1','Total ore sch. 1','Total shift 1 hours','Total heures équipe 1','Totale ore turno 1','Stunden Schicht 1 gesamt','1. műszak összes óra'],
+      ['Total ore sch. 2','Total ore sch. 2','Total shift 2 hours','Total heures équipe 2','Totale ore turno 2','Stunden Schicht 2 gesamt','2. műszak összes óra'],
+      ['Total ore sch. 3','Total ore sch. 3','Total shift 3 hours','Total heures équipe 3','Totale ore turno 3','Stunden Schicht 3 gesamt','3. műszak összes óra'],
+      ['luni','luni','Monday','lundi','lunedì','Montag','hétfő'],
+      ['marți','marți','Tuesday','mardi','martedì','Dienstag','kedd'],
+      ['miercuri','miercuri','Wednesday','mercredi','mercoledì','Mittwoch','szerda'],
+      ['joi','joi','Thursday','jeudi','giovedì','Donnerstag','csütörtök'],
+      ['vineri','vineri','Friday','vendredi','venerdì','Freitag','péntek'],
+      ['sâmbătă','sâmbătă','Saturday','samedi','sabato','Samstag','szombat'],
+      ['duminică','duminică','Sunday','dimanche','domenica','Sonntag','vasárnap'],
+      ['lun','lun','Mon','lun','lun','Mo','hét'],
+      ['mar','mar','Tue','mar','mar','Di','ked'],
+      ['mie','mie','Wed','mer','mer','Mi','sze'],
+      ['joi','joi','Thu','jeu','gio','Do','csü'],
+      ['vin','vin','Fri','ven','ven','Fr','pén'],
+      ['sâm','sâm','Sat','sam','sab','Sa','szo'],
+      ['sam','sâm','Sat','sam','sab','Sa','szo'],
+      ['dum','dum','Sun','dim','dom','So','vas'],
+      ['thu','joi','Thu','jeu','gio','Do','csü'],
+      ['thurs','joi','Thu','jeu','gio','Do','csü'],
+      ['thur','joi','Thu','jeu','gio','Do','csü'],
+      ['mon','lun','Mon','lun','lun','Mo','hét'],
+      ['tue','mar','Tue','mar','mar','Di','ked'],
+      ['wed','mie','Wed','mer','mer','Mi','sze'],
+      ['fri','vin','Fri','ven','ven','Fr','pén'],
+      ['sat','sâm','Sat','sam','sab','Sa','szo'],
+      ['sun','dum','Sun','dim','dom','So','vas'],
+      ['Total CO','Total CO','Total CO','Total CO','Totale CO','CO gesamt','Összes CO'],
+      ['Total CM','Total CM','Total CM','Total CM','Totale CM','CM gesamt','Összes CM'],
+      ['Total CFS','Total CFS','Total CFS','Total CFS','Totale CFS','CFS gesamt','Összes CFS'],
+      ['Total AN','Total AN','Total AN','Total AN','Totale AN','AN gesamt','Összes AN'],
+      ['Total LP','Total LP','Total LP','Total LP','Totale LP','LP gesamt','Összes LP']
+    ];
+    pontajExact.forEach(function(r){ addExact.apply(null, r); });
+    var pontajTerms = [
+      ['debitari','debitari','cutting','débitage','taglio','Zuschnitt','darabolás'],
+      ['scularie','sculărie','toolroom','outillage','attrezzeria','Werkzeugbau','szerszámműhely'],
+      ['operatori','operatori','operators','opérateurs','operatori','Bediener','operátorok'],
+      ['operators','operatori','operators','opérateurs','operatori','Bediener','operátorok'],
+      ['schimb','schimb','shift','équipe','turno','Schicht','műszak'],
+      ['ore lucrate','ore lucrate','hours worked','heures travaillées','ore lavorate','geleistete Stunden','ledolgozott órák'],
+      ['ore suplimentare','ore suplimentare','overtime hours','heures supplémentaires','ore straordinarie','Überstunden','túlórák']
+    ];
+    pontajTerms.forEach(function(r){ addTerm.apply(null, r); });
+    buildTerms();
+  })();
+
   function escapeRe(s){ return String(s).replace(/[.*+?^${}()|[\]\\]/g,'\\$&'); }
   function hasLower(s){ return /[a-zăâîșțéèêëàáâäçôöûüùúìíòóñáéíóúőű]/.test(String(s)); }
   function hasUpper(s){ return /[A-ZĂÂÎȘȚÉÈÊËÀÁÂÄÇÔÖÛÜÙÚÌÍÒÓÑÁÉÍÓÚŐŰ]/.test(String(s)); }
