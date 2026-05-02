@@ -76,7 +76,7 @@
           <span class="badge warn viewonly-note">Doar vizualizare</span>
         </div>
         <div class="help" style="margin-top:8px">
-          Se importă valorile din fișierul aparatului fără imagini. Dublurile se evită după data și ora măsurării, nu după numele fișierului. Numele introdus în aparat este separat automat în Operator + Reper complet, folosind reperele din Helper Data. Sufixele de tip _005 sunt ignorate.
+          Se importă valorile din fișierul aparatului fără imagini. Dublurile se evită după data și ora măsurării, nu după numele fișierului. Numele introdus în aparat este separat automat în Operator + Reper complet + Sarjă, folosind reperele din Helper Data. Sarja se preia imediat după reper, iar sufixele de tip _005 sunt ignorate.
         </div>
       </div>
 
@@ -110,7 +110,7 @@
   const OVERLAP = 4096;
   const MONTHS = ['','Ianuarie','Februarie','Martie','Aprilie','Mai','Iunie','Iulie','August','Septembrie','Octombrie','Noiembrie','Decembrie'];
   const COLUMNS = [
-    ['measurement_date_ro','Data'],['measurement_time','Ora'],['operator_name','Operator'],['reper_complet','Reper complet'],['name_original','Nume aparat'],['hardness_scale','Scară'],['hardness_value','Duritate'],['hb','HB'],['hrc','HRC'],['hv','HV'],['diameter','Diametru'],['force','Forță'],['sphere','Sferă'],['d1','D1'],['d2','D2'],['pixelmm','Pixel/mm'],['zoom','Zoom'],['hmax','HMax'],['hmin','HMin'],['status','Status'],['source_file','Fișier sursă'],['imported_at_ro','Importat la']
+    ['measurement_date_ro','Data'],['measurement_time','Ora'],['operator_name','Operator'],['reper_complet','Reper complet'],['sarja','Sarjă'],['name_original','Nume aparat'],['hardness_scale','Scară'],['hardness_value','Duritate'],['hb','HB'],['hrc','HRC'],['hv','HV'],['diameter','Diametru'],['force','Forță'],['sphere','Sferă'],['d1','D1'],['d2','D2'],['pixelmm','Pixel/mm'],['zoom','Zoom'],['hmax','HMax'],['hmin','HMin'],['status','Status'],['source_file','Fișier sursă'],['imported_at_ro','Importat la']
   ];
 
   const state = { supa:null, user:null, role:'viewer', access:{can_view:false,can_edit:false}, repere:[], cloudRows:[], importRows:[], existingKeys:new Set(), filters:{year:'',month:'',operator:'',reper:'',scale:'',status:''} };
@@ -139,9 +139,35 @@
     if(Number(raw.Sphere) === 10 && Number(raw.Force) >= 2500) return 'HB';
     return 'NECUNOSCUT';
   }
+  function locateTokenInBase(base, token){
+    const tokenNorm = norm(token);
+    if(!tokenNorm) return null;
+    const chars = [];
+    for(let i=0;i<base.length;i++){
+      const ch = base[i];
+      const n = norm(ch);
+      if(n){ chars.push({ ch:n, idx:i }); }
+    }
+    const compact = chars.map(x=>x.ch).join('');
+    const pos = compact.indexOf(tokenNorm);
+    if(pos < 0) return null;
+    const startIdx = chars[pos] ? chars[pos].idx : -1;
+    const endIdx = chars[pos + tokenNorm.length - 1] ? chars[pos + tokenNorm.length - 1].idx + 1 : -1;
+    if(startIdx < 0 || endIdx < 0) return null;
+    return { startIdx, endIdx, tokenNorm };
+  }
+  function cleanSarjaPart(v){
+    return String(v||'')
+      .replace(/_\d+$/,'')
+      .replace(/^[\s_\-\/.,;:]+/,'')
+      .replace(/[\s_\-\/.,;:]+$/,'')
+      .replace(/\s+/g,' ')
+      .trim()
+      .toUpperCase();
+  }
   function findReperAndOperator(original){
     const base = cleanName(original); const baseNorm = norm(base);
-    if(!baseNorm) return { operator_name:'', reper_complet:'', reper_short:'', status:'neidentificat', note:'Nume gol' };
+    if(!baseNorm) return { operator_name:'', reper_complet:'', reper_short:'', sarja:'', status:'neidentificat', note:'Nume gol' };
     const candidates = [];
     for(const reper of state.repere){
       const rn = reper.norm;
@@ -162,15 +188,21 @@
     for(const c of candidates){ if(!seen.has(c.reper.value)){ unique.push(c); seen.add(c.reper.value); } }
     if(!unique.length){
       const op = base.replace(/[\s_\-\/]+$/,'').trim().toUpperCase();
-      return { operator_name:op, reper_complet:'', reper_short:tokens[0]||'', status:'neidentificat', note:'Reper negăsit în Helper Data' };
+      return { operator_name:op, reper_complet:'', reper_short:tokens[0]||'', sarja:'', status:'neidentificat', note:'Reper negăsit în Helper Data' };
     }
     if(unique.length > 1 && unique[0].score === unique[1].score && unique[0].token === unique[1].token){
-      return { operator_name:'', reper_complet:unique.map(x=>x.reper.value).slice(0,3).join(' / '), reper_short:unique[0].token, status:'neclar', note:'Mai multe repere posibile' };
+      return { operator_name:'', reper_complet:unique.map(x=>x.reper.value).slice(0,3).join(' / '), reper_short:unique[0].token, sarja:'', status:'neclar', note:'Mai multe repere posibile' };
     }
     const best=unique[0];
-    let operator = base;
     const token = best.token || '';
-    if(token){
+    let operator = '';
+    let sarja = '';
+    const loc = locateTokenInBase(base, token) || locateTokenInBase(base, best.reper.norm);
+    if(loc){
+      operator = base.slice(0, loc.startIdx);
+      sarja = cleanSarjaPart(base.slice(loc.endIdx));
+    }else{
+      operator = base;
       const tokenParts = token.match(/[A-Z]+|\d+/g) || [token];
       for(const part of tokenParts.sort((a,b)=>b.length-a.length)){
         operator = operator.replace(new RegExp(part.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'),'i'),' ');
@@ -178,7 +210,7 @@
     }
     operator = operator.replace(/[_\-\/]+/g,' ').replace(/\s+/g,' ').trim().toUpperCase();
     if(norm(operator) === best.reper.norm) operator='';
-    return { operator_name:operator, reper_complet:best.reper.value, reper_short:token, status:'ok', note:'' };
+    return { operator_name:operator, reper_complet:best.reper.value, reper_short:token, sarja:sarja, status:'ok', note:'' };
   }
 
   async function initSupabase(){
@@ -301,7 +333,7 @@
         const scale=detectScale(raw); const hv=scale==='HV'?Number(raw.Hardness):null; const hrc=scale==='HRC'?Number(raw.Hardness):null; const hb=scale==='HB'?Number(raw.Hardness):null;
         rows.push({
           measurement_key:key, measurement_datetime:dt.iso, measurement_date:dt.date, measurement_date_ro:dt.ro, measurement_time:dt.time, year:dt.year, month:dt.month,
-          operator_name:split.operator_name, reper_complet:split.reper_complet, reper_short:split.reper_short, name_original:String(raw.Name||''), name_clean:cleanName(raw.Name),
+          operator_name:split.operator_name, reper_complet:split.reper_complet, reper_short:split.reper_short, sarja:split.sarja || '', name_original:String(raw.Name||''), name_clean:cleanName(raw.Name),
           hardness_scale:scale, hardness_value:Number(raw.Hardness), hb:hb, hrc:hrc, hv:hv, diameter:Number(raw.Diameter), force:Number(raw.Force), sphere:Number(raw.Sphere), d1:Number(raw.D1), d2:Number(raw.D2), pixelmm:Number(raw.Pixelmm), zoom:Number(raw.Zoom), hmax:Number(raw.HMax), hmin:Number(raw.HMin), circle_mode:!!raw.CircleMode, passa_non_passa:Number(raw.PassaNonPassa), xleft:Number(raw.XLeft), xright:Number(raw.XRight), yup:Number(raw.YUp), ydown:Number(raw.YDown), source_file:file.name, imported_at_ro:'', raw_json:raw,
           status: state.existingKeys.has(key) ? 'duplicat' : (split.status==='ok' ? 'nou' : 'neidentificat'), note:split.note || ''
         });
@@ -314,23 +346,23 @@
     return rows.sort((a,b)=>String(a.measurement_datetime).localeCompare(String(b.measurement_datetime)));
   }
   function payload(row){
-    return { measurement_key:row.measurement_key, measurement_datetime:row.measurement_datetime, measurement_date:row.measurement_date, measurement_time:row.measurement_time, year:row.year, month:row.month, operator_name:row.operator_name||null, reper_complet:row.reper_complet||null, reper_short:row.reper_short||null, name_original:row.name_original||null, name_clean:row.name_clean||null, hardness_scale:row.hardness_scale||null, hardness_value:numOrNull(row.hardness_value), hb:numOrNull(row.hb), hrc:numOrNull(row.hrc), hv:numOrNull(row.hv), diameter:numOrNull(row.diameter), force:numOrNull(row.force), sphere:numOrNull(row.sphere), d1:numOrNull(row.d1), d2:numOrNull(row.d2), pixelmm:numOrNull(row.pixelmm), zoom:numOrNull(row.zoom), hmax:numOrNull(row.hmax), hmin:numOrNull(row.hmin), circle_mode:row.circle_mode, passa_non_passa:numOrNull(row.passa_non_passa), xleft:numOrNull(row.xleft), xright:numOrNull(row.xright), yup:numOrNull(row.yup), ydown:numOrNull(row.ydown), source_file:row.source_file||null, imported_by_email:String(state.user&&state.user.email||'').toLowerCase(), raw_json:row.raw_json||{} };
+    return { measurement_key:row.measurement_key, measurement_datetime:row.measurement_datetime, measurement_date:row.measurement_date, measurement_time:row.measurement_time, year:row.year, month:row.month, operator_name:row.operator_name||null, reper_complet:row.reper_complet||null, reper_short:row.reper_short||null, sarja:row.sarja||null, name_original:row.name_original||null, name_clean:row.name_clean||null, hardness_scale:row.hardness_scale||null, hardness_value:numOrNull(row.hardness_value), hb:numOrNull(row.hb), hrc:numOrNull(row.hrc), hv:numOrNull(row.hv), diameter:numOrNull(row.diameter), force:numOrNull(row.force), sphere:numOrNull(row.sphere), d1:numOrNull(row.d1), d2:numOrNull(row.d2), pixelmm:numOrNull(row.pixelmm), zoom:numOrNull(row.zoom), hmax:numOrNull(row.hmax), hmin:numOrNull(row.hmin), circle_mode:row.circle_mode, passa_non_passa:numOrNull(row.passa_non_passa), xleft:numOrNull(row.xleft), xright:numOrNull(row.xright), yup:numOrNull(row.yup), ydown:numOrNull(row.ydown), source_file:row.source_file||null, imported_by_email:String(state.user&&state.user.email||'').toLowerCase(), raw_json:row.raw_json||{} };
   }
   function numOrNull(v){ const n=Number(v); return Number.isFinite(n)?n:null; }
   async function saveNewRows(){
     if(!state.access.can_edit){ toast('Nu ai drept de editare.'); return; }
-    const rows=state.importRows.filter(r=>r.status==='nou' || r.status==='neidentificat');
-    if(!rows.length){ toast('Nu există rânduri noi de salvat.'); return; }
+    const rows=state.importRows.filter(r=>r.status==='nou' || r.status==='neidentificat' || r.status==='duplicat');
+    if(!rows.length){ toast('Nu există rânduri importate de salvat/actualizat.'); return; }
     $.btnSave.disabled=true; setSync('Salvez în cloud...','warn');
     let saved=0;
     for(let i=0;i<rows.length;i+=300){
       const chunk=rows.slice(i,i+300).map(payload);
-      const { error } = await state.supa.from(TABLE).upsert(chunk,{onConflict:'measurement_key',ignoreDuplicates:true});
+      const { error } = await state.supa.from(TABLE).upsert(chunk,{onConflict:'measurement_key'});
       if(error){ $.btnSave.disabled=false; setSync('Eroare salvare','err'); toast(error.message || 'Eroare la salvare'); return; }
       saved += chunk.length;
     }
     rows.forEach(r=>{ r.status='salvat'; state.existingKeys.add(r.measurement_key); });
-    await loadCloud(); render(); setSync('Salvat','ok'); toast(`Salvate ${saved} măsurători.`);
+    await loadCloud(); render(); setSync('Salvat','ok'); toast(`Salvate/actualizate ${saved} măsurători.`);
   }
   function mergedRows(){ return [...state.importRows, ...state.cloudRows.filter(r=>!state.importRows.some(x=>x.measurement_key===r.measurement_key))]; }
   function filteredRows(){
@@ -356,7 +388,7 @@
     }).join('')+'</tr>').join('');
     const all=mergedRows();
     el('statCloud').textContent=state.cloudRows.length; el('statParsed').textContent=state.importRows.length; el('statNew').textContent=state.importRows.filter(r=>r.status==='nou').length; el('statDup').textContent=state.importRows.filter(r=>r.status==='duplicat').length; el('statBad').textContent=state.importRows.filter(r=>r.status==='neidentificat'||r.status==='neclar').length;
-    $.btnSave.disabled = !state.access.can_edit || !state.importRows.some(r=>r.status==='nou'||r.status==='neidentificat');
+    $.btnSave.disabled = !state.access.can_edit || !state.importRows.length;
   }
   function populateYearFilter(){
     const years=[...new Set(mergedRows().map(r=>r.year).filter(Boolean))].sort((a,b)=>b-a);
