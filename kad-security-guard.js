@@ -356,6 +356,9 @@
     if(status.is_banned === true || status.is_active === false){
       return { allowed:false, role:role, permissions:buildPermissions(null), message:status.note || 'Cont blocat.', accountStatus:status };
     }
+    if(pageKey === 'helper-acl' && role !== 'admin'){
+      return { allowed:false, role:role, permissions:buildPermissions(null), message:'Helper ACL este permis doar pentru admin.', accountStatus:status, source:'admin only' };
+    }
     if(pageKey === 'index'){
       return { allowed:true, role:role, permissions:{ can_view:true, can_add:false, can_edit:false, can_delete:false, can_export:false, can_import:false }, accountStatus:status, source:'authenticated index' };
     }
