@@ -1,253 +1,318 @@
-(function () {
+(function(){
   'use strict';
 
-  var CONFIG = Object.assign({
-    inactivityMinutes: 15,
-    warningSeconds: 60,
-    redirectTo: 'access-gate.html',
-    loginRedirectTo: 'access-gate.html',
-    storageKey: 'rf_auto_logout_last_activity',
-    disabledPages: ['access-gate.html', 'login.html', 'mfa-setup.html', 'mfa-verify.html'],
-    version: '20260502-auto-logout-1'
-  }, window.RF_AUTO_LOGOUT_CONFIG || {});
+  if (window.__KAD_AUTO_LOGOUT_LOADED__) return;
+  window.__KAD_AUTO_LOGOUT_LOADED__ = true;
 
-  var pageName = (window.location.pathname.split('/').pop() || 'index.html').toLowerCase();
-  if (CONFIG.disabledPages.indexOf(pageName) !== -1) return;
+  var PAGE = String((location.pathname.split('/').pop() || '').toLowerCase());
+  var EXCLUDED = {
+    'access-gate.html': true,
+    'login.html': true,
+    'mfa-setup.html': true,
+    'mfa-verify.html': true,
+    'kad_system_presentation.html': true
+  };
+  if (EXCLUDED[PAGE]) return;
 
-  var inactivityMs = Math.max(1, Number(CONFIG.inactivityMinutes || 15)) * 60 * 1000;
-  var warningMs = Math.max(10, Number(CONFIG.warningSeconds || 60)) * 1000;
-  var warningTimer = null;
-  var countdownTimer = null;
+  var IDLE_LIMIT_MS = 15 * 60 * 1000;
+  var WARNING_MS = 60 * 1000;
+  var CHECK_EVERY_MS = 1000;
+  var ACTIVITY_WRITE_THROTTLE_MS = 5000;
+
+  var LAST_ACTIVITY_KEY = 'kad_auto_logout_last_activity';
+  var LOGOUT_SIGNAL_KEY = 'kad_auto_logout_signal';
+  var DISABLED_KEY = 'kad_auto_logout_disabled';
+  var GATE_KEYS = [
+    'rf_project_gate_access',
+    'rf_project_gate_access_session',
+    'rf_project_gate_token',
+    'rf_project_gate_token_session'
+  ];
+
+  var warningVisible = false;
+  var loggedOut = false;
   var overlay = null;
   var countdownNode = null;
-  var loggingOut = false;
-  var isWarningVisible = false;
-  var lastMove = 0;
+  var lastWrite = 0;
 
-  function now() { return Date.now(); }
+  function now(){ return Date.now(); }
 
-  function safeStoreSet(key, value) {
-    try { localStorage.setItem(key, value); } catch (_) {}
+  function safeGet(key){
+    try { return localStorage.getItem(key); } catch(_) { return null; }
   }
 
-  function safeStoreGet(key) {
-    try { return localStorage.getItem(key); } catch (_) { return null; }
+  function safeSet(key, value){
+    try { localStorage.setItem(key, value); } catch(_) {}
   }
 
-  function safeRemove(storage, key) {
-    try { storage.removeItem(key); } catch (_) {}
+  function safeRemove(key){
+    try { localStorage.removeItem(key); } catch(_) {}
+    try { sessionStorage.removeItem(key); } catch(_) {}
   }
 
-  function getLastActivity() {
-    var value = Number(safeStoreGet(CONFIG.storageKey) || 0);
-    if (!value || !isFinite(value)) {
-      value = now();
-      safeStoreSet(CONFIG.storageKey, String(value));
+  function autoLogoutDisabled(){
+    return safeGet(DISABLED_KEY) === '1';
+  }
+
+  function getLang(){
+    try {
+      var v = localStorage.getItem('kad_language') || localStorage.getItem('rf_language') || document.documentElement.getAttribute('lang') || 'ro';
+      v = String(v || 'ro').toLowerCase();
+      if (v.indexOf('en') === 0) return 'en';
+      if (v.indexOf('fr') === 0) return 'fr';
+      if (v.indexOf('it') === 0) return 'it';
+      if (v.indexOf('de') === 0) return 'de';
+      if (v.indexOf('hu') === 0) return 'hu';
+    } catch(_) {}
+    return 'ro';
+  }
+
+  function text(){
+    var l = getLang();
+    var map = {
+      ro: {
+        title: 'Sesiune inactivă',
+        body: 'Ai fost inactiv. Vei fi delogat automat.',
+        remain: 'Timp rămas:',
+        stay: 'Rămân logat',
+        logout: 'Delogare acum'
+      },
+      en: {
+        title: 'Inactive session',
+        body: 'You have been inactive. You will be logged out automatically.',
+        remain: 'Time remaining:',
+        stay: 'Stay logged in',
+        logout: 'Logout now'
+      },
+      fr: {
+        title: 'Session inactive',
+        body: 'Vous êtes inactif. Vous serez déconnecté automatiquement.',
+        remain: 'Temps restant :',
+        stay: 'Rester connecté',
+        logout: 'Déconnexion maintenant'
+      },
+      it: {
+        title: 'Sessione inattiva',
+        body: 'Sei inattivo. Verrai disconnesso automaticamente.',
+        remain: 'Tempo restante:',
+        stay: 'Rimani connesso',
+        logout: 'Disconnetti ora'
+      },
+      de: {
+        title: 'Inaktive Sitzung',
+        body: 'Sie waren inaktiv. Sie werden automatisch abgemeldet.',
+        remain: 'Verbleibende Zeit:',
+        stay: 'Angemeldet bleiben',
+        logout: 'Jetzt abmelden'
+      },
+      hu: {
+        title: 'Inaktív munkamenet',
+        body: 'Inaktív voltál. Automatikusan kijelentkeztetünk.',
+        remain: 'Hátralévő idő:',
+        stay: 'Bejelentkezve maradok',
+        logout: 'Kijelentkezés most'
+      }
+    };
+    return map[l] || map.ro;
+  }
+
+  function readLastActivity(){
+    var n = Number(safeGet(LAST_ACTIVITY_KEY));
+    if (!Number.isFinite(n) || n <= 0) {
+      n = now();
+      safeSet(LAST_ACTIVITY_KEY, String(n));
     }
-    return value;
+    return n;
   }
 
-  function markActivity() {
-    safeStoreSet(CONFIG.storageKey, String(now()));
+  function markActivity(force){
+    if (loggedOut || autoLogoutDisabled()) return;
+    var t = now();
+    if (!force && t - lastWrite < ACTIVITY_WRITE_THROTTLE_MS) return;
+    lastWrite = t;
+    safeSet(LAST_ACTIVITY_KEY, String(t));
+    hideWarning();
   }
 
-  function clearTimer(timer) {
-    if (timer) window.clearTimeout(timer);
-  }
-
-  function clearIntervalSafe(timer) {
-    if (timer) window.clearInterval(timer);
-  }
-
-  function ensureOverlay() {
+  function ensureOverlay(){
     if (overlay) return overlay;
-
-    var style = document.createElement('style');
-    style.id = 'rf-auto-logout-style';
-    style.textContent = '' +
-      '.rf-auto-logout-backdrop{position:fixed;inset:0;z-index:2147483000;background:rgba(4,10,24,.58);display:flex;align-items:center;justify-content:center;padding:18px;font-family:Inter,Arial,sans-serif;}' +
-      '.rf-auto-logout-card{width:min(440px,calc(100vw - 36px));background:#ffffff;color:#0f172a;border-radius:18px;box-shadow:0 24px 70px rgba(0,0,0,.34);border:1px solid rgba(148,163,184,.55);padding:22px;text-align:left;}' +
-      '.rf-auto-logout-title{font-size:20px;font-weight:800;margin:0 0 8px;}' +
-      '.rf-auto-logout-text{font-size:14px;line-height:1.45;color:#475569;margin:0 0 16px;}' +
-      '.rf-auto-logout-count{font-weight:900;color:#b91c1c;}' +
-      '.rf-auto-logout-actions{display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap;}' +
-      '.rf-auto-logout-btn{border:0;border-radius:12px;padding:10px 14px;font-size:14px;font-weight:800;cursor:pointer;}' +
-      '.rf-auto-logout-keep{background:#0f172a;color:white;}' +
-      '.rf-auto-logout-out{background:#fee2e2;color:#991b1b;border:1px solid #fecaca;}' +
-      '@media(max-width:520px){.rf-auto-logout-actions{justify-content:stretch}.rf-auto-logout-btn{flex:1}}';
-    (document.head || document.documentElement).appendChild(style);
+    var css = document.createElement('style');
+    css.id = 'kad-auto-logout-style';
+    css.textContent = [
+      '#kad-auto-logout-overlay{position:fixed;inset:0;z-index:2147483647;background:rgba(4,15,28,.58);display:flex;align-items:center;justify-content:center;padding:20px;font-family:"Segoe UI",Arial,sans-serif}',
+      '#kad-auto-logout-box{width:min(520px,96vw);border:1px solid rgba(255,255,255,.45);border-radius:22px;background:linear-gradient(135deg,#eef7ff,#cfe6fb);box-shadow:0 26px 70px rgba(0,0,0,.35);color:#0d2440;padding:26px;text-align:center}',
+      '#kad-auto-logout-box h2{margin:0 0 10px;font-size:26px;line-height:1.15}',
+      '#kad-auto-logout-box p{margin:8px 0;font-size:16px;font-weight:700}',
+      '#kad-auto-logout-count{display:inline-flex;align-items:center;justify-content:center;min-width:70px;margin-top:8px;padding:8px 12px;border-radius:999px;background:#fff;color:#b91c1c;font-weight:900}',
+      '#kad-auto-logout-actions{display:flex;gap:12px;justify-content:center;flex-wrap:wrap;margin-top:20px}',
+      '#kad-auto-logout-actions button{border:1px solid rgba(15,35,65,.35);border-radius:14px;padding:12px 18px;font-weight:900;cursor:pointer;background:#fff;color:#0d2440}',
+      '#kad-auto-logout-actions button.danger{background:#b91c1c;color:#fff;border-color:#b91c1c}'
+    ].join('\n');
+    (document.head || document.documentElement).appendChild(css);
 
     overlay = document.createElement('div');
-    overlay.className = 'rf-auto-logout-backdrop';
+    overlay.id = 'kad-auto-logout-overlay';
     overlay.setAttribute('role', 'dialog');
     overlay.setAttribute('aria-modal', 'true');
-    overlay.innerHTML = '' +
-      '<div class="rf-auto-logout-card">' +
-        '<h2 class="rf-auto-logout-title">Sesiune inactivă</h2>' +
-        '<p class="rf-auto-logout-text">Nu ai mai fost activ pe pagină. Vei fi delogat automat în <span class="rf-auto-logout-count">60</span> secunde.</p>' +
-        '<div class="rf-auto-logout-actions">' +
-          '<button type="button" class="rf-auto-logout-btn rf-auto-logout-out">Delogare acum</button>' +
-          '<button type="button" class="rf-auto-logout-btn rf-auto-logout-keep">Rămân logat</button>' +
-        '</div>' +
-      '</div>';
-
-    countdownNode = overlay.querySelector('.rf-auto-logout-count');
-    overlay.querySelector('.rf-auto-logout-keep').addEventListener('click', function () {
-      registerActivity(true);
-    });
-    overlay.querySelector('.rf-auto-logout-out').addEventListener('click', function () {
-      performLogout();
-    });
-
+    overlay.style.display = 'none';
+    overlay.innerHTML = '<div id="kad-auto-logout-box">'
+      + '<h2></h2>'
+      + '<p class="body"></p>'
+      + '<p><span class="remain"></span> <span id="kad-auto-logout-count">60s</span></p>'
+      + '<div id="kad-auto-logout-actions">'
+      + '<button type="button" class="stay"></button>'
+      + '<button type="button" class="danger logout"></button>'
+      + '</div>'
+      + '</div>';
+    (document.body || document.documentElement).appendChild(overlay);
+    countdownNode = overlay.querySelector('#kad-auto-logout-count');
+    overlay.querySelector('button.stay').addEventListener('click', function(){ markActivity(true); });
+    overlay.querySelector('button.logout').addEventListener('click', function(){ doLogout(); });
     return overlay;
   }
 
-  function hideWarning() {
-    isWarningVisible = false;
-    clearIntervalSafe(countdownTimer);
-    countdownTimer = null;
-    if (overlay && overlay.parentNode) overlay.parentNode.removeChild(overlay);
-  }
-
-  function scheduleWarning() {
-    if (loggingOut) return;
-    clearTimer(warningTimer);
-    var remaining = getLastActivity() + inactivityMs - now();
-    if (remaining <= 0) {
-      showWarning();
-      return;
-    }
-    warningTimer = window.setTimeout(showWarning, Math.min(remaining, 2147483647));
-  }
-
-  function showWarning() {
-    if (loggingOut || isWarningVisible) return;
-    isWarningVisible = true;
+  function showWarning(remainingMs){
+    if (loggedOut) return;
+    var t = text();
     ensureOverlay();
-    if (!overlay.parentNode) document.body.appendChild(overlay);
-
-    var endAt = now() + warningMs;
-    function tick() {
-      var secondsLeft = Math.max(0, Math.ceil((endAt - now()) / 1000));
-      if (countdownNode) countdownNode.textContent = String(secondsLeft);
-      if (secondsLeft <= 0) {
-        performLogout();
-      }
-    }
-    tick();
-    countdownTimer = window.setInterval(tick, 1000);
+    overlay.querySelector('h2').textContent = t.title;
+    overlay.querySelector('p.body').textContent = t.body;
+    overlay.querySelector('.remain').textContent = t.remain;
+    overlay.querySelector('button.stay').textContent = t.stay;
+    overlay.querySelector('button.logout').textContent = t.logout;
+    if (countdownNode) countdownNode.textContent = Math.max(0, Math.ceil(remainingMs / 1000)) + 's';
+    overlay.style.display = 'flex';
+    warningVisible = true;
   }
 
-  function registerActivity(force) {
-    var t = now();
-    if (!force && t - lastMove < 750) return;
-    lastMove = t;
-    markActivity();
-    if (isWarningVisible) hideWarning();
-    scheduleWarning();
+  function hideWarning(){
+    if (!warningVisible) return;
+    warningVisible = false;
+    if (overlay) overlay.style.display = 'none';
   }
 
-  function clearLocalSessionMarkers() {
-    var keys = [
-      'rf_user_id',
-      'rf_user_email',
-      'rf_user_role',
-      'rf_login_at',
-      'rf_helper_acl_mfa_entry_ok',
-      'rf_project_gate_access',
-      'rf_project_gate_access_session',
-      'rf_project_gate_token'
-    ];
-    keys.forEach(function (key) {
-      safeRemove(window.localStorage, key);
-      safeRemove(window.sessionStorage, key);
+  function clearSupabaseAuthStorage(){
+    [localStorage, sessionStorage].forEach(function(store){
+      try {
+        for (var i = store.length - 1; i >= 0; i -= 1) {
+          var k = store.key(i);
+          if (!k) continue;
+          if ((k.indexOf('sb-') === 0 && k.indexOf('-auth-token') !== -1) || k.indexOf('supabase.auth.token') !== -1) {
+            store.removeItem(k);
+          }
+        }
+      } catch(_) {}
     });
   }
 
-  function getSupabaseClient() {
-    try {
-      if (window.ERPAuth && typeof window.ERPAuth.getSupabaseClient === 'function') {
-        return window.ERPAuth.getSupabaseClient();
-      }
-    } catch (_) {}
-
-    try {
-      if (window.createRfSupabaseClient && typeof window.createRfSupabaseClient === 'function') {
-        return window.createRfSupabaseClient();
-      }
-    } catch (_) {}
-
-    try {
-      if (window.__RF_SUPABASE_SINGLETON__ && window.__RF_SUPABASE_SINGLETON__.client) {
-        return window.__RF_SUPABASE_SINGLETON__.client;
-      }
-    } catch (_) {}
-
-    try {
-      var cfg = window.RF_CONFIG || window.ERP_FORJA_CONFIG || window.__ERP_FORJA_CONFIG__ || {};
-      var url = cfg.SUPABASE_URL || cfg.supabaseUrl || window.RF_SUPABASE_URL || window.SUPABASE_URL || '';
-      var key = cfg.SUPABASE_ANON_KEY || cfg.supabaseAnonKey || window.RF_SUPABASE_ANON_KEY || window.SUPABASE_ANON_KEY || '';
-      if (url && key && window.supabase && typeof window.supabase.createClient === 'function') {
-        return window.supabase.createClient(url, key, {
-          auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true }
-        });
-      }
-    } catch (_) {}
-
-    return null;
+  function clearGateAndLocalAuthState(){
+    GATE_KEYS.forEach(safeRemove);
+    ['rf_user_id','rf_user_email','rf_user_role','rf_login_at','rf_uid','rf_email','rf_role','rf_login_ts','kad_admin_mfa_verified','kad_admin_mfa_verified_at','kad_helper_acl_mfa_ok','kad_helper_acl_mfa_at'].forEach(safeRemove);
+    clearSupabaseAuthStorage();
+    try { sessionStorage.setItem('rf_force_stay_on_login', '1'); } catch(_) {}
+    try { localStorage.setItem('rf_force_stay_on_login', '1'); } catch(_) {}
   }
 
-  async function performLogout() {
-    if (loggingOut) return;
-    loggingOut = true;
-    hideWarning();
-    clearTimer(warningTimer);
+  function getSupabaseConfig(){
+    var cfg = window.ERP_FORJA_CONFIG || window.__ERP_FORJA_CONFIG__ || window.RF_CONFIG || {};
+    var url = cfg.SUPABASE_URL || cfg.supabaseUrl || cfg.supabase_url || cfg.url || '';
+    var key = cfg.SUPABASE_ANON_KEY || cfg.supabaseAnonKey || cfg.supabase_anon_key || cfg.anonKey || '';
+    return { url: String(url || '').trim(), key: String(key || '').trim() };
+  }
+
+  async function signOutWithCreatedClient(){
+    try {
+      if (!window.supabase || typeof window.supabase.createClient !== 'function') return false;
+      var cfg = getSupabaseConfig();
+      if (!cfg.url || !cfg.key) return false;
+      var client = window.supabase.createClient(cfg.url, cfg.key, {
+        auth: { persistSession:true, autoRefreshToken:false, detectSessionInUrl:false }
+      });
+      await client.auth.signOut();
+      return true;
+    } catch(_) {
+      return false;
+    }
+  }
+
+  async function doLogout(){
+    if (loggedOut) return;
+    loggedOut = true;
+    clearGateAndLocalAuthState();
+    safeSet(LOGOUT_SIGNAL_KEY, String(now()));
 
     try {
       if (window.ERPAuth && typeof window.ERPAuth.signOut === 'function') {
-        await window.ERPAuth.signOut({ redirectTo: CONFIG.redirectTo || CONFIG.loginRedirectTo || 'access-gate.html' });
+        await window.ERPAuth.signOut({ redirectTo: 'access-gate.html?logout=idle' });
         return;
       }
-    } catch (_) {}
+    } catch(_) {}
 
     try {
-      var sb = getSupabaseClient();
-      if (sb && sb.auth && typeof sb.auth.signOut === 'function') {
-        await sb.auth.signOut();
+      if (window.__SUPA__ && window.__SUPA__.auth && typeof window.__SUPA__.auth.signOut === 'function') {
+        await window.__SUPA__.auth.signOut();
       }
-    } catch (_) {}
+    } catch(_) {}
 
-    clearLocalSessionMarkers();
-    var target = CONFIG.redirectTo || CONFIG.loginRedirectTo || 'access-gate.html';
-    try { window.location.replace(target); } catch (_) { window.location.href = target; }
+    await signOutWithCreatedClient();
+    clearGateAndLocalAuthState();
+
+    try { window.location.replace('access-gate.html?logout=idle'); }
+    catch(_) { window.location.href = 'access-gate.html?logout=idle'; }
   }
 
-  function bindActivityEvents() {
-    ['mousedown','mousemove','keydown','scroll','touchstart','touchmove','pointerdown','wheel'].forEach(function (eventName) {
-      window.addEventListener(eventName, function () { registerActivity(false); }, { passive: true, capture: true });
-    });
-
-    window.addEventListener('storage', function (event) {
-      if (event && event.key === CONFIG.storageKey) {
-        if (isWarningVisible) hideWarning();
-        scheduleWarning();
-      }
-    });
-
-    document.addEventListener('visibilitychange', function () {
-      if (!document.hidden) scheduleWarning();
-    });
+  function checkIdle(){
+    if (loggedOut || autoLogoutDisabled()) return;
+    var last = readLastActivity();
+    var elapsed = now() - last;
+    if (elapsed >= IDLE_LIMIT_MS + WARNING_MS) {
+      doLogout();
+      return;
+    }
+    if (elapsed >= IDLE_LIMIT_MS) {
+      showWarning(IDLE_LIMIT_MS + WARNING_MS - elapsed);
+    } else {
+      hideWarning();
+    }
   }
 
-  function init() {
-    markActivity();
+  function onStorage(ev){
+    if (!ev) return;
+    if (ev.key === LOGOUT_SIGNAL_KEY && ev.newValue) {
+      clearGateAndLocalAuthState();
+      try { window.location.replace('access-gate.html?logout=idle'); }
+      catch(_) { window.location.href = 'access-gate.html?logout=idle'; }
+    }
+    if (ev.key === LAST_ACTIVITY_KEY) {
+      checkIdle();
+    }
+  }
+
+  function bindActivityEvents(){
+    ['pointerdown','mousedown','keydown','wheel','touchstart','scroll'].forEach(function(evt){
+      window.addEventListener(evt, function(){ markActivity(false); }, { passive:true, capture:true });
+    });
+    window.addEventListener('mousemove', function(){ markActivity(false); }, { passive:true, capture:true });
+    window.addEventListener('focus', function(){ checkIdle(); }, true);
+    document.addEventListener('visibilitychange', function(){ if (!document.hidden) checkIdle(); }, true);
+    window.addEventListener('storage', onStorage, false);
+  }
+
+  function start(){
+    if (autoLogoutDisabled()) return;
+    if (!document.body) {
+      window.setTimeout(start, 50);
+      return;
+    }
+    if (!safeGet(LAST_ACTIVITY_KEY)) markActivity(true);
     bindActivityEvents();
-    scheduleWarning();
+    window.setInterval(checkIdle, CHECK_EVERY_MS);
+    checkIdle();
   }
 
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', init, { once: true });
+    document.addEventListener('DOMContentLoaded', start, { once:true });
   } else {
-    init();
+    start();
   }
 })();
