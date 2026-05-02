@@ -7,6 +7,7 @@
   <style>
     :root{--bg:#b7d7f0;--panel:#e7f1fb;--panel-2:#d8e9f8;--hdr:#cfe3f6;--white:#ffffff;--grid:#000000;--text:#0f172a;--muted:#475569;--btn:#2b6cb0;--btn2:#1e5a96;--btn-soft:#dbeafe;--ok:#166534;--warn:#92400e;--err:#b91c1c;--shadow:0 10px 24px rgba(15,23,42,.14);--radius:16px;}
     *{box-sizing:border-box} html,body{height:100%} body{margin:0;font-family:Arial,Helvetica,sans-serif;color:var(--text);background:linear-gradient(180deg,#bddbf2 0%,#a9cfe9 100%)}
+    body.mfa-guard-pending .app{visibility:hidden;}
     .app{min-height:100%;display:flex;flex-direction:column;padding:14px;gap:12px}
     .topbar,.statusbar,.workspace{border:2px solid var(--grid);border-radius:var(--radius);box-shadow:var(--shadow);background:var(--panel)}
     .topbar{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 16px;background:linear-gradient(180deg,var(--hdr) 0%,var(--panel) 100%)}
@@ -76,7 +77,7 @@
 
 <link rel="stylesheet" href="./kad-nav-shell.css">
 </head>
-<body>
+<body class="mfa-guard-pending">
   <div class="app">
     <header class="topbar">
       <div>
@@ -402,9 +403,45 @@
       return map;
     }
 
+    function unlockMfaGuardView(){
+      try { document.body.classList.remove('mfa-guard-pending'); } catch (_e) {}
+    }
+    function redirectToMfaPage(page){
+      const next = encodeURIComponent('helper-acl.html');
+      window.location.replace('./' + page + '?next=' + next);
+    }
+    async function requireMfaForHelperAcl(){
+      const result = await sb.auth.getSession();
+      if (result && result.error) throw result.error;
+      const session = result && result.data && result.data.session ? result.data.session : null;
+      if (!session || !session.user) {
+        window.location.replace('./login.html?next=' + encodeURIComponent('helper-acl.html'));
+        return false;
+      }
+      state.session = session;
+
+      const aal = await sb.auth.mfa.getAuthenticatorAssuranceLevel();
+      if (!aal || aal.error) throw (aal && aal.error ? aal.error : new Error('Nu am putut verifica nivelul MFA.'));
+      const currentLevel = String(aal.data && aal.data.currentLevel || '').toLowerCase();
+      if (currentLevel === 'aal2') return true;
+
+      const factors = await sb.auth.mfa.listFactors();
+      if (!factors || factors.error) throw (factors && factors.error ? factors.error : new Error('Nu am putut citi factorii MFA.'));
+      const totp = Array.isArray(factors.data && factors.data.totp) ? factors.data.totp : [];
+      const verified = totp.filter(f => String(f && f.status || '').toLowerCase() === 'verified');
+      if (!verified.length) {
+        redirectToMfaPage('mfa-setup.html');
+        return false;
+      }
+      redirectToMfaPage('mfa-verify.html');
+      return false;
+    }
+
     async function ensureSession(){
       if (!sb){ setStatus(els.authStatus, 'Config lipsă', 'err'); els.authSub.textContent = 'Lipsește configurația Supabase.'; return false; }
       try {
+        const mfaOk = await requireMfaForHelperAcl();
+        if (!mfaOk) return false;
         if (window.ERPAuth && typeof window.ERPAuth.requireAuth === 'function') {
           const auth = await window.ERPAuth.requireAuth({ next:'helper-acl.html', redirectToLogin:true });
           state.session = { user: auth.user };
@@ -415,8 +452,9 @@
             window.location.href = 'index.html';
             return false;
           }
-          setStatus(els.authStatus, 'Autentificat', 'ok');
-          els.authSub.textContent = (auth.user && auth.user.email) || 'Sesiune activă.';
+          setStatus(els.authStatus, 'Autentificat + MFA', 'ok');
+          els.authSub.textContent = ((auth.user && auth.user.email) || 'Sesiune activă.') + ' MFA confirmat.';
+          unlockMfaGuardView();
           return true;
         }
         const { data, error } = await sb.auth.getSession();
@@ -424,10 +462,17 @@
         const session = data && data.session ? data.session : null;
         if (!session || !session.user){ setStatus(els.authStatus, 'Nelogat', 'err'); els.authSub.textContent = 'Te redirecționez la login.'; setTimeout(() => { window.location.href = 'login.html'; }, 500); return false; }
         state.session = session;
-        setStatus(els.authStatus, 'Autentificat', 'ok');
-        els.authSub.textContent = session.user.email || 'Sesiune activă.';
+        setStatus(els.authStatus, 'Autentificat + MFA', 'ok');
+        els.authSub.textContent = (session.user.email || 'Sesiune activă.') + ' MFA confirmat.';
+        unlockMfaGuardView();
         return true;
-      } catch (err){ setStatus(els.authStatus, 'Eroare', 'err'); els.authSub.textContent = err && err.message ? err.message : 'Nu am putut citi sesiunea.'; return false; }
+      } catch (err){
+        console.error('Helper ACL MFA/Auth error:', err);
+        setStatus(els.authStatus, 'Eroare MFA', 'err');
+        els.authSub.textContent = err && err.message ? err.message : 'Nu am putut verifica sesiunea MFA.';
+        setTimeout(() => { redirectToMfaPage('mfa-verify.html'); }, 500);
+        return false;
+      }
     }
 
     async function maybeSelect(builder){
