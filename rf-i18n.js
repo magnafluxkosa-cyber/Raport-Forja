@@ -508,6 +508,35 @@
         .sort(function(a,b){ return b.source.length - a.source.length; });
     });
   }
+
+  // Additional high-frequency fixed texts from ERP pages.
+  addExact('Deconectare','Deconectare','Logout','Déconnexion','Disconnessione','Abmelden','Kijelentkezés');
+  addExact('FORJA','FORJĂ','FORGING','FORGE','FORGIATURA','SCHMIEDE','KOVÁCSOLÁS');
+  addExact('PRELUCRARI MECANICE','PRELUCRĂRI MECANICE','MACHINING','USINAGE MÉCANIQUE','LAVORAZIONI MECCANICHE','MECHANISCHE BEARBEITUNG','MECHANIKAI MEGMUNKÁLÁS');
+  addExact('TRATAMENT TERMIC','TRATAMENT TERMIC','HEAT TREATMENT','TRAITEMENT THERMIQUE','TRATTAMENTO TERMICO','WÄRMEBEHANDLUNG','HŐKEZELÉS');
+  addExact('PROBLEME, ÎMBUNĂTĂȚIRI ȘI INVESTIȚII','PROBLEME, ÎMBUNĂTĂȚIRI ȘI INVESTIȚII','PROBLEMS, IMPROVEMENTS AND INVESTMENTS','PROBLÈMES, AMÉLIORATIONS ET INVESTISSEMENTS','PROBLEMI, MIGLIORAMENTI E INVESTIMENTI','PROBLEME, VERBESSERUNGEN UND INVESTITIONEN','PROBLÉMÁK, FEJLESZTÉSEK ÉS BERUHÁZÁSOK');
+  addExact('RESURSE UMANE','RESURSE UMANE','HUMAN RESOURCES','RESSOURCES HUMAINES','RISORSE UMANE','PERSONALWESEN','EMBERI ERŐFORRÁS');
+  addExact('HELPER-DATA','HELPER-DATA','HELPER DATA','DONNÉES D’AIDE','DATI DI SUPPORTO','HILFSDATEN','SEGÉDADATOK');
+  addExact('HELPER-ACL','HELPER-ACL','HELPER ACL','ACL D’AIDE','ACL DI SUPPORTO','HILFS-ACL','SEGÉD ACL');
+  addExact('Selectează o categorie','Selectează o categorie','Select a category','Sélectionnez une catégorie','Seleziona una categoria','Kategorie auswählen','Válassz egy kategóriát');
+  addExact('Selectează o categorie din Forjă.','Selectează o categorie din Forjă.','Select a category from Forging.','Sélectionnez une catégorie dans Forge.','Seleziona una categoria da Forgiatura.','Wählen Sie eine Kategorie aus Schmiede.','Válassz kategóriát a Kovácsolásból.');
+  addExact('Selectează o categorie din Resurse Umane.','Selectează o categorie din Resurse Umane.','Select a category from Human Resources.','Sélectionnez une catégorie dans Ressources humaines.','Seleziona una categoria da Risorse umane.','Wählen Sie eine Kategorie aus Personalwesen.','Válassz kategóriát az Emberi erőforrásból.');
+  addExact('Toate lunile','Toate lunile','All months','Tous les mois','Tutti i mesi','Alle Monate','Összes hónap');
+  addExact('toate lunile','toate lunile','all months','tous les mois','tutti i mesi','alle Monate','összes hónap');
+  addExact('toți anii','toți anii','all years','toutes les années','tutti gli anni','alle Jahre','összes év');
+  addExact('toate','toate','all','tous','tutti','alle','összes');
+  addExact('toți','toți','all','tous','tutti','alle','összes');
+  addExact('Șterge selectatul','Șterge selectatul','Delete selected','Supprimer la sélection','Elimina selezionato','Ausgewähltes löschen','Kijelölt törlése');
+  addExact('Cloud: conectat','Cloud: conectat','Cloud: connected','Cloud : connecté','Cloud: connesso','Cloud: verbunden','Felhő: csatlakoztatva');
+  addExact('Cloud: pregătit','Cloud: pregătit','Cloud: ready','Cloud : prêt','Cloud: pronto','Cloud: bereit','Felhő: kész');
+  addExact('Cloud: local','Cloud: local','Cloud: local','Cloud : local','Cloud: locale','Cloud: lokal','Felhő: helyi');
+  addExact('Cont: Viewer','Cont: Viewer','Account: Viewer','Compte : lecteur','Account: Viewer','Konto: Viewer','Fiók: megtekintő');
+  addExact('Cont: viewer','Cont: viewer','Account: viewer','Compte : lecteur','Account: viewer','Konto: Betrachter','Fiók: megtekintő');
+  addExact('Cont: verificare...','Cont: verificare...','Account: checking...','Compte : vérification...','Account: verifica...','Konto: Prüfung...','Fiók: ellenőrzés...');
+  addExact('Cloud: verificare...','Cloud: verificare...','Cloud: checking...','Cloud : vérification...','Cloud: verifica...','Cloud: Prüfung...','Felhő: ellenőrzés...');
+  addExact('Alege','Alege','Choose','Choisir','Scegli','Auswählen','Válassz');
+  addExact('Alege furnizorul, anul și luna.','Alege furnizorul, anul și luna.','Choose the supplier, year and month.','Choisissez le fournisseur, l’année et le mois.','Scegli il fornitore, l’anno e il mese.','Wählen Sie Lieferant, Jahr und Monat.','Válaszd ki a beszállítót, az évet és a hónapot.');
+
   buildTerms();
 
   function escapeRe(s){ return String(s).replace(/[.*+?^${}()|[\]\\]/g,'\\$&'); }
@@ -616,10 +645,14 @@
 
   function translateTextNode(node, lang){
     if(shouldSkipNode(node)) return;
+    var p = node.parentElement;
     var original = node.__kadI18nOriginal;
     if(original == null){
       original = node.nodeValue;
       node.__kadI18nOriginal = original;
+      try{
+        if(p && p.tagName === 'OPTION' && !p.hasAttribute('value')) p.setAttribute('value', String(original).trim());
+      }catch(_){ }
     }
     var next = translateText(original, lang);
     if(node.nodeValue !== next) node.nodeValue = next;
@@ -671,17 +704,39 @@
   function updateSelector(lang){
     var s = document.getElementById('kadLanguageSelect');
     if(s && s.value !== lang) s.value = lang;
-    var lbl = document.getElementById('kadLanguageLabel');
-    if(lbl) lbl.textContent = translateText('Limba', lang);
+    var label = document.getElementById('kadLanguageLabel');
+    if(label){
+      var text = {ro:'Limba',en:'Language',fr:'Langue',it:'Lingua',de:'Sprache',hu:'Nyelv'}[lang] || 'Limba';
+      if(label.textContent !== text) label.textContent = text;
+    }
+  }
+
+  function bindSelector(){
+    var select = document.getElementById('kadLanguageSelect');
+    if(!select) return false;
+    try{
+      var box = document.getElementById('kadLanguageBox');
+      if(box) box.removeAttribute('data-i18n-skip');
+    }catch(_){ }
+    for(var i=0;i<select.options.length;i++){
+      var opt = select.options[i];
+      if(opt && SUPPORTED.indexOf(opt.value) >= 0) opt.textContent = LANG_NAMES[opt.value] || opt.textContent;
+    }
+    if(!select.__kadI18nBound){
+      select.addEventListener('change', function(){ setLang(this.value); });
+      select.__kadI18nBound = true;
+    }
+    updateSelector(getLang());
+    return true;
   }
 
   function ensureSelector(){
     var path = (location.pathname.split('/').pop() || 'index.html').toLowerCase();
     if(path && path !== 'index.html' && path !== '') return;
-    if(document.getElementById('kadLanguageSelect')) return;
+    if(bindSelector()) return;
     var holder = document.createElement('div');
     holder.id = 'kadLanguageBox';
-    holder.setAttribute('data-i18n-skip','1');
+    holder.className = 'kadLanguageBox';
     holder.innerHTML = '<span id="kadLanguageLabel">Limba</span><select id="kadLanguageSelect" aria-label="Limba"></select>';
     var select = holder.querySelector('select');
     SUPPORTED.forEach(function(code){
@@ -690,13 +745,16 @@
       opt.textContent = LANG_NAMES[code];
       select.appendChild(opt);
     });
-    select.value = getLang();
-    select.addEventListener('change', function(){ setLang(this.value); });
     var css = document.createElement('style');
-    css.textContent = '#kadLanguageBox{display:inline-flex;align-items:center;gap:10px;min-height:44px;padding:8px 14px;border-radius:999px;background:rgba(255,255,255,.18);border:1px solid rgba(255,255,255,.35);font-weight:800;color:inherit;white-space:nowrap;z-index:9999}#kadLanguageBox select{border:0;background:transparent;color:inherit;font-weight:800;outline:0;cursor:pointer}#kadLanguageBox option{color:#111;background:#fff}';
+    css.textContent = '#kadLanguageBox,.kadLanguageBox{display:inline-flex;align-items:center;gap:10px;padding:10px 14px;border-radius:999px;background:rgba(255,255,255,.18);border:1px solid rgba(255,255,255,.35);font-weight:800;color:inherit;min-height:42px}#kadLanguageBox select,.kadLanguageBox select{border:0;background:transparent;color:inherit;font-weight:800;outline:0;cursor:pointer}#kadLanguageBox option,.kadLanguageBox option{color:#111;background:#fff}';
     document.head.appendChild(css);
     var target = document.querySelector('.topActions') || document.querySelector('.header .statusRow') || document.querySelector('.header') || document.querySelector('header') || document.body;
-    if(target && target.appendChild) target.appendChild(holder);
+    if(target && target.appendChild){
+      var logout = target.querySelector && target.querySelector('#btnLogout, .logoutOnly, [data-logout]');
+      if(logout && logout.parentNode === target) target.insertBefore(holder, logout);
+      else target.appendChild(holder);
+    }
+    bindSelector();
   }
 
   var scheduled = 0;
@@ -708,7 +766,6 @@
   function boot(){
     try{ ensureSelector(); }catch(_){ }
     translatePage();
-    try{ updateSelector(getLang()); }catch(_){}
     try{
       var obs = new MutationObserver(function(mutations){
         if(translating) return;
