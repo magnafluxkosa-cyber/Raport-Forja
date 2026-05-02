@@ -76,7 +76,7 @@
           <span class="badge warn viewonly-note">Doar vizualizare</span>
         </div>
         <div class="help" style="margin-top:8px">
-          Se importă valorile din fișierul aparatului fără imagini. Dublurile se evită după data și ora măsurării, nu după numele fișierului. Numele introdus în aparat este separat automat în Operator + Reper complet + Sarjă, folosind reperele din Helper Data. Sarja se preia imediat după reper, iar sufixele de tip _005 sunt ignorate.
+          Se importă valorile din fișierul aparatului fără imagini. Dublurile se evită după data și ora măsurării, nu după numele fișierului. Numele introdus în aparat este separat automat în Operator + Reper complet + Marcaj matriță + Sarjă material, folosind reperele din Helper Data. Codul PT este ignorat, iar sufixele de tip _005 sunt ignorate.
         </div>
       </div>
 
@@ -110,7 +110,7 @@
   const OVERLAP = 4096;
   const MONTHS = ['','Ianuarie','Februarie','Martie','Aprilie','Mai','Iunie','Iulie','August','Septembrie','Octombrie','Noiembrie','Decembrie'];
   const COLUMNS = [
-    ['measurement_date_ro','Data'],['measurement_time','Ora'],['operator_name','Operator'],['reper_complet','Reper complet'],['sarja','Sarjă'],['name_original','Nume aparat'],['hardness_scale','Scară'],['hardness_value','Duritate'],['hb','HB'],['hrc','HRC'],['hv','HV'],['diameter','Diametru'],['force','Forță'],['sphere','Sferă'],['d1','D1'],['d2','D2'],['pixelmm','Pixel/mm'],['zoom','Zoom'],['hmax','HMax'],['hmin','HMin'],['status','Status'],['source_file','Fișier sursă'],['imported_at_ro','Importat la']
+    ['measurement_date_ro','Data'],['measurement_time','Ora'],['operator_name','Operator'],['reper_complet','Reper complet'],['marcaj_matrita','Marcaj matriță'],['sarja_material','Sarjă material'],['name_original','Nume aparat'],['hardness_scale','Scară'],['hardness_value','Duritate'],['hb','HB'],['hrc','HRC'],['hv','HV'],['diameter','Diametru'],['force','Forță'],['sphere','Sferă'],['d1','D1'],['d2','D2'],['pixelmm','Pixel/mm'],['zoom','Zoom'],['hmax','HMax'],['hmin','HMin'],['status','Status'],['source_file','Fișier sursă'],['imported_at_ro','Importat la']
   ];
 
   const state = { supa:null, user:null, role:'viewer', access:{can_view:false,can_edit:false}, repere:[], cloudRows:[], importRows:[], existingKeys:new Set(), filters:{year:'',month:'',operator:'',reper:'',scale:'',status:''} };
@@ -165,6 +165,43 @@
       .trim()
       .toUpperCase();
   }
+
+  function parseMarcajSiSarja(v){
+    const raw = cleanSarjaPart(v);
+    if(!raw) return { marcaj_matrita:'', sarja_material:'', sarja:'' };
+
+    // Acceptă toate variantele cerute:
+    // RD-PT-KUA / RD KUA / RDKUA / rdkua / rd kua / RD KUA / RD-KUA / RD PT KUA.
+    let separated = raw
+      .replace(/[_\/\.,;:]+/g, ' ')
+      .replace(/-/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .toUpperCase();
+
+    let tokens = separated.split(' ').filter(Boolean).filter(t => t !== 'PT');
+
+    // Pentru scriere compactă: RDKUA, RDPTKUA etc.
+    if(tokens.length === 1){
+      let compact = tokens[0].replace(/[^A-Z0-9]/g, '').toUpperCase();
+      compact = compact.replace(/PT/g, ''); // PT este ignorat indiferent unde apare.
+      if(!compact) return { marcaj_matrita:'', sarja_material:'', sarja:'' };
+      if(compact.length > 2){
+        tokens = [compact.slice(0,2), compact.slice(2)];
+      }else{
+        tokens = [compact];
+      }
+    }
+
+    const marcaj = String(tokens[0] || '').trim().toUpperCase();
+    const sarjaMaterial = tokens.slice(1).join(' ').trim().toUpperCase();
+    return {
+      marcaj_matrita: marcaj,
+      sarja_material: sarjaMaterial,
+      sarja: [marcaj, sarjaMaterial].filter(Boolean).join(' ')
+    };
+  }
+
   function deriveReperKeys(reperValue){
     const raw = String(reperValue || '').toUpperCase();
     const keys = new Set();
@@ -175,19 +212,28 @@
     for(const g of groups){
       const gn = norm(g);
       if(!gn) continue;
-      if(/^\d{3,}$/.test(gn)) keys.add(gn);              // ex: 2308 din 248-2308
-      if(/^\d+[A-Z]+$/.test(gn)) keys.add(gn);           // ex: 7G, 9K
-      if(/^[A-Z]+\d{3,}$/.test(gn)) keys.add(gn);        // ex: SKU140
+      if(/^\d{3,}$/.test(gn)) keys.add(gn);
+      if(/^\d+[A-Z]+$/.test(gn)) keys.add(gn);
+      if(/^[A-Z]+\d{3,}$/.test(gn)) keys.add(gn);
     }
 
     const numericGroups = groups.map(norm).filter(g => /^\d{3,}$/.test(g));
     if(numericGroups.length) keys.add(numericGroups[numericGroups.length - 1]);
 
-    // pentru repere de tip 9K-6628, 7G-0521 etc. păstrăm și primul grup digit+literă
     const prefix = groups.map(norm).find(g => /^\d+[A-Z]+$/.test(g));
     if(prefix) keys.add(prefix);
 
     return [...keys].filter(Boolean).sort((a,b)=>b.length-a.length);
+  }
+
+  function getKnownReperFromShort(shortCode){
+    const code = norm(shortCode);
+    const manual = {
+      '2307': '248-2307',
+      '2308': '248-2308'
+    };
+    if(manual[code]) return { value: manual[code], norm: norm(manual[code]) };
+    return null;
   }
 
   function getBestReperCandidate(base){
@@ -200,8 +246,8 @@
         if(!loc) continue;
         let score = 0;
         if(key === reper.norm) score = 1000 + key.length;
-        else if(/^\d{3,}$/.test(key)) score = 850 + key.length;      // prioritar: terminație reper 2307/2308
-        else if(/^\d+[A-Z]+$/.test(key)) score = 760 + key.length;   // ex: 7G
+        else if(/^\d{3,}$/.test(key)) score = 850 + key.length;
+        else if(/^\d+[A-Z]+$/.test(key)) score = 760 + key.length;
         else score = 650 + key.length;
         candidates.push({ reper, key, loc, score });
       }
@@ -209,6 +255,15 @@
         const loc = locateTokenInBase(base, reper.norm);
         if(loc) candidates.push({ reper, key:reper.norm, loc, score:1100 + reper.norm.length });
       }
+    }
+
+    // Fallback explicit pentru 2307/2308, ca să nu depindă 100% de Helper Data.
+    const shortMatch = String(base||'').match(/(^|[^A-Z0-9])(2307|2308)(?=([^0-9]|$))/i);
+    if(shortMatch){
+      const short = shortMatch[2];
+      const known = getKnownReperFromShort(short);
+      const loc = locateTokenInBase(base, short);
+      if(known && loc) candidates.push({ reper: known, key: norm(short), loc, score: 900 + String(short).length });
     }
 
     const seen = new Set();
@@ -228,24 +283,30 @@
   }
 
   function fallbackSplitName(base){
-    const m = String(base||'').match(/^(.*?)(\d{3,}|\d+[A-Z]+)(.*)$/i);
+    const cleaned = cleanName(base);
+    const m = String(cleaned||'').match(/^(.*?)(\d{3,}|\d+[A-Z]+)(.*)$/i);
     if(!m){
-      return { operator_name:String(base||'').trim().toUpperCase(), reper_complet:'', reper_short:'', sarja:'', status:'neidentificat', note:'Reper negăsit în Helper Data' };
+      return { operator_name:String(cleaned||'').trim().toUpperCase(), reper_complet:'', reper_short:'', marcaj_matrita:'', sarja_material:'', sarja:'', status:'neidentificat', note:'Reper negăsit în Helper Data' };
     }
+    const short = norm(m[2]);
+    const known = getKnownReperFromShort(short);
+    const parsed = parseMarcajSiSarja(m[3]);
     return {
       operator_name:String(m[1]||'').replace(/[_\-\/]+/g,' ').replace(/\s+/g,' ').trim().toUpperCase(),
-      reper_complet:'',
-      reper_short:norm(m[2]),
-      sarja:cleanSarjaPart(m[3]),
-      status:'neidentificat',
-      note:'Reper negăsit în Helper Data'
+      reper_complet: known ? known.value : '',
+      reper_short:short,
+      marcaj_matrita:parsed.marcaj_matrita,
+      sarja_material:parsed.sarja_material,
+      sarja:parsed.sarja,
+      status: known ? 'ok' : 'neidentificat',
+      note: known ? '' : 'Reper negăsit în Helper Data'
     };
   }
 
   function findReperAndOperator(original){
     const base = cleanName(original);
     const baseNorm = norm(base);
-    if(!baseNorm) return { operator_name:'', reper_complet:'', reper_short:'', sarja:'', status:'neidentificat', note:'Nume gol' };
+    if(!baseNorm) return { operator_name:'', reper_complet:'', reper_short:'', marcaj_matrita:'', sarja_material:'', sarja:'', status:'neidentificat', note:'Nume gol' };
 
     const candidates = getBestReperCandidate(base);
     if(!candidates.length) return fallbackSplitName(base);
@@ -258,6 +319,8 @@
         operator_name:'',
         reper_complet:distinctRepere.slice(0,3).join(' / '),
         reper_short:best.key,
+        marcaj_matrita:'',
+        sarja_material:'',
         sarja:'',
         status:'neclar',
         note:'Mai multe repere posibile pentru același cod scurt'
@@ -265,7 +328,8 @@
     }
 
     let operator = base.slice(0, best.loc.startIdx);
-    let sarja = cleanSarjaPart(base.slice(best.loc.endIdx));
+    const tail = base.slice(best.loc.endIdx);
+    const parsedSarja = parseMarcajSiSarja(tail);
 
     operator = operator.replace(/[_\-\/]+/g,' ').replace(/\s+/g,' ').trim().toUpperCase();
     if(norm(operator) === best.reper.norm) operator = '';
@@ -274,7 +338,9 @@
       operator_name:operator,
       reper_complet:best.reper.value,
       reper_short:best.key,
-      sarja:sarja,
+      marcaj_matrita:parsedSarja.marcaj_matrita,
+      sarja_material:parsedSarja.sarja_material,
+      sarja:parsedSarja.sarja,
       status:'ok',
       note:''
     };
@@ -352,7 +418,28 @@
     const dt = r.measurement_datetime ? new Date(r.measurement_datetime) : null;
     const dateIso = r.measurement_date || (dt && !isNaN(dt) ? dt.toISOString().slice(0,10) : '');
     const time = r.measurement_time || (dt && !isNaN(dt) ? dt.toISOString().slice(11,19) : '');
-    return Object.assign({}, r, { measurement_date_ro: dateIso ? dateIso.split('-').reverse().join('.') : '', measurement_time: time, imported_at_ro: r.imported_at ? new Date(r.imported_at).toLocaleString('ro-RO') : '', status: r.status || 'salvat' });
+    const out = Object.assign({}, r, { measurement_date_ro: dateIso ? dateIso.split('-').reverse().join('.') : '', measurement_time: time, imported_at_ro: r.imported_at ? new Date(r.imported_at).toLocaleString('ro-RO') : '', status: r.status || 'salvat' });
+
+    // Corectare la afișare pentru rândurile vechi importate înainte de parsarea Marcaj/Sarjă.
+    const sourceName = out.name_original || out.name_clean || out.operator_name || '';
+    const needsReparse = sourceName && (
+      !out.reper_complet ||
+      !out.marcaj_matrita ||
+      !out.sarja_material ||
+      /\d{3,}/.test(String(out.operator_name||''))
+    );
+    if(needsReparse){
+      const parsed = findReperAndOperator(sourceName);
+      if(parsed.operator_name) out.operator_name = parsed.operator_name;
+      if(parsed.reper_complet) out.reper_complet = parsed.reper_complet;
+      if(parsed.reper_short) out.reper_short = parsed.reper_short;
+      if(parsed.marcaj_matrita) out.marcaj_matrita = parsed.marcaj_matrita;
+      if(parsed.sarja_material) out.sarja_material = parsed.sarja_material;
+      if(parsed.sarja) out.sarja = parsed.sarja;
+      if(parsed.status === 'ok') out.status = out.status || 'salvat';
+    }
+
+    return out;
   }
 
   function readSlice(file,start,end){ return file.slice(start,end).arrayBuffer().then(b=>new Uint8Array(b)); }
@@ -400,7 +487,7 @@
         const scale=detectScale(raw); const hv=scale==='HV'?Number(raw.Hardness):null; const hrc=scale==='HRC'?Number(raw.Hardness):null; const hb=scale==='HB'?Number(raw.Hardness):null;
         rows.push({
           measurement_key:key, measurement_datetime:dt.iso, measurement_date:dt.date, measurement_date_ro:dt.ro, measurement_time:dt.time, year:dt.year, month:dt.month,
-          operator_name:split.operator_name, reper_complet:split.reper_complet, reper_short:split.reper_short, sarja:split.sarja || '', name_original:String(raw.Name||''), name_clean:cleanName(raw.Name),
+          operator_name:split.operator_name, reper_complet:split.reper_complet, reper_short:split.reper_short, marcaj_matrita:split.marcaj_matrita || '', sarja_material:split.sarja_material || '', sarja:split.sarja || '', name_original:String(raw.Name||''), name_clean:cleanName(raw.Name),
           hardness_scale:scale, hardness_value:Number(raw.Hardness), hb:hb, hrc:hrc, hv:hv, diameter:Number(raw.Diameter), force:Number(raw.Force), sphere:Number(raw.Sphere), d1:Number(raw.D1), d2:Number(raw.D2), pixelmm:Number(raw.Pixelmm), zoom:Number(raw.Zoom), hmax:Number(raw.HMax), hmin:Number(raw.HMin), circle_mode:!!raw.CircleMode, passa_non_passa:Number(raw.PassaNonPassa), xleft:Number(raw.XLeft), xright:Number(raw.XRight), yup:Number(raw.YUp), ydown:Number(raw.YDown), source_file:file.name, imported_at_ro:'', raw_json:raw,
           status: state.existingKeys.has(key) ? 'duplicat' : (split.status==='ok' ? 'nou' : 'neidentificat'), note:split.note || ''
         });
@@ -413,7 +500,7 @@
     return rows.sort((a,b)=>String(a.measurement_datetime).localeCompare(String(b.measurement_datetime)));
   }
   function payload(row){
-    return { measurement_key:row.measurement_key, measurement_datetime:row.measurement_datetime, measurement_date:row.measurement_date, measurement_time:row.measurement_time, year:row.year, month:row.month, operator_name:row.operator_name||null, reper_complet:row.reper_complet||null, reper_short:row.reper_short||null, sarja:row.sarja||null, name_original:row.name_original||null, name_clean:row.name_clean||null, hardness_scale:row.hardness_scale||null, hardness_value:numOrNull(row.hardness_value), hb:numOrNull(row.hb), hrc:numOrNull(row.hrc), hv:numOrNull(row.hv), diameter:numOrNull(row.diameter), force:numOrNull(row.force), sphere:numOrNull(row.sphere), d1:numOrNull(row.d1), d2:numOrNull(row.d2), pixelmm:numOrNull(row.pixelmm), zoom:numOrNull(row.zoom), hmax:numOrNull(row.hmax), hmin:numOrNull(row.hmin), circle_mode:row.circle_mode, passa_non_passa:numOrNull(row.passa_non_passa), xleft:numOrNull(row.xleft), xright:numOrNull(row.xright), yup:numOrNull(row.yup), ydown:numOrNull(row.ydown), source_file:row.source_file||null, imported_by_email:String(state.user&&state.user.email||'').toLowerCase(), raw_json:row.raw_json||{} };
+    return { measurement_key:row.measurement_key, measurement_datetime:row.measurement_datetime, measurement_date:row.measurement_date, measurement_time:row.measurement_time, year:row.year, month:row.month, operator_name:row.operator_name||null, reper_complet:row.reper_complet||null, reper_short:row.reper_short||null, marcaj_matrita:row.marcaj_matrita||null, sarja_material:row.sarja_material||null, sarja:row.sarja||null, name_original:row.name_original||null, name_clean:row.name_clean||null, hardness_scale:row.hardness_scale||null, hardness_value:numOrNull(row.hardness_value), hb:numOrNull(row.hb), hrc:numOrNull(row.hrc), hv:numOrNull(row.hv), diameter:numOrNull(row.diameter), force:numOrNull(row.force), sphere:numOrNull(row.sphere), d1:numOrNull(row.d1), d2:numOrNull(row.d2), pixelmm:numOrNull(row.pixelmm), zoom:numOrNull(row.zoom), hmax:numOrNull(row.hmax), hmin:numOrNull(row.hmin), circle_mode:row.circle_mode, passa_non_passa:numOrNull(row.passa_non_passa), xleft:numOrNull(row.xleft), xright:numOrNull(row.xright), yup:numOrNull(row.yup), ydown:numOrNull(row.ydown), source_file:row.source_file||null, imported_by_email:String(state.user&&state.user.email||'').toLowerCase(), raw_json:row.raw_json||{} };
   }
   function numOrNull(v){ const n=Number(v); return Number.isFinite(n)?n:null; }
   async function saveNewRows(){
