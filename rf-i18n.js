@@ -143,7 +143,7 @@
   addExact('An','An','Year','Année','Anno','Jahr','Év');
   addExact('Anul','Anul','Year','Année','Anno','Jahr','Év');
   addExact('ANUL','ANUL','YEAR','ANNÉE','ANNO','JAHR','ÉV');
-  addExact('AN','AN','YEAR','ANNÉE','ANNO','JAHR','ÉV');
+  addExact('AN','AN','AN','AN','AN','AN','AN');
   addExact('Luna','Luna','Month','Mois','Mese','Monat','Hónap');
   addExact('Lună','Lună','Month','Mois','Mese','Monat','Hónap');
   addExact('LUNA','LUNA','MONTH','MOIS','MESE','MONAT','HÓNAP');
@@ -710,6 +710,40 @@
       ['ore suplimentare','ore suplimentare','overtime hours','heures supplémentaires','ore straordinarie','Überstunden','túlórák']
     ];
     pontajTerms.forEach(function(r){ addTerm.apply(null, r); });
+    buildTerms();
+  })();
+
+
+  // Pontaj final fix: keep attendance codes unchanged, translate split/wrapped hour headers.
+  (function(){
+    var codeLock = ['AN','CO','CM','CFS','LP'];
+    codeLock.forEach(function(c){ addExact(c,c,c,c,c,c,c); });
+    var rows = [
+      ['Total ore lucrate','Total ore lucrate','Total hours worked','Total heures travaillées','Totale ore lavorate','Geleistete Stunden gesamt','Összes ledolgozott óra'],
+      ['TOTAL ORE LUCRATE','TOTAL ORE LUCRATE','TOTAL HOURS WORKED','TOTAL HEURES TRAVAILLÉES','TOTALE ORE LAVORATE','GELEISTETE STUNDEN GESAMT','ÖSSZES LEDOLGOZOTT ÓRA'],
+      ['Total ore','Total ore','Total hours','Total heures','Totale ore','Stunden gesamt','Összes óra'],
+      ['TOTAL ORE','TOTAL ORE','TOTAL HOURS','TOTAL HEURES','TOTALE ORE','STUNDEN GESAMT','ÖSSZES ÓRA'],
+      ['lucrate','lucrate','worked','travaillées','lavorate','geleistet','ledolgozott'],
+      ['Lucrate','Lucrate','Worked','Travaillées','Lavorate','Geleistet','Ledolgozott'],
+      ['LUCRATE','LUCRATE','WORKED','TRAVAILLÉES','LAVORATE','GELEISTET','LEDOLGOZOTT'],
+      ['Ore supl','Ore supl','Overtime hrs','Heures sup.','Ore straord.','Überstunden','Túlóra'],
+      ['ORE SUPL','ORE SUPL','OVERTIME HRS','HEURES SUP.','ORE STRAORD.','ÜBERSTUNDEN','TÚLÓRA'],
+      ['ore supl','ore supl','overtime hrs','heures sup.','ore straord.','Überstunden','túlóra'],
+      ['supl','supl','overtime','sup.','straord.','Überstunden','túlóra'],
+      ['Supl','Supl','Overtime','Sup.','Straord.','Überstunden','Túlóra'],
+      ['SUPL','SUPL','OVERTIME','SUP.','STRAORD.','ÜBERSTUNDEN','TÚLÓRA'],
+      ['Ore','Ore','Hours','Heures','Ore','Stunden','Órák'],
+      ['ORE','ORE','HOURS','HEURES','ORE','STUNDEN','ÓRÁK'],
+      ['ore','ore','hours','heures','ore','Stunden','órák']
+    ];
+    rows.forEach(function(r){ addExact.apply(null, r); });
+    var terms = [
+      ['total ore lucrate','total ore lucrate','total hours worked','total heures travaillées','totale ore lavorate','geleistete Stunden gesamt','összes ledolgozott óra'],
+      ['total ore','total ore','total hours','total heures','totale ore','Stunden gesamt','összes óra'],
+      ['ore supl','ore supl','overtime hrs','heures sup.','ore straord.','Überstunden','túlóra'],
+      ['lucrate','lucrate','worked','travaillées','lavorate','geleistet','ledolgozott']
+    ];
+    terms.forEach(function(r){ addTerm.apply(null, r); });
     buildTerms();
   })();
 
