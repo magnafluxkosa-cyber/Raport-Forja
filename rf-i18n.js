@@ -740,6 +740,102 @@
     buildTerms();
   })();
 
+
+  // Planificare Forja tooltip / stock-check coverage.
+  // Strict translation-only additions. Product codes, machine codes and numeric values stay unchanged.
+  (function(){
+    var planExact = [
+      ['Date to','Dată până la','Date to','Date jusqu’à','Data fino a','Datum bis','Dátumig'],
+      ['CHECKING STOCK','VERIFICARE STOC','CHECKING STOCK','VÉRIFICATION STOCK','CONTROLLO STOCK','BESTANDSPRÜFUNG','KÉSZLET ELLENŐRZÉS'],
+      ['Checking Stock','Verificare stoc','Checking stock','Vérification stock','Controllo stock','Bestandsprüfung','Készlet ellenőrzés'],
+      ['Verificare stoc','Verificare stoc','Checking stock','Vérification stock','Controllo stock','Bestandsprüfung','Készlet ellenőrzés'],
+      ['IDENTIFICARE','IDENTIFICARE','IDENTIFICATION','IDENTIFICATION','IDENTIFICAZIONE','IDENTIFIKATION','AZONOSÍTÁS'],
+      ['Identificare','Identificare','Identification','Identification','Identificazione','Identifikation','Azonosítás'],
+      ['Part Forged','Reper forjat','Forged part','Référence forgée','Codice pezzo forgiato','Geschmiedetes Teil','Kovácsolt cikkszám'],
+      ['Part forged','Reper forjat','Forged part','Référence forgée','Codice pezzo forgiato','Geschmiedetes Teil','Kovácsolt cikkszám'],
+      ['Reper forjat','Reper forjat','Forged part','Référence forgée','Codice pezzo forgiato','Geschmiedetes Teil','Kovácsolt cikkszám'],
+      ['Part cut','Reper debitat','Cut part','Référence débitée','Codice pezzo tagliato','Geschnittenes Teil','Darabolt cikkszám'],
+      ['Reper debitat','Reper debitat','Cut part','Référence débitée','Codice pezzo tagliato','Geschnittenes Teil','Darabolt cikkszám'],
+      ['Specification','Specificație','Specification','Spécification','Specifica','Spezifikation','Specifikáció'],
+      ['Specificație','Specificație','Specification','Spécification','Specifica','Spezifikation','Specifikáció'],
+      ['Specificație material','Specificație material','Material specification','Spécification matière','Specifica materiale','Materialspezifikation','Anyag specifikáció'],
+      ['Mod','Mod','Mode','Mode','Modalità','Modus','Mód'],
+      ['Simulare with missing material calculation','Simulare cu calcul material lipsă','Simulation with missing material calculation','Simulation avec calcul de matière manquante','Simulazione con calcolo materiale mancante','Simulation mit Berechnung fehlenden Materials','Szimuláció hiányzó anyag számításával'],
+      ['Simulare cu calcul material lipsă','Simulare cu calcul material lipsă','Simulation with missing material calculation','Simulation avec calcul de matière manquante','Simulazione con calcolo materiale mancante','Simulation mit Berechnung fehlenden Materials','Szimuláció hiányzó anyag számításával'],
+      ['Source Quantity','Cantitate sursă','Source quantity','Quantité source','Quantità sorgente','Quellmenge','Forrás mennyiség'],
+      ['Cantitate sursă','Cantitate sursă','Source quantity','Quantité source','Quantità sorgente','Quellmenge','Forrás mennyiség'],
+      ['Quantity used','Cantitate folosită','Quantity used','Quantité utilisée','Quantità usata','Verwendete Menge','Felhasznált mennyiség'],
+      ['Cantitate folosită','Cantitate folosită','Quantity used','Quantité utilisée','Quantità usata','Verwendete Menge','Felhasznált mennyiség'],
+      ['STOCK INAINTE','STOC ÎNAINTE','STOCK BEFORE','STOCK AVANT','STOCK PRIMA','BESTAND VORHER','KÉSZLET ELŐTTE'],
+      ['STOC INAINTE','STOC ÎNAINTE','STOCK BEFORE','STOCK AVANT','STOCK PRIMA','BESTAND VORHER','KÉSZLET ELŐTTE'],
+      ['STOC ÎNAINTE','STOC ÎNAINTE','STOCK BEFORE','STOCK AVANT','STOCK PRIMA','BESTAND VORHER','KÉSZLET ELŐTTE'],
+      ['Stock înainte','Stoc înainte','Stock before','Stock avant','Stock prima','Bestand vorher','Készlet előtte'],
+      ['Cut disponibil','Debitat disponibil','Cut available','Débit disponible','Tagliato disponibile','Schnittbestand verfügbar','Darabolt elérhető'],
+      ['Debitat disponibil','Debitat disponibil','Cut available','Débit disponible','Tagliato disponibile','Schnittbestand verfügbar','Darabolt elérhető'],
+      ['Steel disponibil','Oțel disponibil','Steel available','Acier disponible','Acciaio disponibile','Stahl verfügbar','Elérhető acél'],
+      ['Oțel disponibil','Oțel disponibil','Steel available','Acier disponible','Acciaio disponibile','Stahl verfügbar','Elérhető acél'],
+      ['Echivalent part','Echivalent reper','Equivalent part','Référence équivalente','Codice pezzo equivalente','Äquivalentes Teil','Egyenértékű cikkszám'],
+      ['Echivalent reper','Echivalent reper','Equivalent part','Référence équivalente','Codice pezzo equivalente','Äquivalentes Teil','Egyenértékű cikkszám'],
+      ['NECESAR ANA ACOPERIRE','NECESAR ÎN ACOPERIRE','REQUIRED FOR COVERAGE','NÉCESSAIRE POUR COUVERTURE','NECESSARIO PER COPERTURA','ERFORDERLICH FÜR ABDECKUNG','SZÜKSÉGES FEDEZETHEZ'],
+      ['NECESAR IN ACOPERIRE','NECESAR ÎN ACOPERIRE','REQUIRED FOR COVERAGE','NÉCESSAIRE POUR COUVERTURE','NECESSARIO PER COPERTURA','ERFORDERLICH FÜR ABDECKUNG','SZÜKSÉGES FEDEZETHEZ'],
+      ['NECESAR ÎN ACOPERIRE','NECESAR ÎN ACOPERIRE','REQUIRED FOR COVERAGE','NÉCESSAIRE POUR COUVERTURE','NECESSARIO PER COPERTURA','ERFORDERLICH FÜR ABDECKUNG','SZÜKSÉGES FEDEZETHEZ'],
+      ['NECESAR DIN ACOPERIRE','NECESAR DIN ACOPERIRE','REQUIRED FROM COVERAGE','NÉCESSAIRE DE LA COUVERTURE','NECESSARIO DALLA COPERTURA','ERFORDERLICH AUS ABDECKUNG','SZÜKSÉGES A FEDEZETBŐL'],
+      ['NECESAR ACOPERIRE','NECESAR ACOPERIRE','COVERAGE REQUIREMENT','BESOIN DE COUVERTURE','FABBISOGNO COPERTURA','ABDECKUNGSBEDARF','FEDEZETI IGÉNY'],
+      ['Realizat','Realizat','Produced','Réalisé','Realizzato','Produziert','Gyártott'],
+      ['REALIZAT','REALIZAT','PRODUCED','RÉALISÉ','REALIZZATO','PRODUZIERT','GYÁRTOTT'],
+      ['Necesar from Steel','Necesar din oțel','Required from steel','Nécessaire depuis acier','Necessario da acciaio','Erforderlich aus Stahl','Szükséges acélból'],
+      ['Necesar din oțel','Necesar din oțel','Required from steel','Nécessaire depuis acier','Necessario da acciaio','Erforderlich aus Stahl','Szükséges acélból'],
+      ['Deficit cut','Deficit debitat','Cut shortage','Déficit débit','Deficit tagliato','Schnittdefizit','Darabolt hiány'],
+      ['Deficit debitat','Deficit debitat','Cut shortage','Déficit débit','Deficit tagliato','Schnittdefizit','Darabolt hiány'],
+      ['Deficit Steel','Deficit oțel','Steel shortage','Déficit acier','Deficit acciaio','Stahldefizit','Acélhiány'],
+      ['Deficit steel','Deficit oțel','Steel shortage','Déficit acier','Deficit acciaio','Stahldefizit','Acélhiány'],
+      ['Deficit oțel','Deficit oțel','Steel shortage','Déficit acier','Deficit acciaio','Stahldefizit','Acélhiány'],
+      ['Acoperire','Acoperire','Coverage','Couverture','Copertura','Abdeckung','Fedezet'],
+      ['STOCK AFTER','STOC DUPĂ','STOCK AFTER','STOCK APRÈS','STOCK DOPO','BESTAND NACHHER','KÉSZLET UTÁNA'],
+      ['STOC DUPĂ','STOC DUPĂ','STOCK AFTER','STOCK APRÈS','STOCK DOPO','BESTAND NACHHER','KÉSZLET UTÁNA'],
+      ['Stock după','Stoc după','Stock after','Stock après','Stock dopo','Bestand nachher','Készlet utána'],
+      ['Cut remaining','Debitat rămas','Cut remaining','Débit restant','Tagliato rimanente','Schnittbestand verbleibend','Maradó darabolt'],
+      ['Debitat rămas','Debitat rămas','Cut remaining','Débit restant','Tagliato rimanente','Schnittbestand verbleibend','Maradó darabolt'],
+      ['Steel remaining','Oțel rămas','Steel remaining','Acier restant','Acciaio rimanente','Stahl verbleibend','Maradó acél'],
+      ['Oțel rămas','Oțel rămas','Steel remaining','Acier restant','Acciaio rimanente','Stahl verbleibend','Maradó acél'],
+      ['Echivalent remaining','Echivalent rămas','Equivalent remaining','Équivalent restant','Equivalente rimanente','Äquivalent verbleibend','Maradó egyenérték'],
+      ['Echivalent rămas','Echivalent rămas','Equivalent remaining','Équivalent restant','Equivalente rimanente','Äquivalent verbleibend','Maradó egyenérték'],
+      ['NOTE','NOTĂ','NOTE','NOTE','NOTA','HINWEIS','MEGJEGYZÉS'],
+      ['NOTĂ','NOTĂ','NOTE','NOTE','NOTA','HINWEIS','MEGJEGYZÉS'],
+      ['Details','Detalii','Details','Détails','Dettagli','Details','Részletek'],
+      ['Detalii','Detalii','Details','Détails','Dettagli','Details','Részletek'],
+      ['Not exists realizări reale; simulează planul from VBA. Missing material','Nu există realizări reale; simulează planul din VBA. Material lipsă','No real produced quantities exist; simulates the VBA plan. Missing material','Aucune réalisation réelle; simule le plan VBA. Matière manquante','Non esistono realizzazioni reali; simula il piano VBA. Materiale mancante','Keine realen Ist-Mengen vorhanden; simuliert den VBA-Plan. Fehlendes Material','Nincs valós teljesítés; a VBA tervet szimulálja. Hiányzó anyag'],
+      ['Not exists realizări reale; simulează planul from VBA.','Nu există realizări reale; simulează planul din VBA.','No real produced quantities exist; simulates the VBA plan.','Aucune réalisation réelle; simule le plan VBA.','Non esistono realizzazioni reali; simula il piano VBA.','Keine realen Ist-Mengen vorhanden; simuliert den VBA-Plan.','Nincs valós teljesítés; a VBA tervet szimulálja.'],
+      ['Nu există realizări reale; simulează planul din VBA.','Nu există realizări reale; simulează planul din VBA.','No real produced quantities exist; simulates the VBA plan.','Aucune réalisation réelle; simule le plan VBA.','Non esistono realizzazioni reali; simula il piano VBA.','Keine realen Ist-Mengen vorhanden; simuliert den VBA-Plan.','Nincs valós teljesítés; a VBA tervet szimulálja.'],
+      ['Missing material','Material lipsă','Missing material','Matière manquante','Materiale mancante','Fehlendes Material','Hiányzó anyag'],
+      ['Material lipsă','Material lipsă','Missing material','Matière manquante','Materiale mancante','Fehlendes Material','Hiányzó anyag'],
+      ['deficit cut','deficit debitat','cut shortage','déficit débit','deficit tagliato','Schnittdefizit','darabolt hiány'],
+      ['deficit debitat','deficit debitat','cut shortage','déficit débit','deficit tagliato','Schnittdefizit','darabolt hiány'],
+      ['pcs','buc','pcs','pcs','pz','Stk.','db'],
+      ['Pcs','Buc','Pcs','Pcs','Pz','Stk.','Db'],
+      ['PART','REPER','PART','RÉFÉRENCE','CODICE PEZZO','TEIL','CIKKSZÁM'],
+      ['Part','Reper','Part','Référence','Codice pezzo','Teil','Cikkszám'],
+      ['Planned','Planificat','Planned','Planifié','Pianificato','Geplant','Tervezett'],
+      ['PLANIFICAT','PLANIFICAT','PLANNED','PLANIFIÉ','PIANIFICATO','GEPLANT','TERVEZETT']
+    ];
+    planExact.forEach(function(r){ addExact.apply(null, r); });
+
+    var planTerms = [
+      ['verificare stoc','verificare stoc','checking stock','vérification stock','controllo stock','Bestandsprüfung','készlet ellenőrzés'],
+      ['stoc înainte','stoc înainte','stock before','stock avant','stock prima','Bestand vorher','készlet előtte'],
+      ['stoc după','stoc după','stock after','stock après','stock dopo','Bestand nachher','készlet utána'],
+      ['disponibil','disponibil','available','disponible','disponibile','verfügbar','elérhető'],
+      ['rămas','rămas','remaining','restant','rimanente','verbleibend','maradó'],
+      ['rămasă','rămasă','remaining','restante','rimanente','verbleibend','maradó'],
+      ['lipsă','lipsă','missing','manquant','mancante','fehlend','hiányzó'],
+      ['simulare','simulare','simulation','simulation','simulazione','Simulation','szimuláció'],
+      ['calculation','calcul','calculation','calcul','calcolo','Berechnung','számítás'],
+      ['calculație','calculație','calculation','calcul','calcolo','Berechnung','számítás']
+    ];
+    planTerms.forEach(function(r){ addTerm.apply(null, r); });
+    buildTerms();
+  })();
+
   function escapeRe(s){ return String(s).replace(/[.*+?^${}()|[\]\\]/g,'\\$&'); }
   function hasLower(s){ return /[a-zăâîșțéèêëàáâäçôöûüùúìíòóñáéíóúőű]/.test(String(s)); }
   function hasUpper(s){ return /[A-ZĂÂÎȘȚÉÈÊËÀÁÂÄÇÔÖÛÜÙÚÌÍÒÓÑÁÉÍÓÚŐŰ]/.test(String(s)); }
