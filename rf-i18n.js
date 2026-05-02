@@ -65,9 +65,10 @@
   function key(s){ return String(s == null ? '' : s).replace(/\s+/g,' ').trim().toLowerCase(); }
   function addExact(source, ro,en,fr,it,de,hu){
     var vals = {ro:ro,en:en,fr:fr,it:it,de:de,hu:hu};
-    EXACT[key(source)] = vals;
-    if(ro) EXACT[key(ro)] = vals;
-    if(en) EXACT[key(en)] = vals;
+    if(source) EXACT[key(source)] = vals;
+    Object.keys(vals).forEach(function(lang){
+      if(vals[lang]) EXACT[key(vals[lang])] = vals;
+    });
   }
 
   // Core UI exact phrases used across all ERP pages.
@@ -91,10 +92,6 @@
   addExact('Doar vizualizare','Doar vizualizare','View only','Lecture seule','Sola visualizzazione','Nur Ansicht','Csak megtekintés');
   addExact('Selectează o categorie.','Selectează o categorie.','Select a category.','Sélectionnez une catégorie.','Seleziona una categoria.','Kategorie auswählen.','Válassz egy kategóriát.');
   addExact('Limba','Limba','Language','Langue','Lingua','Sprache','Nyelv');
-  addExact('KAD','K.A.D','K.A.D','K.A.D','K.A.D','K.A.D','K.A.D');
-  addExact('K.A.D','K.A.D','K.A.D','K.A.D','K.A.D','K.A.D','K.A.D');
-  addExact('K.A.D - Navigare','K.A.D - Navigare','K.A.D - Navigation','K.A.D - Navigation','K.A.D - Navigazione','K.A.D - Navigation','K.A.D - Navigáció');
-  addExact('Navigare','Navigare','Navigation','Navigation','Navigazione','Navigation','Navigáció');
 
   addExact('Salvează','Salvează','Save','Enregistrer','Salva','Speichern','Mentés');
   addExact('Salvează în cloud','Salvează în cloud','Save to cloud','Enregistrer dans le cloud','Salva nel cloud','In Cloud speichern','Mentés a felhőbe');
@@ -417,7 +414,7 @@
   function addSource(src, vals){
     if(!src) return;
     Object.keys(vals).forEach(function(lang){ if(!TERMS[lang]) TERMS[lang] = []; });
-    SUPPORTED.forEach(function(lang){ TERMS[lang].push({source:String(src), target:vals[lang]}); });
+    SUPPORTED.forEach(function(lang){ TERMS[lang].push({source:String(src), target:vals[lang], ro:vals.ro || String(src)}); });
   }
 
   var termRows = [
@@ -501,52 +498,6 @@
   ];
   termRows.forEach(function(r){ addTerm.apply(null,r); });
 
-
-
-  // Translation speed helpers.  Large ERP tables generate thousands of DOM changes;
-  // cache compiled patterns and translated strings so language mode stays responsive.
-  var COMPILED_TERMS = Object.create(null);
-  var TEXT_CACHE = Object.create(null);
-  var TEXT_CACHE_COUNT = 0;
-  var TEXT_CACHE_LIMIT = 6000;
-
-  function cacheKeyFor(text, lang){ return lang + '\u0001' + String(text); }
-  function getCached(text, lang){
-    var k = cacheKeyFor(text, lang);
-    return Object.prototype.hasOwnProperty.call(TEXT_CACHE, k) ? TEXT_CACHE[k] : null;
-  }
-  function setCached(text, lang, value){
-    if(TEXT_CACHE_COUNT > TEXT_CACHE_LIMIT){ TEXT_CACHE = Object.create(null); TEXT_CACHE_COUNT = 0; }
-    var k = cacheKeyFor(text, lang);
-    if(!Object.prototype.hasOwnProperty.call(TEXT_CACHE, k)) TEXT_CACHE_COUNT++;
-    TEXT_CACHE[k] = value;
-    return value;
-  }
-
-  function normalizeKadBrand(text){
-    var s = String(text == null ? '' : text);
-    // Do not rewrite domains such as kad-system.ro or file/config names.
-    return s.replace(/(^|[^A-Za-z0-9.])(K\s*\.?\s*A\s*\.?\s*D\.?)($|[^A-Za-z0-9.\-])/gi, function(_, p, brand, suffix){
-      return p + 'K.A.D' + suffix;
-    });
-  }
-
-  function getCompiledTerms(lang){
-    if(COMPILED_TERMS[lang]) return COMPILED_TERMS[lang];
-    var compiled = [];
-    (TERMS[lang] || []).forEach(function(item){
-      var src = item.source;
-      var target = item.target;
-      if(!src || !target || src === target) return;
-      try{
-        var isSingle = /^[\p{L}]+$/u.test(src);
-        var pattern = isSingle ? '(^|[^\\p{L}])(' + escapeRe(src) + ')(?=$|[^\\p{L}])' : '(' + escapeRe(src) + ')';
-        compiled.push({src:src,target:target,isSingle:isSingle,re:new RegExp(pattern, 'giu')});
-      }catch(_){ }
-    });
-    COMPILED_TERMS[lang] = compiled;
-    return compiled;
-  }
   function buildTerms(){
     SUPPORTED.forEach(function(lang){
       TERMS[lang] = (TERMS[lang] || [])
@@ -557,9 +508,6 @@
         })
         .sort(function(a,b){ return b.source.length - a.source.length; });
     });
-    COMPILED_TERMS = Object.create(null);
-    TEXT_CACHE = Object.create(null);
-    TEXT_CACHE_COUNT = 0;
   }
 
   // Additional high-frequency fixed texts from ERP pages.
@@ -615,6 +563,22 @@
       return String(target).charAt(0).toUpperCase() + String(target).slice(1);
     }
     return target;
+  }
+
+  function normalizeBrand(text){
+    return String(text == null ? '' : text).replace(/(^|[^A-Za-z0-9])K\s*\.?\s*A\s*\.?\s*D(?=$|[^A-Za-z0-9.-])/gi, function(full, prefix){
+      return (prefix || '') + 'K.A.D';
+    });
+  }
+
+  function canonicalizeToRomanian(text){
+    var t = String(text == null ? '' : text);
+    var leading = (t.match(/^\s*/) || [''])[0];
+    var trailing = (t.match(/\s*$/) || [''])[0];
+    var core = t.trim().replace(/\s+/g,' ');
+    var found = EXACT[key(core)];
+    if(found && found.ro) return leading + found.ro + trailing;
+    return t;
   }
 
 
@@ -685,41 +649,39 @@
 
   function applyTermReplacements(text, lang){
     var out = String(text);
-    var terms = getCompiledTerms(lang);
+    var terms = TERMS[lang] || [];
     terms.forEach(function(item){
-      out = out.replace(item.re, function(){
-        if(item.isSingle){
+      var src = item.source;
+      var target = item.target;
+      if(!src || !target || src === target) return;
+      if(item.ro && key(src) !== key(item.ro)) return;
+      var isSingle = /^[\p{L}]+$/u.test(src);
+      var pattern = isSingle ? '(^|[^\\p{L}])(' + escapeRe(src) + ')(?=$|[^\\p{L}])' : '(' + escapeRe(src) + ')';
+      var re = new RegExp(pattern, 'giu');
+      out = out.replace(re, function(){
+        if(isSingle){
           var prefix = arguments[1] || '';
-          var original = arguments[2] || item.src;
-          return prefix + matchCase(original, item.target);
+          var original = arguments[2] || src;
+          return prefix + matchCase(original, target);
         }
-        var original2 = arguments[1] || item.src;
-        return matchCase(original2, item.target);
+        var original2 = arguments[1] || src;
+        return matchCase(original2, target);
       });
     });
     return out;
   }
 
   function translateText(text, lang){
-    var raw = String(text == null ? '' : text);
-    var cached = getCached(raw, lang);
-    if(cached != null) return cached;
-
-    var brandOnly = raw.trim();
-    if(/^(K\s*\.?\s*A\s*\.?\s*D\.?)$/i.test(brandOnly)){
-      return setCached(raw, lang, raw.replace(brandOnly, 'K.A.D'));
-    }
-
-    if(shouldSkipWholeText(raw)) return setCached(raw, lang, normalizeKadBrand(raw));
-    var exact = translateExact(raw, lang);
-    if(exact != null) return setCached(raw, lang, normalizeKadBrand(exact));
-    var leading = (raw.match(/^\s*/) || [''])[0];
-    var trailing = (raw.match(/\s*$/) || [''])[0];
-    var core = raw.trim();
+    var base = canonicalizeToRomanian(text);
+    if(shouldSkipWholeText(base)) return normalizeBrand(base);
+    var exact = translateExact(base, lang);
+    if(exact != null) return normalizeBrand(exact);
+    var leading = (String(base).match(/^\s*/) || [''])[0];
+    var trailing = (String(base).match(/\s*$/) || [''])[0];
+    var core = String(base).trim();
     var translated = replaceMonthsAndDays(core, lang);
     translated = applyTermReplacements(translated, lang);
-    translated = normalizeKadBrand(translated);
-    return setCached(raw, lang, leading + translated + trailing);
+    return normalizeBrand(leading + translated + trailing);
   }
 
   function shouldSkipNode(node){
@@ -733,21 +695,18 @@
   function translateTextNode(node, lang){
     if(shouldSkipNode(node)) return;
     var p = node.parentElement;
-    var current = node.nodeValue;
     var original = node.__kadI18nOriginal;
     if(original == null){
-      original = current;
+      original = canonicalizeToRomanian(node.nodeValue);
       node.__kadI18nOriginal = original;
       try{
         if(p && p.tagName === 'OPTION' && !p.hasAttribute('value')) p.setAttribute('value', String(original).trim());
       }catch(_){ }
-    }else if(node.__kadI18nLastValue != null && current !== node.__kadI18nLastValue){
-      // The page script changed this node after translation; treat the new value as the new source text.
-      original = current;
+    } else {
+      original = canonicalizeToRomanian(original);
       node.__kadI18nOriginal = original;
     }
     var next = translateText(original, lang);
-    node.__kadI18nLastValue = next;
     if(node.nodeValue !== next) node.nodeValue = next;
   }
 
@@ -757,46 +716,20 @@
     ['placeholder','title','aria-label','data-title','data-label'].forEach(function(attr){
       if(!el.hasAttribute || !el.hasAttribute(attr)) return;
       var store = '__kadI18nAttr_' + attr;
-      var last = '__kadI18nAttrLast_' + attr;
-      var now = el.getAttribute(attr);
-      if(el[store] == null) el[store] = now;
-      else if(el[last] != null && now !== el[last]) el[store] = now;
+      if(el[store] == null) el[store] = canonicalizeToRomanian(el.getAttribute(attr));
+      else el[store] = canonicalizeToRomanian(el[store]);
       var next = translateText(el[store], lang);
-      el[last] = next;
       if(el.getAttribute(attr) !== next) el.setAttribute(attr, next);
     });
     if(el.tagName === 'INPUT'){
       var type = String(el.getAttribute('type') || '').toLowerCase();
       if((type === 'button' || type === 'submit' || type === 'reset') && el.value){
-        if(el.__kadI18nValue == null) el.__kadI18nValue = el.value;
-        else if(el.__kadI18nValueLast != null && el.value !== el.__kadI18nValueLast) el.__kadI18nValue = el.value;
+        if(el.__kadI18nValue == null) el.__kadI18nValue = canonicalizeToRomanian(el.value);
+        else el.__kadI18nValue = canonicalizeToRomanian(el.__kadI18nValue);
         var v = translateText(el.__kadI18nValue, lang);
-        el.__kadI18nValueLast = v;
         if(el.value !== v) el.value = v;
       }
     }
-  }
-
-  function translateSubtree(root, lang){
-    if(!root) return;
-    try{
-      if(root.nodeType === 3){ translateTextNode(root, lang); return; }
-      if(root.nodeType !== 1 && root.nodeType !== 9 && root.nodeType !== 11) return;
-      if(root.nodeType === 1) translateAttributes(root, lang);
-      var walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
-        acceptNode:function(node){
-          if(!node.nodeValue || !node.nodeValue.trim()) return NodeFilter.FILTER_REJECT;
-          if(shouldSkipNode(node)) return NodeFilter.FILTER_REJECT;
-          return NodeFilter.FILTER_ACCEPT;
-        }
-      });
-      var nodes = [];
-      while(walker.nextNode()) nodes.push(walker.currentNode);
-      nodes.forEach(function(n){ translateTextNode(n, lang); });
-      if(root.querySelectorAll){
-        Array.prototype.slice.call(root.querySelectorAll('*')).forEach(function(el){ translateAttributes(el, lang); });
-      }
-    }catch(_){ }
   }
 
   var translating = false;
@@ -806,7 +739,19 @@
     var lang = getLang();
     window.KAD_CURRENT_LANGUAGE = lang;
     try{ document.documentElement.setAttribute('lang', lang); }catch(_){ }
-    try{ translateSubtree(document.body || document.documentElement, lang); }catch(_){ }
+    try{
+      var walker = document.createTreeWalker(document.body || document.documentElement, NodeFilter.SHOW_TEXT, {
+        acceptNode:function(node){
+          if(!node.nodeValue || !node.nodeValue.trim()) return NodeFilter.FILTER_REJECT;
+          if(shouldSkipNode(node)) return NodeFilter.FILTER_REJECT;
+          return NodeFilter.FILTER_ACCEPT;
+        }
+      });
+      var nodes = [];
+      while(walker.nextNode()) nodes.push(walker.currentNode);
+      nodes.forEach(function(n){ translateTextNode(n, lang); });
+      Array.prototype.slice.call(document.querySelectorAll('*')).forEach(function(el){ translateAttributes(el, lang); });
+    }catch(_){ }
     translating = false;
   }
 
@@ -825,7 +770,7 @@
     if(!select) return false;
     try{
       var box = document.getElementById('kadLanguageBox');
-      if(box) box.removeAttribute('data-i18n-skip');
+      if(box) box.setAttribute('data-i18n-skip','1');
     }catch(_){ }
     for(var i=0;i<select.options.length;i++){
       var opt = select.options[i];
@@ -846,6 +791,7 @@
     var holder = document.createElement('div');
     holder.id = 'kadLanguageBox';
     holder.className = 'kadLanguageBox';
+    holder.setAttribute('data-i18n-skip','1');
     holder.innerHTML = '<span id="kadLanguageLabel">Limba</span><select id="kadLanguageSelect" aria-label="Limba"></select>';
     var select = holder.querySelector('select');
     SUPPORTED.forEach(function(code){
@@ -867,28 +813,9 @@
   }
 
   var scheduled = 0;
-  var scheduledNodes = [];
-  function schedule(root){
-    if(root) scheduledNodes.push(root);
+  function schedule(){
     if(scheduled) return;
-    scheduled = setTimeout(function(){
-      scheduled = 0;
-      var lang = getLang();
-      var list = scheduledNodes.splice(0, scheduledNodes.length);
-      if(!list.length){ translatePage(); return; }
-      if(translating) return;
-      translating = true;
-      try{
-        var seen = [];
-        list.forEach(function(n){
-          if(!n) return;
-          for(var i=0;i<seen.length;i++) if(seen[i] === n || (seen[i].contains && n.nodeType === 1 && seen[i].contains(n))) return;
-          seen.push(n);
-          translateSubtree(n.nodeType === 3 ? n : n, lang);
-        });
-      }catch(_){ }
-      translating = false;
-    }, 250);
+    scheduled = setTimeout(function(){ scheduled = 0; translatePage(); }, 80);
   }
 
   function boot(){
@@ -898,22 +825,12 @@
       var obs = new MutationObserver(function(mutations){
         if(translating) return;
         for(var i=0;i<mutations.length;i++){
-          var m = mutations[i];
-          if(m.target && m.target.id === 'kadLanguageBox') continue;
-          if(m.type === 'childList'){
-            for(var j=0;j<m.addedNodes.length;j++){
-              var n = m.addedNodes[j];
-              if(n && n.nodeType === 1 && n.id === 'kadLanguageBox') continue;
-              schedule(n);
-            }
-          }else if(m.type === 'characterData'){
-            schedule(m.target);
-          }else if(m.type === 'attributes'){
-            schedule(m.target);
-          }
+          if(mutations[i].target && mutations[i].target.id === 'kadLanguageBox') continue;
+          schedule();
+          break;
         }
       });
-      obs.observe(document.body || document.documentElement, {subtree:true, childList:true, characterData:true, attributes:true, attributeFilter:['placeholder','title','aria-label','data-title','data-label','value']});
+      obs.observe(document.body || document.documentElement, {subtree:true, childList:true, characterData:true, attributes:true, attributeFilter:['placeholder','title','aria-label','value']});
     }catch(_){ }
     window.addEventListener('storage', function(e){
       if(e && ([STORAGE_KEY].concat(LEGACY_KEYS).indexOf(e.key) >= 0)) translatePage();
