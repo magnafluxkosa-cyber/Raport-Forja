@@ -24,17 +24,12 @@
       var style = document.createElement('style');
       style.id = 'kad-security-guard-style';
       style.textContent = '' +
-        'html:not([' + READY_ATTR + '="1"]):not([' + DENIED_ATTR + '="1"]) body{display:none!important;visibility:hidden!important;opacity:0!important;}' +
-        'html:not([' + READY_ATTR + '="1"]):not([' + DENIED_ATTR + '="1"]) body>*{display:none!important;visibility:hidden!important;opacity:0!important;}' +
+        'html[' + SECURITY_ATTR + '="1"] body{visibility:hidden!important;}' +
+        'html[' + SECURITY_ATTR + '="1"] body>*{visibility:hidden!important;}' +
+        'html[' + DENIED_ATTR + '="1"] body{visibility:visible!important;}' +
         'html.kad-readonly [contenteditable="true"]{user-select:text!important;}';
       (document.head || document.documentElement).appendChild(style);
     }
-  }
-
-  function dispatchReadyEvent(ok){
-    try {
-      window.dispatchEvent(new CustomEvent('kad-security-ready', { detail:{ allowed:!!ok, pageKey:currentPageKey(), access:window.__KAD_SECURITY_ACCESS__ || null, user:window.__KAD_SECURITY_USER__ || null } }));
-    } catch(_) {}
   }
 
   function markAllowed(){
@@ -44,7 +39,6 @@
     try { document.documentElement.removeAttribute(DENIED_ATTR); } catch(_) {}
     try { document.documentElement.setAttribute(READY_ATTR, '1'); } catch(_) {}
     if(state.readyResolve) state.readyResolve(true);
-    dispatchReadyEvent(true);
   }
 
   function markDenied(){
@@ -53,7 +47,6 @@
     try { document.documentElement.removeAttribute(SECURITY_ATTR); } catch(_) {}
     try { document.documentElement.setAttribute(DENIED_ATTR, '1'); } catch(_) {}
     if(state.readyResolve) state.readyResolve(false);
-    dispatchReadyEvent(false);
   }
 
   function normalizePageKey(value){
@@ -363,9 +356,6 @@
     if(status.is_banned === true || status.is_active === false){
       return { allowed:false, role:role, permissions:buildPermissions(null), message:status.note || 'Cont blocat.', accountStatus:status };
     }
-    if(pageKey === 'helper-acl' && role !== 'admin'){
-      return { allowed:false, role:role, permissions:buildPermissions(null), message:'Helper ACL este permis doar pentru admin.', accountStatus:status, source:'admin only' };
-    }
     if(pageKey === 'index'){
       return { allowed:true, role:role, permissions:{ can_view:true, can_add:false, can_edit:false, can_delete:false, can_export:false, can_import:false }, accountStatus:status, source:'authenticated index' };
     }
@@ -380,73 +370,6 @@
     var roleMap = await loadRoleAcl(sb, role);
     var rolePerm = roleMap[pageKey] || buildPermissions(null);
     return { allowed:rolePerm.can_view === true, role:role, permissions:rolePerm, accountStatus:status, source:'role acl strict', message:rolePerm.can_view === true ? '' : 'Nu ai acces în această pagină.' };
-  }
-
-
-  function requiresFreshMfa(pageKey){
-    pageKey = normalizePageKey(pageKey);
-    return pageKey === 'helper-acl' || pageKey === 'helper-data';
-  }
-
-  function scopedMfaKeys(pageKey){
-    pageKey = normalizePageKey(pageKey);
-    var keys = [
-      'rf_kad_mfa_entry_ok_' + pageKey,
-      'rf_mfa_gate_' + pageKey,
-      'rf_mfa_entry_ok_' + pageKey
-    ];
-    if(pageKey === 'helper-acl') keys.push('rf_helper_acl_mfa_entry_ok');
-    if(pageKey === 'helper-data') keys.push('rf_helper_data_mfa_entry_ok');
-    return keys;
-  }
-
-  function readFreshMfaToken(pageKey){
-    var keys = scopedMfaKeys(pageKey);
-    var now = Date.now();
-    var hasFreshToken = false;
-    keys.forEach(function(k){
-      var value = 0;
-      try { value = Number(window.sessionStorage.getItem(k) || 0); } catch(_) { value = 0; }
-      if(value && now - value < 2 * 60 * 1000){
-        hasFreshToken = true;
-      } else if(value){
-        try { window.sessionStorage.removeItem(k); } catch(_) {}
-      }
-    });
-    return hasFreshToken;
-  }
-
-  async function hasVerifiedTotpFactor(sb){
-    try {
-      if(!sb || !sb.auth || !sb.auth.mfa || typeof sb.auth.mfa.listFactors !== 'function') return false;
-      var factors = await sb.auth.mfa.listFactors();
-      if(factors && factors.error) return false;
-      var totp = factors && factors.data && Array.isArray(factors.data.totp) ? factors.data.totp : [];
-      return totp.some(function(f){ return String((f && f.status) || '').toLowerCase() === 'verified'; });
-    } catch(_) { return false; }
-  }
-
-  async function currentMfaLevelIsAal2(sb){
-    try {
-      if(!sb || !sb.auth || !sb.auth.mfa || typeof sb.auth.mfa.getAuthenticatorAssuranceLevel !== 'function') return false;
-      var aal = await sb.auth.mfa.getAuthenticatorAssuranceLevel();
-      if(aal && aal.error) return false;
-      return String(aal && aal.data && aal.data.currentLevel || '').toLowerCase() === 'aal2';
-    } catch(_) { return false; }
-  }
-
-  async function enforceFreshMfaForPage(sb, pageKey){
-    if(!requiresFreshMfa(pageKey)) return true;
-    var hasFactor = await hasVerifiedTotpFactor(sb);
-    if(!hasFactor){
-      redirect('mfa-setup.html', { next: currentFileName(), scope: normalizePageKey(pageKey) });
-      return false;
-    }
-    var hasFreshToken = readFreshMfaToken(pageKey);
-    var isAal2 = await currentMfaLevelIsAal2(sb);
-    if(hasFreshToken && isAal2) return true;
-    redirect('mfa-verify.html', { next: currentFileName(), force: '1', scope: normalizePageKey(pageKey) });
-    return false;
   }
 
   function renderDenied(title, message){
@@ -567,7 +490,6 @@
       return;
     }
 
-    try { window.__KAD_SECURITY_USER__ = session.user || null; } catch(_) {}
     var pageKey = currentPageKey();
     var access = await runInternal(function(){ return resolveAccess(sb, session.user, pageKey); });
     window.__KAD_SECURITY_ACCESS__ = access;
@@ -578,9 +500,6 @@
       renderDenied('Acces restricționat', access && access.message ? access.message : 'Nu ai acces în această pagină.');
       return;
     }
-
-    var mfaOk = await runInternal(function(){ return enforceFreshMfaForPage(sb, pageKey); });
-    if(!mfaOk) return;
 
     applyReadonly(access.permissions || {});
     markAllowed();
