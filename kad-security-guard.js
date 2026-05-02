@@ -390,7 +390,11 @@
 
   function scopedMfaKeys(pageKey){
     pageKey = normalizePageKey(pageKey);
-    var keys = ['rf_kad_mfa_entry_ok_' + pageKey];
+    var keys = [
+      'rf_kad_mfa_entry_ok_' + pageKey,
+      'rf_mfa_gate_' + pageKey,
+      'rf_mfa_entry_ok_' + pageKey
+    ];
     if(pageKey === 'helper-acl') keys.push('rf_helper_acl_mfa_entry_ok');
     if(pageKey === 'helper-data') keys.push('rf_helper_data_mfa_entry_ok');
     return keys;
@@ -399,16 +403,17 @@
   function readFreshMfaToken(pageKey){
     var keys = scopedMfaKeys(pageKey);
     var now = Date.now();
-    for(var i=0; i<keys.length; i+=1){
+    var hasFreshToken = false;
+    keys.forEach(function(k){
       var value = 0;
-      try { value = Number(window.sessionStorage.getItem(keys[i]) || 0); } catch(_) { value = 0; }
+      try { value = Number(window.sessionStorage.getItem(k) || 0); } catch(_) { value = 0; }
       if(value && now - value < 2 * 60 * 1000){
-        keys.forEach(function(k){ try { window.sessionStorage.removeItem(k); } catch(_) {} });
-        return true;
+        hasFreshToken = true;
+      } else if(value){
+        try { window.sessionStorage.removeItem(k); } catch(_) {}
       }
-    }
-    keys.forEach(function(k){ try { window.sessionStorage.removeItem(k); } catch(_) {} });
-    return false;
+    });
+    return hasFreshToken;
   }
 
   async function hasVerifiedTotpFactor(sb){
