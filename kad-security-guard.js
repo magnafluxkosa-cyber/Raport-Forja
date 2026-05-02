@@ -32,6 +32,12 @@
     }
   }
 
+  function dispatchReadyEvent(ok){
+    try {
+      window.dispatchEvent(new CustomEvent('kad-security-ready', { detail:{ allowed:!!ok, pageKey:currentPageKey() } }));
+    } catch(_) {}
+  }
+
   function markAllowed(){
     state.allowed = true;
     state.ready = true;
@@ -39,6 +45,7 @@
     try { document.documentElement.removeAttribute(DENIED_ATTR); } catch(_) {}
     try { document.documentElement.setAttribute(READY_ATTR, '1'); } catch(_) {}
     if(state.readyResolve) state.readyResolve(true);
+    dispatchReadyEvent(true);
   }
 
   function markDenied(){
@@ -47,6 +54,7 @@
     try { document.documentElement.removeAttribute(SECURITY_ATTR); } catch(_) {}
     try { document.documentElement.setAttribute(DENIED_ATTR, '1'); } catch(_) {}
     if(state.readyResolve) state.readyResolve(false);
+    dispatchReadyEvent(false);
   }
 
   function normalizePageKey(value){
