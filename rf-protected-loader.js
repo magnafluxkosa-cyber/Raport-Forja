@@ -79,6 +79,8 @@
     if(!MFA_PAGES[page]) return true;
     try{
       var ts = Number(sessionStorage.getItem('rf_mfa_gate_' + page) || 0);
+      if(!ts && page === 'helper-acl') ts = Number(sessionStorage.getItem('rf_helper_acl_mfa_entry_ok') || 0);
+      if(!ts && page === 'helper-data') ts = Number(sessionStorage.getItem('rf_helper_data_mfa_entry_ok') || 0);
       return ts > 0 && (Date.now() - ts) < MFA_TTL_MS;
     }catch(_){ return false; }
   }
@@ -120,6 +122,19 @@
     if(MFA_PAGES[page] && !mfaMarkerOk(page)){
       requireMfa(page);
       return;
+    }
+
+    // După confirmarea MFA, forțăm refresh la sesiune ca tokenul trimis către Edge Function
+    // să conțină nivelul aal2. Fără asta, Supabase poate păstra temporar tokenul aal1
+    // și funcția blochează corect pagina sensibilă chiar dacă utilizatorul a introdus codul.
+    if(MFA_PAGES[page]){
+      try{
+        await sb.auth.refreshSession();
+        var freshRes = await sb.auth.getSession();
+        if(freshRes && freshRes.data && freshRes.data.session) session = freshRes.data.session;
+      }catch(refreshError){
+        console.warn('MFA session refresh failed:', refreshError);
+      }
     }
 
     var cfg = getConfig();
