@@ -34,7 +34,7 @@
 
   function dispatchReadyEvent(ok){
     try {
-      window.dispatchEvent(new CustomEvent('kad-security-ready', { detail:{ allowed:!!ok, pageKey:currentPageKey() } }));
+      window.dispatchEvent(new CustomEvent('kad-security-ready', { detail:{ allowed:!!ok, pageKey:currentPageKey(), access:window.__KAD_SECURITY_ACCESS__ || null, user:window.__KAD_SECURITY_USER__ || null } }));
     } catch(_) {}
   }
 
@@ -501,6 +501,7 @@
       return;
     }
 
+    try { window.__KAD_SECURITY_USER__ = session.user || null; } catch(_) {}
     var pageKey = currentPageKey();
     var access = await runInternal(function(){ return resolveAccess(sb, session.user, pageKey); });
     window.__KAD_SECURITY_ACCESS__ = access;
