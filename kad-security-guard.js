@@ -9,6 +9,8 @@
   var READY_ATTR = 'data-kad-security-ready';
   var DENIED_ATTR = 'data-kad-security-denied';
   var STORAGE_KEYS = ['rf_project_gate_access_session', 'rf_project_gate_access'];
+  var MFA_REQUIRED_PAGES = { 'helper-acl': true, 'helper-data': true };
+  var MFA_ENTRY_TTL_MS = 90 * 1000;
   var state = {
     allowed: false,
     ready: false,
@@ -427,6 +429,51 @@
     return /salv|save|adaug|add\b|nou\b|new\b|edit|delete|sterg|șterg|remove|import|upload|submit|actualiz|update|cloud.*save|salvează/.test(text);
   }
 
+
+  function mfaEntryKey(pageKey){
+    return 'rf_mfa_entry_ok_' + normalizePageKey(pageKey).replace(/[^a-z0-9_-]/g, '_');
+  }
+
+  function consumeMfaEntryFlag(pageKey){
+    var pk = normalizePageKey(pageKey);
+    var keys = [mfaEntryKey(pk)];
+    if(pk === 'helper-acl') keys.push('rf_helper_acl_mfa_entry_ok');
+    var now = Date.now();
+    var ok = false;
+    keys.forEach(function(k){
+      try {
+        var ts = Number(sessionStorage.getItem(k) || 0);
+        sessionStorage.removeItem(k);
+        if(ts && (now - ts) >= 0 && (now - ts) < MFA_ENTRY_TTL_MS) ok = true;
+      } catch(_) {}
+    });
+    return ok;
+  }
+
+  async function hasVerifiedTotpFactor(sb){
+    try {
+      var factors = await sb.auth.mfa.listFactors();
+      if(factors && factors.error) return false;
+      var totp = factors && factors.data && Array.isArray(factors.data.totp) ? factors.data.totp : [];
+      return totp.some(function(f){ return String((f && f.status) || '').toLowerCase() === 'verified'; });
+    } catch(_) { return false; }
+  }
+
+  async function requireMfaForPage(sb, pageKey){
+    pageKey = normalizePageKey(pageKey);
+    if(!MFA_REQUIRED_PAGES[pageKey]) return true;
+    if(consumeMfaEntryFlag(pageKey)) return true;
+    var next = currentFileName();
+    var scope = pageKey;
+    var verified = await hasVerifiedTotpFactor(sb);
+    if(!verified){
+      redirect('mfa-setup.html', { next: next, scope: scope });
+      return false;
+    }
+    redirect('mfa-verify.html', { next: next, force: '1', scope: scope });
+    return false;
+  }
+
   function applyReadonly(permissions){
     var canEdit = permissions && permissions.can_edit === true;
     var canAdd = permissions && permissions.can_add === true;
@@ -512,6 +559,9 @@
       renderDenied('Acces restricționat', access && access.message ? access.message : 'Nu ai acces în această pagină.');
       return;
     }
+
+    var mfaOk = await runInternal(function(){ return requireMfaForPage(sb, pageKey); });
+    if(mfaOk !== true) return;
 
     applyReadonly(access.permissions || {});
     markAllowed();
