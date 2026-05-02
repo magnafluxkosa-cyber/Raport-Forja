@@ -549,6 +549,89 @@
     buildTerms();
   })();
 
+
+
+  // Final coverage layer: untranslated Romanian UI texts + K.A.D brand lock.
+  (function(){
+    var finalExact = [
+      ['KAD','K.A.D','K.A.D','K.A.D','K.A.D','K.A.D','K.A.D'],
+      ['K.A.D','K.A.D','K.A.D','K.A.D','K.A.D','K.A.D','K.A.D'],
+      ['Depozit de vechituri','K.A.D','K.A.D','K.A.D','K.A.D','K.A.D','K.A.D'],
+      ['Adaugă problemă raportată','Adaugă problemă raportată','Add reported problem','Ajouter problème signalé','Aggiungi problema segnalato','Gemeldetes Problem hinzufügen','Jelentett probléma hozzáadása'],
+      ['Analiză probleme raportate','Analiză probleme raportate','Reported problems analysis','Analyse des problèmes signalés','Analisi problemi segnalati','Analyse gemeldeter Probleme','Jelentett problémák elemzése'],
+      ['An analiză','An analiză','Analysis year','Année d’analyse','Anno analisi','Analysejahr','Elemzési év'],
+      ['Denumire operațiune','Denumire operațiune','Operation name','Nom de l’opération','Nome operazione','Vorgangsbezeichnung','Művelet neve'],
+      ['Cantitate totală','Cantitate totală','Total quantity','Quantité totale','Quantità totale','Gesamtmenge','Összes mennyiség'],
+      ['Avertizare pe Sarjă (Stoc inițial + Intrări vs Debitate)','Avertizare pe Sarjă (Stoc inițial + Intrări vs Debitate)','Batch warning (Initial stock + Entries vs Cut parts)','Avertissement par coulée (Stock initial + Entrées vs Débités)','Avviso per colata (Stock iniziale + Entrate vs Tagliati)','Warnung nach Charge (Anfangsbestand + Eingänge vs Geschnitten)','Adag figyelmeztetés (Kezdő készlet + Bevételek vs Darabolt)'],
+      ['Corelare Numeral KOD din Magnaflux cu Intrări Oțel.','Corelare Numeral KOD din Magnaflux cu Intrări Oțel.','Numeral KOD correlation from Magnaflux with Steel Entries.','Corrélation Numeral KOD de Magnaflux avec les entrées acier.','Correlazione Numeral KOD da Magnaflux con Entrate acciaio.','Numeral-KOD-Abgleich aus Magnaflux mit Stahleingängen.','Numeral KOD összekapcsolás Magnafluxból az acél bevételekkel.'],
+      ['ALTĂ PROBLEMĂ','ALTĂ PROBLEMĂ','OTHER PROBLEM','AUTRE PROBLÈME','ALTRO PROBLEMA','ANDERES PROBLEM','MÁS PROBLÉMA'],
+      ['Dublu click pe rând pentru editare. Importul adaugă doar rândurile noi și ignoră dublurile identice.','Dublu click pe rând pentru editare. Importul adaugă doar rândurile noi și ignoră dublurile identice.','Double-click a row to edit. Import adds only new rows and ignores identical duplicates.','Double-cliquez sur une ligne pour modifier. L’import ajoute seulement les nouvelles lignes et ignore les doublons identiques.','Doppio clic sulla riga per modificare. L’import aggiunge solo le righe nuove e ignora i duplicati identici.','Doppelklick auf eine Zeile zum Bearbeiten. Der Import fügt nur neue Zeilen hinzu und ignoriert identische Duplikate.','Dupla kattintás a soron a szerkesztéshez. Az import csak az új sorokat adja hozzá, és figyelmen kívül hagyja az azonos duplikátumokat.'],
+      ['Aici gestionezi comenzile de oțel. În MRC intră automat doar cantitatea rămasă din fiecare comandă:','Aici gestionezi comenzile de oțel. În MRC intră automat doar cantitatea rămasă din fiecare comandă:','Here you manage steel orders. Only the remaining quantity from each order automatically enters MRC:','Ici vous gérez les commandes d’acier. Seule la quantité restante de chaque commande entre automatiquement dans MRC :','Qui gestisci gli ordini di acciaio. In MRC entra automaticamente solo la quantità rimanente di ogni ordine:','Hier verwalten Sie Stahlbestellungen. In MRC fließt automatisch nur die Restmenge jeder Bestellung ein:','Itt kezeled az acél rendeléseket. Az MRC-be automatikusan csak az egyes rendelések fennmaradó mennyisége kerül:'],
+      ['Aici setezi minimele și limita de piese până la regrăvare. Pragul de avertizare este procentul la care matrița trebuie planificată.','Aici setezi minimele și limita de piese până la regrăvare. Pragul de avertizare este procentul la care matrița trebuie planificată.','Here you set the minimums and the part limit until re-engraving. The warning threshold is the percentage at which the die must be planned.','Ici vous définissez les minimums et la limite de pièces jusqu’à la regravure. Le seuil d’avertissement est le pourcentage auquel la matrice doit être planifiée.','Qui imposti i minimi e il limite pezzi fino alla reincisione. La soglia di avviso è la percentuale alla quale la matrice deve essere pianificata.','Hier legen Sie Mindestwerte und Teilegrenze bis zur Nachgravur fest. Die Warnschwelle ist der Prozentsatz, bei dem die Matrize geplant werden muss.','Itt állítod be a minimumokat és az újravésésig engedett darabszámot. A figyelmeztetési küszöb az a százalék, ahol a szerszámot tervezni kell.'],
+      ['Aici introduci stocul fizic debitat, în structură exactă ca în Excel, păstrând aceleași reguli de lucru ca la STOC INIȚIAL OȚEL.','Aici introduci stocul fizic debitat, în structură exactă ca în Excel, păstrând aceleași reguli de lucru ca la STOC INIȚIAL OȚEL.','Here you enter the physical cut stock, in the exact Excel structure, keeping the same working rules as INITIAL STEEL STOCK.','Ici vous saisissez le stock physique débité, dans la structure exacte d’Excel, en conservant les mêmes règles de travail que pour le STOCK INITIAL ACIER.','Qui inserisci lo stock fisico tagliato, nella struttura esatta di Excel, mantenendo le stesse regole di lavoro dello STOCK INIZIALE ACCIAIO.','Hier erfassen Sie den physischen Schnittbestand in der exakten Excel-Struktur und mit denselben Arbeitsregeln wie beim ANFANGSBESTAND STAHL.','Itt adod meg a fizikai darabolt készletet, pontos Excel-szerkezetben, ugyanazokkal a munkaszabályokkal, mint a KEZDŐ ACÉLKÉSZLETNÉL.'],
+      ['Aici introduci stocul fizic pentru piesele forjate, cu aceleași reguli de lucru ca la STOC INIȚIAL OȚEL: grupare pe ani, deschidere pe ultimul rând și import/export Excel.','Aici introduci stocul fizic pentru piesele forjate, cu aceleași reguli de lucru ca la STOC INIȚIAL OȚEL: grupare pe ani, deschidere pe ultimul rând și import/export Excel.','Here you enter the physical stock for forged parts, with the same working rules as INITIAL STEEL STOCK: grouping by years, opening on the last row and Excel import/export.','Ici vous saisissez le stock physique des pièces forgées, avec les mêmes règles que le STOCK INITIAL ACIER : regroupement par années, ouverture sur la dernière ligne et import/export Excel.','Qui inserisci lo stock fisico dei pezzi forgiati, con le stesse regole dello STOCK INIZIALE ACCIAIO: raggruppamento per anni, apertura sull’ultima riga e import/export Excel.','Hier erfassen Sie den physischen Bestand der Schmiedeteile mit denselben Regeln wie beim ANFANGSBESTAND STAHL: Gruppierung nach Jahren, Öffnen in der letzten Zeile und Excel-Import/Export.','Itt adod meg a kovácsolt alkatrészek fizikai készletét, ugyanazokkal a szabályokkal, mint a KEZDŐ ACÉLKÉSZLETNÉL: évek szerinti csoportosítás, utolsó sorra nyitás és Excel import/export.'],
+      ['Aici apar doar reperele din comenzile importate care nu au încă mapare completă în Helper Data. Nu intră în calculul principal până nu au reper intern, material, diametru și kg/buc.','Aici apar doar reperele din comenzile importate care nu au încă mapare completă în Helper Data. Nu intră în calculul principal până nu au reper intern, material, diametru și kg/buc.','Only parts from imported orders that do not yet have complete mapping in Helper Data appear here. They do not enter the main calculation until they have internal part, material, diameter and kg/pc.','Seules les références des commandes importées qui n’ont pas encore de mappage complet dans Helper Data apparaissent ici. Elles n’entrent pas dans le calcul principal tant qu’elles n’ont pas référence interne, matière, diamètre et kg/pièce.','Qui appaiono solo i codici pezzo degli ordini importati che non hanno ancora una mappatura completa in Helper Data. Non entrano nel calcolo principale finché non hanno codice interno, materiale, diametro e kg/pz.','Hier erscheinen nur Teile aus importierten Bestellungen, die noch keine vollständige Zuordnung in Helper Data haben. Sie gehen erst in die Hauptberechnung ein, wenn internes Teil, Material, Durchmesser und kg/Stk. vorhanden sind.','Itt csak azok az importált rendelésekből származó cikkszámok jelennek meg, amelyeknek még nincs teljes párosítása a Helper Data-ban. Nem kerülnek a fő számításba, amíg nincs belső cikkszám, anyag, átmérő és kg/db.'],
+      ['Atenție: Browserul a blocat salvarea automată (localStorage) pentru fișiere locale. Datele NU vor rămâne după închidere.','Atenție: Browserul a blocat salvarea automată (localStorage) pentru fișiere locale. Datele NU vor rămâne după închidere.','Warning: The browser blocked automatic saving (localStorage) for local files. Data will NOT remain after closing.','Attention : le navigateur a bloqué l’enregistrement automatique (localStorage) pour les fichiers locaux. Les données NE resteront PAS après la fermeture.','Attenzione: il browser ha bloccato il salvataggio automatico (localStorage) per i file locali. I dati NON resteranno dopo la chiusura.','Warnung: Der Browser hat das automatische Speichern (localStorage) für lokale Dateien blockiert. Die Daten bleiben nach dem Schließen NICHT erhalten.','Figyelem: a böngésző blokkolta az automatikus mentést (localStorage) helyi fájloknál. Az adatok bezárás után NEM maradnak meg.'],
+      ['Contul curent este doar pentru vizualizare. Poți deschide și exporta documentele, dar nu poți încărca, înlocui sau șterge fișiere.','Contul curent este doar pentru vizualizare. Poți deschide și exporta documentele, dar nu poți încărca, înlocui sau șterge fișiere.','The current account is view-only. You can open and export documents, but you cannot upload, replace or delete files.','Le compte actuel est en lecture seule. Vous pouvez ouvrir et exporter les documents, mais vous ne pouvez pas charger, remplacer ou supprimer des fichiers.','L’account corrente è solo in visualizzazione. Puoi aprire ed esportare i documenti, ma non puoi caricare, sostituire o eliminare file.','Das aktuelle Konto ist nur zur Ansicht. Sie können Dokumente öffnen und exportieren, aber keine Dateien hochladen, ersetzen oder löschen.','A jelenlegi fiók csak megtekintésre jogosult. Megnyithatod és exportálhatod a dokumentumokat, de nem tölthetsz fel, cserélhetsz vagy törölhetsz fájlokat.'],
+      ['Contul curent este doar pentru vizualizare. Poți deschide și exporta fișele PDF, dar nu poți încărca, înlocui sau șterge fișiere.','Contul curent este doar pentru vizualizare. Poți deschide și exporta fișele PDF, dar nu poți încărca, înlocui sau șterge fișiere.','The current account is view-only. You can open and export PDF sheets, but you cannot upload, replace or delete files.','Le compte actuel est en lecture seule. Vous pouvez ouvrir et exporter les fiches PDF, mais vous ne pouvez pas charger, remplacer ou supprimer des fichiers.','L’account corrente è solo in visualizzazione. Puoi aprire ed esportare le schede PDF, ma non puoi caricare, sostituire o eliminare file.','Das aktuelle Konto ist nur zur Ansicht. Sie können PDF-Blätter öffnen und exportieren, aber keine Dateien hochladen, ersetzen oder löschen.','A jelenlegi fiók csak megtekintésre jogosult. Megnyithatod és exportálhatod a PDF lapokat, de nem tölthetsz fel, cserélhetsz vagy törölhetsz fájlokat.'],
+      ['Adaugă PDF sau Excel. Toate rândurile cu aceeași sarjă, același diametru și aceeași calitate vor primi automat „Are pretest”.','Adaugă PDF sau Excel. Toate rândurile cu aceeași sarjă, același diametru și aceeași calitate vor primi automat „Are pretest”.','Add PDF or Excel. All rows with the same batch, same diameter and same grade will automatically receive “Has pretest”.','Ajoutez PDF ou Excel. Toutes les lignes avec la même coulée, le même diamètre et la même qualité recevront automatiquement « A un prétest ».','Aggiungi PDF o Excel. Tutte le righe con la stessa colata, lo stesso diametro e la stessa qualità riceveranno automaticamente “Ha pretest”.','PDF oder Excel hinzufügen. Alle Zeilen mit derselben Charge, demselben Durchmesser und derselben Qualität erhalten automatisch „Hat Pretest“.','PDF vagy Excel hozzáadása. Az azonos adaggal, átmérővel és minőséggel rendelkező sorok automatikusan „Van pretest” jelölést kapnak.']
+    ];
+    finalExact.forEach(function(r){ addExact.apply(null, r); });
+
+    var finalTerms = [
+      ['aici','aici','here','ici','qui','hier','itt'],
+      ['gestionezi','gestionezi','manage','gérez','gestisci','verwalten','kezeled'],
+      ['introduci','introduci','enter','saisissez','inserisci','eingeben','beírod'],
+      ['setări','setări','settings','paramètres','impostazioni','Einstellungen','beállítások'],
+      ['setezi','setezi','set','définissez','imposti','festlegen','beállítod'],
+      ['intră','intră','enters','entre','entra','geht ein','belép'],
+      ['primi','primi','receive','recevoir','ricevere','erhalten','kap'],
+      ['primește','primește','receives','reçoit','riceve','erhält','kap'],
+      ['raportată','raportată','reported','signalée','segnalata','gemeldet','jelentett'],
+      ['raportate','raportate','reported','signalées','segnalate','gemeldet','jelentett'],
+      ['analiză','analiză','analysis','analyse','analisi','Analyse','elemzés'],
+      ['operațiune','operațiune','operation','opération','operazione','Vorgang','művelet'],
+      ['denumire','denumire','name','nom','nome','Bezeichnung','megnevezés'],
+      ['totală','totală','total','totale','totale','gesamt','összes'],
+      ['inițial','inițial','initial','initial','iniziale','anfänglich','kezdeti'],
+      ['inițială','inițială','initial','initiale','iniziale','anfänglich','kezdeti'],
+      ['dublu','dublu','double','double','doppio','Doppel','dupla'],
+      ['click','click','click','clic','clic','Klick','kattintás'],
+      ['ignoră','ignoră','ignores','ignore','ignora','ignoriert','figyelmen kívül hagyja'],
+      ['dublurile','dublurile','duplicates','doublons','duplicati','Duplikate','duplikátumok'],
+      ['identice','identice','identical','identiques','identici','identisch','azonos'],
+      ['aceea','aceea','that','cela','quello','das','az'],
+      ['după aceea','după aceea','after that','après cela','dopo di ciò','danach','ezután'],
+      ['despica','despica','split','diviser','dividere','aufteilen','szétosztani'],
+      ['câte','câte','each','chacun','ciascuno','jeweils','egyenként'],
+      ['lada','lada','box','caisse','cassa','Kiste','láda'],
+      ['aceeași','aceeași','same','même','stessa','gleiche','ugyanaz'],
+      ['același','același','same','même','stesso','gleiche','ugyanaz'],
+      ['corespunzător','corespunzător','corresponding','correspondant','corrispondente','entsprechend','megfelelő'],
+      ['completează','completează','fills','remplit','compila','füllt','kitölti'],
+      ['completă','completă','complete','complète','completa','vollständig','teljes'],
+      ['până nu','până nu','until','tant que','finché','bis','amíg'],
+      ['fizic','fizic','physical','physique','fisico','physisch','fizikai'],
+      ['fizică','fizică','physical','physique','fisica','physisch','fizikai'],
+      ['grupare','grupare','grouping','regroupement','raggruppamento','Gruppierung','csoportosítás'],
+      ['deschidere','deschidere','opening','ouverture','apertura','Öffnen','megnyitás'],
+      ['ultimul','ultimul','last','dernier','ultimo','letzte','utolsó'],
+      ['ultim','ultim','last','dernier','ultimo','letzte','utolsó'],
+      ['jos','jos','bottom','bas','basso','unten','lent'],
+      ['înlocui','înlocui','replace','remplacer','sostituire','ersetzen','cserélni'],
+      ['încărca','încărca','upload','charger','caricare','hochladen','feltölteni'],
+      ['documentele','documentele','documents','documents','documenti','Dokumente','dokumentumok'],
+      ['fișele','fișele','sheets','fiches','schede','Blätter','lapok'],
+      ['browserul','browserul','browser','navigateur','browser','Browser','böngésző'],
+      ['salvarea automată','salvarea automată','automatic saving','enregistrement automatique','salvataggio automatico','automatisches Speichern','automatikus mentés'],
+      ['fișiere locale','fișiere locale','local files','fichiers locaux','file locali','lokale Dateien','helyi fájlok'],
+      ['închidere','închidere','closing','fermeture','chiusura','Schließen','bezárás'],
+      ['localstorage','localStorage','localStorage','localStorage','localStorage','localStorage','localStorage']
+    ];
+    finalTerms.forEach(function(r){ addTerm.apply(null, r); });
+    buildTerms();
+  })();
+
   function escapeRe(s){ return String(s).replace(/[.*+?^${}()|[\]\\]/g,'\\$&'); }
   function hasLower(s){ return /[a-zăâîșțéèêëàáâäçôöûüùúìíòóñáéíóúőű]/.test(String(s)); }
   function hasUpper(s){ return /[A-ZĂÂÎȘȚÉÈÊËÀÁÂÄÇÔÖÛÜÙÚÌÍÒÓÑÁÉÍÓÚŐŰ]/.test(String(s)); }
@@ -566,9 +649,12 @@
   }
 
   function normalizeBrand(text){
-    return String(text == null ? '' : text).replace(/(^|[^A-Za-z0-9])K\s*\.?\s*A\s*\.?\s*D(?=$|[^A-Za-z0-9.-])/gi, function(full, prefix){
+    var s = String(text == null ? '' : text);
+    s = s.replace(/\bDepozit\s+de\s+vechituri\b/gi, 'K.A.D');
+    s = s.replace(/(^|[^A-Za-z0-9])K\s*\.?\s*A\s*\.?\s*D(?=$|[^A-Za-z0-9.-])/gi, function(full, prefix){
       return (prefix || '') + 'K.A.D';
     });
+    return s;
   }
 
   function canonicalizeToRomanian(text){
@@ -627,7 +713,7 @@
   function shouldSkipWholeText(text){
     var t = String(text || '').trim();
     if(!t) return true;
-    if(t.length > 600) return true;
+    if(t.length > 2200) return true;
     if(!/[A-Za-zĂÂÎȘȚăâîșțÀ-ž]/.test(t)) return true;
     if(/^(https?:|mailto:|tel:)/i.test(t)) return true;
     if(/^[A-Z]{1,4}\d+[A-Z0-9_\-/\. ]*$/i.test(t) && !/(STOC|TOTAL|MODEL|LUNA|DATA|AN|REPER|OTEL|OȚEL|BUC|KG|CALITATE|MATRIT|MATRȚ|FORJ|PRELUCR|TRAT|AMBAL|LIVR|PLAN|RAPORT|HELPER|INVENTAR|MAGNAFLUX|KPI)/i.test(t)) return true;
@@ -695,9 +781,10 @@
   function translateTextNode(node, lang){
     if(shouldSkipNode(node)) return;
     var p = node.parentElement;
+    var current = String(node.nodeValue == null ? '' : node.nodeValue);
     var original = node.__kadI18nOriginal;
-    if(original == null){
-      original = canonicalizeToRomanian(node.nodeValue);
+    if(original == null || (node.__kadI18nLast != null && current !== node.__kadI18nLast && current.trim() !== '')){
+      original = canonicalizeToRomanian(current);
       node.__kadI18nOriginal = original;
       try{
         if(p && p.tagName === 'OPTION' && !p.hasAttribute('value')) p.setAttribute('value', String(original).trim());
@@ -707,26 +794,31 @@
       node.__kadI18nOriginal = original;
     }
     var next = translateText(original, lang);
+    node.__kadI18nLast = next;
     if(node.nodeValue !== next) node.nodeValue = next;
   }
 
   function translateAttributes(el, lang){
     if(!el || el.nodeType !== 1) return;
     if(el.closest && el.closest('[data-i18n-skip], [translate="no"], .no-translate, .notranslate, code, pre, script, style')) return;
-    ['placeholder','title','aria-label','data-title','data-label'].forEach(function(attr){
+    ['placeholder','title','aria-label','aria-description','alt','data-title','data-label','data-placeholder','data-tooltip','data-empty','data-status','data-original-title'].forEach(function(attr){
       if(!el.hasAttribute || !el.hasAttribute(attr)) return;
       var store = '__kadI18nAttr_' + attr;
-      if(el[store] == null) el[store] = canonicalizeToRomanian(el.getAttribute(attr));
+      var curAttr = el.getAttribute(attr);
+      var lastStore = store + '_last';
+      if(el[store] == null || (el[lastStore] != null && curAttr !== el[lastStore] && String(curAttr || '').trim() !== '')) el[store] = canonicalizeToRomanian(curAttr);
       else el[store] = canonicalizeToRomanian(el[store]);
       var next = translateText(el[store], lang);
+      el[lastStore] = next;
       if(el.getAttribute(attr) !== next) el.setAttribute(attr, next);
     });
     if(el.tagName === 'INPUT'){
       var type = String(el.getAttribute('type') || '').toLowerCase();
       if((type === 'button' || type === 'submit' || type === 'reset') && el.value){
-        if(el.__kadI18nValue == null) el.__kadI18nValue = canonicalizeToRomanian(el.value);
+        if(el.__kadI18nValue == null || (el.__kadI18nValueLast != null && el.value !== el.__kadI18nValueLast && String(el.value || '').trim() !== '')) el.__kadI18nValue = canonicalizeToRomanian(el.value);
         else el.__kadI18nValue = canonicalizeToRomanian(el.__kadI18nValue);
         var v = translateText(el.__kadI18nValue, lang);
+        el.__kadI18nValueLast = v;
         if(el.value !== v) el.value = v;
       }
     }
@@ -830,7 +922,7 @@
           break;
         }
       });
-      obs.observe(document.body || document.documentElement, {subtree:true, childList:true, characterData:true, attributes:true, attributeFilter:['placeholder','title','aria-label','value']});
+      obs.observe(document.body || document.documentElement, {subtree:true, childList:true, characterData:true, attributes:true, attributeFilter:['placeholder','title','aria-label','aria-description','alt','data-title','data-label','data-placeholder','data-tooltip','data-empty','data-status','data-original-title','value']});
     }catch(_){ }
     window.addEventListener('storage', function(e){
       if(e && ([STORAGE_KEY].concat(LEGACY_KEYS).indexOf(e.key) >= 0)) translatePage();
@@ -842,7 +934,8 @@
     getLanguage:getLang,
     translate:translatePage,
     translateText:function(text, lang){ return translateText(text, normalizeLang(lang || getLang())); },
-    languages:SUPPORTED.slice()
+    languages:SUPPORTED.slice(),
+    normalizeBrand:normalizeBrand
   };
 
   if(document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
