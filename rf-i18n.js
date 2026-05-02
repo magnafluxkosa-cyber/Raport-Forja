@@ -935,6 +935,78 @@
     buildTerms();
   })();
 
+
+
+  // Planificare Forja remaining visible labels and mixed generated texts.
+  // This block is translation-only and keeps part codes, machine codes, numbers and K.A.D unchanged.
+  (function(){
+    var planMoreExact = [
+      ['FORGING PLANNING','PLANIFICARE FORJĂ','FORGING PLANNING','PLANIFICATION FORGE','PIANIFICAZIONE FORGIATURA','SCHMIEDEPLANUNG','KOVÁCSOLÁSI TERVEZÉS'],
+      ['Forging Planning','Planificare Forjă','Forging planning','Planification forge','Pianificazione forgiatura','Schmiedeplanung','Kovácsolási tervezés'],
+      ['Realizat live','Realizat live','Produced live','Réalisé en direct','Prodotto live','Produziert live','Gyártott élő'],
+      ['REALIZAT LIVE','REALIZAT LIVE','PRODUCED LIVE','RÉALISÉ EN DIRECT','PRODOTTO LIVE','PRODUZIERT LIVE','GYÁRTOTT ÉLŐ'],
+      ['Refresh realizat','Refresh realizat','Refresh produced','Actualiser réalisé','Aggiorna prodotto','Produziert aktualisieren','Gyártott frissítése'],
+      ['Refresh Realizat','Refresh realizat','Refresh produced','Actualiser réalisé','Aggiorna prodotto','Produziert aktualisieren','Gyártott frissítése'],
+      ['Refresh produs','Refresh realizat','Refresh produced','Actualiser réalisé','Aggiorna prodotto','Produziert aktualisieren','Gyártott frissítése'],
+      ['Generator plan propus','Generator plan propus','Proposed plan generator','Générateur de plan proposé','Generatore piano proposto','Generator vorgeschlagener Plan','Javasolt terv generátor'],
+      ['Add sub row Selected','Adaugă subrând selectat','Add selected sub-row','Ajouter sous-ligne sélectionnée','Aggiungi sotto-riga selezionata','Ausgewählte Unterzeile hinzufügen','Kijelölt alsor hozzáadása'],
+      ['Add sub row selected','Adaugă subrând selectat','Add selected sub-row','Ajouter sous-ligne sélectionnée','Aggiungi sotto-riga selezionata','Ausgewählte Unterzeile hinzufügen','Kijelölt alsor hozzáadása'],
+      ['Add selected sub-row','Adaugă subrând selectat','Add selected sub-row','Ajouter sous-ligne sélectionnée','Aggiungi sotto-riga selezionata','Ausgewählte Unterzeile hinzufügen','Kijelölt alsor hozzáadása'],
+      ['Add selected sub row','Adaugă subrând selectat','Add selected sub-row','Ajouter sous-ligne sélectionnée','Aggiungi sotto-riga selezionata','Ausgewählte Unterzeile hinzufügen','Kijelölt alsor hozzáadása'],
+      ['Adaugă subrând selectat','Adaugă subrând selectat','Add selected sub-row','Ajouter sous-ligne sélectionnée','Aggiungi sotto-riga selezionata','Ausgewählte Unterzeile hinzufügen','Kijelölt alsor hozzáadása'],
+      ['Delete selected row','Șterge rândul selectat','Delete selected row','Supprimer la ligne sélectionnée','Elimina riga selezionata','Ausgewählte Zeile löschen','Kijelölt sor törlése'],
+      ['Save now','Salvează acum','Save now','Enregistrer maintenant','Salva ora','Jetzt speichern','Mentés most'],
+      ['Search Part','Caută reper','Search part','Rechercher référence','Cerca codice pezzo','Teil suchen','Cikkszám keresése'],
+      ['Search part','Caută reper','Search part','Rechercher référence','Cerca codice pezzo','Teil suchen','Cikkszám keresése'],
+      ['Caută reper','Caută reper','Search part','Rechercher référence','Cerca codice pezzo','Teil suchen','Cikkszám keresése'],
+      ['Date from','Data de la','Date from','Date de début','Data da','Datum von','Dátumtól'],
+      ['Date to','Data până la','Date to','Date de fin','Data fino a','Datum bis','Dátumig'],
+      ['Export Excel','Export Excel','Export Excel','Exporter Excel','Esporta Excel','Excel exportieren','Excel exportálás'],
+      ['AN','AN','YEAR','ANNÉE','ANNO','JAHR','ÉV'],
+      ['DATE','DATA','DATE','DATE','DATA','DATUM','DÁTUM'],
+      ['DAY','ZI','DAY','JOUR','GIORNO','TAG','NAP'],
+      ['Day','Zi','Day','Jour','Giorno','Tag','Nap'],
+      ['Zi','Zi','Day','Jour','Giorno','Tag','Nap'],
+      ['Part','Reper','Part','Référence','Codice pezzo','Teil','Cikkszám'],
+      ['PLANNED','PLANIFICAT','PLANNED','PLANIFIÉ','PIANIFICATO','GEPLANT','TERVEZETT'],
+      ['PRODUCED','REALIZAT','PRODUCED','RÉALISÉ','PRODOTTO','PRODUZIERT','GYÁRTOTT'],
+      ['Produced','Realizat','Produced','Réalisé','Prodotto','Produziert','Gyártott'],
+      ['Realizat','Realizat','Produced','Réalisé','Prodotto','Produziert','Gyártott'],
+      ['PLANIFICAT','PLANIFICAT','PLANNED','PLANIFIÉ','PIANIFICATO','GEPLANT','TERVEZETT'],
+      ['Neacoperite','Neacoperite','Uncovered','Non couvertes','Non coperte','Nicht gedeckt','Nem fedezett'],
+      ['NEACOPERITE','NEACOPERITE','UNCOVERED','NON COUVERTES','NON COPERTE','NICHT GEDECKT','NEM FEDEZETT'],
+      ['Replanificat','Replanificat','Rescheduled','Replanifié','Ripianificato','Neu geplant','Újratervezett'],
+      ['replanificat','replanificat','rescheduled','replanifié','ripianificato','neu geplant','újratervezett'],
+      ['De replanificat','De replanificat','To reschedule','À replanifier','Da ripianificare','Neu zu planen','Újratervezendő'],
+      ['Livrări de replanificat','Livrări de replanificat','Deliveries to reschedule','Livraisons à replanifier','Consegne da ripianificare','Lieferungen neu zu planen','Újratervezendő szállítások'],
+      ['Deliveries of replanificat','Livrări de replanificat','Deliveries to reschedule','Livraisons à replanifier','Consegne da ripianificare','Lieferungen neu zu planen','Újratervezendő szállítások'],
+      ['Deliveries to reschedule','Livrări de replanificat','Deliveries to reschedule','Livraisons à replanifier','Consegne da ripianificare','Lieferungen neu zu planen','Újratervezendő szállítások'],
+      ['Missing Steel','Oțel lipsă','Missing steel','Acier manquant','Acciaio mancante','Fehlender Stahl','Hiányzó acél'],
+      ['Missing steel','Oțel lipsă','Missing steel','Acier manquant','Acciaio mancante','Fehlender Stahl','Hiányzó acél'],
+      ['Oțel lipsă','Oțel lipsă','Missing steel','Acier manquant','Acciaio mancante','Fehlender Stahl','Hiányzó acél'],
+      ['săpt.','săpt.','weeks','sem.','sett.','Wo.','hét'],
+      ['săpt','săpt.','weeks','sem.','sett.','Wo.','hét'],
+      ['pcs','buc','pcs','pcs','pz','Stk.','db'],
+      ['parts','repere','parts','références','codici pezzo','Teile','cikkszámok'],
+      ['part','reper','part','référence','codice pezzo','Teil','cikkszám']
+    ];
+    planMoreExact.forEach(function(r){ addExact.apply(null, r); });
+    var planMoreTerms = [
+      ['neacoperite','neacoperite','uncovered','non couvertes','non coperte','nicht gedeckt','nem fedezett'],
+      ['neacoperit','neacoperit','uncovered','non couvert','non coperto','nicht gedeckt','nem fedezett'],
+      ['replanificat','replanificat','rescheduled','replanifié','ripianificato','neu geplant','újratervezett'],
+      ['realizat','realizat','produced','réalisé','prodotto','produziert','gyártott'],
+      ['realizate','realizate','produced','réalisées','prodotte','produziert','gyártott'],
+      ['produs','produs','produced','produit','prodotto','produziert','gyártott'],
+      ['plan propus','plan propus','proposed plan','plan proposé','piano proposto','vorgeschlagener Plan','javasolt terv'],
+      ['subrând','subrând','sub-row','sous-ligne','sotto-riga','Unterzeile','alsor'],
+      ['lipsă','lipsă','missing','manquant','mancante','fehlend','hiányzó'],
+      ['săpt.','săpt.','weeks','sem.','sett.','Wo.','hét']
+    ];
+    planMoreTerms.forEach(function(r){ addTerm.apply(null, r); });
+    buildTerms();
+  })();
+
   function replaceMonthsAndDays(text, lang){
     var out = String(text);
     SUPPORTED.forEach(function(srcLang){
@@ -1002,6 +1074,34 @@
     return out;
   }
 
+
+
+  function translateDynamicPlanningText(text, lang){
+    lang = normalizeLang(lang || getLang());
+    var raw = String(text == null ? '' : text);
+    var leading = (raw.match(/^\s*/) || [''])[0];
+    var trailing = (raw.match(/\s*$/) || [''])[0];
+    var core = raw.trim().replace(/\s+/g,' ');
+    var m;
+    var L = {
+      ro:{uncovered:'Neacoperite', parts:'repere', pcs:'buc', deliveries:'Livrări de replanificat', missingSteel:'Oțel lipsă', weeks:'săpt.'},
+      en:{uncovered:'Uncovered', parts:'parts', pcs:'pcs', deliveries:'Deliveries to reschedule', missingSteel:'Missing steel', weeks:'weeks'},
+      fr:{uncovered:'Non couvertes', parts:'références', pcs:'pcs', deliveries:'Livraisons à replanifier', missingSteel:'Acier manquant', weeks:'sem.'},
+      it:{uncovered:'Non coperte', parts:'codici pezzo', pcs:'pz', deliveries:'Consegne da ripianificare', missingSteel:'Acciaio mancante', weeks:'sett.'},
+      de:{uncovered:'Nicht gedeckt', parts:'Teile', pcs:'Stk.', deliveries:'Lieferungen neu zu planen', missingSteel:'Fehlender Stahl', weeks:'Wo.'},
+      hu:{uncovered:'Nem fedezett', parts:'cikkszámok', pcs:'db', deliveries:'Újratervezendő szállítások', missingSteel:'Hiányzó acél', weeks:'hét'}
+    }[lang] || {};
+    m = core.match(/^(?:Neacoperite|Uncovered|Non couvertes|Non coperte|Nicht gedeckt|Nem fedezett)\s*:\s*([0-9.,]+)\s*(?:parts|part|repere|reper|références|référence|codici pezzo|codice pezzo|Teile|Teil|cikkszámok|cikkszám)\s*[•\-–—]\s*([0-9.,]+)\s*(?:pcs|buc|pz|Stk\.?|db)$/i);
+    if(m) return leading + L.uncovered + ': ' + m[1] + ' ' + L.parts + ' • ' + m[2] + ' ' + L.pcs + trailing;
+    m = core.match(/^(?:Deliveries of replanificat|Deliveries to reschedule|Livrări de replanificat|Livrari de replanificat|Livraisons à replanifier|Consegne da ripianificare|Lieferungen neu zu planen|Újratervezendő szállítások)\s*:\s*([0-9.,]+)$/i);
+    if(m) return leading + L.deliveries + ': ' + m[1] + trailing;
+    m = core.match(/^(?:Missing Steel|Missing steel|Oțel lipsă|Otel lipsa|Acier manquant|Acciaio mancante|Fehlender Stahl|Hiányzó acél)\s*([0-9.,]+)\s*(?:săpt\.?|sapt\.?|weeks?|sem\.?|sett\.?|Wo\.?|hét)\s*:\s*([0-9.,]+)\s*kg$/i);
+    if(m) return leading + L.missingSteel + ' ' + m[1] + ' ' + L.weeks + ': ' + m[2] + ' kg' + trailing;
+    m = core.match(/^(?:Refresh realizat|Refresh produs|Refresh produced|Actualiser réalisé|Aggiorna prodotto|Produziert aktualisieren|Gyártott frissítése)$/i);
+    if(m) return leading + ({ro:'Refresh realizat',en:'Refresh produced',fr:'Actualiser réalisé',it:'Aggiorna prodotto',de:'Produziert aktualisieren',hu:'Gyártott frissítése'}[lang] || core) + trailing;
+    return null;
+  }
+
   function translateText(text, lang){
     lang = normalizeLang(lang || getLang());
     var raw = String(text == null ? '' : text);
@@ -1009,9 +1109,15 @@
     var cached = cacheGet(ck);
     if(cached != null) return cached;
     var base = canonicalizeToRomanian(raw);
+    if(/^\s*AN\s*$/i.test(base) && /planificare/i.test(String(location.pathname || document.title || ''))){
+      var anMap = {ro:'AN',en:'YEAR',fr:'ANNÉE',it:'ANNO',de:'JAHR',hu:'ÉV'};
+      return cacheSet(ck, anMap[lang] || 'AN');
+    }
     if(shouldSkipWholeText(base)) return cacheSet(ck, normalizeBrand(base));
     var exact = translateExact(base, lang);
     if(exact != null) return cacheSet(ck, normalizeBrand(exact));
+    var dynamicPlanning = translateDynamicPlanningText(base, lang);
+    if(dynamicPlanning != null) return cacheSet(ck, normalizeBrand(dynamicPlanning));
     var leading = (String(base).match(/^\s*/) || [''])[0];
     var trailing = (String(base).match(/\s*$/) || [''])[0];
     var core = String(base).trim();
