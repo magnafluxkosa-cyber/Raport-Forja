@@ -248,26 +248,44 @@
 
   async function resolveRole(sb, user){
     var email = normalizeEmail(user && user.email);
+    var userId = String(user && user.id || '').trim();
+
+    function cleanRole(value){
+      var role = normalizePageKey(value);
+      return ['admin','editor','operator','viewer'].indexOf(role) !== -1 ? role : '';
+    }
+
+    var attempts = [];
+    if(userId){
+      attempts.push(sb.from('profiles').select('role').eq('user_id', userId).maybeSingle());
+      attempts.push(sb.from('profiles').select('role').eq('id', userId).maybeSingle());
+      attempts.push(sb.from('rf_acl').select('role').eq('user_id', userId).maybeSingle());
+      attempts.push(sb.from('rf_acl').select('role').eq('id', userId).maybeSingle());
+    }
+    if(email){
+      attempts.push(sb.from('profiles').select('role').ilike('email', email).maybeSingle());
+      attempts.push(sb.from('rf_acl').select('role').ilike('email', email).maybeSingle());
+    }
+
+    for(var i=0; i<attempts.length; i+=1){
+      var row = await maybeSelect(attempts[i]);
+      var role = cleanRole(row && row.role);
+      if(role) return role;
+    }
+
+    try {
+      var metaRole = cleanRole(user && user.app_metadata && (user.app_metadata.erp_role || user.app_metadata.role));
+      if(metaRole && metaRole !== 'authenticated') return metaRole;
+    } catch(_) {}
+
     try {
       var doc = await readDoc(sb, 'acl_roles_v1');
       var roles = doc && doc.roles && typeof doc.roles === 'object' ? doc.roles : null;
-      var mirrored = roles && (roles[email] || roles[email.toLowerCase()]);
-      if(mirrored) return normalizePageKey(mirrored);
+      var mirrored = roles && email && (roles[email] || roles[email.toLowerCase()]);
+      var mirrorRole = cleanRole(mirrored);
+      if(mirrorRole) return mirrorRole;
     } catch(_) {}
-    var attempts = [];
-    if(user && user.id){
-      attempts.push(sb.from('profiles').select('role').eq('user_id', user.id).maybeSingle());
-      attempts.push(sb.from('profiles').select('role').eq('id', user.id).maybeSingle());
-    }
-    if(email){
-      attempts.push(sb.from('profiles').select('role').eq('email', email).maybeSingle());
-      attempts.push(sb.from('rf_acl').select('role').eq('email', email).maybeSingle());
-    }
-    for(var i=0; i<attempts.length; i+=1){
-      var row = await maybeSelect(attempts[i]);
-      var role = normalizePageKey(row && row.role);
-      if(['admin','editor','operator','viewer'].indexOf(role) !== -1) return role;
-    }
+
     return 'viewer';
   }
 
