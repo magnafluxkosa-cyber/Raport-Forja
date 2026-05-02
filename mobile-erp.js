@@ -1,6 +1,7 @@
 (function(){
   const MOBILE_WIDTH = 900;
   let scaleObserver = null;
+  const MOBILE_CSS_HREF = './mobile-erp.css';
 
   function isMobileViewport(){
     return window.innerWidth <= MOBILE_WIDTH || (window.matchMedia && window.matchMedia('(pointer:coarse) and (max-width: 1024px)').matches);
@@ -9,6 +10,18 @@
   function updateViewportVars(){
     const vh = (window.visualViewport ? window.visualViewport.height : window.innerHeight) * 0.01;
     document.documentElement.style.setProperty('--rf-vh', `${vh}px`);
+  }
+
+
+  function ensureMobileCssLoaded(){
+    if(document.querySelector('link[href$="mobile-erp.css"]')) return;
+    const head = document.head || document.getElementsByTagName('head')[0];
+    if(!head) return;
+    const link = document.createElement('link');
+    link.rel = 'stylesheet';
+    link.href = MOBILE_CSS_HREF;
+    link.setAttribute('data-rf-mobile-css', '1');
+    head.appendChild(link);
   }
 
   function enforceUnscaledTables(){
@@ -26,6 +39,7 @@
     scaleObserver = new MutationObserver(() => {
       enforceUnscaledTables();
       wrapFreeTables();
+      markExistingTableContainers();
       neutralizeStickyInsideScroll();
     });
     try{
@@ -33,8 +47,12 @@
     }catch(_err){}
   }
 
+  function tableScrollContainerSelector(){
+    return '.rf-mobile-table-scroll, .table-wrap, .tableWrap, .tablewrap, .tableScroll, .table-scroll, .sheet-scroll, .sheetScroll, .sumWrap, .summaryWrap, .summary-table-wrap, .summaryTableWrap, .sideTableWrap, .matrix-wrap, .ranking-wrap, .mini-table-wrap, .mini-table, .deptTableWrap, .defect-filter-table-wrap, .generator-preview-wrap, .main-table-wrap, .monthly-table-wrap, .tableInner, .fit-table, .excel-wrap, .excel-scroll, .data-scroll, .grid-scroll, .list-scroll, .table-panel, .table-shell, .table-card, .sideTable';
+  }
+
   function isInsideExistingScrollWrap(table){
-    return !!table.closest('.rf-mobile-table-scroll, .table-wrap, .tableWrap, .tablewrap, .sumWrap, .summaryWrap, .sideTableWrap, .matrix-wrap, .ranking-wrap, .mini-table, .table-panel, .table-shell, .table-card, .sideTable');
+    return !!table.closest(tableScrollContainerSelector());
   }
 
   function shouldWrapTable(table){
@@ -44,12 +62,64 @@
     return true;
   }
 
+
+  function isIgnoredTable(table){
+    return !table || table.closest('#kadNavShellRoot, .modal, .modalBody, .modal-body, .pm-modal, .pm-modal-body, .modal-content, .kad-shell, script, template');
+  }
+
+  function getColumnCount(table){
+    const row = table.tHead && table.tHead.rows && table.tHead.rows[0] ? table.tHead.rows[0] : table.querySelector('tr');
+    if(!row) return 0;
+    return Array.from(row.cells || []).reduce((sum, cell) => sum + (Number(cell.colSpan) || 1), 0);
+  }
+
+  function estimateTableMinWidth(table){
+    const cols = getColumnCount(table);
+    const viewport = Math.max(window.innerWidth || 360, 320);
+    const base = cols >= 12 ? 92 : cols >= 8 ? 104 : 118;
+    const estimated = cols ? cols * base : table.scrollWidth;
+    const natural = Math.max(table.scrollWidth || 0, table.offsetWidth || 0, estimated || 0);
+    return Math.max(viewport - 18, natural, cols >= 5 ? 640 : 0);
+  }
+
+  function prepareTableForMobile(table){
+    if(!table || isIgnoredTable(table)) return;
+    table.classList.add('rf-mobile-wide-table');
+    const minWidth = estimateTableMinWidth(table);
+    if(minWidth > 0){
+      table.style.minWidth = `${Math.ceil(minWidth)}px`;
+    }
+    table.style.width = 'max-content';
+    table.style.maxWidth = 'none';
+    table.style.tableLayout = 'auto';
+  }
+
+  function markExistingTableContainers(){
+    if(!document.body || !document.body.classList.contains('rf-mobile')) return;
+    document.querySelectorAll('table').forEach((table) => {
+      if(isIgnoredTable(table)) return;
+      prepareTableForMobile(table);
+      const container = table.closest(tableScrollContainerSelector());
+      if(container){
+        container.classList.add('rf-mobile-table-scroll');
+        let parent = container.parentElement;
+        let hops = 0;
+        while(parent && parent !== document.body && hops < 3){
+          parent.setAttribute('data-rf-mobile-scroll-parent', '1');
+          parent = parent.parentElement;
+          hops += 1;
+        }
+      }
+    });
+  }
+
   function wrapFreeTables(){
     if(!document.body || !document.body.classList.contains('rf-mobile')) return;
     document.querySelectorAll('table').forEach((table) => {
       if(!shouldWrapTable(table)) return;
       const parent = table.parentElement;
       if(!parent) return;
+      prepareTableForMobile(table);
       const wrapper = document.createElement('div');
       wrapper.className = 'rf-mobile-table-scroll';
       parent.insertBefore(wrapper, table);
@@ -78,9 +148,11 @@
   function applyMobileClass(){
     if(!document.body) return;
     document.body.classList.toggle('rf-mobile', isMobileViewport());
+    ensureMobileCssLoaded();
     updateViewportVars();
     enforceUnscaledTables();
     wrapFreeTables();
+    markExistingTableContainers();
     neutralizeStickyInsideScroll();
     attachScaleObserver();
     dispatchMobileLayoutEvent();
