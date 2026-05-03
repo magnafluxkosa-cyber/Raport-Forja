@@ -59,7 +59,7 @@
 
     <div id="appBox">
       <div class="stats">
-        <div class="stat-card"><span>Total cloud</span><strong id="statCloud">0</strong></div>
+        <div class="stat-card"><span>Afișate / Total</span><strong id="statCloud">0</strong></div>
         <div class="stat-card"><span>Import citit</span><strong id="statParsed">0</strong></div>
         <div class="stat-card"><span>Noi</span><strong id="statNew">0</strong></div>
         <div class="stat-card"><span>Duplicate</span><strong id="statDup">0</strong></div>
@@ -113,7 +113,7 @@
     ['measurement_date_ro','Data'],['measurement_time','Ora'],['operator_name','Operator'],['reper_complet','Reper complet'],['marcaj_matrita','Marcaj matriță'],['sarja_material','Sarjă material'],['name_original','Nume aparat'],['hb','HB'],['diameter','Diametru'],['force','Forță'],['sphere','Sferă'],['zoom','Zoom'],['hmax','HMax'],['hmin','HMin'],['status','Status'],['source_file','Fișier sursă'],['imported_at_ro','Importat la']
   ];
 
-  const state = { supa:null, user:null, role:'viewer', access:{can_view:false,can_edit:false}, repere:[], reperePromise:null, cloudRows:[], importRows:[], existingKeys:new Set(), filters:{year:'',month:'',operator:'',reper:'',scale:'',status:''} };
+  const state = { supa:null, user:null, role:'viewer', access:{can_view:false,can_edit:false}, repere:[], reperePromise:null, cloudRows:[], importRows:[], existingKeys:new Set(), filters:{year:'',month:'',operator:'',reper:'',scale:'',status:''}, latestPeriod:null, defaultFilterActive:false, cloudTotal:0, loadedMode:'latest' };
   const el = id => document.getElementById(id);
   const $ = { pageRoot:el('pageRoot'), appBox:el('appBox'), deniedBox:el('deniedBox'), roleBadge:el('roleBadge'), syncBadge:el('syncBadge'), fileDb:el('fileDb'), btnImport:el('btnImport'), btnSave:el('btnSave'), btnReload:el('btnReload'), btnExport:el('btnExport'), btnBack:el('btnBack'), btnLogout:el('btnLogout'), theadRow:el('theadRow'), tbody:el('tbody'), toast:el('toast'), fYear:el('fYear'), fMonth:el('fMonth'), fOperator:el('fOperator'), fReper:el('fReper'), fScale:el('fScale'), fStatus:el('fStatus') };
 
@@ -574,11 +574,85 @@
     }
     state.repere=[...set.values()].sort((a,b)=>a.value.localeCompare(b.value,'ro'));
   }
-  async function loadCloud(){
-    setSync('Încarc cloud rapid...', 'warn');
+  async function getCloudTotalCount(){
+    try{
+      const { count, error } = await state.supa.from(TABLE).select('measurement_key', { count:'exact', head:true });
+      if(error) return null;
+      return Number.isFinite(Number(count)) ? Number(count) : null;
+    }catch(_e){ return null; }
+  }
 
-    // Selectăm doar coloanele afișate/folosite. Asta reduce mult timpul față de select('*').
-    // Nu selectăm coloana "status" din Supabase, deoarece nu există în toate instalările.
+  async function getLatestPeriod(){
+    try{
+      const { data, error } = await state.supa
+        .from(TABLE)
+        .select('year,month,measurement_datetime')
+        .order('measurement_datetime', { ascending:false })
+        .limit(1);
+      if(error) throw error;
+      const r = Array.isArray(data) && data[0] ? data[0] : null;
+      if(!r) return null;
+      const dt = r.measurement_datetime ? new Date(r.measurement_datetime) : null;
+      const y = Number(r.year) || (dt && !isNaN(dt) ? dt.getFullYear() : null);
+      const m = Number(r.month) || (dt && !isNaN(dt) ? dt.getMonth()+1 : null);
+      if(!y || !m) return null;
+      return { year:String(y), month:String(m) };
+    }catch(_e){ return null; }
+  }
+
+  function hasCloudSearchFilters(){
+    return !!(
+      String(state.filters.year||'').trim() ||
+      String(state.filters.month||'').trim() ||
+      String(state.filters.operator||'').trim() ||
+      String(state.filters.reper||'').trim() ||
+      String(state.filters.scale||'').trim() ||
+      String(state.filters.status||'').trim()
+    );
+  }
+
+  function applyQueryFilters(q, filters){
+    const f = filters || {};
+    if(f.year) q = q.eq('year', Number(f.year));
+    if(f.month) q = q.eq('month', Number(f.month));
+    if(f.operator) q = q.ilike('operator_name', '%' + String(f.operator).trim() + '%');
+    if(f.reper) q = q.ilike('reper_complet', '%' + String(f.reper).trim() + '%');
+    if(f.scale) q = q.eq('hardness_scale', String(f.scale));
+    // Statusul nu este coloană stabilă în toate schemele. Pentru cloud, statusul real este „salvat”.
+    // Noi / duplicate / neidentificate rămân statusuri locale pentru importul curent.
+    return q;
+  }
+
+  function syncFilterInputs(){
+    if($.fYear) $.fYear.value = state.filters.year || '';
+    if($.fMonth) $.fMonth.value = state.filters.month || '';
+    if($.fOperator) $.fOperator.value = state.filters.operator || '';
+    if($.fReper) $.fReper.value = state.filters.reper || '';
+    if($.fScale) $.fScale.value = state.filters.scale || '';
+    if($.fStatus) $.fStatus.value = state.filters.status || '';
+  }
+
+  function readFiltersFromUi(source){
+    state.filters.year = $.fYear ? String($.fYear.value||'') : '';
+    state.filters.month = $.fMonth ? String($.fMonth.value||'') : '';
+    state.filters.operator = $.fOperator ? String($.fOperator.value||'').trim() : '';
+    state.filters.reper = $.fReper ? String($.fReper.value||'').trim() : '';
+    state.filters.scale = $.fScale ? String($.fScale.value||'') : '';
+    state.filters.status = $.fStatus ? String($.fStatus.value||'') : '';
+
+    // Dacă pagina s-a deschis pe ultima lună și utilizatorul caută operator/reper,
+    // căutarea trebuie să fie în tot cloud-ul, nu doar în luna implicită.
+    if(source === 'text' && state.defaultFilterActive && (state.filters.operator || state.filters.reper)){
+      state.filters.year = '';
+      state.filters.month = '';
+      state.defaultFilterActive = false;
+      syncFilterInputs();
+    }else if(source === 'period'){
+      state.defaultFilterActive = false;
+    }
+  }
+
+  async function fetchCloudRows(filters, label){
     const selectCols = [
       'measurement_key','measurement_datetime','measurement_date','measurement_time','year','month',
       'operator_name','reper_complet','reper_short','marcaj_matrita','sarja_material','sarja',
@@ -586,10 +660,11 @@
       'source_file','imported_at'
     ].join(',');
 
-    async function runSelect(from, to, withCount, useStar){
-      const q = withCount
+    function runSelect(from, to, withCount, useStar){
+      let q = withCount
         ? state.supa.from(TABLE).select(useStar ? '*' : selectCols, { count:'exact' })
         : state.supa.from(TABLE).select(useStar ? '*' : selectCols);
+      q = applyQueryFilters(q, filters);
       return q.order('measurement_datetime', { ascending:true }).range(from, to);
     }
 
@@ -598,10 +673,7 @@
       if(res.error){
         const msg = String(res.error.message || res.error.details || res.error.hint || res.error || '');
         const schemaErr = /column|schema cache|could not find|PGRST/i.test(msg);
-        if(schemaErr){
-          // Fallback sigur: dacă schema diferă, revenim la select('*'), dar păstrăm paginarea.
-          res = await runSelect(from, to, withCount, true);
-        }
+        if(schemaErr) res = await runSelect(from, to, withCount, true);
       }
       return res;
     }
@@ -612,16 +684,13 @@
 
     const allRows = Array.isArray(first.data) ? first.data.slice() : [];
     const total = Number.isFinite(Number(first.count)) ? Number(first.count) : null;
-    setSync(`Încarc cloud... ${allRows.length}${total ? '/' + total : ''} rânduri`, 'warn');
+    setSync(`${label}... ${allRows.length}${total ? '/' + total : ''} rânduri`, 'warn');
 
     if(total && total > pageSize){
       const ranges = [];
       for(let from = pageSize; from < total; from += pageSize){
         ranges.push([from, Math.min(from + pageSize - 1, total - 1)]);
       }
-
-      // Fetch paralel controlat. Este mult mai rapid decât 1000 + 1000 + 1000 secvențial,
-      // dar nu bombardăm Supabase cu prea multe requesturi simultane.
       const concurrency = 4;
       for(let i = 0; i < ranges.length; i += concurrency){
         const group = ranges.slice(i, i + concurrency);
@@ -630,23 +699,64 @@
           if(res.error) throw res.error;
           if(Array.isArray(res.data)) allRows.push(...res.data);
         }
-        setSync(`Încarc cloud... ${Math.min(allRows.length,total)}/${total} rânduri`, 'warn');
+        setSync(`${label}... ${Math.min(allRows.length,total)}/${total} rânduri`, 'warn');
         await new Promise(r => setTimeout(r, 0));
       }
     }else if(!total && allRows.length === pageSize){
-      // Fallback fără count: continuă secvențial până batch-ul este sub 1000.
       let from = pageSize;
       while(true){
         const res = await fetchPage(from, from + pageSize - 1, false);
         if(res.error) throw res.error;
         const batch = Array.isArray(res.data) ? res.data : [];
         allRows.push(...batch);
-        setSync(`Încarc cloud... ${allRows.length} rânduri`, 'warn');
+        setSync(`${label}... ${allRows.length} rânduri`, 'warn');
         if(batch.length < pageSize) break;
         from += pageSize;
         await new Promise(r => setTimeout(r, 0));
       }
     }
+    return allRows;
+  }
+
+  async function loadCloud(options){
+    options = options || {};
+    const explicitDefault = options.mode === 'default';
+
+    setSync('Verific cloud...', 'warn');
+    state.cloudTotal = await getCloudTotalCount();
+    state.latestPeriod = await getLatestPeriod();
+
+    if(explicitDefault || (!hasCloudSearchFilters() && state.latestPeriod)){
+      state.filters.year = state.latestPeriod ? state.latestPeriod.year : '';
+      state.filters.month = state.latestPeriod ? state.latestPeriod.month : '';
+      state.filters.operator = '';
+      state.filters.reper = '';
+      state.filters.scale = '';
+      state.filters.status = '';
+      state.defaultFilterActive = true;
+      state.loadedMode = 'latest';
+      populateYearFilter();
+      syncFilterInputs();
+    }else{
+      state.defaultFilterActive = false;
+      state.loadedMode = 'search';
+      populateYearFilter();
+      syncFilterInputs();
+    }
+
+    const queryFilters = Object.assign({}, state.filters);
+    const onlyLocalStatus = queryFilters.status && queryFilters.status !== 'salvat';
+    if(onlyLocalStatus){
+      // Pentru statusuri de import (nou/duplicat/neidentificat) nu încărcăm cloud inutil.
+      state.cloudRows = [];
+      render();
+      setSync('Filtru local aplicat', 'ok');
+      return;
+    }
+    if(queryFilters.status === 'salvat') queryFilters.status = '';
+
+    const label = state.loadedMode === 'latest' ? 'Încarc ultima lună' : 'Caut în cloud';
+    const allRows = await fetchCloudRows(queryFilters, label);
 
     state.cloudRows = allRows
       .map(row => normalizeCloudRow(row))
@@ -654,11 +764,16 @@
 
     state.existingKeys = new Set(state.cloudRows.map(r => r.measurement_key).filter(Boolean));
     populateYearFilter();
+    syncFilterInputs();
     render();
-    setSync(`Pregătit · ${state.cloudRows.length} rânduri cloud`, 'ok');
+
+    const totalText = state.cloudTotal ? ` din ${state.cloudTotal} total` : '';
+    const modeText = state.loadedMode === 'latest' ? 'ultima lună' : 'rezultate filtrate';
+    setSync(`Pregătit · ${state.cloudRows.length} rânduri (${modeText})${totalText}`, 'ok');
     scrollTableToBottom();
   }
-  function normalizeCloudRow(r){
+  
+function normalizeCloudRow(r){
     const dt = r.measurement_datetime ? new Date(r.measurement_datetime) : null;
     const dateIso = r.measurement_date || (dt && !isNaN(dt) ? dt.toISOString().slice(0,10) : '');
     const time = r.measurement_time || (dt && !isNaN(dt) ? dt.toISOString().slice(11,19) : '');
@@ -732,6 +847,26 @@
     }
     return rows.sort((a,b)=>String(a.measurement_datetime).localeCompare(String(b.measurement_datetime)));
   }
+  async function refreshImportDuplicateStatus(rows){
+    if(!Array.isArray(rows) || !rows.length || !state.supa) return rows;
+    const keys = [...new Set(rows.map(r => r.measurement_key).filter(Boolean))];
+    const found = new Set();
+    for(let i=0; i<keys.length; i+=800){
+      const chunk = keys.slice(i, i+800);
+      try{
+        const { data, error } = await state.supa.from(TABLE).select('measurement_key').in('measurement_key', chunk);
+        if(error) continue;
+        (data || []).forEach(r => { if(r && r.measurement_key) found.add(r.measurement_key); });
+      }catch(_e){}
+    }
+    rows.forEach(r => {
+      if(found.has(r.measurement_key)) r.status = 'duplicat';
+      else if(r.status === 'duplicat') r.status = (r.reper_complet ? 'nou' : 'neidentificat');
+    });
+    state.existingKeys = new Set([...state.existingKeys, ...found]);
+    return rows;
+  }
+
   function payload(row){
     return { measurement_key:row.measurement_key, measurement_datetime:row.measurement_datetime, measurement_date:row.measurement_date, measurement_time:row.measurement_time, year:row.year, month:row.month, operator_name:row.operator_name||null, reper_complet:row.reper_complet||null, reper_short:row.reper_short||null, marcaj_matrita:row.marcaj_matrita||null, sarja_material:row.sarja_material||null, sarja:row.sarja||null, name_original:row.name_original||null, name_clean:row.name_clean||null, hardness_scale:row.hardness_scale||null, hardness_value:numOrNull(row.hardness_value), hb:numOrNull(row.hb), hrc:numOrNull(row.hrc), hv:numOrNull(row.hv), diameter:numOrNull(row.diameter), force:numOrNull(row.force), sphere:numOrNull(row.sphere), d1:numOrNull(row.d1), d2:numOrNull(row.d2), pixelmm:numOrNull(row.pixelmm), zoom:numOrNull(row.zoom), hmax:numOrNull(row.hmax), hmin:numOrNull(row.hmin), circle_mode:row.circle_mode, passa_non_passa:numOrNull(row.passa_non_passa), xleft:numOrNull(row.xleft), xright:numOrNull(row.xright), yup:numOrNull(row.yup), ydown:numOrNull(row.ydown), source_file:row.source_file||null, imported_by_email:String(state.user&&state.user.email||'').toLowerCase(), raw_json:row.raw_json||{} };
   }
@@ -749,7 +884,7 @@
       saved += (Array.isArray(data) && data.length ? data.length : chunk.length);
     }
     rows.forEach(r=>{ r.status='salvat'; state.existingKeys.add(r.measurement_key); });
-    await loadCloud(); render(); setSync('Salvat','ok'); toast(`Salvate/actualizate ${saved} măsurători.`);
+    await loadCloud(hasCloudSearchFilters() ? { mode:'search' } : { mode:'default' }); render(); setSync('Salvat','ok'); toast(`Salvate/actualizate ${saved} măsurători.`);
   }
   function mergedRows(){
     if(!state.importRows.length) return state.cloudRows.slice();
@@ -799,28 +934,72 @@
       return `<td>${esc(v)}</td>`;
     }).join('')+'</tr>').join('');
     const all=mergedRows();
-    el('statCloud').textContent=state.cloudRows.length; el('statParsed').textContent=state.importRows.length; el('statNew').textContent=state.importRows.filter(r=>r.status==='nou').length; el('statDup').textContent=state.importRows.filter(r=>r.status==='duplicat').length; el('statBad').textContent=state.importRows.filter(r=>r.status==='neidentificat'||r.status==='neclar').length;
+    el('statCloud').textContent = state.cloudTotal ? (state.cloudRows.length + '/' + state.cloudTotal) : state.cloudRows.length; el('statParsed').textContent=state.importRows.length; el('statNew').textContent=state.importRows.filter(r=>r.status==='nou').length; el('statDup').textContent=state.importRows.filter(r=>r.status==='duplicat').length; el('statBad').textContent=state.importRows.filter(r=>r.status==='neidentificat'||r.status==='neclar').length;
     $.btnSave.disabled = !state.access.can_edit || !state.importRows.length;
     scrollTableToBottom();
   }
   function populateYearFilter(){
-    const years=[...new Set(mergedRows().map(r=>r.year).filter(Boolean))].sort((a,b)=>b-a);
+    const currentY = state.filters.year || ($.fYear ? $.fYear.value : '') || '';
+    const currentM = state.filters.month || ($.fMonth ? $.fMonth.value : '') || '';
+    const yearsSet = new Set(mergedRows().map(r=>Number(r.year)).filter(Boolean));
+    const nowY = new Date().getFullYear();
+    if(state.latestPeriod && state.latestPeriod.year) yearsSet.add(Number(state.latestPeriod.year));
+    for(let y = nowY + 1; y >= nowY - 8; y--) yearsSet.add(y);
+    const years=[...yearsSet].filter(Boolean).sort((a,b)=>b-a);
     $.fYear.innerHTML='<option value="">Toți</option>'+years.map(y=>`<option value="${y}">${y}</option>`).join('');
     $.fMonth.innerHTML='<option value="">Toate</option>'+MONTHS.slice(1).map((m,i)=>`<option value="${i+1}">${m}</option>`).join('');
+    if($.fYear) $.fYear.value = currentY && years.map(String).includes(String(currentY)) ? String(currentY) : '';
+    if($.fMonth) $.fMonth.value = currentM ? String(currentM) : '';
   }
-  function exportExcel(){
+  
+function exportExcel(){
     const rows=filteredRows().map(r=>{ const o={}; COLUMNS.forEach(([k,label])=>{ o[label]=['hardness_value','hb','hrc','hv','diameter','force','sphere','d1','d2','pixelmm','zoom'].includes(k)?numOrNull(r[k]):(r[k]||''); }); return o; });
     if(!window.XLSX){ toast('Librăria Excel nu este încărcată.'); return; }
     const ws=window.XLSX.utils.json_to_sheet(rows.length?rows:[{}]); const wb=window.XLSX.utils.book_new(); window.XLSX.utils.book_append_sheet(wb,ws,'Duritate'); window.XLSX.writeFile(wb,'duritate.xlsx');
   }
   function bind(){
-    $.btnBack.onclick=()=>window.location.href='index.html'; $.btnLogout.onclick=async()=>{ try{ await state.supa.auth.signOut(); }catch(_e){} window.location.href='login.html'; };
-    $.btnImport.onclick=()=> $.fileDb.click(); $.fileDb.onchange=async()=>{ const file=$.fileDb.files && $.fileDb.files[0]; if(!file) return; if(!state.access.can_edit){ toast('Nu ai drept de import.'); return; } try{ if(state.reperePromise){ setSync('Încarc repere pentru import...','warn'); await state.reperePromise; } setSync('Citesc fișierul...','warn'); state.importRows=await parseDbFile(file); populateYearFilter(); render(); setSync('Import citit','ok'); toast(`Am citit ${state.importRows.length} măsurători.`); }catch(e){ setSync('Eroare import','err'); toast(e.message||'Eroare import'); } finally { $.fileDb.value=''; } };
-    $.btnSave.onclick=saveNewRows; $.btnReload.onclick=loadCloud; $.btnExport.onclick=exportExcel;
-    [$.fYear,$.fMonth,$.fScale,$.fStatus].forEach(x=>x.onchange=()=>{ state.filters.year=$.fYear.value; state.filters.month=$.fMonth.value; state.filters.scale=$.fScale.value; state.filters.status=$.fStatus.value; render(); });
-    [$.fOperator,$.fReper].forEach(x=>x.oninput=()=>{ state.filters.operator=$.fOperator.value; state.filters.reper=$.fReper.value; render(); });
+    $.btnBack.onclick=()=>window.location.href='index.html';
+    $.btnLogout.onclick=async()=>{ try{ await state.supa.auth.signOut(); }catch(_e){} window.location.href='login.html'; };
+    $.btnImport.onclick=()=> $.fileDb.click();
+    $.fileDb.onchange=async()=>{
+      const file=$.fileDb.files && $.fileDb.files[0];
+      if(!file) return;
+      if(!state.access.can_edit){ toast('Nu ai drept de import.'); return; }
+      try{
+        if(state.reperePromise){ setSync('Încarc repere pentru import...','warn'); await state.reperePromise; }
+        setSync('Citesc fișierul...','warn');
+        state.importRows=await parseDbFile(file);
+        setSync('Verific duplicatele în cloud...','warn');
+        await refreshImportDuplicateStatus(state.importRows);
+        populateYearFilter();
+        render();
+        setSync('Import citit','ok');
+        toast(`Am citit ${state.importRows.length} măsurători.`);
+      }catch(e){
+        setSync('Eroare import','err');
+        toast(e.message||'Eroare import');
+      } finally { $.fileDb.value=''; }
+    };
+    $.btnSave.onclick=saveNewRows;
+    $.btnReload.onclick=()=>loadCloud({ mode:'default' });
+    $.btnExport.onclick=exportExcel;
+
+    let searchTimer = null;
+    function queueCloudSearch(source){
+      readFiltersFromUi(source);
+      clearTimeout(searchTimer);
+      const delay = source === 'text' ? 450 : 0;
+      searchTimer = setTimeout(()=>{
+        if(!hasCloudSearchFilters()) loadCloud({ mode:'default' });
+        else loadCloud({ mode:'search' });
+      }, delay);
+    }
+
+    [$.fYear,$.fMonth,$.fScale,$.fStatus].forEach(x=>x.onchange=()=>queueCloudSearch('period'));
+    [$.fOperator,$.fReper].forEach(x=>x.oninput=()=>queueCloudSearch('text'));
   }
-  async function start(){
+  
+async function start(){
     bind(); render();
     try{
       state.supa=await initSupabase();
@@ -832,7 +1011,7 @@
       // Reperele sunt necesare doar pentru parsarea unui import nou.
       // Le încărcăm în paralel cu cloud-ul, ca tabelul să apară mai repede.
       state.reperePromise = loadRepere().catch(_e => {});
-      await loadCloud();
+      await loadCloud({ mode:'default' });
     }
     catch(e){ setSync('Cloud indisponibil','err'); toast(e.message || 'Nu pot conecta Supabase. Verifică dacă ai rulat SQL-ul de setup.'); }
   }
