@@ -105,7 +105,9 @@
       <div class="panel">
         <div class="toolbar">
           <input class="file-input" id="fileDb" type="file" accept=".db,application/octet-stream" />
+          <input class="file-input" id="fileDbImages" type="file" accept=".db,application/octet-stream" />
           <button class="btn primary edit-only" id="btnImport" type="button">Importă fișier .db</button>
+          <button class="btn" id="btnLoadImagesLocal" type="button">Încarcă .db pentru imagini</button>
           <button class="btn ok edit-only" id="btnSave" type="button" disabled>Salvează în cloud</button>
           <button class="btn" id="btnReload" type="button">Reîncarcă din cloud</button>
           <button class="btn" id="btnExport" type="button">Export Excel</button>
@@ -113,7 +115,7 @@
           <span class="badge warn viewonly-note">Doar vizualizare</span>
         </div>
         <div class="help" style="margin-top:8px">
-          Se importă valorile din fișierul aparatului. Imaginile pot fi vizualizate local din .db, fără să fie salvate în cloud. Dublurile se evită după data și ora măsurării, nu după numele fișierului. Numele introdus în aparat este separat automat în Operator + Reper complet + Marcaj matriță + Sarjă material, folosind reperele din Helper Data. Codul PT este ignorat, iar sufixele de tip _005 sunt ignorate.
+          Se importă valorile din fișierul aparatului. Tabelul rămâne salvat în cloud, iar imaginile se pot încărca separat local cu butonul „Încarcă .db pentru imagini”, fără să fie salvate în cloud. Dublurile se evită după data și ora măsurării, nu după numele fișierului. Numele introdus în aparat este separat automat în Operator + Reper complet + Marcaj matriță + Sarjă material, folosind reperele din Helper Data. Codul PT este ignorat, iar sufixele de tip _005 sunt ignorate.
         </div>
       </div>
 
@@ -212,7 +214,7 @@
 
   const state = { supa:null, user:null, role:'viewer', access:{can_view:false,can_edit:false}, repere:[], reperePromise:null, cloudRows:[], importRows:[], cpkRows:[], cpkEdits:{}, imageRefs:new Map(), imageModalUrls:[], existingKeys:new Set(), filters:{year:'',month:'',operator:'',reper:'',scale:'',status:''}, latestPeriod:null, defaultFilterActive:false, cloudTotal:0, loadedMode:'latest' };
   const el = id => document.getElementById(id);
-  const $ = { pageRoot:el('pageRoot'), appBox:el('appBox'), deniedBox:el('deniedBox'), roleBadge:el('roleBadge'), syncBadge:el('syncBadge'), fileDb:el('fileDb'), btnImport:el('btnImport'), btnSave:el('btnSave'), btnReload:el('btnReload'), btnExport:el('btnExport'), btnClearImages:el('btnClearImages'), btnBack:el('btnBack'), btnLogout:el('btnLogout'), theadRow:el('theadRow'), tbody:el('tbody'), toast:el('toast'), imageModal:el('imageModal'), imageModalTitle:el('imageModalTitle'), imageModalBody:el('imageModalBody'), btnImageMeasured:el('btnImageMeasured'), btnImageCaptured:el('btnImageCaptured'), btnImageClose:el('btnImageClose'), fYear:el('fYear'), fMonth:el('fMonth'), fOperator:el('fOperator'), fReper:el('fReper'), fScale:el('fScale'), fStatus:el('fStatus'), cpkDate:el('cpkDate'), cpkReper:el('cpkReper'), cpkSarja:el('cpkSarja'), cpkLsl:el('cpkLsl'), cpkUsl:el('cpkUsl'), cpkInternalMin:el('cpkInternalMin'), cpkInternalMax:el('cpkInternalMax'), btnCpkCalc:el('btnCpkCalc'), btnCpkClear:el('btnCpkClear'), btnCpkExport:el('btnCpkExport'), cpkValues:el('cpkValues'), cpkMetrics:el('cpkMetrics'), cpkChart:el('cpkChart'), cpkHint:el('cpkHint') };
+  const $ = { pageRoot:el('pageRoot'), appBox:el('appBox'), deniedBox:el('deniedBox'), roleBadge:el('roleBadge'), syncBadge:el('syncBadge'), fileDb:el('fileDb'), fileDbImages:el('fileDbImages'), btnImport:el('btnImport'), btnLoadImagesLocal:el('btnLoadImagesLocal'), btnSave:el('btnSave'), btnReload:el('btnReload'), btnExport:el('btnExport'), btnClearImages:el('btnClearImages'), btnBack:el('btnBack'), btnLogout:el('btnLogout'), theadRow:el('theadRow'), tbody:el('tbody'), toast:el('toast'), imageModal:el('imageModal'), imageModalTitle:el('imageModalTitle'), imageModalBody:el('imageModalBody'), btnImageMeasured:el('btnImageMeasured'), btnImageCaptured:el('btnImageCaptured'), btnImageClose:el('btnImageClose'), fYear:el('fYear'), fMonth:el('fMonth'), fOperator:el('fOperator'), fReper:el('fReper'), fScale:el('fScale'), fStatus:el('fStatus'), cpkDate:el('cpkDate'), cpkReper:el('cpkReper'), cpkSarja:el('cpkSarja'), cpkLsl:el('cpkLsl'), cpkUsl:el('cpkUsl'), cpkInternalMin:el('cpkInternalMin'), cpkInternalMax:el('cpkInternalMax'), btnCpkCalc:el('btnCpkCalc'), btnCpkClear:el('btnCpkClear'), btnCpkExport:el('btnCpkExport'), cpkValues:el('cpkValues'), cpkMetrics:el('cpkMetrics'), cpkChart:el('cpkChart'), cpkHint:el('cpkHint') };
 
   function toast(msg){ $.toast.textContent = msg; $.toast.classList.add('show'); clearTimeout(toast._t); toast._t=setTimeout(()=>$.toast.classList.remove('show'),4500); }
   function setSync(text, cls){ $.syncBadge.textContent=text; $.syncBadge.className='badge '+(cls||'warn'); }
@@ -959,6 +961,49 @@ function normalizeCloudRow(r){
     }
     if(found){ setSync(`Imagini locale găsite: ${found}`, 'ok'); }
   }
+
+  async function indexDbImagesOnly(file){
+    if(!file) return [];
+    const pattern = new TextEncoder().encode('CreationDate');
+    const rows=[]; const seenLocal=new Set(); let offset=0; let tail=new Uint8Array(0);
+    const existingByKey = new Map(mergedRows().map(r => [String(r.measurement_key || ''), r]));
+    while(offset < file.size){
+      const end = Math.min(file.size, offset + CHUNK_SIZE);
+      const part = await readSlice(file, offset, end);
+      const buf = new Uint8Array(tail.length + part.length); buf.set(tail,0); buf.set(part,tail.length);
+      const bufferStartGlobal = Math.max(0, offset - tail.length);
+      let pos=0;
+      while(true){
+        const idx=findPattern(buf,pattern,pos); if(idx<0) break; pos=idx+1;
+        const start=idx-1; if(start<0 || buf[start]!==0x02) continue;
+        const raw=parseElements(buf,start);
+        if(!raw.CreationDate) continue;
+        const dt=parseRoDate(raw.CreationDate); if(!dt) continue;
+        const key='aparat-duritate|'+dt.iso;
+        if(seenLocal.has(key)) continue; seenLocal.add(key);
+        const existing = existingByKey.get(key) || {};
+        rows.push(Object.assign({
+          measurement_key:key,
+          __creation_offset:bufferStartGlobal + idx,
+          measurement_datetime:dt.iso,
+          measurement_date:dt.date,
+          measurement_date_ro:dt.ro,
+          measurement_time:dt.time,
+          year:dt.year,
+          month:dt.month,
+          source_file:file.name
+        }, existing));
+      }
+      offset = end;
+      tail = buf.slice(Math.max(0, buf.length - OVERLAP));
+      setSync(`Indexez imagini locale: ${Math.round(offset/file.size*100)}%`, 'warn');
+      await new Promise(r=>setTimeout(r,0));
+    }
+    const offsetRows = rows.slice().sort((a,b)=>Number(a.__creation_offset||0)-Number(b.__creation_offset||0));
+    await attachLocalImageRefsFromFile(file, offsetRows);
+    return rows.sort((a,b)=>String(a.measurement_datetime).localeCompare(String(b.measurement_datetime)));
+  }
+
   function revokeImageModalUrls(){
     (state.imageModalUrls || []).forEach(url => { try{ URL.revokeObjectURL(url); }catch(_e){} });
     state.imageModalUrls = [];
@@ -972,7 +1017,8 @@ function normalizeCloudRow(r){
     const blob = ref.file.slice(item.start, item.start + item.length, item.type || 'application/octet-stream');
     const url = URL.createObjectURL(blob);
     state.imageModalUrls.push(url);
-    const row = ref.row || {};
+    const currentRow = mergedRows().find(r => String(r.measurement_key || '') === String(key || ''));
+    const row = currentRow || ref.row || {};
     if($.imageModalTitle){
       $.imageModalTitle.textContent = `${item.field === 'MeasuredImage' ? 'Imagine măsurată' : 'Imagine capturată'} · ${row.measurement_date_ro || ''} ${row.measurement_time || ''} · ${row.reper_complet || ''}`.trim();
     }
@@ -1042,9 +1088,9 @@ function normalizeCloudRow(r){
       setSync(`Citesc fișierul: ${Math.round(offset/file.size*100)}%`, 'warn');
       await new Promise(r=>setTimeout(r,0));
     }
-    const sortedRows = rows.sort((a,b)=>String(a.measurement_datetime).localeCompare(String(b.measurement_datetime)));
-    await attachLocalImageRefsFromFile(file, sortedRows);
-    return sortedRows;
+    const offsetRows = rows.slice().sort((a,b)=>Number(a.__creation_offset||0)-Number(b.__creation_offset||0));
+    await attachLocalImageRefsFromFile(file, offsetRows);
+    return rows.sort((a,b)=>String(a.measurement_datetime).localeCompare(String(b.measurement_datetime)));
   }
   async function refreshImportDuplicateStatus(rows){
     if(!Array.isArray(rows) || !rows.length || !state.supa) return rows;
@@ -2077,6 +2123,22 @@ function normalizeCloudRow(r){
     $.btnBack.onclick=()=>window.location.href='index.html';
     $.btnLogout.onclick=async()=>{ try{ await state.supa.auth.signOut(); }catch(_e){} window.location.href='login.html'; };
     $.btnImport.onclick=()=> $.fileDb.click();
+    if($.btnLoadImagesLocal) $.btnLoadImagesLocal.onclick=()=> $.fileDbImages.click();
+    if($.fileDbImages) $.fileDbImages.onchange=async()=>{
+      const file=$.fileDbImages.files && $.fileDbImages.files[0];
+      if(!file) return;
+      try{
+        setSync('Citesc .db pentru imagini locale...', 'warn');
+        const indexedRows = await indexDbImagesOnly(file);
+        render();
+        const found = indexedRows.filter(r => state.imageRefs.has(r.measurement_key)).length;
+        setSync(`Imagini locale încărcate: ${found}`, found ? 'ok' : 'warn');
+        toast(found ? (`Am încărcat local imagini pentru ${found} măsurători. Nu s-a salvat nimic în cloud.`) : 'Nu am găsit imagini asociate măsurătorilor din tabel.');
+      }catch(e){
+        setSync('Eroare imagini locale','err');
+        toast(e.message || 'Nu am putut încărca imaginile locale din .db.');
+      } finally { $.fileDbImages.value=''; }
+    };
     $.fileDb.onchange=async()=>{
       const file=$.fileDb.files && $.fileDb.files[0];
       if(!file) return;
