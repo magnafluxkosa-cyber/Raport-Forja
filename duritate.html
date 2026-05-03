@@ -1573,47 +1573,69 @@ function normalizeCloudRow(r){
     try{
       const JSZipCtor = await ensureJsZip();
       drawCpkChart(state.cpkRows);
-      await new Promise(r => requestAnimationFrame(r));
+      await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
       const canvasImg = $.cpkChart && $.cpkChart.toDataURL ? $.cpkChart.toDataURL('image/png') : '';
-      if(!canvasImg){ toast('Graficul nu este pregătit pentru export.'); return; }
+      if(!canvasImg || !/^data:image\/png;base64,/.test(canvasImg)){ toast('Graficul nu este pregătit pentru export.'); return; }
       const pngBytes = dataUrlToBytes(canvasImg);
       const internal = getInternalLimits();
       const metricRows = cpkMetricRowsForExport();
-      const rowsXml = [];
-      rowsXml.push(xlsxRow(1, [{col:1,value:'CP / CPK · Distribuție diametru amprentă',style:6}]));
-      rowsXml.push(xlsxRow(2, [
+
+      const rowMap = new Map();
+      function addCell(row, col, value, style){
+        if(!rowMap.has(row)) rowMap.set(row, []);
+        rowMap.get(row).push({ col, value, style });
+      }
+      function addRow(row, cells){
+        cells.forEach(c => addCell(row, c.col, c.value, c.style));
+      }
+
+      addRow(1, [{col:1,value:'CP / CPK · Distribuție diametru amprentă',style:6}]);
+      addRow(2, [
         {col:1,value:'Client min/max',style:5},{col:2,value:CPK_CLIENT_MIN,style:7},{col:3,value:CPK_CLIENT_MAX,style:7},
         {col:5,value:'Grafic distribuție diametru amprentă',style:6},
         {col:13,value:'Indicatori capabilitate',style:6}
-      ]));
-      rowsXml.push(xlsxRow(3, [
+      ]);
+      addRow(3, [
         {col:1,value:'Intern min/max',style:5},{col:2,value:internal.internalMin,style:8},{col:3,value:internal.internalMax,style:8},
         {col:13,value:'Indicator',style:1},{col:14,value:'Valoare',style:1}
-      ]));
-      rowsXml.push(xlsxRow(4, [{col:1,value:'Reper',style:1},{col:2,value:'Sarjă',style:1},{col:3,value:'Diametru amprentă',style:1}]));
+      ]);
+      addRow(4, [{col:1,value:'Reper',style:1},{col:2,value:'Sarjă',style:1},{col:3,value:'Diametru amprentă',style:1}]);
+
       values.forEach((r, idx) => {
         const rowNum = 5 + idx;
         const d = cpkMeasureValue(r);
         const cls = cpkValueClass(d);
         const style = xlsxStyleForCpkClass(cls);
-        rowsXml.push(xlsxRow(rowNum, [
+        addRow(rowNum, [
           {col:1,value:r.reper_complet || '-',style},
           {col:2,value:r.sarja_material || r.sarja || '-',style},
           {col:3,value:Number(d.toFixed(3)),style}
-        ]));
+        ]);
       });
+
       metricRows.forEach((m, idx) => {
         const rowNum = 4 + idx;
-        rowsXml.push(xlsxRow(rowNum, [{col:13,value:m[0],style:5},{col:14,value:m[1],style:0}]));
+        addRow(rowNum, [
+          {col:13,value:m[0],style:5},
+          {col:14,value:m[1],style:0}
+        ]);
       });
+
+      const renderedRows = Array.from(rowMap.keys()).sort((a,b)=>a-b).map(rowNum => {
+        const cells = rowMap.get(rowNum).sort((a,b)=>a.col-b.col);
+        return xlsxRow(rowNum, cells);
+      }).join('');
       const maxRow = Math.max(40, 5 + values.length, 4 + metricRows.length);
       const sheetXml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
         + '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+        + '<dimension ref="A1:N' + maxRow + '"/>'
+        + '<sheetViews><sheetView workbookViewId="0"/></sheetViews>'
+        + '<sheetFormatPr defaultRowHeight="18"/>'
         + '<cols>'
-        + '<col min="1" max="1" width="22" customWidth="1"/><col min="2" max="2" width="18" customWidth="1"/><col min="3" max="3" width="16" customWidth="1"/>'
-        + '<col min="4" max="4" width="3" customWidth="1"/><col min="5" max="12" width="16" customWidth="1"/><col min="13" max="13" width="24" customWidth="1"/><col min="14" max="14" width="28" customWidth="1"/>'
-        + '</cols><sheetData>' + rowsXml.join('') + '</sheetData>'
-        + '<mergeCells count="2"><mergeCell ref="A1:C1"/><mergeCell ref="E2:L2"/></mergeCells>'
+        + '<col min="1" max="1" width="24" customWidth="1"/><col min="2" max="2" width="18" customWidth="1"/><col min="3" max="3" width="17" customWidth="1"/>'
+        + '<col min="4" max="4" width="3" customWidth="1"/><col min="5" max="12" width="16" customWidth="1"/><col min="13" max="13" width="25" customWidth="1"/><col min="14" max="14" width="32" customWidth="1"/>'
+        + '</cols><sheetData>' + renderedRows + '</sheetData>'
+        + '<mergeCells count="3"><mergeCell ref="A1:C1"/><mergeCell ref="E2:L2"/><mergeCell ref="M2:N2"/></mergeCells>'
         + '<drawing r:id="rId1"/>'
         + '<pageMargins left="0.25" right="0.25" top="0.5" bottom="0.5" header="0.3" footer="0.3"/>'
         + '</worksheet>';
@@ -1629,10 +1651,11 @@ function normalizeCloudRow(r){
         + '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>'
         + '<cellXfs count="9"><xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyBorder="1"/><xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1"/><xf numFmtId="0" fontId="2" fillId="3" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1"/><xf numFmtId="0" fontId="3" fillId="4" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1"/><xf numFmtId="0" fontId="4" fillId="5" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1"/><xf numFmtId="0" fontId="1" fillId="6" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1"/><xf numFmtId="0" fontId="5" fillId="6" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1"/><xf numFmtId="0" fontId="4" fillId="7" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1"/><xf numFmtId="0" fontId="2" fillId="8" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1"/></cellXfs>'
         + '<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles><dxfs count="0"/><tableStyles count="0" defaultTableStyle="TableStyleMedium9" defaultPivotStyle="PivotStyleLight16"/></styleSheet>';
+      const nowIso = new Date().toISOString();
       const zip = new JSZipCtor();
       zip.file('[Content_Types].xml', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Default Extension="png" ContentType="image/png"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/drawings/drawing1.xml" ContentType="application/vnd.openxmlformats-officedocument.drawing+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/><Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/><Override PartName="/docProps/app.xml" ContentType="application/vnd.openxmlformats-officedocument.extended-properties+xml"/></Types>');
       zip.folder('_rels').file('.rels', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/><Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties" Target="docProps/app.xml"/></Relationships>');
-      zip.folder('docProps').file('core.xml', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" xmlns:dcmitype="http://purl.org/dc/dcmitype/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><dc:creator>ERP Forja</dc:creator><cp:lastModifiedBy>ERP Forja</cp:lastModifiedBy><dcterms:created xsi:type="dcterms:W3CDTF">'+new Date().toISOString()+'</dcterms:created><dcterms:modified xsi:type="dcterms:W3CDTF">'+new Date().toISOString()+'</dcterms:modified></cp:coreProperties>');
+      zip.folder('docProps').file('core.xml', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" xmlns:dcmitype="http://purl.org/dc/dcmitype/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><dc:creator>ERP Forja</dc:creator><cp:lastModifiedBy>ERP Forja</cp:lastModifiedBy><dcterms:created xsi:type="dcterms:W3CDTF">' + nowIso + '</dcterms:created><dcterms:modified xsi:type="dcterms:W3CDTF">' + nowIso + '</dcterms:modified></cp:coreProperties>');
       zip.folder('docProps').file('app.xml', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties" xmlns:vt="http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes"><Application>ERP Forja</Application></Properties>');
       const xl = zip.folder('xl');
       xl.file('workbook.xml', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="CPK Duritate" sheetId="1" r:id="rId1"/></sheets></workbook>');
@@ -1652,7 +1675,7 @@ function normalizeCloudRow(r){
       const href = a.href;
       a.remove();
       setTimeout(() => URL.revokeObjectURL(href), 2000);
-      toast('Export CPK Excel generat cu grafic inclus.');
+      toast('Export CPK Excel generat cu tabel, indicatori și grafic inclus.');
     }catch(e){
       toast(e.message || 'Nu am putut genera exportul CPK Excel.');
     }
