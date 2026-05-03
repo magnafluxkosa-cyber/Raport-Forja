@@ -116,12 +116,12 @@
           <label class="small">Data măsurării <input class="small" id="cpkDate" type="date" /></label>
           <label class="small">Reper <input class="small" id="cpkReper" placeholder="ex: 248-2308" /></label>
           <label class="small">Sarjă material <input class="small" id="cpkSarja" placeholder="ex: KUA" /></label>
-          <label class="small">DMin din HMax / LSL <input class="small" id="cpkLsl" type="number" step="0.01" placeholder="DMin" readonly /></label>
-          <label class="small">DMax din HMin / USL <input class="small" id="cpkUsl" type="number" step="0.01" placeholder="DMax" readonly /></label>
+          <label class="small">Client Min mm <input class="small" id="cpkLsl" type="number" step="0.01" placeholder="3.15" readonly /></label>
+          <label class="small">Client Max mm <input class="small" id="cpkUsl" type="number" step="0.01" placeholder="3.45" readonly /></label>
           <button class="btn primary" id="btnCpkCalc" type="button">Calculează CPK</button>
           <button class="btn" id="btnCpkClear" type="button">Reset CPK</button>
         </div>
-        <div class="help" id="cpkHint" style="margin-top:8px">Alege o dată, un reper sau o sarjă. Pagina caută valorile HB direct în cloud, convertește automat HMin/HMax din HB în diametru amprentă, desenează distribuția cu curba normală și calculează Cp/Cpk pe amprentă.</div>
+        <div class="help" id="cpkHint" style="margin-top:8px">Alege o dată, un reper sau o sarjă. Graficul este pe diametrul amprentei: limitele clientului sunt 3.15–3.45 mm cu linii roșii, iar limitele interne sunt 3.20–3.40 mm cu linii verzi.</div>
         <div class="cpk-layout">
           <div class="cpk-card">
             <div class="cpk-card-head">Valorile amprentei selectate</div>
@@ -136,7 +136,7 @@
             <div class="cpk-metrics" id="cpkMetrics">
               <div class="cpk-metric full"><span>Status</span><strong>Fără date</strong></div>
             </div>
-            <div class="cpk-note" style="padding:0 8px 8px">Cp/Cpk se calculează când există minimum 2 valori HB. Limitele se calculează automat prin conversia HMin/HMax din HB în diametru amprentă. Pentru CPK pe amprentă: HMax devine DMin, iar HMin devine DMax.</div>
+            <div class="cpk-note" style="padding:0 8px 8px">Cp/Cpk se calculează pe diametrul amprentei. Limitele clientului sunt 3.15–3.45 mm, iar marja internă țintă este 3.20–3.40 mm.</div>
           </div>
         </div>
       </div>
@@ -155,6 +155,11 @@
   const COLUMNS = [
     ['measurement_date_ro','Data'],['measurement_time','Ora'],['operator_name','Operator'],['reper_complet','Reper complet'],['marcaj_matrita','Marcaj matriță'],['sarja_material','Sarjă material'],['name_original','Nume aparat'],['hb','HB'],['diameter','Diametru'],['force','Forță'],['sphere','Sferă'],['zoom','Zoom'],['hmax','HMax'],['hmin','HMin'],['status','Status'],['source_file','Fișier sursă'],['imported_at_ro','Importat la']
   ];
+
+  const CPK_CLIENT_MIN = 3.15;
+  const CPK_CLIENT_MAX = 3.45;
+  const CPK_INTERNAL_MIN = 3.20;
+  const CPK_INTERNAL_MAX = 3.40;
 
   const state = { supa:null, user:null, role:'viewer', access:{can_view:false,can_edit:false}, repere:[], reperePromise:null, cloudRows:[], importRows:[], cpkRows:[], existingKeys:new Set(), filters:{year:'',month:'',operator:'',reper:'',scale:'',status:''}, latestPeriod:null, defaultFilterActive:false, cloudTotal:0, loadedMode:'latest' };
   const el = id => document.getElementById(id);
@@ -1076,15 +1081,31 @@ function normalizeCloudRow(r){
     return null;
   }
   function applyAutoCpkLimits(rows){
-    const validRows = (rows || []).filter(r => Number.isFinite(cpkMeasureValue(r)));
-    const spec = cpkCommonSpecPair(validRows);
-    if($.cpkLsl) $.cpkLsl.value = spec && Number.isFinite(spec.dmin) ? Number(spec.dmin.toFixed(3)) : '';
-    if($.cpkUsl) $.cpkUsl.value = spec && Number.isFinite(spec.dmax) ? Number(spec.dmax.toFixed(3)) : '';
-    return spec || { dmin:NaN, dmax:NaN, hmin:NaN, hmax:NaN, force:NaN, sphere:NaN, count:0, totalRows:validRows.length };
+    if($.cpkLsl) $.cpkLsl.value = CPK_CLIENT_MIN.toFixed(2);
+    if($.cpkUsl) $.cpkUsl.value = CPK_CLIENT_MAX.toFixed(2);
+    return {
+      clientMin: CPK_CLIENT_MIN,
+      clientMax: CPK_CLIENT_MAX,
+      internalMin: CPK_INTERNAL_MIN,
+      internalMax: CPK_INTERNAL_MAX,
+      totalRows: (rows || []).filter(r => Number.isFinite(cpkMeasureValue(r))).length
+    };
   }
   function cpkNormalPdf(x, mean, sigma){
     if(!Number.isFinite(x) || !Number.isFinite(mean) || !Number.isFinite(sigma) || sigma <= 0) return 0;
     return Math.exp(-0.5 * Math.pow((x - mean) / sigma, 2)) / (sigma * Math.sqrt(2 * Math.PI));
+  }
+
+  function cpkCapability(values, lsl, usl, sampleSigma){
+    const mean = cpkMean(values);
+    const sigma = sampleSigma;
+    if(!values.length || !Number.isFinite(lsl) || !Number.isFinite(usl) || usl <= lsl || !Number.isFinite(sigma) || sigma <= 0){
+      return { cp:NaN, cpl:NaN, cpu:NaN, cpk:NaN };
+    }
+    const cp = (usl - lsl) / (6 * sigma);
+    const cpl = (mean - lsl) / (3 * sigma);
+    const cpu = (usl - mean) / (3 * sigma);
+    return { cp, cpl, cpu, cpk: Math.min(cpl, cpu) };
   }
   function cpkInputs(){
     return {
@@ -1149,24 +1170,44 @@ function normalizeCloudRow(r){
     if(!$.cpkMetrics) return;
     const values = rows.map(cpkMeasureValue).filter(Number.isFinite);
     const n = values.length;
-    const lsl = $.cpkLsl ? Number($.cpkLsl.value) : NaN;
-    const usl = $.cpkUsl ? Number($.cpkUsl.value) : NaN;
-    const spec = cpkCommonSpecPair(rows || []);
     if(!n){ $.cpkMetrics.innerHTML = cpkMetric('Status','Fără valori amprentă','full'); return; }
+
     const mean = cpkMean(values);
     const s = cpkStd(values, true);
     const sigmaPop = cpkStd(values, false);
     const min = Math.min(...values), max = Math.max(...values);
-    const limitsOk = Number.isFinite(lsl) && Number.isFinite(usl) && usl > lsl && Number.isFinite(s) && s > 0;
-    let cp=NaN, cpl=NaN, cpu=NaN, cpk=NaN, pp=NaN, ppk=NaN;
-    if(limitsOk){
-      cp = (usl-lsl)/(6*s); cpl = (mean-lsl)/(3*s); cpu = (usl-mean)/(3*s); cpk = Math.min(cpl,cpu);
-      if(Number.isFinite(sigmaPop) && sigmaPop > 0){ pp=(usl-lsl)/(6*sigmaPop); ppk=Math.min((mean-lsl)/(3*sigmaPop),(usl-mean)/(3*sigmaPop)); }
-    }
-    const status = !limitsOk ? 'Lipsește conversia HMin/HMax' : (cpk >= 1.33 ? 'OK CPK ≥ 1,33' : (cpk >= 1 ? 'Atenție CPK ≥ 1' : 'NOK CPK < 1'));
-    const specText = spec ? ('HB ' + cpkFmt(spec.hmin,0) + '–' + cpkFmt(spec.hmax,0)) : '-';
+    const client = cpkCapability(values, CPK_CLIENT_MIN, CPK_CLIENT_MAX, s);
+    const internal = cpkCapability(values, CPK_INTERNAL_MIN, CPK_INTERNAL_MAX, s);
+    const clientPop = cpkCapability(values, CPK_CLIENT_MIN, CPK_CLIENT_MAX, sigmaPop);
+    const outsideClient = values.filter(v => v < CPK_CLIENT_MIN || v > CPK_CLIENT_MAX).length;
+    const outsideInternal = values.filter(v => v < CPK_INTERNAL_MIN || v > CPK_INTERNAL_MAX).length;
+
+    let status;
+    if(outsideClient > 0) status = 'NOK client: ' + outsideClient + ' valori în afara 3.15–3.45 mm';
+    else if(outsideInternal > 0) status = 'OK client, atenție intern: ' + outsideInternal + ' valori în afara 3.20–3.40 mm';
+    else status = 'OK: toate valorile sunt în marja internă 3.20–3.40 mm';
+
     $.cpkMetrics.innerHTML = [
-      cpkMetric('Status', status, 'full'), cpkMetric('N', n), cpkMetric('Media amprentă mm', cpkFmt(mean,3)), cpkMetric('Sigma sample mm', cpkFmt(s,4)), cpkMetric('Sigma populație mm', cpkFmt(sigmaPop,4)), cpkMetric('Min observat mm', cpkFmt(min,3)), cpkMetric('Max observat mm', cpkFmt(max,3)), cpkMetric('Range mm', cpkFmt(max-min,3)), cpkMetric('HMin/HMax tabel', specText), cpkMetric('Sferă / Forță', spec ? (cpkFmt(spec.sphere,1) + ' / ' + cpkFmt(spec.force,0)) : '-'), cpkMetric('LSL DMin din HMax', Number.isFinite(lsl)?cpkFmt(lsl,3):'-'), cpkMetric('USL DMax din HMin', Number.isFinite(usl)?cpkFmt(usl,3):'-'), cpkMetric('Cp', cpkFmt(cp,3)), cpkMetric('CPL', cpkFmt(cpl,3)), cpkMetric('CPU', cpkFmt(cpu,3)), cpkMetric('Cpk', cpkFmt(cpk,3)), cpkMetric('Pp', cpkFmt(pp,3)), cpkMetric('Ppk', cpkFmt(ppk,3))
+      cpkMetric('Status', status, 'full'),
+      cpkMetric('N', n),
+      cpkMetric('Media amprentă mm', cpkFmt(mean,3)),
+      cpkMetric('Sigma sample mm', cpkFmt(s,4)),
+      cpkMetric('Sigma populație mm', cpkFmt(sigmaPop,4)),
+      cpkMetric('Min observat mm', cpkFmt(min,3)),
+      cpkMetric('Max observat mm', cpkFmt(max,3)),
+      cpkMetric('Range mm', cpkFmt(max-min,3)),
+      cpkMetric('Client min/max', cpkFmt(CPK_CLIENT_MIN,2) + ' / ' + cpkFmt(CPK_CLIENT_MAX,2)),
+      cpkMetric('Intern min/max', cpkFmt(CPK_INTERNAL_MIN,2) + ' / ' + cpkFmt(CPK_INTERNAL_MAX,2)),
+      cpkMetric('Valori în afara client', outsideClient),
+      cpkMetric('Valori în afara intern', outsideInternal),
+      cpkMetric('Cp client', cpkFmt(client.cp,3)),
+      cpkMetric('Cpk client', cpkFmt(client.cpk,3)),
+      cpkMetric('CPL client', cpkFmt(client.cpl,3)),
+      cpkMetric('CPU client', cpkFmt(client.cpu,3)),
+      cpkMetric('Cp intern', cpkFmt(internal.cp,3)),
+      cpkMetric('Cpk intern', cpkFmt(internal.cpk,3)),
+      cpkMetric('Pp client', cpkFmt(clientPop.cp,3)),
+      cpkMetric('Ppk client', cpkFmt(clientPop.cpk,3))
     ].join('');
   }
   function drawCpkChart(rows){
@@ -1203,13 +1244,11 @@ function normalizeCloudRow(r){
 
     const observedMin = Math.min(...values);
     const observedMax = Math.max(...values);
-    const lsl = Number.isFinite(Number($.cpkLsl && $.cpkLsl.value)) ? Number($.cpkLsl.value) : NaN;
-    const usl = Number.isFinite(Number($.cpkUsl && $.cpkUsl.value)) ? Number($.cpkUsl.value) : NaN;
     const mean = cpkMean(values);
     const sigma = cpkStd(values, true);
 
-    let min = Math.min(observedMin, Number.isFinite(lsl) ? lsl : observedMin);
-    let max = Math.max(observedMax, Number.isFinite(usl) ? usl : observedMax);
+    let min = Math.min(observedMin, CPK_CLIENT_MIN, CPK_INTERNAL_MIN);
+    let max = Math.max(observedMax, CPK_CLIENT_MAX, CPK_INTERNAL_MAX);
     if(max === min){ max += 0.05; min -= 0.05; }
     const pad = Math.max((max-min)*0.12, 0.02);
     min -= pad; max += pad;
@@ -1232,6 +1271,17 @@ function normalizeCloudRow(r){
     ctx.strokeStyle = '#b7c9d9';
     ctx.lineWidth = 1.2;
     ctx.strokeRect(left, top, chartW, chartH);
+
+    function xFor(v){ return left + (v-min)/(max-min)*chartW; }
+    function yForCount(c){ return bottom - chartH * c / maxCount; }
+
+    // Zone vizuale: client roșu pal, intern verde pal.
+    const xClientMin = xFor(CPK_CLIENT_MIN), xClientMax = xFor(CPK_CLIENT_MAX);
+    ctx.fillStyle = 'rgba(220,38,38,0.045)';
+    ctx.fillRect(xClientMin, top, Math.max(0, xClientMax - xClientMin), chartH);
+    const xInternalMin = xFor(CPK_INTERNAL_MIN), xInternalMax = xFor(CPK_INTERNAL_MAX);
+    ctx.fillStyle = 'rgba(22,163,74,0.105)';
+    ctx.fillRect(xInternalMin, top, Math.max(0, xInternalMax - xInternalMin), chartH);
 
     ctx.font='11px Arial';
     ctx.textAlign='right';
@@ -1261,20 +1311,17 @@ function normalizeCloudRow(r){
       ctx.strokeRect(x, y, Math.max(2,barW-6), bh);
     });
 
-    function xFor(v){ return left + (v-min)/(max-min)*chartW; }
-    function yForCount(c){ return bottom - chartH * c / maxCount; }
-
     if(Number.isFinite(mean) && Number.isFinite(sigma) && sigma > 0 && values.length >= 2){
       const binWidth = (max - min) / bins;
       ctx.save();
       ctx.strokeStyle = '#f97316';
-      ctx.lineWidth = 3.4;
+      ctx.lineWidth = 3.8;
       ctx.lineJoin = 'round';
       ctx.lineCap = 'round';
       ctx.beginPath();
       let started = false;
-      for(let i=0;i<=320;i++){
-        const xVal = min + (max-min) * i / 320;
+      for(let i=0;i<=340;i++){
+        const xVal = min + (max-min) * i / 340;
         const expectedCount = cpkNormalPdf(xVal, mean, sigma) * values.length * binWidth;
         const x = xFor(xVal);
         const y = yForCount(expectedCount);
@@ -1292,30 +1339,32 @@ function normalizeCloudRow(r){
       let bx = alignRight ? x - tw - padX*2 - 5 : x + 5;
       bx = Math.max(left+2, Math.min(bx, right - tw - padX*2 - 2));
       const by = Math.max(top+2, Math.min(y, bottom-24));
-      ctx.fillStyle = 'rgba(255,255,255,0.94)';
+      ctx.fillStyle = 'rgba(255,255,255,0.95)';
       ctx.fillRect(bx, by, tw + padX*2, 22);
       ctx.strokeStyle = color;
-      ctx.lineWidth = 1;
+      ctx.lineWidth = 1.2;
       ctx.strokeRect(bx, by, tw + padX*2, 22);
       ctx.fillStyle = color;
       ctx.fillText(text, bx+padX, by+14);
     }
 
-    function verticalLine(v,label,color,dash,yLabel,alignRight){
+    function verticalLine(v,label,color,dash,yLabel,alignRight,lineWidth){
       if(!Number.isFinite(v)) return;
       const x=xFor(v);
       ctx.save();
       ctx.strokeStyle=color;
-      ctx.lineWidth=3;
+      ctx.lineWidth=lineWidth || 3;
       ctx.setLineDash(dash ? [8,5] : []);
       ctx.beginPath(); ctx.moveTo(x,top); ctx.lineTo(x,bottom); ctx.stroke();
       ctx.restore();
-      labelBox(label+' '+cpkFmt(v,3), x, yLabel, color, alignRight);
+      labelBox(label+' '+cpkFmt(v,2), x, yLabel, color, alignRight);
     }
 
-    verticalLine(lsl,'DMin','#dc2626',true,top+10,false);
-    verticalLine(usl,'DMax','#dc2626',true,top+38,true);
-    verticalLine(mean,'Medie','#16a34a',false,top+66,false);
+    verticalLine(CPK_CLIENT_MIN,'Client Min','#dc2626',true,top+10,false,3.4);
+    verticalLine(CPK_CLIENT_MAX,'Client Max','#dc2626',true,top+38,true,3.4);
+    verticalLine(CPK_INTERNAL_MIN,'Intern Min','#16a34a',false,top+66,false,3.2);
+    verticalLine(CPK_INTERNAL_MAX,'Intern Max','#16a34a',false,top+94,true,3.2);
+    verticalLine(mean,'Medie','#7c3aed',false,top+122,false,2.8);
 
     ctx.strokeStyle = '#17324a'; ctx.lineWidth = 1.6; ctx.setLineDash([]);
     ctx.beginPath(); ctx.moveTo(left,bottom); ctx.lineTo(right,bottom); ctx.moveTo(left,top); ctx.lineTo(left,bottom); ctx.stroke();
@@ -1337,16 +1386,18 @@ function normalizeCloudRow(r){
     ctx.textBaseline='alphabetic';
     ctx.fillStyle = '#17324a';
     ctx.font='bold 16px Arial';
-    ctx.fillText('Distribuție diametru amprentă · '+values.length+' valori · DMin/DMax din HMax/HMin', left, 24);
+    ctx.fillText('Distribuție diametru amprentă · '+values.length+' valori · client 3.15–3.45 mm / intern 3.20–3.40 mm', left, 24);
 
     const legendY = h - 20;
     ctx.font='bold 12px Arial';
     ctx.strokeStyle='#2b6cb0'; ctx.lineWidth=8; ctx.beginPath(); ctx.moveTo(left,legendY-4); ctx.lineTo(left+34,legendY-4); ctx.stroke();
     ctx.fillStyle='#17324a'; ctx.fillText('Histogramă amprentă', left+42, legendY);
-    ctx.strokeStyle='#f97316'; ctx.lineWidth=3.4; ctx.beginPath(); ctx.moveTo(left+185,legendY-4); ctx.lineTo(left+223,legendY-4); ctx.stroke();
+    ctx.strokeStyle='#f97316'; ctx.lineWidth=3.8; ctx.beginPath(); ctx.moveTo(left+185,legendY-4); ctx.lineTo(left+223,legendY-4); ctx.stroke();
     ctx.fillText('Curba normală', left+231, legendY);
-    ctx.strokeStyle='#dc2626'; ctx.lineWidth=3; ctx.setLineDash([8,5]); ctx.beginPath(); ctx.moveTo(left+360,legendY-4); ctx.lineTo(left+398,legendY-4); ctx.stroke(); ctx.setLineDash([]);
-    ctx.fillText('DMin / DMax convertite', left+406, legendY);
+    ctx.strokeStyle='#dc2626'; ctx.lineWidth=3.4; ctx.setLineDash([8,5]); ctx.beginPath(); ctx.moveTo(left+360,legendY-4); ctx.lineTo(left+398,legendY-4); ctx.stroke(); ctx.setLineDash([]);
+    ctx.fillText('Limite client', left+406, legendY);
+    ctx.strokeStyle='#16a34a'; ctx.lineWidth=3.2; ctx.beginPath(); ctx.moveTo(left+520,legendY-4); ctx.lineTo(left+558,legendY-4); ctx.stroke();
+    ctx.fillText('Limite interne', left+566, legendY);
   }
 
   function renderCpkPanel(rows){
@@ -1362,13 +1413,10 @@ function normalizeCloudRow(r){
       setSync(hasFilter ? 'Caut CPK în cloud...' : 'Calculez CPK din tabelul încărcat...', 'warn');
       let rows = hasFilter ? await fetchCpkRowsFromCloud() : currentCpkRowsFallback();
       rows = rows.filter(r => Number.isFinite(cpkMeasureValue(r))).sort((a,b)=>String(a.measurement_datetime||'').localeCompare(String(b.measurement_datetime||'')));
-      const spec = applyAutoCpkLimits(rows);
+      applyAutoCpkLimits(rows);
       renderCpkPanel(rows);
       if($.cpkHint){
-        const specInfo = spec && Number.isFinite(spec.dmin) && Number.isFinite(spec.dmax)
-          ? (' DMin=' + cpkFmt(spec.dmin,3) + ' mm din HMax=' + cpkFmt(spec.hmax,0) + ' HB; DMax=' + cpkFmt(spec.dmax,3) + ' mm din HMin=' + cpkFmt(spec.hmin,0) + ' HB.')
-          : ' Nu s-au putut converti limitele HMin/HMax.';
-        $.cpkHint.textContent = (hasFilter ? ('CPK calculat din cloud pentru selecția curentă: ' + rows.length + ' valori de amprentă.') : ('CPK calculat din rândurile deja încărcate în tabel: ' + rows.length + ' valori de amprentă.')) + specInfo;
+        $.cpkHint.textContent = (hasFilter ? ('CPK calculat din cloud pentru selecția curentă: ' + rows.length + ' valori de amprentă.') : ('CPK calculat din rândurile deja încărcate în tabel: ' + rows.length + ' valori de amprentă.')) + ' Limite client: 3.15–3.45 mm, linii roșii. Limite interne: 3.20–3.40 mm, linii verzi.';
       }
       setSync('CPK pregătit','ok');
     }catch(e){
@@ -1379,7 +1427,7 @@ function normalizeCloudRow(r){
   function resetCpk(){
     if($.cpkDate) $.cpkDate.value=''; if($.cpkReper) $.cpkReper.value=''; if($.cpkSarja) $.cpkSarja.value=''; if($.cpkLsl) $.cpkLsl.value=''; if($.cpkUsl) $.cpkUsl.value='';
     renderCpkPanel([]);
-    if($.cpkHint) $.cpkHint.textContent='Alege o dată, un reper sau o sarjă. Pagina caută valorile de diametru amprentă direct în cloud, convertește HMin/HMax din HB în DMax/DMin și calculează Cp/Cpk pe amprentă.';
+    if($.cpkHint) $.cpkHint.textContent='Alege o dată, un reper sau o sarjă. Graficul afișează diametrul amprentei cu limite client 3.15–3.45 mm roșu și limite interne 3.20–3.40 mm verde.';
   }
 
 
