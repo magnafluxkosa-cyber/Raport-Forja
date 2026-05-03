@@ -576,11 +576,31 @@
   }
   async function loadCloud(){
     setSync('Încarc cloud...','warn');
-    const { data, error } = await state.supa.from(TABLE).select('*').order('measurement_datetime',{ascending:true}).limit(20000);
-    if(error) throw error;
-    state.cloudRows=(data||[]).map(row=>normalizeCloudRow(row));
+    const allRows = [];
+    const pageSize = 1000;
+    let from = 0;
+
+    while(true){
+      const to = from + pageSize - 1;
+      const { data, error } = await state.supa
+        .from(TABLE)
+        .select('*')
+        .order('measurement_datetime',{ascending:true})
+        .range(from, to);
+      if(error) throw error;
+
+      const batch = Array.isArray(data) ? data : [];
+      allRows.push(...batch);
+      setSync(`Încarc cloud... ${allRows.length} rânduri`, 'warn');
+
+      if(batch.length < pageSize) break;
+      from += pageSize;
+      await new Promise(r=>setTimeout(r,0));
+    }
+
+    state.cloudRows=allRows.map(row=>normalizeCloudRow(row));
     state.existingKeys=new Set(state.cloudRows.map(r=>r.measurement_key).filter(Boolean));
-    populateYearFilter(); render(); setSync('Pregătit','ok');
+    populateYearFilter(); render(); setSync(`Pregătit · ${state.cloudRows.length} rânduri cloud`,'ok');
   }
   function normalizeCloudRow(r){
     const dt = r.measurement_datetime ? new Date(r.measurement_datetime) : null;
@@ -683,9 +703,9 @@
     let saved=0;
     for(let i=0;i<rows.length;i+=300){
       const chunk=rows.slice(i,i+300).map(payload);
-      const { error } = await state.supa.from(TABLE).upsert(chunk,{onConflict:'measurement_key'});
+      const { data, error } = await state.supa.from(TABLE).upsert(chunk,{onConflict:'measurement_key'}).select('measurement_key');
       if(error){ $.btnSave.disabled=false; setSync('Eroare salvare','err'); toast(error.message || 'Eroare la salvare'); return; }
-      saved += chunk.length;
+      saved += (Array.isArray(data) && data.length ? data.length : chunk.length);
     }
     rows.forEach(r=>{ r.status='salvat'; state.existingKeys.add(r.measurement_key); });
     await loadCloud(); render(); setSync('Salvat','ok'); toast(`Salvate/actualizate ${saved} măsurători.`);
