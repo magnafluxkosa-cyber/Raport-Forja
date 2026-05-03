@@ -7,6 +7,7 @@
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="./rf-config.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
   <script src="./supabase-config.js"></script>
   <script src="./rf-app-registry.js"></script>
   <link rel="stylesheet" href="./kad-nav-shell.css" />
@@ -38,7 +39,8 @@
 
     .cpk-panel{margin-top:12px}
     .cpk-title{font-size:16px;font-weight:900;margin:0 0 10px;color:var(--text)}
-    .cpk-layout{display:grid;grid-template-columns:360px minmax(620px,1fr) 320px;gap:12px;align-items:stretch;margin-top:12px}
+    .cpk-layout{display:grid;grid-template-columns:360px minmax(720px,1fr) 340px;grid-template-areas:"values chart metrics";gap:12px;align-items:stretch;margin-top:12px}
+    .cpk-values-card{grid-area:values}.cpk-chart-card{grid-area:chart}.cpk-metrics-card{grid-area:metrics}
     .cpk-card{border:1px solid var(--line);border-radius:12px;background:#fff;overflow:hidden;min-height:300px}
     .cpk-card-head{background:var(--head);border-bottom:1px solid var(--grid);padding:8px 10px;font-size:12px;font-weight:900;text-align:center}
     .cpk-limit-pair{display:flex;flex-direction:column;gap:5px;padding:7px;border:1px solid #aac2d7;border-radius:10px;background:#f8fcff;min-width:140px}
@@ -56,7 +58,7 @@
     .cpk-value-row.ok-internal .cpk-diameter-input{border-color:#16a34a;background:#f0fdf4;color:#166534}.cpk-value-row.warn-internal .cpk-diameter-input{border-color:#d97706;background:#fffbeb;color:#92400e}.cpk-value-row.over-client .cpk-diameter-input{border-color:#dc2626;background:#fff1f2;color:#991b1b}
     .cpk-chart-wrap{height:590px;padding:10px;background:#f6fbff}.cpk-chart-wrap canvas{width:100%;height:100%;display:block;background:#fff;border-radius:10px;border:1px solid #d5e4f1}
     .cpk-metrics{padding:8px;display:grid;grid-template-columns:1fr 1fr;gap:6px;background:#fff}.cpk-metric{border:1px solid #d7e3ee;border-radius:9px;padding:7px;background:#f8fcff}.cpk-metric span{display:block;font-size:10px;color:var(--muted);font-weight:800;text-transform:uppercase}.cpk-metric strong{display:block;margin-top:2px;font-size:15px;color:var(--text)}.cpk-metric.full{grid-column:1/-1}.cpk-note{font-size:11px;color:var(--muted);font-weight:700;line-height:1.35;margin-top:6px}
-    @media(max-width:1100px){.cpk-layout{grid-template-columns:1fr}.cpk-values{height:360px}.cpk-chart-wrap{height:470px}}
+    @media(max-width:1100px){.cpk-layout{grid-template-columns:1fr;grid-template-areas:"values" "chart" "metrics"}.cpk-values{height:360px}.cpk-chart-wrap{height:470px}}
     @media(max-width:900px){body{overflow:auto}.page{padding:8px;min-width:0}.topbar{align-items:flex-start}.stats{grid-template-columns:repeat(2,minmax(120px,1fr))}.table-wrap{max-height:calc(100dvh - 360px);min-height:320px;overflow:auto;-webkit-overflow-scrolling:touch}.toolbar,.filters{align-items:flex-start}.btn{padding:9px 11px}h1{font-size:22px}}
   </style>
 </head>
@@ -140,15 +142,15 @@
         </div>
         <div class="help" id="cpkHint" style="margin-top:8px">Alege o dată, un reper sau o sarjă. Graficul este pe diametrul amprentei: limitele clientului sunt 3.15–3.45 mm cu linii roșii, iar limitele interne pornesc de la 3.20–3.40 mm cu linii verzi și pot fi modificate.</div>
         <div class="cpk-layout">
-          <div class="cpk-card">
+          <div class="cpk-card cpk-values-card">
             <div class="cpk-card-head">Valorile amprentei selectate</div>
             <div class="cpk-values" id="cpkValues"><div class="muted">Nu există încă selecție CPK.</div></div>
           </div>
-          <div class="cpk-card">
+          <div class="cpk-card cpk-chart-card">
             <div class="cpk-card-head">Grafic distribuție diametru amprentă</div>
             <div class="cpk-chart-wrap"><canvas id="cpkChart" width="1200" height="520"></canvas></div>
           </div>
-          <div class="cpk-card">
+          <div class="cpk-card cpk-metrics-card">
             <div class="cpk-card-head">Indicatori capabilitate</div>
             <div class="cpk-metrics" id="cpkMetrics">
               <div class="cpk-metric full"><span>Status</span><strong>Fără date</strong></div>
@@ -1511,46 +1513,149 @@ function normalizeCloudRow(r){
   }
 
 
-  function exportCpkExcel(){
+  async function ensureJsZip(){
+    if(window.JSZip) return window.JSZip;
+    return await new Promise((resolve, reject) => {
+      const sc = document.createElement('script');
+      sc.src = 'https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js';
+      sc.onload = () => window.JSZip ? resolve(window.JSZip) : reject(new Error('JSZip nu s-a încărcat.'));
+      sc.onerror = () => reject(new Error('Nu pot încărca librăria pentru export XLSX.'));
+      document.head.appendChild(sc);
+    });
+  }
+  function xmlEsc(v){
+    return String(v == null ? '' : v).replace(/[&<>'"]/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&apos;','"':'&quot;'}[ch]));
+  }
+  function colName(n){
+    let s = '';
+    while(n > 0){ const m = (n - 1) % 26; s = String.fromCharCode(65 + m) + s; n = Math.floor((n - 1) / 26); }
+    return s;
+  }
+  function dataUrlToBytes(dataUrl){
+    const base64 = String(dataUrl || '').split(',')[1] || '';
+    const bin = atob(base64);
+    const bytes = new Uint8Array(bin.length);
+    for(let i=0;i<bin.length;i++) bytes[i] = bin.charCodeAt(i);
+    return bytes;
+  }
+  function cpkMetricRowsForExport(){
+    const rows = [];
+    if(!$.cpkMetrics) return rows;
+    $.cpkMetrics.querySelectorAll('.cpk-metric').forEach(card => {
+      const label = card.querySelector('span') ? card.querySelector('span').textContent.trim() : '';
+      const value = card.querySelector('strong') ? card.querySelector('strong').textContent.trim() : '';
+      if(label || value) rows.push([label, value]);
+    });
+    return rows;
+  }
+  function xlsxCell(ref, value, styleId){
+    const sAttr = styleId != null ? ' s="' + styleId + '"' : '';
+    if(value == null || value === '') return '<c r="' + ref + '"' + sAttr + '/>';
+    const n = typeof value === 'number' ? value : Number(String(value).replace(',', '.'));
+    if(typeof value === 'number' || (String(value).trim() !== '' && Number.isFinite(n) && /^-?\d+(?:[\.,]\d+)?$/.test(String(value).trim()))){
+      return '<c r="' + ref + '"' + sAttr + '><v>' + xmlEsc(String(n)) + '</v></c>';
+    }
+    return '<c r="' + ref + '" t="inlineStr"' + sAttr + '><is><t>' + xmlEsc(value) + '</t></is></c>';
+  }
+  function xlsxRow(rowNum, cells){
+    return '<row r="' + rowNum + '">' + cells.map(c => xlsxCell(colName(c.col) + rowNum, c.value, c.style)).join('') + '</row>';
+  }
+  function xlsxStyleForCpkClass(cls){
+    if(cls === 'over-client') return 4;
+    if(cls === 'warn-internal') return 3;
+    if(cls === 'ok-internal') return 2;
+    return 0;
+  }
+  async function exportCpkExcel(){
     if(!state.cpkRows || !state.cpkRows.length){ toast('Nu există date CPK de exportat.'); return; }
     const values = state.cpkRows.filter(r => Number.isFinite(cpkMeasureValue(r)));
     if(!values.length){ toast('Nu există valori de amprentă de exportat.'); return; }
-    const internal = getInternalLimits();
-    const canvasImg = $.cpkChart && $.cpkChart.toDataURL ? $.cpkChart.toDataURL('image/png') : '';
-    const metricsHtml = $.cpkMetrics ? $.cpkMetrics.innerHTML : '';
-    const valuesRows = values.map((r, idx) => {
-      const d = cpkMeasureValue(r);
-      const cls = cpkValueClass(d);
-      const bg = cls === 'over-client' ? '#ffe3e3' : (cls === 'warn-internal' ? '#fff8db' : '#edf9f0');
-      const color = cls === 'over-client' ? '#991b1b' : (cls === 'warn-internal' ? '#92400e' : '#166534');
-      return '<tr style="background:'+bg+';color:'+color+';font-weight:bold">'
-        + '<td>'+esc(r.reper_complet || '-')+'</td>'
-        + '<td>'+esc(r.sarja_material || r.sarja || '-')+'</td>'
-        + '<td style="text-align:right">'+esc(cpkFmt(d,3))+'</td>'
-        + '</tr>';
-    }).join('');
-    const metricRows = (metricsHtml.match(/<div class="cpk-metric[^>]*">[\s\S]*?<\/div>/g) || []).map(card => {
-      const labelMatch = card.match(/<span>([\s\S]*?)<\/span>/);
-      const valueMatch = card.match(/<strong>([\s\S]*?)<\/strong>/);
-      return '<tr><td>'+ (labelMatch ? labelMatch[1] : '') +'</td><td><b>'+ (valueMatch ? valueMatch[1] : '') +'</b></td></tr>';
-    }).join('');
-    const html = '<html><head><meta charset="utf-8"><style>'
-      + 'body{font-family:Arial;background:#b7d7f0;color:#17324a}h2{margin:0 0 10px}table{border-collapse:collapse;background:#fff;margin:8px 0}th{background:#e3dfef;color:#17324a;font-weight:900}td,th{border:1px solid #91aec7;padding:6px 8px;font-size:12px}.box{background:#d8e8f7;border:1px solid #7ea4c3;padding:10px;margin-bottom:10px}.red{color:#dc2626;font-weight:900}.green{color:#16a34a;font-weight:900}.orange{color:#f97316;font-weight:900}'
-      + '</style></head><body>'
-      + '<div class="box"><h2>CP / CPK · Distribuție diametru amprentă</h2>'
-      + '<div>Limite client: <span class="red">'+cpkFmt(CPK_CLIENT_MIN,2)+' – '+cpkFmt(CPK_CLIENT_MAX,2)+' mm</span></div>'
-      + '<div>Limite interne: <span class="green">'+cpkFmt(internal.internalMin,2)+' – '+cpkFmt(internal.internalMax,2)+' mm</span></div></div>'
-      + '<table><tr><th>Reper</th><th>Sarjă</th><th>Diametru amprentă</th></tr>'+valuesRows+'</table>'
-      + '<table><tr><th>Indicator</th><th>Valoare</th></tr>'+metricRows+'</table>'
-      + (canvasImg ? '<div class="box"><img src="'+canvasImg+'" style="width:1150px;height:auto;border:1px solid #d5e4f1;background:#fff" /></div>' : '')
-      + '</body></html>';
-    const blob = new Blob([html], { type:'application/vnd.ms-excel;charset=utf-8' });
-    const a = document.createElement('a');
-    const date = ($.cpkDate && $.cpkDate.value) ? $.cpkDate.value : new Date().toISOString().slice(0,10);
-    a.href = URL.createObjectURL(blob);
-    a.download = 'cpk_duritate_' + date + '.xls';
-    document.body.appendChild(a); a.click(); a.remove();
-    setTimeout(() => URL.revokeObjectURL(a.href), 1200);
+    try{
+      const JSZipCtor = await ensureJsZip();
+      drawCpkChart(state.cpkRows);
+      await new Promise(r => requestAnimationFrame(r));
+      const canvasImg = $.cpkChart && $.cpkChart.toDataURL ? $.cpkChart.toDataURL('image/png') : '';
+      if(!canvasImg){ toast('Graficul nu este pregătit pentru export.'); return; }
+      const pngBytes = dataUrlToBytes(canvasImg);
+      const internal = getInternalLimits();
+      const metricRows = cpkMetricRowsForExport();
+      const rowsXml = [];
+      rowsXml.push(xlsxRow(1, [{col:1,value:'CP / CPK · Distribuție diametru amprentă',style:6}]));
+      rowsXml.push(xlsxRow(2, [
+        {col:1,value:'Client min/max',style:5},{col:2,value:CPK_CLIENT_MIN,style:7},{col:3,value:CPK_CLIENT_MAX,style:7},
+        {col:5,value:'Grafic distribuție diametru amprentă',style:6},
+        {col:13,value:'Indicatori capabilitate',style:6}
+      ]));
+      rowsXml.push(xlsxRow(3, [
+        {col:1,value:'Intern min/max',style:5},{col:2,value:internal.internalMin,style:8},{col:3,value:internal.internalMax,style:8},
+        {col:13,value:'Indicator',style:1},{col:14,value:'Valoare',style:1}
+      ]));
+      rowsXml.push(xlsxRow(4, [{col:1,value:'Reper',style:1},{col:2,value:'Sarjă',style:1},{col:3,value:'Diametru amprentă',style:1}]));
+      values.forEach((r, idx) => {
+        const rowNum = 5 + idx;
+        const d = cpkMeasureValue(r);
+        const cls = cpkValueClass(d);
+        const style = xlsxStyleForCpkClass(cls);
+        rowsXml.push(xlsxRow(rowNum, [
+          {col:1,value:r.reper_complet || '-',style},
+          {col:2,value:r.sarja_material || r.sarja || '-',style},
+          {col:3,value:Number(d.toFixed(3)),style}
+        ]));
+      });
+      metricRows.forEach((m, idx) => {
+        const rowNum = 4 + idx;
+        rowsXml.push(xlsxRow(rowNum, [{col:13,value:m[0],style:5},{col:14,value:m[1],style:0}]));
+      });
+      const maxRow = Math.max(40, 5 + values.length, 4 + metricRows.length);
+      const sheetXml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        + '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+        + '<cols>'
+        + '<col min="1" max="1" width="22" customWidth="1"/><col min="2" max="2" width="18" customWidth="1"/><col min="3" max="3" width="16" customWidth="1"/>'
+        + '<col min="4" max="4" width="3" customWidth="1"/><col min="5" max="12" width="16" customWidth="1"/><col min="13" max="13" width="24" customWidth="1"/><col min="14" max="14" width="28" customWidth="1"/>'
+        + '</cols><sheetData>' + rowsXml.join('') + '</sheetData>'
+        + '<mergeCells count="2"><mergeCell ref="A1:C1"/><mergeCell ref="E2:L2"/></mergeCells>'
+        + '<drawing r:id="rId1"/>'
+        + '<pageMargins left="0.25" right="0.25" top="0.5" bottom="0.5" header="0.3" footer="0.3"/>'
+        + '</worksheet>';
+      const drawingXml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        + '<xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+        + '<xdr:twoCellAnchor editAs="oneCell"><xdr:from><xdr:col>4</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>3</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:from><xdr:to><xdr:col>12</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>34</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:to>'
+        + '<xdr:pic><xdr:nvPicPr><xdr:cNvPr id="2" name="Grafic CPK"/><xdr:cNvPicPr><a:picLocks noChangeAspect="1"/></xdr:cNvPicPr></xdr:nvPicPr><xdr:blipFill><a:blip r:embed="rId1"/><a:stretch><a:fillRect/></a:stretch></xdr:blipFill><xdr:spPr><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></xdr:spPr></xdr:pic><xdr:clientData/></xdr:twoCellAnchor></xdr:wsDr>';
+      const stylesXml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        + '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+        + '<fonts count="6"><font><sz val="11"/><color rgb="FF17324A"/><name val="Arial"/></font><font><b/><sz val="11"/><color rgb="FF17324A"/><name val="Arial"/></font><font><b/><sz val="11"/><color rgb="FF166534"/><name val="Arial"/></font><font><b/><sz val="11"/><color rgb="FF92400E"/><name val="Arial"/></font><font><b/><sz val="11"/><color rgb="FF991B1B"/><name val="Arial"/></font><font><b/><sz val="14"/><color rgb="FF17324A"/><name val="Arial"/></font></fonts>'
+        + '<fills count="9"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FFE3DFEF"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFEDF9F0"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFFFF8DB"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFFFE3E3"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFD8E8F7"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFFFF5F5"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFF0FDF4"/><bgColor indexed="64"/></patternFill></fill></fills>'
+        + '<borders count="2"><border><left/><right/><top/><bottom/><diagonal/></border><border><left style="thin"><color rgb="FF91AEC7"/></left><right style="thin"><color rgb="FF91AEC7"/></right><top style="thin"><color rgb="FF91AEC7"/></top><bottom style="thin"><color rgb="FF91AEC7"/></bottom><diagonal/></border></borders>'
+        + '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>'
+        + '<cellXfs count="9"><xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyBorder="1"/><xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1"/><xf numFmtId="0" fontId="2" fillId="3" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1"/><xf numFmtId="0" fontId="3" fillId="4" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1"/><xf numFmtId="0" fontId="4" fillId="5" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1"/><xf numFmtId="0" fontId="1" fillId="6" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1"/><xf numFmtId="0" fontId="5" fillId="6" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1"/><xf numFmtId="0" fontId="4" fillId="7" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1"/><xf numFmtId="0" fontId="2" fillId="8" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1"/></cellXfs>'
+        + '<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles><dxfs count="0"/><tableStyles count="0" defaultTableStyle="TableStyleMedium9" defaultPivotStyle="PivotStyleLight16"/></styleSheet>';
+      const zip = new JSZipCtor();
+      zip.file('[Content_Types].xml', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Default Extension="png" ContentType="image/png"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/drawings/drawing1.xml" ContentType="application/vnd.openxmlformats-officedocument.drawing+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/><Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/><Override PartName="/docProps/app.xml" ContentType="application/vnd.openxmlformats-officedocument.extended-properties+xml"/></Types>');
+      zip.folder('_rels').file('.rels', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/><Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties" Target="docProps/app.xml"/></Relationships>');
+      zip.folder('docProps').file('core.xml', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" xmlns:dcmitype="http://purl.org/dc/dcmitype/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><dc:creator>ERP Forja</dc:creator><cp:lastModifiedBy>ERP Forja</cp:lastModifiedBy><dcterms:created xsi:type="dcterms:W3CDTF">'+new Date().toISOString()+'</dcterms:created><dcterms:modified xsi:type="dcterms:W3CDTF">'+new Date().toISOString()+'</dcterms:modified></cp:coreProperties>');
+      zip.folder('docProps').file('app.xml', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties" xmlns:vt="http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes"><Application>ERP Forja</Application></Properties>');
+      const xl = zip.folder('xl');
+      xl.file('workbook.xml', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="CPK Duritate" sheetId="1" r:id="rId1"/></sheets></workbook>');
+      xl.file('styles.xml', stylesXml);
+      xl.folder('_rels').file('workbook.xml.rels', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>');
+      xl.folder('worksheets').file('sheet1.xml', sheetXml);
+      xl.folder('worksheets').folder('_rels').file('sheet1.xml.rels', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing" Target="../drawings/drawing1.xml"/></Relationships>');
+      xl.folder('drawings').file('drawing1.xml', drawingXml);
+      xl.folder('drawings').folder('_rels').file('drawing1.xml.rels', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/image1.png"/></Relationships>');
+      xl.folder('media').file('image1.png', pngBytes);
+      const blob = await zip.generateAsync({ type:'blob', mimeType:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+      const a = document.createElement('a');
+      const date = ($.cpkDate && $.cpkDate.value) ? $.cpkDate.value : new Date().toISOString().slice(0,10);
+      a.href = URL.createObjectURL(blob);
+      a.download = 'cpk_duritate_' + date + '.xlsx';
+      document.body.appendChild(a); a.click();
+      const href = a.href;
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(href), 2000);
+      toast('Export CPK Excel generat cu grafic inclus.');
+    }catch(e){
+      toast(e.message || 'Nu am putut genera exportul CPK Excel.');
+    }
   }
 
   function exportExcel(){
@@ -1586,7 +1691,7 @@ function normalizeCloudRow(r){
     $.btnExport.onclick=exportExcel;
     if($.btnCpkCalc) $.btnCpkCalc.onclick=calculateCpk;
     if($.btnCpkClear) $.btnCpkClear.onclick=resetCpk;
-    if($.btnCpkExport) $.btnCpkExport.onclick=exportCpkExcel;
+    if($.btnCpkExport) $.btnCpkExport.onclick=()=>exportCpkExcel();
     [$.cpkDate,$.cpkLsl,$.cpkUsl].forEach(x=>{ if(x) x.onchange=()=>{ if(state.cpkRows.length) calculateCpk(); }; });
     [$.cpkInternalMin,$.cpkInternalMax].forEach(x=>{ if(x){ x.onchange=()=>{ if(state.cpkRows.length) renderCpkPanel(state.cpkRows); }; x.oninput=()=>{ if(state.cpkRows.length) renderCpkPanel(state.cpkRows); }; } });
     let cpkTimer = null;
