@@ -361,6 +361,64 @@
 #roleBadge,#chipRole,.roleBadge,[data-role-badge],#roleStatusWrap,.paletteWrap{display:none !important;}
 </style>
 
+
+
+<style id="kpi-multi-cell-selection-style">
+.kpi-selection-active,
+.kpi-selection-active *{
+  user-select:none !important;
+  -webkit-user-select:none !important;
+}
+#kpiTable td.kpi-selected-cell{
+  background:#eef6ff !important;
+  box-shadow:inset 0 0 0 1px rgba(95,143,190,.30) !important;
+  outline:none !important;
+}
+.kpi-selection-tooltip{
+  position:fixed;
+  left:-9999px;
+  top:-9999px;
+  z-index:10050;
+  pointer-events:auto;
+  display:flex;
+  align-items:center;
+  gap:10px;
+  background:rgba(11,31,70,.96);
+  color:#fff;
+  border:1px solid rgba(191,219,254,.34);
+  border-radius:16px;
+  padding:8px 10px 8px 12px;
+  font:700 12px/1.2 Arial,Helvetica,sans-serif;
+  box-shadow:0 16px 34px rgba(15,23,42,.24);
+  white-space:nowrap;
+  backdrop-filter:blur(4px);
+}
+.kpi-selection-tooltip[hidden]{
+  display:none !important;
+}
+.kpi-selection-text{
+  display:block;
+}
+.kpi-selection-close{
+  width:22px;
+  height:22px;
+  min-width:22px;
+  border:1px solid rgba(191,219,254,.34);
+  border-radius:999px;
+  background:rgba(255,255,255,.10);
+  color:#fff;
+  font:800 13px/1 Arial,Helvetica,sans-serif;
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  cursor:pointer;
+  padding:0;
+}
+.kpi-selection-close:hover{
+  background:rgba(255,255,255,.18);
+}
+</style>
+
 <link rel="stylesheet" href="./kad-nav-shell.css">
 </head>
 <body>
@@ -461,6 +519,185 @@
       let byDayEquipment = new Map();
       let problemsByDayShift = new Map();
       let programByDayShift = new Map();
+      let kpiIsSelecting = false;
+      let kpiSelectionStart = null;
+      let kpiSelectedCells = [];
+      let kpiSelectionTooltip = null;
+
+      function ensureKpiSelectionTooltip(){
+        if (kpiSelectionTooltip) return kpiSelectionTooltip;
+        const tooltip = document.createElement('div');
+        tooltip.className = 'kpi-selection-tooltip';
+        tooltip.hidden = true;
+
+        const text = document.createElement('span');
+        text.className = 'kpi-selection-text';
+        tooltip.appendChild(text);
+
+        const close = document.createElement('button');
+        close.type = 'button';
+        close.className = 'kpi-selection-close';
+        close.textContent = '×';
+        close.setAttribute('aria-label', 'Închide selecția');
+        close.addEventListener('click', () => clearKpiSelection(true));
+        tooltip.appendChild(close);
+
+        document.body.appendChild(tooltip);
+        kpiSelectionTooltip = tooltip;
+        return tooltip;
+      }
+
+      function clearKpiSelection(hideTooltip = true){
+        kpiSelectedCells.forEach(cell => cell.classList.remove('kpi-selected-cell'));
+        kpiSelectedCells = [];
+        kpiSelectionStart = null;
+        if (hideTooltip && kpiSelectionTooltip) kpiSelectionTooltip.hidden = true;
+      }
+
+      function getKpiCellFromPoint(event){
+        const hit = document.elementFromPoint(event.clientX, event.clientY);
+        if (!hit) return null;
+        return hit.closest ? hit.closest('#kpiTable td') : null;
+      }
+
+      function updateKpiSelection(endCell){
+        if (!kpiSelectionStart || !endCell || !kpiTable.contains(endCell)) return;
+
+        kpiSelectedCells.forEach(cell => cell.classList.remove('kpi-selected-cell'));
+        kpiSelectedCells = [];
+
+        const startRow = kpiSelectionStart.parentElement.rowIndex;
+        const endRow = endCell.parentElement.rowIndex;
+        const startCol = kpiSelectionStart.cellIndex;
+        const endCol = endCell.cellIndex;
+        const rowMin = Math.min(startRow, endRow);
+        const rowMax = Math.max(startRow, endRow);
+        const colMin = Math.min(startCol, endCol);
+        const colMax = Math.max(startCol, endCol);
+
+        for (let rowIndex = rowMin; rowIndex <= rowMax; rowIndex++) {
+          const row = kpiTable.rows[rowIndex];
+          if (!row) continue;
+          for (let colIndex = colMin; colIndex <= colMax; colIndex++) {
+            const cell = row.cells[colIndex];
+            if (!cell || cell.tagName !== 'TD') continue;
+            cell.classList.add('kpi-selected-cell');
+            kpiSelectedCells.push(cell);
+          }
+        }
+      }
+
+      function parseLocalizedNumber(value){
+        const text = String(value ?? '').trim();
+        if (!text) return null;
+        const clean = text
+          .replace(/\s+/g, '')
+          .replace(/\.(?=\d{3}(\D|$))/g, '')
+          .replace(',', '.')
+          .replace(/[^0-9.-]/g, '');
+        if (!clean || clean === '-' || clean === '.') return null;
+        const num = Number(clean);
+        return Number.isFinite(num) ? num : null;
+      }
+
+      function getNumericValuesFromKpiCell(cell){
+        if (!cell || !cell.textContent) return [];
+        if (
+          cell.classList.contains('sticky-left-1') ||
+          cell.classList.contains('sticky-left-2') ||
+          cell.classList.contains('w-reper') ||
+          cell.classList.contains('w-date') ||
+          cell.classList.contains('w-day')
+        ) return [];
+
+        const raw = String(cell.innerText || cell.textContent || '').trim();
+        if (!raw) return [];
+        if (/^\d{1,2}\.\d{1,2}\.\d{4}$/.test(raw)) return [];
+        if (/^(luni|marți|marti|miercuri|joi|vineri|sâmbătă|sambata|duminică|duminica|media)$/i.test(raw)) return [];
+
+        const values = [];
+        raw.split(/\n+/).forEach(line => {
+          let text = String(line || '').trim();
+          if (!text) return;
+          text = text.replace(/\bSCH\s*\d+\s*:/ig, '').trim();
+          const matches = text.match(/-?\d+(?:[.,]\d+)?%?/g) || [];
+          matches.forEach(token => {
+            const num = parseLocalizedNumber(token.replace('%', ''));
+            if (num != null) values.push(num);
+          });
+        });
+        return values;
+      }
+
+      function formatSelectionNumber(value){
+        if (value == null || !Number.isFinite(value)) return '-';
+        return new Intl.NumberFormat('ro-RO', {
+          minimumFractionDigits: 0,
+          maximumFractionDigits: 2
+        }).format(value);
+      }
+
+      function showKpiSelectionTooltip(event){
+        if (!kpiSelectedCells.length) return;
+        const tooltip = ensureKpiSelectionTooltip();
+        const textEl = tooltip.querySelector('.kpi-selection-text');
+        const values = kpiSelectedCells.flatMap(getNumericValuesFromKpiCell);
+        const sum = values.reduce((total, value) => total + value, 0);
+        const avg = values.length ? sum / values.length : null;
+
+        textEl.textContent = `Pătrate: ${kpiSelectedCells.length} • Sumă: ${values.length ? formatSelectionNumber(sum) : '0'} • Medie: ${formatSelectionNumber(avg)}`;
+        tooltip.hidden = false;
+
+        const gap = 14;
+        const width = tooltip.offsetWidth || 260;
+        const height = tooltip.offsetHeight || 40;
+        let left = (event?.clientX ?? Math.round(window.innerWidth / 2)) + gap;
+        let top = (event?.clientY ?? Math.round(window.innerHeight / 2)) + gap;
+        if (left + width > window.innerWidth - 10) left = Math.max(10, (event?.clientX ?? window.innerWidth) - width - gap);
+        if (top + height > window.innerHeight - 10) top = Math.max(10, (event?.clientY ?? window.innerHeight) - height - gap);
+        tooltip.style.left = `${left}px`;
+        tooltip.style.top = `${top}px`;
+      }
+
+      function bindKpiMultiSelection(){
+        ensureKpiSelectionTooltip();
+
+        kpiTable.addEventListener('mousedown', event => {
+          if (event.button !== 0) return;
+          const cell = event.target.closest('#kpiTable td');
+          if (!cell) return;
+
+          if (tooltipBox) tooltipBox.style.display = 'none';
+          kpiIsSelecting = true;
+          kpiSelectionStart = cell;
+          document.body.classList.add('kpi-selection-active');
+          clearKpiSelection(true);
+          kpiSelectionStart = cell;
+          updateKpiSelection(cell);
+          event.preventDefault();
+        });
+
+        document.addEventListener('mousemove', event => {
+          if (!kpiIsSelecting) return;
+          const cell = getKpiCellFromPoint(event);
+          if (cell) updateKpiSelection(cell);
+          event.preventDefault();
+        });
+
+        document.addEventListener('mouseup', event => {
+          if (!kpiIsSelecting) return;
+          kpiIsSelecting = false;
+          document.body.classList.remove('kpi-selection-active');
+          showKpiSelectionTooltip(event);
+          event.preventDefault();
+        });
+
+        document.addEventListener('mousedown', event => {
+          if (kpiIsSelecting) return;
+          if (event.target.closest('#kpiTable') || event.target.closest('.kpi-selection-tooltip')) return;
+          clearKpiSelection(true);
+        });
+      }
 
       function normalizeText(value){
         return String(value ?? '')
@@ -1111,6 +1348,7 @@
       }
 
       function renderTable(){
+        clearKpiSelection(true);
         buildHeader();
         const year = Number(yearSelect.value) || new Date().getFullYear();
         const monthIndex = monthNameToIndex(monthSelect.value);
@@ -1430,6 +1668,7 @@
       }
 
       function bindEvents(){
+        bindKpiMultiSelection();
         yearSelect.addEventListener('change', () => { updateMonthOptions(); renderTable(); });
         monthSelect.addEventListener('change', renderTable);
         oeeInput.addEventListener('change', () => {
@@ -1441,6 +1680,7 @@
         if (pdfBtn) pdfBtn.addEventListener('click', exportPdf);
 
         document.addEventListener('mouseover', event => {
+          if (kpiIsSelecting) return;
           const target = event.target.closest('[data-tooltip]');
           if (!target) return;
           tooltipBox.textContent = target.dataset.tooltip || '';
