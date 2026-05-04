@@ -779,61 +779,58 @@
       'source_file','imported_at'
     ].join(',');
 
-    function runSelect(from, to, withCount, useStar){
+    const pageSize = 1000;
+
+    function runSelect(afterDateTime, withCount, useStar){
       let q = withCount
         ? state.supa.from(TABLE).select(useStar ? '*' : selectCols, { count:'exact' })
         : state.supa.from(TABLE).select(useStar ? '*' : selectCols);
       q = applyQueryFilters(q, filters);
-      return q.order('measurement_datetime', { ascending:true }).range(from, to);
+      if(afterDateTime){
+        q = q.gt('measurement_datetime', afterDateTime);
+      }
+      return q.order('measurement_datetime', { ascending:true }).limit(pageSize);
     }
 
-    async function fetchPage(from, to, withCount){
-      let res = await runSelect(from, to, withCount, false);
+    async function fetchPage(afterDateTime, withCount){
+      let res = await runSelect(afterDateTime, withCount, false);
       if(res.error){
         const msg = String(res.error.message || res.error.details || res.error.hint || res.error || '');
         const schemaErr = /column|schema cache|could not find|PGRST/i.test(msg);
-        if(schemaErr) res = await runSelect(from, to, withCount, true);
+        if(schemaErr) res = await runSelect(afterDateTime, withCount, true);
       }
       return res;
     }
 
-    const pageSize = 1000;
-    const first = await fetchPage(0, pageSize - 1, true);
+    const first = await fetchPage('', true);
     if(first.error) throw first.error;
 
-    const allRows = Array.isArray(first.data) ? first.data.slice() : [];
+    const firstBatch = Array.isArray(first.data) ? first.data.slice() : [];
+    const allRows = firstBatch.slice();
     const total = Number.isFinite(Number(first.count)) ? Number(first.count) : null;
     setSync(`${label}... ${allRows.length}${total ? '/' + total : ''} rânduri`, 'warn');
 
-    if(total && total > pageSize){
-      const ranges = [];
-      for(let from = pageSize; from < total; from += pageSize){
-        ranges.push([from, Math.min(from + pageSize - 1, total - 1)]);
-      }
-      const concurrency = 4;
-      for(let i = 0; i < ranges.length; i += concurrency){
-        const group = ranges.slice(i, i + concurrency);
-        const results = await Promise.all(group.map(([from, to]) => fetchPage(from, to, false)));
-        for(const res of results){
-          if(res.error) throw res.error;
-          if(Array.isArray(res.data)) allRows.push(...res.data);
-        }
-        setSync(`${label}... ${Math.min(allRows.length,total)}/${total} rânduri`, 'warn');
-        await new Promise(r => setTimeout(r, 0));
-      }
-    }else if(!total && allRows.length === pageSize){
-      let from = pageSize;
-      while(true){
-        const res = await fetchPage(from, from + pageSize - 1, false);
-        if(res.error) throw res.error;
-        const batch = Array.isArray(res.data) ? res.data : [];
-        allRows.push(...batch);
-        setSync(`${label}... ${allRows.length} rânduri`, 'warn');
-        if(batch.length < pageSize) break;
-        from += pageSize;
-        await new Promise(r => setTimeout(r, 0));
-      }
+    let lastBatch = firstBatch;
+    let lastCursor = lastBatch.length ? String(lastBatch[lastBatch.length - 1].measurement_datetime || '') : '';
+    let safety = 0;
+
+    // Paginare fără OFFSET/RANGE mare.
+    // Unele proiecte Supabase/PostgREST se opresc practic la 5000 rânduri când se folosesc range-uri mari.
+    // Cu measurement_datetime > ultimul rând încărcat, fiecare cerere ia următoarea pagină reală din cloud.
+    while(lastBatch.length === pageSize && lastCursor && safety++ < 2000){
+      const res = await fetchPage(lastCursor, false);
+      if(res.error) throw res.error;
+      const batch = Array.isArray(res.data) ? res.data : [];
+      if(!batch.length) break;
+      allRows.push(...batch);
+      const nextCursor = String(batch[batch.length - 1].measurement_datetime || '');
+      setSync(`${label}... ${total ? Math.min(allRows.length,total) + '/' + total : allRows.length} rânduri`, 'warn');
+      if(!nextCursor || nextCursor === lastCursor) break;
+      lastCursor = nextCursor;
+      lastBatch = batch;
+      await new Promise(r => setTimeout(r, 0));
     }
+
     return allRows;
   }
 
