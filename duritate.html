@@ -739,25 +739,43 @@
     );
   }
 
-  function knownReperSearchCode(value){
-    const n = norm(value);
-    if(!n) return '';
-    if(n === '6910' || n.includes('2296910')) return '6910';
-    if(n === '6909' || n.includes('2296909')) return '6909';
-    return '';
+
+  function safeOrFilterText(v){
+    return String(v || '').trim().replace(/[,%]/g, ' ').replace(/\s+/g, ' ');
+  }
+
+  function reperSearchTerms(value){
+    const raw = String(value || '').trim();
+    const n = norm(raw);
+    const terms = new Set();
+    if(raw) terms.add(raw);
+    const knownCodes = ['6910','6909','2307','2308','6628','6629','1625','1626','0761','0762','761','762','4531011','4934858','3763091','7G','358','SKU','ESKU'];
+    knownCodes.forEach(code => {
+      if(n.includes(norm(code))) terms.add(code);
+    });
+    if(n.includes('2296910') || n.includes('6910')) terms.add('229-6910');
+    if(n.includes('2296909') || n.includes('6909')) terms.add('229-6909');
+    if(n.includes('2482307') || n.includes('2307')) terms.add('248-2307');
+    if(n.includes('2482308') || n.includes('2308')) terms.add('248-2308');
+    if(n.includes('9K6628') || n.includes('6628')) terms.add('9K-6628');
+    if(n.includes('9K6629') || n.includes('6629')) terms.add('9K-6629');
+    if(n.includes('1061625') || n.includes('1625')) terms.add('106-1625');
+    if(n.includes('1061626') || n.includes('1626')) terms.add('106-1626');
+    if(n.includes('5030761') || n.includes('0761') || n === '761') terms.add('503-0761');
+    if(n.includes('5030762') || n.includes('0762') || n === '762') terms.add('503-0762');
+    return [...terms].map(safeOrFilterText).filter(Boolean);
   }
 
   function applyReperCloudFilter(q, value){
-    const txt = String(value || '').trim();
-    if(!txt) return q;
-    const code = knownReperSearchCode(txt);
-    if(code === '6910'){
-      return q.or('reper_complet.ilike.%229-6910%,reper_short.eq.6910,name_original.ilike.%6910%');
-    }
-    if(code === '6909'){
-      return q.or('reper_complet.ilike.%229-6909%,reper_short.eq.6909,name_original.ilike.%6909%');
-    }
-    return q.ilike('reper_complet', '%' + txt + '%');
+    const terms = reperSearchTerms(value);
+    if(!terms.length) return q;
+    const parts = [];
+    terms.forEach(term => {
+      parts.push('reper_complet.ilike.%' + term + '%');
+      parts.push('reper_short.ilike.%' + term + '%');
+      parts.push('name_original.ilike.%' + term + '%');
+    });
+    return q.or(parts.join(','));
   }
 
   function applyQueryFilters(q, filters){
@@ -1480,38 +1498,14 @@ function normalizeCloudRow(r){
     return { cp, cpl, cpu, cpk: Math.min(cpl, cpu) };
   }
   function cpkInputs(){
-    const rawFrom = $.cpkDateFrom ? String($.cpkDateFrom.value||'').trim() : '';
-    const rawTo = $.cpkDateTo ? String($.cpkDateTo.value||'').trim() : '';
-    let dateFrom = rawFrom;
-    let dateTo = rawTo;
-    if(dateFrom && dateTo && dateFrom > dateTo){
-      const tmp = dateFrom;
-      dateFrom = dateTo;
-      dateTo = tmp;
-    }
     return {
-      dateFrom,
-      dateTo,
+      dateFrom: $.cpkDateFrom ? String($.cpkDateFrom.value||'').trim() : '',
+      dateTo: $.cpkDateTo ? String($.cpkDateTo.value||'').trim() : '',
       reper: $.cpkReper ? String($.cpkReper.value||'').trim() : '',
       sarja: $.cpkSarja ? String($.cpkSarja.value||'').trim() : '',
       lsl: $.cpkLsl ? Number($.cpkLsl.value) : NaN,
       usl: $.cpkUsl ? Number($.cpkUsl.value) : NaN
     };
-  }
-  function applyCpkDateRange(q, f){
-    if(!f) return q;
-    if(f.dateFrom && f.dateTo && f.dateFrom === f.dateTo){
-      return q.eq('measurement_date', f.dateFrom);
-    }
-    if(f.dateFrom) q = q.gte('measurement_date', f.dateFrom);
-    if(f.dateTo) q = q.lte('measurement_date', f.dateTo);
-    return q;
-  }
-  function applyCpkCloudFilters(q, f){
-    q = applyCpkDateRange(q, f);
-    if(f.reper) q = applyReperCloudFilter(q, f.reper);
-    if(f.sarja) q = q.or('sarja_material.ilike.%' + f.sarja + '%,sarja.ilike.%' + f.sarja + '%');
-    return q.not('diameter','is',null);
   }
   async function fetchCpkRowsFromCloud(){
     const f = cpkInputs();
@@ -1523,7 +1517,11 @@ function normalizeCloudRow(r){
       'source_file','imported_at'
     ].join(',');
     let q = state.supa.from(TABLE).select(selectCpkCols, { count:'exact' });
-    q = applyCpkCloudFilters(q, f);
+    if(f.dateFrom) q = q.gte('measurement_date', f.dateFrom);
+    if(f.dateTo) q = q.lte('measurement_date', f.dateTo);
+    if(f.reper) q = applyReperCloudFilter(q, f.reper);
+    if(f.sarja) q = q.or('sarja_material.ilike.%' + f.sarja + '%,sarja.ilike.%' + f.sarja + '%');
+    q = q.not('diameter','is',null);
     q = q.order('measurement_datetime', { ascending:true }).range(0, 999);
     const first = await q;
     if(first.error) throw first.error;
@@ -1532,7 +1530,11 @@ function normalizeCloudRow(r){
     if(total && total > 1000){
       for(let from=1000; from<total; from += 1000){
         let qq = state.supa.from(TABLE).select(selectCpkCols);
-        qq = applyCpkCloudFilters(qq, f);
+        if(f.dateFrom) qq = qq.gte('measurement_date', f.dateFrom);
+        if(f.dateTo) qq = qq.lte('measurement_date', f.dateTo);
+        if(f.reper) qq = applyReperCloudFilter(qq, f.reper);
+        if(f.sarja) qq = qq.or('sarja_material.ilike.%' + f.sarja + '%,sarja.ilike.%' + f.sarja + '%');
+        qq = qq.not('diameter','is',null);
         qq = qq.order('measurement_datetime', { ascending:true }).range(from, from + 999);
         const res = await qq;
         if(res.error) throw res.error;
@@ -2038,10 +2040,10 @@ function normalizeCloudRow(r){
 
       const buffer = await workbook.xlsx.writeBuffer();
       const blob = new Blob([buffer], { type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
-      const f = cpkInputs();
-      const dateLabel = f.dateFrom && f.dateTo ? (f.dateFrom + '_' + f.dateTo) : (f.dateFrom || f.dateTo || 'toate_datele');
-      const reperLabel = f.reper ? ('_' + norm(f.reper).slice(0,30)) : '';
-      downloadBlob(blob, 'cpk_duritate_' + dateLabel + reperLabel + '.xlsx');
+      const dateFrom = ($.cpkDateFrom && $.cpkDateFrom.value) ? $.cpkDateFrom.value : '';
+      const dateTo = ($.cpkDateTo && $.cpkDateTo.value) ? $.cpkDateTo.value : '';
+      const date = dateFrom || dateTo ? (dateFrom || 'start') + '_' + (dateTo || 'final') : new Date().toISOString().slice(0,10);
+      downloadBlob(blob, 'cpk_duritate_' + date + '.xlsx');
       toast('Export CPK Excel generat corect cu valori, grafic și indicatori.');
     }catch(e){
       toast(e.message || 'Nu am putut genera exportul CPK Excel.');
@@ -2119,7 +2121,7 @@ function normalizeCloudRow(r){
     if($.btnCpkCalc) $.btnCpkCalc.onclick=calculateCpk;
     if($.btnCpkClear) $.btnCpkClear.onclick=resetCpk;
     if($.btnCpkExport) $.btnCpkExport.onclick=()=>exportCpkExcel();
-    [$.cpkDateFrom,$.cpkDateTo,$.cpkLsl,$.cpkUsl].forEach(x=>{ if(x) x.onchange=()=>{ if(state.cpkRows.length || (($.cpkDateFrom && $.cpkDateFrom.value) || ($.cpkDateTo && $.cpkDateTo.value))) calculateCpk(); }; });
+    [$.cpkDateFrom,$.cpkDateTo,$.cpkLsl,$.cpkUsl].forEach(x=>{ if(x) x.onchange=()=>{ if(state.cpkRows.length || x === $.cpkDateFrom || x === $.cpkDateTo) calculateCpk(); }; });
     [$.cpkInternalMin,$.cpkInternalMax].forEach(x=>{ if(x){ x.onchange=()=>{ if(state.cpkRows.length) renderCpkPanel(state.cpkRows); }; x.oninput=()=>{ if(state.cpkRows.length) renderCpkPanel(state.cpkRows); }; } });
     let cpkTimer = null;
     [$.cpkReper,$.cpkSarja].forEach(x=>{ if(x) x.oninput=()=>{ clearTimeout(cpkTimer); if(state.cpkRows.length || String(x.value||'').trim()) cpkTimer=setTimeout(calculateCpk, 550); }; });
