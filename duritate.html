@@ -226,6 +226,9 @@
   const CPK_CLIENT_MAX = 3.45;
   const CPK_INTERNAL_DEFAULT_MIN = 3.20;
   const CPK_INTERNAL_DEFAULT_MAX = 3.40;
+  const CPK_PAGE_SIZE = 500;
+  const CPK_MAX_ROWS = 2500;
+  const CPK_VALUES_RENDER_LIMIT = 500;
 
   const state = { supa:null, user:null, role:'viewer', access:{can_view:false,can_edit:false}, repere:[], reperePromise:null, cloudRows:[], importRows:[], cpkRows:[], cpkEdits:{}, cpkDateUserTouched:false, cpkPeriodUserTouched:false, existingKeys:new Set(), filters:{year:'',month:'',operator:'',reper:'',scale:'',status:''}, latestPeriod:null, defaultFilterActive:false, cloudTotal:0, loadedMode:'latest', cloudPageSize:1000, lastCursor:'', cloudHasMore:false, activeQueryFilters:{}, lastQueryLabel:'' };
   const el = id => document.getElementById(id);
@@ -1535,32 +1538,61 @@ function normalizeCloudRow(r){
   async function fetchCpkRowsFromCloud(){
     const f = cpkInputs();
     if(!state.supa) return [];
+
+    const hasDate = !!String(f.date || '').trim();
+    const hasReper = !!String(f.reper || '').trim();
+    const hasSarja = !!String(f.sarja || '').trim();
+    const hasPeriod = !!(String(f.year || '').trim() || String(f.month || '').trim());
+
+    // Protecție anti-blocare: luna întreagă fără reper/sarjă poate întoarce mii de rânduri
+    // și poate bloca browserul. CPK pe lună se folosește pentru reperul selectat.
+    if(!hasDate && hasPeriod && !hasReper && !hasSarja){
+      if($.cpkHint){
+        $.cpkHint.style.display = 'block';
+        $.cpkHint.textContent = 'Pentru CPK pe lună întreagă, introdu reperul sau sarja. Dacă vrei doar ultima zi, lasă Data măsurării completată.';
+      }
+      return [];
+    }
+
     const selectCpkCols = [
       'measurement_key','measurement_datetime','measurement_date','measurement_time','year','month',
       'operator_name','reper_complet','reper_short','marcaj_matrita','sarja_material','sarja',
       'name_original','hardness_scale','hardness_value','hb','diameter','force','sphere','zoom','hmax','hmin',
       'source_file','imported_at'
     ].join(',');
-    function buildCpkQuery(withCount, from, to){
-      let q = withCount
-        ? state.supa.from(TABLE).select(selectCpkCols, { count:'exact' })
-        : state.supa.from(TABLE).select(selectCpkCols);
+
+    function buildCpkQuery(afterCursor){
+      let q = state.supa.from(TABLE).select(selectCpkCols);
       q = cpkApplyFiltersToQuery(q, f);
       q = q.not('diameter','is',null);
-      return q.order('measurement_datetime', { ascending:true }).range(from, to);
+      if(afterCursor) q = q.gt('measurement_datetime', afterCursor);
+      return q.order('measurement_datetime', { ascending:true }).limit(CPK_PAGE_SIZE);
     }
-    const first = await buildCpkQuery(true, 0, 999);
-    if(first.error) throw first.error;
-    const total = Number.isFinite(Number(first.count)) ? Number(first.count) : null;
-    let rows = Array.isArray(first.data) ? first.data.slice() : [];
-    if(total && total > 1000){
-      for(let from=1000; from<total; from += 1000){
-        const res = await buildCpkQuery(false, from, from + 999);
-        if(res.error) throw res.error;
-        rows = rows.concat(Array.isArray(res.data) ? res.data : []);
-      }
+
+    let rows = [];
+    let cursor = '';
+    let safety = 0;
+
+    while(rows.length < CPK_MAX_ROWS && safety++ < 20){
+      const res = await buildCpkQuery(cursor);
+      if(res.error) throw res.error;
+      const batch = Array.isArray(res.data) ? res.data : [];
+      if(!batch.length) break;
+
+      rows = rows.concat(batch);
+      const nextCursor = String(batch[batch.length - 1].measurement_datetime || '');
+      setSync('Caut CPK în cloud... ' + rows.length + ' valori', 'warn');
+      if(!nextCursor || nextCursor === cursor || batch.length < CPK_PAGE_SIZE) break;
+      cursor = nextCursor;
+      await new Promise(r => setTimeout(r, 0));
     }
-    return rows.map(normalizeCloudRow);
+
+    if(rows.length >= CPK_MAX_ROWS && $.cpkHint){
+      $.cpkHint.style.display = 'block';
+      $.cpkHint.textContent = 'CPK a fost limitat la ' + CPK_MAX_ROWS + ' valori ca să nu blocheze pagina. Restrânge filtrarea pe reper, sarjă, zi sau lună.';
+    }
+
+    return rows.slice(0, CPK_MAX_ROWS).map(normalizeCloudRow);
   }
   function currentCpkRowsFallback(){
     return mergedRows().filter(r => Number.isFinite(cpkMeasureValue(r)));
@@ -1570,7 +1602,14 @@ function normalizeCloudRow(r){
     if(!$.cpkValues) return;
     const valid = rows.filter(r => Number.isFinite(cpkMeasureValue(r)));
     if(!valid.length){ $.cpkValues.innerHTML = '<div class="muted">Nu există valori de amprentă pentru selecția curentă.</div>'; return; }
-    $.cpkValues.innerHTML = '<div class="cpk-values-head"><span>Reper</span><span>Sarjă</span><span>Diametru</span></div>' + valid.map((r, idx) => {
+
+    const visible = valid.slice(0, CPK_VALUES_RENDER_LIMIT);
+    const hiddenCount = Math.max(0, valid.length - visible.length);
+    const moreNote = hiddenCount
+      ? '<div class="muted" style="padding:7px 6px;font-weight:800">Sunt calculate toate cele '+valid.length+' valori, dar sunt afișate doar primele '+visible.length+' ca să nu se blocheze pagina.</div>'
+      : '';
+
+    $.cpkValues.innerHTML = '<div class="cpk-values-head"><span>Reper</span><span>Sarjă</span><span>Diametru</span></div>' + visible.map((r, idx) => {
       const key = cpkRowKey(r, idx);
       r.__cpkKey = key;
       const d = cpkMeasureValue(r);
@@ -1583,7 +1622,7 @@ function normalizeCloudRow(r){
         + '<span class="cpk-sarja">'+esc(sarja)+'</span>'
         + '<input class="cpk-diameter-input" type="text" inputmode="decimal" data-cpk-key="'+esc(key)+'" value="'+esc(cpkFmt(d,3))+'" />'
         + '</div>';
-    }).join('');
+    }).join('') + moreNote;
     $.cpkValues.querySelectorAll('.cpk-diameter-input').forEach(inp => {
       inp.addEventListener('change', e => {
         const key = e.target.getAttribute('data-cpk-key');
@@ -1868,13 +1907,14 @@ function normalizeCloudRow(r){
     try{
       const f = cpkInputs();
       const hasFilter = !!(f.date || f.year || f.month || f.reper || f.sarja);
+      if($.cpkHint){ $.cpkHint.style.display = 'none'; $.cpkHint.textContent = ''; }
       setSync(hasFilter ? 'Caut CPK în cloud...' : 'Calculez CPK din tabelul încărcat...', 'warn');
       let rows = hasFilter ? await fetchCpkRowsFromCloud() : currentCpkRowsFallback();
       rows = rows.filter(r => Number.isFinite(cpkMeasureValue(r))).sort((a,b)=>String(a.measurement_datetime||'').localeCompare(String(b.measurement_datetime||'')));
       applyAutoCpkLimits(rows);
       renderCpkPanel(rows);
-      if($.cpkHint){
-        $.cpkHint.textContent = '';
+      if($.cpkHint && !$.cpkHint.textContent){
+        $.cpkHint.style.display = 'none';
       }
       setSync('CPK pregătit','ok');
     }catch(e){
