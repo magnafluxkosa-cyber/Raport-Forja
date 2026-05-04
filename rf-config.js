@@ -1146,27 +1146,6 @@ function getControlCatalogForPage(pageKey) {
     return role || 'viewer';
   }
 
-
-  var RF_PERF_CACHE_TTL = 90 * 1000;
-  var RF_PERF_CACHE = window.__RF_PERF_CACHE__ || (window.__RF_PERF_CACHE__ = { values:Object.create(null), promises:Object.create(null) });
-  function rfPerfNow(){ return Date.now ? Date.now() : new Date().getTime(); }
-  function rfPerfKey(){
-    return Array.prototype.slice.call(arguments).map(function(v){ return String(v == null ? '' : v).trim().toLowerCase(); }).join('|');
-  }
-  function rfPerfGet(key){
-    var hit = RF_PERF_CACHE.values[key];
-    if(!hit || hit.expire <= rfPerfNow()){ delete RF_PERF_CACHE.values[key]; return undefined; }
-    return hit.value;
-  }
-  function rfPerfSet(key, value, ttl){
-    RF_PERF_CACHE.values[key] = { value:value, expire:rfPerfNow() + (ttl || RF_PERF_CACHE_TTL) };
-    return value;
-  }
-  function rfPerfClear(){
-    RF_PERF_CACHE.values = Object.create(null);
-    RF_PERF_CACHE.promises = Object.create(null);
-  }
-
   function normalizeHref(value) {
     return String(value || '').split('#')[0].split('?')[0];
   }
@@ -1271,28 +1250,25 @@ function getControlCatalogForPage(pageKey) {
     if (!client || !user || !user.id) {
       return { role: 'viewer', source: 'fallback viewer' };
     }
-    var cacheId = rfPerfKey('role', user.id, email);
-    var cached = rfPerfGet(cacheId);
-    if(cached) return Object.assign({}, cached);
 
     try {
       var a = await client.from('profiles').select('role').eq('user_id', user.id).maybeSingle();
-      if (!a.error && a.data && a.data.role) return rfPerfSet(cacheId, { role: normalizeRole(a.data.role), source: 'profiles.user_id' }, 90 * 1000);
+      if (!a.error && a.data && a.data.role) return { role: normalizeRole(a.data.role), source: 'profiles.user_id' };
     } catch (_) {}
 
     try {
       var b = await client.from('profiles').select('role').eq('id', user.id).maybeSingle();
-      if (!b.error && b.data && b.data.role) return rfPerfSet(cacheId, { role: normalizeRole(b.data.role), source: 'profiles.id' }, 90 * 1000);
+      if (!b.error && b.data && b.data.role) return { role: normalizeRole(b.data.role), source: 'profiles.id' };
     } catch (_) {}
 
     if (email) {
       try {
         var c = await client.from('rf_acl').select('role').eq('email', email).maybeSingle();
-        if (!c.error && c.data && c.data.role) return rfPerfSet(cacheId, { role: normalizeRole(c.data.role), source: 'rf_acl' }, 90 * 1000);
+        if (!c.error && c.data && c.data.role) return { role: normalizeRole(c.data.role), source: 'rf_acl' };
       } catch (_) {}
     }
 
-    return rfPerfSet(cacheId, { role: 'viewer', source: 'fallback viewer' }, 45 * 1000);
+    return { role: 'viewer', source: 'fallback viewer' };
   }
 
   function normalizeAclEmail(value) {
@@ -1369,9 +1345,6 @@ async function loadUserControlPermissionMap(client, user, pageKey) {
   var email = normalizeAclEmail(user.email);
   var userId = user && user.id ? String(user.id).trim() : '';
   if (!email && !userId) return null;
-  var cacheId = rfPerfKey('userControlMap', userId, email, pageKey || '');
-  var cached = rfPerfGet(cacheId);
-  if(cached instanceof Map) return cached;
   var map = new Map();
 
   function appendRows(rows) {
@@ -1401,14 +1374,11 @@ async function loadUserControlPermissionMap(client, user, pageKey) {
     } catch (_) {}
   }
 
-  return rfPerfSet(cacheId, map.size ? map : null, 90 * 1000);
+  return map.size ? map : null;
 }
 
 async function loadRoleFieldPermissionMap(client, role, pageKey) {
   if (!client) return null;
-  var cacheId = rfPerfKey('roleFieldMap', normalizeRole(role), pageKey || '');
-  var cached = rfPerfGet(cacheId);
-  if(cached instanceof Map || cached === null) return cached;
   try {
     var query = client.from('field_permissions').select('page_key,field_key,can_edit').eq('role', normalizeRole(role));
     if (pageKey) query = query.eq('page_key', pageKey);
@@ -1421,9 +1391,9 @@ async function loadRoleFieldPermissionMap(client, role, pageKey) {
       if (!pg || !ck) return;
       map.set(pg + '::' + ck, { can_view:true, can_use: row.can_edit === true, can_edit: row.can_edit === true, control_key: ck, control_type:'field', control_label: ck });
     });
-    return rfPerfSet(cacheId, map.size ? map : null, 90 * 1000);
+    return map.size ? map : null;
   } catch (_) {
-    return rfPerfSet(cacheId, null, 25 * 1000);
+    return null;
   }
 }
 
@@ -1441,9 +1411,6 @@ async function resolveControlAccess(pageKey, controlKey, options) {
   }
   var base = defaultControlAccessFromPagePermissions(pageAccess && pageAccess.permissions, cKey);
   var role = normalizeRole(pageAccess && pageAccess.role || 'viewer');
-  var controlCacheId = rfPerfKey('controlAccess', key, cKey, role, user && user.id, user && user.email, JSON.stringify(pageAccess && pageAccess.permissions || {}));
-  var controlCached = rfPerfGet(controlCacheId);
-  if(controlCached) return Object.assign({}, controlCached);
   var merged = Object.assign({ control_key:cKey, control_label:cKey, control_type:'action' }, base);
   var source = 'page permissions';
   if (role !== 'admin' && client && user) {
@@ -1463,7 +1430,7 @@ async function resolveControlAccess(pageKey, controlKey, options) {
     source = 'admin';
   }
   merged.allowed = merged.can_view === true;
-  return rfPerfSet(controlCacheId, Object.assign({}, merged), 90 * 1000);
+  return merged;
 }
 
 async function canUseControl(pageKey, controlKey, options) {
@@ -1473,13 +1440,6 @@ async function canUseControl(pageKey, controlKey, options) {
 
 async function applyDomPermissions(pageKey, root, options) {
   var pageAccess = options && options.pageAccess ? options.pageAccess : await resolvePageAccess(pageKey, options);
-  var sharedOptions = Object.assign({}, options || {}, { pageAccess: pageAccess });
-  if(!sharedOptions.user && sharedOptions.client){
-    try{
-      var sessionRes = await sharedOptions.client.auth.getSession();
-      sharedOptions.user = sessionRes && sessionRes.data && sessionRes.data.session ? sessionRes.data.session.user : null;
-    }catch(_){}
-  }
   var scope = root && root.querySelectorAll ? root : document;
   var nodes = scope.querySelectorAll('[data-rf-permission],[data-rf-control],[data-rf-field]');
   for (var i = 0; i < nodes.length; i += 1) {
@@ -1496,7 +1456,7 @@ async function applyDomPermissions(pageKey, root, options) {
     }
     var controlKey = String(el.getAttribute('data-rf-control') || el.getAttribute('data-rf-field') || '').trim();
     if (!controlKey) continue;
-    var controlAccess = await resolveControlAccess(pageKey, controlKey, sharedOptions);
+    var controlAccess = await resolveControlAccess(pageKey, controlKey, Object.assign({}, options || {}, { pageAccess: pageAccess }));
     if (controlAccess.can_view !== true) {
       el.style.display = 'none';
       el.setAttribute('aria-hidden', 'true');
@@ -1515,9 +1475,6 @@ async function applyDomPermissions(pageKey, root, options) {
     var email = normalizeAclEmail(user.email);
     var userId = user && user.id ? String(user.id).trim() : '';
     if (!email && !userId) return null;
-    var cacheId = rfPerfKey('userPageMap', userId, email);
-    var cached = rfPerfGet(cacheId);
-    if(cached instanceof Map || cached === null) return cached;
 
     function appendRows(map, rows) {
       (Array.isArray(rows) ? rows : []).forEach(function (row) {
@@ -1547,14 +1504,11 @@ async function applyDomPermissions(pageKey, root, options) {
       } catch (_) {}
     }
 
-    return rfPerfSet(cacheId, map.size ? map : null, 90 * 1000);
+    return map.size ? map : null;
   }
 
   async function loadPagePermissionMap(client, role) {
     if (!client) return null;
-    var cacheId = rfPerfKey('pagePermMap', normalizeRole(role));
-    var cached = rfPerfGet(cacheId);
-    if(cached instanceof Map || cached === null) return cached;
     try {
       var res = await client.from('page_permissions')
         .select('page_key,can_view,can_add,can_edit,can_delete,can_export,can_import')
@@ -1566,17 +1520,14 @@ async function applyDomPermissions(pageKey, root, options) {
         if (!key) return;
         map.set(key, buildPermissionEntry(row));
       });
-      return rfPerfSet(cacheId, map, 90 * 1000);
+      return map;
     } catch (_) {
-      return rfPerfSet(cacheId, null, 25 * 1000);
+      return null;
     }
   }
 
   async function readDashboardAclMirror(client) {
     if (!client) return null;
-    var cacheId = rfPerfKey('dashboardAclMirror');
-    var cached = rfPerfGet(cacheId);
-    if(cached !== undefined) return cached;
     function pickBest(rows, field) {
       var list = Array.isArray(rows) ? rows.slice() : [];
       list.sort(function (a, b) {
@@ -1589,12 +1540,12 @@ async function applyDomPermissions(pageKey, root, options) {
       return null;
     }
     try {
-      var rows = await client.from('rf_documents').select('content,data,updated_at').eq('doc_key', 'dashboard_acl_v1').order('updated_at', { ascending:false }).limit(1);
+      var rows = await client.from('rf_documents').select('content,data,updated_at').eq('doc_key', 'dashboard_acl_v1').order('updated_at', { ascending:false }).limit(50);
       if (!rows.error && Array.isArray(rows.data) && rows.data.length) {
-        return rfPerfSet(cacheId, pickBest(rows.data, 'content') || pickBest(rows.data, 'data'), 90 * 1000);
+        return pickBest(rows.data, 'content') || pickBest(rows.data, 'data');
       }
     } catch (_) {}
-    return rfPerfSet(cacheId, null, 25 * 1000);
+    return null;
   }
 
   function mirrorHasAnyUserAcl(mirror) {
@@ -1731,9 +1682,6 @@ async function applyDomPermissions(pageKey, root, options) {
     if (!client || !user) return null;
     var email = normalizeAclEmail(user.email);
     var userId = user && user.id ? String(user.id).trim() : '';
-    var cacheId = rfPerfKey('accountStatus', userId, email);
-    var cached = rfPerfGet(cacheId);
-    if(cached !== undefined) return cached;
     function normalizeRow(row) {
       if (!row || typeof row !== 'object') return null;
       return {
@@ -1747,16 +1695,16 @@ async function applyDomPermissions(pageKey, root, options) {
     try {
       if (userId) {
         var byUserId = await client.from('user_account_access').select('user_id,email,is_active,is_banned,note').eq('user_id', userId).maybeSingle();
-        if (!byUserId.error && byUserId.data) return rfPerfSet(cacheId, normalizeRow(byUserId.data), 30 * 1000);
+        if (!byUserId.error && byUserId.data) return normalizeRow(byUserId.data);
       }
     } catch (_) {}
     try {
       if (email) {
         var byEmail = await client.from('user_account_access').select('user_id,email,is_active,is_banned,note').ilike('email', email).maybeSingle();
-        if (!byEmail.error && byEmail.data) return rfPerfSet(cacheId, normalizeRow(byEmail.data), 30 * 1000);
+        if (!byEmail.error && byEmail.data) return normalizeRow(byEmail.data);
       }
     } catch (_) {}
-    return rfPerfSet(cacheId, null, 30 * 1000);
+    return null;
   }
 
   async function resolvePageAccess(pageKey, options) {

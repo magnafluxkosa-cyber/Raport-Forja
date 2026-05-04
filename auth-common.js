@@ -10,25 +10,6 @@
   };
 
   let supabaseClient = null;
-  let cachedAuthState = null;
-  let cachedAuthStateAt = 0;
-  let cachedAuthStatePromise = null;
-  const PERF_CACHE_TTL = 60 * 1000;
-  const perfCache = Object.create(null);
-
-  function perfNow(){ return Date.now ? Date.now() : new Date().getTime(); }
-  function perfGet(key){
-    const hit = perfCache[key];
-    if(!hit || hit.expire <= perfNow()) { delete perfCache[key]; return undefined; }
-    return hit.value;
-  }
-  function perfSet(key, value, ttl){
-    perfCache[key] = { value:value, expire:perfNow() + (ttl || PERF_CACHE_TTL) };
-    return value;
-  }
-  function perfKey(){
-    return Array.prototype.slice.call(arguments).map(function(v){ return String(v == null ? '' : v).trim().toLowerCase(); }).join('|');
-  }
 
   function normalizeEmail(value){
     return String(value || '').trim().toLowerCase();
@@ -237,22 +218,19 @@
   }
 
   async function readLatestRfDocument(sb, docKey){
-    const cacheId = perfKey('rfdoc', docKey);
-    const cached = perfGet(cacheId);
-    if(cached !== undefined) return cached;
     try{
       const data = await maybeSelect(
         sb.from('rf_documents')
           .select('content,data,updated_at')
           .eq('doc_key', docKey)
           .order('updated_at', { ascending:false })
-          .limit(1)
+          .limit(50)
       );
       if(Array.isArray(data) && data.length){
-        return perfSet(cacheId, pickLatestObject(data, 'content') || pickLatestObject(data, 'data') || null, 90 * 1000);
+        return pickLatestObject(data, 'content') || pickLatestObject(data, 'data') || null;
       }
     }catch(_e){}
-    return perfSet(cacheId, null, 20 * 1000);
+    return null;
   }
 
   function autoPageLabelFromKey(key){
@@ -264,8 +242,6 @@
   async function registerAutoPage(sb, pageKey){
     const key = normalizePageKey(pageKey);
     if(!sb || !key || ['login','index'].includes(key)) return;
-    const regFlag = 'rf_auto_page_seen_' + key;
-    try{ if(sessionStorage.getItem(regFlag) === '1') return; }catch(_e){}
     const stamp = new Date().toISOString();
     try{
       const existingRows = await maybeSelect(
@@ -283,7 +259,6 @@
         const body = { doc_key:'rf_auto_pages_v1', content:payload, data:payload, updated_at:stamp };
         try{ await sb.from('rf_documents').upsert(body, { onConflict:'doc_key' }); }catch(_e){}
       }
-      try{ sessionStorage.setItem(regFlag, '1'); }catch(_e){}
     }catch(_e){}
   }
 
@@ -292,9 +267,6 @@
     const email = normalizeEmail(user && user.email);
     const userId = String(user && user.id || '').trim();
     if(!sb || (!email && !userId)) return map;
-    const cacheId = perfKey('userPageMap', userId, email);
-    const cached = perfGet(cacheId);
-    if(cached instanceof Map) return cached;
 
     const pushRows = (rows) => {
       (Array.isArray(rows) ? rows : []).forEach(row => {
@@ -333,7 +305,6 @@
       });
     });
 
-    perfSet(cacheId, map, 90 * 1000);
     return map;
   }
 
@@ -440,9 +411,6 @@
     if(!user){
       return 'viewer';
     }
-    const roleCacheId = perfKey('role', user && user.id, email);
-    const cachedRole = perfGet(roleCacheId);
-    if(cachedRole) return cachedRole;
 
     const sb = getSupabaseClient();
 
@@ -451,7 +419,7 @@
         const resolved = await window.RF_ACL.resolveRole(sb, user);
         const aclRole = String(resolved && resolved.role || '').trim().toLowerCase();
         if(['viewer','operator','editor','admin'].includes(aclRole)){
-          return perfSet(roleCacheId, aclRole, 90 * 1000);
+          return aclRole;
         }
       } catch (_) {
         // continue with compatibility lookups
@@ -470,14 +438,14 @@
       try {
         const role = String(await attempt() || '').trim().toLowerCase();
         if(['viewer','operator','editor','admin'].includes(role)){
-          return perfSet(roleCacheId, role, 90 * 1000);
+          return role;
         }
       } catch (_) {
         // fallback compat
       }
     }
 
-    return perfSet(roleCacheId, 'viewer', 60 * 1000);
+    return 'viewer';
   }
 
 
@@ -487,9 +455,6 @@
     if(!user || (!email && !userId)){
       return { is_active:true, is_banned:false, note:'', ban_reason:'', updated_at:'' };
     }
-    const statusCacheId = perfKey('accountStatus', userId, email);
-    const cachedStatus = perfGet(statusCacheId);
-    if(cachedStatus) return cachedStatus;
 
     function normalizeStatusRow(row){
       if(!row || typeof row !== 'object'){
@@ -590,42 +555,28 @@
   }
 
   async function getCurrentUserWithRole(){
-    if(cachedAuthState && (perfNow() - cachedAuthStateAt) < 30 * 1000){
-      return cachedAuthState;
+    const session = await getSession();
+    if(!session || !session.user){
+      clearUserState();
+      return null;
     }
-    if(cachedAuthStatePromise){
-      return cachedAuthStatePromise;
+    const currentEmail = normalizeEmail(session.user.email);
+    const currentUserId = String(session.user.id || '').trim();
+    const storedEmail = normalizeEmail(safeGetItem(STORAGE.userEmail));
+    const storedUserId = String(safeGetItem(STORAGE.userId) || '').trim();
+    if((storedEmail && currentEmail && storedEmail !== currentEmail) || (storedUserId && currentUserId && storedUserId !== currentUserId)){
+      clearUserState();
     }
-    cachedAuthStatePromise = (async function(){
-      const session = await getSession();
-      if(!session || !session.user){
-        clearUserState();
-        cachedAuthState = null;
-        cachedAuthStateAt = 0;
-        return null;
-      }
-      const currentEmail = normalizeEmail(session.user.email);
-      const currentUserId = String(session.user.id || '').trim();
-      const storedEmail = normalizeEmail(safeGetItem(STORAGE.userEmail));
-      const storedUserId = String(safeGetItem(STORAGE.userId) || '').trim();
-      if((storedEmail && currentEmail && storedEmail !== currentEmail) || (storedUserId && currentUserId && storedUserId !== currentUserId)){
-        clearUserState();
-      }
-      const status = await getAccountStatus(session.user);
-      const role = await resolveUserRole(session.user);
-      persistUserState(session.user, role);
+    const status = await getAccountStatus(session.user);
+    const role = await resolveUserRole(session.user);
+    persistUserState(session.user, role);
 
-      cachedAuthState = {
-        session,
-        user: session.user,
-        role,
-        accountStatus: status
-      };
-      cachedAuthStateAt = perfNow();
-      return cachedAuthState;
-    })();
-    try{ return await cachedAuthStatePromise; }
-    finally{ cachedAuthStatePromise = null; }
+    return {
+      session,
+      user: session.user,
+      role,
+      accountStatus: status
+    };
   }
 
   function getCurrentPageName(){
@@ -703,9 +654,6 @@
     }
 
     clearUserState();
-    cachedAuthState = null;
-    cachedAuthStateAt = 0;
-    Object.keys(perfCache).forEach(function(k){ delete perfCache[k]; });
     window.location.href = settings.redirectTo;
   }
 
