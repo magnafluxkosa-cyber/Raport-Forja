@@ -401,22 +401,69 @@ async function resolvePagePermissions(){
   }
   function getMaxOrderTransportForPair(pairKey, year, excludeId){
     let maxNr = 0;
+    const cleanPairKey = trimText(pairKey);
+    const cleanYear = Number(year) || 0;
     state.rows.forEach(item => {
       if(excludeId && String(item.id) === String(excludeId)) return;
-      if(getTransportPairKey(item.reper) !== pairKey) return;
-      if(year && Number(item.an || 0) && Number(item.an || 0) !== Number(year)) return;
-      maxNr = Math.max(maxNr, getTransportNumber(item.nrTransport));
+      if(getTransportPairKey(item && item.reper) !== cleanPairKey) return;
+      const itemYear = Number(item && item.an) || (trimText(item && item.dataLivrare) ? Number(trimText(item.dataLivrare).slice(0,4)) : 0);
+      if(cleanYear && itemYear && itemYear !== cleanYear) return;
+      maxNr = Math.max(maxNr, getTransportNumber(item && item.nrTransport));
     });
     return maxNr;
   }
   function guessNextTransport(row){
     const pairKey = getTransportPairKey(row && row.reper);
     if(!pairKey) return '';
-    const year = Number(row && row.an) || 0;
+    const year = Number(row && row.an) || (trimText(row && row.dataLivrare) ? Number(trimText(row.dataLivrare).slice(0,4)) : 0);
     const maxTracking = getMaxTrackingTransportForPair(pairKey, year);
     const maxOrders = getMaxOrderTransportForPair(pairKey, year, row && row.id);
     const maxNr = Math.max(maxTracking, maxOrders);
     return maxNr > 0 ? String(maxNr + 1) : '1';
+  }
+  function repairAutoTransportNumbers(){
+    const groups = new Map();
+    state.rows.forEach((row, index) => {
+      if(!row || !row.reper) return;
+      const pairKey = getTransportPairKey(row.reper);
+      if(!pairKey || pairKey.indexOf('SINGLE|') === 0) return;
+      const nr = getTransportNumber(row.nrTransport);
+      if(!nr) return;
+      const year = Number(row.an || 0) || (trimText(row.dataLivrare) ? Number(trimText(row.dataLivrare).slice(0,4)) : 0);
+      if(!year) return;
+      const dateIso = trimText(row.dataLivrare);
+      const key = [year, pairKey, nr, dateIso].join('|');
+      if(!groups.has(key)) groups.set(key, { year, pairKey, nr, dateIso, index, rows:[] });
+      const group = groups.get(key);
+      group.index = Math.min(group.index, index);
+      group.rows.push(row);
+    });
+
+    const datedMax = Object.create(null);
+    Array.from(groups.values()).forEach(group => {
+      if(!group.dateIso) return;
+      const baseKey = group.year + '|' + group.pairKey;
+      datedMax[baseKey] = Math.max(datedMax[baseKey] || 0, group.nr);
+    });
+
+    let changed = false;
+    const blankGroups = Array.from(groups.values())
+      .filter(group => !group.dateIso)
+      .sort((a,b) => a.year - b.year || String(a.pairKey).localeCompare(String(b.pairKey), 'ro', { sensitivity:'base' }) || a.index - b.index);
+
+    blankGroups.forEach(group => {
+      const baseKey = group.year + '|' + group.pairKey;
+      const maxKnown = datedMax[baseKey] || 0;
+      if(maxKnown > 0 && group.nr <= maxKnown){
+        const nextNr = maxKnown + 1;
+        group.rows.forEach(row => { row.nrTransport = String(nextNr); });
+        datedMax[baseKey] = nextNr;
+        changed = true;
+      } else {
+        datedMax[baseKey] = Math.max(maxKnown, group.nr);
+      }
+    });
+    return changed;
   }
   function guessDefaultQuantity(row){ const familyKey = getReperFamilyKey(row && row.reper); const exactKey = getCanonicalReperKey(row && row.reper); const year = Number(row && row.an) || 0; const candidates = state.rows.filter(item => { if(String(item.id) === String(row.id)) return false; if(year && Number(item.an || 0) !== year) return false; return getCanonicalReperKey(item.reper) === exactKey && Math.max(0, Math.round(toNumber(item.cantitate))) > 0; }).slice().sort(compareOrders); if(candidates.length) return Math.max(0, Math.round(toNumber(candidates[candidates.length - 1].cantitate))); const familyCandidates = state.rows.filter(item => { if(String(item.id) === String(row.id)) return false; if(year && Number(item.an || 0) !== year) return false; return getReperFamilyKey(item.reper) === familyKey && Math.max(0, Math.round(toNumber(item.cantitate))) > 0; }).slice().sort(compareOrders); if(familyCandidates.length) return Math.max(0, Math.round(toNumber(familyCandidates[familyCandidates.length - 1].cantitate))); return 0; }
   function autofillOrderDefaults(row){
@@ -626,7 +673,7 @@ async function resolvePagePermissions(){
   }
   function findRow(id){ return state.rows.find(row => String(row.id) === String(id)) || null; }
   function queueSave(){ if(!state.canEdit) return; if(state.saveTimer) clearTimeout(state.saveTimer); els.cloudStatus.textContent = 'Salvare...'; els.cloudSub.textContent = 'Se pregătește payload-ul pentru rf_documents.'; state.saveTimer = setTimeout(async () => { try{ state.updatedAt = nowIso(); const payload = buildPayload(); payload.updated_at = state.updatedAt; await writeDocumentCompat(DOC_KEY, payload); els.cloudStatus.textContent = 'Cloud salvat'; els.cloudSub.textContent = 'rf_documents / comenzi-livrare'; els.syncStatus.textContent = formatDateTime(state.updatedAt); els.sourceSub.textContent = 'Sursă: cloud comenzi-livrare'; }catch(error){ console.error(error); els.cloudStatus.textContent = 'Eroare cloud'; els.cloudSub.textContent = safeText(error && error.message || 'Nu am putut salva documentul.'); } }, 550); }
-  async function refreshSupport(){ return (async function(){ await loadHelperMaps(); state.deliveredByKey = Object.create(null); await loadLivrariZaleStatus(); await loadTrackingDocs(); const changed = hydrateRowsFromTracking(); buildRepereList(); renderTable(); if(changed) queueSave(); })(); }
+  async function refreshSupport(){ return (async function(){ await loadHelperMaps(); state.deliveredByKey = Object.create(null); await loadLivrariZaleStatus(); await loadTrackingDocs(); const changed = hydrateRowsFromTracking() || repairAutoTransportNumbers(); buildRepereList(); renderTable(); if(changed) queueSave(); })(); }
   function updateAccessUi(){ const label = (window.ERPAuth && window.ERPAuth.roleLabel) ? window.ERPAuth.roleLabel(state.role) : state.role; els.roleStatus.textContent = label; els.roleSub.textContent = state.canEdit ? (label + ' • editare activă') : (label + ' • doar vizualizare'); if(els.lockLayer){ els.lockLayer.style.display = 'none'; els.lockLayer.setAttribute('aria-hidden', 'true'); } }
   async function initAuth(){ try{ if(!window.ERPAuth) throw new Error('auth-common.js nu s-a încărcat.'); const authState = await window.ERPAuth.requireAuth({ next:'comenzi-livrare.html', redirectToLogin:true }); state.supabase = window.ERPAuth.getSupabaseClient(); state.user = authState.user; state.role = trimText(authState && authState.role || 'viewer') || 'viewer'; await resolvePagePermissions(); const displayName = trimText(state.user && (state.user.email || state.user.id) || '-'); els.authStatus.textContent = displayName; els.authSub.textContent = 'Sesiune activă.'; updateAccessUi(); }catch(error){ console.error(error); els.authStatus.textContent = 'Neautentificat'; els.authSub.textContent = trimText(error && error.message || 'Nu am putut valida sesiunea.'); } }
   function applyOrderFieldUpdate(target, options){
