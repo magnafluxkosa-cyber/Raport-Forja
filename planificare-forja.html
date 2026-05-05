@@ -3071,7 +3071,6 @@ function getDefaultPermissions(role){
     }
     function getEffectiveDeliveryOrdersForPlanning(){
       const map = Object.create(null);
-      const deliveredMap = buildDeliveredDeliveryDemandMap();
       const pushOrder = (order, prefer) => {
         if(!order) return;
         const normalized = normalizeDeliveryOrderRow(order, 0);
@@ -3079,10 +3078,13 @@ function getDefaultPermissions(role){
         if(!normalized.dataLivrare || !reperKey || Math.max(0, Math.round(toNumber(normalized.cantitate))) <= 0) return;
         const key = getDeliveryDemandDedupKey(normalized);
         if(!key) return;
-        if(isDeliveryOrderAlreadyDelivered(normalized, deliveredMap, key)) return;
         if(prefer || !map[key]) map[key] = normalized;
       };
       (Array.isArray(state.deliverySupport && state.deliverySupport.orders) ? state.deliverySupport.orders : []).forEach(order => pushOrder(order, false));
+      (Array.isArray(state.deliverySupport && state.deliverySupport.deliveredRows) ? state.deliverySupport.deliveredRows : []).forEach((row, index) => {
+        const demand = makeDeliveryDemandFromLivrariZale(row, index);
+        pushOrder(demand, true);
+      });
       return Object.values(map).sort(compareDeliveryOrders);
     }
     function normalizeInventarForjatRow(row, index){
@@ -3577,6 +3579,67 @@ function getDefaultPermissions(role){
       els.steel2WeekAlertButton.setAttribute('data-tooltip-html', buildSteel2WeekIndicatorHtml(safe));
       els.steel2WeekAlertButton.setAttribute('data-tooltip-tone', tone);
     }
+    function buildDeliveredPlanCoverageForSteelAlerts(){
+      const coveredByCell = Object.create(null);
+      const deliveredRows = Array.isArray(state.deliverySupport && state.deliverySupport.deliveredRows)
+        ? state.deliverySupport.deliveredRows.slice()
+        : [];
+      if(!deliveredRows.length) return coveredByCell;
+
+      const byReper = Object.create(null);
+      deliveredRows.forEach(row => {
+        const reperKey = getCanonicalDeliveryReperKey(row && row.reper) || (row && row.reperKey) || '';
+        const dataLivrare = trimText(row && row.dataLivrare);
+        const qty = Math.max(0, Math.round(toNumber(row && row.cantitate)));
+        if(!reperKey || !dataLivrare || qty <= 0) return;
+        (byReper[reperKey] = byReper[reperKey] || []).push({ dataLivrare, qty });
+      });
+
+      const contributionByReper = Object.create(null);
+      getDeliveryContributionRows().forEach(item => {
+        if(!item || !item.reperKey || !item.rowIso || Math.max(0, Math.round(toNumber(item.qty))) <= 0) return;
+        (contributionByReper[item.reperKey] = contributionByReper[item.reperKey] || []).push({
+          cellKey: cellCalcKey(item.rowId, item.machine),
+          rowIso: item.rowIso,
+          rowNo: Number(item.rowNo || 0),
+          machineIndex: Number(item.machineIndex || 0),
+          qtyLeft: Math.max(0, Math.round(toNumber(item.qty)))
+        });
+      });
+
+      Object.keys(contributionByReper).forEach(reperKey => {
+        contributionByReper[reperKey].sort((a,b) =>
+          String(a.rowIso).localeCompare(String(b.rowIso), 'ro', { sensitivity:'base' }) ||
+          Number(a.rowNo || 0) - Number(b.rowNo || 0) ||
+          Number(a.machineIndex || 0) - Number(b.machineIndex || 0)
+        );
+      });
+
+      Object.keys(byReper).forEach(reperKey => {
+        const deliveries = byReper[reperKey].sort((a,b) => String(a.dataLivrare).localeCompare(String(b.dataLivrare), 'ro', { sensitivity:'base' }));
+        const contributions = contributionByReper[reperKey] || [];
+        let pointer = 0;
+        deliveries.forEach(delivery => {
+          let need = Math.max(0, Math.round(toNumber(delivery.qty)));
+          while(need > 0 && pointer < contributions.length){
+            const item = contributions[pointer];
+            if(item.rowIso > delivery.dataLivrare) break;
+            if(item.qtyLeft <= 0){
+              pointer += 1;
+              continue;
+            }
+            const take = Math.min(item.qtyLeft, need);
+            item.qtyLeft -= take;
+            need -= take;
+            coveredByCell[item.cellKey] = Math.max(0, Math.round(toNumber(coveredByCell[item.cellKey]))) + take;
+            if(item.qtyLeft <= 0) pointer += 1;
+          }
+        });
+      });
+
+      return coveredByCell;
+    }
+
     function rebuildSteel2WeekAlerts(){
       try{
         const currentWeekEndIso = getCurrentWeekEndIso(TODAY_ISO) || TODAY_ISO;
@@ -3589,6 +3652,7 @@ function getDefaultPermissions(role){
         const missingRules = [];
         let relevantRowsCount = 0;
         let totalShortageKg = 0;
+        const deliveredCoverageByCell = buildDeliveredPlanCoverageForSteelAlerts();
         state.rows.forEach(row => {
           const rowIso = trimText(row && row.data);
           const bucket = getRollingThreeWeekBucket(rowIso);
@@ -3598,14 +3662,19 @@ function getDefaultPermissions(role){
             const reper = trimText(slot && slot.reper).toUpperCase();
             const planBuc = Math.max(0, Math.round(toNumber(slot && slot.planificat)));
             if(!reper || planBuc <= 0) return;
+            const steelCellKey = cellCalcKey(row.id, machine);
+            const deliveredCoveredBuc = Math.min(planBuc, Math.max(0, Math.round(toNumber(deliveredCoverageByCell[steelCellKey]))));
+            const effectivePlanBuc = Math.max(0, planBuc - deliveredCoveredBuc);
+            if(effectivePlanBuc <= 0) return;
             relevantRowsCount += 1;
-            const calc = state.stockCalcByCell[cellCalcKey(row.id, machine)] || null;
+            const calc = state.stockCalcByCell[steelCellKey] || null;
             if(!calc || trimText(calc.mode) === 'error'){
               missingRules.push({ dateIso: rowIso, machine, reper, note: trimText(calc && calc.note) || 'Regulă helper lipsă sau invalidă pentru calculul de oțel.' });
               return;
             }
             if(trimText(calc.mode) === 'real') return;
-            const shortageKg = Math.max(0, toNumber(calc.shortageSteelKg || (Math.max(0, toNumber(calc.needSteelKg)) - Math.max(0, toNumber(calc.beforeSteelKg)))));
+            const rawShortageKg = Math.max(0, toNumber(calc.shortageSteelKg || (Math.max(0, toNumber(calc.needSteelKg)) - Math.max(0, toNumber(calc.beforeSteelKg)))));
+            const shortageKg = planBuc > 0 ? rawShortageKg * (effectivePlanBuc / planBuc) : rawShortageKg;
             if(shortageKg <= 0) return;
             const helper = resolvePlanningHelper(reper);
             const specKey = helper && helper.diametru && helper.calitate ? buildSpecKey(helper.diametru, helper.calitate) : (trimText(calc.specLabel) || ('spec|' + reper));
@@ -3618,7 +3687,7 @@ function getDefaultPermissions(role){
               specEntry = weekEntry.specMap[specKey] = { specKey, diametru: helper.diametru || '', calitate: helper.calitate || '', shortageKg:0, details:[] };
             }
             specEntry.shortageKg += shortageKg;
-            specEntry.details.push({ dateIso: rowIso, machine, reper, planBuc, shortageKg });
+            specEntry.details.push({ dateIso: rowIso, machine, reper, planBuc: effectivePlanBuc, shortageKg });
             weekEntry.totalShortageKg += shortageKg;
             totalShortageKg += shortageKg;
           });
