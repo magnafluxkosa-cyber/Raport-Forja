@@ -129,6 +129,9 @@
     .date-future, tbody td.date-future{background:#fff4bf !important;}
     .ambalat-ok, tbody td.ambalat-ok{background:#dff3df !important;}
     .ambalat-warn, tbody td.ambalat-warn{background:#fff4bf !important;color:#c62828 !important;font-weight:800 !important;}
+    .livrat-cell{text-align:center!important;background:#f8fcff!important;}
+    .livrat-check{width:18px;height:18px;accent-color:#1f7a45;cursor:pointer;vertical-align:middle;}
+    .livrat-check:disabled{cursor:not-allowed;opacity:.55;}
     .date-inline-input{width:100%;min-width:96px;height:28px;border:1px solid #95b5cd;border-radius:6px;padding:4px 6px;font-size:12px;font-weight:700;color:var(--text);background:#fff;outline:none}
 
   
@@ -220,10 +223,12 @@
                 <th colspan="2">FORJAT</th>
                 <th colspan="2">Tratate</th>
                 <th colspan="2">AMBALAT</th>
+                <th colspan="2">LIVRAT</th>
                 <th colspan="2">Fără T.T</th>
                 <th colspan="2">Diferență</th>
               </tr>
               <tr class="sub-head">
+                <th>417-3595</th><th>417-3596</th>
                 <th>417-3595</th><th>417-3596</th>
                 <th>417-3595</th><th>417-3596</th>
                 <th>417-3595</th><th>417-3596</th>
@@ -386,6 +391,12 @@
       const s = String(v).trim();
       if(!s) return null;
       return toInt(v);
+    }
+
+    function boolFromAny(value) {
+      if(value === true || value === 1) return true;
+      const s = String(value == null ? '' : value).trim().toLowerCase();
+      return ['true','1','da','yes','y','x','bifat','livrat','checked'].includes(s);
     }
     function nowIso() {
       return new Date().toISOString();
@@ -661,6 +672,72 @@
         return false;
       }
     }
+
+    function normalizeAutoDeliveryRow(row) {
+      return {
+        id: toStr(row.id) || uid('livrat'),
+        an: normalizeYear(row.an) || yearFromDate(row.data_livrarii),
+        luna: normalizeMonthName(row.luna) || monthFromDate(row.data_livrarii),
+        data_livrarii: normalizeDate(row.data_livrarii || row.data),
+        nr_transport: toStr(row.nr_transport),
+        reper: toStr(row.reper).toUpperCase(),
+        cantitate: toInt(row.cantitate),
+        source_auto_livrat: row.source_auto_livrat === true,
+        source_page: toStr(row.source_page),
+        source_row_id: toStr(row.source_row_id),
+        source_reper: toStr(row.source_reper).toUpperCase()
+      };
+    }
+    function currentPageAutoDeliveryRows(rows) {
+      const out = [];
+      (rows || []).forEach(row => {
+        const base = {
+          an: row.an,
+          luna: row.luna,
+          data_livrarii: row.data_livrarii,
+          nr_transport: row.nr_transport,
+          source_auto_livrat: true,
+          source_page: PAGE_KEY,
+          source_row_id: row.id
+        };
+        if(boolFromAny(row.livrat_2307)) {
+          out.push(normalizeAutoDeliveryRow({
+            ...base,
+            id: 'auto-livrat-' + PAGE_KEY + '-' + row.id + '-2307',
+            reper: LIVRARE_PART_2307,
+            source_reper: LIVRARE_PART_2307,
+            cantitate: row.ambalat_2307
+          }));
+        }
+        if(boolFromAny(row.livrat_2308)) {
+          out.push(normalizeAutoDeliveryRow({
+            ...base,
+            id: 'auto-livrat-' + PAGE_KEY + '-' + row.id + '-2308',
+            reper: LIVRARE_PART_2308,
+            source_reper: LIVRARE_PART_2308,
+            cantitate: row.ambalat_2308
+          }));
+        }
+      });
+      return out;
+    }
+    function isAutoDeliveryFromThisPage(row) {
+      return row && row.source_auto_livrat === true && toStr(row.source_page) === PAGE_KEY;
+    }
+    async function syncLivrariZaleFromCurrentPage(rows) {
+      const autoRows = currentPageAutoDeliveryRows(rows || []);
+      const existingDoc = await readDocByKey(LIVRARI_ZALE_DOC_KEY);
+      const existingRows = existingDoc ? resolveRowsPayload(existingDoc.payload).map(normalizeAutoDeliveryRow) : [];
+      const keepRows = existingRows.filter(row => !isAutoDeliveryFromThisPage(row));
+      const merged = keepRows.concat(autoRows).sort((a,b) => {
+        const da = dateSortValue(a.data_livrarii), db = dateSortValue(b.data_livrarii);
+        if(da !== db) return da.localeCompare(db);
+        const ta = toInt(a.nr_transport), tb = toInt(b.nr_transport);
+        if(ta !== tb) return ta - tb;
+        return toStr(a.reper).localeCompare(toStr(b.reper), 'ro', { numeric:true, sensitivity:'base' });
+      });
+      return await writeDoc(LIVRARI_ZALE_DOC_KEY, { rows: merged, updated_at: nowIso(), source: 'auto-livrat-' + PAGE_KEY });
+    }
     async function resolveRole(user){
       if(!user) return 'viewer';
       const client = await createSupabaseClient();
@@ -750,6 +827,8 @@
         tratate_2308: toInt(src.tratate_2308),
         ambalat_2307: toInt(src.ambalat_2307),
         ambalat_2308: toInt(src.ambalat_2308),
+        livrat_2307: boolFromAny(src.livrat_2307),
+        livrat_2308: boolFromAny(src.livrat_2308),
         fara_tt_2307: toInt(src.fara_tt_2307),
         fara_tt_2308: toInt(src.fara_tt_2308),
         diferenta_2307: toInt(src.diferenta_2307),
@@ -1360,6 +1439,18 @@
       if(n === TRUCK_SIZE) return 'background:#dff3df !important;';
       return 'background:#fff4bf !important;color:#c62828 !important;font-weight:800 !important;';
     }
+
+    function toggleLivrat(rowId, field, checked) {
+      if(!pageAccess.can_edit) return;
+      const idx = state.rows.findIndex(r => r.id === rowId);
+      if(idx < 0) return;
+      const next = { ...state.rows[idx], [field]: !!checked };
+      state.rows[idx] = normalizeMainRow(next);
+      selectedRowId = rowId;
+      refreshDerivedRows();
+      renderTable();
+      queueSave();
+    }
     function saveInlineDate(rowId, rawValue) {
       if(!pageAccess.can_edit) return;
       const normalized = normalizeDate(rawValue);
@@ -1444,7 +1535,7 @@
       const rows = getFilteredRows();
       const tbody = document.getElementById('tableBody');
       if(!rows.length) {
-        tbody.innerHTML = '<tr><td colspan="14" class="empty-state">Nu există rânduri pentru filtrul curent.</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="16" class="empty-state">Nu există rânduri pentru filtrul curent.</td></tr>';
         document.getElementById('gridMeta').textContent = '0 rânduri afișate';
         renderSummary();
         scrollTableBottom();
@@ -1462,6 +1553,8 @@
           <td class="right mono" data-edit-cell="1" data-field="manual_tratate_2308" data-id="${escapeHtml(row.id)}" data-raw="${escapeHtml(row.tratate_2308)}">${fmtInt(row.tratate_2308)}</td>
           <td class="right mono ${getAmbalatCellClass(row.ambalat_2307)}" style="${getAmbalatCellStyle(row.ambalat_2307)}">${fmtInt(row.ambalat_2307)}</td>
           <td class="right mono ${getAmbalatCellClass(row.ambalat_2308)}" style="${getAmbalatCellStyle(row.ambalat_2308)}">${fmtInt(row.ambalat_2308)}</td>
+          <td class="livrat-cell"><input class="livrat-check" type="checkbox" data-livrat-check="1" data-id="${escapeHtml(row.id)}" data-field="livrat_2307" ${row.livrat_2307 ? 'checked' : ''} ${pageAccess.can_edit ? '' : 'disabled'}></td>
+          <td class="livrat-cell"><input class="livrat-check" type="checkbox" data-livrat-check="1" data-id="${escapeHtml(row.id)}" data-field="livrat_2308" ${row.livrat_2308 ? 'checked' : ''} ${pageAccess.can_edit ? '' : 'disabled'}></td>
           <td class="right mono">${fmtInt(row.fara_tt_2307)}</td>
           <td class="right mono">${fmtInt(row.fara_tt_2308)}</td>
           <td class="right mono">${fmtInt(row.diferenta_2307)}</td>
@@ -1471,11 +1564,11 @@
       tbody.querySelectorAll('tr[data-id]').forEach(tr => {
         tr.addEventListener('click', ev => {
           selectedRowId = tr.dataset.id;
-          if(ev.target && ev.target.closest('[data-date-cell="1"],[data-edit-cell="1"]')) return;
+          if(ev.target && ev.target.closest('[data-date-cell="1"],[data-edit-cell="1"],[data-livrat-check="1"]')) return;
           renderTable();
         });
         tr.addEventListener('dblclick', ev => {
-          if(ev.target && ev.target.closest('[data-date-cell="1"],[data-edit-cell="1"]')) return;
+          if(ev.target && ev.target.closest('[data-date-cell="1"],[data-edit-cell="1"],[data-livrat-check="1"]')) return;
           if(pageAccess.can_edit) openModal(tr.dataset.id);
         });
       });
@@ -1489,6 +1582,14 @@
         td.addEventListener('dblclick', ev => {
           ev.stopPropagation();
           startNumericInlineEdit(td, td.dataset.id, td.dataset.field);
+        });
+      });
+      tbody.querySelectorAll('[data-livrat-check="1"]').forEach(input => {
+        input.addEventListener('click', ev => ev.stopPropagation());
+        input.addEventListener('dblclick', ev => ev.stopPropagation());
+        input.addEventListener('change', ev => {
+          ev.stopPropagation();
+          toggleLivrat(input.dataset.id, input.dataset.field, input.checked);
         });
       });
       renderSummary();
@@ -1583,7 +1684,8 @@
       });
       writeLocalJson(LOCAL_KEY, { rows: payloadRows, updated_at: nowIso() });
       const ok = await writeDoc(PAGE_KEY, { rows: payloadRows, updated_at: nowIso() });
-      setCloudBadge(ok ? 'Cloud: sincronizat' : 'Cloud: eroare salvare', ok ? 'ok' : 'bad');
+      const livrariOk = ok ? await syncLivrariZaleFromCurrentPage(payloadRows) : false;
+      setCloudBadge(ok ? (livrariOk ? 'Cloud: sincronizat' : 'Cloud: sincronizat, livrări neverificate') : 'Cloud: eroare salvare', ok ? 'ok' : 'bad');
       document.getElementById('footerNote').textContent = 'Ultima salvare: ' + new Date().toLocaleString('ro-RO');
     }
     function queueSave() {
