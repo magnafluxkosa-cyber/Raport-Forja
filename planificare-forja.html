@@ -638,6 +638,7 @@
     const DEBITARI_FLOW_DOC_BASE_KEYS = ['debitate'];
     const DELIVERY_DOC_KEY = 'comenzi-livrare';
     const DELIVERY_DOC_ALIASES = ['comenzi-livrare'];
+    const LIVRARI_ZALE_DOC_KEY = 'livrari-zale';
     const FORJAT_INV_BASE_KEYS = ['inventar-forjat'];
     const LOCK_DOC_KEY = 'planificare-forja:locks';
     const PLAN_SYNC_CHANNEL_TOPIC = 'planificare-forja-sync';
@@ -739,7 +740,7 @@
       deliveryReadyByCell: Object.create(null),
       hoveredRowId: '',
       selectedRowId: '',
-      deliverySupport: { orders:[], inventarRows:[], ordersSource:'-', inventarSource:'-', ok:false, alertSummary:{ tone:'neutral', uncovered:[], count:0, shortageTotal:0 }, termSummary:{ tone:'neutral', warnings:[], count:0 } },
+      deliverySupport: { orders:[], inventarRows:[], deliveredRows:[], ordersSource:'-', inventarSource:'-', deliveredSource:'-', ok:false, alertSummary:{ tone:'neutral', uncovered:[], count:0, shortageTotal:0 }, termSummary:{ tone:'neutral', warnings:[], count:0 } },
       sessionId: getPlanSessionId(),
       remoteLocks: Object.create(null),
       activeCellLockKey: '',
@@ -2553,6 +2554,7 @@ function getDefaultPermissions(role){
       const forjateFlow = await loadForjateDailyMovements(targetYear);
       const deliveryOrders = await loadDeliveryOrders();
       const inventarForjat = await loadInventarForjatRows(targetYear);
+      const livrariZale = await loadLivrariZaleRows(targetYear);
 
       const notes = [];
       notes.push('Helper: ' + (state.helperMaps.source || '-'));
@@ -2563,14 +2565,18 @@ function getDefaultPermissions(role){
       notes.push('Forjate: ' + (forjateFlow.source || '-'));
       notes.push('Comenzi livrare: ' + (deliveryOrders.source || '-'));
       notes.push('Inventar forjat: ' + (inventarForjat.source || '-'));
+      notes.push('Livrări zale: ' + (livrariZale.source || '-'));
 
       state.deliverySupport = {
         orders: deliveryOrders.rows || [],
         inventarRows: inventarForjat.rows || [],
+        deliveredRows: livrariZale.rows || [],
         ordersSource: deliveryOrders.source || '-',
         inventarSource: inventarForjat.source || '-',
-        ok: !!(deliveryOrders.ok || inventarForjat.ok),
-        alertSummary: { late:0, ahead:0, tone:'neutral', overdueLate:[], futureLate:[], futureAhead:[] }
+        deliveredSource: livrariZale.source || '-',
+        ok: !!(deliveryOrders.ok || inventarForjat.ok || livrariZale.ok),
+        alertSummary: { tone:'neutral', uncovered:[], count:0, shortageTotal:0 },
+        termSummary: { tone:'neutral', warnings:[], count:0 }
       };
 
       state.stockSupport = {
@@ -2822,15 +2828,19 @@ function getDefaultPermissions(role){
           const firstGroup = groups[0];
           if(!firstGroup) return;
           const snapshotMonthStartIso = firstGroup.monthIso + '-01';
-          const snapshot = findInventarForjatSnapshot(firstGroup.reper, snapshotMonthStartIso);
-          const snapshotQty = Math.max(0, Math.round(toNumber(snapshot && snapshot.qty)));
+          const opening = calculateNetOpeningForReper(firstGroup.reper, snapshotMonthStartIso, contributionRows);
+          const snapshot = opening.snapshot;
+          const snapshotQty = Math.max(0, Math.round(toNumber(opening.qty)));
           const allItems = (byReper[firstGroup.reperKey] || []).filter(item => item.rowIso >= snapshotMonthStartIso);
           if(!allItems.length && snapshotQty <= 0) return;
           let cumulativeRequired = 0;
           let cumulativeAvailable = snapshotQty;
           let itemIndex = 0;
           groups.forEach(group => {
-            cumulativeRequired += Math.max(0, Math.round(toNumber(group.requiredQty)));
+            const deliveredInMonth = Math.max(0, Math.round(toNumber(sumLivrariZaleQtyForMonth(group.reperKey, group.monthIso))));
+            const effectiveRequiredQty = Math.max(0, Math.round(toNumber(group.requiredQty)) - deliveredInMonth);
+            if(effectiveRequiredQty <= 0) return;
+            cumulativeRequired += effectiveRequiredQty;
             let markerItem = null;
             let readyFromStock = false;
             let availableBeforeCell = Math.max(0, Math.round(toNumber(cumulativeAvailable)));
@@ -2870,7 +2880,7 @@ function getDefaultPermissions(role){
               reperKey: group.reperKey,
               machine: markerItem.machine,
               readyDateIso: markerItem.rowIso,
-              requiredQty: Math.max(0, Math.round(toNumber(group.requiredQty))),
+              requiredQty: effectiveRequiredQty,
               snapshotQty,
               snapshotEndIso: trimText(snapshot && snapshot.endIso),
               sourceType: readyFromStock ? 'stoc' : markerItem.sourceType,
@@ -2972,6 +2982,37 @@ function getDefaultPermissions(role){
         observatii: trimText(pick(obj, ['observatii','observații','notes']))
       };
     }
+    function normalizeLivrariZaleRow(row, index){
+      const obj = Array.isArray(row) ? {
+        an: arrayCell(row, 0, 0),
+        luna: arrayCell(row, 1, ''),
+        data_livrarii: arrayCell(row, 2, ''),
+        cantitate: arrayCell(row, 3, 0),
+        nr_transport: arrayCell(row, 4, ''),
+        reper: arrayCell(row, 5, '')
+      } : (row || {});
+      const dataRaw = pick(obj, ['dataLivrare','data_livrare','data_livrarii','data livrarii','Data Livrării','DATA LIVRARII','data','DATA']);
+      const dataLivrare = displayToIso(dataRaw) || trimText(dataRaw);
+      const an = Number(pick(obj, ['an','AN','An','anul','year'])) || (dataLivrare ? Number(String(dataLivrare).slice(0,4)) : 0);
+      const lunaRaw = trimText(pick(obj, ['luna','LUNA','Luna','month'])) || (dataLivrare ? getMonthName(Number(String(dataLivrare).slice(5,7))) : '');
+      const lunaNum = monthNumberFromAny(lunaRaw) || (dataLivrare ? Number(String(dataLivrare).slice(5,7)) : 0);
+      const reper = trimText(pick(obj, ['reper','REPER','Reper','source_reper','sourceReper'])).toUpperCase();
+      const nrTransport = trimText(pick(obj, ['nrTransport','nr_transport','nr transport','transport','Nr transport','NR TRANSPORT']));
+      const cantitate = Math.max(0, Math.round(toNumber(pick(obj, ['cantitate','cantitate_livrata','cantitate livrata','Cantitate','CANTITATE','ambalat','AMBALAT']))));
+      return {
+        id: trimText(pick(obj, ['id','_id'])) || ('livrari-zale-' + index),
+        an,
+        luna: getMonthName(lunaNum || lunaRaw),
+        lunaNum,
+        dataLivrare,
+        nrTransport,
+        reper,
+        reperKey: getCanonicalDeliveryReperKey(reper),
+        cantitate,
+        sourceAutoLivrat: pick(obj, ['source_auto_livrat','sourceAutoLivrat']) === true,
+        sourcePage: trimText(pick(obj, ['source_page','sourcePage']))
+      };
+    }
     function normalizeInventarForjatRow(row, index){
       const obj = Array.isArray(row) ? {
         an: arrayCell(row, 0, 0),
@@ -3018,6 +3059,17 @@ function getDefaultPermissions(role){
       const rows = extractRowsPayload(picked.content || picked.data).map(normalizeDeliveryOrderRow).filter(row => row.reper && row.dataLivrare && row.cantitate > 0);
       return { rows, source:picked.doc_key || DELIVERY_DOC_KEY, ok:rows.length > 0 };
     }
+    async function loadLivrariZaleRows(year){
+      if(!state.supabase) return { rows:[], source:'-', ok:false };
+      const doc = await readDocumentCompat(LIVRARI_ZALE_DOC_KEY);
+      if(!(doc && (doc.content || doc.data))){
+        return { rows:[], source:'livrari-zale lipsă', ok:false };
+      }
+      const rows = extractRowsPayload(doc.content || doc.data)
+        .map(normalizeLivrariZaleRow)
+        .filter(row => row.reperKey && row.dataLivrare && row.cantitate > 0);
+      return { rows, source:doc.doc_key || LIVRARI_ZALE_DOC_KEY, ok:rows.length > 0 };
+    }
     async function loadInventarForjatRows(year){
       if(!state.supabase) return { rows:[], source:'-', ok:false };
       const keys = buildForjatInventarKeys(year);
@@ -3062,6 +3114,50 @@ function getDefaultPermissions(role){
       const reperKey = getCanonicalDeliveryReperKey(order && order.reper);
       if(!an || !lunaNum || !reperKey) return '';
       return [String(an), String(lunaNum), reperKey].join('|');
+    }
+    function sumDeliveryContributionQtyForWindow(items, reperKey, startExclusiveIso, endExclusiveIso){
+      const key = getCanonicalDeliveryReperKey(reperKey) || normalizeDeliveryReperLoose(reperKey);
+      if(!key) return 0;
+      let total = 0;
+      (Array.isArray(items) ? items : []).forEach(item => {
+        if(!item || item.reperKey !== key) return;
+        const iso = trimText(item.rowIso);
+        if(!iso) return;
+        if(startExclusiveIso && iso <= startExclusiveIso) return;
+        if(endExclusiveIso && iso >= endExclusiveIso) return;
+        total += Math.max(0, Math.round(toNumber(item.qty)));
+      });
+      return Math.max(0, Math.round(total));
+    }
+    function sumLivrariZaleQtyForWindow(reper, startExclusiveIso, endExclusiveIso){
+      const reperKey = getCanonicalDeliveryReperKey(reper);
+      if(!reperKey) return 0;
+      let total = 0;
+      (Array.isArray(state.deliverySupport && state.deliverySupport.deliveredRows) ? state.deliverySupport.deliveredRows : []).forEach(row => {
+        if((row.reperKey || getCanonicalDeliveryReperKey(row.reper)) !== reperKey) return;
+        const iso = trimText(row.dataLivrare);
+        if(!iso) return;
+        if(startExclusiveIso && iso <= startExclusiveIso) return;
+        if(endExclusiveIso && iso >= endExclusiveIso) return;
+        total += Math.max(0, Math.round(toNumber(row.cantitate)));
+      });
+      return Math.max(0, Math.round(total));
+    }
+    function sumLivrariZaleQtyForMonth(reper, monthIso){
+      const startIso = trimText(monthIso) + '-01';
+      if(!/^\d{4}-\d{2}-01$/.test(startIso)) return 0;
+      const endIso = addMonthsIso(startIso, 1);
+      return sumLivrariZaleQtyForWindow(reper, '', endIso) - sumLivrariZaleQtyForWindow(reper, '', startIso);
+    }
+    function calculateNetOpeningForReper(reper, endExclusiveIso, contributionRows){
+      const reperKey = getCanonicalDeliveryReperKey(reper);
+      const snapshot = findInventarForjatSnapshot(reper, endExclusiveIso);
+      const snapshotEndIso = trimText(snapshot && snapshot.endIso);
+      const baseQty = Math.max(0, Math.round(toNumber(snapshot && snapshot.qty)));
+      const producedAfterSnapshot = sumDeliveryContributionQtyForWindow(contributionRows || getDeliveryContributionRows(), reperKey, snapshotEndIso, endExclusiveIso);
+      const deliveredAfterSnapshot = sumLivrariZaleQtyForWindow(reperKey, snapshotEndIso, endExclusiveIso);
+      const qty = Math.max(0, Math.round(baseQty + producedAfterSnapshot - deliveredAfterSnapshot));
+      return { snapshot, snapshotQty: baseQty, snapshotEndIso, producedAfterSnapshot, deliveredAfterSnapshot, qty };
     }
     function getPreviousCommittedDeliveryQty(targetOrder, scopedOrders, afterExclusiveIso){
       const reperKey = getCanonicalDeliveryReperKey(targetOrder && targetOrder.reper);
@@ -3229,12 +3325,14 @@ function getDefaultPermissions(role){
       ).map(group => {
         const monthStartIso = group.monthIso + '-01';
         const monthEndIso = endOfMonthIso(group.an, group.lunaNum);
-        const snapshot = findInventarForjatSnapshot(group.reper, monthStartIso);
-        const snapshotQty = Math.max(0, Math.round(toNumber(snapshot && snapshot.qty)));
+        const opening = calculateNetOpeningForReper(group.reper, monthStartIso, contributionRows);
+        const snapshotQty = Math.max(0, Math.round(toNumber(opening && opening.qty)));
         const relevantItems = (byReper[group.reperKey] || []).filter(item => item.rowIso >= monthStartIso && item.rowIso <= monthEndIso);
         const planQty = relevantItems.reduce((sum, item) => sum + Math.max(0, Math.round(toNumber(item && item.qty))), 0);
+        const deliveredInMonth = Math.max(0, Math.round(toNumber(sumLivrariZaleQtyForMonth(group.reperKey, group.monthIso))));
+        const requiredQty = Math.max(0, Math.round(toNumber(group.requiredQty)) - deliveredInMonth);
         const coveredQty = snapshotQty + planQty;
-        const shortageQty = Math.max(0, group.requiredQty - coveredQty);
+        const shortageQty = Math.max(0, requiredQty - coveredQty);
         return {
           key: group.key,
           an: group.an,
@@ -3243,7 +3341,7 @@ function getDefaultPermissions(role){
           monthIso: group.monthIso,
           reper: group.reper,
           reperKey: group.reperKey,
-          requiredQty: Math.max(0, Math.round(group.requiredQty)),
+          requiredQty,
           snapshotQty,
           plannedQty: planQty,
           coveredQty,
@@ -3558,21 +3656,8 @@ function getDefaultPermissions(role){
         });
     }
     function getCurrentTheoreticalStockForReper(reper){
-      const snapshot = findInventarForjatSnapshot(reper, TODAY_ISO);
-      let qty = Math.max(0, Math.round(toNumber(snapshot && snapshot.qty)));
-      const reperKey = getCanonicalDeliveryReperKey(reper);
-      getDeliveryContributionRows().forEach(item => {
-        if(item.reperKey !== reperKey) return;
-        if(!item.rowIso || item.rowIso >= TODAY_ISO) return;
-        qty += Math.max(0, Math.round(toNumber(item.qty)));
-      });
-      (Array.isArray(state.deliverySupport && state.deliverySupport.orders) ? state.deliverySupport.orders : []).forEach(order => {
-        if(getCanonicalDeliveryReperKey(order && order.reper) !== reperKey) return;
-        const deliveryIso = trimText(order && order.dataLivrare);
-        if(!deliveryIso || deliveryIso >= TODAY_ISO) return;
-        qty -= Math.max(0, Math.round(toNumber(order && order.cantitate)));
-      });
-      return Math.max(0, Math.round(qty));
+      const opening = calculateNetOpeningForReper(reper, TODAY_ISO, getDeliveryContributionRows());
+      return Math.max(0, Math.round(toNumber(opening && opening.qty)));
     }
     function getFutureSupplyEventsForReper(reper){
       const reperKey = getCanonicalDeliveryReperKey(reper);
