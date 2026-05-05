@@ -2779,7 +2779,7 @@ function getDefaultPermissions(role){
     function rebuildDeliveryReadyMarkers(){
       state.deliveryReadyByCell = Object.create(null);
       try{
-        const sourceOrders = Array.isArray(state.deliverySupport && state.deliverySupport.orders) ? state.deliverySupport.orders : [];
+        const sourceOrders = getEffectiveDeliveryOrdersForPlanning();
         if(!sourceOrders.length) return;
         const activeYearNum = Number(state.activeYear) || Number(CURRENT_YEAR) || Number(TODAY.getFullYear());
         const currentMonthNum = String(activeYearNum) === String(TODAY.getFullYear()) ? (TODAY.getMonth() + 1) : 1;
@@ -3011,6 +3011,51 @@ function getDefaultPermissions(role){
         sourceAutoLivrat: pick(obj, ['source_auto_livrat','sourceAutoLivrat']) === true,
         sourcePage: trimText(pick(obj, ['source_page','sourcePage']))
       };
+    }
+    function makeDeliveryDemandFromLivrariZale(row, index){
+      const dataLivrare = trimText(row && row.dataLivrare);
+      const lunaNum = Number(row && row.lunaNum) || (dataLivrare ? Number(String(dataLivrare).slice(5,7)) : 0);
+      const an = Number(row && row.an) || (dataLivrare ? Number(String(dataLivrare).slice(0,4)) : 0);
+      const reper = trimText(row && row.reper).toUpperCase();
+      const cantitate = Math.max(0, Math.round(toNumber(row && row.cantitate)));
+      return {
+        id: 'livrari-zale-demand-' + (trimText(row && row.id) || String(index || 0)),
+        an,
+        luna: getMonthName(lunaNum),
+        reper,
+        nrTransport: trimText(row && row.nrTransport),
+        dataLivrare,
+        cantitate,
+        observatii: 'livrari-zale',
+        source: 'livrari-zale'
+      };
+    }
+    function getDeliveryDemandDedupKey(order){
+      const reperKey = getCanonicalDeliveryReperKey(order && order.reper) || normalizeDeliveryReperLoose(order && order.reper);
+      if(!reperKey) return '';
+      const transport = trimText(order && order.nrTransport).replace(/\s+/g, '').toUpperCase();
+      if(transport) return 'transport|' + reperKey + '|' + transport;
+      const dataLivrare = trimText(order && order.dataLivrare);
+      const qty = Math.max(0, Math.round(toNumber(order && order.cantitate)));
+      return 'dateqty|' + reperKey + '|' + dataLivrare + '|' + String(qty);
+    }
+    function getEffectiveDeliveryOrdersForPlanning(){
+      const map = Object.create(null);
+      const pushOrder = (order, prefer) => {
+        if(!order) return;
+        const normalized = normalizeDeliveryOrderRow(order, 0);
+        const reperKey = getCanonicalDeliveryReperKey(normalized.reper);
+        if(!normalized.dataLivrare || !reperKey || Math.max(0, Math.round(toNumber(normalized.cantitate))) <= 0) return;
+        const key = getDeliveryDemandDedupKey(normalized);
+        if(!key) return;
+        if(prefer || !map[key]) map[key] = normalized;
+      };
+      (Array.isArray(state.deliverySupport && state.deliverySupport.orders) ? state.deliverySupport.orders : []).forEach(order => pushOrder(order, false));
+      (Array.isArray(state.deliverySupport && state.deliverySupport.deliveredRows) ? state.deliverySupport.deliveredRows : []).forEach((row, index) => {
+        const demand = makeDeliveryDemandFromLivrariZale(row, index);
+        pushOrder(demand, true);
+      });
+      return Object.values(map).sort(compareDeliveryOrders);
     }
     function normalizeInventarForjatRow(row, index){
       const obj = Array.isArray(row) ? {
@@ -3295,7 +3340,7 @@ function getDefaultPermissions(role){
     }
 
     function buildMonthlyCoverageEntries(){
-      const sourceOrders = Array.isArray(state.deliverySupport && state.deliverySupport.orders) ? state.deliverySupport.orders : [];
+      const sourceOrders = getEffectiveDeliveryOrdersForPlanning();
       const grouped = Object.create(null);
       sourceOrders.forEach(order => {
         const deliveryIso = trimText(order && order.dataLivrare);
@@ -3652,9 +3697,7 @@ function getDefaultPermissions(role){
 
     function getCurrentTermOrders(){
       const currentMonthIso = TODAY_ISO.slice(0,7);
-      return (Array.isArray(state.deliverySupport && state.deliverySupport.orders) ? state.deliverySupport.orders : [])
-        .slice()
-        .sort(compareDeliveryOrders)
+      return getEffectiveDeliveryOrdersForPlanning()
         .filter(order => {
           const deliveryIso = trimText(order && order.dataLivrare);
           if(!deliveryIso) return false;
