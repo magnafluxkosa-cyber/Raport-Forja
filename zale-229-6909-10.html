@@ -1298,27 +1298,150 @@
       if(m === 1) return { year: String(y - 1), month: 'Decembrie' };
       return { year: String(y), month: MONTHS[m - 2] };
     }
+    function nextMonthPeriod(year, month) {
+      const y = Number(normalizeYear(year));
+      const m = MONTHS.indexOf(normalizeMonthName(month)) + 1;
+      if(!y || !m) return { year:'', month:'' };
+      if(m === 12) return { year: String(y + 1), month: 'Ianuarie' };
+      return { year: String(y), month: MONTHS[m] };
+    }
+    function periodIndex(year, month) {
+      const y = Number(normalizeYear(year));
+      const m = MONTHS.indexOf(normalizeMonthName(month)) + 1;
+      return y && m ? (y * 12 + m) : 0;
+    }
+    function isPeriodAtOrAfter(year, month, startIdx) {
+      const idx = periodIndex(year, month);
+      return !!idx && (!startIdx || idx >= startIdx);
+    }
     function getInventarPreviousMonthTotals(inventarRows, year, month) {
       const prev = previousMonthPeriod(year, month);
       const totals = { p2307:0, p2308:0, has2307:false, has2308:false };
       if(!prev.year || !prev.month) return totals;
-      const latest = { '229-6909': null, '229-6910': null };
-      (inventarRows || []).forEach((row, idx) => {
+      (inventarRows || []).forEach(row => {
         if(normalizeYear(row.an) !== prev.year) return;
         if(normalizeMonthName(row.luna) !== prev.month) return;
         const reper = normalizeReper248(row.reper);
-        if(reper !== '229-6909' && reper !== '229-6910') return;
-        const currentSort = `${dateSortValue(row.data) || '9999-99-99'}|${String(idx).padStart(6,'0')}`;
-        const prevRow = latest[reper];
-        const prevSort = prevRow ? `${dateSortValue(prevRow.data) || '0000-00-00'}|${String(prevRow._idx || 0).padStart(6,'0')}` : '';
-        if(!prevRow || currentSort >= prevSort) latest[reper] = { ...row, _idx: idx };
+        if(reper === LIVRARE_PART_2307) { totals.p2307 = toInt(row.stoc_final); totals.has2307 = true; }
+        if(reper === LIVRARE_PART_2308) { totals.p2308 = toInt(row.stoc_final); totals.has2308 = true; }
       });
-      totals.p2307 = toInt(latest['229-6909'] && latest['229-6909'].stoc_final);
-      totals.p2308 = toInt(latest['229-6910'] && latest['229-6910'].stoc_final);
-      totals.has2307 = !!latest['229-6909'];
-      totals.has2308 = !!latest['229-6910'];
       return totals;
     }
+    function getLatestInventarStockForReper(inventarRows, reperValue) {
+      const target = normalizeReper248(reperValue);
+      let best = null;
+      (inventarRows || []).forEach((row, idx) => {
+        if(normalizeReper248(row.reper) !== target) return;
+        const year = normalizeYear(row.an) || yearFromDate(row.data);
+        const month = normalizeMonthName(row.luna) || monthFromDate(row.data);
+        const pIdx = periodIndex(year, month);
+        if(!pIdx) return;
+        const dateKey = dateSortValue(row.data) || '';
+        const item = {
+          has:true,
+          reper:target,
+          year,
+          month,
+          idx:pIdx,
+          dateKey,
+          order:idx,
+          stock:toInt(row.stoc_final)
+        };
+        if(!best || item.idx > best.idx || (item.idx === best.idx && item.dateKey > best.dateKey) || (item.idx === best.idx && item.dateKey === best.dateKey && item.order > best.order)) {
+          best = item;
+        }
+      });
+      if(!best) return { has:false, reper:target, year:'', month:'', idx:0, startYear:'', startMonth:'', startIdx:0, stock:0 };
+      const next = nextMonthPeriod(best.year, best.month);
+      return Object.assign(best, {
+        startYear: next.year,
+        startMonth: next.month,
+        startIdx: periodIndex(next.year, next.month)
+      });
+    }
+    function getInventarCutoffPlan(inventarRows) {
+      return {
+        p2307: getLatestInventarStockForReper(inventarRows, LIVRARE_PART_2307),
+        p2308: getLatestInventarStockForReper(inventarRows, LIVRARE_PART_2308)
+      };
+    }
+    function shouldCalculateAfterInventar(plan, year, month) {
+      return !(plan && plan.has) || isPeriodAtOrAfter(year, month, plan.startIdx);
+    }
+    function addMonthlyProductionAfterInventar(remaining, plan, usedMonths, year, month, reper, monthlyTotals, externalRebutTotals) {
+      const monthKey = `${year}|${month}`;
+      if(!shouldCalculateAfterInventar(plan, year, month)) return remaining;
+      if(usedMonths.has(monthKey)) return remaining;
+      usedMonths.add(monthKey);
+      const key = `${year}|${month}|${reper}`;
+      return Math.max(0, toInt(remaining) + toInt(monthlyTotals.get(key)) - toInt(externalRebutTotals.get(key)));
+    }
+
+    function deliveryDateSortValue(row, year, month) {
+      const d = dateSortValue(row && row.data_livrarii);
+      if(d) return d;
+      const y = normalizeYear(year || (row && row.an));
+      const mName = normalizeMonthName(month || (row && row.luna));
+      const m = MONTHS.indexOf(mName) + 1;
+      return y && m ? `${y}-${String(m).padStart(2,'0')}-31` : '';
+    }
+    function monthStartSortValue(year, month) {
+      const y = normalizeYear(year);
+      const mName = normalizeMonthName(month);
+      const m = MONTHS.indexOf(mName) + 1;
+      return y && m ? `${y}-${String(m).padStart(2,'0')}-01` : '';
+    }
+    function monthEndSortValue(year, month) {
+      const y = normalizeYear(year);
+      const mName = normalizeMonthName(month);
+      const m = MONTHS.indexOf(mName) + 1;
+      return y && m ? `${y}-${String(m).padStart(2,'0')}-31` : '';
+    }
+    function buildProductionEvents(forjateRows, externalRebutTotals, part, plan) {
+      const target = normalizeReper248(part);
+      const events = [];
+      (forjateRows || []).forEach((row, idx) => {
+        const year = normalizeYear(row.an) || yearFromDate(row.data);
+        const month = normalizeMonthName(row.luna) || monthFromDate(row.data);
+        if(!shouldCalculateAfterInventar(plan, year, month)) return;
+        if(normalizeReper248(row.reper) !== target) return;
+        const qty = toInt(row.piese_bune);
+        if(!qty) return;
+        const d = dateSortValue(row.data) || monthStartSortValue(year, month);
+        if(!d) return;
+        events.push({ dateKey:d, qty, order:idx, source:'forjate' });
+      });
+      const rebutMap = externalRebutTotals || new Map();
+      const usedRebutKeys = new Set();
+      for(const [key, qtyRaw] of rebutMap.entries()) {
+        const parts = String(key || '').split('|');
+        const year = normalizeYear(parts[0]);
+        const month = normalizeMonthName(parts[1]);
+        const reper = normalizeReper248(parts[2]);
+        if(reper !== target) continue;
+        if(!shouldCalculateAfterInventar(plan, year, month)) continue;
+        const qty = toInt(qtyRaw);
+        if(!qty) continue;
+        const id = `${year}|${month}|${reper}`;
+        if(usedRebutKeys.has(id)) continue;
+        usedRebutKeys.add(id);
+        const d = monthStartSortValue(year, month) || monthEndSortValue(year, month);
+        if(!d) continue;
+        events.push({ dateKey:d, qty:-Math.abs(qty), order:1000000 + usedRebutKeys.size, source:'rebut' });
+      }
+      events.sort((a,b) => String(a.dateKey).localeCompare(String(b.dateKey)) || a.order - b.order);
+      return { events, pos:0 };
+    }
+    function addProductionUntil(balance, eventState, deliveryDateKey) {
+      if(!eventState || !Array.isArray(eventState.events) || !deliveryDateKey) return balance;
+      while(eventState.pos < eventState.events.length && String(eventState.events[eventState.pos].dateKey) <= String(deliveryDateKey)) {
+        balance += toInt(eventState.events[eventState.pos].qty);
+        if(balance < 0) balance = 0;
+        eventState.pos += 1;
+      }
+      return balance;
+    }
+
     function productionValue(monthTotal, positionInMonth) {
       return Math.min(TRUCK_SIZE, toInt(monthTotal) - (TRUCK_SIZE * (positionInMonth - 1)));
     }
@@ -1327,50 +1450,44 @@
     }
     function computeDerivedRows(baseRows) {
       const sorted = (baseRows || []).map(normalizeMainRow).sort(transportSort);
-      const monthlyTotals = getMonthlyTotals(state.forjateRows);
       const packTotals = getPackTotals(state.packRows);
       const externalRebutTotals = getMonthlyExternalRebutTotals(state.magnafluxRows, state.rebutPmRows);
+      const cutoffPlan = getInventarCutoffPlan(state.inventarRows);
       const out = [];
-      const addedMonthKeys = new Set();
       const monthPositions = new Map();
-      let remaining2307 = 0;
-      let remaining2308 = 0;
+      let remaining2307 = cutoffPlan.p2307.has ? toInt(cutoffPlan.p2307.stock) : 0;
+      let remaining2308 = cutoffPlan.p2308.has ? toInt(cutoffPlan.p2308.stock) : 0;
+      const prod2307 = buildProductionEvents(state.forjateRows, externalRebutTotals, LIVRARE_PART_2307, cutoffPlan.p2307);
+      const prod2308 = buildProductionEvents(state.forjateRows, externalRebutTotals, LIVRARE_PART_2308, cutoffPlan.p2308);
 
       sorted.forEach(baseRaw => {
         const base = normalizeMainRow(baseRaw);
         const year = normalizeYear(base.an) || yearFromDate(base.data_livrarii);
         const month = normalizeMonthName(base.luna) || monthFromDate(base.data_livrarii);
         const monthKey = `${year}|${month}`;
-
-        if(!addedMonthKeys.has(monthKey)) {
-          addedMonthKeys.add(monthKey);
-          const key2307 = `${year}|${month}|${LIVRARE_PART_2307}`;
-          const key2308 = `${year}|${month}|${LIVRARE_PART_2308}`;
-          const previousStock = getInventarPreviousMonthTotals(state.inventarRows, year, month);
-          const previous2307 = previousStock.has2307 ? toInt(previousStock.p2307) : 0;
-          const previous2308 = previousStock.has2308 ? toInt(previousStock.p2308) : 0;
-
-          // Dacă luna de livrare se schimbă pe un transport, FORJAT nu trebuie să se reseteze.
-          // Continuăm calculul în ordinea transporturilor și folosim stocul de inventar doar ca bază
-          // când nu există deja sold calculat din transporturile precedente.
-          if(remaining2307 <= 0 && previous2307 > 0) remaining2307 = previous2307;
-          if(remaining2308 <= 0 && previous2308 > 0) remaining2308 = previous2308;
-
-          remaining2307 = Math.max(0, remaining2307 + toInt(monthlyTotals.get(key2307)) - toInt(externalRebutTotals.get(key2307)));
-          remaining2308 = Math.max(0, remaining2308 + toInt(monthlyTotals.get(key2308)) - toInt(externalRebutTotals.get(key2308)));
-        }
+        const deliveryDateKey = deliveryDateSortValue(base, year, month);
 
         const posInMonth = (monthPositions.get(monthKey) || 0) + 1;
         monthPositions.set(monthKey, posInMonth);
         const pack = packTotals.get(normalizeTransportKey(base.nr_transport));
         const hasPack = !!pack;
         const forceScriptic1650 = isScripticUntilFeb2026(year, month);
-        const default2307 = forceScriptic1650 ? 1650 : (remaining2307 > 0 ? Math.min(TRUCK_SIZE, remaining2307) : toInt(base.forjat_2307));
-        const default2308 = forceScriptic1650 ? 1650 : (remaining2308 > 0 ? Math.min(TRUCK_SIZE, remaining2308) : toInt(base.forjat_2308));
+        const canCalc2307 = shouldCalculateAfterInventar(cutoffPlan.p2307, year, month);
+        const canCalc2308 = shouldCalculateAfterInventar(cutoffPlan.p2308, year, month);
+
+        if(canCalc2307) remaining2307 = addProductionUntil(remaining2307, prod2307, deliveryDateKey);
+        if(canCalc2308) remaining2308 = addProductionUntil(remaining2308, prod2308, deliveryDateKey);
+
+        const default2307 = canCalc2307
+          ? (forceScriptic1650 ? 1650 : Math.min(TRUCK_SIZE, Math.max(0, remaining2307)))
+          : toInt(base.forjat_2307);
+        const default2308 = canCalc2308
+          ? (forceScriptic1650 ? 1650 : Math.min(TRUCK_SIZE, Math.max(0, remaining2308)))
+          : toInt(base.forjat_2308);
         const forjat2307 = base.manual_forjat_2307 != null ? toInt(base.manual_forjat_2307) : Math.max(0, default2307);
         const forjat2308 = base.manual_forjat_2308 != null ? toInt(base.manual_forjat_2308) : Math.max(0, default2308);
-        remaining2307 = Math.max(0, remaining2307 - Math.max(0, forjat2307));
-        remaining2308 = Math.max(0, remaining2308 - Math.max(0, forjat2308));
+        if(canCalc2307) remaining2307 = Math.max(0, remaining2307 - Math.max(0, forjat2307));
+        if(canCalc2308) remaining2308 = Math.max(0, remaining2308 - Math.max(0, forjat2308));
 
         const ambalat2307 = hasPack ? toInt(pack.p2307) : 0;
         const ambalat2308 = hasPack ? toInt(pack.p2308) : 0;
@@ -1398,6 +1515,7 @@
       });
       return out.sort(transportSort);
     }
+    
     function refreshDerivedRows() {
       state.derivedRows = computeDerivedRows(state.rows);
     }
@@ -1444,17 +1562,41 @@
       const filtered = getFilteredRows();
       const pack2307 = filtered.reduce((sum,row) => sum + toInt(row.ambalat_2307), 0);
       const pack2308 = filtered.reduce((sum,row) => sum + toInt(row.ambalat_2308), 0);
-      let totalGood2307 = 0;
-      let totalGood2308 = 0;
-      const monthKeys = new Set(filtered.map(row => `${normalizeYear(row.an)}|${normalizeMonthName(row.luna)}`));
-      monthKeys.forEach(monthKey => {
-        const [year, month] = monthKey.split('|');
-        const previousStock = getInventarPreviousMonthTotals(state.inventarRows, year, month);
-        totalGood2307 += toInt(previousStock.p2307) + toInt(getMonthlyTotals(state.forjateRows).get(`${year}|${month}|229-6909`));
-        totalGood2308 += toInt(previousStock.p2308) + toInt(getMonthlyTotals(state.forjateRows).get(`${year}|${month}|229-6910`));
-      });
-      const stock2307 = totalGood2307 - state.packRows.filter(r => r.reper === '229-6909').reduce((s,r)=> s + toInt(r.buc), 0);
-      const stock2308 = totalGood2308 - state.packRows.filter(r => r.reper === '229-6910').reduce((s,r)=> s + toInt(r.buc), 0);
+      const monthlyTotals = getMonthlyTotals(state.forjateRows);
+      const externalRebutTotals = getMonthlyExternalRebutTotals(state.magnafluxRows, state.rebutPmRows);
+      const cutoffPlan = getInventarCutoffPlan(state.inventarRows);
+      const monthKeys = Array.from(new Set(state.derivedRows.map(row => `${normalizeYear(row.an)}|${normalizeMonthName(row.luna)}`)))
+        .filter(k => !k.includes('undefined') && !k.endsWith('|'))
+        .sort((a,b) => {
+          const [ay, am] = a.split('|');
+          const [by, bm] = b.split('|');
+          return periodIndex(ay, am) - periodIndex(by, bm);
+        });
+
+      function packTotalAfterInventar(reper, plan) {
+        return state.packRows
+          .filter(r => normalizeReper248(r.reper) === reper)
+          .filter(r => {
+            if(!(plan && plan.has)) return true;
+            const y = normalizeYear(r.an) || yearFromDate(r.data);
+            const m = normalizeMonthName(r.luna) || monthFromDate(r.data);
+            return shouldCalculateAfterInventar(plan, y, m);
+          })
+          .reduce((s,r) => s + toInt(r.buc), 0);
+      }
+
+      function stockFor(plan, reper) {
+        let total = plan && plan.has ? toInt(plan.stock) : 0;
+        const used = new Set();
+        monthKeys.forEach(monthKey => {
+          const [year, month] = monthKey.split('|');
+          total = addMonthlyProductionAfterInventar(total, plan, used, year, month, reper, monthlyTotals, externalRebutTotals);
+        });
+        return total - packTotalAfterInventar(reper, plan);
+      }
+
+      const stock2307 = stockFor(cutoffPlan.p2307, LIVRARE_PART_2307);
+      const stock2308 = stockFor(cutoffPlan.p2308, LIVRARE_PART_2308);
 
       document.getElementById('statTransports').textContent = fmtInt(filtered.length);
       document.getElementById('statPack2307').textContent = fmtInt(pack2307);
@@ -1463,14 +1605,14 @@
       document.getElementById('statStock2308').textContent = fmtInt(stock2308);
 
       document.getElementById('summaryBody').innerHTML = `
-        <tr><td>229-6909</td><td class="right mono">${fmtInt(pack2307)}</td><td class="right mono">${fmtInt(stock2307)}</td></tr>
-        <tr><td>229-6910</td><td class="right mono">${fmtInt(pack2308)}</td><td class="right mono">${fmtInt(stock2308)}</td></tr>`;
+        <tr><td>${LIVRARE_PART_2307}</td><td class="right mono">${fmtInt(pack2307)}</td><td class="right mono">${fmtInt(stock2307)}</td></tr>
+        <tr><td>${LIVRARE_PART_2308}</td><td class="right mono">${fmtInt(pack2308)}</td><td class="right mono">${fmtInt(stock2308)}</td></tr>`;
 
       const selected = getSelectedRow();
       void selected;
     }
 
-    function getForjatCellClass(value) {
+        function getForjatCellClass(value) {
       const n = toInt(value);
       if(n === TRUCK_SIZE) return 'forjat-ok';
       if(n < 0) return 'forjat-neg';
