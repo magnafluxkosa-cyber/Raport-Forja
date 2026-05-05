@@ -725,19 +725,73 @@
     function isAutoDeliveryFromThisPage(row) {
       return row && row.source_auto_livrat === true && toStr(row.source_page) === PAGE_KEY;
     }
+    function autoDeliveryMergeKey(row, strictYear) {
+      const transport = normalizeTransportKey(row && row.nr_transport);
+      const reper = toStr(row && row.reper).toUpperCase();
+      if(!transport || !reper) return '';
+      const year = normalizeYear(row && row.an) || yearFromDate(row && row.data_livrarii);
+      return (strictYear && year ? (year + '|') : '') + transport + '|' + reper;
+    }
     async function syncLivrariZaleFromCurrentPage(rows) {
       const autoRows = currentPageAutoDeliveryRows(rows || []);
       const existingDoc = await readDocByKey(LIVRARI_ZALE_DOC_KEY);
       const existingRows = existingDoc ? resolveRowsPayload(existingDoc.payload).map(normalizeAutoDeliveryRow) : [];
+
+      // Nu dublăm transporturile deja existente în „Livrări zale”.
+      // Dacă există deja același AN + NR. TRANSPORT + REPER, rândul este corectat
+      // cu data/cantitatea din foaia detaliată. Dacă anul lipsește în rândul vechi,
+      // folosim potrivire de rezervă pe NR. TRANSPORT + REPER.
       const keepRows = existingRows.filter(row => !isAutoDeliveryFromThisPage(row));
-      const merged = keepRows.concat(autoRows).sort((a,b) => {
+      const merged = keepRows.slice();
+      const strictIndex = new Map();
+      const looseIndex = new Map();
+
+      merged.forEach((row, idx) => {
+        const strictKey = autoDeliveryMergeKey(row, true);
+        const looseKey = autoDeliveryMergeKey(row, false);
+        if(strictKey && !strictIndex.has(strictKey)) strictIndex.set(strictKey, idx);
+        if(looseKey && !looseIndex.has(looseKey)) looseIndex.set(looseKey, idx);
+      });
+
+      autoRows.forEach(autoRow => {
+        const strictKey = autoDeliveryMergeKey(autoRow, true);
+        const looseKey = autoDeliveryMergeKey(autoRow, false);
+        let idx = strictKey && strictIndex.has(strictKey) ? strictIndex.get(strictKey) : -1;
+        if(idx < 0 && looseKey && looseIndex.has(looseKey)) idx = looseIndex.get(looseKey);
+
+        if(idx >= 0){
+          const oldRow = merged[idx] || {};
+          const wasAuto = oldRow.source_auto_livrat === true;
+          const corrected = normalizeAutoDeliveryRow({
+            ...oldRow,
+            ...autoRow,
+            id: oldRow.id || autoRow.id,
+            source_auto_livrat: wasAuto ? true : oldRow.source_auto_livrat === true,
+            source_page: wasAuto ? autoRow.source_page : oldRow.source_page,
+            source_row_id: wasAuto ? autoRow.source_row_id : oldRow.source_row_id,
+            source_reper: wasAuto ? autoRow.source_reper : oldRow.source_reper
+          });
+          merged[idx] = corrected;
+          const correctedStrict = autoDeliveryMergeKey(corrected, true);
+          const correctedLoose = autoDeliveryMergeKey(corrected, false);
+          if(correctedStrict) strictIndex.set(correctedStrict, idx);
+          if(correctedLoose) looseIndex.set(correctedLoose, idx);
+        }else{
+          const insertIdx = merged.length;
+          merged.push(autoRow);
+          if(strictKey) strictIndex.set(strictKey, insertIdx);
+          if(looseKey) looseIndex.set(looseKey, insertIdx);
+        }
+      });
+
+      const sorted = merged.sort((a,b) => {
         const da = dateSortValue(a.data_livrarii), db = dateSortValue(b.data_livrarii);
         if(da !== db) return da.localeCompare(db);
         const ta = toInt(a.nr_transport), tb = toInt(b.nr_transport);
         if(ta !== tb) return ta - tb;
         return toStr(a.reper).localeCompare(toStr(b.reper), 'ro', { numeric:true, sensitivity:'base' });
       });
-      return await writeDoc(LIVRARI_ZALE_DOC_KEY, { rows: merged, updated_at: nowIso(), source: 'auto-livrat-' + PAGE_KEY });
+      return await writeDoc(LIVRARI_ZALE_DOC_KEY, { rows: sorted, updated_at: nowIso(), source: 'auto-livrat-' + PAGE_KEY });
     }
     async function resolveRole(user){
       if(!user) return 'viewer';
