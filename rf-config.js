@@ -24,6 +24,7 @@
     { page_key: 'eficienta', page_name: 'Eficiență' },
     { page_key: 'program-utilaje', page_name: 'Program Utilaje' },
     { page_key: 'magnaflux', page_name: 'Magnaflux' },
+    { page_key: 'magnaflux-operatori', page_name: 'Magnaflux Operatori' },
     { page_key: 'probleme-raportate', page_name: 'Probleme Raportate' },
     { page_key: 'urmarire-actiuni-progres', page_name: 'Urmărire acțiuni și progres' },
     { page_key: 'imbunatatire-continua', page_name: 'Îmbunătățire continuă' },
@@ -126,6 +127,7 @@ var PAGE_CONTROL_OVERRIDES = Object.freeze({
     Object.freeze({ control_key:'nav.tratament-termic-fise-tehnologice', control_label:'Buton T.T FIȘE TEHNOLOGICE', control_type:'action' }),
     Object.freeze({ control_key:'nav.tratament-termic-documente', control_label:'Buton T.T RAPOARTE EXCEL / WORD', control_type:'action' }),
     Object.freeze({ control_key:'nav.magnaflux', control_label:'Buton MAGNAFLUX', control_type:'action' }),
+    Object.freeze({ control_key:'nav.magnaflux-operatori', control_label:'Buton MAGNAFLUX OPERATORI', control_type:'action' }),
     Object.freeze({ control_key:'nav.rebut', control_label:'Buton REBUT', control_type:'action' }),
     Object.freeze({ control_key:'nav.probleme-raportate', control_label:'Buton PROBLEME RAPORTATE', control_type:'action' }),
     Object.freeze({ control_key:'nav.urmarire-actiuni-progres', control_label:'Buton URMĂRIRE ACȚIUNI ȘI PROGRES', control_type:'action' }),
@@ -2579,6 +2581,26 @@ async function applyDomPermissions(pageKey, root, options) {
         ['field.rebut','Câmp Rebut']
       ], [
         ['section.table-main','Tabel Magnaflux']
+      ])
+    }),
+    'magnaflux-operatori': Object.freeze({
+      hint: 'Pagina operatorilor Magnaflux: PIN operator, fișă zilnică, automentenanță și salvare totaluri în Magnaflux.',
+      items: makeCrudCatalog([
+        ['field.pin','Cod PIN operator'],
+        ['field.data','Data control'],
+        ['field.operator','Operator automat'],
+        ['field.reper','Câmp Reper'],
+        ['field.cod-cat','Câmp Cod CAT'],
+        ['field.val-magnetica','Valoare Magnetică'],
+        ['field.val-electrica','Valoare Electrică'],
+        ['field.controlate','Piese controlate'],
+        ['field.acceptate','Acceptate calculate'],
+        ['field.rebut','Defecte / rebut'],
+        ['field.automentenanta','Automentenanță'],
+        ['field.observatii','Observații']
+      ], [
+        ['section.operator-sheet','Fișă operator Magnaflux'],
+        ['section.pin-config','Configurare PIN-uri operatori']
       ])
     }),
     'probleme-raportate': Object.freeze({
