@@ -1277,6 +1277,17 @@ function getControlCatalogForPage(pageKey) {
     return safeLower(value);
   }
 
+  function normalizeAclPageKey(value) {
+    var key = String(value || '').trim();
+    if (!key) return '';
+    key = normalizeHref(key);
+    key = key.split('/').pop() || key;
+    key = key.replace(/\.html$/i, '');
+    if (key === 'index') return 'index';
+    if (key === 'login') return 'login';
+    return key;
+  }
+
   function buildPermissionEntry(row) {
     return {
       can_view: row && row.can_view === true,
@@ -1480,7 +1491,7 @@ async function applyDomPermissions(pageKey, root, options) {
 
     function appendRows(map, rows) {
       (Array.isArray(rows) ? rows : []).forEach(function (row) {
-        var key = String(row && row.page_key || '').trim();
+        var key = normalizeAclPageKey(row && row.page_key);
         if (!key) return;
         map.set(key, buildPermissionEntry(row));
       });
@@ -1518,7 +1529,7 @@ async function applyDomPermissions(pageKey, root, options) {
       if (res.error || !Array.isArray(res.data)) return null;
       var map = new Map();
       res.data.forEach(function (row) {
-        var key = String(row.page_key || '').trim();
+        var key = normalizeAclPageKey(row.page_key);
         if (!key) return;
         map.set(key, buildPermissionEntry(row));
       });
@@ -1610,7 +1621,7 @@ async function applyDomPermissions(pageKey, root, options) {
 
   function collectAclDecisions(opts) {
     var decisions = [];
-    var pageKey = String(opts.pageKey || '').trim();
+    var pageKey = normalizeAclPageKey(opts.pageKey);
     var href = normalizeHref(opts.href);
     var role = normalizeRole(opts.role);
     var email = normalizeAclEmail(opts.email);
@@ -1710,7 +1721,7 @@ async function applyDomPermissions(pageKey, root, options) {
   }
 
   async function resolvePageAccess(pageKey, options) {
-    var key = String(pageKey || '').trim();
+    var key = normalizeAclPageKey(pageKey);
     var href = pageKeyToHref(key);
     var client = options && options.client ? options.client : createRfSupabaseClient();
     var user = options && options.user ? options.user : null;
