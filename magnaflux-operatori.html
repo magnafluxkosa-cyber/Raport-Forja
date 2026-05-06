@@ -375,7 +375,9 @@
     const PIN_DOC_KEY = 'magnaflux:operatori-pins';
     const SHEETS_DOC_KEY = 'magnaflux:operatori-fise';
     const PPTX_DOC_KEY = 'magnaflux:operatori-pptx';
-    const PPTX_MAX_SIZE = 12 * 1024 * 1024;
+    const PPTX_BUCKET = 'rf-magnaflux-files';
+    const PPTX_STORAGE_PREFIX = 'magnaflux-operatori';
+    const PPTX_MAX_SIZE = 80 * 1024 * 1024;
     const PPTX_LABELS = {
       instructiuni: 'Instrucțiuni Magnaflux',
       catalog: 'Catalog de defecte'
@@ -1167,7 +1169,7 @@
       if(el.pptxModalSubtitle) el.pptxModalSubtitle.textContent = canManagePptxFiles() ? 'Poți încărca / înlocui fișierul PPTX. Operatorii îl pot vizualiza.' : 'Fișier PPTX disponibil pentru vizualizare operatori.';
       if(el.pptxUploadBox) el.pptxUploadBox.classList.toggle('hidden', !canManagePptxFiles());
       if(el.pptxFileInput) el.pptxFileInput.value = '';
-      const exists = !!(file && file.data_url && file.name);
+      const exists = !!(file && file.name && (file.data_url || file.storage_path));
       if(el.pptxFileStatus){
         const updated = file && file.updated_at ? new Date(file.updated_at).toLocaleString('ro-RO') : '';
         el.pptxFileStatus.innerHTML = exists
@@ -1186,35 +1188,51 @@
       return state.pptxFiles && state.pptxFiles[type] ? state.pptxFiles[type] : null;
     }
 
-    function triggerPptxLink(type, forceDownload){
+    async function triggerPptxLink(type, forceDownload){
       const file = getPptxFile(type);
-      if(!file || !file.data_url) return toast('Nu este încărcat fișier PPTX pentru acest buton.');
-      const a = document.createElement('a');
-      a.href = file.data_url;
-      a.target = '_blank';
-      a.rel = 'noopener';
-      if(forceDownload) a.download = file.name || ((PPTX_LABELS[type] || 'magnaflux') + '.pptx');
-      document.body.appendChild(a);
-      a.click();
-      setTimeout(()=>a.remove(), 250);
-      if(forceDownload) toast('Descărcare fișier PPTX pornită.');
+      if(!file || !(file.data_url || file.storage_path)) return toast('Nu este încărcat fișier PPTX pentru acest buton.');
+
+      try{
+        let url = '';
+        if(file.storage_bucket && file.storage_path){
+          const storage = state.client.storage.from(file.storage_bucket);
+          let res = await storage.createSignedUrl(file.storage_path, 60 * 60, forceDownload ? { download: file.name || true } : undefined);
+          if(res.error && forceDownload){
+            res = await storage.createSignedUrl(file.storage_path, 60 * 60);
+          }
+          if(res.error) throw res.error;
+          url = res.data && res.data.signedUrl ? res.data.signedUrl : '';
+        } else {
+          url = file.data_url || '';
+        }
+
+        if(!url) throw new Error('Nu am putut genera linkul pentru fișier.');
+        const a = document.createElement('a');
+        a.href = url;
+        a.target = '_blank';
+        a.rel = 'noopener';
+        if(forceDownload) a.download = file.name || ((PPTX_LABELS[type] || 'magnaflux') + '.pptx');
+        document.body.appendChild(a);
+        a.click();
+        setTimeout(()=>a.remove(), 250);
+        if(forceDownload) toast('Descărcare fișier PPTX pornită.');
+      }catch(err){
+        console.error(err);
+        toast('Nu am putut deschide fișierul PPTX.');
+        try{ alert('Nu am putut deschide fișierul PPTX: ' + (err && (err.message || err.details || err.code) || 'eroare necunoscută')); }catch(_){}
+      }
     }
 
-    function openPptxFile(type){
-      triggerPptxLink(type, false);
+    async function openPptxFile(type){
+      await triggerPptxLink(type, false);
     }
 
-    function downloadPptxFile(type){
-      triggerPptxLink(type, true);
+    async function downloadPptxFile(type){
+      await triggerPptxLink(type, true);
     }
 
-    function fileToDataUrl(file){
-      return new Promise((resolve, reject)=>{
-        const reader = new FileReader();
-        reader.onload = () => resolve(String(reader.result || ''));
-        reader.onerror = () => reject(reader.error || new Error('Nu am putut citi fișierul.'));
-        reader.readAsDataURL(file);
-      });
+    function pptxStoragePath(type){
+      return PPTX_STORAGE_PREFIX + '/' + String(type || 'fisier').replace(/[^a-z0-9_-]/gi,'_') + '.pptx';
     }
 
     async function saveActivePptxFile(){
@@ -1223,13 +1241,28 @@
       const file = el.pptxFileInput && el.pptxFileInput.files ? el.pptxFileInput.files[0] : null;
       if(!file) return toast('Alege un fișier .pptx.');
       if(!/\.pptx$/i.test(file.name || '')) return toast('Fișierul trebuie să fie .pptx.');
-      if(file.size > PPTX_MAX_SIZE) return toast('Fișierul PPTX este prea mare. Limita este 12 MB.');
+      if(file.size > PPTX_MAX_SIZE) return toast('Fișierul PPTX este prea mare. Limita este 80 MB.');
       setSync('Salvez fișier PPTX...', 'warn');
       try{
-        const dataUrl = await fileToDataUrl(file);
+        const storagePath = pptxStoragePath(type);
+        const upload = await state.client.storage.from(PPTX_BUCKET).upload(storagePath, file, {
+          cacheControl: '3600',
+          upsert: true,
+          contentType: file.type || 'application/vnd.openxmlformats-officedocument.presentationml.presentation'
+        });
+        if(upload.error) throw upload.error;
+
         const doc = await fetchDoc(PPTX_DOC_KEY) || {};
         const files = doc && doc.files && typeof doc.files === 'object' ? doc.files : {};
-        files[type] = { name:file.name, type:file.type || 'application/vnd.openxmlformats-officedocument.presentationml.presentation', size:file.size, data_url:dataUrl, updated_at:new Date().toISOString(), updated_by:currentEmail() };
+        files[type] = {
+          name:file.name,
+          type:file.type || 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+          size:file.size,
+          storage_bucket:PPTX_BUCKET,
+          storage_path:storagePath,
+          updated_at:new Date().toISOString(),
+          updated_by:currentEmail()
+        };
         await upsertDoc(PPTX_DOC_KEY, { page_key:PAGE_KEY, files, updated_at:new Date().toISOString() });
         state.pptxFiles = files;
         state.pptxLoaded = true;
@@ -1239,7 +1272,7 @@
       }catch(err){
         console.error(err);
         setSync('Eroare salvare PPTX', 'bad');
-        alert('Nu am putut salva fișierul PPTX: ' + (err && (err.message || err.details || err.code) || 'eroare necunoscută'));
+        alert('Nu am putut salva fișierul PPTX: ' + (err && (err.message || err.details || err.code) || 'eroare necunoscută') + '\n\nVerifică dacă ai rulat SQL-ul inclus pentru bucket-ul Storage rf-magnaflux-files.');
       }
     }
 
