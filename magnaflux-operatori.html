@@ -511,6 +511,18 @@
       }catch(err){ console.warn('fetchDoc', docKey, err); return null; }
     }
 
+
+    async function fetchDocStrict(docKey){
+      let res = await state.client.from('rf_documents').select('doc_key,content,data,updated_at').eq('doc_key', docKey).maybeSingle();
+      if(res.error && /data/i.test(String(res.error.message||''))){
+        res = await state.client.from('rf_documents').select('doc_key,content,updated_at').eq('doc_key', docKey).maybeSingle();
+      }
+      if(res.error) throw res.error;
+      const row = res.data;
+      if(!row) return null;
+      return row.content || row.data || null;
+    }
+
     async function upsertDoc(docKey, content){
       const payload = { doc_key:docKey, content, data:content, updated_at:new Date().toISOString() };
       let res = await state.client.from('rf_documents').upsert(payload, { onConflict:'doc_key' });
@@ -1069,7 +1081,7 @@
         <td class="num">${esc(savedRowValue(r,'acceptate'))}</td>
         ${defectKeys.map(k=>`<td class="num ${remKeys.includes(k)?'yellow':''}">${esc(savedRowValue(r,k))}</td>`).join('')}
       </tr>`).join('') : '<tr><td colspan="21">Nu există rânduri salvate pe această fișă.</td></tr>';
-      const entryTable = `<table><tr><th colspan="21" class="sec">NECONFORME - RÂNDURILE FIȘEI</th></tr><tr><th>Nr.</th><th>NR.LADA</th><th>Reper</th><th>Sarja</th><th>Cod CAT</th><th class="blue">Valoare magnetică</th><th class="blue">Valoare electrică</th><th>Controlate</th><th>Acceptate</th>${defectKeys.map(k=>`<th>${esc(k.toUpperCase())}</th>`).join('')}</tr>${entryRows}</table><br>`;
+      const entryTable = `<table><tr><th colspan="21" class="sec">NECONFORME - RÂNDURILE FIȘEI</th></tr><tr><th>Nr.</th><th>NR.LADA</th><th>Reper</th><th>Cod CAT</th><th class="blue">Valoare magnetică</th><th class="blue">Valoare electrică</th><th>Controlate</th><th>Acceptate</th>${defectKeys.map(k=>`<th>${esc(k.toUpperCase())}</th>`).join('')}</tr>${entryRows}</table><br>`;
       const groupRows = groups.length ? groups.map(g=>`<tr><td>${esc(g.reper || '')}</td><td>${esc(g.nr_lada || '')}</td><td>${esc(g.cod_cat || '')}</td><td class="num">${nf(g.controlate || 0)}</td><td class="num">${nf(g.acceptate || 0)}</td><td class="num">${nf(g.total_rebut || 0)}</td></tr>`).join('') : '<tr><td colspan="6">Nu există totaluri salvate.</td></tr>';
       const groupsTable = `<table><tr><th colspan="6" class="sec">TOTALURI PE REPER / COD CAT</th></tr><tr><th>Reper</th><th>NR.LADA</th><th>Cod CAT</th><th>Controlate</th><th>Acceptate</th><th>Total rebut</th></tr>${groupRows}</table><br>`;
       const maintRows = maint.length ? maint.map((m,idx)=>`<tr><td class="center">${idx+1}</td><td>${esc(m.operation || '')}</td><td class="center">${m.checked ? 'BIFAT' : ''}</td><td>${esc(m.observations || '')}</td></tr>`).join('') : '<tr><td colspan="4">Nu există automentenanță salvată.</td></tr>';
@@ -1161,32 +1173,53 @@
       setSync('Salvare în Magnaflux...', 'warn');
       try{
         const docKey = MAG_DOC_PREFIX + year;
-        const doc = await fetchDoc(docKey);
+        const doc = await fetchDocStrict(docKey);
         const existing = Array.isArray(doc && doc.rows) ? doc.rows : [];
         const updatedAt = new Date().toISOString();
         const newDoc = { page_key:'magnaflux', year:Number(year), rows:[...existing, ...groups], updated_at:updatedAt };
         await upsertDoc(docKey, newDoc);
-        await updateMagnafluxIndex(year, updatedAt);
-        const sheetRecord = sheetSnapshot(groups);
-        const sheetsDoc = await fetchDoc(SHEETS_DOC_KEY) || {};
-        const saved = Array.isArray(sheetsDoc.sheets) ? sheetsDoc.sheets : [];
-        state.savedSheets = [...saved, sheetRecord].slice(-500);
-        await upsertDoc(SHEETS_DOC_KEY, { page_key:PAGE_KEY, sheets:state.savedSheets, updated_at:updatedAt });
-        renderSavedSheets();
-        setSync('Salvat în Magnaflux', 'ok');
-        toast('Fișa a fost înregistrată în Magnaflux.');
+
+        const warnings = [];
+        try{
+          await updateMagnafluxIndex(year, updatedAt);
+        }catch(indexErr){
+          console.warn('Index Magnaflux nesalvat', indexErr);
+          warnings.push('indexul Magnaflux nu s-a actualizat');
+        }
+
+        try{
+          const sheetRecord = sheetSnapshot(groups);
+          const sheetsDoc = await fetchDocStrict(SHEETS_DOC_KEY) || {};
+          const saved = Array.isArray(sheetsDoc.sheets) ? sheetsDoc.sheets : [];
+          state.savedSheets = [...saved, sheetRecord].slice(-500);
+          await upsertDoc(SHEETS_DOC_KEY, { page_key:PAGE_KEY, sheets:state.savedSheets, updated_at:updatedAt });
+          renderSavedSheets();
+        }catch(sheetErr){
+          console.warn('Fișa completă nu s-a putut salva separat', sheetErr);
+          warnings.push('fișa completă nu s-a putut salva în lista „Fișe salvate”');
+        }
+
+        setSync(warnings.length ? 'Salvat în Magnaflux cu avertizare' : 'Salvat în Magnaflux', warnings.length ? 'warn' : 'ok');
+        toast(warnings.length ? 'Totalul a fost salvat în Magnaflux, dar există avertizări.' : 'Fișa a fost înregistrată în Magnaflux.');
         el.confirmModal.classList.remove('show');
         clearSheet(true);
+        if(warnings.length){
+          try{ alert('Totalul a fost salvat în Magnaflux. Atenție: ' + warnings.join('; ') + '.'); }catch(_){}
+        }
       }catch(err){
         console.error(err);
         setSync('Salvare eșuată', 'bad');
-        toast('Nu am putut salva în Magnaflux. Verifică drepturile contului sau conexiunea.');
-        try{ alert('Salvarea a eșuat: ' + (err && (err.message || err.details || err.hint || err.code) || 'eroare necunoscută')); }catch(_){}
+        const detail = err && (err.message || err.details || err.hint || err.code) ? (err.message || err.details || err.hint || err.code) : 'eroare necunoscută';
+        toast('Nu am putut salva în Magnaflux.');
+        try{
+          alert('Salvarea a eșuat: ' + detail + '\n\nDacă eroarea apare pe contul op@magnaflux.local, verifică ACL/RLS pentru rf_documents. În ZIP am inclus SQL-ul de permisiuni.');
+        }catch(_){}
       }
     }
 
+
     async function updateMagnafluxIndex(year, updatedAt){
-      const doc = await fetchDoc(MAG_INDEX_KEY) || {};
+      const doc = await fetchDocStrict(MAG_INDEX_KEY) || {};
       const years = Array.isArray(doc.years) ? doc.years.map(String) : [];
       if(!years.includes(String(year))) years.push(String(year));
       const updated_at_by_year = Object.assign({}, doc.updated_at_by_year || {});
