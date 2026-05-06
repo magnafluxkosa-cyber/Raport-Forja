@@ -759,6 +759,34 @@
     roleClass,
     canAccess,
     getPageAccess,
+
+    getCurrentPagePermissions: function(){
+      const access = window.__PAGE_ACCESS__ || {};
+      const perms = access.permissions || access || {};
+      return {
+        can_view: perms.can_view === true || perms.canView === true,
+        can_add: perms.can_add === true || perms.canAdd === true,
+        can_edit: perms.can_edit === true || perms.canEdit === true,
+        can_delete: perms.can_delete === true || perms.canDelete === true,
+        can_export: perms.can_export === true || perms.canExport === true,
+        can_import: perms.can_import === true || perms.canImport === true
+      };
+    },
+    canAdd: function(){ return this.getCurrentPagePermissions().can_add === true; },
+    canEdit: function(){ return this.getCurrentPagePermissions().can_edit === true; },
+    canDelete: function(){ return this.getCurrentPagePermissions().can_delete === true; },
+    canExport: function(){ return this.getCurrentPagePermissions().can_export === true; },
+    canImport: function(){ return this.getCurrentPagePermissions().can_import === true; },
+    guardAction: function(action){
+      const p = this.getCurrentPagePermissions();
+      const a = String(action || '').toLowerCase();
+      if(a === 'add' || a === 'create' || a === 'new') return p.can_add === true;
+      if(a === 'edit' || a === 'save' || a === 'update') return p.can_edit === true;
+      if(a === 'delete' || a === 'remove' || a === 'sterge') return p.can_delete === true;
+      if(a === 'export') return p.can_export === true;
+      if(a === 'import' || a === 'upload') return p.can_import === true;
+      return p.can_view === true;
+    },
     buildLoginUrl,
     renderAccessDeniedPage,
     prehideProtectedPage,
