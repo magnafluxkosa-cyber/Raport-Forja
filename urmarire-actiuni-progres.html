@@ -792,21 +792,66 @@
       if (stored && stored.trim()) return stored.trim();
       return "";
     }
-    function askOperatorNameForObservation() {
+    function askOperatorNameForObservation(message = "Introdu numele pentru observația nouă:") {
       const preset = getSavedOperatorName();
-      const raw = window.prompt("Introdu numele pentru observația nouă:", preset || "");
+      const raw = window.prompt(message, preset || "");
       const value = String(raw || "").trim();
       if (!value) return "";
       localStorage.setItem(OPERATOR_NAME_KEY, value);
       return value;
     }
-    function mergeObservationHistory(existingText, newText) {
-      const cleanNew = String(newText || "").replace(/\r/g, "").trim();
-      if (!cleanNew) return String(existingText || "").trim();
-      const author = askOperatorNameForObservation();
+    function askOperatorNameForChange() {
+      return askOperatorNameForObservation("Ai modificat Nivel prioritate sau Stadiu. Introdu numele pentru istoricul modificării:");
+    }
+    function cleanObservationText(value) {
+      return String(value || "").replace(/\r/g, "").trim();
+    }
+    function mergeObservationHistory(existingText, newText, authorOverride = "") {
+      const cleanNew = cleanObservationText(newText);
+      if (!cleanNew) return cleanObservationText(existingText);
+      const author = authorOverride || askOperatorNameForObservation();
       if (!author) return null;
       const entry = `[${currentDateTimeString()}] ${author}: ${cleanNew}`;
-      const cleanExisting = String(existingText || "").replace(/\r/g, "").trim();
+      const cleanExisting = cleanObservationText(existingText);
+      return cleanExisting ? `${cleanExisting}\n${entry}` : entry;
+    }
+    function formatPriorityAuditValue(value) {
+      const clean = String(value || "").trim();
+      if (!clean) return "—";
+      const meta = priorityMeta(clean);
+      return meta?.label ? `${clean} (${meta.label})` : clean;
+    }
+    function formatStageAuditValue(value) {
+      const clean = String(value || "").trim().toUpperCase();
+      if (!clean) return "—";
+      const meta = stageMeta(clean);
+      return meta?.label ? `${clean} (${meta.label})` : clean;
+    }
+    function formatAuditValue(key, value) {
+      if (key === "nivel_prioritate") return formatPriorityAuditValue(value);
+      if (key === "stadiu") return formatStageAuditValue(value);
+      return String(value || "").trim() || "—";
+    }
+    function getPriorityStageAuditChanges(beforeRow, nextValues) {
+      if (!beforeRow) return [];
+      const changes = [];
+      const beforePriority = String(beforeRow.nivel_prioritate || "").trim();
+      const afterPriority = String(nextValues.nivel_prioritate || "").trim();
+      if (beforePriority !== afterPriority) {
+        changes.push({ label: "Nivel prioritate", before: formatAuditValue("nivel_prioritate", beforePriority), after: formatAuditValue("nivel_prioritate", afterPriority) });
+      }
+      const beforeStage = String(beforeRow.stadiu || "").trim().toUpperCase();
+      const afterStage = String(nextValues.stadiu || "").trim().toUpperCase();
+      if (beforeStage !== afterStage) {
+        changes.push({ label: "Stadiu", before: formatAuditValue("stadiu", beforeStage), after: formatAuditValue("stadiu", afterStage) });
+      }
+      return changes;
+    }
+    function appendAuditChanges(existingText, author, changes) {
+      const cleanExisting = cleanObservationText(existingText);
+      if (!author || !Array.isArray(changes) || !changes.length) return cleanExisting;
+      const details = changes.map(change => `${change.label}: ${change.before} → ${change.after}`).join("; ");
+      const entry = `[${currentDateTimeString()}] ${author}: modificare ${details}`;
       return cleanExisting ? `${cleanExisting}\n${entry}` : entry;
     }
     function daysBetween(start, end = new Date()) { const a = parseDate(start); if (!a) return ""; const d1 = new Date(a.getFullYear(), a.getMonth(), a.getDate()); const d2 = new Date(end.getFullYear(), end.getMonth(), end.getDate()); return Math.max(0, Math.round((d2 - d1) / 86400000)); }
@@ -1133,9 +1178,17 @@ async function resolvePagePermissions() {
     async function handleRowSave(event) {
       event.preventDefault(); if (!state.permissions.canAdd && !state.permissions.canEdit) return;
       const existingRow = state.editingId ? rowById(state.editingId) : null;
+      const nextValues = { nivel_prioritate: dom.fldPrioritate.value, stadiu: dom.fldStadiu.value };
+      const auditChanges = getPriorityStageAuditChanges(existingRow, nextValues);
+      let auditAuthor = "";
+      if (auditChanges.length) {
+        auditAuthor = askOperatorNameForChange();
+        if (!auditAuthor) return;
+      }
       const existingObservatii = existingRow?.observatii || "";
-      const mergedObservatii = await mergeObservationHistory(existingObservatii, dom.fldObservatii.value);
+      let mergedObservatii = await mergeObservationHistory(existingObservatii, dom.fldObservatii.value, auditAuthor);
       if (mergedObservatii === null) return;
+      if (auditChanges.length) mergedObservatii = appendAuditChanges(mergedObservatii, auditAuthor, auditChanges);
       const row = enrichRow({ id: state.editingId || randomId(), created_at: existingRow?.created_at || new Date().toISOString(), descriere_probleme: dom.fldDescriere.value, linie_utilaj: dom.fldLinie.value, data_constatare: dom.fldDataConstatare.value, responsabil_actiune: dom.fldResponsabil.value, nivel_prioritate: dom.fldPrioritate.value, stadiu: dom.fldStadiu.value, data_finalizare: dom.fldDataFinalizare.value, departament: state.activeSheet === "forja" ? dom.fldDepartament.value : "", termen_prop: dom.fldTermen.value, observatii: mergedObservatii }, state.activeSheet);
       if (!row.descriere_probleme) { alert("Completează descrierea problemei."); return; }
       const target = getActiveRows(); const index = target.findIndex(item => item.id === row.id); if (index >= 0) target[index] = row; else target.push(row);
@@ -1147,8 +1200,14 @@ async function resolvePagePermissions() {
       const rows = getActiveRows();
       const index = rows.findIndex(row => row.id === id);
       if (index < 0) return;
-      const next = { ...rows[index], [key]: value };
+      const currentRow = rows[index];
+      const next = { ...currentRow, [key]: key === "stadiu" ? String(value || "").toUpperCase() : value };
+      const auditChanges = ["nivel_prioritate", "stadiu"].includes(key) ? getPriorityStageAuditChanges(currentRow, next) : [];
+      if (!auditChanges.length) { renderTable(); return; }
+      const auditAuthor = askOperatorNameForChange();
+      if (!auditAuthor) { renderTable(); return; }
       const enriched = enrichRow(next, state.activeSheet);
+      enriched.observatii = appendAuditChanges(currentRow.observatii, auditAuthor, auditChanges);
       rows[index] = enriched;
       state.datasets[state.activeSheet] = sortRows(rows);
       state.selectedId = enriched.id;
