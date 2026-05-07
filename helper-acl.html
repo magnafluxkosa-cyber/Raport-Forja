@@ -1397,6 +1397,44 @@
       }
     }
 
+    async function verifyCreatedAccountInSupabase(email, expectedUserId){
+      const cleanEmail = normalizeEmail(email);
+      const cleanUserId = String(expectedUserId || '').trim();
+      const result = { profiles:false, rf_acl:false, user_account_access:false, auth_checked:false, auth:false, user_id:cleanUserId };
+      if (!cleanEmail || !sb) return result;
+
+      try {
+        const res = await sb.from('profiles').select('email,user_id,role').eq('email', cleanEmail).limit(1);
+        if (!res.error && Array.isArray(res.data) && res.data.length) {
+          result.profiles = true;
+          if (!result.user_id && res.data[0] && res.data[0].user_id) result.user_id = String(res.data[0].user_id);
+        }
+      } catch (_e) {}
+
+      try {
+        const res = await sb.from('rf_acl').select('email,role').eq('email', cleanEmail).limit(1);
+        if (!res.error && Array.isArray(res.data) && res.data.length) result.rf_acl = true;
+      } catch (_e) {}
+
+      try {
+        const res = await sb.from('user_account_access').select('email,user_id,is_active,is_banned').eq('email', cleanEmail).limit(1);
+        if (!res.error && Array.isArray(res.data) && res.data.length) {
+          result.user_account_access = true;
+          if (!result.user_id && res.data[0] && res.data[0].user_id) result.user_id = String(res.data[0].user_id);
+        }
+      } catch (_e) {}
+
+      try {
+        const adminUsers = await fetchAdminUsers();
+        if (Array.isArray(adminUsers) && adminUsers.length) {
+          result.auth_checked = true;
+          result.auth = adminUsers.some(user => normalizeEmail(user && user.email) === cleanEmail);
+        }
+      } catch (_e) {}
+
+      return result;
+    }
+
     async function createAccountFromAcl(){
       const email = normalizeEmail(els.txtNewEmail && els.txtNewEmail.value);
       const password = String(els.txtNewPassword && els.txtNewPassword.value || '');
@@ -1404,26 +1442,54 @@
       const role = normalizeRole(els.selNewRole && els.selNewRole.value || 'viewer');
       if (!email || !password) { alert('Completează email și parolă inițială.'); return; }
       if (password.length < 6) { alert('Parola trebuie să aibă minimum 6 caractere.'); return; }
-      const ok = window.confirm('Confirmi crearea contului:\\n\\n' + email + '\\nRol: ' + roleLabel(role));
+      const ok = window.confirm('Confirmi crearea contului:\n\n' + email + '\nRol: ' + roleLabel(role));
       if (!ok) return;
       if (els.btnCreateAccount) els.btnCreateAccount.disabled = true;
       setStatus(els.saveStatus, 'Creare cont...', 'warn');
       const data = await invokeAdminUsers('create_user', { email, password, role, full_name: fullName });
       if (els.btnCreateAccount) els.btnCreateAccount.disabled = false;
       if (!data) return;
+
       const createdUserId = data && (data.user_id || data.id || data.uid) ? String(data.user_id || data.id || data.uid) : '';
-      ensureUserVisibleInAcl(email, role, createdUserId);
-      setStatus(els.saveStatus, 'Cont creat', 'ok');
-      els.saveSub.textContent = 'Cont creat/actualizat: ' + email + '. Contul este selectat fără acces implicit; setează permisiunile și apasă Salvează în cloud.';
+      const authSavedBySql = data && (data.auth_saved === true || data.auth_user_exists === true || data.saved_in_auth === true);
+      const verify = await verifyCreatedAccountInSupabase(email, createdUserId);
+      const publicSaved = verify.profiles || verify.rf_acl || verify.user_account_access;
+      const authSaved = authSavedBySql || verify.auth;
+
+      if (!publicSaved && !authSaved) {
+        setStatus(els.saveStatus, 'Eroare', 'err');
+        els.saveSub.textContent = 'Funcția a răspuns, dar contul nu a fost găsit în tabelele Supabase. Rulează SQL-ul actualizat rf_admin_users_simple_real_save.sql și încearcă din nou.';
+        return;
+      }
+
       if (els.txtNewPassword) els.txtNewPassword.value = '';
-      await loadUsers(); await loadPageRules(); await loadAccountAccess();
-      const visibleUser = ensureUserVisibleInAcl(email, role, createdUserId);
+      await loadUsers();
+      await loadPageRules();
+      await loadAccountAccess();
+
+      let visibleUser = state.users.find(u => normalizeEmail(u.email) === email) || null;
+      if (!visibleUser && publicSaved) {
+        visibleUser = ensureUserVisibleInAcl(email, role, verify.user_id || createdUserId);
+      }
+      if (!visibleUser) {
+        setStatus(els.saveStatus, 'Eroare', 'err');
+        els.saveSub.textContent = 'Contul a fost creat, dar Helper ACL nu l-a putut reîncărca din Supabase. Apasă Reîncarcă.';
+        return;
+      }
+
       state.selectedEmail = email;
       prepareNewAccountDenyByDefault(visibleUser);
       state.dirty = true;
-      renderUsers(); renderPermissions();
+      renderUsers();
+      renderPermissions();
+      renderAccountSection();
       setStatus(els.saveStatus, 'Nesalvat', 'warn');
-      els.saveSub.textContent = 'Cont creat/actualizat: ' + email + '. Contul nu primește acces automat. Bifează ce trebuie și apasă Salvează în cloud.';
+      const parts = [];
+      if (authSaved) parts.push('Auth');
+      if (verify.profiles) parts.push('profiles');
+      if (verify.rf_acl) parts.push('rf_acl');
+      if (verify.user_account_access) parts.push('user_account_access');
+      els.saveSub.textContent = 'Cont salvat în Supabase (' + (parts.length ? parts.join(', ') : 'verificare parțială') + '): ' + email + '. Contul nu primește acces automat. Bifează ce trebuie și apasă Salvează în cloud.';
     }
 
     async function resetSelectedPassword(){
