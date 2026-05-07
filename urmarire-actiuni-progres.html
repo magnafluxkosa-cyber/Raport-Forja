@@ -322,6 +322,10 @@
       overflow-wrap:break-word;
       text-align:left;
     }
+    .table-wrap .audit-created{
+      text-decoration: underline;
+      font-weight: 800;
+    }
     .table-wrap .center{ text-align:center; }
     .table-wrap .nowrap{ white-space:nowrap; }
     .table-wrap .excel-progress{
@@ -827,25 +831,58 @@
       const meta = stageMeta(clean);
       return meta?.label ? `${clean} (${meta.label})` : clean;
     }
+    const AUDIT_FIELD_LABELS = {
+      descriere_probleme: "Descriere probleme",
+      linie_utilaj: "Linie / Utilaj",
+      data_constatare: "Data constatării acțiunii",
+      nivel_prioritate: "Nivel prioritate",
+      stadiu: "Stadiu",
+      data_finalizare: "Data finalizării 100%",
+      responsabil_actiune: "Responsabil acțiune",
+      departament: "Departament",
+      termen_prop: "Termen propus de responsabil"
+    };
+    const AUDIT_FIELD_ORDER = ["descriere_probleme", "linie_utilaj", "data_constatare", "nivel_prioritate", "stadiu", "data_finalizare", "responsabil_actiune", "departament", "termen_prop"];
+    function askOperatorNameForCreate() {
+      return askOperatorNameForObservation("Se creează un rând nou. Introdu numele pentru istoricul creării:");
+    }
+    function askOperatorNameForRowEdit() {
+      return askOperatorNameForObservation("Ai modificat acest rând. Introdu numele pentru istoricul modificării:");
+    }
     function formatAuditValue(key, value) {
       if (key === "nivel_prioritate") return formatPriorityAuditValue(value);
       if (key === "stadiu") return formatStageAuditValue(value);
+      if (["data_constatare", "data_finalizare", "termen_prop"].includes(key)) {
+        const formatted = formatDate(value);
+        return formatted || "—";
+      }
       return String(value || "").trim() || "—";
+    }
+    function normalizeAuditValue(key, value) {
+      if (key === "stadiu") return String(value || "").trim().toUpperCase();
+      if (["data_constatare", "data_finalizare", "termen_prop"].includes(key)) return formatDate(value || "");
+      if (key === "nivel_prioritate") return String(value || "").trim();
+      return String(value || "").replace(/\r/g, "").trim();
+    }
+    function getRowAuditChanges(beforeRow, nextRow, keys = AUDIT_FIELD_ORDER) {
+      if (!beforeRow || !nextRow) return [];
+      const changes = [];
+      keys.forEach(key => {
+        const beforeValue = normalizeAuditValue(key, beforeRow[key]);
+        const afterValue = normalizeAuditValue(key, nextRow[key]);
+        if (beforeValue !== afterValue) {
+          changes.push({
+            label: AUDIT_FIELD_LABELS[key] || key,
+            before: formatAuditValue(key, beforeValue),
+            after: formatAuditValue(key, afterValue)
+          });
+        }
+      });
+      return changes;
     }
     function getPriorityStageAuditChanges(beforeRow, nextValues) {
       if (!beforeRow) return [];
-      const changes = [];
-      const beforePriority = String(beforeRow.nivel_prioritate || "").trim();
-      const afterPriority = String(nextValues.nivel_prioritate || "").trim();
-      if (beforePriority !== afterPriority) {
-        changes.push({ label: "Nivel prioritate", before: formatAuditValue("nivel_prioritate", beforePriority), after: formatAuditValue("nivel_prioritate", afterPriority) });
-      }
-      const beforeStage = String(beforeRow.stadiu || "").trim().toUpperCase();
-      const afterStage = String(nextValues.stadiu || "").trim().toUpperCase();
-      if (beforeStage !== afterStage) {
-        changes.push({ label: "Stadiu", before: formatAuditValue("stadiu", beforeStage), after: formatAuditValue("stadiu", afterStage) });
-      }
-      return changes;
+      return getRowAuditChanges(beforeRow, { ...beforeRow, ...nextValues }, ["nivel_prioritate", "stadiu", "data_finalizare"]);
     }
     function appendAuditChanges(existingText, author, changes) {
       const cleanExisting = cleanObservationText(existingText);
@@ -853,6 +890,34 @@
       const details = changes.map(change => `${change.label}: ${change.before} → ${change.after}`).join("; ");
       const entry = `[${currentDateTimeString()}] ${author}: modificare ${details}`;
       return cleanExisting ? `${cleanExisting}\n${entry}` : entry;
+    }
+    function appendCreateAudit(existingText, author) {
+      const cleanExisting = cleanObservationText(existingText);
+      if (!author) return cleanExisting;
+      const entry = `[${currentDateTimeString()}] Creat de ${author}`;
+      return cleanExisting ? `${cleanExisting}\n${entry}` : entry;
+    }
+    function addDaysToDate(value, days) {
+      const dt = parseDate(value);
+      if (!dt) return "";
+      const result = new Date(dt.getFullYear(), dt.getMonth(), dt.getDate());
+      result.setDate(result.getDate() + Number(days || 0));
+      return formatDate(result);
+    }
+    function calculateFinalizationDate(dataConstatare, nivelPrioritate, termenPropus) {
+      const termenDate = parseDate(termenPropus);
+      if (termenDate) return formatDate(termenDate);
+      const pMeta = priorityMeta(nivelPrioritate);
+      if (!pMeta) return "";
+      return addDaysToDate(dataConstatare, pMeta.days || 0);
+    }
+    function rowAuditTooltip(row) {
+      const lines = String(row?.observatii || "")
+        .replace(/\r/g, "")
+        .split("\n")
+        .map(line => line.trim())
+        .filter(line => /^\[\d{2}\.\d{2}\.\d{4}\s+\d{2}:\d{2}\]/.test(line));
+      return lines.join("\n");
     }
     function daysBetween(start, end = new Date()) { const a = parseDate(start); if (!a) return ""; const d1 = new Date(a.getFullYear(), a.getMonth(), a.getDate()); const d2 = new Date(end.getFullYear(), end.getMonth(), end.getDate()); return Math.max(0, Math.round((d2 - d1) / 86400000)); }
     function randomId(prefix = state.activeSheet) { return prefix + "-" + Date.now() + "-" + Math.random().toString(36).slice(2,8); }
@@ -887,6 +952,8 @@
       } else {
         row.procent_realizat = normalizePercentValue(row.procent_realizat);
       }
+      const calculatedFinalDate = calculateFinalizationDate(row.data_constatare, row.nivel_prioritate, row.termen_prop);
+      if (calculatedFinalDate) row.data_finalizare = calculatedFinalDate;
       if (sheetKey !== "forja") row.departament = "";
       return row;
     }
@@ -993,6 +1060,16 @@
       fillSelect(dom.filterDepartament, uniqueSorted(rows.map(row => row.departament)), "Toate");
     }
     function escapeHtml(value) { return String(value ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\"/g, "&quot;"); }
+    function renderObservationHtml(value) {
+      const clean = cleanObservationText(value);
+      if (!clean) return "—";
+      return clean.split("\n").map(line => {
+        const trimmed = line.trim();
+        const safe = escapeHtml(line);
+        if (/^\[\d{2}\.\d{2}\.\d{4}\s+\d{2}:\d{2}\]\s+Creat de\b/i.test(trimmed)) return `<span class="audit-created">${safe}</span>`;
+        return safe;
+      }).join("<br>");
+    }
     function filtersMatch(row) {
       const search = normalizeText(dom.filterSearch.value);
       if (search) { const hay = normalizeText([row.descriere_probleme,row.linie_utilaj,row.responsabil_actiune,row.departament,row.observatii,row.descriere_stadiu,row.descriere_prioritate].join(" ")); if (!hay.includes(search)) return false; }
@@ -1028,6 +1105,7 @@
         return `<td data-col="${escapeHtml(col.key)}" class="${col.cls || ""}">${value ? escapeHtml(value) : "—"}</td>`;
       }
       if (col.key === "zile_deschise") { const value = rowDaysOpen(row); return `<td data-col="${escapeHtml(col.key)}" class="center">${value === "" ? "—" : value}</td>`; }
+      if (col.key === "observatii") return `<td data-col="${escapeHtml(col.key)}" class="${col.cls || ""}">${renderObservationHtml(row[col.key])}</td>`;
       const value = row[col.key];
       return `<td data-col="${escapeHtml(col.key)}" class="${col.cls || ""}">${value ? escapeHtml(value) : "—"}</td>`;
     }
@@ -1036,7 +1114,9 @@
       if (!rows.length) { dom.tableBody.innerHTML = `<tr><td colspan="${TABLE_COLUMNS[state.activeSheet].length}" class="table-empty">Nu există rânduri pentru filtrele selectate.</td></tr>`; applyPermissionsToUi(); scrollTableToBottomIfNeeded(); return; }
       dom.tableBody.innerHTML = rows.map(row => {
         const classes = [`stage-${normalizeText(row.stadiu)}`, rowIsLate(row) ? "late" : "", state.selectedId === row.id ? "selected" : ""].filter(Boolean).join(" ");
-        return `<tr class="${classes}" data-id="${escapeHtml(row.id)}">${TABLE_COLUMNS[state.activeSheet].map(col => renderRowCell(row, col)).join("")}</tr>`;
+        const tooltip = rowAuditTooltip(row);
+        const titleAttr = tooltip ? ` title="${escapeHtml(tooltip)}"` : "";
+        return `<tr class="${classes}" data-id="${escapeHtml(row.id)}"${titleAttr}>${TABLE_COLUMNS[state.activeSheet].map(col => renderRowCell(row, col)).join("")}</tr>`;
       }).join("");
       applyPermissionsToUi();
       scrollTableToBottomIfNeeded();
@@ -1173,26 +1253,65 @@ async function resolvePagePermissions() {
       dom.editModal.classList.add("open"); dom.editModal.setAttribute("aria-hidden", "false"); setTimeout(() => dom.fldDescriere.focus(), 30);
     }
     function closeModal() { state.editingId = null; dom.editModal.classList.remove("open"); dom.editModal.setAttribute("aria-hidden", "true"); }
-    function updateComputedFields() { const pMeta = priorityMeta(dom.fldPrioritate.value); const sMeta = stageMeta(dom.fldStadiu.value); dom.fldPrioritateDescriere.textContent = pMeta?.label || "—"; dom.fldStadiuDescriere.textContent = sMeta?.label || "—"; dom.fldProcent.textContent = `${sMeta?.percent || 0}%`; }
+    function updateComputedFields() {
+      const pMeta = priorityMeta(dom.fldPrioritate.value);
+      const sMeta = stageMeta(dom.fldStadiu.value);
+      dom.fldPrioritateDescriere.textContent = pMeta?.label || "—";
+      dom.fldStadiuDescriere.textContent = sMeta?.label || "—";
+      dom.fldProcent.textContent = `${sMeta?.percent || 0}%`;
+      dom.fldDataFinalizare.value = calculateFinalizationDate(dom.fldDataConstatare.value, dom.fldPrioritate.value, dom.fldTermen.value);
+    }
     function resetFormDefaults() { dom.editForm.reset(); dom.fldDataConstatare.value = currentDateString(); if (dom.fldObservatiiIstoric) dom.fldObservatiiIstoric.value = ""; if (dom.obsExistingWrap) dom.obsExistingWrap.classList.toggle("hidden", !state.editingId); updateComputedFields(); }
     async function handleRowSave(event) {
-      event.preventDefault(); if (!state.permissions.canAdd && !state.permissions.canEdit) return;
+      event.preventDefault();
+      if (!state.permissions.canAdd && !state.permissions.canEdit) return;
+      updateComputedFields();
       const existingRow = state.editingId ? rowById(state.editingId) : null;
-      const nextValues = { nivel_prioritate: dom.fldPrioritate.value, stadiu: dom.fldStadiu.value };
-      const auditChanges = getPriorityStageAuditChanges(existingRow, nextValues);
-      let auditAuthor = "";
-      if (auditChanges.length) {
-        auditAuthor = askOperatorNameForChange();
-        if (!auditAuthor) return;
-      }
-      const existingObservatii = existingRow?.observatii || "";
-      let mergedObservatii = await mergeObservationHistory(existingObservatii, dom.fldObservatii.value, auditAuthor);
-      if (mergedObservatii === null) return;
-      if (auditChanges.length) mergedObservatii = appendAuditChanges(mergedObservatii, auditAuthor, auditChanges);
-      const row = enrichRow({ id: state.editingId || randomId(), created_at: existingRow?.created_at || new Date().toISOString(), descriere_probleme: dom.fldDescriere.value, linie_utilaj: dom.fldLinie.value, data_constatare: dom.fldDataConstatare.value, responsabil_actiune: dom.fldResponsabil.value, nivel_prioritate: dom.fldPrioritate.value, stadiu: dom.fldStadiu.value, data_finalizare: dom.fldDataFinalizare.value, departament: state.activeSheet === "forja" ? dom.fldDepartament.value : "", termen_prop: dom.fldTermen.value, observatii: mergedObservatii }, state.activeSheet);
+      const row = enrichRow({
+        id: state.editingId || randomId(),
+        created_at: existingRow?.created_at || new Date().toISOString(),
+        descriere_probleme: dom.fldDescriere.value,
+        linie_utilaj: dom.fldLinie.value,
+        data_constatare: dom.fldDataConstatare.value,
+        responsabil_actiune: dom.fldResponsabil.value,
+        nivel_prioritate: dom.fldPrioritate.value,
+        stadiu: dom.fldStadiu.value,
+        data_finalizare: dom.fldDataFinalizare.value,
+        departament: state.activeSheet === "forja" ? dom.fldDepartament.value : "",
+        termen_prop: dom.fldTermen.value,
+        observatii: existingRow?.observatii || ""
+      }, state.activeSheet);
       if (!row.descriere_probleme) { alert("Completează descrierea problemei."); return; }
-      const target = getActiveRows(); const index = target.findIndex(item => item.id === row.id); if (index >= 0) target[index] = row; else target.push(row);
-      state.datasets[state.activeSheet] = sortRows(target); state.selectedId = row.id; markDirty(); renderTable(); closeModal();
+      const existingObservatii = existingRow?.observatii || "";
+      const newObservationText = cleanObservationText(dom.fldObservatii.value);
+      const isNewRow = !existingRow;
+      let auditAuthor = "";
+      let mergedObservatii = cleanObservationText(existingObservatii);
+      if (isNewRow) {
+        auditAuthor = askOperatorNameForCreate();
+        if (!auditAuthor) return;
+        mergedObservatii = appendCreateAudit(mergedObservatii, auditAuthor);
+      } else {
+        const auditChanges = getRowAuditChanges(existingRow, row);
+        if (auditChanges.length || newObservationText) {
+          auditAuthor = askOperatorNameForRowEdit();
+          if (!auditAuthor) return;
+        }
+        if (auditChanges.length) mergedObservatii = appendAuditChanges(mergedObservatii, auditAuthor, auditChanges);
+      }
+      if (newObservationText) {
+        mergedObservatii = await mergeObservationHistory(mergedObservatii, newObservationText, auditAuthor);
+        if (mergedObservatii === null) return;
+      }
+      row.observatii = mergedObservatii;
+      const target = getActiveRows();
+      const index = target.findIndex(item => item.id === row.id);
+      if (index >= 0) target[index] = row; else target.push(row);
+      state.datasets[state.activeSheet] = sortRows(target);
+      state.selectedId = row.id;
+      markDirty();
+      renderTable();
+      closeModal();
     }
     function rowById(id) { return getActiveRows().find(row => row.id === id) || null; }
     function inlineUpdateRow(id, key, value) {
@@ -1202,11 +1321,11 @@ async function resolvePagePermissions() {
       if (index < 0) return;
       const currentRow = rows[index];
       const next = { ...currentRow, [key]: key === "stadiu" ? String(value || "").toUpperCase() : value };
-      const auditChanges = ["nivel_prioritate", "stadiu"].includes(key) ? getPriorityStageAuditChanges(currentRow, next) : [];
-      if (!auditChanges.length) { renderTable(); return; }
-      const auditAuthor = askOperatorNameForChange();
-      if (!auditAuthor) { renderTable(); return; }
       const enriched = enrichRow(next, state.activeSheet);
+      const auditChanges = ["nivel_prioritate", "stadiu"].includes(key) && currentRow.descriere_probleme ? getPriorityStageAuditChanges(currentRow, enriched) : [];
+      if (!auditChanges.length) { renderTable(); return; }
+      const auditAuthor = askOperatorNameForRowEdit();
+      if (!auditAuthor) { renderTable(); return; }
       enriched.observatii = appendAuditChanges(currentRow.observatii, auditAuthor, auditChanges);
       rows[index] = enriched;
       state.datasets[state.activeSheet] = sortRows(rows);
@@ -1314,7 +1433,7 @@ async function resolvePagePermissions() {
         const row = rowById(tr.dataset.id);
         if (row) openModal(row);
       });
-      dom.btnCloseModal.addEventListener("click", closeModal); dom.btnCancelForm.addEventListener("click", closeModal); dom.btnResetForm.addEventListener("click", resetFormDefaults); dom.btnDeleteForm.addEventListener("click", () => { closeModal(); deleteSelected(); }); dom.editForm.addEventListener("submit", handleRowSave); dom.fldPrioritate.addEventListener("change", updateComputedFields); dom.fldStadiu.addEventListener("change", updateComputedFields); dom.editModal.addEventListener("click", e => { if (e.target === dom.editModal) closeModal(); });
+      dom.btnCloseModal.addEventListener("click", closeModal); dom.btnCancelForm.addEventListener("click", closeModal); dom.btnResetForm.addEventListener("click", resetFormDefaults); dom.btnDeleteForm.addEventListener("click", () => { closeModal(); deleteSelected(); }); dom.editForm.addEventListener("submit", handleRowSave); dom.fldPrioritate.addEventListener("change", updateComputedFields); dom.fldStadiu.addEventListener("change", updateComputedFields); [dom.fldDataConstatare, dom.fldTermen].forEach(el => { el.addEventListener("input", updateComputedFields); el.addEventListener("change", updateComputedFields); }); dom.editModal.addEventListener("click", e => { if (e.target === dom.editModal) closeModal(); });
       dom.namePromptForm.addEventListener("submit", event => {
         event.preventDefault();
         const value = String(dom.namePromptInput.value || "").trim();
