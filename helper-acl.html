@@ -176,7 +176,7 @@
             <div class="section-head">
               <div>
                 <div class="section-title">Administrare conturi</div>
-                <div class="section-sub">Creezi conturi .local și resetezi parole direct din Helper ACL. Operațiile se fac prin funcții SQL securizate în Supabase, fără Edge Function și fără service_role în frontend.</div>
+                <div class="section-sub">Creezi conturi .local și resetezi parole direct din Helper ACL. Operațiile se fac prin Edge Function securizată în Supabase, fără service_role în frontend.</div>
               </div>
             </div>
             <div class="section-body">
@@ -1365,34 +1365,56 @@
     }
 
 
+    async function invokeAdminControl(action, body){
+      const payload = Object.assign({}, body || {}, { action });
+      const token = await getSessionAccessToken();
+      const baseUrl = String((cfg && cfg.SUPABASE_URL) || '').replace(/\/$/, '');
+      const attempts = [];
+
+      if (sb && sb.functions && typeof sb.functions.invoke === 'function') {
+        attempts.push(async () => {
+          const res = await sb.functions.invoke('admin-control', { body: payload });
+          if (res && res.error) throw res.error;
+          return res ? res.data : null;
+        });
+      }
+
+      if (baseUrl && token) {
+        const headers = { 'Authorization':'Bearer ' + token, 'Content-Type':'application/json' };
+        attempts.push(async () => {
+          const res = await fetch(baseUrl + '/functions/v1/admin-control', { method:'POST', headers, body: JSON.stringify(payload) });
+          let data = null;
+          try { data = await res.json(); } catch (_e) {}
+          if (!res.ok) throw new Error((data && (data.error || data.message)) || ('admin-control HTTP ' + res.status));
+          return data;
+        });
+      }
+
+      let lastError = null;
+      for (const attempt of attempts) {
+        try {
+          const data = await attempt();
+          if (data && data.ok === false) throw new Error(data.error || 'Operația administrativă a eșuat.');
+          if (data) return data;
+        } catch (err) {
+          lastError = err;
+        }
+      }
+      if (lastError) throw lastError;
+      throw new Error('Edge Function admin-control nu este disponibilă.');
+    }
+
     async function invokeAdminUsers(action, body){
       if (!canAclEdit()) { alert('Nu ai drept de administrare ACL.'); return null; }
       try {
-        let res = null;
-        if (action === 'create_user') {
-          res = await sb.rpc('rf_admin_create_user_simple', {
-            p_email: normalizeEmail(body && body.email),
-            p_password: String((body && body.password) || ''),
-            p_role: normalizeRole((body && body.role) || 'viewer'),
-            p_full_name: String((body && body.full_name) || '')
-          });
-        } else if (action === 'reset_password') {
-          res = await sb.rpc('rf_admin_reset_password_simple', {
-            p_email: normalizeEmail(body && body.email),
-            p_password: String((body && body.password) || '')
-          });
-        } else {
-          throw new Error('Acțiune necunoscută: ' + action);
-        }
-        if (res && res.error) throw res.error;
-        const data = res && res.data ? res.data : { ok:true };
+        const data = await invokeAdminControl(action, body);
         if (data && data.ok === false) throw new Error(data.error || 'Operația administrativă a eșuat.');
         return data || { ok:true };
       } catch (err) {
-        console.error('Admin RPC error:', err);
+        console.error('Admin control error:', err);
         setStatus(els.saveStatus, 'Eroare', 'err');
-        const msg = err && err.message ? err.message : 'Funcțiile SQL pentru administrare conturi nu sunt instalate.';
-        els.saveSub.textContent = msg + ' Rulează o singură dată SQL-ul din fișierul supabase-sql/rf_admin_users_simple.sql.';
+        const msg = err && err.message ? err.message : 'Edge Function admin-control nu este instalată sau nu răspunde.';
+        els.saveSub.textContent = msg + ' Deployează supabase/functions/admin-control și setează SUPABASE_SERVICE_ROLE_KEY în Supabase Secrets.';
         return null;
       }
     }
