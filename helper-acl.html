@@ -277,7 +277,7 @@
     };
     const cfg = window.RF_CONFIG || {};
     const sb = (cfg.SUPABASE_URL && cfg.SUPABASE_ANON_KEY && window.supabase) ? window.supabase.createClient(cfg.SUPABASE_URL, cfg.SUPABASE_ANON_KEY, { auth:{ persistSession:true, autoRefreshToken:true, detectSessionInUrl:true } }) : null;
-    const state = { session:null, users:[], selectedEmail:'', doc:{ users:{} }, pageRules:{}, accountAccess:{}, presence:{}, authUserEmails:new Set(), hasCanonicalAuthList:false, dirty:false, access:{ can_view:false, can_add:false, can_edit:false, can_delete:false }, roleDrafts:{} };
+    const state = { session:null, users:[], selectedEmail:'', doc:{ users:{} }, pageRules:{}, accountAccess:{}, presence:{}, authUserEmails:new Set(), hasCanonicalAuthList:false, dirty:false, access:{ can_view:false, can_add:false, can_edit:false, can_delete:false }, roleDrafts:{}, pendingCreatedUsers:{} };
     function canAclEdit(){ return !!(state.access && (state.access.can_edit === true || state.access.can_add === true)); }
     function applyAclReadOnly(){ const ro = !canAclEdit(); document.body.classList.toggle('acl-view-only', ro); try{ els.btnSave.disabled = ro; }catch(_e){} qsa('input[type="checkbox"], #txtSearch').forEach(el=>{ try{ if(el.id !== 'txtSearch') el.disabled = ro; }catch(_e){} }); ['btnCheckAll','btnHideAll','btnPageAll','btnPageNone','btnResetMfa','selAccountRole','selAccountStatus','txtAccountNote'].forEach(id=>{ try{ if(els[id]) els[id].disabled = ro; }catch(_e){} }); if(ro){ els.saveSub.textContent = 'Contul curent are doar drept de vizualizare pe această pagină.'; } }
 
@@ -306,6 +306,60 @@
       return keys;
     }
     function fmtNow(){ const d = new Date(); const p = n => String(n).padStart(2,'0'); return p(d.getDate()) + '.' + p(d.getMonth()+1) + '.' + d.getFullYear() + ' ' + p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds()); }
+    function allIndexButtonKeys(){
+      return Array.from(new Set((BUTTON_GROUPS || []).flatMap(group => (group.items || []).map(item => String(item && item[0] || '').trim()).filter(Boolean))));
+    }
+    function ensureUserVisibleInAcl(email, role, userId){
+      const cleanEmail = normalizeEmail(email);
+      if (!cleanEmail) return null;
+      const cleanRole = normalizeRole(role || 'viewer');
+      const cleanUserId = String(userId || '').trim();
+      state.pendingCreatedUsers = state.pendingCreatedUsers || {};
+      state.pendingCreatedUsers[cleanEmail] = {
+        email: cleanEmail,
+        label: safeId(cleanEmail),
+        role: cleanRole,
+        source: ['created-local'],
+        user_id: cleanUserId,
+        role_source: 'created-local',
+        role_rank: 99
+      };
+      let user = state.users.find(u => normalizeEmail(u.email) === cleanEmail) || null;
+      if (!user) {
+        user = Object.assign({}, state.pendingCreatedUsers[cleanEmail]);
+        state.users.push(user);
+      } else {
+        if (!user.role) user.role = cleanRole;
+        if (!user.user_id && cleanUserId) user.user_id = cleanUserId;
+      }
+      return user;
+    }
+    function accountHasIndexVisibility(user){
+      if (!user || !state.doc.users || typeof state.doc.users !== 'object') return false;
+      return accountKeys(user).some(key => Object.prototype.hasOwnProperty.call(state.doc.users, key));
+    }
+    function prepareNewAccountDenyByDefault(user){
+      if (!user) return;
+      const email = normalizeEmail(user.email);
+      const hidden = allIndexButtonKeys();
+      state.doc.users = state.doc.users || {};
+      if (!accountHasIndexVisibility(user)) {
+        accountKeys(user).forEach(key => {
+          state.doc.users[key] = {
+            hidden: hidden.slice(),
+            account_email: email,
+            account_user_id: user.user_id || user.id || ''
+          };
+        });
+      }
+      if (!state.pageRules[email]) state.pageRules[email] = {};
+      MANAGED_PAGE_KEYS.forEach(key => {
+        const cleanKey = normalizeKey(key);
+        if (!Object.prototype.hasOwnProperty.call(state.pageRules[email], cleanKey)) {
+          state.pageRules[email][cleanKey] = clonePagePerm(EMPTY_PAGE_PERM);
+        }
+      });
+    }
 
     function statusKeyFromRow(row){ if (row && row.is_banned === true) return 'banned'; if (row && row.is_active === false) return 'blocked'; return 'active'; }
     function statusLabel(statusKey){ return statusKey === 'banned' ? 'Banat' : (statusKey === 'blocked' ? 'Blocat' : 'Activ'); }
@@ -675,11 +729,19 @@
         add(state.session.user.email, { user_id: state.session.user.id || '', source:'session' });
       }
 
+      const pendingEmails = new Set(Object.keys(state.pendingCreatedUsers || {}).map(normalizeEmail));
       state.users = Array.from(found.values())
-        .filter(user => !state.hasCanonicalAuthList || isAuthCanonicalEmail(user.email))
-        .sort((a,b) => a.email.localeCompare(b.email));
+        .filter(user => !state.hasCanonicalAuthList || isAuthCanonicalEmail(user.email) || pendingEmails.has(normalizeEmail(user.email)));
+      Object.keys(state.pendingCreatedUsers || {}).forEach(email => {
+        const cleanEmail = normalizeEmail(email);
+        if (!cleanEmail) return;
+        if (!state.users.some(u => normalizeEmail(u.email) === cleanEmail)) {
+          state.users.push(Object.assign({}, state.pendingCreatedUsers[cleanEmail] || state.pendingCreatedUsers[email], { email: cleanEmail, label: safeId(cleanEmail) }));
+        }
+      });
+      state.users.sort((a,b) => a.email.localeCompare(b.email));
 
-      if (state.selectedEmail && !state.users.some(u => u.email === state.selectedEmail)) state.selectedEmail = '';
+      if (state.selectedEmail && !state.users.some(u => normalizeEmail(u.email) === normalizeEmail(state.selectedEmail))) state.selectedEmail = '';
       if (!state.selectedEmail && state.users.length) state.selectedEmail = state.users[0].email;
       setStatus(els.countStatus, String(state.users.length), state.users.length ? 'ok' : 'warn');
       els.countSub.textContent = state.users.length
@@ -1029,6 +1091,8 @@
         els.selectedTitle.textContent = 'Niciun cont selectat'; setStatus(els.userStatus, '-', ''); els.userSub.textContent = 'Alege un cont din stânga.';
         els.permissionGroups.innerHTML = '<div class="empty">Nu există cont selectat.</div>';
         els.pageGroups.innerHTML = '<div class="empty">Nu există cont selectat.</div>';
+        if (els.txtResetEmail) els.txtResetEmail.value = '';
+        renderAccountSection();
         return;
       }
       const selectedAccess = currentAccountAccess(selected.email);
@@ -1347,12 +1411,19 @@
       const data = await invokeAdminUsers('create_user', { email, password, role, full_name: fullName });
       if (els.btnCreateAccount) els.btnCreateAccount.disabled = false;
       if (!data) return;
+      const createdUserId = data && (data.user_id || data.id || data.uid) ? String(data.user_id || data.id || data.uid) : '';
+      ensureUserVisibleInAcl(email, role, createdUserId);
       setStatus(els.saveStatus, 'Cont creat', 'ok');
-      els.saveSub.textContent = 'Cont creat/actualizat: ' + email + '. Setează permisiunile și apasă Salvează în cloud.';
+      els.saveSub.textContent = 'Cont creat/actualizat: ' + email + '. Contul este selectat fără acces implicit; setează permisiunile și apasă Salvează în cloud.';
       if (els.txtNewPassword) els.txtNewPassword.value = '';
       await loadUsers(); await loadPageRules(); await loadAccountAccess();
+      const visibleUser = ensureUserVisibleInAcl(email, role, createdUserId);
       state.selectedEmail = email;
+      prepareNewAccountDenyByDefault(visibleUser);
+      state.dirty = true;
       renderUsers(); renderPermissions();
+      setStatus(els.saveStatus, 'Nesalvat', 'warn');
+      els.saveSub.textContent = 'Cont creat/actualizat: ' + email + '. Contul nu primește acces automat. Bifează ce trebuie și apasă Salvează în cloud.';
     }
 
     async function resetSelectedPassword(){
