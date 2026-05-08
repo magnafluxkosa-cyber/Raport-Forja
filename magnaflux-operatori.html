@@ -498,7 +498,7 @@
       machineName: byId('machineName'), shiftInput: byId('shiftInput'), brixInput: byId('brixInput'), etalonInput: byId('etalonInput'), normOperators: byId('normOperators'), normTarget: byId('normTarget'), normDone: byId('normDone'), normPercent: byId('normPercent'), normStatus: byId('normStatus'), monthNormLabel: byId('monthNormLabel'), monthNormOperator: byId('monthNormOperator'), monthNormDone: byId('monthNormDone'), monthNormTarget: byId('monthNormTarget'), monthNormPercent: byId('monthNormPercent'), monthNormStatus: byId('monthNormStatus'), totalGroupsBody: byId('totalGroupsBody'), perReperBody: byId('perReperBody'), savedSheetsBody: byId('savedSheetsBody'), btnOpenSavedSheets: byId('btnOpenSavedSheets'), btnLiveOperators: byId('btnLiveOperators'), liveOperatorsModal: byId('liveOperatorsModal'), liveOperatorsBody: byId('liveOperatorsBody'), btnRefreshLiveOperators: byId('btnRefreshLiveOperators'), btnCloseLiveOperators: byId('btnCloseLiveOperators'), liveSheetModal: byId('liveSheetModal'), liveSheetBody: byId('liveSheetBody'), liveSheetSubtitle: byId('liveSheetSubtitle'), btnCloseLiveSheet: byId('btnCloseLiveSheet'), btnMagInstructions: byId('btnMagInstructions'), btnDefectCatalog: byId('btnDefectCatalog'), savedSheetsHint: byId('savedSheetsHint'), savedSheetsModal: byId('savedSheetsModal'), savedSheetsModalBody: byId('savedSheetsModalBody'), btnCloseSavedSheets: byId('btnCloseSavedSheets'), savedSheetFullModal: byId('savedSheetFullModal'), savedSheetFullBody: byId('savedSheetFullBody'), btnCloseSavedSheetFull: byId('btnCloseSavedSheetFull'), btnEditSavedSheetFull: byId('btnEditSavedSheetFull'), btnDeleteSavedSheetFull: byId('btnDeleteSavedSheetFull'), btnExportSavedSheetFull: byId('btnExportSavedSheetFull'), pptxModal: byId('pptxModal'), pptxModalTitle: byId('pptxModalTitle'), pptxModalSubtitle: byId('pptxModalSubtitle'), pptxFileStatus: byId('pptxFileStatus'), pptxUploadBox: byId('pptxUploadBox'), pptxFileInput: byId('pptxFileInput'), btnOpenPptx: byId('btnOpenPptx'), btnDownloadPptx: byId('btnDownloadPptx'), btnSavePptx: byId('btnSavePptx'), btnClosePptxModal: byId('btnClosePptxModal')
     };
 
-    const state = { client:null, session:null, user:null, role:'viewer', canEdit:false, pinConfig:[], activeOperator:null, rows:[], repere:[], reperMap:new Map(), pendingGroups:null, savedSheets:[], activeSavedSheetIndex:null, editingSheetIndex:null, editingSheetId:null, editingOriginalGroupIds:[], editingOriginalYear:null, pendingSheetId:null, pptxFiles:{}, activePptxType:null, pptxLoaded:false, liveSessionId:null, livePublishTimer:null, livePublishInterval:null, liveAdminPoll:null, liveEntries:[] };
+    const state = { client:null, session:null, user:null, role:'viewer', canEdit:false, pinConfig:[], activeOperator:null, rows:[], repere:[], reperMap:new Map(), pendingGroups:null, savedSheets:[], activeSavedSheetIndex:null, editingSheetIndex:null, editingSheetId:null, editingOriginalGroupIds:[], editingOriginalYear:null, pendingSheetId:null, pptxFiles:{}, activePptxType:null, pptxLoaded:false, liveSessionId:null, livePublishTimer:null, livePublishInterval:null, liveAdminPoll:null, liveEntries:[], liveChannel:null, livePresenceReady:false, liveLastPresence:[] };
 
     function byId(id){ return document.getElementById(id); }
     function norm(v){ return String(v||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().trim(); }
@@ -1735,7 +1735,7 @@ function allMaintenanceChecked(){
       if(isAdminAccount()) return;
       if(!state.canEdit) return;
       clearTimeout(state.livePublishTimer);
-      state.livePublishTimer = setTimeout(()=>publishLivePresence(false), 700);
+      state.livePublishTimer = setTimeout(()=>{ publishLivePresence(false); updateRealtimePresence(false); }, 700);
     }
 
     function liveDocKeyForSession(sessionId){
@@ -1752,6 +1752,84 @@ function allMaintenanceChecked(){
         page_key: PAGE_KEY,
         sheet: collectLiveSheetSnapshot()
       };
+    }
+
+    function livePresenceKey(){
+      return String(currentEmail() || 'anon') + ':' + ensureLiveSessionId();
+    }
+
+    function readRealtimePresenceEntries(){
+      if(!state.liveChannel || typeof state.liveChannel.presenceState !== 'function') return [];
+      const presence = state.liveChannel.presenceState() || {};
+      const out = [];
+      Object.keys(presence).forEach(key=>{
+        const list = Array.isArray(presence[key]) ? presence[key] : [];
+        list.forEach(item=>{
+          const entry = item && item.entry ? item.entry : item;
+          if(entry && entry.id && entry.page_key === PAGE_KEY) out.push(entry);
+        });
+      });
+      return out;
+    }
+
+    async function ensureLiveRealtimeChannel(){
+      if(!state.client || state.liveChannel) return state.liveChannel;
+      try{
+        state.liveChannel = state.client.channel('kad-magnaflux-operatori-live', {
+          config:{ presence:{ key: livePresenceKey() } }
+        });
+        state.liveChannel.on('presence', { event:'sync' }, ()=>{
+          state.liveLastPresence = readRealtimePresenceEntries();
+          if(isAdminAccount() && el.liveOperatorsModal && el.liveOperatorsModal.classList.contains('show')) renderLiveOperatorsFromAllSources();
+        });
+        state.liveChannel.on('presence', { event:'join' }, ()=>{
+          state.liveLastPresence = readRealtimePresenceEntries();
+          if(isAdminAccount() && el.liveOperatorsModal && el.liveOperatorsModal.classList.contains('show')) renderLiveOperatorsFromAllSources();
+        });
+        state.liveChannel.on('presence', { event:'leave' }, ()=>{
+          state.liveLastPresence = readRealtimePresenceEntries();
+          if(isAdminAccount() && el.liveOperatorsModal && el.liveOperatorsModal.classList.contains('show')) renderLiveOperatorsFromAllSources();
+        });
+        state.liveChannel.subscribe(async (status)=>{
+          if(status === 'SUBSCRIBED'){
+            state.livePresenceReady = true;
+            if(!isAdminAccount()) await updateRealtimePresence(true);
+            if(isAdminAccount()) {
+              state.liveLastPresence = readRealtimePresenceEntries();
+              if(el.liveOperatorsModal && el.liveOperatorsModal.classList.contains('show')) renderLiveOperatorsFromAllSources();
+            }
+          }
+        });
+      }catch(err){
+        console.warn('Realtime live status indisponibil', err);
+      }
+      return state.liveChannel;
+    }
+
+    async function updateRealtimePresence(force){
+      if(isAdminAccount() || !state.canEdit || !state.client || !state.user) return;
+      if(!force && !state.activeOperator && shouldRequireOperatorPin()) return;
+      const channel = await ensureLiveRealtimeChannel();
+      if(!channel || !state.livePresenceReady || typeof channel.track !== 'function') return;
+      try{
+        await channel.track({ entry: buildLiveEntry(new Date().toISOString()) });
+      }catch(err){
+        console.warn('Nu am putut publica live prin realtime', err);
+      }
+    }
+
+    async function untrackRealtimePresence(){
+      try{
+        if(state.liveChannel && typeof state.liveChannel.untrack === 'function') await state.liveChannel.untrack();
+      }catch(err){ console.warn('Nu am putut opri live realtime', err); }
+    }
+
+    function renderLiveOperatorsFromAllSources(){
+      const map = new Map();
+      (state.liveEntries || []).forEach(entry=>{ if(entry && entry.id) map.set(entry.id, entry); });
+      (readRealtimePresenceEntries() || []).forEach(entry=>{ if(entry && entry.id) map.set(entry.id, entry); });
+      state.liveEntries = Array.from(map.values()).filter(isLiveOnline).sort((a,b)=>String(a.operator||'').localeCompare(String(b.operator||''),'ro'));
+      renderLiveOperators();
     }
 
     async function upsertLiveSessionToPersonalDoc(entry){
@@ -1799,6 +1877,7 @@ function allMaintenanceChecked(){
     }
 
     async function removeLivePresence(){
+      await untrackRealtimePresence();
       if(isAdminAccount() || !state.client || !state.liveSessionId) return;
       try{
         await upsertDoc(liveDocKeyForSession(state.liveSessionId), {
@@ -1819,15 +1898,17 @@ function allMaintenanceChecked(){
 
     function startLivePresence(){
       if(isAdminAccount()) return;
+      ensureLiveRealtimeChannel();
       clearInterval(state.livePublishInterval);
-      state.livePublishInterval = setInterval(()=>publishLivePresence(false), LIVE_PUBLISH_INTERVAL_MS);
-      setTimeout(()=>publishLivePresence(true), 900);
-      setTimeout(()=>publishLivePresence(true), 3000);
+      state.livePublishInterval = setInterval(()=>{ publishLivePresence(false); updateRealtimePresence(false); }, LIVE_PUBLISH_INTERVAL_MS);
+      setTimeout(()=>{ publishLivePresence(true); updateRealtimePresence(true); }, 900);
+      setTimeout(()=>{ publishLivePresence(true); updateRealtimePresence(true); }, 3000);
       scheduleLivePublish();
     }
 
     function startLiveAdminPolling(){
       if(!isAdminAccount()) return;
+      ensureLiveRealtimeChannel();
       clearInterval(state.liveAdminPoll);
       state.liveAdminPoll = setInterval(()=>{
         if(el.liveOperatorsModal && el.liveOperatorsModal.classList.contains('show')) loadLiveOperators();
@@ -1867,6 +1948,7 @@ function allMaintenanceChecked(){
         Object.values(sessions).forEach(entry=>{ if(entry && entry.id) entriesMap.set(entry.id, entry); });
         const personalEntries = await fetchPersonalLiveEntries();
         personalEntries.forEach(entry=>{ if(entry && entry.id) entriesMap.set(entry.id, entry); });
+        (readRealtimePresenceEntries() || []).forEach(entry=>{ if(entry && entry.id) entriesMap.set(entry.id, entry); });
         state.liveEntries = Array.from(entriesMap.values()).filter(isLiveOnline).sort((a,b)=>String(a.operator||'').localeCompare(String(b.operator||''),'ro'));
         renderLiveOperators();
       }catch(err){
@@ -1917,7 +1999,9 @@ function allMaintenanceChecked(){
 
     async function openLiveOperatorsModal(){
       if(!isAdminAccount()) return;
+      await ensureLiveRealtimeChannel();
       if(el.liveOperatorsModal) el.liveOperatorsModal.classList.add('show');
+      state.liveLastPresence = readRealtimePresenceEntries();
       await loadLiveOperators();
     }
 
@@ -2430,7 +2514,7 @@ function allMaintenanceChecked(){
       el.btnBack.addEventListener('click', ()=>{ if(isMagnafluxOperatorAccount()) return; window.location.href='index.html'; });
       el.btnLogout.addEventListener('click', async()=>{ try{ await removeLivePresence(); await state.client.auth.signOut(); }catch(_){} window.location.href='login.html'; });
       window.addEventListener('beforeunload', ()=>{ try{ removeLivePresence(); }catch(_){} });
-      document.addEventListener('visibilitychange', ()=>{ if(document.visibilityState === 'visible') { publishLivePresence(true); if(isAdminAccount()) loadLiveOperators(); } });
+      document.addEventListener('visibilitychange', ()=>{ if(document.visibilityState === 'visible') { publishLivePresence(true); updateRealtimePresence(true); if(isAdminAccount()) loadLiveOperators(); } });
       function openPinAdmin(){
         if(isMagnafluxOperatorAccount()) return;
         if(state.role!=='admin') return;
