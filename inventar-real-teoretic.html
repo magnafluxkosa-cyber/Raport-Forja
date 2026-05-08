@@ -43,8 +43,8 @@
     .hint{margin-left:auto;max-width:760px;font-weight:700}
     .table-card{display:flex;flex-direction:column;gap:10px}
     .table-head{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;flex-wrap:wrap}
-    .table-wrap{overflow-y:auto;overflow-x:hidden;border:1px solid rgba(29,29,29,.35);border-radius:14px;background:#f4f8fc;scrollbar-gutter:stable both-edges;max-height:calc(100vh - 300px)}
-    table{border-collapse:collapse;width:100%;min-width:0;table-layout:fixed;color:var(--text)}
+    .table-wrap{overflow-y:auto;overflow-x:auto;border:1px solid rgba(29,29,29,.35);border-radius:14px;background:#f4f8fc;scrollbar-gutter:stable both-edges;max-height:calc(100vh - 300px)}
+    table{border-collapse:collapse;width:max-content;min-width:100%;table-layout:fixed;color:var(--text)}
     th{position:sticky;top:0;z-index:5;background:var(--head);color:#10213d;border:1px solid #000;padding:5px 3px;font-size:10px;text-align:center;line-height:1.0;font-weight:800;word-break:break-word}
     td{border:1px solid #000;background:#fff;font-size:10px;padding:5px 3px;text-align:center;font-weight:700;word-break:break-word}
     td.left{text-align:left;padding-left:5px}
@@ -254,6 +254,9 @@
   function parseLooseDate(value){ if(value instanceof Date && !Number.isNaN(value.getTime())) return value; const raw=trimText(value); if(!raw) return null; const normalized=raw.replace(/\./g,'/').replace(/-/g,'/'); const parts=normalized.split('/').map(s=>s.trim()).filter(Boolean); if(parts.length===3){ let day=Number(parts[0]),month=Number(parts[1]),year=Number(parts[2]); if(parts[0].length===4){ year=Number(parts[0]); month=Number(parts[1]); day=Number(parts[2]); } if(year<100) year+=2000; const d=new Date(year,month-1,day,23,59,59,999); if(!Number.isNaN(d.getTime())) return d; } const d=new Date(raw); return Number.isNaN(d.getTime())?null:d; }
   function squeezeKey(v){ return normText(v).replace(/\s+/g,''); }
   function normalizeBucketRow(bucket,row){
+    if(!Array.isArray(row) && bucket==='rebutPm' && row && typeof row==='object' && Object.prototype.hasOwnProperty.call(row,'0')){
+      row=Array.from({length:25},(_,i)=>row[String(i)]);
+    }
     if(!Array.isArray(row)) return row||{};
     switch(bucket){
       case 'helper':
@@ -421,47 +424,71 @@
   function setReal(kind,key,value){ if(!state.realStock[kind]) state.realStock[kind]={}; const clean=trimText(value); if(clean==='') delete state.realStock[kind][key]; else state.realStock[kind][key]=clean; }
   function diffClass(value){ return value<0?'diff-neg':(value===0?'diff-zero':'diff-pos'); }
   function realCell(kind,key,value){ const editable=window.__CAN_EDIT__!==false; return `<td class="num real-edit" data-real-kind="${esc(kind)}" data-real-key="${esc(key)}" contenteditable="${editable?'true':'false'}">${esc(value)}</td>`; }
-  function diffCell(theoretical, realValue, decimals){ const has=trimText(realValue)!==''; const diff=has ? (toNumber(theoretical)-toNumber(realValue)) : 0; return `<td class="num ${has?diffClass(diff):'group-blank'}"><strong>${has?formatNumber(diff,decimals):''}</strong></td>`; }
+  function diffCell(theoretical, realValue, decimals){ const has=trimText(realValue)!==''; const diff=has ? (toNumber(realValue)-toNumber(theoretical)) : 0; return `<td class="num ${has?diffClass(diff):'group-blank'}"><strong>${has?formatNumber(diff,decimals):''}</strong></td>`; }
   const REBUT_ALTE_SURSE_CODES=['LM','IBT','SM','FTT','FL','LMC','DES','AS','DIV','01','02','03','06','07','09','13','14','16'];
   const MF_CODES=REBUT_ALTE_SURSE_CODES;
   function aggregateRebutThisPeriod(){
     const forja=new Map(), other=new Map();
-    const hasRebutSheet=Array.isArray(state.raw.rebutPm) && state.raw.rebutPm.length>0;
 
-    if(hasRebutSheet){
-      state.raw.rebutPm.forEach(row=>{
-        if(!rowInSelectedPeriod(row)) return;
-        const reper=normalizeReper(pickValue(row,['reper','REPER','denumire_reper_forja','Denumire reper forja','denumire reper forja','reper forjat','Reper']));
-        if(!reper) return;
-
-        const rebutForja=toNumber(pickValue(row,['Rebut Fj.','Rebut Fj','rebut fj.','rebut fj','rebut_fj','REBUT FJ','Rebut FJ','rebut forja','Rebut Forja']));
-        if(rebutForja) forja.set(reper,(forja.get(reper)||0)+rebutForja);
-
-        let rebutAlte=0;
-        REBUT_ALTE_SURSE_CODES.forEach(code=>{
-          rebutAlte+=toNumber(pickValue(row,[code,code.toLowerCase(),code.toUpperCase()]));
-        });
-        if(rebutAlte) other.set(reper,(other.get(reper)||0)+rebutAlte);
+    function addTo(map,reper,qty){
+      const key=normalizeReper(reper);
+      const n=toNumber(qty);
+      if(!key || !n) return;
+      map.set(key,(map.get(key)||0)+n);
+    }
+    function getRebutReper(row){
+      let reper=pickValue(row,['reper','REPER','Reper','denumire_reper_forja','Denumire reper forja','denumire reper forja','reper forjat','Reper forjat','REPER FORJAT']);
+      if(reper) return reper;
+      if(Array.isArray(row)) return row[2] || '';
+      if(row && typeof row==='object'){
+        const vals=Object.values(row).map(v=>trimText(v));
+        const found=vals.find(v=>/^[A-Za-z0-9]{1,6}[-_\/][A-Za-z0-9]{1,10}/.test(v) || /^[A-Z]{2,}\d{0,}[A-Z0-9_\/-]*$/i.test(v));
+        return found || '';
+      }
+      return '';
+    }
+    function sumCodes(row,codes){
+      let total=0;
+      codes.forEach(code=>{
+        total += toNumber(pickValue(row,[code,code.toLowerCase(),code.toUpperCase(),String(code)]));
       });
-      return {forja,other};
+      return total;
     }
 
+    /* Sursa principală: foaia REBUT. Rebut Fj. intră separat, iar LM/IBT/SM/FTT/FL/LMC/DES/AS/DIV/01/02/03/06/07/09/13/14/16 intră la Rebut alte surse. */
+    if(Array.isArray(state.raw.rebutPm) && state.raw.rebutPm.length){
+      state.raw.rebutPm.forEach(row=>{
+        if(!rowInSelectedPeriod(row)) return;
+        const reper=getRebutReper(row);
+        if(!reper) return;
+
+        let rebutForja=toNumber(pickValue(row,['Rebut Fj.','Rebut Fj','rebut fj.','rebut fj','rebut_fj','REBUT FJ','Rebut FJ','rebut forja','Rebut Forja','rebut_fj_buc']));
+        if(!rebutForja && Array.isArray(row)) rebutForja=toNumber(row[5]);
+        addTo(forja,reper,rebutForja);
+
+        let rebutAlte=sumCodes(row,REBUT_ALTE_SURSE_CODES);
+        if(!rebutAlte && Array.isArray(row)){
+          for(let i=6;i<=23;i++) rebutAlte += toNumber(row[i]);
+        }
+        addTo(other,reper,rebutAlte);
+      });
+    }
+
+    /* Backup: dacă foaia Rebut nu are valori pentru un reper, completează Rebut Fj. din Forjate și alte surse din Magnaflux. Nu dublează valorile deja găsite în foaia Rebut. */
     state.raw.forjate.forEach(row=>{
       if(!rowInSelectedPeriod(row)) return;
       const reper=normalizeReper(pickValue(row,['reper','reper forjat']));
-      if(!reper) return;
-      const qty=toNumber(pickValue(row,['rebut','REBUT','rebuturi','cc','CC']));
-      if(qty) forja.set(reper,(forja.get(reper)||0)+qty);
+      if(!reper || forja.has(reper)) return;
+      addTo(forja,reper,pickValue(row,['rebut','REBUT','rebuturi','cc','CC']));
     });
 
     state.raw.magnaflux.forEach(row=>{
       if(!rowInSelectedPeriod(row)) return;
-      const reper=normalizeReper(pickValue(row,['reper','REPER','denumire reper forja','Denumire reper forja','reper forjat']));
-      if(!reper) return;
-      let qty=0;
-      REBUT_ALTE_SURSE_CODES.forEach(code=>{ qty+=toNumber(pickValue(row,[code,code.toLowerCase(),code.toUpperCase()])); });
+      const reper=normalizeReper(pickValue(row,['reper','REPER','Reper','denumire reper forja','Denumire reper forja','reper forjat']));
+      if(!reper || other.has(reper)) return;
+      let qty=sumCodes(row,REBUT_ALTE_SURSE_CODES);
       if(!qty) qty=toNumber(pickValue(row,['cantitate','Cantitate','qty','Quantity','buc','Buc','rebut','Rebut','piese rebut final','Piese rebut final  [buc]']));
-      if(qty) other.set(reper,(other.get(reper)||0)+qty);
+      addTo(other,reper,qty);
     });
 
     return {forja,other};
@@ -1107,9 +1134,9 @@
       return parts.join('');
     }).join('');
 
-    const steelTotal=state.filteredGroups.reduce((sum,material)=>{ const r=getReal('steel',realKeySteel(material)); return sum+(trimText(r)===''?0:(material.otelRamasKg-toNumber(r))); },0);
-    const debTotal=state.filteredGroups.reduce((sum,material)=>sum+material.visibleDebGroups.reduce((s,deb)=>{ const r=getReal('debitate',realKeyDeb(deb)); return s+(trimText(r)===''?0:(deb.debitatRamas-toNumber(r))); },0),0);
-    const forjTotal=state.filteredGroups.reduce((sum,material)=>sum+material.visibleDebGroups.reduce((s,deb)=>s+(deb.visibleForjats||[]).reduce((sf,forjat)=>{ const r=forjat.reperForjat?getReal('forjate',realKeyForj(forjat)):''; return sf+(trimText(r)===''?0:(forjat.forjatRamas-toNumber(r))); },0),0),0);
+    const steelTotal=state.filteredGroups.reduce((sum,material)=>{ const r=getReal('steel',realKeySteel(material)); return sum+(trimText(r)===''?0:(toNumber(r)-material.otelRamasKg)); },0);
+    const debTotal=state.filteredGroups.reduce((sum,material)=>sum+material.visibleDebGroups.reduce((s,deb)=>{ const r=getReal('debitate',realKeyDeb(deb)); return s+(trimText(r)===''?0:(toNumber(r)-deb.debitatRamas)); },0),0);
+    const forjTotal=state.filteredGroups.reduce((sum,material)=>sum+material.visibleDebGroups.reduce((s,deb)=>s+(deb.visibleForjats||[]).reduce((sf,forjat)=>{ const r=forjat.reperForjat?getReal('forjate',realKeyForj(forjat)):''; return sf+(trimText(r)===''?0:(toNumber(r)-forjat.forjatRamas)); },0),0),0);
     els.statSteel.textContent=formatNumber(steelTotal,2)+' kg';
     els.statDebitate.textContent=formatNumber(debTotal,0)+' buc';
     els.statForjate.textContent=formatNumber(forjTotal,0)+' buc';
