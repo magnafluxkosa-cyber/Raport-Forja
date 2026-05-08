@@ -450,6 +450,7 @@
     const PPTX_BUCKET = 'rf-magnaflux-files';
     const PPTX_STORAGE_PREFIX = 'magnaflux-operatori';
     const LIVE_DOC_KEY = 'magnaflux:operatori-live';
+    const LIVE_DOC_PREFIX = 'magnaflux:operatori-live:';
     const LIVE_SESSION_TTL_MS = 45000;
     const LIVE_PUBLISH_INTERVAL_MS = 5000;
     const PPTX_MAX_SIZE = 80 * 1024 * 1024;
@@ -1737,36 +1738,77 @@ function allMaintenanceChecked(){
       state.livePublishTimer = setTimeout(()=>publishLivePresence(false), 700);
     }
 
+    function liveDocKeyForSession(sessionId){
+      return LIVE_DOC_PREFIX + String(sessionId || ensureLiveSessionId()).replace(/[^a-zA-Z0-9:_@.-]/g, '_');
+    }
+
+    function buildLiveEntry(now){
+      const sessionId = ensureLiveSessionId();
+      return {
+        id: sessionId,
+        email: currentEmail(),
+        operator: state.activeOperator || accountDefaultOperatorName(),
+        updated_at: now || new Date().toISOString(),
+        page_key: PAGE_KEY,
+        sheet: collectLiveSheetSnapshot()
+      };
+    }
+
+    async function upsertLiveSessionToPersonalDoc(entry){
+      await upsertDoc(liveDocKeyForSession(entry.id), {
+        page_key:PAGE_KEY,
+        session_id:entry.id,
+        entry:entry,
+        updated_at:entry.updated_at
+      });
+    }
+
+    async function upsertLiveSessionToAggregateDoc(entry){
+      const doc = await fetchDoc(LIVE_DOC_KEY) || {};
+      const sessions = doc && doc.sessions && typeof doc.sessions === 'object' ? doc.sessions : {};
+      const cutoff = Date.now() - LIVE_SESSION_TTL_MS;
+      Object.keys(sessions).forEach(k=>{
+        const t = Date.parse(sessions[k] && sessions[k].updated_at || '');
+        if(!Number.isFinite(t) || t < cutoff) delete sessions[k];
+      });
+      sessions[entry.id] = entry;
+      await upsertDoc(LIVE_DOC_KEY, { page_key:PAGE_KEY, sessions, updated_at:entry.updated_at });
+    }
+
     async function publishLivePresence(force){
       if(isAdminAccount()) return;
       if(!state.canEdit || !state.client || !state.user) return;
       if(!force && !state.activeOperator && shouldRequireOperatorPin()) return;
+      const entry = buildLiveEntry(new Date().toISOString());
       try{
-        const now = new Date().toISOString();
-        const sessionId = ensureLiveSessionId();
-        const doc = await fetchDoc(LIVE_DOC_KEY) || {};
-        const sessions = doc && doc.sessions && typeof doc.sessions === 'object' ? doc.sessions : {};
-        const cutoff = Date.now() - LIVE_SESSION_TTL_MS;
-        Object.keys(sessions).forEach(k=>{
-          const t = Date.parse(sessions[k] && sessions[k].updated_at || '');
-          if(!Number.isFinite(t) || t < cutoff) delete sessions[k];
-        });
-        sessions[sessionId] = {
-          id: sessionId,
-          email: currentEmail(),
-          operator: state.activeOperator || accountDefaultOperatorName(),
-          updated_at: now,
-          page_key: PAGE_KEY,
-          sheet: collectLiveSheetSnapshot()
-        };
-        await upsertDoc(LIVE_DOC_KEY, { page_key:PAGE_KEY, sessions, updated_at:now });
+        await upsertLiveSessionToPersonalDoc(entry);
       }catch(err){
-        console.warn('Nu am putut actualiza statusul live operator', err);
+        console.warn('Nu am putut actualiza statusul live personal operator', err);
+        try{
+          await upsertLiveSessionToAggregateDoc(entry);
+        }catch(err2){
+          console.warn('Nu am putut actualiza statusul live operator', err2);
+        }
+        return;
+      }
+      try{
+        await upsertLiveSessionToAggregateDoc(entry);
+      }catch(err){
+        console.warn('Statusul live personal este salvat, dar registrul comun nu s-a actualizat', err);
       }
     }
 
     async function removeLivePresence(){
       if(isAdminAccount() || !state.client || !state.liveSessionId) return;
+      try{
+        await upsertDoc(liveDocKeyForSession(state.liveSessionId), {
+          page_key:PAGE_KEY,
+          session_id:state.liveSessionId,
+          entry:null,
+          offline:true,
+          updated_at:new Date().toISOString()
+        });
+      }catch(err){ console.warn('Nu am putut marca offline statusul live personal', err); }
       try{
         const doc = await fetchDoc(LIVE_DOC_KEY) || {};
         const sessions = doc && doc.sessions && typeof doc.sessions === 'object' ? doc.sessions : {};
@@ -1779,6 +1821,8 @@ function allMaintenanceChecked(){
       if(isAdminAccount()) return;
       clearInterval(state.livePublishInterval);
       state.livePublishInterval = setInterval(()=>publishLivePresence(false), LIVE_PUBLISH_INTERVAL_MS);
+      setTimeout(()=>publishLivePresence(true), 900);
+      setTimeout(()=>publishLivePresence(true), 3000);
       scheduleLivePublish();
     }
 
@@ -1790,12 +1834,40 @@ function allMaintenanceChecked(){
       }, 5000);
     }
 
+    async function fetchPersonalLiveEntries(){
+      const entries = [];
+      try{
+        const res = await state.client.from('rf_documents').select('doc_key,content,data,updated_at').like('doc_key', LIVE_DOC_PREFIX + '%');
+        if(res.error && /data/i.test(String(res.error.message||''))){
+          const res2 = await state.client.from('rf_documents').select('doc_key,content,updated_at').like('doc_key', LIVE_DOC_PREFIX + '%');
+          if(res2.error) throw res2.error;
+          (res2.data || []).forEach(row=>{
+            const content = row.content || {};
+            if(content && content.entry && !content.offline) entries.push(content.entry);
+          });
+        }else{
+          if(res.error) throw res.error;
+          (res.data || []).forEach(row=>{
+            const content = row.content || row.data || {};
+            if(content && content.entry && !content.offline) entries.push(content.entry);
+          });
+        }
+      }catch(err){
+        console.warn('Nu am putut citi documentele live individuale', err);
+      }
+      return entries;
+    }
+
     async function loadLiveOperators(){
       if(!isAdminAccount()) return;
       try{
+        const entriesMap = new Map();
         const doc = await fetchDoc(LIVE_DOC_KEY) || {};
         const sessions = doc && doc.sessions && typeof doc.sessions === 'object' ? doc.sessions : {};
-        state.liveEntries = Object.values(sessions).filter(isLiveOnline).sort((a,b)=>String(a.operator||'').localeCompare(String(b.operator||''),'ro'));
+        Object.values(sessions).forEach(entry=>{ if(entry && entry.id) entriesMap.set(entry.id, entry); });
+        const personalEntries = await fetchPersonalLiveEntries();
+        personalEntries.forEach(entry=>{ if(entry && entry.id) entriesMap.set(entry.id, entry); });
+        state.liveEntries = Array.from(entriesMap.values()).filter(isLiveOnline).sort((a,b)=>String(a.operator||'').localeCompare(String(b.operator||''),'ro'));
         renderLiveOperators();
       }catch(err){
         console.warn('Nu am putut încărca operatorii online', err);
