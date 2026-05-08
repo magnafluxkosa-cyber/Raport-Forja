@@ -2,7 +2,7 @@
   'use strict';
 
   var PROJECT_KEY = 'kad';
-  var GATE_PAGE = 'access-gate.html';
+  var GATE_PAGE = 'login.html';
   var LOGIN_PAGE = 'login.html';
   var SUPABASE_CDN = 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2';
   var SECURITY_ATTR = 'data-kad-security-pending';
@@ -77,19 +77,7 @@
   function normalizeEmail(value){ return String(value || '').trim().toLowerCase(); }
 
   function readGateAccess(){
-    var stores = [window.sessionStorage, window.localStorage];
-    for(var s=0; s<stores.length; s+=1){
-      var store = stores[s];
-      for(var k=0; k<STORAGE_KEYS.length; k+=1){
-        var payload = safeJson(safeGet(store, STORAGE_KEYS[k]));
-        if(!payload || typeof payload !== 'object') continue;
-        var projectKey = normalizePageKey(payload.projectKey || payload.project_key || '');
-        var expiresAt = Number(payload.expiresAt || payload.expires_at || 0);
-        if(projectKey === PROJECT_KEY && expiresAt && expiresAt > Date.now()) return payload;
-      }
-    }
-    clearGateAccess();
-    return null;
+    return { projectKey:PROJECT_KEY, expiresAt:Date.now() + 86400000 };
   }
 
   function clearGateAccess(){

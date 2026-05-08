@@ -80,12 +80,155 @@
     }
   }
 
+  const SESSION_REFRESH_AHEAD_MS = 5 * 60 * 1000;
+  const SESSION_REFRESH_MIN_INTERVAL_MS = 20 * 1000;
+  const registeredSessionClients = [];
+  let lastSessionRefreshAt = 0;
+  let sessionRefreshPromise = null;
+  let globalCreateClientPatched = false;
+  let sessionMaintenanceStarted = false;
+
+  function isMutatingRequest(input, init){
+    const method = String((init && init.method) || (input && input.method) || 'GET').toUpperCase();
+    return !['GET','HEAD','OPTIONS'].includes(method);
+  }
+
+  function shouldRefreshBeforeFetch(input, init){
+    if(!isMutatingRequest(input, init)) return false;
+    const rawUrl = String((typeof input === 'string' ? input : (input && input.url)) || '');
+    return /\/rest\/v1\//i.test(rawUrl) || /\/functions\/v1\//i.test(rawUrl) || /\/storage\/v1\//i.test(rawUrl);
+  }
+
+  function shouldRetryAfterAuthFailure(input, init, response){
+    if(!response || ![401,403].includes(Number(response.status))) return false;
+    return shouldRefreshBeforeFetch(input, init);
+  }
+
+  async function ensureFreshSession(client, options){
+    const settings = Object.assign({ force:false, redirect:false, next:getCurrentPageName() }, options || {});
+    const sb = client || supabaseClient || null;
+    if(!sb || !sb.auth || typeof sb.auth.getSession !== 'function') return null;
+
+    const now = Date.now();
+    if(!settings.force && sessionRefreshPromise) return sessionRefreshPromise;
+    if(!settings.force && now - lastSessionRefreshAt < SESSION_REFRESH_MIN_INTERVAL_MS){
+      try{
+        const current = await sb.auth.getSession();
+        return current && current.data ? (current.data.session || null) : null;
+      }catch(_e){ return null; }
+    }
+
+    sessionRefreshPromise = (async function(){
+      try{
+        const result = await sb.auth.getSession();
+        let session = result && result.data ? (result.data.session || null) : null;
+        if(!session || !session.user){
+          clearUserState();
+          if(settings.redirect) window.location.href = buildLoginUrl(settings.next || getCurrentPageName());
+          return null;
+        }
+
+        const expiresAtMs = Number(session.expires_at || 0) ? Number(session.expires_at) * 1000 : 0;
+        const needsRefresh = settings.force || !expiresAtMs || (expiresAtMs - Date.now() <= SESSION_REFRESH_AHEAD_MS);
+        if(needsRefresh && typeof sb.auth.refreshSession === 'function'){
+          const refreshed = await sb.auth.refreshSession();
+          if(refreshed && refreshed.error) throw refreshed.error;
+          session = refreshed && refreshed.data && refreshed.data.session ? refreshed.data.session : session;
+        }
+
+        if(session && session.user){
+          const storedRole = safeGetItem(STORAGE.userRole) || 'viewer';
+          persistUserState(session.user, storedRole);
+        }
+        lastSessionRefreshAt = Date.now();
+        return session || null;
+      }catch(err){
+        try{ console.warn('ERPAuth session refresh failed', err); }catch(_e){}
+        if(settings.redirect) window.location.href = buildLoginUrl(settings.next || getCurrentPageName());
+        return null;
+      }finally{
+        sessionRefreshPromise = null;
+      }
+    })();
+
+    return sessionRefreshPromise;
+  }
+
+  async function ensureFreshSessionOrRedirect(next){
+    return ensureFreshSession(getSupabaseClient(), { force:true, redirect:true, next: next || getCurrentPageName() });
+  }
+
+  function makeSessionAwareFetch(client, originalFetch){
+    const nativeFetch = originalFetch || (typeof fetch === 'function' ? fetch.bind(window) : null);
+    if(!nativeFetch) return originalFetch;
+    return async function(input, init){
+      if(shouldRefreshBeforeFetch(input, init)){
+        await ensureFreshSession(client, { force:false, redirect:false });
+      }
+      let response = await nativeFetch(input, init);
+      if(shouldRetryAfterAuthFailure(input, init, response)){
+        const refreshed = await ensureFreshSession(client, { force:true, redirect:false });
+        if(refreshed){
+          try{ response = await nativeFetch(input, init); }catch(_e){}
+        }
+      }
+      return response;
+    };
+  }
+
+  function registerSessionClient(client){
+    if(!client || registeredSessionClients.includes(client)) return client;
+    registeredSessionClients.push(client);
+    startSessionMaintenance();
+    return client;
+  }
+
+  function startSessionMaintenance(){
+    if(sessionMaintenanceStarted) return;
+    sessionMaintenanceStarted = true;
+    const refreshAll = function(force){
+      registeredSessionClients.slice().forEach(function(client){
+        try{ ensureFreshSession(client, { force: !!force, redirect:false }); }catch(_e){}
+      });
+    };
+    window.addEventListener('focus', function(){ refreshAll(true); });
+    window.addEventListener('pageshow', function(){ refreshAll(true); });
+    document.addEventListener('visibilitychange', function(){ if(!document.hidden) refreshAll(true); });
+    window.setInterval(function(){ if(!document.hidden) refreshAll(false); }, 4 * 60 * 1000);
+  }
+
+  function patchSupabaseCreateClient(){
+    if(globalCreateClientPatched) return;
+    if(!window.supabase || typeof window.supabase.createClient !== 'function') return;
+    if(window.supabase.__erpSessionPatchApplied) return;
+    const originalCreateClient = window.supabase.createClient.bind(window.supabase);
+    window.supabase.createClient = function(url, key, options){
+      const opts = Object.assign({}, options || {});
+      opts.auth = Object.assign({ persistSession:true, autoRefreshToken:true, detectSessionInUrl:true }, opts.auth || {});
+      let clientRef = null;
+      const originalGlobal = opts.global || {};
+      const originalFetch = originalGlobal.fetch || (typeof fetch === 'function' ? fetch.bind(window) : null);
+      opts.global = Object.assign({}, originalGlobal, {
+        fetch: function(input, init){
+          const activeClient = clientRef || supabaseClient;
+          return makeSessionAwareFetch(activeClient, originalFetch)(input, init);
+        }
+      });
+      clientRef = originalCreateClient(url, key, opts);
+      registerSessionClient(clientRef);
+      return clientRef;
+    };
+    window.supabase.__erpSessionPatchApplied = true;
+    globalCreateClientPatched = true;
+  }
+
   function getSupabaseClient(){
     if(supabaseClient){
       return supabaseClient;
     }
 
     ensureSupabaseLibrary();
+    patchSupabaseCreateClient();
     const cfg = readConfig();
 
     if(!cfg.url){
@@ -104,6 +247,7 @@
       }
     });
 
+    registerSessionClient(supabaseClient);
     return supabaseClient;
   }
 
@@ -644,7 +788,7 @@
   }
 
   async function signOut(options){
-    const settings = Object.assign({ redirectTo: 'access-gate.html' }, options || {});
+    const settings = Object.assign({ redirectTo: 'login.html' }, options || {});
 
     try {
       const sb = getSupabaseClient();
@@ -741,12 +885,16 @@
     };
   }
 
+  try{ patchSupabaseCreateClient(); }catch(_e){}
+
   window.ERPAuth = {
     ADMIN_EMAIL,
     normalizeEmail,
     readConfig,
     getSupabaseClient,
     getSession,
+    ensureFreshSession,
+    ensureFreshSessionOrRedirect,
     getCurrentUserWithRole,
     resolveUserRole,
     getAccountStatus,
