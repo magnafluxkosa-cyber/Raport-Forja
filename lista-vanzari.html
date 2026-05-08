@@ -85,7 +85,7 @@
   </style>
   <link rel="stylesheet" href="./kad-nav-shell.css">
 </head>
-<body>
+<body data-page-key="lista-vanzari">
   <div class="page">
     <div class="topbar">
       <div class="top-left">
@@ -260,7 +260,7 @@ const els = {
 let rows = [];
 let filteredRows = [];
 let editingIndex = -1;
-let pageAccess = { can_view:true, can_add:true, can_edit:true, can_delete:true };
+let pageAccess = { can_view:true, can_add:true, can_edit:true, can_delete:true, can_import:true };
 const filters = { year:'', month:'', company:'', search:'' };
 
 function createClient(){
@@ -272,11 +272,12 @@ function createClient(){
 const supa = createClient();
 
 function canEdit(){ return !!(pageAccess.can_edit === true || pageAccess.can_add === true); }
+function canImport(){ return !!(pageAccess.can_import === true || pageAccess.can_edit === true || pageAccess.can_add === true); }
 function canDelete(){ return !!(pageAccess.can_delete === true || pageAccess.can_edit === true); }
 function applyAccessUi(){
   const ro = !canEdit();
   try{ els.btnAdd.disabled = ro; }catch(_e){}
-  try{ els.btnImport.disabled = ro; }catch(_e){}
+  try{ els.btnImport.disabled = !canImport(); }catch(_e){}
   try{ els.btnSaveModal.disabled = ro; }catch(_e){}
   try{ els.btnDelete.disabled = !canDelete(); }catch(_e){}
 }
@@ -433,7 +434,7 @@ async function ensureSession(){
     pageAccess = access && access.permissions ? access.permissions : pageAccess;
     if (pageAccess.can_view === false) { window.location.href = 'index.html'; throw new Error('Fără acces'); }
     const email = normText(auth.user && auth.user.email);
-    els.roleText.textContent = 'Utilizator: ' + (email || '-') + (canEdit() ? '' : ' • doar vizualizare');
+    els.roleText.textContent = 'Utilizator: ' + (email || '-') + (canEdit() ? '' : (canImport() ? ' • import permis' : ' • doar vizualizare'));
     applyAccessUi();
     return;
   }
@@ -615,25 +616,50 @@ async function deleteModalRow(){
   closeModal();
 }
 function findHeaderRow(sheetRows){
-  const limit = Math.min(sheetRows.length, 10);
+  const limit = Math.min(sheetRows.length, 30);
+  const expected = [
+    ['cod articol','cod art','cod produs','articol cod'],
+    ['nume art','nume articol','denumire articol','articol'],
+    ['numar document','număr document','document','nr document'],
+    ['data emiterii','data','data document'],
+    ['firma','firmă','client'],
+    ['cantitate','cant','qty']
+  ];
+  let bestIndex = 0;
+  let bestScore = -1;
   for(let i=0; i<limit; i++){
     const row = (sheetRows[i] || []).map(normKey);
-    if(row.includes('cod articol') && row.includes('nume art') && row.some(v => v.indexOf('numar document') >= 0 || v.indexOf('număr document') >= 0 || v.indexOf('document') >= 0)){
-      return i;
-    }
+    let score = 0;
+    expected.forEach(group=>{
+      if(row.some(cell => group.some(key => cell === normKey(key) || cell.includes(normKey(key)) || normKey(key).includes(cell)))) score++;
+    });
+    if(score > bestScore){ bestScore = score; bestIndex = i; }
+    if(score >= 4) return i;
   }
-  return 0;
+  return bestIndex;
 }
 function buildHeaderMap(headerRow){
   const map = {};
-  (headerRow || []).forEach((value, idx) => { map[normKey(value)] = idx; });
+  (headerRow || []).forEach((value, idx) => {
+    const key = normKey(value);
+    if(key && typeof map[key] !== 'number') map[key] = idx;
+  });
+  map.__headers = (headerRow || []).map(normKey);
   return map;
 }
-function pickCell(arr, map, candidates){
+function pickCell(arr, map, candidates, fallbackIndex){
   for(const candidate of candidates){
-    const idx = map[normKey(candidate)];
+    const key = normKey(candidate);
+    const idx = map[key];
     if(typeof idx === 'number' && arr[idx] != null && arr[idx] !== '') return arr[idx];
   }
+  const headers = map.__headers || [];
+  for(const candidate of candidates){
+    const key = normKey(candidate);
+    const idx = headers.findIndex(h => h && (h === key || h.includes(key) || key.includes(h)));
+    if(idx >= 0 && arr[idx] != null && arr[idx] !== '') return arr[idx];
+  }
+  if(typeof fallbackIndex === 'number' && arr[fallbackIndex] != null && arr[fallbackIndex] !== '') return arr[fallbackIndex];
   return '';
 }
 function importSalesFromWorkbook(wb){
@@ -648,13 +674,13 @@ function importSalesFromWorkbook(wb){
     const arr = raw[i] || [];
     if(arr.every(v => normText(v) === '')) continue;
     const row = sanitizeRows([{
-      cod_articol: pickCell(arr, headerMap, ['Cod articol', 'Cod art.', 'Cod produs']),
-      nume_articol: pickCell(arr, headerMap, ['Nume art.', 'Nume articol', 'Articol']),
-      numar_document: pickCell(arr, headerMap, ['Număr document', 'Numar document', 'Document']),
-      data_emiterii: pickCell(arr, headerMap, ['Data emiterii', 'Data', 'Data document']),
-      firma: pickCell(arr, headerMap, ['Firmă', 'Firma', 'Client']),
-      cantitate: pickCell(arr, headerMap, ['Cantitate', 'Cant.', 'Qty']),
-      um: pickCell(arr, headerMap, ['U.M.', 'UM', 'U/M'])
+      cod_articol: pickCell(arr, headerMap, ['Cod articol', 'Cod art.', 'Cod produs'], 0),
+      nume_articol: pickCell(arr, headerMap, ['Nume art.', 'Nume articol', 'Denumire articol', 'Articol'], 1),
+      numar_document: pickCell(arr, headerMap, ['Număr document', 'Numar document', 'Nr document', 'Document'], 2),
+      data_emiterii: pickCell(arr, headerMap, ['Data emiterii', 'Data', 'Data document'], 3),
+      firma: pickCell(arr, headerMap, ['Firmă', 'Firma', 'Client'], 4),
+      cantitate: pickCell(arr, headerMap, ['Cantitate', 'Cant.', 'Qty'], 5),
+      um: pickCell(arr, headerMap, ['U.M.', 'UM', 'U/M'], 6)
     }])[0];
     if(!row.cod_articol && !row.nume_articol && !row.numar_document) continue;
     parsed.push(row);
@@ -663,7 +689,7 @@ function importSalesFromWorkbook(wb){
 }
 async function runImportFile(file){
   if(!file) return;
-  if(!canEdit()){
+  if(!canImport()){
     window.alert('Nu ai drept de import pe această pagină.');
     return;
   }
@@ -674,6 +700,10 @@ async function runImportFile(file){
   const buf = await file.arrayBuffer();
   const wb = XLSX.read(buf, { type:'array', cellDates:true });
   const importedRows = importSalesFromWorkbook(wb);
+  if(!importedRows.length){
+    window.alert('Nu am găsit rânduri de importat. Verifică dacă Excelul are coloanele: Cod articol, Nume art., Număr document, Data emiterii, Firmă, Cantitate, U.M.');
+    return;
+  }
   const seen = new Set(rows.map(rowSignature));
   let added = 0;
   const next = rows.slice();
@@ -736,7 +766,7 @@ async function pickExcelFiles(options){
   });
 }
 async function startImportPicker(){
-  if(!canEdit()){
+  if(!canImport()){
     window.alert('Nu ai drept de import pe această pagină.');
     return;
   }
