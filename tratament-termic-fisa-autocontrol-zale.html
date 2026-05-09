@@ -496,6 +496,7 @@
       var PIN_DOC_KEY = 'tratament-termic:operatori-pins';
       var TEMP_SETTINGS_DOC_KEY = 'tratament-termic:temperaturi-setate';
       var TRACKING_DOC_KEY = 'tratament-termic:urmarire-temperaturi-tt';
+      var TRACKING_LOCAL_KEY = 'kad_' + TRACKING_DOC_KEY;
       var TRACKING_SESSION_KEY = STORAGE_KEY + ':tracking-session';
       var TEMP_SETTINGS_CACHE = null;
       var trackingSaveTimer = null;
@@ -1108,6 +1109,60 @@
         var result = controlLimitResult(limit, value);
         return { preset:preset, value:value, ok:result.ok, status:result.ok ? 'OK' : 'NOK', interval:result.text };
       }
+
+      function readTrackingLocalDoc(){
+        try{
+          var raw = localStorage.getItem(TRACKING_LOCAL_KEY);
+          var doc = raw ? JSON.parse(raw) : null;
+          if(doc && typeof doc === 'object') return doc;
+        }catch(_){ }
+        return { page_key:'urmarire-temperaturi-tt', source_page_key:PAGE_KEY, schema_version:1, rows:[], updated_at:'' };
+      }
+      function trackingRowMergeKey(row){
+        if(row && row.id) return 'id:' + String(row.id);
+        return [row && row.session_id || '', row && row.reper_slot || '', row && row.nr_crt || '', row && row.date_iso || '', row && row.ora_ctrl || '', row && row.reper || ''].join('|');
+      }
+      function mergeTrackingRows(baseRows, newRows, sessionId){
+        var map = new Map();
+        (baseRows || []).forEach(function(row){
+          if(!row) return;
+          if(sessionId && String(row.session_id || '') === String(sessionId)) return;
+          map.set(trackingRowMergeKey(row), row);
+        });
+        (newRows || []).forEach(function(row){ if(row) map.set(trackingRowMergeKey(row), row); });
+        var rows = Array.from(map.values());
+        rows.sort(function(a,b){
+          var ak = String(a.date_iso || '') + ' ' + String(a.ora_ctrl || '') + ' ' + String(a.reper || '') + ' ' + String(a.nr_crt || '');
+          var bk = String(b.date_iso || '') + ' ' + String(b.ora_ctrl || '') + ' ' + String(b.reper || '') + ' ' + String(b.nr_crt || '');
+          return ak.localeCompare(bk, 'ro', { numeric:true });
+        });
+        return rows;
+      }
+      function writeTrackingLocalSnapshot(rows, sessionId){
+        try{
+          var doc = readTrackingLocalDoc();
+          var merged = mergeTrackingRows(Array.isArray(doc.rows) ? doc.rows : [], rows || [], sessionId || getTrackingSessionId());
+          var payload = { page_key:'urmarire-temperaturi-tt', source_page_key:PAGE_KEY, schema_version:1, rows:merged, updated_at:new Date().toISOString() };
+          localStorage.setItem(TRACKING_LOCAL_KEY, JSON.stringify(payload));
+          localStorage.setItem(TRACKING_LOCAL_KEY + ':changed', payload.updated_at);
+          return payload;
+        }catch(error){
+          console.warn('Nu am putut salva local urmărirea temperaturilor TT', error);
+          return null;
+        }
+      }
+      function saveTrackingLocalNow(){
+        try{
+          var sessionId = getTrackingSessionId();
+          var rows = collectTrackingRows();
+          var doc = writeTrackingLocalSnapshot(rows, sessionId);
+          if(rows.length && doc) setChip(els.modeChip, 'Urmărire TT salvată local', 'ok');
+          return { sessionId:sessionId, rows:rows, doc:doc };
+        }catch(error){
+          console.warn('saveTrackingLocalNow', error);
+          return { sessionId:getTrackingSessionId(), rows:[], doc:null };
+        }
+      }
       function collectTrackingRows(){
         var sessionId = getTrackingSessionId();
         var dateIso = (els.ttWorkDate && els.ttWorkDate.dataset.iso) || todayIso();
@@ -1168,34 +1223,29 @@
         return rows;
       }
       async function saveTrackingNow(){
+        var local = saveTrackingLocalNow();
+        var sessionId = local.sessionId || getTrackingSessionId();
+        var rows = local.rows || [];
         if(!state.user || !getSupabaseClient()) return;
-        var sessionId = getTrackingSessionId();
-        var rows = collectTrackingRows();
         trackingSaveBusy = true;
         try{
           var doc = await fetchDoc(TRACKING_DOC_KEY) || {};
-          var all = Array.isArray(doc.rows) ? doc.rows.slice() : [];
-          all = all.filter(function(row){ return String(row && row.session_id || '') !== sessionId; });
-          all = all.concat(rows);
-          all.sort(function(a,b){
-            var ak = String(a.date_iso || '') + ' ' + String(a.ora_ctrl || '') + ' ' + String(a.reper || '') + ' ' + String(a.nr_crt || '');
-            var bk = String(b.date_iso || '') + ' ' + String(b.ora_ctrl || '') + ' ' + String(b.reper || '') + ' ' + String(b.nr_crt || '');
-            return ak.localeCompare(bk, 'ro', { numeric:true });
-          });
+          var all = mergeTrackingRows(Array.isArray(doc.rows) ? doc.rows.slice() : [], rows, sessionId);
           await upsertDoc(TRACKING_DOC_KEY, { page_key:'urmarire-temperaturi-tt', source_page_key:PAGE_KEY, schema_version:1, rows:all, updated_at:new Date().toISOString() });
           if(rows.length) setChip(els.modeChip, 'Urmărire TT salvată automat', 'ok');
         }catch(error){
-          console.warn('Nu am putut salva urmărirea temperaturilor TT', error);
-          setChip(els.modeChip, 'Eroare salvare urmărire TT', 'bad');
+          console.warn('Nu am putut salva urmărirea temperaturilor TT în cloud; rămâne salvată local.', error);
+          if(rows.length) setChip(els.modeChip, 'Urmărire TT salvată local', 'warn');
         }finally{
           trackingSaveBusy = false;
         }
       }
       function scheduleTrackingSave(){
+        saveTrackingLocalNow();
         if(trackingSaveTimer) clearTimeout(trackingSaveTimer);
         trackingSaveTimer = setTimeout(function(){
           saveTrackingNow().catch(function(error){ console.warn(error); });
-        }, 900);
+        }, 550);
       }
 
       function parseControlLimit(key, token){
@@ -1933,6 +1983,10 @@
           if(!td) return;
           if(event.key === 'Enter'){ event.preventDefault(); moveToNextEditable(td, event.shiftKey ? -1 : 1); }
         });
+        document.addEventListener('focusout', function(event){
+          var td = event.target && event.target.closest ? event.target.closest('.editable-cell') : null;
+          if(td){ ensureOraCtrlForRow(td.parentElement); validateMeasuredTemperatures(); saveDraft(); scheduleTrackingSave(); }
+        });
       }
       function moveToNextEditable(current, step){
         var cells = Array.from(document.querySelectorAll('.editable-cell'));
@@ -2063,6 +2117,8 @@
           showPinModal();
         });
         window.addEventListener('resize', fitSheet);
+        window.addEventListener('beforeunload', function(){ try{ saveTrackingLocalNow(); }catch(_){ } });
+        document.addEventListener('visibilitychange', function(){ if(document.visibilityState === 'hidden'){ try{ saveTrackingLocalNow(); }catch(_){ } } });
       }
       async function init(){
         els.roleChip = qs('roleChip');
