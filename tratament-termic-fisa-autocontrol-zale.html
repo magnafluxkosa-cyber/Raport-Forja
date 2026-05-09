@@ -513,7 +513,7 @@
       </div>
       <div class="tt-operator-sheets-wrap">
         <table class="tt-operator-sheets-table">
-          <thead><tr><th>Data</th><th>Operator</th><th>Schimb</th><th>Reper 1</th><th>Reper 2</th><th>Ultima salvare</th><th>Acțiune</th></tr></thead>
+          <thead><tr><th>Data</th><th>Operator</th><th>Schimb</th><th>Reper 1</th><th>Reper 2</th><th>Ultima salvare</th><th>Acțiune</th><th>Ștergere</th></tr></thead>
           <tbody id="operatorSheetsBody"></tbody>
         </table>
       </div>
@@ -1623,6 +1623,93 @@
         await loadOperatorSheetFor(operator, dateIso, shift);
         state.trackingDirty = false;
       }
+
+      function removeTrackingRowsFromLocal(sheetId){
+        sheetId = String(sheetId || '').trim();
+        if(!sheetId) return null;
+        try{
+          var doc = readTrackingLocalDoc();
+          var rows = Array.isArray(doc.rows) ? doc.rows : [];
+          var filtered = rows.filter(function(row){
+            var sourceId = trackingSourceId(row);
+            var id = String(row && row.id || '');
+            var sessionId = String(row && row.session_id || '');
+            return sourceId !== sheetId && id.indexOf(sheetId + '::') !== 0 && sessionId !== ('sheet::' + sheetId);
+          });
+          var payload = { page_key:'urmarire-temperaturi-tt', source_page_key:PAGE_KEY, schema_version:1, rows:filtered, updated_at:new Date().toISOString() };
+          localStorage.setItem(TRACKING_LOCAL_KEY, JSON.stringify(payload));
+          localStorage.setItem(TRACKING_LOCAL_KEY + ':changed', payload.updated_at);
+          return payload;
+        }catch(error){
+          console.warn('Nu am putut șterge local rândurile din urmărirea TT.', error);
+          return null;
+        }
+      }
+      async function deleteTrackingRowsForSheet(sheetId){
+        sheetId = String(sheetId || '').trim();
+        if(!sheetId) return;
+        removeTrackingRowsFromLocal(sheetId);
+        if(!state.user || !getSupabaseClient()) return;
+        try{
+          var doc = await fetchDoc(TRACKING_DOC_KEY) || {};
+          var rows = Array.isArray(doc.rows) ? doc.rows : [];
+          var filtered = rows.filter(function(row){
+            var sourceId = trackingSourceId(row);
+            var id = String(row && row.id || '');
+            var sessionId = String(row && row.session_id || '');
+            return sourceId !== sheetId && id.indexOf(sheetId + '::') !== 0 && sessionId !== ('sheet::' + sheetId);
+          });
+          await upsertDoc(TRACKING_DOC_KEY, { page_key:'urmarire-temperaturi-tt', source_page_key:PAGE_KEY, schema_version:1, rows:filtered, updated_at:new Date().toISOString() });
+        }catch(error){
+          console.warn('Nu am putut șterge din cloud rândurile din Urmărire temperaturi TT.', error);
+          throw error;
+        }
+      }
+      function removeOperatorSheetFromLocal(sheetId){
+        sheetId = String(sheetId || '').trim();
+        try{
+          var localDoc = readOperatorSheetsLocalDoc();
+          var localSheets = Array.isArray(localDoc.sheets) ? localDoc.sheets : [];
+          var filtered = localSheets.filter(function(sheet){ return String(sheet && sheet.id || '') !== sheetId; });
+          var payload = { page_key:PAGE_KEY, schema_version:1, sheets:filtered, updated_at:new Date().toISOString() };
+          localStorage.setItem(OPERATOR_SHEETS_LOCAL_KEY, JSON.stringify(payload));
+          localStorage.setItem(OPERATOR_SHEETS_LOCAL_KEY + ':changed', payload.updated_at);
+        }catch(error){
+          console.warn('Nu am putut șterge local fișa operatorului.', error);
+        }
+      }
+      async function deleteOperatorSheetById(sheetId){
+        if(!isAdminAccount()) return;
+        sheetId = String(sheetId || '').trim();
+        if(!sheetId) return;
+        await loadOperatorSheets(true);
+        var sheet = (OPERATOR_SHEETS_CACHE || []).find(function(s){ return String(s && s.id || '') === sheetId; });
+        if(!sheet) return;
+        var label = [sheet.date_text || dateRo(sheet.date_iso), sheet.operator || '', sheet.shift ? shiftInfo(sheet.shift).label : ''].filter(Boolean).join(' · ');
+        var ok = confirm('Ștergi fișa operatorului?\n' + label + '\n\nSe vor șterge și datele aferente din Urmărire temperaturi TT.');
+        if(!ok) return;
+        try{
+          setChip(els.operatorSheetsMsg, 'Se șterge fișa și urmărirea TT...', 'warn');
+          var doc = await fetchDoc(OPERATOR_SHEETS_DOC_KEY) || {};
+          var remoteSheets = Array.isArray(doc.sheets) ? doc.sheets : [];
+          var filteredRemote = remoteSheets.filter(function(item){ return String(item && item.id || '') !== sheetId; });
+          await upsertDoc(OPERATOR_SHEETS_DOC_KEY, { page_key:PAGE_KEY, schema_version:1, sheets:filteredRemote, updated_at:new Date().toISOString() });
+          removeOperatorSheetFromLocal(sheetId);
+          await deleteTrackingRowsForSheet(sheetId);
+          OPERATOR_SHEETS_CACHE = (OPERATOR_SHEETS_CACHE || []).filter(function(item){ return String(item && item.id || '') !== sheetId; });
+          if(String(state.currentOperatorSheetId || '') === sheetId){
+            state.currentOperatorSheetId = null;
+            clearSheetContentNoConfirm(true);
+          }
+          renderOperatorSheetsList();
+          setChip(els.operatorSheetsMsg, 'Fișa a fost ștearsă împreună cu datele din Urmărire temperaturi TT.', 'ok');
+          setChip(els.modeChip, 'Fișa ștearsă', 'ok');
+        }catch(error){
+          console.error(error);
+          setChip(els.operatorSheetsMsg, 'Eroare la ștergere', 'bad');
+          alert('Nu am putut șterge fișa: ' + (error && error.message || error));
+        }
+      }
       function renderOperatorSheetsList(){
         if(!els.operatorSheetsBody) return;
         var q = norm(els.operatorSheetsSearch ? els.operatorSheetsSearch.value : '');
@@ -1632,7 +1719,7 @@
           return norm(pack).indexOf(q) >= 0;
         });
         if(!sheets.length){
-          els.operatorSheetsBody.innerHTML = '<tr><td colspan="7" class="tt-operator-sheets-empty">Nu există fișe salvate pentru filtrul selectat.</td></tr>';
+          els.operatorSheetsBody.innerHTML = '<tr><td colspan="8" class="tt-operator-sheets-empty">Nu există fișe salvate pentru filtrul selectat.</td></tr>';
           setChip(els.operatorSheetsMsg, '0 fișe', 'warn');
           return;
         }
@@ -1645,6 +1732,7 @@
             '<td class="left">' + escHtml(sheet.reper2 || '') + '</td>' +
             '<td>' + escHtml(String(sheet.updated_at || '').replace('T',' ').slice(0,16)) + '</td>' +
             '<td><button class="btn secondary" type="button" data-open-operator-sheet="' + escHtml(sheet.id || '') + '">Deschide</button></td>' +
+            '<td><button class="btn danger" type="button" data-delete-operator-sheet="' + escHtml(sheet.id || '') + '">Șterge</button></td>' +
           '</tr>';
         }).join('');
         els.operatorSheetsBody.querySelectorAll('[data-open-operator-sheet]').forEach(function(btn){
@@ -1658,6 +1746,15 @@
               state.trackingDirty = false;
               setChip(els.modeChip, 'Vizualizare fișă: ' + (sheet.operator || ''), 'ok');
             }
+          });
+        });
+        els.operatorSheetsBody.querySelectorAll('[data-delete-operator-sheet]').forEach(function(btn){
+          btn.addEventListener('click', function(){
+            var id = btn.getAttribute('data-delete-operator-sheet');
+            deleteOperatorSheetById(id).catch(function(error){
+              console.error(error);
+              alert('Nu am putut șterge fișa: ' + (error && error.message || error));
+            });
           });
         });
         setChip(els.operatorSheetsMsg, sheets.length + ' fișe', 'ok');
