@@ -1348,8 +1348,32 @@
       function currentWorkDateIso(){
         return (els.ttWorkDate && els.ttWorkDate.dataset.iso) || todayIso();
       }
-      function operatorDraftStorageKey(operator, dateIso){
-        return STORAGE_KEY + ':operator:' + safeStoragePart(operator) + ':' + String(dateIso || todayIso()).slice(0,10);
+      function currentShift(){
+        return String((els.ttShift && els.ttShift.value) || '').trim();
+      }
+      function shiftInfo(shift){
+        shift = String(shift || '').trim();
+        if(shift === '1') return { shift:'1', start:'06:00', end:'14:00', label:'Schimb 1 · 06:00-14:00' };
+        if(shift === '2') return { shift:'2', start:'14:00', end:'22:00', label:'Schimb 2 · 14:00-22:00' };
+        if(shift === '3') return { shift:'3', start:'22:00', end:'06:00', label:'Schimb 3 · 22:00-06:00' };
+        return { shift:'', start:'', end:'', label:'Schimb nesetat' };
+      }
+      function buildOperatorSheetId(operator, dateIso, shift){
+        return 'tt-sheet::' + safeStoragePart(operator) + '::' + String(dateIso || todayIso()).slice(0,10) + '::sch-' + (String(shift || '').trim() || 'nesetat');
+      }
+      function operatorDraftStorageKey(operator, dateIso, shift){
+        return STORAGE_KEY + ':operator:' + safeStoragePart(operator) + ':' + String(dateIso || todayIso()).slice(0,10) + ':sch-' + (String(shift || '').trim() || 'nesetat');
+      }
+      function parseDateInput(value){
+        var raw = String(value || '').trim();
+        if(!raw) return '';
+        var iso = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+        if(iso) return raw;
+        var ro = raw.match(/^(\d{1,2})[.\/\-](\d{1,2})[.\/\-](\d{4})$/);
+        if(ro){
+          return ro[3] + '-' + String(ro[2]).padStart(2,'0') + '-' + String(ro[1]).padStart(2,'0');
+        }
+        return '';
       }
       function setWorkDateIso(iso){
         iso = String(iso || todayIso()).slice(0,10);
@@ -1374,14 +1398,19 @@
         var fields = headerFieldValues();
         var operator = activeSheetOperator() || fields.operatorTT || '';
         var dateIso = fields.dateIso || currentWorkDateIso();
-        var id = state.currentOperatorSheetId || ('tt-sheet::' + safeStoragePart(operator) + '::' + String(dateIso).slice(0,10));
+        var shift = String(fields.shift || currentShift() || '').trim();
+        var info = shiftInfo(shift);
+        var id = buildOperatorSheetId(operator, dateIso, shift);
         return {
           id:id,
           page_key:PAGE_KEY,
           operator:operator,
           date_iso:String(dateIso).slice(0,10),
           date_text:fields.dateText || dateRo(dateIso),
-          shift:fields.shift || '',
+          shift:shift,
+          shift_start:info.start,
+          shift_end:info.end,
+          shift_interval:info.label,
           reper1:fields.reper1 || '',
           reper2:fields.reper2 || '',
           codCat1:fields.codCat1 || '',
@@ -1502,11 +1531,17 @@
           saveOperatorSheetCloudNow().catch(function(error){ console.warn(error); });
         }, 650);
       }
-      function findOperatorSheetFor(operator, dateIso){
+      function findOperatorSheetFor(operator, dateIso, shift){
         operator = norm(operator);
         dateIso = String(dateIso || todayIso()).slice(0,10);
+        shift = String(shift || '').trim();
         var sheets = OPERATOR_SHEETS_CACHE || [];
-        var matches = sheets.filter(function(sheet){ return norm(sheet.operator) === operator && String(sheet.date_iso || '').slice(0,10) === dateIso; });
+        var matches = sheets.filter(function(sheet){
+          var sameBase = norm(sheet.operator) === operator && String(sheet.date_iso || '').slice(0,10) === dateIso;
+          if(!sameBase) return false;
+          if(shift) return String(sheet.shift || '').trim() === shift;
+          return true;
+        });
         matches.sort(function(a,b){ return String(b.updated_at || '').localeCompare(String(a.updated_at || '')); });
         return matches[0] || null;
       }
@@ -1559,21 +1594,34 @@
           state.trackingDirty = false;
         }
       }
-      async function loadOperatorSheetFor(operator, dateIso){
+      async function loadOperatorSheetFor(operator, dateIso, shift){
         dateIso = String(dateIso || todayIso()).slice(0,10);
+        shift = String(shift || '').trim();
         await loadOperatorSheets(true);
-        var found = findOperatorSheetFor(operator, dateIso);
+        var found = findOperatorSheetFor(operator, dateIso, shift);
         if(found){
           applySheetData(found);
-          setChip(els.modeChip, 'Fișă încărcată: ' + operator, 'ok');
+          setChip(els.modeChip, 'Fișă încărcată: ' + operator + (found.shift ? ' · ' + shiftInfo(found.shift).label : ''), 'ok');
           return true;
         }
-        state.currentOperatorSheetId = 'tt-sheet::' + safeStoragePart(operator) + '::' + dateIso;
+        state.currentOperatorSheetId = buildOperatorSheetId(operator, dateIso, shift);
         clearSheetContentNoConfirm(true);
         setWorkDateIso(dateIso);
+        if(els.ttShift) els.ttShift.value = shift;
         if(els.ttOperatorTT) els.ttOperatorTT.value = operator;
-        setChip(els.modeChip, 'Fișă nouă: ' + operator, 'ok');
+        setChip(els.modeChip, 'Fișă nouă: ' + operator + (shift ? ' · ' + shiftInfo(shift).label : ''), 'ok');
         return false;
+      }
+      async function switchOperatorSheetScope(dateIso, shift){
+        if(state.loadingOperatorSheet || state.suppressTrackingSave) return;
+        var operator = activeSheetOperator();
+        if(!operator) return;
+        dateIso = String(dateIso || currentWorkDateIso() || todayIso()).slice(0,10);
+        shift = String(shift || currentShift() || '').trim();
+        try{ await saveOperatorSheetCloudNow(); }catch(error){ console.warn(error); }
+        state.currentOperatorSheetId = null;
+        await loadOperatorSheetFor(operator, dateIso, shift);
+        state.trackingDirty = false;
       }
       function renderOperatorSheetsList(){
         if(!els.operatorSheetsBody) return;
@@ -1592,7 +1640,7 @@
           return '<tr data-sheet-id="' + escHtml(sheet.id || '') + '">' +
             '<td>' + escHtml(sheet.date_text || dateRo(sheet.date_iso)) + '</td>' +
             '<td class="left">' + escHtml(sheet.operator || '') + '</td>' +
-            '<td>' + escHtml(sheet.shift || '') + '</td>' +
+            '<td>' + escHtml(sheet.shift ? shiftInfo(sheet.shift).label : '') + '</td>' +
             '<td class="left">' + escHtml(sheet.reper1 || '') + '</td>' +
             '<td class="left">' + escHtml(sheet.reper2 || '') + '</td>' +
             '<td>' + escHtml(String(sheet.updated_at || '').replace('T',' ').slice(0,16)) + '</td>' +
@@ -2038,7 +2086,7 @@
         lockPrimaryOperatorUi();
         forceEnablePinInput();
         resetWorkDateToToday();
-        await loadOperatorSheetFor(found.operator, todayIso());
+        await loadOperatorSheetFor(found.operator, todayIso(), currentShift());
         if(els.ttOperatorTT) els.ttOperatorTT.value = found.operator;
         saveDraft();
         state.trackingDirty = false;
@@ -2231,6 +2279,22 @@
         if(els.ttWorkDate){
           els.ttWorkDate.dataset.iso = today;
           els.ttWorkDate.value = dateRo(today);
+          els.ttWorkDate.addEventListener('blur', function(){
+            if(els.ttWorkDate.readOnly || els.ttWorkDate.disabled) return;
+            var parsed = parseDateInput(els.ttWorkDate.value);
+            if(!parsed){ setWorkDateIso(currentWorkDateIso()); return; }
+            if(parsed !== currentWorkDateIso()){
+              switchOperatorSheetScope(parsed, currentShift()).catch(function(error){ console.warn(error); setWorkDateIso(currentWorkDateIso()); });
+            } else {
+              setWorkDateIso(parsed);
+            }
+          });
+          els.ttWorkDate.addEventListener('keydown', function(event){
+            if(event.key === 'Enter'){
+              event.preventDefault();
+              try{ els.ttWorkDate.blur(); }catch(_){ }
+            }
+          });
         }
         [['ttCodCat1', null], ['ttCodCat2', null]].forEach(function(pair){
           var ctrl = els[pair[0]];
@@ -2254,7 +2318,17 @@
             scheduleTrackingSave();
           });
         }
-        if(els.ttShift) els.ttShift.addEventListener('change', function(){ updateMagnafluxOperatorNames(); saveDraft(); scheduleTrackingSave(); });
+        if(els.ttShift) els.ttShift.addEventListener('change', function(){
+          updateMagnafluxOperatorNames();
+          var operator = activeSheetOperator();
+          var shift = currentShift();
+          if(operator && !state.loadingOperatorSheet && !state.suppressTrackingSave){
+            switchOperatorSheetScope(currentWorkDateIso(), shift).catch(function(error){ console.warn(error); });
+          } else {
+            saveDraft();
+            scheduleTrackingSave();
+          }
+        });
         if(els.ttOperatorTT) els.ttOperatorTT.addEventListener('input', function(){ saveDraft(); scheduleTrackingSave(); });
         if(els.ttOperatorMF) els.ttOperatorMF.addEventListener('input', function(){
           els.ttOperatorMF.dataset.autoMf = '0';
@@ -2306,6 +2380,11 @@
         setChip(els.modeChip, canEdit() ? 'Editare permisă' : 'Doar vizualizare', canEdit() ? 'ok' : 'warn');
         document.querySelectorAll('.tt-user-field').forEach(function(ctrl){ ctrl.disabled = !canEdit(); });
         document.querySelectorAll('.tt-auto-field').forEach(function(ctrl){ ctrl.readOnly = true; ctrl.disabled = false; });
+        if(els.ttWorkDate){
+          els.ttWorkDate.readOnly = !isAdminAccount();
+          els.ttWorkDate.disabled = false;
+          els.ttWorkDate.title = isAdminAccount() ? 'Admin: poți schimba data. La schimbarea datei se deschide fișa separată pentru operator/data/schimbul selectat.' : 'Data se setează automat pentru operator.';
+        }
         lockPrimaryOperatorUi();
       }
       function getDraft(){
@@ -2313,7 +2392,7 @@
         var operator = activeSheetOperator();
         var dateIso = currentWorkDateIso();
         var keys = [];
-        if(operator) keys.push(operatorDraftStorageKey(operator, dateIso));
+        if(operator) keys.push(operatorDraftStorageKey(operator, dateIso, currentShift()));
         keys.push(STORAGE_KEY);
         for(var i=0;i<keys.length;i++){
           try{
@@ -2328,7 +2407,7 @@
         if(!canEdit()) return;
         var data = collectCurrentSheetData();
         try{
-          if(data.operator) localStorage.setItem(operatorDraftStorageKey(data.operator, data.date_iso), JSON.stringify(data));
+          if(data.operator) localStorage.setItem(operatorDraftStorageKey(data.operator, data.date_iso, data.shift), JSON.stringify(data));
           localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
         }catch(_){ }
         scheduleOperatorSheetSave();
@@ -2356,7 +2435,7 @@
         var dateIso = currentWorkDateIso();
         clearSheetContentNoConfirm(true);
         try{
-          if(operator) localStorage.removeItem(operatorDraftStorageKey(operator, dateIso));
+          if(operator) localStorage.removeItem(operatorDraftStorageKey(operator, dateIso, currentShift()));
           localStorage.removeItem(STORAGE_KEY);
         }catch(_){ }
         if(shouldRequireOperatorPin() && state.activeOperator && els.ttOperatorTT){ els.ttOperatorTT.value = state.activeOperator; }
