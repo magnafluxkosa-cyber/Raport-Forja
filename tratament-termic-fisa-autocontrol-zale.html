@@ -1433,10 +1433,40 @@
         try{
           var raw = localStorage.getItem(OPERATOR_SHEETS_LOCAL_KEY);
           var doc = raw ? JSON.parse(raw) : null;
-          if(doc && typeof doc === 'object') return doc;
+          if(doc && typeof doc === 'object'){
+            if(!Array.isArray(doc.sheets)) doc.sheets = [];
+            if(!Array.isArray(doc.deleted_ids)) doc.deleted_ids = Array.isArray(doc.deleted_sheet_ids) ? doc.deleted_sheet_ids : [];
+            return doc;
+          }
         }catch(_){ }
-        return { page_key:PAGE_KEY, schema_version:1, sheets:[], updated_at:'' };
+        return { page_key:PAGE_KEY, schema_version:1, sheets:[], deleted_ids:[], updated_at:'' };
       }
+      function operatorSheetsDeletedSet(doc){
+        var set = new Set();
+        if(doc && Array.isArray(doc.deleted_ids)) doc.deleted_ids.forEach(function(id){ id = String(id || '').trim(); if(id) set.add(id); });
+        if(doc && Array.isArray(doc.deleted_sheet_ids)) doc.deleted_sheet_ids.forEach(function(id){ id = String(id || '').trim(); if(id) set.add(id); });
+        return set;
+      }
+      function addDeletedOperatorSheetId(doc, sheetId){
+        var set = operatorSheetsDeletedSet(doc || {});
+        sheetId = String(sheetId || '').trim();
+        if(sheetId) set.add(sheetId);
+        return Array.from(set);
+      }
+      function filterDeletedOperatorSheets(sheets, deletedSet){
+        deletedSet = deletedSet || new Set();
+        return (sheets || []).filter(function(sheet){
+          var id = String(sheet && sheet.id || '').trim();
+          return id && !deletedSet.has(id);
+        });
+      }
+      function persistOperatorSheetsLocal(sheets, deletedIds){
+        var payload = { page_key:PAGE_KEY, schema_version:1, sheets:filterDeletedOperatorSheets(sheets || [], new Set(deletedIds || [])), deleted_ids:Array.from(new Set(deletedIds || [])), updated_at:new Date().toISOString() };
+        localStorage.setItem(OPERATOR_SHEETS_LOCAL_KEY, JSON.stringify(payload));
+        localStorage.setItem(OPERATOR_SHEETS_LOCAL_KEY + ':changed', payload.updated_at);
+        return payload;
+      }
+      function functionSafeRemoveItem(key){ try{ if(key) localStorage.removeItem(key); }catch(_){ } }
       function sheetUpdatedMs(sheet){
         var ms = Date.parse(String(sheet && sheet.updated_at || sheet && sheet.synced_at || ''));
         return Number.isFinite(ms) ? ms : 0;
@@ -1474,10 +1504,10 @@
         data.local_dirty = true;
         try{
           var doc = readOperatorSheetsLocalDoc();
-          var merged = mergeOperatorSheets(Array.isArray(doc.sheets) ? doc.sheets : [], [data]);
-          var payload = { page_key:PAGE_KEY, schema_version:1, sheets:merged, updated_at:new Date().toISOString() };
-          localStorage.setItem(OPERATOR_SHEETS_LOCAL_KEY, JSON.stringify(payload));
-          localStorage.setItem(OPERATOR_SHEETS_LOCAL_KEY + ':changed', payload.updated_at);
+          var deletedSet = operatorSheetsDeletedSet(doc);
+          if(deletedSet.has(String(data.id || '').trim())) return null;
+          var merged = mergeOperatorSheets(filterDeletedOperatorSheets(Array.isArray(doc.sheets) ? doc.sheets : [], deletedSet), [data]);
+          persistOperatorSheetsLocal(merged, Array.from(deletedSet));
           return data;
         }catch(error){
           console.warn('Nu am putut salva local fișa operatorului.', error);
@@ -1487,19 +1517,25 @@
       async function loadOperatorSheets(force){
         if(OPERATOR_SHEETS_CACHE && !force) return OPERATOR_SHEETS_CACHE;
         var remote = [];
+        var remoteDeletedSet = new Set();
         try{
           var doc = await fetchDoc(OPERATOR_SHEETS_DOC_KEY);
           remote = Array.isArray(doc && doc.sheets) ? doc.sheets : [];
+          remoteDeletedSet = operatorSheetsDeletedSet(doc || {});
         }catch(error){ console.warn('Nu am putut citi fișele operatorilor din cloud.', error); }
-        var remoteIds = new Set(remote.map(function(sheet){ return String(sheet && sheet.id || ''); }).filter(Boolean));
         var localDoc = readOperatorSheetsLocalDoc();
-        var local = Array.isArray(localDoc && localDoc.sheets) ? localDoc.sheets : [];
+        var localDeletedSet = operatorSheetsDeletedSet(localDoc || {});
+        var deletedSet = new Set(Array.from(remoteDeletedSet).concat(Array.from(localDeletedSet)));
+        remote = filterDeletedOperatorSheets(remote, deletedSet);
+        var remoteIds = new Set(remote.map(function(sheet){ return String(sheet && sheet.id || ''); }).filter(Boolean));
+        var local = filterDeletedOperatorSheets(Array.isArray(localDoc && localDoc.sheets) ? localDoc.sheets : [], deletedSet);
         local = local.filter(function(sheet){
           if(!sheet || !sheet.id) return false;
           if(!remoteIds.has(String(sheet.id))) return true;
           return sheet.local_dirty === true;
         });
-        OPERATOR_SHEETS_CACHE = mergeOperatorSheets(remote, local);
+        OPERATOR_SHEETS_CACHE = filterDeletedOperatorSheets(mergeOperatorSheets(remote, local), deletedSet);
+        try{ persistOperatorSheetsLocal(OPERATOR_SHEETS_CACHE, Array.from(deletedSet)); }catch(_){ }
         return OPERATOR_SHEETS_CACHE;
       }
       async function saveOperatorSheetCloudNow(){
@@ -1507,14 +1543,16 @@
         if(!data || !data.operator || !sheetHasContent(data)) return;
         try{
           var doc = await fetchDoc(OPERATOR_SHEETS_DOC_KEY) || {};
+          var localDoc = readOperatorSheetsLocalDoc();
+          var deletedSet = new Set(Array.from(operatorSheetsDeletedSet(doc)).concat(Array.from(operatorSheetsDeletedSet(localDoc))));
+          if(deletedSet.has(String(data.id || '').trim())) return;
           var cleanData = Object.assign({}, data, { local_dirty:false, synced_at:new Date().toISOString(), updated_at:new Date().toISOString() });
-          var merged = mergeOperatorSheets(Array.isArray(doc.sheets) ? doc.sheets : [], [cleanData]);
-          await upsertDoc(OPERATOR_SHEETS_DOC_KEY, { page_key:PAGE_KEY, schema_version:1, sheets:merged, updated_at:new Date().toISOString() });
+          var merged = mergeOperatorSheets(filterDeletedOperatorSheets(Array.isArray(doc.sheets) ? doc.sheets : [], deletedSet), [cleanData]);
+          merged = filterDeletedOperatorSheets(merged, deletedSet);
+          await upsertDoc(OPERATOR_SHEETS_DOC_KEY, { page_key:PAGE_KEY, schema_version:1, sheets:merged, deleted_ids:Array.from(deletedSet), updated_at:new Date().toISOString() });
           OPERATOR_SHEETS_CACHE = merged;
           try{
-            var payload = { page_key:PAGE_KEY, schema_version:1, sheets:merged, updated_at:new Date().toISOString() };
-            localStorage.setItem(OPERATOR_SHEETS_LOCAL_KEY, JSON.stringify(payload));
-            localStorage.setItem(OPERATOR_SHEETS_LOCAL_KEY + ':changed', payload.updated_at);
+            persistOperatorSheetsLocal(merged, Array.from(deletedSet));
           }catch(_){ }
           setChip(els.modeChip, 'Fișa operatorului salvată automat', 'ok');
         }catch(error){
@@ -1669,11 +1707,10 @@
         sheetId = String(sheetId || '').trim();
         try{
           var localDoc = readOperatorSheetsLocalDoc();
+          var deletedIds = addDeletedOperatorSheetId(localDoc, sheetId);
           var localSheets = Array.isArray(localDoc.sheets) ? localDoc.sheets : [];
           var filtered = localSheets.filter(function(sheet){ return String(sheet && sheet.id || '') !== sheetId; });
-          var payload = { page_key:PAGE_KEY, schema_version:1, sheets:filtered, updated_at:new Date().toISOString() };
-          localStorage.setItem(OPERATOR_SHEETS_LOCAL_KEY, JSON.stringify(payload));
-          localStorage.setItem(OPERATOR_SHEETS_LOCAL_KEY + ':changed', payload.updated_at);
+          persistOperatorSheetsLocal(filtered, deletedIds);
         }catch(error){
           console.warn('Nu am putut șterge local fișa operatorului.', error);
         }
@@ -1691,15 +1728,24 @@
         try{
           setChip(els.operatorSheetsMsg, 'Se șterge fișa și urmărirea TT...', 'warn');
           var doc = await fetchDoc(OPERATOR_SHEETS_DOC_KEY) || {};
+          var deletedIds = addDeletedOperatorSheetId(doc, sheetId);
           var remoteSheets = Array.isArray(doc.sheets) ? doc.sheets : [];
           var filteredRemote = remoteSheets.filter(function(item){ return String(item && item.id || '') !== sheetId; });
-          await upsertDoc(OPERATOR_SHEETS_DOC_KEY, { page_key:PAGE_KEY, schema_version:1, sheets:filteredRemote, updated_at:new Date().toISOString() });
+          await upsertDoc(OPERATOR_SHEETS_DOC_KEY, { page_key:PAGE_KEY, schema_version:1, sheets:filteredRemote, deleted_ids:deletedIds, updated_at:new Date().toISOString() });
           removeOperatorSheetFromLocal(sheetId);
+          try{
+            if(sheet){
+              functionSafeRemoveItem(operatorDraftStorageKey(sheet.operator || '', sheet.date_iso || '', sheet.shift || ''));
+            }
+            if(String(state.currentOperatorSheetId || '') === sheetId) functionSafeRemoveItem(STORAGE_KEY);
+          }catch(_){ }
           await deleteTrackingRowsForSheet(sheetId);
-          OPERATOR_SHEETS_CACHE = (OPERATOR_SHEETS_CACHE || []).filter(function(item){ return String(item && item.id || '') !== sheetId; });
+          OPERATOR_SHEETS_CACHE = filterDeletedOperatorSheets((OPERATOR_SHEETS_CACHE || []).filter(function(item){ return String(item && item.id || '') !== sheetId; }), new Set(deletedIds));
           if(String(state.currentOperatorSheetId || '') === sheetId){
             state.currentOperatorSheetId = null;
+            state.suppressTrackingSave = true;
             clearSheetContentNoConfirm(true);
+            state.suppressTrackingSave = false;
           }
           renderOperatorSheetsList();
           setChip(els.operatorSheetsMsg, 'Fișa a fost ștearsă împreună cu datele din Urmărire temperaturi TT.', 'ok');
