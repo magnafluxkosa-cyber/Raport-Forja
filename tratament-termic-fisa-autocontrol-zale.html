@@ -823,7 +823,7 @@
       var TT_PARAM_KEYS = ['aust_z1','aust_z2','aust_z3','aust_z4','bazin_calire','duritate_calire','temp_remanenta','polimer','timp_scufundare','revenire_z1','revenire_z2','bazin_racire'];
       var TT_PARAM_CELL_INDEX = { aust_z1:2, aust_z2:3, aust_z3:4, aust_z4:5, bazin_calire:6, duritate_calire:7, temp_remanenta:8, polimer:9, timp_scufundare:10, revenire_z1:11, revenire_z2:12, bazin_racire:13 };
       var TT_PARAM_LABEL = { aust_z1:'Aust. zona 1', aust_z2:'Aust. zona 2', aust_z3:'Aust. zona 3', aust_z4:'Aust. zona 4', bazin_calire:'Bazin călire', duritate_calire:'Duritate după călire HRC', temp_remanenta:'Temp. remanență', polimer:'% Polimer', timp_scufundare:'Timp scufundare', revenire_z1:'Revenire zona 1', revenire_z2:'Revenire zona 2', bazin_racire:'Bazin răcire' };
-      var state = { canEdit:false, access:null, client:null, session:null, user:null, role:'viewer', repere:[], reperMap:new Map(), magnafluxSheets:[], magnafluxOperators:[], pinConfig:[], activeOperator:null, pinUnlocked:false, reper2PresetAfter:null, currentOperatorSheetId:null, trackingDirty:false, loadingOperatorSheet:false, suppressTrackingSave:false };
+      var state = { canEdit:false, access:null, client:null, session:null, user:null, role:'viewer', repere:[], reperMap:new Map(), magnafluxSheets:[], magnafluxOperators:[], pinConfig:[], activeOperator:null, pinUnlocked:false, reper2PresetAfter:null, currentOperatorSheetId:null, trackingDirty:false, loadingOperatorSheet:false, suppressTrackingSave:false, reportDirty:false, reportSavedForSheetId:'' };
       var els = {};
 
       function qs(id){ return document.getElementById(id); }
@@ -1737,6 +1737,36 @@
           problema_observatii:collectObservationRows().map(function(row){ return row.observatii; }).filter(Boolean).join('\n')
         };
       }
+      function markReportDirty(){
+        if(state.loadingOperatorSheet || state.suppressTrackingSave) return;
+        state.reportDirty = true;
+        state.reportSavedForSheetId = '';
+        setChip(els.ttReportStatus, 'Raport modificat', 'warn');
+      }
+      function markReportCleanAsLoaded(data){
+        state.reportDirty = false;
+        state.reportSavedForSheetId = ttReportHasData(data || collectReportPanelData()) ? ttReportBaseId() : '';
+      }
+      function validateReportSavedBeforeOperatorChange(){
+        updateReportAutoFields();
+        var reportData = collectReportPanelData();
+        if(!ttReportHasData(reportData)){
+          setChip(els.ttReportStatus, 'Salvează raportul TT', 'bad');
+          alert('Nu poți schimba operatorul până nu completezi și salvezi raportul TT.');
+          if(els.btnSaveReportTT){ try{ els.btnSaveReportTT.focus({ preventScroll:false }); }catch(_){ try{ els.btnSaveReportTT.focus(); }catch(__){} } }
+          return false;
+        }
+        if(state.reportDirty || state.reportSavedForSheetId !== ttReportBaseId()){
+          setChip(els.ttReportStatus, 'Trebuie salvat raportul TT', 'bad');
+          alert('Nu poți schimba operatorul până nu apeși butonul „Salvează raport TT”.');
+          if(els.btnSaveReportTT){
+            try{ els.btnSaveReportTT.scrollIntoView({ behavior:'smooth', block:'center' }); }catch(_){ }
+            try{ els.btnSaveReportTT.focus({ preventScroll:false }); }catch(_){ try{ els.btnSaveReportTT.focus(); }catch(__){} }
+          }
+          return false;
+        }
+        return true;
+      }
       function legacyReportToRows(data){
         if(data && data.rows){
           if(!Array.isArray(data.observatii)){
@@ -1772,8 +1802,13 @@
           if(minEl) minEl.value = line.minute ? String(line.minute) : '';
         }
         updateReportAutoFields();
+        markReportCleanAsLoaded(data);
       }
-      function clearReportPanel(){ loadReportPanelData({ rows:{ '1':{slot:'1'}, '2':{slot:'2'} }, observatii:[{nr:1, observatii:'', minute:0},{nr:2, observatii:'', minute:0},{nr:3, observatii:'', minute:0},{nr:4, observatii:'', minute:0}], problema_observatii:'' }); }
+      function clearReportPanel(){
+        var emptyReport = { rows:{ '1':{slot:'1'}, '2':{slot:'2'} }, observatii:[{nr:1, observatii:'', minute:0},{nr:2, observatii:'', minute:0},{nr:3, observatii:'', minute:0},{nr:4, observatii:'', minute:0}], problema_observatii:'' };
+        loadReportPanelData(emptyReport);
+        markReportCleanAsLoaded(emptyReport);
+      }
       function ttReportSlotHasData(row){
         row = row || {};
         return !!(row.reper || row.sarja || row.cantitate || row.opriri_neplanificate || row.mentenanta || row.incalzire || row.golire);
@@ -1873,11 +1908,11 @@
         return Array.from(map.values());
       }
       async function saveReportAndProblemsNow(){
-        if(!canEdit()) return;
+        if(!canEdit()) return false;
         updateReportAutoFields();
         var reportRows = buildReportRowsFromPanel();
         var problemRows = buildProblemRowsFromPanel();
-        if(!reportRows.length && !problemRows.length){ setChip(els.ttReportStatus, 'Nu sunt date de salvat', 'warn'); return; }
+        if(!reportRows.length && !problemRows.length){ setChip(els.ttReportStatus, 'Nu sunt date de salvat', 'warn'); return false; }
         setChip(els.ttReportStatus, 'Se salvează raportul...', 'warn');
         try{
           var reportLocal = readDocLocal(TT_REPORT_LOCAL_KEY) || { rows:[] };
@@ -1892,19 +1927,23 @@
             var problemDoc = await fetchDoc(TT_PROBLEME_DOC_KEY) || {};
             await upsertDoc(TT_PROBLEME_DOC_KEY, { rows:mergeRowsById(Array.isArray(problemDoc.rows) ? problemDoc.rows : [], problemRows, problemRowIdsForCurrentSheet().filter(function(id){ return !problemRows.some(function(row){ return row.id === id; }); })), updated_at:new Date().toISOString() });
           }
+          state.reportDirty = false;
+          state.reportSavedForSheetId = ttReportBaseId();
           setChip(els.ttReportStatus, 'Raport salvat', 'ok');
+          return true;
         }catch(error){
           console.error(error);
           setChip(els.ttReportStatus, 'Eroare la salvare raport', 'bad');
           alert('Nu am putut salva raportul TT: ' + (error && error.message || error));
+          return false;
         }
       }
       function bindReportPanelEvents(){
         ['ttReportCantitate','ttReportOpriri','ttReportMentenanta','ttReportIncalzire','ttReportGolire','ttReportCantitate2','ttReportOpriri2','ttReportMentenanta2','ttReportIncalzire2','ttReportGolire2','ttProblemObservatii1','ttProblemMinute1','ttProblemObservatii2','ttProblemMinute2','ttProblemObservatii3','ttProblemMinute3','ttProblemObservatii4','ttProblemMinute4'].forEach(function(id){
           var el = els[id];
           if(!el) return;
-          el.addEventListener('input', function(){ recalcReportOre(); saveDraft(); setChip(els.ttReportStatus, 'Raport modificat', 'warn'); });
-          el.addEventListener('change', function(){ updateReportAutoFields(); saveDraft(); setChip(els.ttReportStatus, 'Raport modificat', 'warn'); });
+          el.addEventListener('input', function(){ recalcReportOre(); markReportDirty(); saveDraft(); });
+          el.addEventListener('change', function(){ updateReportAutoFields(); markReportDirty(); saveDraft(); });
         });
         if(els.btnSaveReportTT) els.btnSaveReportTT.addEventListener('click', function(){ saveReportAndProblemsNow(); });
       }
@@ -3133,14 +3172,15 @@
         [['ttCodCat1', null], ['ttCodCat2', null]].forEach(function(pair){
           var ctrl = els[pair[0]];
           if(!ctrl) return;
-          ctrl.addEventListener('input', function(){ ctrl.value = formatCodCat(ctrl.value); updateReportAutoFields(); saveDraft(); scheduleTrackingSave(); });
-          ctrl.addEventListener('blur', function(){ ctrl.value = formatCodCat(ctrl.value); updateReportAutoFields(); saveDraft(); scheduleTrackingSave(); });
+          ctrl.addEventListener('input', function(){ ctrl.value = formatCodCat(ctrl.value); updateReportAutoFields(); markReportDirty(); saveDraft(); scheduleTrackingSave(); });
+          ctrl.addEventListener('blur', function(){ ctrl.value = formatCodCat(ctrl.value); updateReportAutoFields(); markReportDirty(); saveDraft(); scheduleTrackingSave(); });
         });
-        if(els.ttReper1){ els.ttReper1.addEventListener('change', function(){ applyReperAuto(1); updateReportAutoFields(); autoFillTreatmentParamsFromRepere(); saveDraft(); scheduleTrackingSave(); }); els.ttReper1.addEventListener('blur', function(){ autoFillTreatmentParamsFromRepere(); }); }
+        if(els.ttReper1){ els.ttReper1.addEventListener('change', function(){ applyReperAuto(1); updateReportAutoFields(); markReportDirty(); autoFillTreatmentParamsFromRepere(); saveDraft(); scheduleTrackingSave(); }); els.ttReper1.addEventListener('blur', function(){ autoFillTreatmentParamsFromRepere(); }); }
         if(els.ttReper2){
           els.ttReper2.addEventListener('change', function(){
             applyReperAuto(2);
             updateReportAutoFields();
+            markReportDirty();
             if(String(els.ttReper2.value || '').trim() && !state.reper2PresetAfter) state.reper2PresetAfter = getLastEnteredDataRowNumber();
             if(!String(els.ttReper2.value || '').trim()) state.reper2PresetAfter = null;
             autoFillTreatmentParamsFromRepere();
@@ -3155,6 +3195,8 @@
         }
         if(els.ttShift) els.ttShift.addEventListener('change', function(){
           updateMagnafluxOperatorNames();
+          updateReportAutoFields();
+          markReportDirty();
           var operator = activeSheetOperator();
           var shift = currentShift();
           if(operator && !state.loadingOperatorSheet && !state.suppressTrackingSave){
@@ -3164,7 +3206,7 @@
             scheduleTrackingSave();
           }
         });
-        if(els.ttOperatorTT) els.ttOperatorTT.addEventListener('input', function(){ saveDraft(); scheduleTrackingSave(); });
+        if(els.ttOperatorTT) els.ttOperatorTT.addEventListener('input', function(){ updateReportAutoFields(); markReportDirty(); saveDraft(); scheduleTrackingSave(); });
         if(els.ttOperatorMF) els.ttOperatorMF.addEventListener('input', function(){
           els.ttOperatorMF.dataset.autoMf = '0';
           if(els.ttOperatorDurit && !String(els.ttOperatorDurit.value || '').trim()) els.ttOperatorDurit.value = els.ttOperatorMF.value;
@@ -3456,9 +3498,9 @@
         if(els.btnChangeOperator) els.btnChangeOperator.addEventListener('click', async function(){
           if(!shouldRequireOperatorPin()) return;
           if(!validateCantitateProdusaBeforeOperatorChange()) return;
+          if(!validateReportSavedBeforeOperatorChange()) return;
           try{ await saveOperatorSheetCloudNow(); }catch(error){ console.warn(error); }
           try{ await saveTrackingNow(); state.trackingDirty = false; }catch(error){ console.warn(error); }
-          try{ await saveReportAndProblemsNow(); }catch(error){ console.warn(error); }
           clearSheetContentNoConfirm(false);
           resetWorkDateToToday();
           state.pinUnlocked = false;
