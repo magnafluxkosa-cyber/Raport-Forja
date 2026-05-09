@@ -175,6 +175,7 @@
 <button class="btn secondary hidden" id="btnPinAdmin" type="button">Configurare PIN-uri</button>
 <button class="btn secondary hidden" id="btnChangeOperator" type="button">Schimbă operator</button>
 <button class="btn secondary hidden" id="btnTempSettings" type="button">Setare temperaturi</button>
+<button class="btn secondary hidden" id="btnTrackingTT" type="button">Urmărire temperaturi TT</button>
 <button class="btn secondary" id="btnBack" type="button">Înapoi la Dashboard</button>
 <button class="btn secondary" id="btnPrint" type="button">Tipărește fișa</button>
 <button class="btn danger" id="btnLogout" type="button">Logout</button>
@@ -494,7 +495,11 @@
       var OPERATOR_TRATAMENT_ROLE_LABEL = 'operator tratament termic';
       var PIN_DOC_KEY = 'tratament-termic:operatori-pins';
       var TEMP_SETTINGS_DOC_KEY = 'tratament-termic:temperaturi-setate';
+      var TRACKING_DOC_KEY = 'tratament-termic:urmarire-temperaturi-tt';
+      var TRACKING_SESSION_KEY = STORAGE_KEY + ':tracking-session';
       var TEMP_SETTINGS_CACHE = null;
+      var trackingSaveTimer = null;
+      var trackingSaveBusy = false;
       var TECH_SHEETS_DOC_KEY = 'tratament-termic-fise-tehnologice';
       var TECH_STORAGE_BUCKET = 'tt-fise-tehnologice';
       var TECH_PDF_TEXT_CACHE = Object.create(null);
@@ -1063,6 +1068,136 @@
         }
         return getPresetParamMap('reper1');
       }
+      
+      function getPresetIdForMeasureRow(row){
+        var current = row;
+        while(current){
+          if(current.getAttribute && current.getAttribute('data-tt-preset-row') === '1'){
+            return current.getAttribute('data-tt-preset-id') || 'reper1';
+          }
+          current = current.previousElementSibling;
+        }
+        return 'reper1';
+      }
+      function getTrackingSessionId(){
+        var today = todayIso();
+        try{
+          var raw = localStorage.getItem(TRACKING_SESSION_KEY);
+          var data = raw ? JSON.parse(raw) : null;
+          if(data && data.date_iso === today && data.id) return String(data.id);
+        }catch(_){ }
+        var fresh = { id:uuid(), date_iso:today, created_at:new Date().toISOString() };
+        try{ localStorage.setItem(TRACKING_SESSION_KEY, JSON.stringify(fresh)); }catch(_){ }
+        return fresh.id;
+      }
+      function cleanNumber(value){
+        var n = parseMeasuredValue(value);
+        return Number.isFinite(n) ? n : null;
+      }
+      function trackingFieldValue(row, key){
+        var idx = TT_PARAM_CELL_INDEX[key];
+        if(idx == null || !row || !row.cells || !row.cells[idx]) return '';
+        return textOf(row.cells[idx]);
+      }
+      function trackingLimitStatus(presetId, key, valueText){
+        var presets = getPresetParamMap(presetId || 'reper1');
+        var preset = presets[key] || '';
+        var limit = parseControlLimit(key, preset);
+        var value = cleanNumber(valueText);
+        if(!preset || !limit || value == null) return { preset:preset, value:value, ok:null, status:'' };
+        var result = controlLimitResult(limit, value);
+        return { preset:preset, value:value, ok:result.ok, status:result.ok ? 'OK' : 'NOK', interval:result.text };
+      }
+      function collectTrackingRows(){
+        var sessionId = getTrackingSessionId();
+        var dateIso = (els.ttWorkDate && els.ttWorkDate.dataset.iso) || todayIso();
+        var dateText = els.ttWorkDate ? els.ttWorkDate.value : dateRo(dateIso);
+        var shift = els.ttShift ? String(els.ttShift.value || '').trim() : '';
+        var operatorTT = els.ttOperatorTT ? String(els.ttOperatorTT.value || '').trim() : '';
+        var operatorMF = els.ttOperatorMF ? String(els.ttOperatorMF.value || '').trim() : '';
+        var operatorDurit = els.ttOperatorDurit ? String(els.ttOperatorDurit.value || '').trim() : '';
+        var rows = [];
+        getDataRows().forEach(function(row){
+          var nr = textOf(row.cells[0]);
+          var ora = row.cells[1] ? textOf(row.cells[1]) : '';
+          var hasAny = rowHasEnteredData(row) || !!ora;
+          if(!hasAny) return;
+          var presetId = getPresetIdForMeasureRow(row);
+          var reper = presetId === 'reper2' ? (els.ttReper2 && els.ttReper2.value || '') : (els.ttReper1 && els.ttReper1.value || '');
+          var codCat = presetId === 'reper2' ? (els.ttCodCat2 && els.ttCodCat2.value || '') : (els.ttCodCat1 && els.ttCodCat1.value || '');
+          reper = String(reper || '').trim();
+          codCat = formatCodCat(codCat || '');
+          if(!reper && !ora) return;
+          var values = {};
+          var limits = {};
+          var hasNok = false;
+          TT_PARAM_KEYS.forEach(function(key){
+            var raw = trackingFieldValue(row, key);
+            var status = trackingLimitStatus(presetId, key, raw);
+            values[key] = { text:raw, number:status.value };
+            limits[key] = status;
+            if(status.ok === false) hasNok = true;
+          });
+          var sarja = '';
+          try{ sarja = String((document.getElementById('ttSarja') || {}).value || '').trim(); }catch(_){ }
+          rows.push({
+            id:sessionId + '::' + presetId + '::' + nr,
+            session_id:sessionId,
+            page_key:PAGE_KEY,
+            date_iso:dateIso,
+            date_text:dateText,
+            year:Number(String(dateIso).slice(0,4)) || null,
+            month:Number(String(dateIso).slice(5,7)) || null,
+            shift:shift,
+            reper:reper,
+            reper_slot:presetId === 'reper2' ? 2 : 1,
+            cod_cat:codCat,
+            sarja:sarja,
+            filter_sarja:sarja || codCat,
+            nr_crt:nr,
+            ora_ctrl:ora,
+            operator_tt:operatorTT,
+            operator_mf:operatorMF,
+            operator_durit:operatorDurit,
+            values:values,
+            limits:limits,
+            status:hasNok ? 'NOK' : 'OK',
+            updated_at:new Date().toISOString()
+          });
+        });
+        return rows;
+      }
+      async function saveTrackingNow(){
+        if(!state.user || !getSupabaseClient()) return;
+        var sessionId = getTrackingSessionId();
+        var rows = collectTrackingRows();
+        trackingSaveBusy = true;
+        try{
+          var doc = await fetchDoc(TRACKING_DOC_KEY) || {};
+          var all = Array.isArray(doc.rows) ? doc.rows.slice() : [];
+          all = all.filter(function(row){ return String(row && row.session_id || '') !== sessionId; });
+          all = all.concat(rows);
+          all.sort(function(a,b){
+            var ak = String(a.date_iso || '') + ' ' + String(a.ora_ctrl || '') + ' ' + String(a.reper || '') + ' ' + String(a.nr_crt || '');
+            var bk = String(b.date_iso || '') + ' ' + String(b.ora_ctrl || '') + ' ' + String(b.reper || '') + ' ' + String(b.nr_crt || '');
+            return ak.localeCompare(bk, 'ro', { numeric:true });
+          });
+          await upsertDoc(TRACKING_DOC_KEY, { page_key:'urmarire-temperaturi-tt', source_page_key:PAGE_KEY, schema_version:1, rows:all, updated_at:new Date().toISOString() });
+          if(rows.length) setChip(els.modeChip, 'Urmărire TT salvată automat', 'ok');
+        }catch(error){
+          console.warn('Nu am putut salva urmărirea temperaturilor TT', error);
+          setChip(els.modeChip, 'Eroare salvare urmărire TT', 'bad');
+        }finally{
+          trackingSaveBusy = false;
+        }
+      }
+      function scheduleTrackingSave(){
+        if(trackingSaveTimer) clearTimeout(trackingSaveTimer);
+        trackingSaveTimer = setTimeout(function(){
+          saveTrackingNow().catch(function(error){ console.warn(error); });
+        }, 900);
+      }
+
       function parseControlLimit(key, token){
         var raw = String(token || '').trim().replace(',', '.').replace(/\s+/g,'');
         if(!raw) return null;
@@ -1487,16 +1622,19 @@
           if(els.btnPinAdminFromModal) els.btnPinAdminFromModal.classList.add('hidden');
           if(els.btnChangeOperator) els.btnChangeOperator.classList.remove('hidden');
           if(els.btnTempSettings) els.btnTempSettings.classList.add('hidden');
+          if(els.btnTrackingTT) els.btnTrackingTT.classList.add('hidden');
         } else if(isAdminAccount()){
           if(els.btnPinAdmin) els.btnPinAdmin.classList.remove('hidden');
           if(els.btnPinAdminFromModal) els.btnPinAdminFromModal.classList.remove('hidden');
           if(els.btnChangeOperator) els.btnChangeOperator.classList.add('hidden');
           if(els.btnTempSettings) els.btnTempSettings.classList.remove('hidden');
+          if(els.btnTrackingTT) els.btnTrackingTT.classList.remove('hidden');
         } else {
           if(els.btnPinAdmin) els.btnPinAdmin.classList.add('hidden');
           if(els.btnPinAdminFromModal) els.btnPinAdminFromModal.classList.add('hidden');
           if(els.btnChangeOperator) els.btnChangeOperator.classList.add('hidden');
           if(els.btnTempSettings) els.btnTempSettings.classList.add('hidden');
+          if(els.btnTrackingTT) els.btnTrackingTT.classList.add('hidden');
         }
       }
 
@@ -1654,10 +1792,10 @@
         [['ttCodCat1', null], ['ttCodCat2', null]].forEach(function(pair){
           var ctrl = els[pair[0]];
           if(!ctrl) return;
-          ctrl.addEventListener('input', function(){ ctrl.value = formatCodCat(ctrl.value); saveDraft(); });
-          ctrl.addEventListener('blur', function(){ ctrl.value = formatCodCat(ctrl.value); saveDraft(); });
+          ctrl.addEventListener('input', function(){ ctrl.value = formatCodCat(ctrl.value); saveDraft(); scheduleTrackingSave(); });
+          ctrl.addEventListener('blur', function(){ ctrl.value = formatCodCat(ctrl.value); saveDraft(); scheduleTrackingSave(); });
         });
-        if(els.ttReper1){ els.ttReper1.addEventListener('change', function(){ applyReperAuto(1); autoFillTreatmentParamsFromRepere(); saveDraft(); }); els.ttReper1.addEventListener('blur', function(){ autoFillTreatmentParamsFromRepere(); }); }
+        if(els.ttReper1){ els.ttReper1.addEventListener('change', function(){ applyReperAuto(1); autoFillTreatmentParamsFromRepere(); saveDraft(); scheduleTrackingSave(); }); els.ttReper1.addEventListener('blur', function(){ autoFillTreatmentParamsFromRepere(); }); }
         if(els.ttReper2){
           els.ttReper2.addEventListener('change', function(){
             applyReperAuto(2);
@@ -1665,18 +1803,21 @@
             if(!String(els.ttReper2.value || '').trim()) state.reper2PresetAfter = null;
             autoFillTreatmentParamsFromRepere();
             saveDraft();
+            scheduleTrackingSave();
           });
           els.ttReper2.addEventListener('blur', function(){
             if(String(els.ttReper2.value || '').trim() && !state.reper2PresetAfter) state.reper2PresetAfter = getLastEnteredDataRowNumber();
             autoFillTreatmentParamsFromRepere();
+            scheduleTrackingSave();
           });
         }
-        if(els.ttShift) els.ttShift.addEventListener('change', function(){ updateMagnafluxOperatorNames(); saveDraft(); });
-        if(els.ttOperatorTT) els.ttOperatorTT.addEventListener('input', saveDraft);
+        if(els.ttShift) els.ttShift.addEventListener('change', function(){ updateMagnafluxOperatorNames(); saveDraft(); scheduleTrackingSave(); });
+        if(els.ttOperatorTT) els.ttOperatorTT.addEventListener('input', function(){ saveDraft(); scheduleTrackingSave(); });
         if(els.ttOperatorMF) els.ttOperatorMF.addEventListener('input', function(){
           els.ttOperatorMF.dataset.autoMf = '0';
           if(els.ttOperatorDurit && !String(els.ttOperatorDurit.value || '').trim()) els.ttOperatorDurit.value = els.ttOperatorMF.value;
           saveDraft();
+          scheduleTrackingSave();
         });
       }
       function makeEditableCells(){
@@ -1773,7 +1914,7 @@
       function installCellEvents(){
         document.addEventListener('input', function(event){
           var td = event.target && event.target.closest ? event.target.closest('.editable-cell') : null;
-          if(td){ ensureOraCtrlForRow(td.parentElement); validateMeasuredTemperatures(); saveDraft(); }
+          if(td){ ensureOraCtrlForRow(td.parentElement); validateMeasuredTemperatures(); saveDraft(); scheduleTrackingSave(); }
         });
         document.addEventListener('paste', function(event){
           var td = event.target && event.target.closest ? event.target.closest('.editable-cell') : null;
@@ -1785,6 +1926,7 @@
           ensureOraCtrlForRow(td.parentElement);
           validateMeasuredTemperatures();
           saveDraft();
+          scheduleTrackingSave();
         });
         document.addEventListener('keydown', function(event){
           var td = event.target && event.target.closest ? event.target.closest('.editable-cell') : null;
@@ -1899,6 +2041,7 @@
         if(els.btnClear) els.btnClear.addEventListener('click', clearDraft);
         if(els.btnPinAdmin) els.btnPinAdmin.addEventListener('click', openPinAdmin);
         if(els.btnTempSettings) els.btnTempSettings.addEventListener('click', function(){ openTempSettings().catch(function(err){ alert('Nu am putut deschide setarea temperaturilor: ' + (err && err.message || err)); }); });
+        if(els.btnTrackingTT) els.btnTrackingTT.addEventListener('click', function(){ window.location.href = 'urmarire-temperaturi-tt.html'; });
         if(els.btnPinAdminFromModal) els.btnPinAdminFromModal.addEventListener('click', openPinAdmin);
         if(els.btnAddPinRow) els.btnAddPinRow.addEventListener('click', addPinAdminRow);
         if(els.btnSavePins) els.btnSavePins.addEventListener('click', function(){ savePins().catch(function(err){ alert('Nu am putut salva PIN-urile: ' + (err && err.message || err)); }); });
@@ -1943,6 +2086,7 @@
         els.ttMagnafluxOperatorsList = qs('ttMagnafluxOperatorsList');
         els.btnPinAdmin = qs('btnPinAdmin');
         els.btnTempSettings = qs('btnTempSettings');
+        els.btnTrackingTT = qs('btnTrackingTT');
         els.btnChangeOperator = qs('btnChangeOperator');
         els.pinModal = qs('pinModal');
         els.pinInput = qs('pinInput');
@@ -1983,6 +2127,7 @@
         fitSheet();
         setProtectedVisible();
         hideKadMenu();
+        if(canEdit()) scheduleTrackingSave();
         if(shouldRequireOperatorPin() && !state.pinUnlocked) showPinModal();
       }
       if(document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
