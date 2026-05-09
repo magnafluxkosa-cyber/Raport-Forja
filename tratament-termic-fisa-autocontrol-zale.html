@@ -551,7 +551,7 @@
       var TT_PARAM_KEYS = ['aust_z1','aust_z2','aust_z3','aust_z4','bazin_calire','duritate_calire','temp_remanenta','polimer','timp_scufundare','revenire_z1','revenire_z2','bazin_racire'];
       var TT_PARAM_CELL_INDEX = { aust_z1:2, aust_z2:3, aust_z3:4, aust_z4:5, bazin_calire:6, duritate_calire:7, temp_remanenta:8, polimer:9, timp_scufundare:10, revenire_z1:11, revenire_z2:12, bazin_racire:13 };
       var TT_PARAM_LABEL = { aust_z1:'Aust. zona 1', aust_z2:'Aust. zona 2', aust_z3:'Aust. zona 3', aust_z4:'Aust. zona 4', bazin_calire:'Bazin călire', duritate_calire:'Duritate după călire HRC', temp_remanenta:'Temp. remanență', polimer:'% Polimer', timp_scufundare:'Timp scufundare', revenire_z1:'Revenire zona 1', revenire_z2:'Revenire zona 2', bazin_racire:'Bazin răcire' };
-      var state = { canEdit:false, access:null, client:null, session:null, user:null, role:'viewer', repere:[], reperMap:new Map(), magnafluxSheets:[], magnafluxOperators:[], pinConfig:[], activeOperator:null, pinUnlocked:false, reper2PresetAfter:null, currentOperatorSheetId:null };
+      var state = { canEdit:false, access:null, client:null, session:null, user:null, role:'viewer', repere:[], reperMap:new Map(), magnafluxSheets:[], magnafluxOperators:[], pinConfig:[], activeOperator:null, pinUnlocked:false, reper2PresetAfter:null, currentOperatorSheetId:null, trackingDirty:false, loadingOperatorSheet:false, suppressTrackingSave:false };
       var els = {};
 
       function qs(id){ return document.getElementById(id); }
@@ -1124,15 +1124,17 @@
         return 'reper1';
       }
       function getTrackingSessionId(){
-        var today = todayIso();
+        var sheetId = String(state.currentOperatorSheetId || '').trim();
+        if(sheetId) return 'sheet::' + sheetId;
+        var dateIso = (typeof currentWorkDateIso === 'function' ? currentWorkDateIso() : todayIso());
         var operatorScope = safeStoragePart(activeSheetOperator() || 'general');
-        var scope = today + '::' + operatorScope;
+        var scope = String(dateIso || todayIso()).slice(0,10) + '::' + operatorScope;
         try{
           var raw = localStorage.getItem(TRACKING_SESSION_KEY + ':' + operatorScope);
           var data = raw ? JSON.parse(raw) : null;
           if(data && data.scope === scope && data.id) return String(data.id);
         }catch(_){ }
-        var fresh = { id:uuid(), date_iso:today, operator_scope:operatorScope, scope:scope, created_at:new Date().toISOString() };
+        var fresh = { id:uuid(), date_iso:String(dateIso || todayIso()).slice(0,10), operator_scope:operatorScope, scope:scope, created_at:new Date().toISOString() };
         try{ localStorage.setItem(TRACKING_SESSION_KEY + ':' + operatorScope, JSON.stringify(fresh)); }catch(_){ }
         return fresh.id;
       }
@@ -1167,11 +1169,45 @@
         if(row && row.id) return 'id:' + String(row.id);
         return [row && row.session_id || '', row && row.reper_slot || '', row && row.nr_crt || '', row && row.date_iso || '', row && row.ora_ctrl || '', row && row.reper || ''].join('|');
       }
+      function trackingSourceId(row){
+        return String(row && (row.operator_sheet_id || row.source_sheet_id || '') || '').trim();
+      }
+      function trackingNaturalKey(row){
+        return [
+          trackingSourceId(row),
+          String(row && row.date_iso || '').slice(0,10),
+          norm(row && row.operator_tt || ''),
+          String(row && row.reper_slot || ''),
+          String(row && row.nr_crt || '')
+        ].join('|');
+      }
+      function trackingNaturalKeyBare(row){
+        return [
+          String(row && row.date_iso || '').slice(0,10),
+          norm(row && row.operator_tt || ''),
+          String(row && row.reper_slot || ''),
+          String(row && row.nr_crt || '')
+        ].join('|');
+      }
       function mergeTrackingRows(baseRows, newRows, sessionId){
         var map = new Map();
+        var newSourceIds = new Set();
+        var newNaturalKeys = new Set();
+        var newBareKeys = new Set();
+        (newRows || []).forEach(function(row){
+          if(!row) return;
+          var sourceId = trackingSourceId(row);
+          if(sourceId) newSourceIds.add(sourceId);
+          newNaturalKeys.add(trackingNaturalKey(row));
+          newBareKeys.add(trackingNaturalKeyBare(row));
+        });
         (baseRows || []).forEach(function(row){
           if(!row) return;
           if(sessionId && String(row.session_id || '') === String(sessionId)) return;
+          var sourceId = trackingSourceId(row);
+          if(sourceId && newSourceIds.has(sourceId)) return;
+          if(newNaturalKeys.has(trackingNaturalKey(row))) return;
+          if(newBareKeys.has(trackingNaturalKeyBare(row))) return;
           map.set(trackingRowMergeKey(row), row);
         });
         (newRows || []).forEach(function(row){ if(row) map.set(trackingRowMergeKey(row), row); });
@@ -1196,9 +1232,11 @@
           return null;
         }
       }
-      function saveTrackingLocalNow(){
+      function saveTrackingLocalNow(force){
         try{
           var sessionId = getTrackingSessionId();
+          if(state.loadingOperatorSheet || state.suppressTrackingSave) return { sessionId:sessionId, rows:[], doc:readTrackingLocalDoc() };
+          if(!force && !state.trackingDirty) return { sessionId:sessionId, rows:[], doc:readTrackingLocalDoc() };
           var rows = collectTrackingRows();
           var doc = writeTrackingLocalSnapshot(rows, sessionId);
           if(rows.length && doc) setChip(els.modeChip, 'Urmărire TT salvată local', 'ok');
@@ -1210,6 +1248,7 @@
       }
       function collectTrackingRows(){
         var sessionId = getTrackingSessionId();
+        var sourceSheetId = String(state.currentOperatorSheetId || sessionId || '').trim();
         var dateIso = (els.ttWorkDate && els.ttWorkDate.dataset.iso) || todayIso();
         var dateText = els.ttWorkDate ? els.ttWorkDate.value : dateRo(dateIso);
         var shift = els.ttShift ? String(els.ttShift.value || '').trim() : '';
@@ -1241,8 +1280,10 @@
           var sarja = '';
           try{ sarja = String((document.getElementById('ttSarja') || {}).value || '').trim(); }catch(_){ }
           rows.push({
-            id:sessionId + '::' + presetId + '::' + nr,
+            id:sourceSheetId + '::' + presetId + '::' + nr,
             session_id:sessionId,
+            operator_sheet_id:sourceSheetId,
+            source_sheet_id:sourceSheetId,
             page_key:PAGE_KEY,
             date_iso:dateIso,
             date_text:dateText,
@@ -1268,7 +1309,8 @@
         return rows;
       }
       async function saveTrackingNow(){
-        var local = saveTrackingLocalNow();
+        if(state.loadingOperatorSheet || state.suppressTrackingSave) return;
+        var local = saveTrackingLocalNow(true);
         var sessionId = local.sessionId || getTrackingSessionId();
         var rows = local.rows || [];
         if(!state.user || !getSupabaseClient()) return;
@@ -1277,7 +1319,10 @@
           var doc = await fetchDoc(TRACKING_DOC_KEY) || {};
           var all = mergeTrackingRows(Array.isArray(doc.rows) ? doc.rows.slice() : [], rows, sessionId);
           await upsertDoc(TRACKING_DOC_KEY, { page_key:'urmarire-temperaturi-tt', source_page_key:PAGE_KEY, schema_version:1, rows:all, updated_at:new Date().toISOString() });
-          if(rows.length) setChip(els.modeChip, 'Urmărire TT salvată automat', 'ok');
+          if(rows.length){
+            state.trackingDirty = false;
+            setChip(els.modeChip, 'Urmărire TT salvată automat', 'ok');
+          }
         }catch(error){
           console.warn('Nu am putut salva urmărirea temperaturilor TT în cloud; rămâne salvată local.', error);
           if(rows.length) setChip(els.modeChip, 'Urmărire TT salvată local', 'warn');
@@ -1286,7 +1331,9 @@
         }
       }
       function scheduleTrackingSave(){
-        saveTrackingLocalNow();
+        if(state.loadingOperatorSheet || state.suppressTrackingSave) return;
+        state.trackingDirty = true;
+        saveTrackingLocalNow(true);
         if(trackingSaveTimer) clearTimeout(trackingSaveTimer);
         trackingSaveTimer = setTimeout(function(){
           saveTrackingNow().catch(function(error){ console.warn(error); });
@@ -1452,6 +1499,9 @@
       }
       function applySheetData(sheet){
         if(!sheet) return;
+        state.loadingOperatorSheet = true;
+        state.suppressTrackingSave = true;
+        try{
         var operatorName = sheet.operator || (sheet.fields && sheet.fields.operatorTT) || '';
         state.currentOperatorSheetId = sheet.id || null;
         state.activeOperator = operatorName || state.activeOperator;
@@ -1474,6 +1524,11 @@
         autoFillTreatmentParamsFromRepere();
         validateMeasuredTemperatures();
         fitSheet();
+        } finally {
+          state.loadingOperatorSheet = false;
+          state.suppressTrackingSave = false;
+          state.trackingDirty = false;
+        }
       }
       async function loadOperatorSheetFor(operator, dateIso){
         dateIso = String(dateIso || todayIso()).slice(0,10);
@@ -1523,6 +1578,7 @@
               applySheetData(sheet);
               if(els.operatorSheetsModal) els.operatorSheetsModal.classList.remove('show');
               applyReadonlyMode();
+              state.trackingDirty = false;
               setChip(els.modeChip, 'Vizualizare fișă: ' + (sheet.operator || ''), 'ok');
             }
           });
@@ -1956,7 +2012,7 @@
         await loadOperatorSheetFor(found.operator, todayIso());
         if(els.ttOperatorTT) els.ttOperatorTT.value = found.operator;
         saveDraft();
-        scheduleTrackingSave();
+        state.trackingDirty = false;
         setChip(els.roleChip, 'Cont: ' + OPERATOR_TRATAMENT_ROLE_LABEL + ' · ' + found.operator, 'ok');
       }
       function applyTratamentOperatorUi(){
@@ -2426,6 +2482,7 @@
         if(els.pinInput) els.pinInput.addEventListener('keydown', function(event){ if(event.key === 'Enter'){ event.preventDefault(); if(els.btnUnlock) els.btnUnlock.click(); } });
         if(els.btnChangeOperator) els.btnChangeOperator.addEventListener('click', async function(){
           if(!shouldRequireOperatorPin()) return;
+          try{ if(state.trackingDirty) await saveTrackingNow(); }catch(error){ console.warn(error); }
           try{ await saveOperatorSheetCloudNow(); }catch(error){ console.warn(error); }
           clearSheetContentNoConfirm(false);
           resetWorkDateToToday();
@@ -2439,8 +2496,8 @@
           showPinModal();
         });
         window.addEventListener('resize', fitSheet);
-        window.addEventListener('beforeunload', function(){ try{ saveTrackingLocalNow(); saveOperatorSheetLocalNow(); }catch(_){ } });
-        document.addEventListener('visibilitychange', function(){ if(document.visibilityState === 'hidden'){ try{ saveTrackingLocalNow(); saveOperatorSheetLocalNow(); }catch(_){ } } });
+        window.addEventListener('beforeunload', function(){ try{ if(state.trackingDirty) saveTrackingLocalNow(true); saveOperatorSheetLocalNow(); }catch(_){ } });
+        document.addEventListener('visibilitychange', function(){ if(document.visibilityState === 'hidden'){ try{ if(state.trackingDirty) saveTrackingLocalNow(true); saveOperatorSheetLocalNow(); }catch(_){ } } });
       }
       async function init(){
         els.roleChip = qs('roleChip');
