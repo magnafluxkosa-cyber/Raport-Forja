@@ -32,6 +32,7 @@
     { page_key: 'tratament-termic-rapoarte', page_name: 'Tratament Termic - Rapoarte' },
     { page_key: 'tratament-termic-probleme', page_name: 'Tratament Termic - Probleme T.T' },
     { page_key: 'tratament-termic-fise-tehnologice', page_name: 'Tratament Termic - Fișe tehnologice' },
+    { page_key: 'tratament-termic-fisa-autocontrol-zale', page_name: 'Tratament Termic - Fișă autocontrol zale' },
     { page_key: 'tratament-termic-documente', page_name: 'Tratament Termic - Rapoarte Excel / Word' },
     { page_key: 'rebut', page_name: 'Rebut' },
     { page_key: 'rebut-pm', page_name: 'Rebut PM' },
@@ -126,6 +127,7 @@ var PAGE_CONTROL_OVERRIDES = Object.freeze({
     Object.freeze({ control_key:'nav.tratament-termic-rapoarte', control_label:'Buton T.T RAPOARTE', control_type:'action' }),
     Object.freeze({ control_key:'nav.tratament-termic-probleme', control_label:'Buton T.T PROBLEME', control_type:'action' }),
     Object.freeze({ control_key:'nav.tratament-termic-fise-tehnologice', control_label:'Buton T.T FIȘE TEHNOLOGICE', control_type:'action' }),
+    Object.freeze({ control_key:'nav.tratament-termic-fisa-autocontrol-zale', control_label:'Buton T.T FIȘĂ AUTOCONTROL ZALE', control_type:'action' }),
     Object.freeze({ control_key:'nav.tratament-termic-documente', control_label:'Buton T.T RAPOARTE EXCEL / WORD', control_type:'action' }),
     Object.freeze({ control_key:'nav.magnaflux', control_label:'Buton MAGNAFLUX', control_type:'action' }),
     Object.freeze({ control_key:'nav.magnaflux-operatori', control_label:'Buton MAGNAFLUX OPERATORI', control_type:'action' }),
@@ -167,6 +169,11 @@ var PAGE_CONTROL_OVERRIDES = Object.freeze({
   'tratament-termic-probleme': Object.freeze([
     Object.freeze({ control_key:'field.minute', control_label:'Câmp Minute', control_type:'field' }),
     Object.freeze({ control_key:'field.descriere', control_label:'Câmp Problemă în schimb', control_type:'field' })
+  ]),
+  'tratament-termic-fisa-autocontrol-zale': Object.freeze([
+    Object.freeze({ control_key:'field.cell.edit', control_label:'Editare celule fișă autocontrol', control_type:'field' }),
+    Object.freeze({ control_key:'form.print', control_label:'Tipărire fișă autocontrol', control_type:'action' }),
+    Object.freeze({ control_key:'form.clear', control_label:'Curățare formular local', control_type:'action' })
   ]),
   'tratament-termic-documente': Object.freeze([
     Object.freeze({ control_key:'doc.open', control_label:'Deschidere document', control_type:'action' }),
