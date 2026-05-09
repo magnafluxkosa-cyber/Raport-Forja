@@ -157,6 +157,7 @@
     .tt-temp-duo span{font-weight:900;color:#4d647a;font-size:11px;}
     .tt-temp-muted{font-size:12px;color:#4d647a;font-weight:800;line-height:1.25;}
     .tt-temp-row-hidden{display:none!important;}
+    .tt-ctrl-time-cell{background:#eef4fa!important;font-weight:900!important;text-align:center!important;cursor:default!important;user-select:none;}
 
 </style>
 </head>
@@ -522,6 +523,67 @@
       function dateRo(iso){
         var p = String(iso || '').slice(0,10).split('-');
         return p.length === 3 ? p[2] + '.' + p[1] + '.' + p[0] : String(iso || '');
+      }
+      function currentTimeHHMM(){
+        var d = new Date();
+        return String(d.getHours()).padStart(2,'0') + ':' + String(d.getMinutes()).padStart(2,'0');
+      }
+      function isDataEntryRow(row){
+        return !!(row && row.cells && row.cells.length >= 14 && /^\d+$/.test(textOf(row.cells[0])));
+      }
+      function isOraCtrlCell(cell){
+        return !!(cell && cell.parentElement && isDataEntryRow(cell.parentElement) && cell.cellIndex === 1);
+      }
+      function tagOraCtrlCells(){
+        var table = document.querySelector('.excel-form-table');
+        if(!table) return;
+        Array.from(table.rows || []).forEach(function(row){
+          if(!isDataEntryRow(row)) return;
+          var cell = row.cells[1];
+          if(!cell) return;
+          cell.setAttribute('data-tt-ora-ctrl-cell', textOf(row.cells[0]));
+          cell.setAttribute('data-tt-locked','1');
+          cell.classList.add('tt-ctrl-time-cell');
+          cell.classList.remove('editable-cell');
+          cell.removeAttribute('contenteditable');
+          cell.removeAttribute('data-draft-cell');
+          cell.removeAttribute('tabindex');
+          cell.setAttribute('title', 'Ora se completează automat când introduci prima valoare pe rând.');
+        });
+      }
+      function rowHasEnteredData(row){
+        if(!isDataEntryRow(row)) return false;
+        for(var i=2;i<row.cells.length;i++){
+          var cell = row.cells[i];
+          if(cell && !cell.hasAttribute('data-tt-preset-cell') && textOf(cell)) return true;
+        }
+        return false;
+      }
+      function ensureOraCtrlForRow(row){
+        if(!canEdit() || !isDataEntryRow(row)) return;
+        var cell = row.cells[1];
+        if(!cell) return;
+        if(!textOf(cell) && rowHasEnteredData(row)){
+          cell.textContent = currentTimeHHMM();
+          cell.dataset.autoOraCtrl = '1';
+        }
+      }
+      function collectOraCtrlValues(){
+        var result = {};
+        document.querySelectorAll('[data-tt-ora-ctrl-cell]').forEach(function(cell){
+          var key = cell.getAttribute('data-tt-ora-ctrl-cell');
+          var value = textOf(cell);
+          if(key && value) result[key] = value;
+        });
+        return result;
+      }
+      function restoreOraCtrlValues(values){
+        values = values || {};
+        tagOraCtrlCells();
+        document.querySelectorAll('[data-tt-ora-ctrl-cell]').forEach(function(cell){
+          var key = cell.getAttribute('data-tt-ora-ctrl-cell');
+          if(Object.prototype.hasOwnProperty.call(values, key)) cell.textContent = values[key];
+        });
       }
       function norm(v){
         return String(v || '').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().trim();
@@ -1440,6 +1502,15 @@
           if(td.classList.contains('form-field-cell') || td.querySelector('.tt-control')) return;
           var txt = textOf(td);
           var isBlank = txt === '';
+          if(isOraCtrlCell(td)){
+            td.classList.add('tt-ctrl-time-cell');
+            td.classList.remove('editable-cell');
+            td.removeAttribute('contenteditable');
+            td.removeAttribute('data-draft-cell');
+            td.removeAttribute('tabindex');
+            if(isBlank && !hasGrey) editableIndex++;
+            return;
+          }
           if(!isBlank || hasGrey) return;
           td.classList.add('editable-cell');
           td.setAttribute('data-draft-cell', String(editableIndex++));
@@ -1476,7 +1547,7 @@
       }
       function saveDraft(){
         if(!canEdit()) return;
-        var data = { updated_at:new Date().toISOString(), cells:{}, fields:headerFieldValues() };
+        var data = { updated_at:new Date().toISOString(), cells:{}, fields:headerFieldValues(), oraCtrl:collectOraCtrlValues() };
         document.querySelectorAll('.editable-cell[data-draft-cell]').forEach(function(td){
           var key = td.getAttribute('data-draft-cell');
           var value = textOf(td);
@@ -1488,6 +1559,7 @@
         var data = getDraft();
         var cells = data.cells || {};
         loadHeaderFields(data.fields || {});
+        restoreOraCtrlValues(data.oraCtrl || {});
         document.querySelectorAll('.editable-cell[data-draft-cell]').forEach(function(td){
           var key = td.getAttribute('data-draft-cell');
           if(Object.prototype.hasOwnProperty.call(cells, key)){
@@ -1499,6 +1571,7 @@
         if(!canEdit()) return;
         if(!confirm('Cureți toate câmpurile completate din fișa curentă?')) return;
         document.querySelectorAll('.editable-cell[data-draft-cell]').forEach(function(td){ td.textContent = ''; });
+        document.querySelectorAll('[data-tt-ora-ctrl-cell]').forEach(function(td){ td.textContent = ''; });
         try{ localStorage.removeItem(STORAGE_KEY); }catch(_){}
         loadHeaderFields({});
         if(shouldRequireOperatorPin() && state.activeOperator && els.ttOperatorTT){ els.ttOperatorTT.value = state.activeOperator; }
@@ -1510,7 +1583,7 @@
       function installCellEvents(){
         document.addEventListener('input', function(event){
           var td = event.target && event.target.closest ? event.target.closest('.editable-cell') : null;
-          if(td){ validateMeasuredTemperatures(); saveDraft(); }
+          if(td){ ensureOraCtrlForRow(td.parentElement); validateMeasuredTemperatures(); saveDraft(); }
         });
         document.addEventListener('paste', function(event){
           var td = event.target && event.target.closest ? event.target.closest('.editable-cell') : null;
@@ -1519,6 +1592,7 @@
           var text = '';
           try{ text = (event.clipboardData || window.clipboardData).getData('text/plain') || ''; }catch(_){}
           document.execCommand('insertText', false, text.replace(/\r?\n/g, ' '));
+          ensureOraCtrlForRow(td.parentElement);
           validateMeasuredTemperatures();
           saveDraft();
         });
@@ -1707,6 +1781,7 @@
         updateMagnafluxOperatorNames();
         insertPresetRow();
         tagTreatmentCells();
+        tagOraCtrlCells();
         makeEditableCells();
         loadDraft();
         validateMeasuredTemperatures();
