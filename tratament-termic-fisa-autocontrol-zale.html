@@ -6,6 +6,7 @@
 <meta content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=yes" name="viewport"/>
 <title>Fișă autocontrol zale - Tratament Termic - K.A.D</title>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script src="./rf-config.js"></script>
 <script src="./rf-app-registry.js"></script>
 <script>window.KAD_NAV_SHELL_DISABLED=true;window.RF_DISABLE_NAV_SHELL=true;window.KAD_DISABLE_NAV_SHELL=true;window.RF_KAD_NO_MENU=true;</script>
@@ -420,6 +421,10 @@
       var OPERATOR_TRATAMENT_EMAIL = 'op@tratament.local';
       var OPERATOR_TRATAMENT_ROLE_LABEL = 'operator tratament termic';
       var PIN_DOC_KEY = 'tratament-termic:operatori-pins';
+      var TECH_SHEETS_DOC_KEY = 'tratament-termic-fise-tehnologice';
+      var TECH_STORAGE_BUCKET = 'tt-fise-tehnologice';
+      var TECH_PDF_TEXT_CACHE = Object.create(null);
+      var TECH_PDF_PARAMS_CACHE = Object.create(null);
       var state = { canEdit:false, access:null, client:null, session:null, user:null, role:'viewer', repere:[], reperMap:new Map(), magnafluxSheets:[], magnafluxOperators:[], pinConfig:[], activeOperator:null, pinUnlocked:false };
       var els = {};
 
@@ -590,6 +595,205 @@
           });
         }
       }
+
+      function dataUrlToBlob(dataUrl){
+        var match = /^data:([^;,]+)?(;base64)?,(.*)$/.exec(String(dataUrl || ''));
+        if(!match) throw new Error('PDF-ul nu are format valid.');
+        var mime = match[1] || 'application/pdf';
+        var binary = atob(match[3] || '');
+        var len = binary.length;
+        var bytes = new Uint8Array(len);
+        for(var i=0;i<len;i++) bytes[i] = binary.charCodeAt(i);
+        return new Blob([bytes], { type:mime });
+      }
+      function normalizeTechReper(value){
+        return norm(String(value || '').replace(/\s+/g,'').replace(/[–—]/g,'-'));
+      }
+      function normalizePdfText(value){
+        return String(value || '')
+          .replace(/\u00a0/g,' ')
+          .replace(/[–—]/g,'-')
+          .replace(/\s+/g,' ')
+          .trim();
+      }
+      function normalizePmToken(value){
+        var v = String(value || '').toUpperCase().replace(/\s+/g,'');
+        v = v.replace(/\+\/-|\+-|-\+|\+/g, '±');
+        return v;
+      }
+      function extractPmTokens(section){
+        var tokens = [];
+        var source = String(section || '').replace(/\s+/g,' ');
+        var re = /(\d{2,4})\s*(?:±|\+\/-|\+-|-\+|\+)\s*(\d{1,2})/g;
+        var m;
+        while((m = re.exec(source)) !== null){
+          var token = normalizePmToken(m[1] + '±' + m[2]);
+          if(tokens.indexOf(token) < 0) tokens.push(token);
+        }
+        return tokens;
+      }
+      function tempNumber(token){
+        var m = String(token || '').match(/\d{2,4}/);
+        return m ? Number(m[0]) : NaN;
+      }
+      function extractTreatmentParamsFromText(pdfText){
+        var plain = normalizePdfText(pdfText)
+          .normalize('NFD').replace(/[\u0300-\u036f]/g,'')
+          .toUpperCase();
+        var calireStart = plain.indexOf('CALIRE');
+        var revenireStart = plain.indexOf('REVENIRE');
+        var calireSection = plain;
+        var revenireSection = plain;
+        if(calireStart >= 0 && revenireStart > calireStart){
+          calireSection = plain.slice(calireStart, revenireStart);
+          revenireSection = plain.slice(revenireStart);
+        } else if(revenireStart >= 0){
+          calireSection = plain.slice(0, revenireStart);
+          revenireSection = plain.slice(revenireStart);
+        }
+        var calireTokens = extractPmTokens(calireSection);
+        var revenireTokens = extractPmTokens(revenireSection);
+        var calireHigh = calireTokens.filter(function(t){ return tempNumber(t) >= 100; });
+        var calireLow = calireTokens.filter(function(t){ return tempNumber(t) > 0 && tempNumber(t) < 100; });
+        var revenireHigh = revenireTokens.filter(function(t){ return tempNumber(t) >= 100; });
+        var revenireLow = revenireTokens.filter(function(t){ return tempNumber(t) > 0 && tempNumber(t) < 100; });
+        var params = {};
+        if(calireHigh[0]) params.aust_z1 = calireHigh[0];
+        if(calireHigh[1]) params.aust_z2 = calireHigh[1];
+        if(calireHigh[2]) params.aust_z3 = calireHigh[2];
+        if(calireHigh[3]) params.aust_z4 = calireHigh[3];
+        if(calireLow[0]) params.bazin_calire = calireLow[0];
+        if(revenireHigh[0]) params.revenire_z1 = revenireHigh[0];
+        if(revenireHigh[1]) params.revenire_z2 = revenireHigh[1];
+        if(revenireLow[0]) params.bazin_racire = revenireLow[0];
+        return params;
+      }
+      async function extractTextFromPdfBlob(blob, cacheKey){
+        cacheKey = String(cacheKey || '');
+        if(cacheKey && TECH_PDF_TEXT_CACHE[cacheKey]) return TECH_PDF_TEXT_CACHE[cacheKey];
+        if(!window.pdfjsLib) throw new Error('Cititorul PDF nu este disponibil.');
+        try{
+          if(window.pdfjsLib.GlobalWorkerOptions){
+            window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+          }
+        }catch(_){ }
+        var buffer = await blob.arrayBuffer();
+        var loadingTask = window.pdfjsLib.getDocument({ data:buffer });
+        var pdf = await loadingTask.promise;
+        var parts = [];
+        for(var p=1; p<=pdf.numPages; p++){
+          var page = await pdf.getPage(p);
+          var content = await page.getTextContent();
+          parts.push(content.items.map(function(item){ return item && item.str ? item.str : ''; }).join(' '));
+        }
+        var text = normalizePdfText(parts.join(' '));
+        if(cacheKey) TECH_PDF_TEXT_CACHE[cacheKey] = text;
+        return text;
+      }
+      async function getTechSheetsRows(){
+        var doc = await fetchDoc(TECH_SHEETS_DOC_KEY);
+        return Array.isArray(doc && doc.rows) ? doc.rows : [];
+      }
+      function findTechSheetForReper(rows, reper){
+        var key = normalizeTechReper(reper);
+        if(!key) return null;
+        var matches = (rows || []).filter(function(row){ return normalizeTechReper(row && row.reper) === key; });
+        if(!matches.length) return null;
+        matches.sort(function(a,b){ return String(b.updated_at || '').localeCompare(String(a.updated_at || '')); });
+        return matches[0];
+      }
+      async function downloadTechSheetBlob(row){
+        var client = getSupabaseClient();
+        if(!client) throw new Error('Client Supabase indisponibil.');
+        if(row && row.storage_path){
+          var bucket = row.storage_bucket || TECH_STORAGE_BUCKET;
+          var res = await client.storage.from(bucket).download(row.storage_path);
+          if(res.error) throw res.error;
+          if(!res.data) throw new Error('PDF-ul fișei tehnologice nu a putut fi descărcat.');
+          return res.data;
+        }
+        if(row && row.file_doc_key){
+          var fileDoc = await fetchDoc(row.file_doc_key);
+          if(!fileDoc || !fileDoc.data_url) throw new Error('PDF-ul vechi nu a fost găsit în rf_documents.');
+          return dataUrlToBlob(fileDoc.data_url);
+        }
+        throw new Error('Fișa tehnologică nu are PDF atașat.');
+      }
+      async function loadTreatmentParamsForReper(reper){
+        var key = normalizeTechReper(reper);
+        if(!key) return null;
+        if(TECH_PDF_PARAMS_CACHE[key]) return TECH_PDF_PARAMS_CACHE[key];
+        var rows = await getTechSheetsRows();
+        var row = findTechSheetForReper(rows, reper);
+        if(!row) return null;
+        var cacheKey = row.storage_path || row.file_doc_key || row.id || key;
+        var blob = await downloadTechSheetBlob(row);
+        var text = await extractTextFromPdfBlob(blob, cacheKey);
+        var params = extractTreatmentParamsFromText(text);
+        TECH_PDF_PARAMS_CACHE[key] = params;
+        return params;
+      }
+      function tagTreatmentParamCells(){
+        var table = document.querySelector('.excel-form-table');
+        if(!table) return;
+        var rows = Array.from(table.rows || []);
+        var dataRow = rows.find(function(row){ return row.cells && row.cells.length >= 14 && textOf(row.cells[0]) === '1'; });
+        if(!dataRow) return;
+        var map = {
+          aust_z1:2,
+          aust_z2:3,
+          aust_z3:4,
+          aust_z4:5,
+          bazin_calire:6,
+          revenire_z1:11,
+          revenire_z2:12,
+          bazin_racire:13
+        };
+        Object.keys(map).forEach(function(key){
+          var cell = dataRow.cells[map[key]];
+          if(cell){
+            cell.setAttribute('data-tt-param-cell', key);
+            cell.title = 'Valoare preluată automat din Fișe tehnologice — Tratament Termic, după reper.';
+          }
+        });
+      }
+      function applyTreatmentParamsToFirstRow(params, sourceReper){
+        if(!params || !Object.keys(params).length) return false;
+        var changed = false;
+        Object.keys(params).forEach(function(key){
+          var value = String(params[key] || '').trim();
+          if(!value) return;
+          var cell = document.querySelector('[data-tt-param-cell="' + key + '"]');
+          if(cell){
+            cell.textContent = value;
+            cell.dataset.autoTechValue = '1';
+            changed = true;
+          }
+        });
+        if(changed){
+          saveDraft();
+          setChip(els.modeChip, 'Temperaturi preluate: ' + sourceReper, 'ok');
+        }
+        return changed;
+      }
+      async function autoFillTreatmentParamsFromRepere(){
+        if(!canEdit()) return;
+        var repere = [];
+        if(els.ttReper1 && String(els.ttReper1.value || '').trim()) repere.push(String(els.ttReper1.value || '').trim());
+        if(els.ttReper2 && String(els.ttReper2.value || '').trim()) repere.push(String(els.ttReper2.value || '').trim());
+        if(!repere.length) return;
+        setChip(els.modeChip, 'Caut fișa tehnologică…', 'warn');
+        for(var i=0;i<repere.length;i++){
+          try{
+            var params = await loadTreatmentParamsForReper(repere[i]);
+            if(params && applyTreatmentParamsToFirstRow(params, repere[i])) return;
+          }catch(error){
+            console.warn('Nu am putut citi PDF-ul pentru reperul ' + repere[i], error);
+          }
+        }
+        setChip(els.modeChip, 'Fișă tehnologică negăsită / PDF necitibil', 'warn');
+      }
+
 
       async function loadPinConfig(){
         var doc = await fetchDoc(PIN_DOC_KEY);
@@ -858,8 +1062,8 @@
           ctrl.addEventListener('input', function(){ ctrl.value = formatCodCat(ctrl.value); saveDraft(); });
           ctrl.addEventListener('blur', function(){ ctrl.value = formatCodCat(ctrl.value); saveDraft(); });
         });
-        if(els.ttReper1) els.ttReper1.addEventListener('change', function(){ applyReperAuto(1); saveDraft(); });
-        if(els.ttReper2) els.ttReper2.addEventListener('change', function(){ applyReperAuto(2); saveDraft(); });
+        if(els.ttReper1) els.ttReper1.addEventListener('change', function(){ applyReperAuto(1); autoFillTreatmentParamsFromRepere(); saveDraft(); });
+        if(els.ttReper2) els.ttReper2.addEventListener('change', function(){ applyReperAuto(2); autoFillTreatmentParamsFromRepere(); saveDraft(); });
         if(els.ttShift) els.ttShift.addEventListener('change', function(){ updateMagnafluxOperatorNames(); saveDraft(); });
         if(els.ttOperatorTT) els.ttOperatorTT.addEventListener('input', saveDraft);
         if(els.ttOperatorMF) els.ttOperatorMF.addEventListener('input', function(){
@@ -1127,6 +1331,7 @@
         await loadMagnafluxSheets();
         updateMagnafluxOperatorNames();
         makeEditableCells();
+        tagTreatmentParamCells();
         loadDraft();
         if(shouldRequireOperatorPin() && !state.pinUnlocked && els.ttOperatorTT) els.ttOperatorTT.value = '';
         updateMagnafluxOperatorNames();
