@@ -1410,14 +1410,32 @@
         }catch(_){ }
         return { page_key:PAGE_KEY, schema_version:1, sheets:[], updated_at:'' };
       }
+      function sheetUpdatedMs(sheet){
+        var ms = Date.parse(String(sheet && sheet.updated_at || sheet && sheet.synced_at || ''));
+        return Number.isFinite(ms) ? ms : 0;
+      }
       function mergeOperatorSheets(baseSheets, newSheets){
         var map = new Map();
-        (baseSheets || []).forEach(function(sheet){ if(sheet && sheet.id) map.set(String(sheet.id), sheet); });
-        (newSheets || []).forEach(function(sheet){ if(sheet && sheet.id) map.set(String(sheet.id), sheet); });
+        function put(sheet){
+          if(!sheet || !sheet.id) return;
+          var id = String(sheet.id);
+          var old = map.get(id);
+          if(!old){
+            map.set(id, sheet);
+            return;
+          }
+          var oldMs = sheetUpdatedMs(old);
+          var newMs = sheetUpdatedMs(sheet);
+          if(newMs > oldMs || (newMs === oldMs && sheet.local_dirty === true && old.local_dirty !== true)){
+            map.set(id, sheet);
+          }
+        }
+        (baseSheets || []).forEach(put);
+        (newSheets || []).forEach(put);
         var sheets = Array.from(map.values());
         sheets.sort(function(a,b){
-          var ak = String(a.date_iso || '') + ' ' + String(a.operator || '');
-          var bk = String(b.date_iso || '') + ' ' + String(b.operator || '');
+          var ak = String(a.date_iso || '') + ' ' + String(a.operator || '') + ' ' + String(a.updated_at || '');
+          var bk = String(b.date_iso || '') + ' ' + String(b.operator || '') + ' ' + String(b.updated_at || '');
           return bk.localeCompare(ak, 'ro', { numeric:true });
         });
         return sheets;
@@ -1426,6 +1444,7 @@
         var data = collectCurrentSheetData();
         if(!data.operator) return null;
         if(!sheetHasContent(data)) return data;
+        data.local_dirty = true;
         try{
           var doc = readOperatorSheetsLocalDoc();
           var merged = mergeOperatorSheets(Array.isArray(doc.sheets) ? doc.sheets : [], [data]);
@@ -1445,8 +1464,14 @@
           var doc = await fetchDoc(OPERATOR_SHEETS_DOC_KEY);
           remote = Array.isArray(doc && doc.sheets) ? doc.sheets : [];
         }catch(error){ console.warn('Nu am putut citi fișele operatorilor din cloud.', error); }
+        var remoteIds = new Set(remote.map(function(sheet){ return String(sheet && sheet.id || ''); }).filter(Boolean));
         var localDoc = readOperatorSheetsLocalDoc();
         var local = Array.isArray(localDoc && localDoc.sheets) ? localDoc.sheets : [];
+        local = local.filter(function(sheet){
+          if(!sheet || !sheet.id) return false;
+          if(!remoteIds.has(String(sheet.id))) return true;
+          return sheet.local_dirty === true;
+        });
         OPERATOR_SHEETS_CACHE = mergeOperatorSheets(remote, local);
         return OPERATOR_SHEETS_CACHE;
       }
@@ -1455,9 +1480,15 @@
         if(!data || !data.operator || !sheetHasContent(data)) return;
         try{
           var doc = await fetchDoc(OPERATOR_SHEETS_DOC_KEY) || {};
-          var merged = mergeOperatorSheets(Array.isArray(doc.sheets) ? doc.sheets : [], [data]);
+          var cleanData = Object.assign({}, data, { local_dirty:false, synced_at:new Date().toISOString(), updated_at:new Date().toISOString() });
+          var merged = mergeOperatorSheets(Array.isArray(doc.sheets) ? doc.sheets : [], [cleanData]);
           await upsertDoc(OPERATOR_SHEETS_DOC_KEY, { page_key:PAGE_KEY, schema_version:1, sheets:merged, updated_at:new Date().toISOString() });
           OPERATOR_SHEETS_CACHE = merged;
+          try{
+            var payload = { page_key:PAGE_KEY, schema_version:1, sheets:merged, updated_at:new Date().toISOString() };
+            localStorage.setItem(OPERATOR_SHEETS_LOCAL_KEY, JSON.stringify(payload));
+            localStorage.setItem(OPERATOR_SHEETS_LOCAL_KEY + ':changed', payload.updated_at);
+          }catch(_){ }
           setChip(els.modeChip, 'Fișa operatorului salvată automat', 'ok');
         }catch(error){
           console.warn('Nu am putut salva fișa operatorului în cloud; rămâne salvată local.', error);
