@@ -133,6 +133,12 @@
     #pinModal.show{display:flex!important;pointer-events:auto!important;}
     #pinModal .modal,#pinModal .modal *{pointer-events:auto!important;}
     #pinInput{position:relative!important;z-index:1000000!important;display:block!important;width:100%!important;visibility:visible!important;opacity:1!important;caret-color:#000!important;color:#000!important;background:#fff!important;user-select:text!important;-webkit-user-select:text!important;touch-action:manipulation!important;}
+    .tt-preset-row td{background:#eaf4ff!important;font-weight:900;color:#08223a;}
+    .tt-preset-label{font-size:12px!important;line-height:1.05!important;}
+    .tt-preset-cell{background:#f8fcff!important;color:#002b4d!important;font-weight:900!important;text-align:center!important;}
+    .tt-preset-cell[data-tt-param-missing="1"]{background:#fff6e4!important;color:#8a5a00!important;}
+    .tt-out-tolerance{background:#ffd1d1!important;box-shadow:inset 0 0 0 2px #b52f2f!important;color:#7d0000!important;font-weight:900!important;}
+
 
 </style>
 </head>
@@ -425,6 +431,9 @@
       var TECH_STORAGE_BUCKET = 'tt-fise-tehnologice';
       var TECH_PDF_TEXT_CACHE = Object.create(null);
       var TECH_PDF_PARAMS_CACHE = Object.create(null);
+      var TT_PARAM_KEYS = ['aust_z1','aust_z2','aust_z3','aust_z4','bazin_calire','revenire_z1','revenire_z2','bazin_racire'];
+      var TT_PARAM_CELL_INDEX = { aust_z1:2, aust_z2:3, aust_z3:4, aust_z4:5, bazin_calire:6, revenire_z1:11, revenire_z2:12, bazin_racire:13 };
+      var TT_PARAM_LABEL = { aust_z1:'Aust. zona 1', aust_z2:'Aust. zona 2', aust_z3:'Aust. zona 3', aust_z4:'Aust. zona 4', bazin_calire:'Bazin călire', revenire_z1:'Revenire zona 1', revenire_z2:'Revenire zona 2', bazin_racire:'Bazin răcire' };
       var state = { canEdit:false, access:null, client:null, session:null, user:null, role:'viewer', repere:[], reperMap:new Map(), magnafluxSheets:[], magnafluxOperators:[], pinConfig:[], activeOperator:null, pinUnlocked:false };
       var els = {};
 
@@ -609,6 +618,31 @@
       function normalizeTechReper(value){
         return norm(String(value || '').replace(/\s+/g,'').replace(/[–—]/g,'-'));
       }
+      function expandReperAliases(value){
+        var raw = String(value || '').toUpperCase().replace(/\s+/g,'').replace(/[–—]/g,'-').trim();
+        var out = new Set();
+        function add(v){ v = normalizeTechReper(v); if(v) out.add(v); }
+        add(raw);
+        var fullCodes = raw.match(/\b\d{3}-\d{4}\b/g) || [];
+        fullCodes.forEach(add);
+        var slash = raw.match(/^(\d{3})-(\d{2})(\d{2})\/(\d{2})$/);
+        if(slash){
+          add(slash[1] + '-' + slash[2] + slash[3]);
+          add(slash[1] + '-' + slash[2] + slash[4]);
+        }
+        var shortDash = raw.match(/^(\d{3})-(\d{2})(\d{2})-(\d{2})$/);
+        if(shortDash){
+          add(shortDash[1] + '-' + shortDash[2] + shortDash[3]);
+          add(shortDash[1] + '-' + shortDash[2] + shortDash[4]);
+        }
+        return Array.from(out);
+      }
+      function reperMatches(rowReper, inputReper){
+        var a = expandReperAliases(rowReper);
+        var b = expandReperAliases(inputReper);
+        if(!a.length || !b.length) return false;
+        return a.some(function(x){ return b.indexOf(x) >= 0; });
+      }
       function normalizePdfText(value){
         return String(value || '')
           .replace(/\u00a0/g,' ')
@@ -617,55 +651,63 @@
           .trim();
       }
       function normalizePmToken(value){
-        var v = String(value || '').toUpperCase().replace(/\s+/g,'');
+        var v = String(value || '').toUpperCase().replace(/\s+/g,'').replace(/,/g,'.');
         v = v.replace(/\+\/-|\+-|-\+|\+/g, '±');
         return v;
+      }
+      function tempNumber(token){
+        var m = String(token || '').replace(',', '.').match(/-?\d+(?:\.\d+)?/);
+        return m ? Number(m[0]) : NaN;
       }
       function extractPmTokens(section){
         var tokens = [];
         var source = String(section || '').replace(/\s+/g,' ');
-        var re = /(\d{2,4})\s*(?:±|\+\/-|\+-|-\+|\+)\s*(\d{1,2})/g;
+        var re = /(-?\d{1,4}(?:[,.]\d+)?)\s*(?:±|\+\/-|\+-|-\+|\+)\s*(-?\d{1,3}(?:[,.]\d+)?)/g;
         var m;
         while((m = re.exec(source)) !== null){
-          var token = normalizePmToken(m[1] + '±' + m[2]);
-          if(tokens.indexOf(token) < 0) tokens.push(token);
+          var nominal = Number(String(m[1]).replace(',', '.'));
+          var tol = Number(String(m[2]).replace(',', '.'));
+          if(!Number.isFinite(nominal) || !Number.isFinite(tol)) continue;
+          if(nominal < 20 && tol < 1) continue;
+          tokens.push(String(m[1]).replace('.', ',') + '±' + String(m[2]).replace('.', ','));
         }
         return tokens;
       }
-      function tempNumber(token){
-        var m = String(token || '').match(/\d{2,4}/);
-        return m ? Number(m[0]) : NaN;
+      function firstSectionAfter(source, startWords, endWords){
+        var start = -1;
+        for(var i=0;i<startWords.length;i++){
+          var idx = source.indexOf(startWords[i]);
+          if(idx >= 0 && (start < 0 || idx < start)) start = idx;
+        }
+        if(start < 0) return source;
+        var end = source.length;
+        for(var j=0;j<endWords.length;j++){
+          var eidx = source.indexOf(endWords[j], start + 1);
+          if(eidx > start && eidx < end) end = eidx;
+        }
+        return source.slice(start, end);
       }
       function extractTreatmentParamsFromText(pdfText){
         var plain = normalizePdfText(pdfText)
           .normalize('NFD').replace(/[\u0300-\u036f]/g,'')
           .toUpperCase();
-        var calireStart = plain.indexOf('CALIRE');
-        var revenireStart = plain.indexOf('REVENIRE');
-        var calireSection = plain;
-        var revenireSection = plain;
-        if(calireStart >= 0 && revenireStart > calireStart){
-          calireSection = plain.slice(calireStart, revenireStart);
-          revenireSection = plain.slice(revenireStart);
-        } else if(revenireStart >= 0){
-          calireSection = plain.slice(0, revenireStart);
-          revenireSection = plain.slice(revenireStart);
-        }
+        var calireSection = firstSectionAfter(plain, ['CALIRE'], ['REVENIRE']);
+        var revenireSection = firstSectionAfter(plain, ['REVENIRE'], ['SABLARE','CTR. DURITATE','CTR. MAGNAFLUX','ETICHETA']);
         var calireTokens = extractPmTokens(calireSection);
         var revenireTokens = extractPmTokens(revenireSection);
         var calireHigh = calireTokens.filter(function(t){ return tempNumber(t) >= 100; });
-        var calireLow = calireTokens.filter(function(t){ return tempNumber(t) > 0 && tempNumber(t) < 100; });
+        var calireLow = calireTokens.filter(function(t){ var n=tempNumber(t); return n >= 20 && n < 100; });
         var revenireHigh = revenireTokens.filter(function(t){ return tempNumber(t) >= 100; });
-        var revenireLow = revenireTokens.filter(function(t){ return tempNumber(t) > 0 && tempNumber(t) < 100; });
+        var revenireLow = revenireTokens.filter(function(t){ var n=tempNumber(t); return n >= 20 && n < 100; });
         var params = {};
-        if(calireHigh[0]) params.aust_z1 = calireHigh[0];
-        if(calireHigh[1]) params.aust_z2 = calireHigh[1];
-        if(calireHigh[2]) params.aust_z3 = calireHigh[2];
-        if(calireHigh[3]) params.aust_z4 = calireHigh[3];
-        if(calireLow[0]) params.bazin_calire = calireLow[0];
-        if(revenireHigh[0]) params.revenire_z1 = revenireHigh[0];
-        if(revenireHigh[1]) params.revenire_z2 = revenireHigh[1];
-        if(revenireLow[0]) params.bazin_racire = revenireLow[0];
+        if(calireHigh[0]) params.aust_z1 = normalizePmToken(calireHigh[0]);
+        if(calireHigh[1]) params.aust_z2 = normalizePmToken(calireHigh[1]);
+        if(calireHigh[2]) params.aust_z3 = normalizePmToken(calireHigh[2]);
+        if(calireHigh[3]) params.aust_z4 = normalizePmToken(calireHigh[3]);
+        if(calireLow[0]) params.bazin_calire = normalizePmToken(calireLow[0]);
+        if(revenireHigh[0]) params.revenire_z1 = normalizePmToken(revenireHigh[0]);
+        if(revenireHigh[1]) params.revenire_z2 = normalizePmToken(revenireHigh[1]);
+        if(revenireLow[0]) params.bazin_racire = normalizePmToken(revenireLow[0]);
         return params;
       }
       async function extractTextFromPdfBlob(blob, cacheKey){
@@ -695,9 +737,8 @@
         return Array.isArray(doc && doc.rows) ? doc.rows : [];
       }
       function findTechSheetForReper(rows, reper){
-        var key = normalizeTechReper(reper);
-        if(!key) return null;
-        var matches = (rows || []).filter(function(row){ return normalizeTechReper(row && row.reper) === key; });
+        if(!String(reper || '').trim()) return null;
+        var matches = (rows || []).filter(function(row){ return reperMatches(row && row.reper, reper); });
         if(!matches.length) return null;
         matches.sort(function(a,b){ return String(b.updated_at || '').localeCompare(String(a.updated_at || '')); });
         return matches[0];
@@ -720,7 +761,7 @@
         throw new Error('Fișa tehnologică nu are PDF atașat.');
       }
       async function loadTreatmentParamsForReper(reper){
-        var key = normalizeTechReper(reper);
+        var key = expandReperAliases(reper)[0] || normalizeTechReper(reper);
         if(!key) return null;
         if(TECH_PDF_PARAMS_CACHE[key]) return TECH_PDF_PARAMS_CACHE[key];
         var rows = await getTechSheetsRows();
@@ -730,63 +771,141 @@
         var blob = await downloadTechSheetBlob(row);
         var text = await extractTextFromPdfBlob(blob, cacheKey);
         var params = extractTreatmentParamsFromText(text);
+        expandReperAliases(row.reper).forEach(function(alias){ TECH_PDF_PARAMS_CACHE[alias] = params; });
         TECH_PDF_PARAMS_CACHE[key] = params;
         return params;
       }
-      function tagTreatmentParamCells(){
+      function findFirstDataRow(){
+        var table = document.querySelector('.excel-form-table');
+        if(!table) return null;
+        var rows = Array.from(table.rows || []);
+        return rows.find(function(row){ return row.cells && row.cells.length >= 14 && textOf(row.cells[0]) === '1'; }) || null;
+      }
+      function insertPresetRow(){
+        if(document.querySelector('[data-tt-preset-row="1"]')) return;
+        var firstDataRow = findFirstDataRow();
+        if(!firstDataRow || !firstDataRow.parentNode) return;
+        var preset = firstDataRow.cloneNode(true);
+        preset.setAttribute('data-tt-preset-row','1');
+        preset.classList.add('tt-preset-row');
+        preset.removeAttribute('sdnum'); preset.removeAttribute('sdval');
+        Array.from(preset.cells || []).forEach(function(cell, idx){
+          cell.classList.remove('editable-cell','tt-out-tolerance');
+          cell.removeAttribute('contenteditable');
+          cell.removeAttribute('data-draft-cell');
+          cell.removeAttribute('tabindex');
+          cell.removeAttribute('sdnum'); cell.removeAttribute('sdval');
+          cell.dataset.ttLocked = '1';
+          if(idx === 0){ cell.textContent = 'SET'; cell.classList.add('tt-preset-label'); }
+          else if(idx === 1){ cell.textContent = 'Temperaturi prestabilite'; cell.classList.add('tt-preset-label'); }
+          else { cell.textContent = ''; }
+          Object.keys(TT_PARAM_CELL_INDEX).forEach(function(key){
+            if(TT_PARAM_CELL_INDEX[key] === idx){
+              cell.setAttribute('data-tt-preset-cell', key);
+              cell.classList.add('tt-preset-cell');
+              cell.title = 'Temperatură prestabilită preluată din fișa tehnologică PDF.';
+            }
+          });
+        });
+        firstDataRow.parentNode.insertBefore(preset, firstDataRow);
+      }
+      function tagTreatmentCells(){
+        insertPresetRow();
         var table = document.querySelector('.excel-form-table');
         if(!table) return;
-        var rows = Array.from(table.rows || []);
-        var dataRow = rows.find(function(row){ return row.cells && row.cells.length >= 14 && textOf(row.cells[0]) === '1'; });
-        if(!dataRow) return;
-        var map = {
-          aust_z1:2,
-          aust_z2:3,
-          aust_z3:4,
-          aust_z4:5,
-          bazin_calire:6,
-          revenire_z1:11,
-          revenire_z2:12,
-          bazin_racire:13
-        };
-        Object.keys(map).forEach(function(key){
-          var cell = dataRow.cells[map[key]];
-          if(cell){
-            cell.setAttribute('data-tt-param-cell', key);
-            cell.title = 'Valoare preluată automat din Fișe tehnologice — Tratament Termic, după reper.';
+        Array.from(table.rows || []).forEach(function(row){
+          if(row.getAttribute('data-tt-preset-row') === '1') return;
+          if(!(row.cells && row.cells.length >= 14)) return;
+          var first = textOf(row.cells[0]);
+          if(!/^\d+$/.test(first)) return;
+          Object.keys(TT_PARAM_CELL_INDEX).forEach(function(key){
+            var cell = row.cells[TT_PARAM_CELL_INDEX[key]];
+            if(cell){
+              cell.setAttribute('data-tt-measure-cell', key);
+              cell.title = 'Completează temperatura citită pe panou. Dacă iese din toleranța prestabilită, celula se colorează.';
+            }
+          });
+        });
+      }
+      function getPresetParamMap(){
+        var result = {};
+        Object.keys(TT_PARAM_CELL_INDEX).forEach(function(key){
+          var cell = document.querySelector('[data-tt-preset-cell="' + key + '"]');
+          result[key] = cell ? textOf(cell) : '';
+        });
+        return result;
+      }
+      function parseToleranceToken(token){
+        var m = String(token || '').replace(',', '.').match(/(-?\d+(?:\.\d+)?)\s*(?:±|\+\/-|\+-|-\+|\+)\s*(-?\d+(?:\.\d+)?)/);
+        if(!m) return null;
+        var nominal = Number(m[1]);
+        var tol = Math.abs(Number(m[2]));
+        if(!Number.isFinite(nominal) || !Number.isFinite(tol)) return null;
+        return { nominal:nominal, tol:tol, min:nominal - tol, max:nominal + tol };
+      }
+      function parseMeasuredValue(value){
+        var m = String(value || '').replace(',', '.').match(/-?\d+(?:\.\d+)?/);
+        if(!m) return NaN;
+        return Number(m[0]);
+      }
+      function validateMeasuredTemperatures(){
+        var presets = getPresetParamMap();
+        document.querySelectorAll('[data-tt-measure-cell]').forEach(function(cell){
+          var key = cell.getAttribute('data-tt-measure-cell');
+          var preset = presets[key] || '';
+          var tol = parseToleranceToken(preset);
+          var value = parseMeasuredValue(textOf(cell));
+          cell.classList.remove('tt-out-tolerance');
+          if(!textOf(cell) || !tol || !Number.isFinite(value)){
+            cell.title = preset ? ('Toleranță prestabilită: ' + preset) : 'Nu există temperatură prestabilită pentru această coloană.';
+            return;
+          }
+          if(value < tol.min || value > tol.max){
+            cell.classList.add('tt-out-tolerance');
+            cell.title = (TT_PARAM_LABEL[key] || key) + ': valoare citită ' + value + ' în afara toleranței ' + preset + ' (' + tol.min + ' - ' + tol.max + ').';
+          } else {
+            cell.title = (TT_PARAM_LABEL[key] || key) + ': valoare citită în toleranță ' + preset + ' (' + tol.min + ' - ' + tol.max + ').';
           }
         });
       }
-      function applyTreatmentParamsToFirstRow(params, sourceReper){
+      function applyTreatmentParamsToPresetRow(params, sourceReper){
+        tagTreatmentCells();
         if(!params || !Object.keys(params).length) return false;
         var changed = false;
-        Object.keys(params).forEach(function(key){
+        TT_PARAM_KEYS.forEach(function(key){
+          var cell = document.querySelector('[data-tt-preset-cell="' + key + '"]');
+          if(!cell) return;
           var value = String(params[key] || '').trim();
-          if(!value) return;
-          var cell = document.querySelector('[data-tt-param-cell="' + key + '"]');
-          if(cell){
+          cell.removeAttribute('data-tt-param-missing');
+          if(value){
             cell.textContent = value;
             cell.dataset.autoTechValue = '1';
             changed = true;
+          } else {
+            cell.textContent = '';
+            cell.setAttribute('data-tt-param-missing','1');
           }
         });
         if(changed){
-          saveDraft();
+          validateMeasuredTemperatures();
           setChip(els.modeChip, 'Temperaturi preluate: ' + sourceReper, 'ok');
         }
         return changed;
       }
+      function clearPresetRow(){
+        document.querySelectorAll('[data-tt-preset-cell]').forEach(function(cell){ cell.textContent = ''; cell.removeAttribute('data-tt-param-missing'); });
+        validateMeasuredTemperatures();
+      }
       async function autoFillTreatmentParamsFromRepere(){
-        if(!canEdit()) return;
         var repere = [];
         if(els.ttReper1 && String(els.ttReper1.value || '').trim()) repere.push(String(els.ttReper1.value || '').trim());
         if(els.ttReper2 && String(els.ttReper2.value || '').trim()) repere.push(String(els.ttReper2.value || '').trim());
-        if(!repere.length) return;
+        if(!repere.length){ clearPresetRow(); return; }
         setChip(els.modeChip, 'Caut fișa tehnologică…', 'warn');
         for(var i=0;i<repere.length;i++){
           try{
             var params = await loadTreatmentParamsForReper(repere[i]);
-            if(params && applyTreatmentParamsToFirstRow(params, repere[i])) return;
+            if(params && applyTreatmentParamsToPresetRow(params, repere[i])) return;
           }catch(error){
             console.warn('Nu am putut citi PDF-ul pentru reperul ' + repere[i], error);
           }
@@ -1062,8 +1181,8 @@
           ctrl.addEventListener('input', function(){ ctrl.value = formatCodCat(ctrl.value); saveDraft(); });
           ctrl.addEventListener('blur', function(){ ctrl.value = formatCodCat(ctrl.value); saveDraft(); });
         });
-        if(els.ttReper1) els.ttReper1.addEventListener('change', function(){ applyReperAuto(1); autoFillTreatmentParamsFromRepere(); saveDraft(); });
-        if(els.ttReper2) els.ttReper2.addEventListener('change', function(){ applyReperAuto(2); autoFillTreatmentParamsFromRepere(); saveDraft(); });
+        if(els.ttReper1){ els.ttReper1.addEventListener('change', function(){ applyReperAuto(1); autoFillTreatmentParamsFromRepere(); saveDraft(); }); els.ttReper1.addEventListener('blur', function(){ autoFillTreatmentParamsFromRepere(); }); }
+        if(els.ttReper2){ els.ttReper2.addEventListener('change', function(){ applyReperAuto(2); autoFillTreatmentParamsFromRepere(); saveDraft(); }); els.ttReper2.addEventListener('blur', function(){ autoFillTreatmentParamsFromRepere(); }); }
         if(els.ttShift) els.ttShift.addEventListener('change', function(){ updateMagnafluxOperatorNames(); saveDraft(); });
         if(els.ttOperatorTT) els.ttOperatorTT.addEventListener('input', saveDraft);
         if(els.ttOperatorMF) els.ttOperatorMF.addEventListener('input', function(){
@@ -1077,6 +1196,7 @@
         var editableIndex = 0;
         cells.forEach(function(td, idx){
           var hasGrey = String(td.getAttribute('bgcolor') || '').toLowerCase() === '#c0c0c0';
+          if((td.closest && td.closest('[data-tt-preset-row="1"]')) || td.hasAttribute('data-tt-preset-cell')) return;
           if(td.classList.contains('form-field-cell') || td.querySelector('.tt-control')) return;
           var txt = textOf(td);
           var isBlank = txt === '';
@@ -1144,12 +1264,13 @@
         if(shouldRequireOperatorPin() && state.activeOperator && els.ttOperatorTT){ els.ttOperatorTT.value = state.activeOperator; }
         if(els.ttOperatorMF){ els.ttOperatorMF.value = ''; els.ttOperatorMF.dataset.autoMf = '1'; }
         updateMagnafluxOperatorNames();
+        autoFillTreatmentParamsFromRepere();
         fitSheet();
       }
       function installCellEvents(){
         document.addEventListener('input', function(event){
           var td = event.target && event.target.closest ? event.target.closest('.editable-cell') : null;
-          if(td) saveDraft();
+          if(td){ validateMeasuredTemperatures(); saveDraft(); }
         });
         document.addEventListener('paste', function(event){
           var td = event.target && event.target.closest ? event.target.closest('.editable-cell') : null;
@@ -1158,6 +1279,7 @@
           var text = '';
           try{ text = (event.clipboardData || window.clipboardData).getData('text/plain') || ''; }catch(_){}
           document.execCommand('insertText', false, text.replace(/\r?\n/g, ' '));
+          validateMeasuredTemperatures();
           saveDraft();
         });
         document.addEventListener('keydown', function(event){
@@ -1330,9 +1452,12 @@
         await loadHelperRepere();
         await loadMagnafluxSheets();
         updateMagnafluxOperatorNames();
+        insertPresetRow();
+        tagTreatmentCells();
         makeEditableCells();
-        tagTreatmentParamCells();
         loadDraft();
+        validateMeasuredTemperatures();
+        autoFillTreatmentParamsFromRepere();
         if(shouldRequireOperatorPin() && !state.pinUnlocked && els.ttOperatorTT) els.ttOperatorTT.value = '';
         updateMagnafluxOperatorNames();
         applyReadonlyMode();
