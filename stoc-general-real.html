@@ -514,52 +514,87 @@ async function scrapeInventarPrelucrariSnapshots(){
   const src = INVENTAR_PRELUCRARI_PAGE + '?rf_embed=1&ts=' + Date.now();
   return new Promise((resolve, reject) => {
     let done = false;
-    const timeout = window.setTimeout(() => { if(!done){ done = true; reject(new Error('Inventar prelucrări nu s-a încărcat la timp.')); } }, 25000);
+    const timeout = window.setTimeout(() => { if(!done){ done = true; reject(new Error('Inventar prelucrări nu s-a încărcat la timp.')); } }, 30000);
+
+    function readTableBlocks(table, snapshots, periodSet){
+      if(!table) return;
+      const cols = Array.from(table.querySelectorAll('colgroup col')).length;
+      if(!cols) return;
+      const isMain = table.id === 'mainExcelSheet';
+      const blockCount = isMain ? Math.max(1, Math.floor(cols / 8) || 1) : 1;
+      const matrix = buildTableMatrix(table);
+      if(!matrix.length) return;
+
+      for(let block = 0; block < blockCount; block++){
+        const start = isMain ? block * 8 : 0;
+        const dateCell = matrix[1] && matrix[1][start + 1];
+        const dateLabel = cellText(dateCell);
+        const dateObj = parseAnyDate(dateLabel);
+        if(!dateObj) continue;
+
+        const year = dateObj.getFullYear();
+        const month = dateObj.getMonth() + 1;
+        const periodKey = buildPeriodKey(year, month);
+
+        /*
+          Inventar Prelucrări poate avea tabele adăugate în față.
+          Dacă există aceeași lună și în tabelul din față și în tabelul vechi,
+          tabelul din față are prioritate fiind cel mai nou.
+        */
+        if(snapshots[periodKey]) continue;
+
+        const rows = [];
+        for(let r = 2; r < matrix.length; r++){
+          const modelCell = matrix[r] && matrix[r][start];
+          const model = cellText(modelCell);
+          if(!model) continue;
+          const packed = cellText(matrix[r] && matrix[r][start + 1]);
+          const finished = cellText(matrix[r] && matrix[r][start + 2]);
+          const wip = cellText(matrix[r] && matrix[r][start + 3]);
+          const bg = modelCell && modelCell.style ? (modelCell.style.background || modelCell.style.backgroundColor || '') : '';
+          rows.push({
+            model,
+            packed: toInt(packed),
+            finished: toInt(finished),
+            wip: toInt(wip),
+            modelHighlight: /ffff00|yellow|rgb\(255,\s*255,\s*0\)/i.test(bg),
+            an: year,
+            lunaNum: month
+          });
+        }
+        if(!rows.length) continue;
+        snapshots[periodKey] = { year, month, dateLabel, rows };
+        periodSet.add(periodKey);
+      }
+    }
+
     function tryRead(){
       if(done) return true;
       try{
         const doc = frame.contentDocument || (frame.contentWindow && frame.contentWindow.document);
-        const table = doc && doc.getElementById('mainExcelSheet');
-        if(!table) return false;
-        const cols = Array.from(table.querySelectorAll('colgroup col')).length;
-        if(!cols) return false;
-        const blockCount = Math.max(1, Math.floor(cols / 8) || 1);
-        const matrix = buildTableMatrix(table);
-        if(!matrix.length) return false;
+        if(!doc) return false;
+
+        const win = frame.contentWindow;
+        if(win && win.KAD_INVENTAR_PRELUCRARI_READY === false) return false;
+
+        const track = doc.getElementById('sheetTrack');
+        const tables = track
+          ? Array.from(track.querySelectorAll('table.excel-sheet'))
+          : Array.from(doc.querySelectorAll('table.excel-sheet'));
+
+        if(!tables.length) return false;
+
         const snapshots = Object.create(null);
         const periodSet = new Set();
-        for(let block = 0; block < blockCount; block++){
-          const start = block * 8;
-          const dateCell = matrix[1] && matrix[1][start + 1];
-          const dateLabel = cellText(dateCell);
-          const dateObj = parseAnyDate(dateLabel);
-          if(!dateObj) continue;
-          const year = dateObj.getFullYear();
-          const month = dateObj.getMonth() + 1;
-          const periodKey = buildPeriodKey(year, month);
-          const rows = [];
-          for(let r = 2; r < matrix.length; r++){
-            const modelCell = matrix[r] && matrix[r][start];
-            const model = cellText(modelCell);
-            if(!model) continue;
-            const packed = cellText(matrix[r] && matrix[r][start + 1]);
-            const finished = cellText(matrix[r] && matrix[r][start + 2]);
-            const wip = cellText(matrix[r] && matrix[r][start + 3]);
-            const bg = modelCell && modelCell.style ? (modelCell.style.background || modelCell.style.backgroundColor || '') : '';
-            rows.push({
-              model,
-              packed: toInt(packed),
-              finished: toInt(finished),
-              wip: toInt(wip),
-              modelHighlight: /ffff00|yellow|rgb\(255,\s*255,\s*0\)/i.test(bg),
-              an: year,
-              lunaNum: month
-            });
-          }
-          if(!rows.length) continue;
-          snapshots[periodKey] = { year, month, dateLabel, rows };
-          periodSet.add(periodKey);
-        }
+
+        /*
+          Citim în ordinea vizuală: întâi tabelele adăugate în față, apoi tabelul principal.
+          Așa Stoc general real preia și tabelele noi din Inventar Prelucrări.
+        */
+        tables.forEach(table => readTableBlocks(table, snapshots, periodSet));
+
+        if(!Object.keys(snapshots).length) return false;
+
         done = true;
         window.clearTimeout(timeout);
         resolve({ snapshots, periods: Array.from(periodSet).sort(comparePeriodsDesc) });
@@ -571,15 +606,16 @@ async function scrapeInventarPrelucrariSnapshots(){
       let attempts = 0;
       const poll = window.setInterval(() => {
         attempts += 1;
-        if(tryRead() || attempts > 80){
+        if(tryRead() || attempts > 120){
           window.clearInterval(poll);
-          if(!done && attempts > 80){ done = true; window.clearTimeout(timeout); reject(new Error('Nu am putut citi tabelele din inventar prelucrări.')); }
+          if(!done && attempts > 120){ done = true; window.clearTimeout(timeout); reject(new Error('Nu am putut citi tabelele din inventar prelucrări.')); }
         }
       }, 250);
     };
     frame.src = src;
   });
 }
+
 function buildSnapshotMap(rows, keySelector, valueSelector){
   const map = Object.create(null);
   (rows || []).forEach(row => {
