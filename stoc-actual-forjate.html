@@ -142,7 +142,7 @@ const state = {
   filteredRows: [],
   dateLabel: '',
   sourceLabels: [],
-  helperMaps: { debitByReper:Object.create(null), forjaByReper:Object.create(null), mrcByKey:Object.create(null), source:'-' },
+  helperMaps: { debitByReper:Object.create(null), forjaByReper:Object.create(null), mrcByKey:Object.create(null), aliasByKey:Object.create(null), source:'-' },
   periods: [],
   selectedYear: '',
   selectedMonth: '',
@@ -233,6 +233,112 @@ function stripVariantSuffix(v){
   let out = raw.replace(/([ _-])\d{2}$/,'');
   if(out === raw) out = raw.replace(/([ _-])0\d$/,'');
   return out;
+}
+
+const ZALE_DISPLAY_REPERS = [
+  '9K-6628','9K-6629','106-1625','106-1626','229-6909','229-6910','248-2307','248-2308',
+  '378-8241','378-8242','417-3595','417-3596','418-2091','418-2092','503-0761','503-0762',
+  '7G-0521','7G-0522','9P-9664','9P-9665','358-5253','358-5255','393-2648','393-2655','369-3318','6I-8077','SKU-140','SK-203034'
+];
+const MANUAL_FORJA_ALIAS_GROUPS = [
+  { canonical:'ASOLLO_M', aliases:['ASOLLO_M','ASOLLO','AT-355','AT355','AU1CZ','AU1CZ01A','AU1CZ-01A'] }
+];
+function addAlias(aliasMap, alias, canonical, source, extra){
+  const a = trimText(alias).toUpperCase();
+  const c = trimText(canonical).toUpperCase();
+  if(!a || !c) return;
+  const keys = [a, stripVariantSuffix(a), normalizeReperLoose(a), normalizeReperLoose(stripVariantSuffix(a))].filter(Boolean);
+  keys.forEach(key => {
+    const loose = normalizeReperLoose(key);
+    if(!loose) return;
+    const current = aliasMap[loose];
+    const meta = Object.assign({ canonical:c, source:source || 'alias' }, extra || {});
+    if(!current || String(c).length >= String(current.canonical || '').length) aliasMap[loose] = meta;
+  });
+}
+function registerAliasList(aliasMap, aliases, canonical, source, extra){
+  (aliases || []).forEach(alias => addAlias(aliasMap, alias, canonical, source, extra));
+}
+function zalaPairAliasVariants(reper){
+  const r = trimText(reper).toUpperCase();
+  const out = [r, 'ZA ' + r, 'ZA' + r, 'ZALA ' + r, 'ZALĂ ' + r];
+  const m = r.match(/^(.+?)(\d{2})$/);
+  if(m){ out.push(m[1] + '/' + m[2]); out.push('ZA ' + m[1] + '/' + m[2]); out.push('ZA' + m[1] + '/' + m[2]); }
+  for(let v=1; v<=12; v++){
+    const vv = String(v).padStart(2,'0');
+    out.push('ZA ' + r + ' V' + vv, 'ZA' + r + 'V' + vv, r + ' V' + vv, r + '_V' + vv, r + '-V' + vv);
+  }
+  return out;
+}
+function buildAliasRegistry(debitByReper, forjaByReper, mrcByKey){
+  const aliasMap = Object.create(null);
+  MANUAL_FORJA_ALIAS_GROUPS.forEach(group => registerAliasList(aliasMap, group.aliases, group.canonical, 'manual'));
+  ZALE_DISPLAY_REPERS.forEach(reper => registerAliasList(aliasMap, zalaPairAliasVariants(reper), reper, 'zale'));
+  Object.keys(forjaByReper || {}).forEach(key => {
+    const row = forjaByReper[key] || {};
+    const canonical = trimText(row.reper_forjat || key).toUpperCase();
+    registerAliasList(aliasMap, [canonical, key, row.reper_debitare_origine, row.reper_final, row.reper], canonical, 'helper-forjate', row);
+  });
+  Object.keys(debitByReper || {}).forEach(key => {
+    const row = debitByReper[key] || {};
+    const deb = trimText(row.reper_debitare || key).toUpperCase();
+    const knownForja = findLooseMapValue(forjaByReper, deb);
+    const canonical = trimText((knownForja && knownForja.reper_forjat) || deb).toUpperCase();
+    registerAliasList(aliasMap, [deb, key, row.reper_forjat, row.reper], canonical, 'helper-debitare', Object.assign({}, row, knownForja || {}));
+  });
+  Object.keys(mrcByKey || {}).forEach(key => {
+    const row = mrcByKey[key] || {};
+    const canonical = trimText(row.reper_intern || row.reper_forjat || row.canonical || '').toUpperCase();
+    if(!canonical) return;
+    registerAliasList(aliasMap, [key, row.raw_part, row.part_norm, row.reper_intern, row.mapped_raw, row.dessin_source, row.reper_client, row.client_part], canonical, 'mrc', row);
+  });
+  return aliasMap;
+}
+function expandZaleShorthandFromText(text){
+  const raw = trimText(text).toUpperCase();
+  const out = [];
+  const add = (v) => { const hit = ZALE_DISPLAY_REPERS.find(r => normalizeReperLoose(r) === normalizeReperLoose(v)); if(hit && !out.includes(hit)) out.push(hit); };
+  ZALE_DISPLAY_REPERS.forEach(reper => {
+    const loose = normalizeReperLoose(reper);
+    if(loose && normalizeReperLoose(raw).includes(loose)) add(reper);
+  });
+  const re = /([A-Z0-9]+-\d{2,4})\s*\/\s*(\d{2,4})/g;
+  let m;
+  while((m = re.exec(raw))){
+    add(m[1]);
+    const prefix = m[1].replace(/\d{2,4}$/,'');
+    add(prefix + m[2]);
+  }
+  return out;
+}
+function findAliasMapping(model){
+  const raw = trimText(model).toUpperCase();
+  const keys = [raw, stripVariantSuffix(raw), normalizeReperLoose(raw), normalizeReperLoose(stripVariantSuffix(raw))].filter(Boolean);
+  const aliases = state.helperMaps && state.helperMaps.aliasByKey ? state.helperMaps.aliasByKey : Object.create(null);
+  for(const key of keys){
+    const loose = normalizeReperLoose(key);
+    if(loose && aliases[loose]) return aliases[loose];
+  }
+  const rawLoose = normalizeReperLoose(raw);
+  let best = null;
+  Object.keys(aliases).forEach(aliasKey => {
+    if(!aliasKey || aliasKey.length < 4 || !rawLoose) return;
+    if(rawLoose.includes(aliasKey) || aliasKey.includes(rawLoose)){
+      if(!best || aliasKey.length > best.key.length) best = { key:aliasKey, meta:aliases[aliasKey] };
+    }
+  });
+  return best && best.meta ? best.meta : null;
+}
+function displayTargetsForSource(model){
+  const raw = trimText(model).toUpperCase();
+  if(!raw) return [];
+  const zales = expandZaleShorthandFromText(raw);
+  if(zales.length) return zales;
+  const alias = findAliasMapping(raw);
+  if(alias && alias.canonical) return [trimText(alias.canonical).toUpperCase()];
+  const mrc = findMrcMapping(raw);
+  if(mrc && mrc.reper_intern) return [trimText(mrc.reper_intern).toUpperCase()];
+  return [raw];
 }
 function buildSpecKey(diametru, calitate){ return trimText(diametru).replace(/\s+/g,'').toUpperCase() + '|' + trimText(calitate).replace(/\s+/g,'').toUpperCase(); }
 function comparePeriodsDesc(a, b){ return String(b).localeCompare(String(a)); }
@@ -335,7 +441,7 @@ function parseHelpersPayload(payload){
     if(!reper) return;
     forjaByReper[reper] = { reper_forjat: reper, reper_debitare_origine: trimText(row.reper_debitare_origine || row.REPER_DEBITARE_ORIGINE || row.origine || '').toUpperCase(), dimensiune_otel: trimText(row.dimensiune_otel || row.DIMENSIUNE_OTEL || row.diametru_otel || ''), calitate_otel: trimText(row.calitate_otel || row.CALITATE_OTEL || ''), kg_buc_forjat: toNumber(row.kg_buc_forjat || row.KG_BUC_FORJAT || 0) };
   });
-  return { debitByReper, forjaByReper, mrcByKey:Object.create(null) };
+  return { debitByReper, forjaByReper, mrcByKey:Object.create(null), aliasByKey:buildAliasRegistry(debitByReper, forjaByReper, Object.create(null)) };
 }
 function addMrcMapping(target, row){
   const rawPart = trimText(row.raw_part || row.RAW_PART || row.part_raw || row.PART_RAW || row.client_part || row.CLIENT_PART || row.cod_articol || row.COD_ARTICOL || row['Reper client brut'] || row['Cod articol'] || row.mapped_raw || '').toUpperCase();
@@ -347,15 +453,26 @@ function addMrcMapping(target, row){
     part_norm: partNorm,
     reper_intern: reperIntern,
     reper_debitare_origine: trimText(row.reper_debitare_origine || row.REPER_DEBITARE_ORIGINE || row.reper_debitare || row.REPER_DEBITARE || '').toUpperCase(),
+    mapped_raw: trimText(row.mapped_raw || row.MAPPED_RAW || row.dessin_source || row.DESSIN_SOURCE || row.customer_part || row.CUSTOMER_PART || '').toUpperCase(),
+    reper_client: trimText(row.reper_client || row.REPER_CLIENT || row.client_part || row.CLIENT_PART || '').toUpperCase(),
     material: trimText(row.material || row.MATERIAL || row.calitate || row.CALITATE || row.calitate_otel || row.CALITATE_OTEL || ''),
     diametru: trimText(row.diametru || row.DIAMETRU || row.dimensiune_otel || row.DIMENSIUNE_OTEL || ''),
     kg_per_buc: toNumber(row.kg_per_buc || row.KG_PER_BUC || row.kgBuc || row.KG_BUC || 0)
   };
-  [rawPart, partNorm, reperIntern, stripVariantSuffix(rawPart), stripVariantSuffix(partNorm), stripVariantSuffix(reperIntern)].forEach(key => {
-    const loose = normalizeReperLoose(key);
+  const aliases = [
+    rawPart, partNorm, reperIntern, meta.mapped_raw, meta.reper_client,
+    row.raw_part, row.RAW_PART, row.part_raw, row.PART_RAW, row.client_part, row.CLIENT_PART,
+    row.cod_articol, row.COD_ARTICOL, row.nume_articol, row.NUME_ARTICOL,
+    row.mapped_raw, row.MAPPED_RAW, row.dessin_source, row.DESSIN_SOURCE,
+    row.reper_client, row.REPER_CLIENT, row.reper_extern, row.REPER_EXTERN,
+    stripVariantSuffix(rawPart), stripVariantSuffix(partNorm), stripVariantSuffix(reperIntern)
+  ];
+  aliases.forEach(alias => {
+    const loose = normalizeReperLoose(alias);
     if(loose && !target[loose]) target[loose] = meta;
   });
 }
+
 function findMrcMapping(model){
   const raw = trimText(model).toUpperCase();
   const keys = [raw, stripVariantSuffix(raw), normalizeReperLoose(raw), normalizeReperLoose(stripVariantSuffix(raw))];
@@ -363,8 +480,17 @@ function findMrcMapping(model){
     const loose = normalizeReperLoose(key);
     if(loose && state.helperMaps.mrcByKey && state.helperMaps.mrcByKey[loose]) return state.helperMaps.mrcByKey[loose];
   }
-  return null;
+  const rawLoose = normalizeReperLoose(raw);
+  let best = null;
+  Object.keys(state.helperMaps.mrcByKey || {}).forEach(key => {
+    if(!key || key.length < 4 || !rawLoose) return;
+    if(rawLoose.includes(key) || key.includes(rawLoose)){
+      if(!best || key.length > best.key.length) best = { key, meta: state.helperMaps.mrcByKey[key] };
+    }
+  });
+  return best ? best.meta : null;
 }
+
 async function loadMrcMapFromTable(){
   const out = Object.create(null);
   if(!state.supabase) return out;
@@ -405,7 +531,8 @@ async function loadHelperMaps(){
       if(doc){ const parsed = parseHelpersPayload(doc.content || doc.data); debitByReper = parsed.debitByReper; forjaByReper = parsed.forjaByReper; source = doc.doc_key || 'helper-data'; }
     }catch(inner){ console.error('helper fallback error', inner); }
   }
-  state.helperMaps = { debitByReper, forjaByReper, mrcByKey: await loadMrcMapFromTable(), source };
+  const mrcByKey = await loadMrcMapFromTable();
+  state.helperMaps = { debitByReper, forjaByReper, mrcByKey, aliasByKey: buildAliasRegistry(debitByReper, forjaByReper, mrcByKey), source };
 }
 function findLooseMapValue(src, key){
   const raw = trimText(key).toUpperCase();
@@ -420,18 +547,23 @@ function findLooseMapValue(src, key){
 function resolveReperMeta(model){
   const raw = trimText(model).toUpperCase();
   const clean = stripVariantSuffix(raw) || raw;
-  const mrc = findMrcMapping(raw) || findMrcMapping(clean) || null;
-  const mappedForja = trimText((mrc && mrc.reper_intern) || '').toUpperCase();
+  const zales = expandZaleShorthandFromText(raw);
+  const alias = findAliasMapping(raw) || (zales.length === 1 ? { canonical:zales[0], source:'zale' } : null);
+  const aliasCanonical = trimText(alias && alias.canonical).toUpperCase();
+  const mrc = findMrcMapping(raw) || findMrcMapping(clean) || (aliasCanonical ? findMrcMapping(aliasCanonical) : null) || null;
+  const mappedForja = trimText(aliasCanonical || (mrc && mrc.reper_intern) || '').toUpperCase();
   const lookupForja = mappedForja || raw;
   const lookupClean = stripVariantSuffix(lookupForja) || lookupForja;
   const forja = findLooseMapValue(state.helperMaps.forjaByReper, lookupForja) || findLooseMapValue(state.helperMaps.forjaByReper, lookupClean) || findLooseMapValue(state.helperMaps.forjaByReper, clean) || null;
-  const originRaw = trimText((mrc && mrc.reper_debitare_origine) || (forja && forja.reper_debitare_origine) || lookupClean || clean || raw).toUpperCase();
+  const originRaw = trimText((mrc && mrc.reper_debitare_origine) || (alias && alias.reper_debitare_origine) || (forja && forja.reper_debitare_origine) || lookupClean || clean || raw).toUpperCase();
   const debit = findLooseMapValue(state.helperMaps.debitByReper, originRaw) || findLooseMapValue(state.helperMaps.debitByReper, clean) || null;
-  const diametru = trimText((debit && debit.diametru_otel) || (forja && forja.dimensiune_otel) || (mrc && mrc.diametru) || '');
-  const calitate = trimText((debit && debit.calitate_otel) || (forja && forja.calitate_otel) || (mrc && mrc.material) || '');
+  const diametru = trimText((debit && debit.diametru_otel) || (forja && forja.dimensiune_otel) || (mrc && mrc.diametru) || (alias && alias.diametru_otel) || (alias && alias.diametru) || '');
+  const calitate = trimText((debit && debit.calitate_otel) || (forja && forja.calitate_otel) || (mrc && mrc.material) || (alias && alias.calitate_otel) || (alias && alias.material) || '');
   const forjaDisplay = trimText((forja && forja.reper_forjat) || mappedForja || lookupForja || raw).toUpperCase();
-  return { raw, clean, mappedForja:forjaDisplay, mrcMatched:!!mrc, forjaKey: normalizeReperLoose(forjaDisplay), originDebitatRaw: originRaw, originDebitatKey: normalizeReperLoose(originRaw || clean || raw), specKey: diametru && calitate ? buildSpecKey(diametru, calitate) : '', specLabel: diametru && calitate ? (diametru + ' / ' + calitate) : '', mappingStatus: mrc ? 'MRC' : (forja ? 'Helper' : 'Nemapat') };
+  const status = alias ? (alias.source === 'zale' ? 'Zale' : alias.source) : (mrc ? 'MRC' : (forja ? 'Helper' : 'Nemapat'));
+  return { raw, clean, mappedForja:forjaDisplay, mrcMatched:!!mrc || !!alias, forjaKey: normalizeReperLoose(forjaDisplay), originDebitatRaw: originRaw, originDebitatKey: normalizeReperLoose(originRaw || clean || raw), specKey: diametru && calitate ? buildSpecKey(diametru, calitate) : '', specLabel: diametru && calitate ? (diametru + ' / ' + calitate) : '', mappingStatus: status };
 }
+
 function buildDocKeys(baseKeys, years, includeIndex){
   const set = new Set();
   (baseKeys || []).forEach(base => {
@@ -718,19 +850,29 @@ function buildSalesMap(rows){
   const map = Object.create(null);
   (rows || []).forEach(row => {
     if(trimText(row.um) && norm(row.um) !== 'buc') return;
-    const keys = new Set();
-    [row.cod_articol, row.nume_articol].forEach(value => {
-      const raw = trimText(value).toUpperCase();
-      if(!raw) return;
-      const loose = normalizeReperLoose(raw);
-      const stripped = normalizeReperLoose(stripVariantSuffix(raw));
-      if(loose) keys.add(loose);
-      if(stripped) keys.add(stripped);
+    const qty = toNumber(row.cantitate);
+    if(!qty) return;
+    const rawValues = [row.cod_articol, row.nume_articol].map(v => trimText(v).toUpperCase()).filter(Boolean);
+    const targets = [];
+    rawValues.forEach(value => displayTargetsForSource(value).forEach(target => { if(target && !targets.includes(target)) targets.push(target); }));
+    if(!targets.length){
+      rawValues.forEach(value => {
+        const loose = normalizeReperLoose(value);
+        const stripped = normalizeReperLoose(stripVariantSuffix(value));
+        if(loose && !targets.includes(loose)) targets.push(loose);
+        if(stripped && !targets.includes(stripped)) targets.push(stripped);
+      });
+    }
+    const dividedQty = targets.length > 1 ? qty / targets.length : qty;
+    targets.forEach(target => {
+      const meta = resolveReperMeta(target);
+      const keys = new Set([normalizeReperLoose(target), meta && meta.forjaKey, meta && meta.clean, meta && meta.mappedForja].filter(Boolean));
+      keys.forEach(key => { map[key] = toNumber(map[key]) + dividedQty; });
     });
-    keys.forEach(key => { map[key] = toNumber(map[key]) + toNumber(row.cantitate); });
   });
   return map;
 }
+
 function periodOfRow(row){ return buildPeriodKey(row && row.an, row && row.lunaNum); }
 function pickBaseSnapshotRows(rows, targetYear, targetMonth){
   const targetKey = buildPeriodKey(targetYear, targetMonth);
@@ -930,6 +1072,15 @@ function buildCurrentRows(){
     return trimText(fallback).toUpperCase();
   }
   function upsertRow(model, packed, finished, wip, sourceType, modelHighlight){
+    const targets = displayTargetsForSource(model);
+    if(targets.length > 1){
+      const div = targets.length;
+      targets.forEach(target => upsertSingleRow(target, toNumber(packed) / div, toNumber(finished) / div, toNumber(wip) / div, sourceType, modelHighlight));
+      return;
+    }
+    upsertSingleRow(targets[0] || model, packed, finished, wip, sourceType, modelHighlight);
+  }
+  function upsertSingleRow(model, packed, finished, wip, sourceType, modelHighlight){
     const incomingModel = trimText(model).toUpperCase();
     const baseKey = normalizeReperLoose(incomingModel);
     if(!baseKey) return;
@@ -991,26 +1142,29 @@ function buildCurrentRows(){
 
   snapshotRows.forEach(row => upsertRow(row.model, row.packed, row.finished, row.wip, 'prelucrari', row.modelHighlight));
   Object.keys(ambalareMap).sort((a,b) => a.localeCompare(b, 'ro')).forEach(key => {
-    const raw = rawByKey[key] || key;
-    const meta = resolveReperMeta(raw);
-    const sold = resolveSalesQty(meta, key);
-    const packed = Math.max(0, toNumber(ambalareMap[key]) - sold);
-    if(packed > 0 || !(key in seen)) upsertRow(raw, packed, 0, 0, 'zala', false);
+    const targets = displayTargetsForSource(rawByKey[key] || key);
+    const targetList = targets.length ? targets : [rawByKey[key] || key];
+    targetList.forEach(target => {
+      const meta = resolveReperMeta(target);
+      const sold = resolveSalesQty(meta, normalizeReperLoose(target));
+      const packed = Math.max(0, toNumber(ambalareMap[key]) / targetList.length - sold);
+      if(packed > 0 || !seen.has((meta && meta.forjaKey) || normalizeReperLoose(target))) upsertSingleRow(target, packed, 0, 0, 'zala', false);
+    });
   });
   forjatBase.rows.forEach(row => { if(row.reper) upsertRow(row.reper, 0, 0, 0, 'flux', false); });
   (state.forjateFlowRows || []).filter(row => periodOfRow(row) === periodKey).forEach(row => { if(row.reper) upsertRow(row.reper, 0, 0, 0, 'flux', false); });
   (state.magnafluxRows || []).filter(row => periodOfRow(row) === periodKey).forEach(row => { if(row.reper) upsertRow(row.reper, 0, 0, 0, 'flux', false); });
   (state.rebutPmRows || []).filter(row => periodOfRow(row) === periodKey).forEach(row => { if(row.reper) upsertRow(row.reper, 0, 0, 0, 'flux', false); });
   salesRowsCurrent.forEach(row => upsertRow(row.cod_articol || row.nume_articol, 0, 0, 0, 'flux', false));
-  function addFromMap(map){ Object.keys(map || {}).forEach(key => { if(key && !seen.has(key)) upsertRow(key, 0, 0, 0, 'flux', false); }); }
+  function addFromMap(map){ Object.keys(map || {}).forEach(key => { const targets = displayTargetsForSource(key); const list = targets.length ? targets : [key]; list.forEach(target => { const meta = resolveReperMeta(target); const k = (meta && meta.forjaKey) || normalizeReperLoose(target); if(k && !seen.has(k)) upsertSingleRow(target, 0, 0, 0, 'flux', false); }); }); }
   addFromMap(forjatStartMap); addFromMap(forjateProducedCurrent); addFromMap(salesMapCurrent); addFromMap(rebutOtherMap); addFromMap(forjaRebutMap);
 
   state.rows = ordered.sort((a,b) => String(a.reperForjat || a.model).localeCompare(String(b.reperForjat || b.model), 'ro'));
   state.sourceLabels = [
     'Stoc inițial forjat: snapshot anterior ' + (forjatBase.label || '-'),
     'Forjate luna: ' + String(state.selectedYear || '') + ' / ' + getMonthName(state.selectedMonth || 0),
-    'Vânzări/livrări: lista-vanzari pentru luna selectată',
-    'Inventar prelucrări: ' + (invSnapshot ? invSnapshot.dateLabel : '-'),
+    'Vânzări/livrări: lista-vanzari pentru luna selectată, cu mapare internă pe reper forjat',
+    'Inventar prelucrări: ' + (invSnapshot ? invSnapshot.dateLabel : '-') + ' cu denumirile alternative ascunse',
     'Rebut alte surse: Magnaflux + Rebut PM coduri cerute',
     'Rebut Forja: coloana Rebut din Forjate, doar afișat'
   ];
