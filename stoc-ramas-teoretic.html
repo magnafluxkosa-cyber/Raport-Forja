@@ -137,6 +137,12 @@
     <div class="sales-alert-list" id="unmappedSalesList"></div>
   </section>
 
+  <section class="sales-alert" id="unmappedPmAlert">
+    <div class="sales-alert-title">Avertizare inventar prelucrări neincluse în foaie</div>
+    <div class="sales-alert-text" id="unmappedPmText"></div>
+    <div class="sales-alert-list" id="unmappedPmList"></div>
+  </section>
+
   <section class="summary">
     <div class="summary-card"><div class="summary-title">Total oțel rămas</div><div class="summary-value" id="statSteel">0 kg</div><div class="summary-note">Total unic pe combinația diametru + calitate.</div></div>
     <div class="summary-card"><div class="summary-title">Total debitate rămase</div><div class="summary-value" id="statDebitate">0 buc</div><div class="summary-note">Total unic pe reperul debitat.</div></div>
@@ -267,7 +273,8 @@
     authStatus:document.getElementById('authStatus'),authSub:document.getElementById('authSub'),cloudStatus:document.getElementById('cloudStatus'),cloudSub:document.getElementById('cloudSub'),periodStatus:document.getElementById('periodStatus'),periodSub:document.getElementById('periodSub'),syncStatus:document.getElementById('syncStatus'),syncSub:document.getElementById('syncSub'),
     filterYear:document.getElementById('filterYear'),filterMonth:document.getElementById('filterMonth'),filterReper:document.getElementById('filterReper'),filterDiam:document.getElementById('filterDiam'),filterCal:document.getElementById('filterCal'),btnClear:document.getElementById('btnClear'),btnRefresh:document.getElementById('btnRefresh'),btnExport:document.getElementById('btnExport'),
     statSteel:document.getElementById('statSteel'),statDebitate:document.getElementById('statDebitate'),statForjate:document.getElementById('statForjate'),statRepere:document.getElementById('statRepere'),tableInfo:document.getElementById('tableInfo'),tableSource:document.getElementById('tableSource'),tbody:document.getElementById('tbody'),errorBox:document.getElementById('errorBox'),footerStatus:document.getElementById('footerStatus'),footerUpdated:document.getElementById('footerUpdated'),
-    unmappedSalesAlert:document.getElementById('unmappedSalesAlert'),unmappedSalesText:document.getElementById('unmappedSalesText'),unmappedSalesList:document.getElementById('unmappedSalesList')
+    unmappedSalesAlert:document.getElementById('unmappedSalesAlert'),unmappedSalesText:document.getElementById('unmappedSalesText'),unmappedSalesList:document.getElementById('unmappedSalesList'),
+    unmappedPmAlert:document.getElementById('unmappedPmAlert'),unmappedPmText:document.getElementById('unmappedPmText'),unmappedPmList:document.getElementById('unmappedPmList')
   };
   const state={supabase:null,user:null,raw:{helper:[],intrariOtel:[],debitate:[],forjate:[],inventarOtel:[],inventarDebitate:[],inventarForjate:[],livrari:[],listaVanzari:[],rebut:[],magnaflux:[],rebutPm:[]},helperTables:{forjate:[],debitare:[],source:'rf_documents'},inventarPrelucrariPayload:null,groups:[],filteredGroups:[],displayRows:[],updatedAt:null};
 
@@ -1140,6 +1147,106 @@
     return out;
   }
 
+
+  function addPmInventoryWarningItem(result, model, packed, finished, wip, date, repers){
+    const qty=toNumber(packed)+toNumber(finished)+toNumber(wip);
+    const modelText=trimText(model);
+    if(!modelText || !qty || !date) return;
+    const dateKey=date instanceof Date && !Number.isNaN(date.getTime()) ? date.toISOString().slice(0,10) : trimText(date);
+    const key=modelText+'|'+dateKey;
+    const current=result.get(key)||{model:modelText,date:dateKey,qty:0,packed:0,finished:0,wip:0,matched:new Set()};
+    current.qty+=qty;
+    current.packed+=toNumber(packed);
+    current.finished+=toNumber(finished);
+    current.wip+=toNumber(wip);
+    (repers||[]).forEach(reper=>{ const normalized=normalizeReper(reper); if(normalized) current.matched.add(normalized); });
+    result.set(key,current);
+  }
+
+  function collectPmInventoryRowsFromTable(table,result){
+    const grid=expandPmTableGrid(table);
+    if(!grid.length) return;
+    const maxCols=grid.reduce((max,row)=>Math.max(max,(row||[]).length),0);
+    const blockStarts=[];
+    for(let c=0;c<maxCols;c++){
+      const modelLabel=normText(grid[1]&&grid[1][c]);
+      const packedLabel=normText(grid[0]&&grid[0][c+1]);
+      const finishedLabel=normText(grid[0]&&grid[0][c+2]);
+      const wipLabel=normText(grid[0]&&grid[0][c+3]);
+      if(modelLabel==='model' && packedLabel.includes('stoc ambalat') && finishedLabel.includes('stoc finite') && wipLabel.includes('stoc wip')) blockStarts.push(c);
+    }
+    blockStarts.forEach(startCol=>{
+      const dateText=(grid[1]&&grid[1][startCol+1]) || (grid[1]&&grid[1][startCol+2]) || '';
+      const date=parseLooseDate(dateText);
+      if(!selectedPeriodMatchesDate(date)) return;
+      for(let r=2;r<grid.length;r++){
+        const model=grid[r]&&grid[r][startCol];
+        const repers=resolvePmSegmentRepersFromText(model);
+        const packed=toNumber(grid[r]&&grid[r][startCol+1]);
+        const finished=toNumber(grid[r]&&grid[r][startCol+2]);
+        const wip=toNumber(grid[r]&&grid[r][startCol+3]);
+        addPmInventoryWarningItem(result,model,packed,finished,wip,date,repers);
+      }
+    });
+  }
+
+  function collectPmInventoryRowsForWarning(){
+    const payload=state.inventarPrelucrariPayload;
+    const result=new Map();
+    if(!payload || typeof payload!=='object') return [];
+    const mainHtml=String(payload.mainTableHtml||payload.staticTableHtml||'');
+    const baseTable=parsePmTableFromInnerHtml(mainHtml);
+    if(baseTable) collectPmInventoryRowsFromTable(baseTable,result);
+    const blocks=(payload.frontSnapshot&&payload.frontSnapshot.blocks&&typeof payload.frontSnapshot.blocks==='object')?payload.frontSnapshot.blocks:((payload.blocks&&typeof payload.blocks==='object')?payload.blocks:{});
+    Object.keys(blocks||{}).filter(key=>String(key).startsWith('front:')).sort((a,b)=>Number(String(a).split(':')[1]||0)-Number(String(b).split(':')[1]||0)).forEach(key=>{
+      const table=buildPmFrontTable(baseTable,blocks[key]);
+      if(table) collectPmInventoryRowsFromTable(table,result);
+    });
+    return Array.from(result.values());
+  }
+
+  function collectUnmappedPmRows(){
+    const included=buildIncludedForjatSet();
+    const items=new Map();
+    collectPmInventoryRowsForWarning().forEach(item=>{
+      if(!item || !item.qty) return;
+      const matched=Array.from(item.matched||[]).map(normalizeReper).filter(Boolean);
+      const isIncluded=matched.some(reper=>included.has(reper));
+      if(isIncluded) return;
+      const key=item.model+'|'+item.date;
+      items.set(key,{...item,matched:new Set(matched)});
+    });
+    return Array.from(items.values()).sort((a,b)=>b.qty-a.qty || String(a.model).localeCompare(String(b.model),'ro'));
+  }
+
+  function renderUnmappedPmAlert(){
+    if(!els.unmappedPmAlert) return;
+    const items=collectUnmappedPmRows();
+    if(!items.length){
+      els.unmappedPmAlert.classList.remove('is-visible');
+      els.unmappedPmText.textContent='';
+      els.unmappedPmList.innerHTML='';
+      return;
+    }
+    const totalQty=items.reduce((sum,item)=>sum+(item.qty||0),0);
+    const shown=items.slice(0,12);
+    const hidden=items.length-shown.length;
+    els.unmappedPmText.textContent=`${formatNumber(items.length,0)} poziții din Inventar Prelucrări nu sunt incluse în tabel pentru perioada selectată. Total neincluse: ${formatNumber(totalQty,0)} buc. Verifică și adaugă maparea pentru ele.`;
+    els.unmappedPmList.innerHTML=shown.map(item=>{
+      const matched=Array.from(item.matched||[]).filter(Boolean).join(', ');
+      const details=[
+        `Total ${formatNumber(item.qty,0)} buc`,
+        `Ambalat ${formatNumber(item.packed||0,0)}`,
+        `Finite ${formatNumber(item.finished||0,0)}`,
+        `WIP ${formatNumber(item.wip||0,0)}`,
+        item.date?`Data: ${item.date}`:'',
+        matched?`Mapat dar neafișat: ${matched}`:'Nemapat'
+      ].filter(Boolean).join(' • ');
+      return `<div class="sales-alert-item" title="${esc(item.model+' | '+details)}">${esc(item.model)} (${esc(details)})</div>`;
+    }).join('') + (hidden>0?`<div class="sales-alert-item">+ ${formatNumber(hidden,0)} poziții</div>`:'');
+    els.unmappedPmAlert.classList.add('is-visible');
+  }
+
   function buildIncludedForjatSet(){
     const set=new Set();
     (state.groups||[]).forEach(material=>{
@@ -1484,6 +1591,7 @@
     els.footerStatus.textContent='';
     els.footerUpdated.textContent='Actualizare: '+(state.updatedAt?formatDateTime(state.updatedAt):'—');
     renderUnmappedSalesAlert();
+    renderUnmappedPmAlert();
     saveFilterState();
   }
   function populateYearMonth(){
