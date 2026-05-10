@@ -878,6 +878,23 @@ function buildSnapshotMap(rows, keySelector, valueSelector){
   });
   return map;
 }
+
+function canonicalSalesKey(target){
+  const raw = trimText(target).toUpperCase();
+  if(!raw) return '';
+  const loose = normalizeReperLoose(raw);
+
+  /*
+    Cheia pentru Lista Vânzări trebuie să rămână rezultatul mapării de vânzări,
+    nu să fie trecută din nou prin resolveReperMeta().
+    resolveReperMeta() folosește aliasuri tehnologice pentru inventar/prelucrări
+    și poate transforma AT-355 în ASOLLO_M. Asta umflă VÂNDUT / LIVRAT.
+  */
+  if(loose.includes('ASOLLOM') || /AS[O0]LL/.test(loose)) return normalizeReperLoose('ASOLLO_M');
+  if(loose.includes('AU1CZ')) return normalizeReperLoose('AU1CZ01A');
+  return loose;
+}
+
 function buildSalesMap(rows, forcedPeriodKey){
   const map = Object.create(null);
   const seenLineTargets = new Set();
@@ -911,8 +928,7 @@ function buildSalesMap(rows, forcedPeriodKey){
     const dividedQty = targets.length > 1 ? qty / targets.length : qty;
     const sourceLineId = [row.id || rowIndex, row.cod_articol || '', row.nume_articol || '', row.an || '', row.lunaNum || '', row.cantitate || ''].join('|');
     targets.forEach(target => {
-      const meta = resolveReperMeta(target);
-      const canonical = normalizeReperLoose((meta && meta.mappedForja) || target);
+      const canonical = canonicalSalesKey(target);
       if(!canonical) return;
       const dedupKey = sourceLineId + '>' + canonical;
       if(seenLineTargets.has(dedupKey)) return;
@@ -1220,7 +1236,17 @@ function buildCurrentRows(){
       const cleanTarget = trimText(target).toUpperCase();
       if(cleanTarget && !saleTargets.includes(cleanTarget)) saleTargets.push(cleanTarget);
     }));
-    (saleTargets.length ? saleTargets : [row.cod_articol || row.nume_articol]).forEach(target => upsertSingleRow(target, 0, 0, 0, 'flux', false));
+    (saleTargets.length ? saleTargets : [row.cod_articol || row.nume_articol]).forEach(target => {
+      /*
+        Rândurile aduse doar din Lista Vânzări se creează pe cheia de vânzări,
+        nu pe aliasurile tehnologice din resolveReperMeta().
+      */
+      const saleKey = canonicalSalesKey(target);
+      const saleName = saleKey === normalizeReperLoose('ASOLLO_M') ? 'ASOLLO_M' :
+                       saleKey === normalizeReperLoose('AU1CZ01A') ? 'AU1CZ01A' :
+                       trimText(target).toUpperCase();
+      upsertSingleRow(saleName, 0, 0, 0, 'flux', false);
+    });
   });
   function addFromMap(map, useSalesTargets){ Object.keys(map || {}).forEach(key => { const targets = useSalesTargets ? displaySalesTargetsForSource(key) : displayTargetsForSource(key); const list = targets.length ? targets : [key]; list.forEach(target => { const meta = resolveReperMeta(target); const k = (meta && meta.forjaKey) || normalizeReperLoose(target); if(k && !seen.has(k)) upsertSingleRow(target, 0, 0, 0, 'flux', false); }); }); }
   addFromMap(forjatStartMap); addFromMap(forjateProducedCurrent); addFromMap(salesMapCurrent, true); addFromMap(rebutOtherMap); addFromMap(forjaRebutMap);
