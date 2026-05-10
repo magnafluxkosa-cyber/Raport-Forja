@@ -52,6 +52,7 @@
     { page_key: 'livrari-zale', page_name: 'Livrări zale' },
     { page_key: 'centralizator-livrari-zale', page_name: 'Centralizator livrări zale' },
     { page_key: 'stoc-ramas-teoretic', page_name: 'Stoc rămas teoretic' },
+    { page_key: 'stoc-actual-forjate', page_name: 'Stoc actual forjate' },
     { page_key: 'mrc-necesar-otel', page_name: 'MRC / Necesar Oțel' },
     { page_key: 'mrc-comenzi-otel', page_name: 'MRC / Comenzi oțel' },
     { page_key: 'mrc-comenzi-saptamanale', page_name: 'MRC / Comenzi săptămânale' },
@@ -145,6 +146,7 @@ var PAGE_CONTROL_OVERRIDES = Object.freeze({
     Object.freeze({ control_key:'nav.livrari-zale', control_label:'Buton LIVRĂRI ZALE', control_type:'action' }),
     Object.freeze({ control_key:'nav.centralizator-livrari-zale', control_label:'Buton CENTRALIZATOR LIVRĂRI', control_type:'action' }),
     Object.freeze({ control_key:'nav.stoc-ramas-teoretic', control_label:'Buton STOC RĂMAS TEORETIC', control_type:'action' }),
+    Object.freeze({ control_key:'nav.stoc-actual-forjate', control_label:'Buton STOC ACTUAL FORJATE', control_type:'action' }),
     Object.freeze({ control_key:'nav.mrc-necesar-otel', control_label:'Buton MRC / NECESAR OȚEL', control_type:'action' }),
     Object.freeze({ control_key:'nav.mrc-comenzi-otel', control_label:'Buton COMENZI OȚEL', control_type:'action' }),
     Object.freeze({ control_key:'nav.mrc-comenzi-saptamanale', control_label:'Buton COMENZI SĂPTĂMÂNALE', control_type:'action' }),
@@ -2911,6 +2913,25 @@ async function applyDomPermissions(pageKey, root, options) {
       ], [
         ['section.table-main','Tabel stoc rămas teoretic'],
         ['section.summary','Sumare stoc teoretic']
+      ])
+    }),
+    'stoc-actual-forjate': Object.freeze({
+      hint: 'Stoc actual forjate: calculează stocul real pornind de la inventar forjat, forjate luna, lista vânzări, inventar prelucrări și rebuturi din alte surse.',
+      items: makeCrudCatalog([
+        ['field.an','Câmp An'],
+        ['field.luna','Câmp Lună'],
+        ['field.reper','Câmp Reper'],
+        ['field.reper-mapat','Câmp Reper mapat MRC'],
+        ['field.stoc-initial-forjat','Câmp Stoc inițial forjat'],
+        ['field.forjat-luna','Câmp Forjat luna'],
+        ['field.vandut-livrat','Câmp Vândut / livrat'],
+        ['field.inventar-prelucrari','Câmp Inventar prelucrări'],
+        ['field.rebut-alte-surse','Câmp Rebut din alte surse'],
+        ['field.rebut-forja','Câmp Rebut Forja'],
+        ['field.stoc-actual-forjat','Câmp Stoc actual forjat']
+      ], [
+        ['section.table-main','Tabel stoc actual forjate'],
+        ['section.summary','Sumare stoc actual forjate']
       ])
     }),
     'mrc-necesar-otel': Object.freeze({
