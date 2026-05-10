@@ -241,7 +241,8 @@ const ZALE_DISPLAY_REPERS = [
   '7G-0521','7G-0522','9P-9664','9P-9665','358-5253','358-5255','393-2648','393-2655','369-3318','6I-8077','SKU-140','SK-203034'
 ];
 const MANUAL_FORJA_ALIAS_GROUPS = [
-  { canonical:'ASOLLO_M', aliases:['ASOLLO_M','ASOLLO','ASOLL','ASOLL01A','ASOLL01A-01','ASOLL01','AS0LL','AS0LL01A','AS0LL01A-01','AS0LL01','ASOLLO1A','ASOLLO1A-01','AT-355','AT355','AU1CZ','AU1CZ01A','AU1CZ-01A','KT700002/ASOLL01A','KT700002/ASOLL01A-01','KT70002/ASOLL01A','KT70002/ASOLL01A-01','KT700002/AS0LL01A','KT700002/AS0LL01A-01','FLANSA KT700002/ASOLL01A','FLANSAKT700002/ASOLL01A','FLANSAKT700002ASOLL01A','FLANSA KT700002/AS0LL01A','FLANSAKT700002AS0LL01A'] }
+  { canonical:'ASOLLO_M', aliases:['ASOLLO_M','ASOLLO','ASOLL','ASOLL01A','ASOLL01A-01','ASOLL01','AS0LL','AS0LL01A','AS0LL01A-01','AS0LL01','ASOLLO1A','ASOLLO1A-01','AT-355','AT355','KT700002/ASOLL01A','KT700002/ASOLL01A-01','KT70002/ASOLL01A','KT70002/ASOLL01A-01','KT700002/AS0LL01A','KT700002/AS0LL01A-01','FLANSA KT700002/ASOLL01A','FLANSAKT700002/ASOLL01A','FLANSAKT700002ASOLL01A','FLANSA KT700002/AS0LL01A','FLANSAKT700002AS0LL01A'] },
+  { canonical:'AU1CZ01A', aliases:['AU1CZ01A','AU1CZ','AU1CZ-01A','CE2K801A AU1CZ01A','FLANSA PC728001/CE2K801A AU1CZ01A','FLANSAPC728001CE2K801AAU1CZ01A'] }
 ];
 function addAlias(aliasMap, alias, canonical, source, extra){
   const a = trimText(alias).toUpperCase();
@@ -314,7 +315,8 @@ function expandZaleShorthandFromText(text){
 function findAliasMapping(model){
   const raw = trimText(model).toUpperCase();
   const rawLooseForManual = normalizeReperLoose(raw);
-  if(/AS[O0]LL/.test(rawLooseForManual) || rawLooseForManual.includes('AT355') || rawLooseForManual.includes('AU1CZ')) return { canonical:'ASOLLO_M', source:'manual' };
+  if(/AS[O0]LL/.test(rawLooseForManual) || rawLooseForManual.includes('AT355')) return { canonical:'ASOLLO_M', source:'manual' };
+  if(rawLooseForManual.includes('AU1CZ')) return { canonical:'AU1CZ01A', source:'manual' };
   const keys = [raw, stripVariantSuffix(raw), normalizeReperLoose(raw), normalizeReperLoose(stripVariantSuffix(raw))].filter(Boolean);
   const aliases = state.helperMaps && state.helperMaps.aliasByKey ? state.helperMaps.aliasByKey : Object.create(null);
   for(const key of keys){
@@ -335,7 +337,8 @@ function displayTargetsForSource(model){
   const raw = trimText(model).toUpperCase();
   if(!raw) return [];
   const rawLooseForManual = normalizeReperLoose(raw);
-  if(/AS[O0]LL/.test(rawLooseForManual) || rawLooseForManual.includes('AT355') || rawLooseForManual.includes('AU1CZ')) return ['ASOLLO_M'];
+  if(/AS[O0]LL/.test(rawLooseForManual) || rawLooseForManual.includes('AT355')) return ['ASOLLO_M'];
+  if(rawLooseForManual.includes('AU1CZ')) return ['AU1CZ01A'];
   const zales = expandZaleShorthandFromText(raw);
   if(zales.length) return zales;
   const alias = findAliasMapping(raw);
@@ -852,13 +855,24 @@ function buildSnapshotMap(rows, keySelector, valueSelector){
 }
 function buildSalesMap(rows){
   const map = Object.create(null);
-  (rows || []).forEach(row => {
+  const seenLineTargets = new Set();
+  (rows || []).forEach((row, rowIndex) => {
     if(trimText(row.um) && norm(row.um) !== 'buc') return;
     const qty = toNumber(row.cantitate);
     if(!qty) return;
+
+    /*
+      Vânzările se adună o singură dată pe reperul canonic afișat.
+      Înainte se putea aduna aceeași linie pe mai multe chei tehnice
+      (cod articol, nume articol, cheie normalizată, cheie MRC), iar la ASOLLO_M
+      cantitatea ieșea mai mare decât totalul real din Lista vânzări.
+    */
     const rawValues = [row.cod_articol, row.nume_articol].map(v => trimText(v).toUpperCase()).filter(Boolean);
     const targets = [];
-    rawValues.forEach(value => displayTargetsForSource(value).forEach(target => { if(target && !targets.includes(target)) targets.push(target); }));
+    rawValues.forEach(value => displayTargetsForSource(value).forEach(target => {
+      const cleanTarget = trimText(target).toUpperCase();
+      if(cleanTarget && !targets.includes(cleanTarget)) targets.push(cleanTarget);
+    }));
     if(!targets.length){
       rawValues.forEach(value => {
         const loose = normalizeReperLoose(value);
@@ -867,11 +881,17 @@ function buildSalesMap(rows){
         if(stripped && !targets.includes(stripped)) targets.push(stripped);
       });
     }
+
     const dividedQty = targets.length > 1 ? qty / targets.length : qty;
+    const sourceLineId = [row.id || rowIndex, row.cod_articol || '', row.nume_articol || '', row.an || '', row.lunaNum || '', row.cantitate || ''].join('|');
     targets.forEach(target => {
       const meta = resolveReperMeta(target);
-      const keys = new Set([normalizeReperLoose(target), meta && meta.forjaKey, meta && meta.clean, meta && meta.mappedForja].filter(Boolean));
-      keys.forEach(key => { map[key] = toNumber(map[key]) + dividedQty; });
+      const canonical = normalizeReperLoose((meta && meta.mappedForja) || target);
+      if(!canonical) return;
+      const dedupKey = sourceLineId + '>' + canonical;
+      if(seenLineTargets.has(dedupKey)) return;
+      seenLineTargets.add(dedupKey);
+      map[canonical] = toNumber(map[canonical]) + dividedQty;
     });
   });
   return map;
