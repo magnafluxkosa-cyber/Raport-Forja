@@ -25,6 +25,12 @@
     .statusbar,.summary{display:grid;grid-template-columns:repeat(4,minmax(180px,1fr));gap:10px}
     .status-card,.summary-card,.panel{background:rgba(255,255,255,.52);border:1px solid rgba(29,29,29,.2);border-radius:16px;padding:10px 12px;box-shadow:0 1px 0 rgba(255,255,255,.4) inset,var(--shadow)}
     .panel{background:rgba(255,255,255,.38)}
+    .sales-alert{display:none;order:-9;background:#fff7ed;border:1px solid #d97706;border-left:6px solid #ea580c;border-radius:14px;padding:8px 10px;box-shadow:0 1px 0 rgba(255,255,255,.55) inset,var(--shadow);color:#7c2d12;font-size:11px;line-height:1.25}
+    .sales-alert.is-visible{display:block}
+    .sales-alert-title{font-size:12px;font-weight:900;text-transform:uppercase;letter-spacing:.25px;margin-bottom:3px;color:#9a3412}
+    .sales-alert-text{font-weight:800;color:#7c2d12}
+    .sales-alert-list{margin-top:6px;display:flex;gap:6px;flex-wrap:wrap}
+    .sales-alert-item{background:rgba(255,255,255,.72);border:1px solid rgba(217,119,6,.35);border-radius:8px;padding:4px 6px;font-weight:800;color:#0b1f46;max-width:360px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
     .topbar,.statusbar,.summary{display:none !important}
     .filters-panel{order:-10;margin-top:0}
     .page{gap:8px}
@@ -122,6 +128,12 @@
       <button class="btn secondary" id="btnClear" type="button">Șterge filtrele</button>
       <div class="hint">Tabelul este grupat pe flux: material (diametru + calitate) → reper debitat → reper forjat. Valorile comune sunt unite pe verticală ca în helper, ca să nu mai apară casete goale repetate.</div>
     </div>
+  </section>
+
+  <section class="sales-alert" id="unmappedSalesAlert">
+    <div class="sales-alert-title">Avertizare vânzări neincluse în foaie</div>
+    <div class="sales-alert-text" id="unmappedSalesText"></div>
+    <div class="sales-alert-list" id="unmappedSalesList"></div>
   </section>
 
   <section class="summary">
@@ -249,7 +261,8 @@
   const els={
     authStatus:document.getElementById('authStatus'),authSub:document.getElementById('authSub'),cloudStatus:document.getElementById('cloudStatus'),cloudSub:document.getElementById('cloudSub'),periodStatus:document.getElementById('periodStatus'),periodSub:document.getElementById('periodSub'),syncStatus:document.getElementById('syncStatus'),syncSub:document.getElementById('syncSub'),
     filterYear:document.getElementById('filterYear'),filterMonth:document.getElementById('filterMonth'),filterReper:document.getElementById('filterReper'),filterDiam:document.getElementById('filterDiam'),filterCal:document.getElementById('filterCal'),btnClear:document.getElementById('btnClear'),btnRefresh:document.getElementById('btnRefresh'),btnExport:document.getElementById('btnExport'),
-    statSteel:document.getElementById('statSteel'),statDebitate:document.getElementById('statDebitate'),statForjate:document.getElementById('statForjate'),statRepere:document.getElementById('statRepere'),tableInfo:document.getElementById('tableInfo'),tableSource:document.getElementById('tableSource'),tbody:document.getElementById('tbody'),errorBox:document.getElementById('errorBox'),footerStatus:document.getElementById('footerStatus'),footerUpdated:document.getElementById('footerUpdated')
+    statSteel:document.getElementById('statSteel'),statDebitate:document.getElementById('statDebitate'),statForjate:document.getElementById('statForjate'),statRepere:document.getElementById('statRepere'),tableInfo:document.getElementById('tableInfo'),tableSource:document.getElementById('tableSource'),tbody:document.getElementById('tbody'),errorBox:document.getElementById('errorBox'),footerStatus:document.getElementById('footerStatus'),footerUpdated:document.getElementById('footerUpdated'),
+    unmappedSalesAlert:document.getElementById('unmappedSalesAlert'),unmappedSalesText:document.getElementById('unmappedSalesText'),unmappedSalesList:document.getElementById('unmappedSalesList')
   };
   const state={supabase:null,user:null,raw:{helper:[],intrariOtel:[],debitate:[],forjate:[],inventarOtel:[],inventarDebitate:[],inventarForjate:[],livrari:[],listaVanzari:[],rebut:[],magnaflux:[],rebutPm:[]},helperTables:{forjate:[],debitare:[],source:'rf_documents'},groups:[],filteredGroups:[],displayRows:[],updatedAt:null};
 
@@ -958,6 +971,63 @@
     return map;
   }
 
+  function buildIncludedForjatSet(){
+    const set=new Set();
+    (state.groups||[]).forEach(material=>{
+      (material.debGroups||[]).forEach(deb=>{
+        (deb.forjats||[]).forEach(f=>{
+          const reper=normalizeReper(f&&f.reperForjat);
+          if(reper) set.add(reper);
+        });
+      });
+    });
+    return set;
+  }
+  function collectUnmappedSalesRows(){
+    const included=buildIncludedForjatSet();
+    const items=new Map();
+    state.raw.listaVanzari.forEach(row=>{
+      if(!rowInSelectedPeriod(row)) return;
+      const qty=toNumber(pickValue(row,['cantitate','cantitateBuc','cantitate_buc','cantitate buc','buc','qty','ordered qty']));
+      if(!qty) return;
+      const repers=resolveZaleRepersFromSalesRow(row).map(normalizeReper).filter(Boolean);
+      const isIncluded=repers.some(reper=>included.has(reper));
+      if(isIncluded) return;
+      const cod=trimText(pickValue(row,['cod_articol','cod articol','cod art','cod produs','part','reper']))||'-';
+      const nume=trimText(pickValue(row,['nume_articol','nume art','nume articol','denumire articol','articol']))||'-';
+      const doc=trimText(pickValue(row,['numar_document','număr document','numar document','nr document','document']));
+      const key=cod+'|'+nume;
+      const current=items.get(key)||{cod,nume,qty:0,rows:0,docs:new Set(),matched:new Set()};
+      current.qty+=qty;
+      current.rows+=1;
+      if(doc) current.docs.add(doc);
+      repers.forEach(reper=>current.matched.add(reper));
+      items.set(key,current);
+    });
+    return Array.from(items.values()).sort((a,b)=>b.qty-a.qty || String(a.cod).localeCompare(String(b.cod),'ro'));
+  }
+  function renderUnmappedSalesAlert(){
+    if(!els.unmappedSalesAlert) return;
+    const items=collectUnmappedSalesRows();
+    if(!items.length){
+      els.unmappedSalesAlert.classList.remove('is-visible');
+      els.unmappedSalesText.textContent='';
+      els.unmappedSalesList.innerHTML='';
+      return;
+    }
+    const totalQty=items.reduce((sum,item)=>sum+(item.qty||0),0);
+    const shown=items.slice(0,12);
+    const hidden=items.length-shown.length;
+    els.unmappedSalesText.textContent=`${formatNumber(items.length,0)} poziții din Lista Vânzări nu sunt incluse în tabel pentru perioada selectată. Total neincluse: ${formatNumber(totalQty,0)} buc. Verifică și adaugă maparea pentru ele.`;
+    els.unmappedSalesList.innerHTML=shown.map(item=>{
+      const docs=Array.from(item.docs||[]).slice(0,3).join(', ');
+      const matched=Array.from(item.matched||[]).filter(Boolean).join(', ');
+      const details=[`Cantitate ${formatNumber(item.qty,0)} buc`, docs?`Doc: ${docs}`:'', matched?`Mapat dar neafișat: ${matched}`:'Nemapat'].filter(Boolean).join(' • ');
+      return `<div class="sales-alert-item" title="${esc(item.cod+' | '+item.nume+' | '+details)}">${esc(item.cod)} — ${esc(item.nume)} (${esc(details)})</div>`;
+    }).join('') + (hidden>0?`<div class="sales-alert-item">+ ${formatNumber(hidden,0)} poziții</div>`:'');
+    els.unmappedSalesAlert.classList.add('is-visible');
+  }
+
   function buildRows(){
     const helperIndex=buildHelperIndex(state.raw.helper,state.raw.debitate,state.raw.forjate,state.helperTables.forjate);
     const debMeta=buildDebitatMeta(state.raw.helper,state.raw.debitate,state.helperTables.debitare,state.helperTables.forjate,helperIndex);
@@ -1237,6 +1307,7 @@
     els.tableInfo.textContent=formatNumber(rows.length,0)+' rânduri';
     els.footerStatus.textContent=buildFooterStatus();
     els.footerUpdated.textContent='Actualizare: '+(state.updatedAt?formatDateTime(state.updatedAt):'—');
+    renderUnmappedSalesAlert();
     saveFilterState();
   }
   function populateYearMonth(){
