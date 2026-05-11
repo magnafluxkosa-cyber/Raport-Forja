@@ -8,6 +8,7 @@
   <script src="./rf-config.js"></script>
   <script src="./auth-common.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
   <link rel="stylesheet" href="./mobile-erp.css" />
   <link rel="stylesheet" href="./kad-nav-shell.css" />
   <style>
@@ -42,8 +43,8 @@
     .info-chip{display:inline-flex;align-items:center;justify-content:center;padding:6px 10px;border-radius:999px;background:rgba(255,255,255,.82);border:1px solid rgba(29,29,29,.16);font-size:11px;font-weight:800;color:#0b1f46}
     .actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-left:auto}
     .excel-import-control{position:relative;display:inline-flex;align-items:center;justify-content:center;height:34px}
-    .excel-import-control > #btnImportExcel{pointer-events:none}
-    .excel-import-control > #excelImportInput{position:absolute;inset:0;width:100%;height:100%;opacity:0;cursor:pointer;z-index:5;font-size:0}
+    .excel-import-control > #btnImportExcel{pointer-events:auto}
+    .excel-import-control > #excelImportInput{display:none}
     .excel-import-control.import-disabled > #excelImportInput{pointer-events:none;cursor:default}
     .action-btn,.back-btn{height:34px;border:1px solid var(--line);border-radius:10px;background:rgba(255,255,255,.84);color:#0b1f46;padding:0 12px;font-size:12px;font-weight:800;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;white-space:nowrap;text-decoration:none;box-shadow:0 1px 0 rgba(0,0,0,.12)}
     .action-btn:hover,.back-btn:hover{background:#fff}
@@ -991,6 +992,18 @@
       }
       return String(value).trim();
     }
+    function sheetCellToText(value){
+      if(value == null) return '';
+      if(value instanceof Date) return '';
+      if(typeof value === 'object'){
+        if(Array.isArray(value.richText)) return value.richText.map((part) => part && part.text ? part.text : '').join('').trim();
+        if(value.result != null) return String(value.result).trim();
+        if(value.text != null) return String(value.text).trim();
+        if(value.v != null) return String(value.v).trim();
+        if(value.w != null) return String(value.w).trim();
+      }
+      return String(value).trim();
+    }
     function normalizeImportHeader(value){
       return normalizeText(value).replace(/[^a-z0-9]+/g,' ');
     }
@@ -1053,6 +1066,28 @@
       Object.keys(aliases).forEach((alias) => add(alias, aliases[alias]));
       return lookup;
     }
+    function findImportBlockInRows(rows){
+      const wanted = new Set(COLUMNS.map((col) => col.key));
+      let best = null;
+      for(let rowNumber = 0; rowNumber < rows.length; rowNumber++){
+        const row = rows[rowNumber] || [];
+        for(let colNumber = 0; colNumber < Math.max(row.length, 1); colNumber++){
+          const head = normalizeImportHeader(row[colNumber]);
+          if(head !== 'model' && head !== 'reper' && head !== 'repere') continue;
+          const fields = [];
+          for(let c = colNumber + 1; c <= Math.min(colNumber + 18, Math.max(row.length, colNumber + 18)); c++){
+            const field = matchImportField(row[c]);
+            if(field && wanted.has(field) && !fields.some((item) => item.field === field)) fields.push({ field, col:c });
+          }
+          if(fields.length >= 2){
+            const candidate = { headerRow:rowNumber, modelCol:colNumber, fields };
+            if(!best || fields.length > best.fields.length) best = candidate;
+            if(fields.length >= 6) return candidate;
+          }
+        }
+      }
+      return best;
+    }
     function findFirstImportBlock(workbook){
       const wanted = new Set(COLUMNS.map((col) => col.key));
       let best = null;
@@ -1080,6 +1115,52 @@
       }
       return best;
     }
+    function resolveImportModel(rawModel, lookup){
+      const key = normalizeModelImportKey(rawModel);
+      if(!key) return '';
+      if(lookup.has(key)) return lookup.get(key);
+      let best = '';
+      let bestLength = 0;
+      lookup.forEach((model, aliasKey) => {
+        if(!aliasKey) return;
+        const isMatch = key.includes(aliasKey) || aliasKey.includes(key);
+        if(isMatch && aliasKey.length > bestLength){
+          best = model;
+          bestLength = aliasKey.length;
+        }
+      });
+      return best;
+    }
+    function importRowsIntoCurrentMonth(rows, block){
+      const lookup = buildImportModelLookup();
+      const monthData = getCurrentMonthData();
+      MODELS.forEach((m) => { monthData.rows[m.model] = normalizeRow({}); });
+      let matchedRows = 0;
+      let matchedCells = 0;
+      let blankRows = 0;
+      for(let r = block.headerRow + 1; r < rows.length; r++){
+        const row = rows[r] || [];
+        const rawModel = sheetCellToText(row[block.modelCol]);
+        const hasValues = block.fields.some((item) => sheetCellToText(row[item.col]) !== '');
+        if(!rawModel && !hasValues){
+          blankRows += 1;
+          if(blankRows >= 10) break;
+          continue;
+        }
+        blankRows = 0;
+        if(['model','reper','repere'].includes(normalizeImportHeader(rawModel))) break;
+        const model = resolveImportModel(rawModel, lookup);
+        if(!model) continue;
+        matchedRows += 1;
+        if(!monthData.rows[model]) monthData.rows[model] = normalizeRow({});
+        block.fields.forEach((item) => {
+          const value = sheetCellToText(row[item.col]);
+          monthData.rows[model][item.field] = value;
+          if(value !== '') matchedCells += 1;
+        });
+      }
+      return { matchedRows, matchedCells };
+    }
     function hasCurrentMonthValues(){
       const monthData = getCurrentMonthData();
       return MODELS.some((m) => {
@@ -1090,59 +1171,64 @@
     async function importExcelFile(file){
       if(!state.canEdit) return;
       if(!file) return;
-      if(!window.ExcelJS){ window.alert('Biblioteca Excel nu s-a încărcat.'); return; }
+      const hasSheetJs = !!(window.XLSX && typeof window.XLSX.read === 'function');
+      const hasExcelJs = !!window.ExcelJS;
+      if(!hasSheetJs && !hasExcelJs){ window.alert('Biblioteca Excel nu s-a încărcat. Reîncarcă pagina și încearcă din nou.'); return; }
       if(hasCurrentMonthValues()){
         const label = (MONTHS[state.currentMonth-1] || '') + ' ' + state.currentYear;
         if(!window.confirm('Importul Excel va înlocui valorile existente din luna ' + label + '. Continui?')) return;
       }
       try{
         const buffer = await file.arrayBuffer();
-        const wb = new ExcelJS.Workbook();
-        await wb.xlsx.load(buffer);
-        const block = findFirstImportBlock(wb);
-        if(!block){
-          window.alert('Nu am găsit în Excel un tabel cu antet MODEL și coloanele de stoc.');
-          return;
-        }
-        const lookup = buildImportModelLookup();
-        const monthData = getCurrentMonthData();
-        MODELS.forEach((m) => { monthData.rows[m.model] = normalizeRow({}); });
-        let matchedRows = 0;
-        let matchedCells = 0;
-        let blankRows = 0;
-        const maxRow = block.worksheet.rowCount || 0;
-        for(let r = block.headerRow + 1; r <= maxRow; r++){
-          const row = block.worksheet.getRow(r);
-          const rawModel = getExcelCellText(row.getCell(block.modelCol));
-          const normalizedModel = normalizeModelImportKey(rawModel);
-          const hasValues = block.fields.some((item) => getExcelCellText(row.getCell(item.col)) !== '');
-          if(!rawModel && !hasValues){
-            blankRows += 1;
-            if(blankRows >= 8) break;
-            continue;
+        let result = null;
+        if(hasSheetJs){
+          const wb = window.XLSX.read(buffer, { type:'array', cellDates:false, raw:false });
+          for(const sheetName of wb.SheetNames || []){
+            const ws = wb.Sheets[sheetName];
+            if(!ws) continue;
+            const rows = window.XLSX.utils.sheet_to_json(ws, { header:1, defval:'', raw:false, blankrows:false });
+            const block = findImportBlockInRows(rows);
+            if(!block) continue;
+            result = importRowsIntoCurrentMonth(rows, block);
+            break;
           }
-          blankRows = 0;
-          if(normalizeImportHeader(rawModel) === 'model') break;
-          const model = lookup.get(normalizedModel);
-          if(!model) continue;
-          matchedRows += 1;
-          if(!monthData.rows[model]) monthData.rows[model] = normalizeRow({});
-          block.fields.forEach((item) => {
-            const value = getExcelCellText(row.getCell(item.col));
-            monthData.rows[model][item.field] = value;
-            if(value !== '') matchedCells += 1;
-          });
+        }
+        if(!result && hasExcelJs){
+          const wb = new ExcelJS.Workbook();
+          await wb.xlsx.load(buffer);
+          const block = findFirstImportBlock(wb);
+          if(block){
+            const rows = [];
+            const maxRow = block.worksheet.rowCount || 0;
+            const maxCol = Math.max(block.worksheet.columnCount || 0, block.modelCol + 18);
+            for(let r = 1; r <= maxRow; r++){
+              const excelRow = block.worksheet.getRow(r);
+              const rowValues = [];
+              for(let c = 1; c <= maxCol; c++) rowValues.push(getExcelCellText(excelRow.getCell(c)));
+              rows.push(rowValues);
+            }
+            result = importRowsIntoCurrentMonth(rows, { headerRow:block.headerRow - 1, modelCol:block.modelCol - 1, fields:block.fields.map((item) => ({ field:item.field, col:item.col - 1 })) });
+          }
+        }
+        if(!result){
+          window.alert('Nu am găsit în Excel un tabel cu antet MODEL și coloanele de stoc. Verifică să existe rândul MODEL + STOC AMBALAT / STOC FINITE / STOC WIP / STOC FORJA / STOC DEBITAT / STOC OTEL.');
+          return;
         }
         state.payload.visibleMonthKey = monthKey(state.currentYear, state.currentMonth);
         setDirty(true);
         renderTable();
-        updateStatus('Import Excel: ' + matchedRows + ' repere, ' + matchedCells + ' valori. Luna din Excel a fost ignorată.');
+        updateStatus('Import Excel: ' + result.matchedRows + ' repere, ' + result.matchedCells + ' valori. Luna din Excel a fost ignorată.');
+        if(result.matchedRows <= 0){
+          window.alert('Importul a găsit tabelul, dar nu a potrivit niciun reper. Verifică denumirile reperelor din Excel.');
+          return;
+        }
         window.alert('Import Excel realizat pentru luna selectată. Luna/data din Excel a fost ignorată. Verifică tabelul și apasă „Salvează acum”.');
       }catch(err){
         console.error('Inventar Prelucrari import Excel', err);
         window.alert('Importul Excel nu a reușit. Verifică fișierul și încearcă din nou.');
       }
     }
+
 
     function exportExcel(){
       if(!window.ExcelJS){ window.alert('Biblioteca Excel nu s-a încărcat.'); return; }
