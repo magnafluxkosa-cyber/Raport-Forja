@@ -849,6 +849,36 @@
         el.className = 'chip ' + (kind || 'warn');
       }
       function canEdit(){ return state.canEdit === true; }
+      function isAdminManualSaveMode(){ return isAdminAccount(); }
+      function markAdminManualDirty(message){
+        if(!isAdminManualSaveMode() || state.loadingOperatorSheet || state.suppressTrackingSave || state.adminManualSaveInProgress) return false;
+        state.adminManualDirty = true;
+        setChip(els.modeChip, message || 'Modificări nesalvate - apasă Salvează modificările', 'warn');
+        return true;
+      }
+      function markAdminManualSaved(message){
+        if(!isAdminManualSaveMode()) return;
+        state.adminManualDirty = false;
+        setChip(els.modeChip, message || 'Fișa admin a fost salvată manual', 'ok');
+      }
+      function adminSheetHasUnsavedContent(){
+        try{
+          var data = collectCurrentSheetData();
+          if(data.reper1 || data.reper2 || data.codCat1 || data.codCat2) return true;
+          if(data.cells && Object.keys(data.cells).length) return true;
+          if(data.oraCtrl && Object.keys(data.oraCtrl).length) return true;
+          if(data.report && ttReportHasData(data.report)) return true;
+        }catch(_){ }
+        return false;
+      }
+      function confirmDiscardAdminUnsaved(){
+        if(!isAdminManualSaveMode() || !state.adminManualDirty || !adminSheetHasUnsavedContent()) return true;
+        return confirm('Ai modificări nesalvate în fișa curentă. Dacă schimbi data sau schimbul fără să salvezi, modificările se pierd. Continui fără salvare?');
+      }
+      function setAdminManualSaveMessage(){
+        if(!isAdminManualSaveMode()) return;
+        setChip(els.modeChip, 'Fișa admin: salvare doar manuală', 'warn');
+      }
       function setProtectedVisible(){
         try{ if(window.ERPAuth && typeof window.ERPAuth.showProtectedPage === 'function') window.ERPAuth.showProtectedPage(); }catch(_){}
         try{ document.documentElement.removeAttribute('data-rf-prehide'); }catch(_){}
@@ -1621,7 +1651,11 @@
         if(state.loadingOperatorSheet || state.suppressTrackingSave) return;
         state.trackingDirty = true;
         if(trackingSaveTimer) clearTimeout(trackingSaveTimer);
-        setChip(els.modeChip, 'Modificări nesalvate în urmărire TT', 'warn');
+        if(isAdminManualSaveMode()){
+          markAdminManualDirty('Modificări nesalvate - apasă Salvează modificările');
+        } else {
+          setChip(els.modeChip, 'Modificări nesalvate în urmărire TT', 'warn');
+        }
       }
 
 
@@ -1759,6 +1793,7 @@
         state.reportDirty = true;
         state.reportSavedForSheetId = '';
         setChip(els.ttReportStatus, 'Raport modificat', 'warn');
+        if(isAdminManualSaveMode()) markAdminManualDirty('Raport modificat - apasă Salvează modificările');
       }
       function markReportCleanAsLoaded(data){
         state.reportDirty = false;
@@ -2124,14 +2159,7 @@
       }
       async function returnToAdminSheet(){
         if(!isAdminAccount()) return;
-        try{
-          if(state.isViewingOperatorSheet){
-            await saveOperatorSheetCloudNow();
-            await saveTrackingNow();
-          }
-        }catch(error){
-          console.warn('Nu am putut salva complet fișa operatorului înainte de întoarcere.', error);
-        }
+        if(state.isViewingOperatorSheet && state.adminManualDirty && !confirmDiscardAdminUnsaved()) return;
         restoreAdminSheetSnapshot();
         applyReadonlyMode();
       }
@@ -2268,7 +2296,8 @@
           try{
             persistOperatorSheetsLocal(merged, Array.from(deletedSet));
           }catch(_){ }
-          setChip(els.modeChip, 'Fișa operatorului salvată automat', 'ok');
+          if(isAdminManualSaveMode()) markAdminManualSaved('Fișa a fost salvată manual');
+          else setChip(els.modeChip, 'Fișa operatorului salvată automat', 'ok');
         }catch(error){
           console.warn('Nu am putut salva fișa operatorului în cloud; rămâne salvată local.', error);
           setChip(els.modeChip, 'Fișa operatorului salvată local', 'warn');
@@ -2276,6 +2305,10 @@
       }
       function scheduleOperatorSheetSave(){
         if(!canEdit()) return;
+        if(isAdminManualSaveMode()){
+          markAdminManualDirty();
+          return;
+        }
         var data = saveOperatorSheetLocalNow();
         if(!data || !data.operator || !sheetHasContent(data)) return;
         if(operatorSheetSaveTimer) clearTimeout(operatorSheetSaveTimer);
@@ -2356,6 +2389,8 @@
         var found = findOperatorSheetFor(operator, dateIso, shift);
         if(found){
           applySheetData(found);
+          state.lastLoadedDateIso = dateIso;
+          state.lastLoadedShift = String(found.shift || shift || '').trim();
           setChip(els.modeChip, 'Fișă încărcată: ' + operator + (found.shift ? ' · ' + shiftInfo(found.shift).label : ''), 'ok');
           return true;
         }
@@ -2364,6 +2399,8 @@
         setWorkDateIso(dateIso);
         if(els.ttShift) els.ttShift.value = shift;
         if(els.ttOperatorTT) els.ttOperatorTT.value = operator;
+        state.lastLoadedDateIso = dateIso;
+        state.lastLoadedShift = shift;
         updateReportAutoFields();
         setChip(els.modeChip, 'Fișă nouă: ' + operator + (shift ? ' · ' + shiftInfo(shift).label : ''), 'ok');
         return false;
@@ -2371,9 +2408,28 @@
       async function switchOperatorSheetScope(dateIso, shift){
         if(state.loadingOperatorSheet || state.suppressTrackingSave) return;
         var operator = activeSheetOperator();
-        if(!operator) return;
         dateIso = String(dateIso || currentWorkDateIso() || todayIso()).slice(0,10);
         shift = String(shift || currentShift() || '').trim();
+        if(!operator){
+          setWorkDateIso(dateIso);
+          if(els.ttShift) els.ttShift.value = shift;
+          markAdminManualDirty('Completează operatorul și apoi salvează manual fișa');
+          return;
+        }
+        if(isAdminManualSaveMode()){
+          if(!confirmDiscardAdminUnsaved()){
+            setWorkDateIso(state.lastLoadedDateIso || currentWorkDateIso());
+            if(els.ttShift) els.ttShift.value = state.lastLoadedShift || '';
+            updateReportAutoFields();
+            return;
+          }
+          state.currentOperatorSheetId = null;
+          await loadOperatorSheetFor(operator, dateIso, shift);
+          state.trackingDirty = false;
+          state.adminManualDirty = false;
+          setAdminManualSaveMessage();
+          return;
+        }
         try{ await saveOperatorSheetCloudNow(); }catch(error){ console.warn(error); }
         state.currentOperatorSheetId = null;
         await loadOperatorSheetFor(operator, dateIso, shift);
@@ -3395,6 +3451,10 @@
       }
       function saveDraft(){
         if(!canEdit()) return;
+        if(isAdminManualSaveMode()){
+          markAdminManualDirty();
+          return;
+        }
         var data = collectCurrentSheetData();
         try{
           if(data.operator) localStorage.setItem(operatorDraftStorageKey(data.operator, data.date_iso, data.shift), JSON.stringify(data));
@@ -3583,14 +3643,20 @@
         if(els.btnBackToAdminSheet) els.btnBackToAdminSheet.addEventListener('click', function(){ returnToAdminSheet().catch(function(err){ alert('Nu am putut reveni la fișa admin: ' + (err && err.message || err)); }); });
         if(els.btnSaveAdminChanges) els.btnSaveAdminChanges.addEventListener('click', async function(){
           try{
+            state.adminManualSaveInProgress = true;
             await saveOperatorSheetCloudNow();
             await saveTrackingNow();
             await saveReportAndProblemsNow();
             state.trackingDirty = false;
-            setChip(els.modeChip, 'Fișa, urmărirea TT și raportul au fost salvate', 'ok');
+            state.adminManualDirty = false;
+            state.lastLoadedDateIso = currentWorkDateIso();
+            state.lastLoadedShift = currentShift();
+            setChip(els.modeChip, 'Fișa schimbului ' + (currentShift() || '-') + ' a fost salvată manual', 'ok');
           }catch(error){
             console.error(error);
             alert('Nu am putut salva modificările: ' + (error && error.message || error));
+          }finally{
+            state.adminManualSaveInProgress = false;
           }
         });
         if(els.btnPinAdminFromModal) els.btnPinAdminFromModal.addEventListener('click', openPinAdmin);
@@ -3624,8 +3690,8 @@
           showPinModal();
         });
         window.addEventListener('resize', fitSheet);
-        window.addEventListener('beforeunload', function(){ try{ saveOperatorSheetLocalNow(); }catch(_){ } });
-        document.addEventListener('visibilitychange', function(){ if(document.visibilityState === 'hidden'){ try{ saveOperatorSheetLocalNow(); }catch(_){ } } });
+        window.addEventListener('beforeunload', function(){ if(!isAdminManualSaveMode()){ try{ saveOperatorSheetLocalNow(); }catch(_){ } } });
+        document.addEventListener('visibilitychange', function(){ if(document.visibilityState === 'hidden' && !isAdminManualSaveMode()){ try{ saveOperatorSheetLocalNow(); }catch(_){ } } });
       }
       async function init(){
         els.roleChip = qs('roleChip');
@@ -3733,6 +3799,8 @@
             clearSheetContentNoConfirm(false);
             resetWorkDateToToday();
             if(els.ttOperatorTT) els.ttOperatorTT.value = '';
+            state.lastLoadedDateIso = currentWorkDateIso();
+            state.lastLoadedShift = currentShift();
           } finally {
             state.loadingOperatorSheet = false;
             state.suppressTrackingSave = false;
@@ -3748,7 +3816,8 @@
         fitSheet();
         setProtectedVisible();
         hideKadMenu();
-        if(canEdit()){ scheduleOperatorSheetSave(); }
+        if(canEdit() && !isAdminManualSaveMode()){ scheduleOperatorSheetSave(); }
+        if(isAdminManualSaveMode()) setAdminManualSaveMessage();
         if(shouldRequireOperatorPin() && !state.pinUnlocked) showPinModal();
       }
       if(document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
