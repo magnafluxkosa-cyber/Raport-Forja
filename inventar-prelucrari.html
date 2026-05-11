@@ -110,6 +110,8 @@
       <div class="actions">
         <a class="back-btn" href="index.html">Înapoi la Dashboard</a>
         <button class="action-btn" type="button" id="btnReload">Reîncarcă</button>
+        <button class="action-btn" type="button" id="btnImportExcel">Import Excel</button>
+        <input type="file" id="excelImportInput" accept=".xlsx,.xls" hidden>
         <button class="action-btn" type="button" id="btnExportExcel">Export Excel</button>
         <button class="action-btn" type="button" id="btnPrint">Listează</button>
         <button class="action-btn danger" type="button" id="btnClearMonth">Șterge valorile lunii</button>
@@ -493,6 +495,8 @@
     const btnReload = document.getElementById('btnReload');
     const btnSave = document.getElementById('btnSave');
     const btnClearMonth = document.getElementById('btnClearMonth');
+    const btnImportExcel = document.getElementById('btnImportExcel');
+    const excelImportInput = document.getElementById('excelImportInput');
     const btnExportExcel = document.getElementById('btnExportExcel');
     const btnPrint = document.getElementById('btnPrint');
 
@@ -644,7 +648,8 @@
     }
     function applyEditLock(){
       const editable = !!state.canEdit;
-      [btnSave, btnClearMonth].forEach((btn) => { if(btn) btn.disabled = !editable; });
+      [btnSave, btnClearMonth, btnImportExcel].forEach((btn) => { if(btn) btn.disabled = !editable; });
+      if(excelImportInput) excelImportInput.disabled = !editable;
       document.querySelectorAll('.cell-input').forEach((input) => { input.disabled = !editable; });
     }
 
@@ -845,6 +850,165 @@
       const n = Number(raw);
       return Number.isFinite(n) ? n : null;
     }
+    function getExcelCellText(cell){
+      if(!cell) return '';
+      const value = cell.value;
+      if(value == null) return '';
+      if(value instanceof Date) return '';
+      if(typeof value === 'object'){
+        if(Array.isArray(value.richText)) return value.richText.map((part) => part && part.text ? part.text : '').join('').trim();
+        if(value.result != null) return String(value.result).trim();
+        if(value.text != null) return String(value.text).trim();
+        if(value.formula && value.result == null) return '';
+      }
+      return String(value).trim();
+    }
+    function normalizeImportHeader(value){
+      return normalizeText(value).replace(/[^a-z0-9]+/g,' ');
+    }
+    function matchImportField(headerText){
+      const h = normalizeImportHeader(headerText);
+      if(!h) return '';
+      if(h.includes('ambalat') || h.includes('packed pcs')) return 'ambalat';
+      if(h.includes('finite prelucrari') || h.includes('finished pcs')) return 'finite';
+      if(h.includes('wip') || h.includes('work in process')) return 'wip';
+      if(h.includes('forja')) return 'forja';
+      if(h.includes('debitat')) return 'debitat';
+      if(h.includes('otel')) return 'otel';
+      return '';
+    }
+    function normalizeModelImportKey(value){
+      return normalizeText(value)
+        .replace(/^za\s+/,'')
+        .replace(/[^a-z0-9]+/g,'');
+    }
+    function buildImportModelLookup(){
+      const lookup = new Map();
+      function add(alias, model){
+        const key = normalizeModelImportKey(alias);
+        if(key && !lookup.has(key)) lookup.set(key, model);
+      }
+      MODELS.forEach((m) => {
+        add(m.model, m.model);
+        add(String(m.model || '').replace(/^ZA\s+/i,''), m.model);
+      });
+      const aliases = {
+        'ASOLLO_M':'KT700002/AS0LL01A',
+        'ASOLLO':'KT700002/AS0LL01A',
+        'AS0LL01A':'KT700002/AS0LL01A',
+        'AU1CZ01A':'FLANSA PC728001/CE2KE01A AU1CZ01A Nezincat',
+        'BF27K01A':'KN752001/BF27K01A',
+        'AT-355':'FLANSA PC727001/CE2HR01A AT35501A Nezincat',
+        'AT35501A':'FLANSA PC727001/CE2HR01A AT35501A Nezincat',
+        'B87K501A':'KP686001/B87K501A',
+        'BF5C001A':'KN743001/BF5C001A',
+        'BF32C01A':'KN745001/BF32C01A',
+        'BF58101A':'KN741001/BF58101A',
+        'BF3E301A':'KN740001/BF3E301A',
+        'SK-304234':'304234',
+        'SK-203034':'203034',
+        '9K-6628':'ZA 9K6628',
+        '9K6628':'ZA 9K6628',
+        '9K-6629':'ZA 9K6629',
+        '9K6629':'ZA 9K6629',
+        '248-2307':'ZA 248-2307',
+        '248-2308':'ZA 248-2308',
+        '378-8241':'ZA 378-8241',
+        '378-8242':'ZA 378-8242',
+        '106-1625':'ZA 106-1625 V07',
+        '106-1626':'ZA 106-1626 V07',
+        '503-0761':'ZA 503-0761',
+        '503-0762':'ZA 503-0762',
+        '229-6909':'ZA 229-6909',
+        '229-6910':'ZA 229-6910'
+      };
+      Object.keys(aliases).forEach((alias) => add(alias, aliases[alias]));
+      return lookup;
+    }
+    function findFirstImportBlock(workbook){
+      for(const ws of workbook.worksheets){
+        for(let rowNumber = 1; rowNumber <= ws.rowCount; rowNumber++){
+          const row = ws.getRow(rowNumber);
+          for(let colNumber = 1; colNumber <= Math.max(row.cellCount, 1); colNumber++){
+            const cellText = getExcelCellText(row.getCell(colNumber));
+            if(normalizeImportHeader(cellText) !== 'model') continue;
+            const fields = [];
+            for(let c = colNumber + 1; c <= Math.min(colNumber + 12, ws.columnCount || colNumber + 12); c++){
+              const field = matchImportField(getExcelCellText(row.getCell(c)));
+              if(field && !fields.some((item) => item.field === field)) fields.push({ field, col:c });
+            }
+            if(fields.length >= 3){
+              return { worksheet:ws, headerRow:rowNumber, modelCol:colNumber, fields };
+            }
+          }
+        }
+      }
+      return null;
+    }
+    function hasCurrentMonthValues(){
+      const monthData = getCurrentMonthData();
+      return MODELS.some((m) => {
+        const row = monthData.rows[m.model] || {};
+        return COLUMNS.some((col) => String(row[col.key] || '').trim() !== '');
+      });
+    }
+    async function importExcelFile(file){
+      if(!state.canEdit) return;
+      if(!file) return;
+      if(!window.ExcelJS){ window.alert('Biblioteca Excel nu s-a încărcat.'); return; }
+      if(hasCurrentMonthValues()){
+        const label = (MONTHS[state.currentMonth-1] || '') + ' ' + state.currentYear;
+        if(!window.confirm('Importul Excel va înlocui valorile existente din luna ' + label + '. Continui?')) return;
+      }
+      try{
+        const buffer = await file.arrayBuffer();
+        const wb = new ExcelJS.Workbook();
+        await wb.xlsx.load(buffer);
+        const block = findFirstImportBlock(wb);
+        if(!block){
+          window.alert('Nu am găsit în Excel un tabel cu antet MODEL și coloanele de stoc.');
+          return;
+        }
+        const lookup = buildImportModelLookup();
+        const monthData = getCurrentMonthData();
+        MODELS.forEach((m) => { monthData.rows[m.model] = normalizeRow({}); });
+        let matchedRows = 0;
+        let matchedCells = 0;
+        let blankRows = 0;
+        const maxRow = block.worksheet.rowCount || 0;
+        for(let r = block.headerRow + 1; r <= maxRow; r++){
+          const row = block.worksheet.getRow(r);
+          const rawModel = getExcelCellText(row.getCell(block.modelCol));
+          const normalizedModel = normalizeModelImportKey(rawModel);
+          const hasValues = block.fields.some((item) => getExcelCellText(row.getCell(item.col)) !== '');
+          if(!rawModel && !hasValues){
+            blankRows += 1;
+            if(blankRows >= 8) break;
+            continue;
+          }
+          blankRows = 0;
+          if(normalizeImportHeader(rawModel) === 'model') break;
+          const model = lookup.get(normalizedModel);
+          if(!model) continue;
+          matchedRows += 1;
+          if(!monthData.rows[model]) monthData.rows[model] = normalizeRow({});
+          block.fields.forEach((item) => {
+            const value = getExcelCellText(row.getCell(item.col));
+            monthData.rows[model][item.field] = value;
+            if(value !== '') matchedCells += 1;
+          });
+        }
+        state.payload.visibleMonthKey = monthKey(state.currentYear, state.currentMonth);
+        setDirty(true);
+        renderTable();
+        updateStatus('Import Excel: ' + matchedRows + ' repere, ' + matchedCells + ' valori. Luna din Excel a fost ignorată.');
+        window.alert('Import Excel realizat pentru luna selectată. Luna/data din Excel a fost ignorată. Verifică tabelul și apasă „Salvează acum”.');
+      }catch(err){
+        console.error('Inventar Prelucrari import Excel', err);
+        window.alert('Importul Excel nu a reușit. Verifică fișierul și încearcă din nou.');
+      }
+    }
+
     function exportExcel(){
       if(!window.ExcelJS){ window.alert('Biblioteca Excel nu s-a încărcat.'); return; }
       const monthData = getCurrentMonthData();
@@ -895,6 +1059,12 @@
     btnReload.addEventListener('click', loadData);
     btnSave.addEventListener('click', saveData);
     btnClearMonth.addEventListener('click', clearCurrentMonth);
+    btnImportExcel.addEventListener('click', () => { if(state.canEdit && excelImportInput) excelImportInput.click(); });
+    excelImportInput.addEventListener('change', async () => {
+      const file = excelImportInput.files && excelImportInput.files[0] ? excelImportInput.files[0] : null;
+      await importExcelFile(file);
+      excelImportInput.value = '';
+    });
     btnExportExcel.addEventListener('click', exportExcel);
     btnPrint.addEventListener('click', () => window.print());
     window.addEventListener('beforeunload', (event) => {
