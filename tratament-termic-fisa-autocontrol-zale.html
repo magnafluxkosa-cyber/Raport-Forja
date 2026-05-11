@@ -423,6 +423,7 @@
 <button class="btn secondary hidden" id="btnTempSettings" type="button">Setare temperaturi</button>
 <button class="btn secondary hidden" id="btnTrackingTT" type="button">Urmărire temperaturi TT</button>
 <button class="btn secondary hidden" id="btnOperatorSheets" type="button">Fișe operatori</button>
+<button class="btn secondary hidden" id="btnBackToAdminSheet" type="button">Înapoi la fișa admin</button>
 <button class="btn secondary hidden" id="btnSaveAdminChanges" type="button">Salvează modificările</button>
 <button class="btn secondary" id="btnBack" type="button">Înapoi la Dashboard</button>
 <button class="btn secondary" id="btnPrint" type="button">Tipărește fișa</button>
@@ -837,7 +838,7 @@
       var TT_PARAM_KEYS = ['aust_z1','aust_z2','aust_z3','aust_z4','bazin_calire','duritate_calire','temp_remanenta','polimer','timp_scufundare','revenire_z1','revenire_z2','bazin_racire'];
       var TT_PARAM_CELL_INDEX = { aust_z1:2, aust_z2:3, aust_z3:4, aust_z4:5, bazin_calire:6, duritate_calire:7, temp_remanenta:8, polimer:9, timp_scufundare:10, revenire_z1:11, revenire_z2:12, bazin_racire:13 };
       var TT_PARAM_LABEL = { aust_z1:'Aust. zona 1', aust_z2:'Aust. zona 2', aust_z3:'Aust. zona 3', aust_z4:'Aust. zona 4', bazin_calire:'Bazin călire', duritate_calire:'Duritate după călire HRC', temp_remanenta:'Temp. remanență', polimer:'% Polimer', timp_scufundare:'Timp scufundare', revenire_z1:'Revenire zona 1', revenire_z2:'Revenire zona 2', bazin_racire:'Bazin răcire' };
-      var state = { canEdit:false, access:null, client:null, session:null, user:null, role:'viewer', repere:[], reperMap:new Map(), magnafluxSheets:[], magnafluxOperators:[], pinConfig:[], activeOperator:null, pinUnlocked:false, reper2PresetAfter:null, currentOperatorSheetId:null, trackingDirty:false, loadingOperatorSheet:false, suppressTrackingSave:false, reportDirty:false, reportSavedForSheetId:'' };
+      var state = { canEdit:false, access:null, client:null, session:null, user:null, role:'viewer', repere:[], reperMap:new Map(), magnafluxSheets:[], magnafluxOperators:[], pinConfig:[], activeOperator:null, pinUnlocked:false, reper2PresetAfter:null, currentOperatorSheetId:null, adminSheetSnapshot:null, isViewingOperatorSheet:false, trackingDirty:false, loadingOperatorSheet:false, suppressTrackingSave:false, reportDirty:false, reportSavedForSheetId:'' };
       var els = {};
 
       function qs(id){ return document.getElementById(id); }
@@ -2051,6 +2052,89 @@
           updated_at:new Date().toISOString()
         };
       }
+      function collectAdminSheetSnapshot(){
+        return {
+          fields:headerFieldValues(),
+          cells:collectDraftCells(),
+          oraCtrl:collectOraCtrlValues(),
+          report:collectReportPanelData(),
+          reper2PresetAfter:state.reper2PresetAfter || '',
+          currentOperatorSheetId:state.currentOperatorSheetId || null,
+          activeOperator:state.activeOperator || null,
+          trackingDirty:state.trackingDirty === true,
+          reportDirty:state.reportDirty === true,
+          reportSavedForSheetId:state.reportSavedForSheetId || '',
+          saved_at:new Date().toISOString()
+        };
+      }
+      function rememberAdminSheetBeforeOperatorOpen(){
+        if(!isAdminAccount()) return;
+        if(!state.isViewingOperatorSheet || !state.adminSheetSnapshot){
+          state.adminSheetSnapshot = collectAdminSheetSnapshot();
+        }
+      }
+      function updateBackToAdminSheetButton(){
+        if(!els.btnBackToAdminSheet) return;
+        if(isAdminAccount() && state.isViewingOperatorSheet){
+          els.btnBackToAdminSheet.classList.remove('hidden');
+        } else {
+          els.btnBackToAdminSheet.classList.add('hidden');
+        }
+      }
+      function restoreAdminSheetSnapshot(){
+        var snap = state.adminSheetSnapshot;
+        state.loadingOperatorSheet = true;
+        state.suppressTrackingSave = true;
+        try{
+          state.activeOperator = snap ? (snap.activeOperator || null) : null;
+          state.currentOperatorSheetId = snap ? (snap.currentOperatorSheetId || null) : null;
+          clearSheetContentNoConfirm(false);
+          if(snap){
+            state.reper2PresetAfter = snap.reper2PresetAfter || null;
+            loadHeaderFields(snap.fields || {});
+            if((snap.fields || {}).reper2) ensureReper2PresetRow();
+            restoreOraCtrlValues(snap.oraCtrl || {});
+            var cells = snap.cells || {};
+            document.querySelectorAll('.editable-cell[data-draft-cell]').forEach(function(td){
+              var key = td.getAttribute('data-draft-cell');
+              td.textContent = Object.prototype.hasOwnProperty.call(cells, key) ? cells[key] : '';
+            });
+            loadReportPanelData(snap.report || {});
+            state.trackingDirty = snap.trackingDirty === true;
+            state.reportDirty = snap.reportDirty === true;
+            state.reportSavedForSheetId = snap.reportSavedForSheetId || '';
+          } else {
+            state.trackingDirty = false;
+            state.reportDirty = false;
+            state.reportSavedForSheetId = '';
+          }
+          clearEmptyOraCtrlRows();
+          updateMagnafluxOperatorNames();
+          autoFillTreatmentParamsFromRepere();
+          validateMeasuredTemperatures();
+          fitSheet();
+        } finally {
+          state.loadingOperatorSheet = false;
+          state.suppressTrackingSave = false;
+          state.isViewingOperatorSheet = false;
+          state.adminSheetSnapshot = null;
+          updateBackToAdminSheetButton();
+          setChip(els.modeChip, canEdit() ? 'Fișa admin' : 'Doar vizualizare', canEdit() ? 'ok' : 'warn');
+        }
+      }
+      async function returnToAdminSheet(){
+        if(!isAdminAccount()) return;
+        try{
+          if(state.isViewingOperatorSheet){
+            await saveOperatorSheetCloudNow();
+            await saveTrackingNow();
+          }
+        }catch(error){
+          console.warn('Nu am putut salva complet fișa operatorului înainte de întoarcere.', error);
+        }
+        restoreAdminSheetSnapshot();
+        applyReadonlyMode();
+      }
       function sheetHasContent(data){
         if(!data) return false;
         if(data.shift || data.reper1 || data.reper2 || data.codCat1 || data.codCat2) return true;
@@ -2380,6 +2464,9 @@
             state.suppressTrackingSave = true;
             clearSheetContentNoConfirm(true);
             state.suppressTrackingSave = false;
+            state.isViewingOperatorSheet = false;
+            state.adminSheetSnapshot = null;
+            updateBackToAdminSheetButton();
           }
           renderOperatorSheetsList();
           setChip(els.operatorSheetsMsg, 'Fișa a fost ștearsă împreună cu datele din Urmărire temperaturi TT.', 'ok');
@@ -2420,7 +2507,10 @@
             var id = btn.getAttribute('data-open-operator-sheet');
             var sheet = (OPERATOR_SHEETS_CACHE || []).find(function(s){ return String(s.id || '') === String(id || ''); });
             if(sheet){
+              rememberAdminSheetBeforeOperatorOpen();
               applySheetData(sheet);
+              state.isViewingOperatorSheet = true;
+              updateBackToAdminSheetButton();
               if(els.operatorSheetsModal) els.operatorSheetsModal.classList.remove('show');
               applyReadonlyMode();
               state.trackingDirty = false;
@@ -3012,6 +3102,7 @@
           if(els.btnOperatorSheets) els.btnOperatorSheets.classList.add('hidden');
           if(els.btnSaveAdminChanges) els.btnSaveAdminChanges.classList.add('hidden');
         }
+        updateBackToAdminSheetButton();
       }
 
       function defaultRepere(){
@@ -3489,6 +3580,7 @@
         if(els.btnTempSettings) els.btnTempSettings.addEventListener('click', function(){ openTempSettings().catch(function(err){ alert('Nu am putut deschide setarea temperaturilor: ' + (err && err.message || err)); }); });
         if(els.btnTrackingTT) els.btnTrackingTT.addEventListener('click', function(){ window.location.href = 'urmarire-temperaturi-tt.html'; });
         if(els.btnOperatorSheets) els.btnOperatorSheets.addEventListener('click', function(){ openOperatorSheets().catch(function(err){ alert('Nu am putut deschide fișele operatorilor: ' + (err && err.message || err)); }); });
+        if(els.btnBackToAdminSheet) els.btnBackToAdminSheet.addEventListener('click', function(){ returnToAdminSheet().catch(function(err){ alert('Nu am putut reveni la fișa admin: ' + (err && err.message || err)); }); });
         if(els.btnSaveAdminChanges) els.btnSaveAdminChanges.addEventListener('click', async function(){
           try{
             await saveOperatorSheetCloudNow();
@@ -3559,6 +3651,7 @@
         els.btnTempSettings = qs('btnTempSettings');
         els.btnTrackingTT = qs('btnTrackingTT');
         els.btnOperatorSheets = qs('btnOperatorSheets');
+        els.btnBackToAdminSheet = qs('btnBackToAdminSheet');
         els.btnSaveAdminChanges = qs('btnSaveAdminChanges');
         els.btnChangeOperator = qs('btnChangeOperator');
         els.pinModal = qs('pinModal');
