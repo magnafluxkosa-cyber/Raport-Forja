@@ -508,6 +508,18 @@
             <span id="steel2WeekAlertText">Verificare oțel 3 săpt.</span>
           </div>
         </div>
+        <div class="delivery-alert-anchor">
+          <div class="delivery-alert-button is-neutral" id="inventoryStatusAlertButton" tabindex="0" aria-label="Verificare inventare lunare">
+            <span class="delivery-alert-dot" aria-hidden="true"></span>
+            <span id="inventoryStatusAlertText">Verificare inventare</span>
+          </div>
+        </div>
+        <div class="delivery-alert-anchor">
+          <div class="delivery-alert-button is-neutral" id="reportsStatusAlertButton" tabindex="0" aria-label="Verificare rapoarte debitare și forjare">
+            <span class="delivery-alert-dot" aria-hidden="true"></span>
+            <span id="reportsStatusAlertText">Verificare rapoarte</span>
+          </div>
+        </div>
                 <div class="hint" id="hintText"></div>
       </div>
 
@@ -711,6 +723,10 @@
       deliveryTermAlertText: document.getElementById('deliveryTermAlertText'),
       steel2WeekAlertButton: document.getElementById('steel2WeekAlertButton'),
       steel2WeekAlertText: document.getElementById('steel2WeekAlertText'),
+      inventoryStatusAlertButton: document.getElementById('inventoryStatusAlertButton'),
+      inventoryStatusAlertText: document.getElementById('inventoryStatusAlertText'),
+      reportsStatusAlertButton: document.getElementById('reportsStatusAlertButton'),
+      reportsStatusAlertText: document.getElementById('reportsStatusAlertText'),
       selectionStats: null
     };
 
@@ -5170,6 +5186,139 @@ function getDefaultPermissions(role){
     function findRow(rowId){
       return state.rows.find(row => String(row.id) === String(rowId)) || null;
     }
+
+    function getPreviousMonthPeriodForToday(){
+      const clean = trimText(TODAY_ISO);
+      const m = clean.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+      const today = m ? { year:Number(m[1]), month:Number(m[2]), day:Number(m[3]) } : { year:(new Date()).getFullYear(), month:(new Date()).getMonth() + 1, day:(new Date()).getDate() };
+      let year = today.year;
+      let month = today.month - 1;
+      if(month < 1){
+        month = 12;
+        year -= 1;
+      }
+      return {
+        year,
+        month,
+        day: today.day,
+        due: today.day > 1,
+        label: getMonthName(month) + ' ' + year
+      };
+    }
+
+    function getRowPeriod(row){
+      if(!row) return { year:0, month:0 };
+      let year = Number(row.an || row.year || 0) || 0;
+      let month = Number(row.lunaNum || 0) || monthNumberFromAny(row.luna || row.month || '');
+      const data = trimText(row.data || row.date || '');
+      if((!year || !month) && /^\d{4}-\d{2}-\d{2}$/.test(data)){
+        year = year || Number(data.slice(0,4));
+        month = month || Number(data.slice(5,7));
+      }
+      return { year, month };
+    }
+
+    function hasInventoryRowsForPeriod(rows, year, month, validator){
+      const list = Array.isArray(rows) ? rows : [];
+      return list.some(row => {
+        const period = getRowPeriod(row);
+        if(Number(period.year) !== Number(year) || Number(period.month) !== Number(month)) return false;
+        if(typeof validator === 'function') return !!validator(row);
+        return true;
+      });
+    }
+
+    function setCompactAlert(button, textEl, tone, text, title){
+      if(!button || !textEl) return;
+      const safeTone = trimText(tone || 'neutral') || 'neutral';
+      button.className = 'delivery-alert-button is-' + safeTone;
+      textEl.textContent = trimText(text) || '-';
+      button.title = trimText(title || '');
+    }
+
+    function rebuildInventoryMonthlyAlert(){
+      const period = getPreviousMonthPeriodForToday();
+      const steelRows = Array.isArray(state.stockSupport && state.stockSupport.steelRows) ? state.stockSupport.steelRows : [];
+      const debitatRows = Array.isArray(state.stockSupport && state.stockSupport.debitatRows) ? state.stockSupport.debitatRows : [];
+      const forjatRows = Array.isArray(state.deliverySupport && state.deliverySupport.inventarRows) ? state.deliverySupport.inventarRows : [];
+
+      const status = {
+        steel: hasInventoryRowsForPeriod(steelRows, period.year, period.month, row => trimText(row.diametru) || trimText(row.calitate) || toNumber(row.cantitateKg) > 0),
+        debitat: hasInventoryRowsForPeriod(debitatRows, period.year, period.month, row => trimText(row.reper) || toNumber(row.cantitateBuc) > 0),
+        forjat: hasInventoryRowsForPeriod(forjatRows, period.year, period.month, row => trimText(row.reper) || toNumber(row.stocFinal) >= 0)
+      };
+      const parts = [
+        { label:'oțel', ok:status.steel },
+        { label:'debitat', ok:status.debitat },
+        { label:'forjat', ok:status.forjat }
+      ];
+      const missing = parts.filter(item => !item.ok);
+      let tone = 'neutral';
+      let text = 'Verificare inventare';
+      if(!period.due && missing.length){
+        tone = 'neutral';
+        text = 'Inventare în termen: ' + period.label;
+      } else if(missing.length){
+        tone = 'late';
+        text = 'Inventare: ' + parts.map(item => item.label + ' ' + (item.ok ? 'OK' : 'NU')).join(' • ');
+      } else {
+        tone = 'ok';
+        text = 'Toate inventarele sunt actualizate';
+      }
+      const title = 'Inventare necesare pentru ' + period.label + ' (inventarele sunt cu o lună în urmă)\n'
+        + 'Inventar oțel: ' + (status.steel ? 'introdus' : 'neintrodus') + '\n'
+        + 'Inventar debitat: ' + (status.debitat ? 'introdus' : 'neintrodus') + '\n'
+        + 'Inventar forjat: ' + (status.forjat ? 'introdus' : 'neintrodus');
+      setCompactAlert(els.inventoryStatusAlertButton, els.inventoryStatusAlertText, tone, text, title);
+    }
+
+    function getPreviousReportWorkdayIso(todayIso){
+      let iso = addDaysIso(todayIso || TODAY_ISO, -1);
+      while(iso && (isSaturdayIso(iso) || isSundayIso(iso))){
+        iso = addDaysIso(iso, -1);
+      }
+      return iso || '';
+    }
+
+    function hasReportRowsForDate(rows, iso, validator){
+      const list = Array.isArray(rows) ? rows : [];
+      const target = trimText(iso);
+      if(!target) return false;
+      return list.some(row => {
+        const rowIso = normalizeDateAny(row && row.data);
+        if(rowIso !== target) return false;
+        if(typeof validator === 'function') return !!validator(row);
+        return true;
+      });
+    }
+
+    function rebuildReportsFreshnessAlert(){
+      const targetIso = getPreviousReportWorkdayIso(TODAY_ISO);
+      const debitariRows = Array.isArray(state.stockSupport && state.stockSupport.debitariRows) ? state.stockSupport.debitariRows : [];
+      const forjateRows = Array.isArray(state.stockSupport && state.stockSupport.forjateRows) ? state.stockSupport.forjateRows : [];
+      const debitatOk = hasReportRowsForDate(debitariRows, targetIso, row => trimText(row.reper) || toNumber(row.cantitateBuc) >= 0 || toNumber(row.totalKgDebitat) >= 0);
+      const forjatOk = hasReportRowsForDate(forjateRows, targetIso, row => trimText(row.reper) || toNumber(row.realizatBuc) >= 0 || toNumber(row.rebutBuc) >= 0);
+      const parts = [
+        { label:'debitat', ok:debitatOk },
+        { label:'forjat', ok:forjatOk }
+      ];
+      const missing = parts.filter(item => !item.ok);
+      const tone = missing.length ? 'late' : 'ok';
+      const text = missing.length
+        ? ('Rapoarte: ' + parts.map(item => item.label + ' ' + (item.ok ? 'OK' : 'NU')).join(' • '))
+        : 'Debitat și forjat actualizate';
+      const title = 'Verificare rapoarte pentru ultima zi lucrătoare: ' + isoToDisplay(targetIso) + '\n'
+        + 'Raport debitat: ' + (debitatOk ? 'introdus' : 'neintrodus') + '\n'
+        + 'Raport forjat: ' + (forjatOk ? 'introdus' : 'neintrodus') + '\n'
+        + 'Sâmbăta și duminica sunt sărite automat.';
+      setCompactAlert(els.reportsStatusAlertButton, els.reportsStatusAlertText, tone, text, title);
+    }
+
+    function rebuildOperationalStatusAlerts(){
+      try{ rebuildInventoryMonthlyAlert(); }catch(error){ console.error('rebuildInventoryMonthlyAlert', error); }
+      try{ rebuildReportsFreshnessAlert(); }catch(error){ console.error('rebuildReportsFreshnessAlert', error); }
+    }
+
     function rebuildLocalDerived(preserveUi){
       try{
         rebuildStockCalculations();
@@ -5190,6 +5339,11 @@ function getDefaultPermissions(role){
         rebuildSteel2WeekAlerts();
       }catch(error){
         console.error('rebuildSteel2WeekAlerts', error);
+      }
+      try{
+        rebuildOperationalStatusAlerts();
+      }catch(error){
+        console.error('rebuildOperationalStatusAlerts', error);
       }
       try{
         rebuildDeliveryReadyMarkers();
