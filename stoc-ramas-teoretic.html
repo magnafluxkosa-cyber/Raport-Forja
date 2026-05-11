@@ -1195,13 +1195,32 @@
     if(!date || Number.isNaN(date.getTime())) return 0;
     return date.getFullYear()*10000+(date.getMonth()+1)*100+date.getDate();
   }
-  function isAsolloPmModel(model){
+  const MAHLE_PM_MAPPINGS=[
+    {reper:'AU1CZ01A', aliases:['FLANSA PC728001/CE2KE01A AU1CZ01A Nezincat','FLANSA PC729001/CE2KV01A BV4UL01A Nezincat','AU1CZ01A','BV4UL01A','PC728001','PC729001','CE2KE01A','CE2KV01A']},
+    {reper:'BF27K01A', aliases:['KN752001/BF27K01A','BF27K01A','KN752001']},
+    {reper:'AT-355', aliases:['FLANSA PC727001/CE2HR01A AT35501A Nezincat','AT-355','AT35501A','AT355','PC727001','CE2HR01A']},
+    {reper:'B87K501A', aliases:['KP686001/B87K501A','B87K501A','KP686001']},
+    {reper:'BF5C001A', aliases:['KN743001/BF5C001A','BF5C001A','KN743001']},
+    {reper:'BF32C01A', aliases:['KN745001/BF32C01A','BF32C01A','KN745001']},
+    {reper:'BF58101A', aliases:['KN741001/BF58101A','BF58101A','KN741001']},
+    {reper:'ASOLLO_M', aliases:['KT700002/AS0LL01A','ASOLLO_M','ASOLLOM','ASOLLO','AS0LL01A','ASOLL01A','AS0LL','ASOLL','KT700002']},
+    {reper:'BF3E301A', aliases:['KN740001/BF3E301A','BF3E301A','KN740001']}
+  ];
+  const MAHLE_PM_ALIAS_INDEX=MAHLE_PM_MAPPINGS.map(item=>({
+    reper:item.reper,
+    aliases:(item.aliases||[]).map(alias=>normalizeLooseReper(alias)).filter(Boolean).sort((a,b)=>b.length-a.length)
+  }));
+  function resolveMahlePmReper(model){
     const raw=normalizeLooseReper(model);
-    return raw.includes('KT700002AS0LL01A') || raw.includes('KT700002ASOLL01A') || raw.includes('AS0LL01A') || raw.includes('ASOLL01A') || raw.includes('ASOLLO');
+    if(!raw) return '';
+    for(const item of MAHLE_PM_ALIAS_INDEX){
+      if((item.aliases||[]).some(alias=>raw.includes(alias))) return item.reper;
+    }
+    return '';
   }
-  function addAsolloPmSnapshotValue(result,qty,date){
-    if(!date || Number.isNaN(date.getTime())) return;
-    const key='ASOLLO_M';
+  function addMahlePmSnapshotValue(result,reper,qty,date){
+    const key=normalizeReper(reper);
+    if(!key || !date || Number.isNaN(date.getTime())) return;
     const code=dateCodeValue(date);
     const current=result.get(key);
     if(!current || code>current.code) result.set(key,{qty:toNumber(qty),code});
@@ -1234,7 +1253,7 @@
     const modelHere=[top0[c],top1[c],top2[c]].map(normText).some(v=>v==='model');
     return modelHere && hasPacked && hasFinished && hasWip;
   }
-  function collectAsolloPmFromTable(table,result){
+  function collectMahlePmFromTable(table,result){
     const grid=expandPmTableGrid(table);
     if(!grid.length) return;
     const maxCols=grid.reduce((max,row)=>Math.max(max,(row||[]).length),0);
@@ -1248,15 +1267,16 @@
       for(let r=0;r<grid.length;r++){
         const row=grid[r]||[];
         const model=row[startCol];
-        if(!isAsolloPmModel(model)) continue;
+        const reper=resolveMahlePmReper(model);
+        if(!reper) continue;
         const packed=toNumber(row[startCol+1]);
         const finished=toNumber(row[startCol+2]);
         const wip=toNumber(row[startCol+3]);
-        addAsolloPmSnapshotValue(result,packed+finished+wip,date);
+        addMahlePmSnapshotValue(result,reper,packed+finished+wip,date);
       }
     });
   }
-  function collectAsolloPmFromBlockValues(block,result){
+  function collectMahlePmFromBlockValues(block,result){
     if(!block || typeof block!=='object') return;
     const entries=Object.keys(block).map(key=>[Number(key), safeText(block[key])]).filter(([key])=>Number.isFinite(key)).sort((a,b)=>a[0]-b[0]);
     if(!entries.length) return;
@@ -1269,7 +1289,8 @@
     const selectedDates=dateCandidates.filter(item=>pmTargetPeriodMatchesDate(item.date));
     const fallbackDate=selectedDates.length?selectedDates[0].date:(dateCandidates.length?dateCandidates[0].date:null);
     for(const [key,value] of entries){
-      if(!isAsolloPmModel(value)) continue;
+      const reper=resolveMahlePmReper(value);
+      if(!reper) continue;
       const rowOffsetV6 = key>=17 ? ((key-17)%8) : -1;
       const rowOffsetLegacy = key>=12 ? ((key-12)%8) : -1;
       if(rowOffsetV6>0 && rowOffsetV6<7) continue;
@@ -1283,47 +1304,47 @@
         ? selectedDates[0].date
         : (dateCandidates.find(item=>Math.abs(item.key-key)<=12)?.date || fallbackDate);
       if(!pmTargetPeriodMatchesDate(date)) continue;
-      addAsolloPmSnapshotValue(result,qty,date);
+      addMahlePmSnapshotValue(result,reper,qty,date);
     }
   }
-  function readAsolloPmFromMonthlyPayload(payload){
-    if(!payload || typeof payload !== 'object' || !payload.months || typeof payload.months !== 'object') return null;
+  function readMahlePmFromMonthlyPayload(payload){
+    const result=new Map();
+    if(!payload || typeof payload !== 'object' || !payload.months || typeof payload.months !== 'object') return result;
     const key=pmTargetMonthKey();
-    if(!key) return null;
+    if(!key) return result;
     const monthData=payload.months[key];
-    if(!monthData || typeof monthData !== 'object' || !monthData.rows || typeof monthData.rows !== 'object') return null;
-    let found=false;
-    let qty=0;
+    if(!monthData || typeof monthData !== 'object' || !monthData.rows || typeof monthData.rows !== 'object') return result;
     Object.keys(monthData.rows).forEach(model=>{
-      if(!isAsolloPmModel(model)) return;
+      const reper=resolveMahlePmReper(model);
+      if(!reper) return;
       const row=monthData.rows[model] || {};
-      found=true;
-      qty += toNumber(row.ambalat) + toNumber(row.finite) + toNumber(row.wip);
+      const qty=toNumber(row.ambalat) + toNumber(row.finite) + toNumber(row.wip);
+      result.set(reper,(result.get(reper)||0)+qty);
     });
-    return found ? qty : null;
+    return result;
   }
   function aggregateStocPmThisPeriod(){
     const payload=state.inventarPrelucrariPayload;
     const result=new Map();
     if(!payload || typeof payload!=='object') return result;
-    const monthlyAsolloQty=readAsolloPmFromMonthlyPayload(payload);
-    if(monthlyAsolloQty !== null){
-      result.set('ASOLLO_M', toNumber(monthlyAsolloQty));
-      return result;
-    }
+    const monthlyMahle=readMahlePmFromMonthlyPayload(payload);
+    monthlyMahle.forEach((qty,reper)=>result.set(reper,toNumber(qty)));
     const legacyResult=new Map();
     const mainHtml=String(payload.mainTableHtml||payload.staticTableHtml||'');
     const baseTable=parsePmTableFromInnerHtml(mainHtml);
-    if(baseTable) collectAsolloPmFromTable(baseTable,legacyResult);
+    if(baseTable) collectMahlePmFromTable(baseTable,legacyResult);
     const blocks=(payload.frontSnapshot&&payload.frontSnapshot.blocks&&typeof payload.frontSnapshot.blocks==='object')?payload.frontSnapshot.blocks:((payload.blocks&&typeof payload.blocks==='object')?payload.blocks:{});
     Object.keys(blocks||{}).filter(key=>String(key).startsWith('front:')).sort((a,b)=>Number(String(a).split(':')[1]||0)-Number(String(b).split(':')[1]||0)).forEach(key=>{
-      collectAsolloPmFromBlockValues(blocks[key],legacyResult);
+      collectMahlePmFromBlockValues(blocks[key],legacyResult);
       const table=buildPmFrontTable(baseTable,blocks[key]);
-      if(table) collectAsolloPmFromTable(table,legacyResult);
+      if(table) collectMahlePmFromTable(table,legacyResult);
     });
-    legacyResult.forEach((entry,key)=>result.set(key,toNumber(entry&&entry.qty)));
+    legacyResult.forEach((entry,key)=>{
+      if(!result.has(key)) result.set(key,toNumber(entry&&entry.qty));
+    });
     return result;
   }
+
 
   function buildIncludedForjatSet(){
     const set=new Set();
