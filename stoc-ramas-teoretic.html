@@ -508,6 +508,57 @@
   }
 
 
+  function readInventarPrelucrariLocalPayload(){
+    const payloads=[];
+    const jsonKeys=[
+      'kad-prelucrari-grid:inventar-prelucrari:v2',
+      'kad-prelucrari-grid:inventar-prelucrari:v2:front-table-state:v1',
+      'kad-prelucrari-grid:inventar-prelucrari:v2:front-table-backup:v2',
+      'kad-prelucrari-grid:inventar-prelucrari:v2:front-hard-state:v4',
+      'kad-prelucrari-grid:inventar-prelucrari:v2:front-hard-backup:v4'
+    ];
+    try{
+      if(typeof localStorage==='undefined') return null;
+      jsonKeys.forEach(key=>{
+        try{
+          const raw=localStorage.getItem(key);
+          if(!raw) return;
+          const parsed=JSON.parse(raw);
+          if(parsed && typeof parsed==='object') payloads.push(parsed);
+        }catch(_e){}
+      });
+      const mainHtml=localStorage.getItem('kad-prelucrari-grid:inventar-prelucrari:v2:main-table-html:v1') || '';
+      const merged=payloads.reduce((acc,item)=>mergeInventarPrelucrariPayload(acc,item), null) || {};
+      if(mainHtml && !merged.mainTableHtml) merged.mainTableHtml=mainHtml;
+      return Object.keys(merged).length?merged:null;
+    }catch(_e){ return null; }
+  }
+  function mergeInventarPrelucrariPayload(base,incoming){
+    if(!incoming || typeof incoming!=='object') return (base&&typeof base==='object')?base:null;
+    if(!base || typeof base!=='object') return JSON.parse(JSON.stringify(incoming));
+    const out=Object.assign({}, base);
+    ['version','docKey','clientId','editedAt','updated_at','mainTableImportedAt','frontTableCountTrusted'].forEach(key=>{
+      if(incoming[key]!=null && incoming[key]!=='') out[key]=incoming[key];
+    });
+    out.frontCount=Math.max(Number(base.frontCount||0)||0, Number(incoming.frontCount||0)||0);
+    const baseBlocks=(base.blocks&&typeof base.blocks==='object')?base.blocks:{};
+    const incomingBlocks=(incoming.blocks&&typeof incoming.blocks==='object')?incoming.blocks:{};
+    out.blocks=Object.assign({}, baseBlocks, incomingBlocks);
+    const baseSnap=(base.frontSnapshot&&typeof base.frontSnapshot==='object')?base.frontSnapshot:{};
+    const incomingSnap=(incoming.frontSnapshot&&typeof incoming.frontSnapshot==='object')?incoming.frontSnapshot:null;
+    if(incomingSnap){
+      out.frontSnapshot=Object.assign({}, baseSnap, incomingSnap);
+      out.frontSnapshot.frontCount=Math.max(Number(baseSnap.frontCount||0)||0, Number(incomingSnap.frontCount||0)||0, out.frontCount||0);
+      out.frontSnapshot.blocks=Object.assign({}, (baseSnap.blocks&&typeof baseSnap.blocks==='object')?baseSnap.blocks:{}, (incomingSnap.blocks&&typeof incomingSnap.blocks==='object')?incomingSnap.blocks:{});
+    }else if(Object.keys(baseSnap).length){
+      out.frontSnapshot=baseSnap;
+    }
+    if(incoming.mainTableHtml) out.mainTableHtml=incoming.mainTableHtml;
+    else if(!out.mainTableHtml && base.mainTableHtml) out.mainTableHtml=base.mainTableHtml;
+    if(incoming.staticTableHtml) out.staticTableHtml=incoming.staticTableHtml;
+    else if(!out.staticTableHtml && base.staticTableHtml) out.staticTableHtml=base.staticTableHtml;
+    return out;
+  }
   async function loadInventarPrelucrariPayload(){
     let payload=null;
     const keys=['inventar-prelucrari','inventar_prelucrari','inventar prelucrari','inventar-prelucrări','inventar_prelucrări','INVENTAR PRELUCRARI','INVENTAR PRELUCRĂRI'];
@@ -515,11 +566,19 @@
       try{
         const res=await state.supabase.from('rf_documents').select('doc_key,content,data,updated_at').in('doc_key',keys);
         if(res && !res.error && Array.isArray(res.data) && res.data.length){
-          const exact=res.data.find(row=>String(row&&row.doc_key||'')==='inventar-prelucrari') || res.data[0];
-          payload=(exact.content&&typeof exact.content==='object')?exact.content:((exact.data&&typeof exact.data==='object')?exact.data:null);
+          const candidates=res.data
+            .map(row=>({
+              row,
+              payload:(row.content&&typeof row.content==='object')?row.content:((row.data&&typeof row.data==='object')?row.data:null),
+              updated:row.updated_at?new Date(row.updated_at).getTime():0
+            }))
+            .filter(item=>item.payload && typeof item.payload==='object')
+            .sort((a,b)=>(b.updated||0)-(a.updated||0));
+          candidates.forEach(item=>{ payload=mergeInventarPrelucrariPayload(payload,item.payload); });
         }
       }catch(_e){}
     }
+    payload=mergeInventarPrelucrariPayload(payload, readInventarPrelucrariLocalPayload());
     try{
       if((!payload || !payload.mainTableHtml) && typeof fetch==='function' && typeof DOMParser!=='undefined'){
         const res=await fetch('inventar-prelucrari.html',{cache:'no-store'});
@@ -1138,15 +1197,29 @@
     const entries=Object.keys(block).map(key=>[Number(key), safeText(block[key])]).filter(([key])=>Number.isFinite(key)).sort((a,b)=>a[0]-b[0]);
     if(!entries.length) return;
     const values=new Map(entries.map(([key,value])=>[key,value]));
-    let date=null;
-    entries.forEach(([,value])=>{ if(!date){ const d=parseLooseDate(value); if(d) date=d; } });
-    if(!selectedPeriodMatchesDate(date)) return;
+    const dateCandidates=[];
+    entries.forEach(([key,value])=>{
+      const d=parseLooseDate(value);
+      if(d) dateCandidates.push({key,date:d});
+    });
+    const selectedDates=dateCandidates.filter(item=>selectedPeriodMatchesDate(item.date));
+    const fallbackDate=selectedDates.length?selectedDates[0].date:(dateCandidates.length?dateCandidates[0].date:null);
     for(const [key,value] of entries){
       if(!isAsolloPmModel(value)) continue;
+      const rowOffsetV6 = key>=17 ? ((key-17)%8) : -1;
+      const rowOffsetLegacy = key>=12 ? ((key-12)%8) : -1;
+      if(rowOffsetV6>0 && rowOffsetV6<7) continue;
+      if(rowOffsetV6<0 && rowOffsetLegacy>0 && rowOffsetLegacy<7) continue;
       const packed=toNumber(values.get(key+1));
       const finished=toNumber(values.get(key+2));
       const wip=toNumber(values.get(key+3));
-      addAsolloPmSnapshotValue(result,packed+finished+wip,date);
+      const qty=packed+finished+wip;
+      if(!qty) continue;
+      const date = selectedDates.length
+        ? selectedDates[0].date
+        : (dateCandidates.find(item=>Math.abs(item.key-key)<=12)?.date || fallbackDate);
+      if(!selectedPeriodMatchesDate(date)) continue;
+      addAsolloPmSnapshotValue(result,qty,date);
     }
   }
   function aggregateStocPmThisPeriod(){
