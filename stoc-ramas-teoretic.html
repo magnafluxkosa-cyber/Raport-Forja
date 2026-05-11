@@ -513,6 +513,7 @@
   function readInventarPrelucrariLocalPayload(){
     const payloads=[];
     const jsonKeys=[
+      'kad:inventar-prelucrari:monthly-v1',
       'kad-prelucrari-grid:inventar-prelucrari:v2',
       'kad-prelucrari-grid:inventar-prelucrari:v2:front-table-state:v1',
       'kad-prelucrari-grid:inventar-prelucrari:v2:front-table-backup:v2',
@@ -539,9 +540,12 @@
     if(!incoming || typeof incoming!=='object') return (base&&typeof base==='object')?base:null;
     if(!base || typeof base!=='object') return JSON.parse(JSON.stringify(incoming));
     const out=Object.assign({}, base);
-    ['version','docKey','clientId','editedAt','updated_at','mainTableImportedAt','frontTableCountTrusted'].forEach(key=>{
+    ['schema','version','docKey','clientId','editedAt','updated_at','mainTableImportedAt','frontTableCountTrusted'].forEach(key=>{
       if(incoming[key]!=null && incoming[key]!=='') out[key]=incoming[key];
     });
+    if(incoming.months && typeof incoming.months === 'object'){
+      out.months = Object.assign({}, (base.months && typeof base.months === 'object') ? base.months : {}, incoming.months);
+    }
     out.frontCount=Math.max(Number(base.frontCount||0)||0, Number(incoming.frontCount||0)||0);
     const baseBlocks=(base.blocks&&typeof base.blocks==='object')?base.blocks:{};
     const incomingBlocks=(incoming.blocks&&typeof incoming.blocks==='object')?incoming.blocks:{};
@@ -1159,6 +1163,34 @@
     if(selected.month && (date.getMonth()+1)!==selected.month) return false;
     return true;
   }
+
+  function getPmTargetPeriod(){
+    const selected=getSelectedPeriod();
+    if(selected.year && selected.month){
+      const nextMonth = selected.month === 12 ? 1 : selected.month + 1;
+      const nextYear = selected.month === 12 ? selected.year + 1 : selected.year;
+      return {
+        year: nextYear,
+        month: nextMonth,
+        code: nextYear * 12 + nextMonth,
+        start: firstOfMonth(nextYear, nextMonth),
+        end: endOfMonth(nextYear, nextMonth)
+      };
+    }
+    return selected;
+  }
+  function pmTargetPeriodMatchesDate(date){
+    const target=getPmTargetPeriod();
+    if(!date || Number.isNaN(date.getTime())) return false;
+    if(target.year && date.getFullYear()!==target.year) return false;
+    if(target.month && (date.getMonth()+1)!==target.month) return false;
+    return true;
+  }
+  function pmTargetMonthKey(){
+    const target=getPmTargetPeriod();
+    if(!target.year || !target.month) return '';
+    return String(target.year) + '-' + String(target.month).padStart(2,'0');
+  }
   function dateCodeValue(date){
     if(!date || Number.isNaN(date.getTime())) return 0;
     return date.getFullYear()*10000+(date.getMonth()+1)*100+date.getDate();
@@ -1212,7 +1244,7 @@
     }
     blockStarts.forEach(startCol=>{
       const date=resolvePmDateFromGrid(grid,startCol);
-      if(!selectedPeriodMatchesDate(date)) return;
+      if(!pmTargetPeriodMatchesDate(date)) return;
       for(let r=0;r<grid.length;r++){
         const row=grid[r]||[];
         const model=row[startCol];
@@ -1234,7 +1266,7 @@
       const d=parseLooseDate(value);
       if(d) dateCandidates.push({key,date:d});
     });
-    const selectedDates=dateCandidates.filter(item=>selectedPeriodMatchesDate(item.date));
+    const selectedDates=dateCandidates.filter(item=>pmTargetPeriodMatchesDate(item.date));
     const fallbackDate=selectedDates.length?selectedDates[0].date:(dateCandidates.length?dateCandidates[0].date:null);
     for(const [key,value] of entries){
       if(!isAsolloPmModel(value)) continue;
@@ -1250,26 +1282,47 @@
       const date = selectedDates.length
         ? selectedDates[0].date
         : (dateCandidates.find(item=>Math.abs(item.key-key)<=12)?.date || fallbackDate);
-      if(!selectedPeriodMatchesDate(date)) continue;
+      if(!pmTargetPeriodMatchesDate(date)) continue;
       addAsolloPmSnapshotValue(result,qty,date);
     }
+  }
+  function readAsolloPmFromMonthlyPayload(payload){
+    if(!payload || typeof payload !== 'object' || !payload.months || typeof payload.months !== 'object') return null;
+    const key=pmTargetMonthKey();
+    if(!key) return null;
+    const monthData=payload.months[key];
+    if(!monthData || typeof monthData !== 'object' || !monthData.rows || typeof monthData.rows !== 'object') return null;
+    let found=false;
+    let qty=0;
+    Object.keys(monthData.rows).forEach(model=>{
+      if(!isAsolloPmModel(model)) return;
+      const row=monthData.rows[model] || {};
+      found=true;
+      qty += toNumber(row.ambalat) + toNumber(row.finite) + toNumber(row.wip);
+    });
+    return found ? qty : null;
   }
   function aggregateStocPmThisPeriod(){
     const payload=state.inventarPrelucrariPayload;
     const result=new Map();
     if(!payload || typeof payload!=='object') return result;
+    const monthlyAsolloQty=readAsolloPmFromMonthlyPayload(payload);
+    if(monthlyAsolloQty !== null){
+      result.set('ASOLLO_M', toNumber(monthlyAsolloQty));
+      return result;
+    }
+    const legacyResult=new Map();
     const mainHtml=String(payload.mainTableHtml||payload.staticTableHtml||'');
     const baseTable=parsePmTableFromInnerHtml(mainHtml);
-    if(baseTable) collectAsolloPmFromTable(baseTable,result);
+    if(baseTable) collectAsolloPmFromTable(baseTable,legacyResult);
     const blocks=(payload.frontSnapshot&&payload.frontSnapshot.blocks&&typeof payload.frontSnapshot.blocks==='object')?payload.frontSnapshot.blocks:((payload.blocks&&typeof payload.blocks==='object')?payload.blocks:{});
     Object.keys(blocks||{}).filter(key=>String(key).startsWith('front:')).sort((a,b)=>Number(String(a).split(':')[1]||0)-Number(String(b).split(':')[1]||0)).forEach(key=>{
-      collectAsolloPmFromBlockValues(blocks[key],result);
+      collectAsolloPmFromBlockValues(blocks[key],legacyResult);
       const table=buildPmFrontTable(baseTable,blocks[key]);
-      if(table) collectAsolloPmFromTable(table,result);
+      if(table) collectAsolloPmFromTable(table,legacyResult);
     });
-    const out=new Map();
-    result.forEach((entry,key)=>out.set(key,toNumber(entry&&entry.qty)));
-    return out;
+    legacyResult.forEach((entry,key)=>result.set(key,toNumber(entry&&entry.qty)));
+    return result;
   }
 
   function buildIncludedForjatSet(){
