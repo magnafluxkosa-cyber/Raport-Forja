@@ -863,6 +863,111 @@
       const matchKey = Object.keys(src).find(k => normalizeReperLoose(k) === looseKey);
       return matchKey ? src[matchKey] : null;
     }
+    const SHARED_DEBITAT_GROUP_ALIASES = [
+      { group:'248-2307/08', aliases:['248-2307','248-2308','378-8241','378-8242','418-2091','418-2092'] },
+      { group:'417-3595/96', aliases:['417-3595','417-3596'] },
+      { group:'9K-6628/29', aliases:['9K-6628','9K-6629'] },
+      { group:'229-6909/10', aliases:['229-6909','229-6910'] },
+      { group:'503-0761/62', aliases:['503-0761','503-0762'] },
+      { group:'106-1625/26', aliases:['106-1625','106-1626'] },
+      { group:'7G-0521/22', aliases:['7G-0521','7G-0522'] },
+      { group:'358-5253/55', aliases:['358-5253','358-5255'] },
+      { group:'9P-9664/65', aliases:['9P-9664','9P-9665'] }
+    ];
+    function debitatAliasHash(value){
+      return normalizeReperLoose(value).replace(/[^A-Z0-9]+/g,'');
+    }
+    function addAliasKey(set, value){
+      const clean = normalizeReperLoose(value);
+      if(!clean) return;
+      set.add(clean);
+      const compact = debitatAliasHash(clean);
+      if(compact) set.add(compact);
+    }
+    function expandDebitatReperAliases(value){
+      const set = new Set();
+      const raw = normalizeReperLoose(value);
+      addAliasKey(set, raw);
+      if(!raw) return Array.from(set);
+
+      const normalizedSeparators = raw.replace(/[–—_]/g,'-');
+      addAliasKey(set, normalizedSeparators);
+      addAliasKey(set, normalizedSeparators.replace(/\//g,'-'));
+
+      const match = normalizedSeparators.match(/^(.+?)(\d+)(?:\/(\d+))$/);
+      if(match){
+        const prefix = match[1];
+        const baseNum = match[2];
+        const suffix = match[3];
+        if(suffix && suffix.length <= baseNum.length){
+          addAliasKey(set, prefix + baseNum);
+          addAliasKey(set, prefix + baseNum.slice(0, baseNum.length - suffix.length) + suffix);
+        }
+      }
+
+      SHARED_DEBITAT_GROUP_ALIASES.forEach(item => {
+        const groupHash = debitatAliasHash(item.group);
+        const all = [item.group].concat(item.aliases || []);
+        const hit = all.some(alias => {
+          const hash = debitatAliasHash(alias);
+          return hash && (hash === debitatAliasHash(raw) || groupHash === debitatAliasHash(raw));
+        });
+        if(hit){
+          addAliasKey(set, item.group);
+          (item.aliases || []).forEach(alias => addAliasKey(set, alias));
+        }
+      });
+      return Array.from(set);
+    }
+    function buildDebitatStockAliasMap(debStock){
+      const map = Object.create(null);
+      const conflicts = Object.create(null);
+      Object.keys(debStock || {}).forEach(stockKey => {
+        expandDebitatReperAliases(stockKey).forEach(alias => {
+          if(!alias) return;
+          if(map[alias] && map[alias] !== stockKey){
+            conflicts[alias] = true;
+            return;
+          }
+          map[alias] = stockKey;
+        });
+      });
+      SHARED_DEBITAT_GROUP_ALIASES.forEach(item => {
+        const groupCandidates = expandDebitatReperAliases(item.group).map(alias => map[alias]).filter(Boolean);
+        const uniqueGroups = Array.from(new Set(groupCandidates));
+        if(uniqueGroups.length !== 1) return;
+        const stockKey = uniqueGroups[0];
+        [item.group].concat(item.aliases || []).forEach(aliasValue => {
+          expandDebitatReperAliases(aliasValue).forEach(alias => {
+            if(!alias || conflicts[alias]) return;
+            if(!map[alias]) map[alias] = stockKey;
+          });
+        });
+      });
+      Object.keys(state.helperMaps && state.helperMaps.forjaByReper || {}).forEach(forjatKey => {
+        const helper = (state.helperMaps.forjaByReper || Object.create(null))[forjatKey] || null;
+        const origin = normalizeReperLoose(helper && helper.reper_debitare_origine);
+        if(!origin) return;
+        const originStockKey = resolveDebitatStockKey(origin, debStock, map);
+        if(!Object.prototype.hasOwnProperty.call(debStock || Object.create(null), originStockKey)) return;
+        expandDebitatReperAliases(forjatKey).forEach(alias => {
+          if(alias && !conflicts[alias]) map[alias] = originStockKey;
+        });
+      });
+      Object.keys(conflicts).forEach(alias => { delete map[alias]; });
+      return map;
+    }
+    function resolveDebitatStockKey(reperKey, debStock, aliasMap){
+      const direct = normalizeReperLoose(reperKey);
+      if(!direct) return '';
+      if(Object.prototype.hasOwnProperty.call(debStock || Object.create(null), direct)) return direct;
+      const aliases = expandDebitatReperAliases(direct);
+      for(const alias of aliases){
+        if(aliasMap && aliasMap[alias]) return aliasMap[alias];
+        if(Object.prototype.hasOwnProperty.call(debStock || Object.create(null), alias)) return alias;
+      }
+      return direct;
+    }
     function normalizeDeliveryReperLoose(v){
       return normUpper(v)
         .replace(/[Øø⌀]/g,'')
@@ -2740,7 +2845,8 @@ function getDefaultPermissions(role){
         '<div class="plan-tip-section"><div class="plan-tip-section-title">Stoc înainte</div>' + buildRows([
           ['Debitat disponibil', formatTooltipBuc(meta.beforeDebitat)],
           ['Oțel disponibil', meta.specLabel ? formatTooltipKg(meta.beforeSteelKg) : '—'],
-          ['Echivalent piese', meta.specLabel ? formatTooltipBuc(meta.beforeSteelPieces) : '—']
+          ['Echivalent oțel', meta.specLabel ? formatTooltipBuc(meta.beforeSteelPieces) : '—'],
+          ['Total disponibil', meta.specLabel ? formatTooltipBuc(toNumber(meta.beforeDebitat) + toNumber(meta.beforeSteelPieces)) : formatTooltipBuc(meta.beforeDebitat)]
         ]) + '</div>',
         '<div class="plan-tip-section"><div class="plan-tip-section-title">Necesar și acoperire</div>' + buildRows([
           ['Planificat', formatTooltipBuc(meta.planValue)],
@@ -4457,6 +4563,7 @@ function getDefaultPermissions(role){
         const repKey = normalizeReperLoose(row.reper);
         debStock[repKey] = toNumber(debStock[repKey]) + toNumber(row.cantitateBuc);
       });
+      const debStockAliasMap = buildDebitatStockAliasMap(debStock);
 
       const fromIsoSteel = nextDayIso(snapEndSteel) || snapEndSteel;
       const fromIsoDeb = nextDayIso(snapEndDeb) || snapEndDeb;
@@ -4485,7 +4592,7 @@ function getDefaultPermissions(role){
 
       debitariRows.forEach(row => {
         if(!row.data || row.data > maxPlanIso) return;
-        const repKey = normalizeReperLoose(row.reper);
+        const repKey = resolveDebitatStockKey(normalizeReperLoose(row.reper), debStock, debStockAliasMap);
         if(row.data >= fromIsoDeb && repKey && toNumber(row.cantitateBuc) !== 0){
           addDailyDelta(debDeltaByDate, row.data, repKey, toNumber(row.cantitateBuc));
         }
@@ -4508,7 +4615,7 @@ function getDefaultPermissions(role){
         const cons = Math.max(0, Math.round(toNumber(row.realizatBuc) + toNumber(row.rebutBuc)));
         if(cons > 0){
           const helper = resolvePlanningHelper(row.reper);
-          const repDeb = helper.originReper || normalizeReperLoose(row.reper);
+          const repDeb = resolveDebitatStockKey(helper.originReper || normalizeReperLoose(row.reper), debStock, debStockAliasMap);
           if(repDeb) addDailyDelta(debDeltaByDate, row.data, repDeb, -cons);
         }
       });
@@ -4563,7 +4670,8 @@ function getDefaultPermissions(role){
           const bucDeSimulat = hasReal ? 0 : planBuc;
 
           const helper = resolvePlanningHelper(reperForjat);
-          const reperDeb = helper.originReper || normalizeReperLoose(reperForjat);
+          const reperDebRaw = helper.originReper || normalizeReperLoose(reperForjat);
+          const reperDeb = resolveDebitatStockKey(reperDebRaw, debStock, debStockAliasMap);
           const specKey = helper.diametru && helper.calitate ? buildSpecKey(helper.diametru, helper.calitate) : '';
           const stOtelInainte = specKey ? toNumber(steelStock[specKey]) : 0;
           const stDebInainte = reperDeb ? toNumber(debStock[reperDeb]) : 0;
@@ -4610,6 +4718,8 @@ function getDefaultPermissions(role){
           const uiStatus = hasReal ? 'ok' : (coverageRatio >= 0.999 ? 'ok' : (coverageRatio > 0 ? 'partial' : 'empty'));
           const beforeSteelPieces = kgBuc > 0 ? Math.max(0, stOtelInainte) / kgBuc : 0;
           const afterSteelPieces = kgBuc > 0 ? Math.max(0, afterSteelKg) / kgBuc : 0;
+          const beforeTotalPieces = Math.max(0, stDebInainte) + beforeSteelPieces;
+          const afterTotalPieces = Math.max(0, afterDebitat) + afterSteelPieces;
 
           state.stockCalcByCell[cellCalcKey(row.id, machine)] = {
             status: uiStatus,
@@ -4623,9 +4733,11 @@ function getDefaultPermissions(role){
             beforeDebitat: stDebInainte,
             beforeSteelKg: stOtelInainte,
             beforeSteelPieces,
+            beforeTotalPieces,
             afterDebitat,
             afterSteelKg,
             afterSteelPieces,
+            afterTotalPieces,
             needSteelKg,
             steelUsedKg,
             shortageSteelKg,
