@@ -161,7 +161,7 @@
           <tr>
             <th class="steel-section-title" colspan="9">OTEL LAMINAT</th>
             <th class="deb-section-title" colspan="7">OTEL DEBITAT</th>
-            <th class="steel-section-spacer" colspan="9"></th>
+            <th class="steel-section-spacer" colspan="10"></th>
           </tr>
           <tr>
             <th style="width:30px">NR.</th>
@@ -187,6 +187,7 @@
             <th class="rebut-head" style="width:78px;color:#b91c1c!important;font-weight:800!important">Rebut dupa forjare</th>
             <th style="width:56px">LIVRĂRI (BUC)</th>
             <th style="width:56px">Vanzari</th>
+            <th style="width:62px">Stoc PM Initial</th>
             <th style="width:56px">STOC PM</th>
             <th style="width:70px">FORJAT RĂMAS (BUC)</th>
           </tr>
@@ -1164,30 +1165,31 @@
     return true;
   }
 
-  function getPmTargetPeriod(){
+  function getPmTargetPeriod(offsetMonths=1){
     const selected=getSelectedPeriod();
     if(selected.year && selected.month){
-      const nextMonth = selected.month === 12 ? 1 : selected.month + 1;
-      const nextYear = selected.month === 12 ? selected.year + 1 : selected.year;
+      const baseIndex = (selected.year * 12) + (selected.month - 1) + offsetMonths;
+      const targetYear = Math.floor(baseIndex / 12);
+      const targetMonth = (baseIndex % 12) + 1;
       return {
-        year: nextYear,
-        month: nextMonth,
-        code: nextYear * 12 + nextMonth,
-        start: firstOfMonth(nextYear, nextMonth),
-        end: endOfMonth(nextYear, nextMonth)
+        year: targetYear,
+        month: targetMonth,
+        code: targetYear * 12 + targetMonth,
+        start: firstOfMonth(targetYear, targetMonth),
+        end: endOfMonth(targetYear, targetMonth)
       };
     }
     return selected;
   }
-  function pmTargetPeriodMatchesDate(date){
-    const target=getPmTargetPeriod();
+  function pmTargetPeriodMatchesDate(date, offsetMonths=1){
+    const target=getPmTargetPeriod(offsetMonths);
     if(!date || Number.isNaN(date.getTime())) return false;
     if(target.year && date.getFullYear()!==target.year) return false;
     if(target.month && (date.getMonth()+1)!==target.month) return false;
     return true;
   }
-  function pmTargetMonthKey(){
-    const target=getPmTargetPeriod();
+  function pmTargetMonthKey(offsetMonths=1){
+    const target=getPmTargetPeriod(offsetMonths);
     if(!target.year || !target.month) return '';
     return String(target.year) + '-' + String(target.month).padStart(2,'0');
   }
@@ -1298,7 +1300,7 @@
     const modelHere=[top0[c],top1[c],top2[c]].map(normText).some(v=>v==='model');
     return modelHere && hasPacked && hasFinished && hasWip;
   }
-  function collectMahlePmFromTable(table,result){
+  function collectMahlePmFromTable(table,result,offsetMonths=1){
     const grid=expandPmTableGrid(table);
     if(!grid.length) return;
     const maxCols=grid.reduce((max,row)=>Math.max(max,(row||[]).length),0);
@@ -1308,7 +1310,7 @@
     }
     blockStarts.forEach(startCol=>{
       const date=resolvePmDateFromGrid(grid,startCol);
-      if(!pmTargetPeriodMatchesDate(date)) return;
+      if(!pmTargetPeriodMatchesDate(date,offsetMonths)) return;
       for(let r=0;r<grid.length;r++){
         const row=grid[r]||[];
         const model=row[startCol];
@@ -1321,7 +1323,7 @@
       }
     });
   }
-  function collectMahlePmFromBlockValues(block,result){
+  function collectMahlePmFromBlockValues(block,result,offsetMonths=1){
     if(!block || typeof block!=='object') return;
     const entries=Object.keys(block).map(key=>[Number(key), safeText(block[key])]).filter(([key])=>Number.isFinite(key)).sort((a,b)=>a[0]-b[0]);
     if(!entries.length) return;
@@ -1331,7 +1333,7 @@
       const d=parseLooseDate(value);
       if(d) dateCandidates.push({key,date:d});
     });
-    const selectedDates=dateCandidates.filter(item=>pmTargetPeriodMatchesDate(item.date));
+    const selectedDates=dateCandidates.filter(item=>pmTargetPeriodMatchesDate(item.date,offsetMonths));
     const fallbackDate=selectedDates.length?selectedDates[0].date:(dateCandidates.length?dateCandidates[0].date:null);
     for(const [key,value] of entries){
       const repers=resolveMahlePmRepers(value);
@@ -1348,14 +1350,14 @@
       const date = selectedDates.length
         ? selectedDates[0].date
         : (dateCandidates.find(item=>Math.abs(item.key-key)<=12)?.date || fallbackDate);
-      if(!pmTargetPeriodMatchesDate(date)) continue;
+      if(!pmTargetPeriodMatchesDate(date,offsetMonths)) continue;
       repers.forEach(reper=>addMahlePmSnapshotValue(result,reper,qty,date));
     }
   }
-  function readMahlePmFromMonthlyPayload(payload){
+  function readMahlePmFromMonthlyPayload(payload,offsetMonths=1){
     const result=new Map();
     if(!payload || typeof payload !== 'object' || !payload.months || typeof payload.months !== 'object') return result;
-    const key=pmTargetMonthKey();
+    const key=pmTargetMonthKey(offsetMonths);
     if(!key) return result;
     const monthData=payload.months[key];
     if(!monthData || typeof monthData !== 'object' || !monthData.rows || typeof monthData.rows !== 'object') return result;
@@ -1368,26 +1370,32 @@
     });
     return result;
   }
-  function aggregateStocPmThisPeriod(){
+  function aggregateStocPmForOffset(offsetMonths){
     const payload=state.inventarPrelucrariPayload;
     const result=new Map();
     if(!payload || typeof payload!=='object') return result;
-    const monthlyMahle=readMahlePmFromMonthlyPayload(payload);
+    const monthlyMahle=readMahlePmFromMonthlyPayload(payload,offsetMonths);
     monthlyMahle.forEach((qty,reper)=>result.set(reper,toNumber(qty)));
     const legacyResult=new Map();
     const mainHtml=String(payload.mainTableHtml||payload.staticTableHtml||'');
     const baseTable=parsePmTableFromInnerHtml(mainHtml);
-    if(baseTable) collectMahlePmFromTable(baseTable,legacyResult);
+    if(baseTable) collectMahlePmFromTable(baseTable,legacyResult,offsetMonths);
     const blocks=(payload.frontSnapshot&&payload.frontSnapshot.blocks&&typeof payload.frontSnapshot.blocks==='object')?payload.frontSnapshot.blocks:((payload.blocks&&typeof payload.blocks==='object')?payload.blocks:{});
     Object.keys(blocks||{}).filter(key=>String(key).startsWith('front:')).sort((a,b)=>Number(String(a).split(':')[1]||0)-Number(String(b).split(':')[1]||0)).forEach(key=>{
-      collectMahlePmFromBlockValues(blocks[key],legacyResult);
+      collectMahlePmFromBlockValues(blocks[key],legacyResult,offsetMonths);
       const table=buildPmFrontTable(baseTable,blocks[key]);
-      if(table) collectMahlePmFromTable(table,legacyResult);
+      if(table) collectMahlePmFromTable(table,legacyResult,offsetMonths);
     });
     legacyResult.forEach((entry,key)=>{
       if(!result.has(key)) result.set(key,toNumber(entry&&entry.qty));
     });
     return result;
+  }
+  function aggregateStocPmInitialThisPeriod(){
+    return aggregateStocPmForOffset(0);
+  }
+  function aggregateStocPmThisPeriod(){
+    return aggregateStocPmForOffset(1);
   }
 
 
@@ -1467,6 +1475,7 @@
     const rebutAfterForjare=aggregateRebutDupaForjareThisPeriod(helperIndex);
     const livrate=aggregateLivrariThisPeriod(helperIndex);
     const vanzariZale=aggregateVanzariZaleThisPeriod();
+    const stocPmInitial=aggregateStocPmInitialThisPeriod();
     const stocPm=aggregateStocPmThisPeriod();
 
     const materialMap=new Map();
@@ -1507,6 +1516,7 @@
     for(const key of rebutAfterForjare.keys()) forjatSet.add(key);
     for(const key of livrate.keys()) forjatSet.add(key);
     for(const key of vanzariZale.keys()) forjatSet.add(key);
+    for(const key of stocPmInitial.keys()) forjatSet.add(key);
     for(const key of stocPm.keys()) forjatSet.add(key);
     forjatSet.delete('');
 
@@ -1515,7 +1525,7 @@
       if(!reperForjat || isExcludedDisplayReper(reperForjat)) continue;
       const knownFromHelper=helperIndex.has(reperForjat);
       const knownAsDebitat=debMeta.has(reperForjat) || debProduced.has(reperForjat) || debInv.has(reperForjat);
-      const knownFromStocPm=stocPm.has(reperForjat);
+      const knownFromStocPm=stocPmInitial.has(reperForjat) || stocPm.has(reperForjat);
       if(!knownFromHelper && !knownAsDebitat && !knownFromStocPm) continue;
       const meta=helperIndex.get(reperForjat)||{reperForjat:reperForjat,reperDebitat:reperForjat,diametru:'',calitate:'',kgBuc:0};
       const debKey=meta.reperDebitat||reperForjat;
@@ -1548,6 +1558,7 @@
         rebutDupaForjare:rebutAfterForjare.get(reperForjat)||0,
         livrat:livrate.get(reperForjat)||0,
         vanzari:vanzariZale.get(reperForjat)||0,
+        stocPmInitial:stocPmInitial.get(reperForjat)||0,
         stocPm:stocPm.get(reperForjat)||0,
         forjatRamas:(forjInv.get(reperForjat)||0)+(forjProduced.get(reperForjat)||0)-(livrate.get(reperForjat)||0)
       });
@@ -1580,6 +1591,7 @@
           rebutDupaForjare:rebutAfterForjare.get(mirrorForjat)||0,
           livrat:livrate.get(mirrorForjat)||0,
           vanzari:vanzariZale.get(mirrorForjat)||0,
+          stocPmInitial:stocPmInitial.get(mirrorForjat)||0,
           stocPm:stocPm.get(mirrorForjat)||0,
           forjatRamas:(forjInv.get(mirrorForjat)||0)+(forjProduced.get(mirrorForjat)||0)-(livrate.get(mirrorForjat)||0)
         });
@@ -1590,7 +1602,7 @@
       const debGroups=Array.from(material.debGroups.values()).map(deb=>{
         const debHasActivity=hasRealDebitatActivity(deb.reperDebitat, debInv, debProduced, steelDebitated, debConsumed);
         const helperForjats=(helperForjateByDeb.get(deb.reperDebitat)||[])
-          .filter(reper=>debHasActivity || hasRealForjatActivity(reper, forjInv, forjProduced, livrate) || toNumber(forjRebut.get(reper))!==0 || toNumber(rebutAfterForjare.get(reper))!==0 || toNumber(vanzariZale.get(reper))!==0 || toNumber(stocPm.get(reper))!==0);
+          .filter(reper=>debHasActivity || hasRealForjatActivity(reper, forjInv, forjProduced, livrate) || toNumber(forjRebut.get(reper))!==0 || toNumber(rebutAfterForjare.get(reper))!==0 || toNumber(vanzariZale.get(reper))!==0 || toNumber(stocPmInitial.get(reper))!==0 || toNumber(stocPm.get(reper))!==0);
         helperForjats.forEach(reper=>{
           if(deb.forjats.some(f=>normalizeReper(f.reperForjat)===normalizeReper(reper))) return;
           deb.forjats.push({
@@ -1601,6 +1613,7 @@
             rebutDupaForjare:rebutAfterForjare.get(reper)||0,
             livrat:livrate.get(reper)||0,
             vanzari:vanzariZale.get(reper)||0,
+            stocPmInitial:stocPmInitial.get(reper)||0,
             stocPm:stocPm.get(reper)||0,
             forjatRamas:(forjInv.get(reper)||0)+(forjProduced.get(reper)||0)-(livrate.get(reper)||0)
           });
@@ -1613,7 +1626,7 @@
               const reper=normalizeReper(f.reperForjat);
               if(!reper) return false;
               if(isExcludedDisplayReper(reper)) return false;
-              return hasRealForjatActivity(reper, forjInv, forjProduced, livrate) || toNumber(f.rebutForja)!==0 || toNumber(f.rebutDupaForjare)!==0 || toNumber(f.vanzari)!==0 || toNumber(f.stocPm)!==0 || isExplicitSelfMappedForjat(reper, helperIndex) || helperSet.has(reper);
+              return hasRealForjatActivity(reper, forjInv, forjProduced, livrate) || toNumber(f.rebutForja)!==0 || toNumber(f.rebutDupaForjare)!==0 || toNumber(f.vanzari)!==0 || toNumber(f.stocPmInitial)!==0 || toNumber(f.stocPm)!==0 || isExplicitSelfMappedForjat(reper, helperIndex) || helperSet.has(reper);
             })
             .sort((a,b)=>normalizeReper(a.reperForjat).localeCompare(normalizeReper(b.reperForjat),'ro'))
         };
@@ -1647,7 +1660,7 @@
         });
         const debHasData=(deb.stocDebitat||0)!==0 || (deb.debitatBuc||0)!==0 || (deb.debitatKg||0)!==0 || (deb.forjatDinDebitat||0)!==0 || (deb.debitatRamas||0)!==0;
         if(!visibleForjats.length && !debHasData) return;
-        if(!visibleForjats.length && debHasData) visibleForjats=[{reperForjat:'',stocStartForjat:0,forjatBuc:0,rebutForja:0,rebutDupaForjare:0,livrat:0,vanzari:0,stocPm:0,forjatRamas:0}];
+        if(!visibleForjats.length && debHasData) visibleForjats=[{reperForjat:'',stocStartForjat:0,forjatBuc:0,rebutForja:0,rebutDupaForjare:0,livrat:0,vanzari:0,stocPmInitial:0,stocPm:0,forjatRamas:0}];
         visibleDebGroups.push({...deb, visibleForjats});
       });
       if(!visibleDebGroups.length) return;
@@ -1718,6 +1731,7 @@
       parts.push(`<td class="num rebut-after" style="color:#b91c1c!important;font-weight:800!important">${formatNumber(row.forjat.rebutDupaForjare||0,0)}</td>`);
       parts.push(`<td class="num">${formatNumber(row.forjat.livrat,0)}</td>`);
       parts.push(`<td class="num">${formatNumber(row.forjat.vanzari||0,0)}</td>`);
+      parts.push(`<td class="num">${formatNumber(row.forjat.stocPmInitial||0,0)}</td>`);
       parts.push(`<td class="num">${formatNumber(row.forjat.stocPm||0,0)}</td>`);
       parts.push(renderRemain(row.forjat.forjatRamas,0));
       parts.push(`</tr>`);
