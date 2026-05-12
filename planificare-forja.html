@@ -166,9 +166,10 @@
     td.plan-stock-partial{background:var(--stock-yellow) !important; box-shadow:none !important}
     td.plan-stock-empty .cell-input{color:var(--stock-red) !important;font-weight:800}
     td.plan-stock-empty .cell-input:focus{background:#fff1f3}
-    td.plan-stock-partial .cell-input{font-weight:800;color:var(--stock-red) !important}
-    td.reper-stock-alert .cell-input{color:var(--stock-red) !important;font-weight:800}
-    td.slot-reper.slot-month-covered.reper-stock-alert .cell-input{color:var(--stock-red) !important;font-weight:800}
+    td.plan-stock-partial .cell-input{font-weight:800;color:#0b1f46 !important}
+    td.reper-stock-alert .cell-input{color:#0b1f46 !important;font-weight:800}
+    td.slot-reper.slot-month-covered.reper-stock-alert .cell-input{color:#0b1f46 !important;font-weight:800}
+    td.plan-stock-empty .cell-input, td.reper-stock-empty .cell-input{color:var(--stock-red) !important;font-weight:800}
     td.slot-plan{position:relative}
     .plan-floating-tooltip{position:fixed;left:-9999px;top:-9999px;z-index:9999;width:232px;max-width:min(232px,calc(100vw - 24px));padding:10px 12px;border-radius:14px;background:linear-gradient(180deg,#12376b 0%,#0f2748 100%);color:#eff6ff;border:1px solid rgba(191,219,254,.34);box-shadow:0 18px 40px rgba(15,23,42,.34);pointer-events:none}
     .plan-floating-tooltip.is-alert{background:linear-gradient(180deg,#7f1d3a 0%,#581c32 100%);border-color:rgba(254,202,202,.32)}
@@ -993,6 +994,33 @@
     }
     function buildSpecKey(diametru, calitate){
       return normDiameterLoose(diametru) + '|' + normalizeCalitateLoose(calitate);
+    }
+    function splitSpecKey(specKey){
+      const parts = String(specKey || '').split('|');
+      return { diam: parts[0] || '', cal: parts.slice(1).join('|') || '' };
+    }
+    function resolveSteelStockSpecKey(diametru, calitate, steelStock){
+      const direct = buildSpecKey(diametru, calitate);
+      const src = steelStock || Object.create(null);
+      if(direct && Object.prototype.hasOwnProperty.call(src, direct)) return direct;
+
+      const diamKey = normDiameterLoose(diametru);
+      const calKey = normalizeCalitateLoose(calitate);
+      if(!diamKey || !calKey) return direct;
+
+      const exactDiam = Object.keys(src).filter(key => {
+        const parts = splitSpecKey(key);
+        if(parts.diam !== diamKey || !parts.cal) return false;
+        return parts.cal === calKey || parts.cal.includes(calKey) || calKey.includes(parts.cal);
+      });
+      if(exactDiam.length === 1) return exactDiam[0];
+
+      const sameStart = exactDiam.filter(key => {
+        const parts = splitSpecKey(key);
+        return parts.cal.startsWith(calKey) || calKey.startsWith(parts.cal);
+      });
+      if(sameStart.length === 1) return sameStart[0];
+      return direct;
     }
     function escapeHtml(value){
       return safeText(value)
@@ -2822,6 +2850,32 @@ function getDefaultPermissions(role){
       const kgBuc = Math.max(0, toNumber((debit && debit.kg_buc_debitat) || 0));
       return { reperKey, reperRaw, forja, debit, originReper, originReperRaw, diametru, calitate, kgBuc };
     }
+    function resolveKgBucForPlanning(helper, reperForjat, reperDebitat, debitariRows){
+      const helperKg = Math.max(0, toNumber(helper && helper.kgBuc));
+      if(helperKg > 0) return helperKg;
+
+      const targetDeb = normalizeReperLoose(reperDebitat || (helper && helper.originReper) || '');
+      const targetForjat = normalizeReperLoose(reperForjat || '');
+      const rows = Array.isArray(debitariRows) ? debitariRows : [];
+      let best = { score:-1, kg:0 };
+      rows.forEach((row, index) => {
+        const rowRep = normalizeReperLoose(row && row.reper);
+        if(!rowRep) return;
+        const aliases = expandDebitatReperAliases(rowRep);
+        const matchesDeb = targetDeb && (rowRep === targetDeb || aliases.includes(targetDeb));
+        const matchesForjat = targetForjat && (rowRep === targetForjat || aliases.includes(targetForjat));
+        if(!matchesDeb && !matchesForjat) return;
+        let kg = Math.max(0, toNumber(row && row.kgBuc));
+        if(!kg && toNumber(row && row.totalKgDebitat) > 0 && toNumber(row && row.cantitateBuc) > 0){
+          kg = toNumber(row.totalKgDebitat) / toNumber(row.cantitateBuc);
+        }
+        if(kg <= 0) return;
+        const dateScore = /^\d{4}-\d{2}-\d{2}$/.test(trimText(row && row.data)) ? Number(String(row.data).replace(/-/g,'')) : 0;
+        const score = dateScore * 100000 + index;
+        if(score > best.score) best = { score, kg };
+      });
+      return best.kg || 0;
+    }
     function cellCalcKey(rowId, machine){
       return String(rowId) + '|' + String(machine);
     }
@@ -4619,7 +4673,7 @@ function getDefaultPermissions(role){
       intrariRows.forEach(row => {
         if(!row.data || row.data < intrariFromIso || row.data > intrariToIso) return;
         if(!row.diametru || !row.calitate || toNumber(row.cantitateKg) === 0) return;
-        addDailyDelta(steelDeltaByDate, row.data, buildSpecKey(row.diametru, row.calitate), toNumber(row.cantitateKg));
+        addDailyDelta(steelDeltaByDate, row.data, resolveSteelStockSpecKey(row.diametru, row.calitate, steelStock), toNumber(row.cantitateKg));
       });
 
       debitariRows.forEach(row => {
@@ -4629,7 +4683,8 @@ function getDefaultPermissions(role){
           addDailyDelta(debDeltaByDate, row.data, repKey, toNumber(row.cantitateBuc));
         }
         if(row.data >= fromIsoSteel && row.diametru && row.calitate && toNumber(row.totalKgDebitat) !== 0){
-          addDailyDelta(steelDeltaByDate, row.data, buildSpecKey(row.diametru, row.calitate), -toNumber(row.totalKgDebitat));
+          const debitareSpecKey = resolveSteelStockSpecKey(row.diametru, row.calitate, steelStock);
+          addDailyDelta(steelDeltaByDate, row.data, debitareSpecKey, -toNumber(row.totalKgDebitat));
         }
       });
 
@@ -4704,11 +4759,12 @@ function getDefaultPermissions(role){
           const helper = resolvePlanningHelper(reperForjat);
           const reperDebRaw = helper.originReper || normalizeReperLoose(reperForjat);
           const reperDeb = resolveDebitatStockKey(reperDebRaw, debStock, debStockAliasMap);
-          const specKey = helper.diametru && helper.calitate ? buildSpecKey(helper.diametru, helper.calitate) : '';
+          const specKey = helper.diametru && helper.calitate ? resolveSteelStockSpecKey(helper.diametru, helper.calitate, steelStock) : '';
           const stOtelInainte = specKey ? toNumber(steelStock[specKey]) : 0;
           const stDebInainte = reperDeb ? toNumber(debStock[reperDeb]) : 0;
-          const kgBuc = Math.max(0, toNumber(helper.kgBuc));
-          const coverageRatio = hasReal ? 1 : (planBuc > 0 ? Math.max(0, Math.min(1, ((Math.max(0, stDebInainte) + (kgBuc > 0 ? (Math.max(0, stOtelInainte) / kgBuc) : 0)) / planBuc))) : 0);
+          const kgBuc = Math.max(0, toNumber(resolveKgBucForPlanning(helper, reperForjat, reperDeb, debitariRows)));
+          const totalPiecesAvailableBefore = Math.max(0, stDebInainte) + (kgBuc > 0 ? (Math.max(0, stOtelInainte) / kgBuc) : 0);
+          const coverageRatio = hasReal ? 1 : (planBuc > 0 ? Math.max(0, Math.min(1, totalPiecesAvailableBefore / planBuc)) : 0);
 
           let mode = hasReal ? 'real' : 'simulated';
           let note = hasReal ? 'Există realizări reale; nu se simulează planul.' : 'Nu există realizări reale; se simulează planul din VBA.';
@@ -4747,7 +4803,7 @@ function getDefaultPermissions(role){
             }
           }
 
-          const uiStatus = hasReal ? 'ok' : (coverageRatio >= 0.999 ? 'ok' : (coverageRatio > 0 ? 'partial' : 'empty'));
+          const uiStatus = hasReal ? 'ok' : (totalPiecesAvailableBefore > 0 ? 'ok' : 'empty');
           const beforeSteelPieces = kgBuc > 0 ? Math.max(0, stOtelInainte) / kgBuc : 0;
           const afterSteelPieces = kgBuc > 0 ? Math.max(0, afterSteelKg) / kgBuc : 0;
           const beforeTotalPieces = Math.max(0, stDebInainte) + beforeSteelPieces;
@@ -5100,7 +5156,7 @@ function getDefaultPermissions(role){
             const readyItems = state.deliveryReadyByCell[cellCalcKey(row.id, machine)] || [];
             const mask = getDuplicateMask(rows, idx, machine);
             const tdPlanClass = calc && calc.status === 'partial' ? 'plan-stock-partial' : (calc && calc.status === 'empty' ? 'plan-stock-empty' : '');
-            const tdReperClass = calc && (calc.status === 'partial' || calc.status === 'empty') ? 'reper-stock-alert' : '';
+            const tdReperClass = calc && calc.status === 'empty' ? 'reper-stock-empty' : '';
             const deliveryTooltip = readyItems.length ? buildDeliveryReadySectionHtml(readyItems, { standalone:true }) : '';
             const combinedTooltipHtml = buildCombinedPlanTooltipHtml((calc && calc.tooltip) ? calc.tooltip : '', readyItems);
             const tooltipTone = (calc && (calc.status === 'partial' || calc.status === 'empty')) ? 'alert' : 'ok';
