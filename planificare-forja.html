@@ -3246,6 +3246,24 @@ function getDefaultPermissions(role){
       });
       return out;
     }
+    function getInventoryPeriodStatus(docs, normalizer, expectedYear, expectedMonth){
+      const rows = makeInventorySourceRows(docs, normalizer);
+      let latest = { rows:[], year:0, month:0, label:'' };
+      try{
+        latest = pickLatestRowsByYearMonth(rows);
+      }catch(error){
+        latest = { rows:[], year:0, month:0, label:'' };
+      }
+      const directOk = rows.some(row => rowMatchesPeriod(row, expectedYear, expectedMonth));
+      const latestOk = Number(latest.year || 0) === Number(expectedYear) && Number(latest.month || 0) === Number(expectedMonth) && rows.length > 0;
+      const noPeriodButHasRows = rows.length > 0 && !Number(latest.year || 0) && !Number(latest.month || 0);
+      return {
+        ok: !!(directOk || latestOk || noPeriodButHasRows),
+        rows,
+        latest,
+        noPeriodButHasRows
+      };
+    }
     async function refreshInventoryAlert(){
       const period = previousMonthParts(new Date());
       const sourceNotes = [];
@@ -3254,18 +3272,21 @@ function getDefaultPermissions(role){
         const steelDocs = await queryDocsByKeys(INVENTORY_ALERT_STEEL_DOC_KEYS);
         const debitatDocs = await queryDocsByKeys(buildDebitatKeysForYear(period.year));
         const forjatDocs = await queryDocsByKeys(buildForjatInventarKeys(period.year));
-        const steelRows = makeInventorySourceRows(steelDocs, normalizeSteelRow);
-        const debitatRows = makeInventorySourceRows(debitatDocs, normalizeDebitatRow);
-        const forjatRows = makeInventorySourceRows(forjatDocs, normalizeInventarForjatRow);
-        const steelOk = steelRows.some(row => rowMatchesPeriod(row, period.year, period.month));
-        const debitatOk = debitatRows.some(row => rowMatchesPeriod(row, period.year, period.month));
-        const forjatOk = forjatRows.some(row => rowMatchesPeriod(row, period.year, period.month));
+        const steelStatus = getInventoryPeriodStatus(steelDocs, normalizeSteelRow, period.year, period.month);
+        const debitatStatus = getInventoryPeriodStatus(debitatDocs, normalizeDebitatRow, period.year, period.month);
+        const forjatStatus = getInventoryPeriodStatus(forjatDocs, normalizeInventarForjatRow, period.year, period.month);
+        const steelOk = !!steelStatus.ok;
+        const debitatOk = !!debitatStatus.ok;
+        const forjatOk = !!forjatStatus.ok;
         if(!steelOk) missing.push('Inventar oțel');
         if(!debitatOk) missing.push('Inventar debitat');
         if(!forjatOk) missing.push('Inventar forjat');
-        sourceNotes.push('Inventar oțel: ' + (steelOk ? 'introdus' : 'lipsă') + ' în foaia inventar-otel');
-        sourceNotes.push('Inventar debitat: ' + (debitatOk ? 'introdus' : 'lipsă'));
-        sourceNotes.push('Inventar forjat: ' + (forjatOk ? 'introdus' : 'lipsă'));
+        const steelPeriod = steelStatus.latest && steelStatus.latest.label ? (' • ultimul: ' + steelStatus.latest.label) : '';
+        const debitatPeriod = debitatStatus.latest && debitatStatus.latest.label ? (' • ultimul: ' + debitatStatus.latest.label) : '';
+        const forjatPeriod = forjatStatus.latest && forjatStatus.latest.label ? (' • ultimul: ' + forjatStatus.latest.label) : '';
+        sourceNotes.push('Inventar oțel: ' + (steelOk ? 'introdus' : 'lipsă') + ' în foaia inventar-otel' + steelPeriod);
+        sourceNotes.push('Inventar debitat: ' + (debitatOk ? 'introdus' : 'lipsă') + debitatPeriod);
+        sourceNotes.push('Inventar forjat: ' + (forjatOk ? 'introdus' : 'lipsă') + forjatPeriod);
         state.inventoryAlert = { tone: missing.length ? 'late' : 'ok', missing, checkedAt: nowIso(), periodLabel: period.label, sourceNotes };
       }catch(error){
         console.error('refreshInventoryAlert', error);
