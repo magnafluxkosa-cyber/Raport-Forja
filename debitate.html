@@ -1108,11 +1108,70 @@ body.rf-access-denied-body{
     if (!(active == null || active === true || active === 1 || active === "1")) return null;
     return {
       reper: reper,
-      diam: row.diametru_otel ?? row.DIAMETRU_OTEL ?? row.diametruOtel ?? row.diametru ?? "",
-      cal: (row.calitate_otel ?? row.CALITATE_OTEL ?? row.calitateOtel ?? row.calitate ?? "").toString().trim(),
+      diam: row.diametru_otel ?? row.DIAMETRU_OTEL ?? row.diametruOtel ?? row.diametru ?? row.diam ?? "",
+      cal: (row.calitate_otel ?? row.CALITATE_OTEL ?? row.calitateOtel ?? row.calitate ?? row.cal ?? "").toString().trim(),
       kgBuc: row.kg_buc_debitat ?? row.KG_BUC_DEBITAT ?? row.kgBucDebitat ?? row.kgBuc ?? "",
-      lung: row.lungime_debitare_mm ?? row.LUNGIME_DEBITARE_MM ?? row.lungimeDebitareMm ?? row.lungime ?? ""
+      lung: row.lungime_debitare_mm ?? row.LUNGIME_DEBITARE_MM ?? row.lungimeDebitareMm ?? row.lungime ?? row.lung ?? ""
     };
+  }
+
+  function sameHelperValue(a, b){
+    return String(a ?? "").trim() === String(b ?? "").trim();
+  }
+
+  function applyHelperInfoToDebitareRow(row, info){
+    if (!row || !info) return false;
+    let changed = false;
+
+    const diam = normalizeDiam(info.diam);
+    const cal = (info.cal ?? "").toString().trim();
+    const kg = parseKgBucValue(info.kgBuc);
+    const lung = parseNumberRO(info.lung);
+
+    if (diam && !sameHelperValue(normalizeDiam(row.diametru), diam)){
+      row.diametru = diam;
+      changed = true;
+    }
+    if (cal && !sameHelperValue(row.calitate, cal)){
+      row.calitate = cal;
+      changed = true;
+    }
+    if (Number.isFinite(kg) && Number(row.kgBuc) !== kg){
+      row.kgBuc = kg;
+      changed = true;
+    }
+    if (Number.isFinite(lung) && Number(row.lungime) !== Math.trunc(lung)){
+      row.lungime = Math.trunc(lung);
+      changed = true;
+    }
+
+    if (changed) recalcRow(row);
+    return changed;
+  }
+
+  function refreshDebitareRowsFromHelper(saveAfter){
+    if (!_mapRepDebitare) buildHelperMaps();
+    if (!_mapRepDebitare || !Array.isArray(rows) || !rows.length) return false;
+
+    let changed = false;
+    rows.forEach(row => {
+      const reper = (row.reper ?? "").toString().trim();
+      if (!reper || !_mapRepDebitare.has(reper)) return;
+      if (applyHelperInfoToDebitareRow(row, _mapRepDebitare.get(reper))) changed = true;
+    });
+
+    if (changed){
+      renderBody();
+      refreshSummaryTable();
+      refreshSarjaWarningTable();
+      if (saveAfter){
+        const y = normalizeYearValue(activeYear) || String(CURRENT_YEAR);
+        saveYearLocal(y, rows);
+        scheduleSave(y);
+        try{ if (window.rfQueueYearPush) window.rfQueueYearPush(y); }catch(_e){}
+      }
+    }
+    return changed;
   }
 
   function applyRepereDebitareToMap(list){
@@ -1245,6 +1304,7 @@ body.rf-access-denied-body{
       if (changed || force){
         buildHelperMaps();
         try{ applyReperAutofill(); }catch(_e){}
+        try{ refreshDebitareRowsFromHelper(true); }catch(_e){}
       }
       return changed;
     }catch(e){
@@ -1292,6 +1352,7 @@ body.rf-access-denied-body{
   window.reloadHelpersNow = reloadHelpersNow;
   window.pullHelpersCloud = pullHelpersCloud;
   window.pullRepereDebitareCloud = pullRepereDebitareCloud;
+  window.refreshDebitareRowsFromHelper = refreshDebitareRowsFromHelper;
 
   // Storage event (instant între tab-uri pe același device)
   window.addEventListener("storage", (e)=>{
@@ -1326,6 +1387,12 @@ body.rf-access-denied-body{
             { event:"INSERT", schema:"public", table:"rf_documents", filter:"doc_key=eq.helpers" },
             ()=>pullHelpersCloud(true))
         .subscribe();
+
+      supa.channel("rf_helper_repere_debitare_live")
+        .on("postgres_changes",
+            { event:"*", schema:"public", table:"rf_helper_repere_debitare" },
+            ()=>pullRepereDebitareCloud(true))
+        .subscribe();
     }
   }catch(_e){}
 
@@ -1336,7 +1403,7 @@ body.rf-access-denied-body{
 let __helpersPoll = null;
 function __startHelpersPoll(){
   if(__helpersPoll) return;
-  __helpersPoll = setInterval(()=>{ if(!document.hidden) pullHelpersCloud(false); }, 15000);
+  __helpersPoll = setInterval(()=>{ if(!document.hidden){ pullHelpersCloud(false); pullRepereDebitareCloud(false); } }, 15000);
 }
 function __stopHelpersPoll(){
   if(__helpersPoll){ clearInterval(__helpersPoll); __helpersPoll = null; }
@@ -1366,13 +1433,13 @@ function setAutofillReadonly(isReadonly){
 
     // kg/buc: păstrează virgula ca zecimal în UI
     if ($("mKgBuc")) {
-      const n = Number(info.kgBuc);
+      const n = parseKgBucValue(info.kgBuc);
       $("mKgBuc").value = Number.isFinite(n) ? fmtKgBuc(n) : "";
     }
 
     // lungime: întreg
     if ($("mLungime")) {
-      const n = Number(info.lung);
+      const n = parseNumberRO(info.lung);
       $("mLungime").value = Number.isFinite(n) ? String(Math.trunc(n)) : "";
     }
   }
