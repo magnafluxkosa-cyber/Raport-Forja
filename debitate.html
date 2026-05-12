@@ -1029,6 +1029,7 @@ body.rf-access-denied-body{
   const SARJA_ALERT_TOLERANCE_KG = 1;
   let _helpers = null;
   let _mapRepDebitare = null;
+  let _repereDebitareCloud = [];
   let _operatoriDebitareCloud = [];
   let _intrariYearCache = {};
   let _inventarRowsCache = null;
@@ -1098,6 +1099,43 @@ body.rf-access-denied-body{
     });
   }
 
+
+  function normalizeReperDebitareCloudRow(row){
+    if (!row || typeof row !== "object") return null;
+    const reper = (row.reper_debitare ?? row.REPER_DEBITARE ?? row.reperDebitare ?? row.reper ?? "").toString().trim();
+    if (!reper) return null;
+    const active = row.is_active ?? row.IS_ACTIVE;
+    if (!(active == null || active === true || active === 1 || active === "1")) return null;
+    return {
+      reper: reper,
+      diam: row.diametru_otel ?? row.DIAMETRU_OTEL ?? row.diametruOtel ?? row.diametru ?? "",
+      cal: (row.calitate_otel ?? row.CALITATE_OTEL ?? row.calitateOtel ?? row.calitate ?? "").toString().trim(),
+      kgBuc: row.kg_buc_debitat ?? row.KG_BUC_DEBITAT ?? row.kgBucDebitat ?? row.kgBuc ?? "",
+      lung: row.lungime_debitare_mm ?? row.LUNGIME_DEBITARE_MM ?? row.lungimeDebitareMm ?? row.lungime ?? ""
+    };
+  }
+
+  function applyRepereDebitareToMap(list){
+    if (!_mapRepDebitare) _mapRepDebitare = new Map();
+    (Array.isArray(list) ? list : []).forEach(row => {
+      const info = normalizeReperDebitareCloudRow(row);
+      if (!info || !info.reper) return;
+      // Tabelul dedicat rf_helper_repere_debitare are prioritate peste helperul vechi/local.
+      _mapRepDebitare.set(info.reper, info);
+    });
+  }
+
+  function refreshRepereDebitareDatalist(){
+    const dlR = $("dlRepereDebitare");
+    if (!dlR || !_mapRepDebitare) return;
+    dlR.innerHTML = "";
+    Array.from(_mapRepDebitare.keys()).sort((a,b)=>a.localeCompare(b, "ro", { sensitivity:"base" })).forEach(k => {
+      const o = document.createElement("option");
+      o.value = k;
+      dlR.appendChild(o);
+    });
+  }
+
   function loadHelpers(){
     if (_helpers) return _helpers;
     try {
@@ -1120,39 +1158,35 @@ body.rf-access-denied-body{
     if (dlU) dlU.innerHTML = "";
     renderOperatoriDebitareDatalist();
 
-    if (!h) return;
-
-    // Repere debitare → autofill
-    (h.repere_debitare || []).forEach(row => {
-      const k = (row.REPER_DEBITARE ?? "").toString().trim();
-      if (!k) return;
-      _mapRepDebitare.set(k, {
-        reper: k,
-        diam: row.DIAMETRU_OTEL,
-        cal: (row.CALITATE_OTEL ?? "").toString().trim(),
-        kgBuc: row.KG_BUC_DEBITAT,
-        lung: row.LUNGIME_DEBITARE_MM
+    // Fallback vechi/local RF_HELPERS_v1, folosit doar dacă tabela dedicată nu este încă încărcată.
+    if (h){
+      (h.repere_debitare || []).forEach(row => {
+        const k = (row.REPER_DEBITARE ?? "").toString().trim();
+        if (!k) return;
+        _mapRepDebitare.set(k, {
+          reper: k,
+          diam: row.DIAMETRU_OTEL,
+          cal: (row.CALITATE_OTEL ?? "").toString().trim(),
+          kgBuc: row.KG_BUC_DEBITAT,
+          lung: row.LUNGIME_DEBITARE_MM
+        });
       });
-    });
 
-    if (dlR){
-      Array.from(_mapRepDebitare.keys()).sort().forEach(k => {
-        const o = document.createElement("option");
-        o.value = k;
-        dlR.appendChild(o);
-      });
+      // Utilaje debitare (autocomplete)
+      if (dlU){
+        (h.utilaje_debitare || []).forEach(u => {
+          const v = (u ?? "").toString().trim();
+          if (!v) return;
+          const o = document.createElement("option");
+          o.value = v;
+          dlU.appendChild(o);
+        });
+      }
     }
 
-    // Utilaje debitare (autocomplete)
-    if (dlU){
-      (h.utilaje_debitare || []).forEach(u => {
-        const v = (u ?? "").toString().trim();
-        if (!v) return;
-        const o = document.createElement("option");
-        o.value = v;
-        dlU.appendChild(o);
-      });
-    }
+    // Sursa principală: Helper-data / rf_helper_repere_debitare. Aceasta suprascrie valorile vechi locale.
+    applyRepereDebitareToMap(_repereDebitareCloud);
+    refreshRepereDebitareDatalist();
   }
 
   // Reîncarcă helperele când sunt modificate în pagina HELPER
@@ -1162,6 +1196,7 @@ body.rf-access-denied-body{
       _helpers = null;
       _mapRepDebitare = null;
       try{ buildHelperMaps(); }catch(e){}
+      try{ pullRepereDebitareCloud(true); }catch(_e){}
       try{ pullDebitareOperatoriCloud(true); }catch(_e){}
     }
   });
@@ -1184,10 +1219,36 @@ body.rf-access-denied-body{
       _helpers = null;
       _mapRepDebitare = null;
       try{ buildHelperMaps(); }catch(_e){}
+      try{ pullRepereDebitareCloud(true); }catch(_e){}
       try{ pullDebitareOperatoriCloud(true); }catch(_e){}
       return true;
     }catch(e){
       console.warn("pullHelpersCloud failed:", e);
+      return false;
+    }
+  }
+
+
+  async function pullRepereDebitareCloud(force){
+    const supa = window.__SUPA__;
+    if(!supa) return false;
+    try{
+      const { data, error } = await supa
+        .from("rf_helper_repere_debitare")
+        .select("reper_debitare,diametru_otel,calitate_otel,kg_buc_debitat,lungime_debitare_mm,is_active,sort_order")
+        .order("sort_order", { ascending:true });
+      if (error) throw error;
+
+      const normalized = (data || []).map(normalizeReperDebitareCloudRow).filter(Boolean);
+      const changed = JSON.stringify(normalized) !== JSON.stringify(_repereDebitareCloud || []);
+      _repereDebitareCloud = normalized;
+      if (changed || force){
+        buildHelperMaps();
+        try{ applyReperAutofill(); }catch(_e){}
+      }
+      return changed;
+    }catch(e){
+      console.warn("pullRepereDebitareCloud failed:", e);
       return false;
     }
   }
@@ -1225,10 +1286,12 @@ body.rf-access-denied-body{
 
   function reloadHelpersNow(){
     pullHelpersCloud(true);
+    pullRepereDebitareCloud(true);
     pullDebitareOperatoriCloud(true);
   }
   window.reloadHelpersNow = reloadHelpersNow;
   window.pullHelpersCloud = pullHelpersCloud;
+  window.pullRepereDebitareCloud = pullRepereDebitareCloud;
 
   // Storage event (instant între tab-uri pe același device)
   window.addEventListener("storage", (e)=>{
@@ -1236,6 +1299,7 @@ body.rf-access-denied-body{
       _helpers = null;
       _mapRepDebitare = null;
       try{ buildHelperMaps(); }catch(_e){}
+      try{ pullRepereDebitareCloud(true); }catch(_e){}
       try{ pullDebitareOperatoriCloud(true); }catch(_e){}
     }
   });
@@ -2633,6 +2697,7 @@ function setAutofillReadonly(isReadonly){
 
     $("mEchip").value = (r.echipament ?? "");
     buildHelperMaps();
+    pullRepereDebitareCloud(true);
     $("mReper").value = (r.reper ?? "");
 
     $("mOverride").checked = false;
@@ -2760,6 +2825,7 @@ function setAutofillReadonly(isReadonly){
     $("mOverride").checked = false;
     setAutofillReadonly(true);
     buildHelperMaps();
+    pullRepereDebitareCloud(true);
     $("mReper").value = "";
     $("mDiam").value = "";
     $("mCal").value = "";
@@ -3107,6 +3173,7 @@ function setAutofillReadonly(isReadonly){
 
     // inițializează helperele (repere/utilaje) pentru autocomplete + autofill
     buildHelperMaps();
+    pullRepereDebitareCloud(true);
     pullDebitareOperatoriCloud(true);
     const _mr = $("mReper"); if (_mr) _mr.addEventListener("input", applyReperAutofill);
     const _ov = $("mOverride"); if (_ov) _ov.addEventListener("change", () => { setAutofillReadonly(!_ov.checked); if(!_ov.checked) applyReperAutofill(); });
@@ -3264,7 +3331,7 @@ function setAutofillReadonly(isReadonly){
       try{ rfApplyAclToUi(acl); }catch(_e){}
       try{ if(window.rfRevealProtectedPage) window.rfRevealProtectedPage(); }catch(_e){}
 
-      setTimeout(()=>{ try{ if(window.pullHelpersCloud) window.pullHelpersCloud(true); }catch(_e){} }, 600);
+      setTimeout(()=>{ try{ if(window.pullHelpersCloud) window.pullHelpersCloud(true); }catch(_e){} try{ if(window.pullRepereDebitareCloud) window.pullRepereDebitareCloud(true); }catch(_e){} }, 600);
     }catch(e){
       console.warn('auth boot failed', e);
       window.location.href = 'login.html';
