@@ -113,7 +113,7 @@
   async function saveDoc(docKey, payload){
     const client = sb();
     if(!client) throw new Error('Supabase indisponibil');
-    const body = { doc_key: docKey, content: payload, data: payload, updated_at: new Date().toISOString() };
+    const body = { doc_key: docKey, content: payload, updated_at: new Date().toISOString() };
     const { error } = await client.from('rf_documents').upsert(body, { onConflict:'doc_key' });
     if(error) throw error;
     return body.updated_at;

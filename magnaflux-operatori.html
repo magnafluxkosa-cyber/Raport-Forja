@@ -459,7 +459,8 @@
     const LIVE_DOC_KEY = 'magnaflux:operatori-live';
     const LIVE_DOC_PREFIX = 'magnaflux:operatori-live:';
     const LIVE_SESSION_TTL_MS = 45000;
-    const LIVE_PUBLISH_INTERVAL_MS = 5000;
+    const LIVE_PUBLISH_INTERVAL_MS = 60000;
+    const LIVE_CLOUD_PUBLISH_MIN_MS = 120000;
     const PPTX_MAX_SIZE = 80 * 1024 * 1024;
     const PPTX_LABELS = {
       instructiuni: 'Instrucțiuni Magnaflux',
@@ -506,7 +507,7 @@
       machineName: byId('machineName'), shiftInput: byId('shiftInput'), brixInput: byId('brixInput'), etalonInput: byId('etalonInput'), etalonStatusText: byId('etalonStatusText'), normOperators: byId('normOperators'), normTarget: byId('normTarget'), normDone: byId('normDone'), normPercent: byId('normPercent'), normStatus: byId('normStatus'), monthNormLabel: byId('monthNormLabel'), monthNormOperator: byId('monthNormOperator'), monthNormDone: byId('monthNormDone'), monthNormTarget: byId('monthNormTarget'), monthNormPercent: byId('monthNormPercent'), monthNormStatus: byId('monthNormStatus'), totalGroupsBody: byId('totalGroupsBody'), perReperBody: byId('perReperBody'), savedSheetsBody: byId('savedSheetsBody'), btnOpenSavedSheets: byId('btnOpenSavedSheets'), btnLiveOperators: byId('btnLiveOperators'), liveOperatorsModal: byId('liveOperatorsModal'), liveOperatorsBody: byId('liveOperatorsBody'), btnRefreshLiveOperators: byId('btnRefreshLiveOperators'), btnCloseLiveOperators: byId('btnCloseLiveOperators'), liveSheetModal: byId('liveSheetModal'), liveSheetBody: byId('liveSheetBody'), liveSheetSubtitle: byId('liveSheetSubtitle'), btnCloseLiveSheet: byId('btnCloseLiveSheet'), btnMagInstructions: byId('btnMagInstructions'), btnDefectCatalog: byId('btnDefectCatalog'), savedSheetsHint: byId('savedSheetsHint'), savedSheetsModal: byId('savedSheetsModal'), savedSheetsModalBody: byId('savedSheetsModalBody'), btnCloseSavedSheets: byId('btnCloseSavedSheets'), savedSheetFullModal: byId('savedSheetFullModal'), savedSheetFullBody: byId('savedSheetFullBody'), btnCloseSavedSheetFull: byId('btnCloseSavedSheetFull'), btnEditSavedSheetFull: byId('btnEditSavedSheetFull'), btnDeleteSavedSheetFull: byId('btnDeleteSavedSheetFull'), btnExportSavedSheetFull: byId('btnExportSavedSheetFull'), pptxModal: byId('pptxModal'), pptxModalTitle: byId('pptxModalTitle'), pptxModalSubtitle: byId('pptxModalSubtitle'), pptxFileStatus: byId('pptxFileStatus'), pptxUploadBox: byId('pptxUploadBox'), pptxFileInput: byId('pptxFileInput'), btnOpenPptx: byId('btnOpenPptx'), btnDownloadPptx: byId('btnDownloadPptx'), btnSavePptx: byId('btnSavePptx'), btnClosePptxModal: byId('btnClosePptxModal')
     };
 
-    const state = { client:null, session:null, user:null, role:'viewer', canEdit:false, pinConfig:[], activeOperator:null, rows:[], repere:[], reperMap:new Map(), pendingGroups:null, savedSheets:[], activeSavedSheetIndex:null, editingSheetIndex:null, editingSheetId:null, editingOriginalGroupIds:[], editingOriginalYear:null, pendingSheetId:null, pptxFiles:{}, activePptxType:null, pptxLoaded:false, liveSessionId:null, livePublishTimer:null, livePublishInterval:null, liveAdminPoll:null, liveEntries:[], liveChannel:null, livePresenceReady:false, liveLastPresence:[] };
+    const state = { client:null, session:null, user:null, role:'viewer', canEdit:false, pinConfig:[], activeOperator:null, rows:[], repere:[], reperMap:new Map(), pendingGroups:null, savedSheets:[], activeSavedSheetIndex:null, editingSheetIndex:null, editingSheetId:null, editingOriginalGroupIds:[], editingOriginalYear:null, pendingSheetId:null, pptxFiles:{}, activePptxType:null, pptxLoaded:false, liveSessionId:null, livePublishTimer:null, livePublishInterval:null, liveAdminPoll:null, liveEntries:[], liveChannel:null, livePresenceReady:false, liveLastPresence:[], liveCloudLastSaveMs:0 };
 
     function byId(id){ return document.getElementById(id); }
     function norm(v){ return String(v||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().trim(); }
@@ -708,7 +709,7 @@
 
     async function upsertDoc(docKey, content){
       await ensureFreshSession();
-      const payload = { doc_key:docKey, content, data:content, updated_at:new Date().toISOString() };
+      const payload = { doc_key:docKey, content, updated_at:new Date().toISOString() };
       let res = await state.client.from('rf_documents').upsert(payload, { onConflict:'doc_key' });
       if(res.error && /column .*data/i.test(String(res.error.message||''))){
         res = await state.client.from('rf_documents').upsert({ doc_key:docKey, content, updated_at:payload.updated_at }, { onConflict:'doc_key' });
@@ -1886,7 +1887,7 @@ function allMaintenanceChecked(){
       if(isAdminAccount()) return;
       if(!state.canEdit) return;
       clearTimeout(state.livePublishTimer);
-      state.livePublishTimer = setTimeout(()=>{ publishLivePresence(false); updateRealtimePresence(false); }, 700);
+      state.livePublishTimer = setTimeout(()=>{ updateRealtimePresence(false); publishLivePresence(false); }, 700);
     }
 
     function liveDocKeyForSession(sessionId){
@@ -2008,16 +2009,15 @@ function allMaintenanceChecked(){
       if(isAdminAccount()) return;
       if(!state.canEdit || !state.client || !state.user) return;
       if(!force && !state.activeOperator && shouldRequireOperatorPin()) return;
+      await updateRealtimePresence(!!force);
+      const nowMs = Date.now();
+      if(!force && state.liveCloudLastSaveMs && nowMs - state.liveCloudLastSaveMs < LIVE_CLOUD_PUBLISH_MIN_MS) return;
       const entry = buildLiveEntry(new Date().toISOString());
       try{
         await upsertLiveSessionToPersonalDoc(entry);
+        state.liveCloudLastSaveMs = nowMs;
       }catch(err){
         console.warn('Nu am putut actualiza statusul live personal operator', err);
-        try{
-          await upsertLiveSessionToAggregateDoc(entry);
-        }catch(err2){
-          console.warn('Nu am putut actualiza statusul live operator', err2);
-        }
         return;
       }
       try{
@@ -2051,9 +2051,9 @@ function allMaintenanceChecked(){
       if(isAdminAccount()) return;
       ensureLiveRealtimeChannel();
       clearInterval(state.livePublishInterval);
-      state.livePublishInterval = setInterval(()=>{ publishLivePresence(false); updateRealtimePresence(false); }, LIVE_PUBLISH_INTERVAL_MS);
-      setTimeout(()=>{ publishLivePresence(true); updateRealtimePresence(true); }, 900);
-      setTimeout(()=>{ publishLivePresence(true); updateRealtimePresence(true); }, 3000);
+      state.livePublishInterval = setInterval(()=>{ updateRealtimePresence(false); publishLivePresence(false); }, LIVE_PUBLISH_INTERVAL_MS);
+      setTimeout(()=>{ updateRealtimePresence(true); publishLivePresence(true); }, 900);
+      setTimeout(()=>{ updateRealtimePresence(true); }, 3000);
       scheduleLivePublish();
     }
 
@@ -2063,7 +2063,7 @@ function allMaintenanceChecked(){
       clearInterval(state.liveAdminPoll);
       state.liveAdminPoll = setInterval(()=>{
         if(el.liveOperatorsModal && el.liveOperatorsModal.classList.contains('show')) loadLiveOperators();
-      }, 5000);
+      }, 30000);
     }
 
     async function fetchPersonalLiveEntries(){
@@ -2671,7 +2671,7 @@ function allMaintenanceChecked(){
       el.btnBack.addEventListener('click', ()=>{ if(isMagnafluxOperatorAccount()) return; window.location.href='index.html'; });
       el.btnLogout.addEventListener('click', async()=>{ try{ await removeLivePresence(); await state.client.auth.signOut(); }catch(_){} window.location.href='login.html'; });
       window.addEventListener('beforeunload', ()=>{ try{ removeLivePresence(); }catch(_){} });
-      document.addEventListener('visibilitychange', ()=>{ if(document.visibilityState === 'visible') { publishLivePresence(true); updateRealtimePresence(true); if(isAdminAccount()) loadLiveOperators(); } });
+      document.addEventListener('visibilitychange', ()=>{ if(document.visibilityState === 'visible') { updateRealtimePresence(true); publishLivePresence(true); if(isAdminAccount()) loadLiveOperators(); } });
       function openPinAdmin(){
         if(isMagnafluxOperatorAccount()) return;
         if(state.role!=='admin') return;

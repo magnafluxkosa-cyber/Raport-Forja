@@ -400,7 +400,7 @@
       if(!pages.some(function(p){ return normalizePageKey(p && (p.page_key || p.key)) === key; })){
         pages.push({ page_key:key, label:autoPageLabelFromKey(key), href:key + '.html', group:'Pagini noi / automate', updated_at:stamp });
         const payload = { app:'RF_AUTO_PAGES', version:1, updated_at:stamp, pages:pages };
-        const body = { doc_key:'rf_auto_pages_v1', content:payload, data:payload, updated_at:stamp };
+        const body = { doc_key:'rf_auto_pages_v1', content:payload, updated_at:stamp };
         try{ await sb.from('rf_documents').upsert(body, { onConflict:'doc_key' }); }catch(_e){}
       }
     }catch(_e){}
@@ -1084,7 +1084,7 @@
 
   async function refreshHiddenIndexButtons(force){
     const now = nowMs();
-    if (!force && now - lastRun < 1200) return;
+    if (!force && now - lastRun < 60000) return;
     lastRun = now;
     const user = await getUser();
     if (!user) return;
@@ -1155,7 +1155,7 @@
     window.addEventListener('focus', () => { refreshHiddenIndexButtons(true); });
     window.addEventListener('pageshow', () => { refreshHiddenIndexButtons(true); });
     document.addEventListener('visibilitychange', () => { if (!document.hidden) refreshHiddenIndexButtons(true); });
-    timer = window.setInterval(() => { if (!document.hidden) refreshHiddenIndexButtons(false); }, 2500);
+    timer = window.setInterval(() => { if (!document.hidden) refreshHiddenIndexButtons(false); }, 60000);
     try {
       const sb = window.ERPAuth && typeof window.ERPAuth.getSupabaseClient === 'function' ? window.ERPAuth.getSupabaseClient() : null;
       if (sb) {
@@ -1359,7 +1359,7 @@
     if(running) return;
     running = true;
     checkNow();
-    timer = window.setInterval(checkNow, 20000);
+    timer = window.setInterval(checkNow, 120000);
     window.addEventListener('focus', checkNow);
     document.addEventListener('visibilitychange', function(){ if(document.hidden !== true) checkNow(); });
   }

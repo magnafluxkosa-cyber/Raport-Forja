@@ -554,8 +554,33 @@
     }catch(err){ els.authStatus.textContent='Fără sesiune'; els.authSub.textContent=trimText(err&&err.message)||'Autentificarea nu a putut fi confirmată.'; }
   }
 
-  async function readExactDocs(keys){ if(!state.supabase||!keys.length) return []; try{ const res=await state.supabase.from('rf_documents').select('*').in('doc_key',keys); if(res && !res.error && Array.isArray(res.data)) return res.data; }catch(_e){} return []; }
-  async function readPrefixDocs(prefix){ if(!state.supabase||!prefix) return []; try{ const res=await state.supabase.from('rf_documents').select('*').like('doc_key', prefix+'%'); if(res && !res.error && Array.isArray(res.data)) return res.data; }catch(_e){} return []; }
+  function activePeriodForCloud(){
+    const saved=loadFilterState ? loadFilterState() : null;
+    const now=new Date();
+    const year=Number(trimText((els.filterYear&&els.filterYear.value) || (saved&&saved.y) || now.getFullYear()) || 0);
+    const month=Number(trimText((els.filterMonth&&els.filterMonth.value) || (saved&&saved.m) || (now.getMonth()+1)) || 0);
+    return {year,month};
+  }
+  function periodDocKeysForPrefix(prefix){
+    const p=activePeriodForCloud();
+    const y=p.year?String(p.year):'';
+    if(!prefix || !y) return [];
+    const keys=[prefix+y, prefix+y+':index'];
+    if(p.month){
+      const m=String(p.month);
+      const mm=m.padStart(2,'0');
+      keys.push(prefix+y+'-'+mm, prefix+y+'-'+m, prefix+y+':'+mm, prefix+y+':'+m, prefix+y+'/'+mm, prefix+y+'/'+m);
+    }
+    return Array.from(new Set(keys));
+  }
+  async function readExactDocs(keys){ if(!state.supabase||!keys.length) return []; try{ const res=await state.supabase.from('rf_documents').select('doc_key,content,data,updated_at').in('doc_key',keys); if(res && !res.error && Array.isArray(res.data)) return res.data; }catch(_e){} return []; }
+  async function readPrefixDocs(prefix){
+    if(!state.supabase||!prefix) return [];
+    const periodDocs=await readExactDocs(periodDocKeysForPrefix(prefix));
+    if(periodDocs.length) return periodDocs;
+    try{ const res=await state.supabase.from('rf_documents').select('doc_key,content,data,updated_at').like('doc_key', prefix+'%').limit(100); if(res && !res.error && Array.isArray(res.data)) return res.data; }catch(_e){}
+    return [];
+  }
   async function loadBucket(bucket,exactKeys,prefixes){ const docs=[]; const seen=new Set(); const exactList=await readExactDocs(exactKeys||[]); const prefList=[]; for(const prefix of (prefixes||[])){ const list=await readPrefixDocs(prefix); list.forEach(doc=>prefList.push(doc)); } const hasYearDocs=prefList.some(doc=>{ const key=String(doc&&doc.doc_key||''); return key && !key.endsWith(':index'); }); const legacyRoots=new Set((exactKeys||[]).filter(key=>{ const s=String(key||''); return s && !s.includes(':'); })); const merged=[...(hasYearDocs ? exactList.filter(doc=>!legacyRoots.has(String(doc&&doc.doc_key||''))) : exactList), ...prefList]; merged.forEach(doc=>{ if(doc&&doc.doc_key&&!seen.has(doc.doc_key)){seen.add(doc.doc_key); docs.push(doc);} }); return docs; }
   function collectRowsFromDocs(docs){ const rows=[]; let latest=null; (docs||[]).forEach(doc=>{ const payload=(doc&&((doc.content&&typeof doc.content==='object')?doc.content:(doc.data&&typeof doc.data==='object')?doc.data:doc))||null; extractRows(payload).forEach(r=>rows.push(r)); const updated=doc&&doc.updated_at?new Date(doc.updated_at):null; if(updated && !Number.isNaN(updated.getTime()) && (!latest || updated>latest)) latest=updated; }); return {rows,latest}; }
   async function tryReadTableRows(tableName){
