@@ -36,6 +36,7 @@
     { page_key: 'urmarire-temperaturi-tt', page_name: 'Tratament Termic - Urmărire temperaturi TT' },
     { page_key: 'tratament-termic-documente', page_name: 'Tratament Termic - Rapoarte Excel / Word' },
     { page_key: 'rebut', page_name: 'Rebut' },
+    { page_key: 'analiza-rebut-calitate', page_name: 'Analiză Rebut Calitate' },
     { page_key: 'rebut-pm', page_name: 'Rebut PM' },
     { page_key: 'rebut-pm-helper', page_name: 'Helper Rebut PM' },
     { page_key: 'kpi', page_name: 'KPI' },
@@ -2811,6 +2812,23 @@ async function applyDomPermissions(pageKey, root, options) {
       ], [
         ['section.table-main','Tabel helper rebut PM']
       ])
+    }),
+    'analiza-rebut-calitate': Object.freeze({
+      hint: 'Analiză Rebut Calitate: pagină de analiză unificată pentru tabele și grafice de rebut.',
+      items: uniqueCatalog([].concat(
+        entries([
+          ['rows.filter','Căutare / filtrare'],
+          ['data.import','Import Excel'],
+          ['data.export','Export Excel'],
+          ['cloud.refresh','Reset date inițiale']
+        ], 'action'),
+        entries([
+          ['section.analiza-pm','Secțiune Analiza Raport PM'],
+          ['section.grafic-nc-pm','Secțiune Grafic NC PM'],
+          ['section.grafic-rebut-mpi','Secțiune Grafic Rebut MPI'],
+          ['section.grafic-rebut-fj','Secțiune Grafic Rebut FJ']
+        ], 'section')
+      ))
     }),
     'kpi': Object.freeze({
       hint: 'KPI are în principal filtrele, butoanele de export și zona de tabel / grafic.',
