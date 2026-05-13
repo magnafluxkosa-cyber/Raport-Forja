@@ -488,14 +488,19 @@ const INVENTAR_MODEL_SET = new Set(INVENTAR_PRELUCRARI_MODELS);
 const SOURCE_CONFIGS = {
   forjate:{ legacyKey:'forjate', indexKey:'forjate:index', prefix:'forjate:' },
   rebutPm:{ legacyKey:'rebut-pm', indexKey:'rebut-pm:index', prefix:'rebut-pm:' },
-  rebut:{ legacyKey:'rebut', indexKey:'rebut:index', prefix:'rebut:' }
+  rebut:{ legacyKey:'rebut', indexKey:'rebut:index', prefix:'rebut:' },
+  listaVanzari:[
+    { legacyKey:'lista-vanzari', indexKey:'lista-vanzari:index', prefix:'lista-vanzari:' },
+    { legacyKey:'lista_vanzari', indexKey:'lista_vanzari:index', prefix:'lista_vanzari:' },
+    { legacyKey:'lista vanzari', indexKey:'lista vanzari:index', prefix:'lista vanzari:' }
+  ]
 };
 
 const els = {
   selLuna:document.getElementById('selLuna'), selAn:document.getElementById('selAn'), cloudText:document.getElementById('cloudText'), rowsText:document.getElementById('rowsText'), btnRefresh:document.getElementById('btnRefresh'),
   thead:document.getElementById('thead'), tbody:document.getElementById('tbody'), tfoot:document.getElementById('tfoot'), table:document.getElementById('pmTable'), emptyState:document.getElementById('emptyState'), colorPalette:document.getElementById('colorPalette')
 };
-const state = { docs:{ forjate:[], rebutPm:[], rebut:[] }, rows:[], years:[], an:'', luna:'' };
+const state = { docs:{ forjate:[], rebutPm:[], rebut:[], listaVanzari:[] }, inventarPrelucrariPayload:null, rows:[], years:[], an:'', luna:'' };
 
 function createClient(){
   if(!(window.supabase && window.supabase.createClient) || !SUPABASE_URL || !SUPABASE_ANON_KEY) return null;
@@ -549,8 +554,8 @@ function pick(row, keys){
   for(const key of keys){ const hit = map.get(normKey(key)); if(hit != null && hit !== '') return hit; }
   return '';
 }
-function yearFromRow(row){ const d = parseDateValue(pick(row, ['data','DATA','date','Date','data inregistrare','Data inregistrare','Data \ninregistrare','C','BM'])); const an = Number(pick(row, ['an','AN','anul','ANUL','Anul','A'])); return Number.isFinite(an) && an > 1900 ? an : (d ? d.getFullYear() : 0); }
-function lunaFromRow(row){ const lunaRaw = pick(row, ['luna','LUNA','Luna','B','month']); const luna = normKey(lunaRaw); if(MONTHS.includes(luna)) return luna; const num = Number(lunaRaw); if(Number.isFinite(num) && num >= 1 && num <= 12) return monthFromNumber(num); const d = parseDateValue(pick(row, ['data','DATA','date','Date','data inregistrare','Data inregistrare','Data \ninregistrare','C','BM'])); return d ? MONTHS[d.getMonth()] : ''; }
+function yearFromRow(row){ const d = parseDateValue(pick(row, ['data','DATA','date','Date','data_emiterii','data emiterii','Data emiterii','Data Emiterii','data inregistrare','Data inregistrare','Data \ninregistrare','C','BM'])); const an = Number(pick(row, ['an','AN','anul','ANUL','Anul','A','year','Year'])); return Number.isFinite(an) && an > 1900 ? an : (d ? d.getFullYear() : 0); }
+function lunaFromRow(row){ const lunaRaw = pick(row, ['luna','LUNA','Luna','B','month','Month']); const luna = normKey(lunaRaw); if(MONTHS.includes(luna)) return luna; const num = Number(lunaRaw); if(Number.isFinite(num) && num >= 1 && num <= 12) return monthFromNumber(num); const d = parseDateValue(pick(row, ['data','DATA','date','Date','data_emiterii','data emiterii','Data emiterii','Data Emiterii','data inregistrare','Data inregistrare','Data \ninregistrare','C','BM'])); return d ? MONTHS[d.getMonth()] : ''; }
 function unwrapPayload(payload){ if(typeof payload === 'string'){ try{ return JSON.parse(payload); }catch(_){ return payload; } } return payload; }
 function resolveRowsPayload(payload){ payload = unwrapPayload(payload); if(!payload) return []; if(Array.isArray(payload)) return payload; for(const k of ['rows','data','items','records','entries','table']) if(Array.isArray(payload[k])) return payload[k]; return []; }
 let __DOC_COLS = null;
@@ -561,6 +566,16 @@ async function readSourceRows(config){
   let rows=[]; const indexDocs = await fetchDocsByKeys([config.indexKey]).catch(()=> []); const indexDoc = indexDocs[0] || null; const indexPayload = indexDoc ? unwrapPayload(indexDoc.content ?? indexDoc.data ?? null) : null; const years = extractYearsFromIndexPayload(indexPayload);
   if(years.length){ const yearDocs = await fetchDocsByKeys(years.map(y => config.prefix + y)); yearDocs.forEach(doc => { const payload = unwrapPayload(doc.content ?? doc.data ?? null); rows = rows.concat(resolveRowsPayload(payload)); }); return rows; }
   const legacyDocs = await fetchDocsByKeys([config.legacyKey]).catch(()=> []); const legacyDoc = legacyDocs[0] || null; const legacyPayload = legacyDoc ? unwrapPayload(legacyDoc.content ?? legacyDoc.data ?? null) : null; return resolveRowsPayload(legacyPayload);
+}
+async function readSourceRowsAny(configOrList){
+  const configs = Array.isArray(configOrList) ? configOrList : [configOrList];
+  const out = [];
+  for(const cfg of configs){
+    if(!cfg) continue;
+    const rows = await readSourceRows(cfg).catch(()=> []);
+    rows.forEach(row => out.push(row));
+  }
+  return out;
 }
 async function ensureSession(){
   if(window.ERPAuth && typeof window.ERPAuth.requireAuth === 'function'){
@@ -585,6 +600,248 @@ const INVENTAR_ALIAS_MAP = buildInventoryAliasMap();
 const INVENTAR_ALIAS_KEYS = Array.from(INVENTAR_ALIAS_MAP.keys()).sort((a,b) => b.length - a.length);
 function resolveInventoryModel(value){ const compact = upperCompact(value); if(!compact) return ''; const exact = INVENTAR_ALIAS_MAP.get(compact); if(exact) return exact.model; for(const key of INVENTAR_ALIAS_KEYS){ if(key && compact.includes(key)) return INVENTAR_ALIAS_MAP.get(key).model; } return ''; }
 function canonicalReper(value){ return resolveInventoryModel(value); }
+
+function normalizeListaVanzariRow(row){
+  if(Array.isArray(row)) return { cod_articol:row[0], nume_articol:row[1], numar_document:row[2], data_emiterii:row[3], firma:row[4], cantitate:row[5], um:row[6] };
+  return row || {};
+}
+function rowInSelectedPeriod(row){
+  const an = yearFromRow(row);
+  const luna = lunaFromRow(row);
+  if(String(an) !== String(state.an)) return false;
+  return luna === state.luna;
+}
+function addModelHit(set, model){
+  if(model && INVENTAR_MODEL_SET.has(model)) set.add(model);
+}
+function resolveModelsFromText(value){
+  const compact = upperCompact(value);
+  const found = new Set();
+  if(!compact) return [];
+  const exact = INVENTAR_ALIAS_MAP.get(compact);
+  if(exact) addModelHit(found, exact.model);
+  for(const key of INVENTAR_ALIAS_KEYS){
+    if(key && compact.includes(key)) addModelHit(found, INVENTAR_ALIAS_MAP.get(key).model);
+  }
+  return Array.from(found);
+}
+function resolveModelsFromSalesRow(row){
+  const text = [
+    pick(row,['cod_articol','cod articol','cod art','cod produs','part','reper']),
+    pick(row,['nume_articol','nume art','nume articol','denumire articol','articol']),
+    pick(row,['numar_document','număr document','numar document','nr document','document']),
+    pick(row,['firma','firmă','client'])
+  ].join(' ');
+  return resolveModelsFromText(text);
+}
+function aggregateVanzariThisPeriod(){
+  const map = new Map();
+  state.docs.listaVanzari.forEach(rawRow => {
+    const row = normalizeListaVanzariRow(rawRow);
+    if(!rowInSelectedPeriod(row)) return;
+    const models = resolveModelsFromSalesRow(row);
+    if(!models.length) return;
+    const qty = toNum(pick(row,['cantitate','cantitateBuc','cantitate_buc','cantitate buc','buc','qty','Qty','ordered qty','Ordered Qty']));
+    if(!qty) return;
+    models.forEach(model => map.set(model, (map.get(model) || 0) + qty));
+  });
+  return map;
+}
+function mergeInventarPrelucrariPayload(base,incoming){
+  if(!incoming || typeof incoming !== 'object') return (base && typeof base === 'object') ? base : null;
+  if(!base || typeof base !== 'object') return JSON.parse(JSON.stringify(incoming));
+  const out = Object.assign({}, base);
+  ['schema','version','docKey','clientId','editedAt','updated_at','mainTableImportedAt','frontTableCountTrusted'].forEach(key=>{ if(incoming[key] != null && incoming[key] !== '') out[key] = incoming[key]; });
+  if(incoming.months && typeof incoming.months === 'object') out.months = Object.assign({}, (base.months && typeof base.months === 'object') ? base.months : {}, incoming.months);
+  out.frontCount = Math.max(Number(base.frontCount || 0) || 0, Number(incoming.frontCount || 0) || 0);
+  out.blocks = Object.assign({}, (base.blocks && typeof base.blocks === 'object') ? base.blocks : {}, (incoming.blocks && typeof incoming.blocks === 'object') ? incoming.blocks : {});
+  const baseSnap = (base.frontSnapshot && typeof base.frontSnapshot === 'object') ? base.frontSnapshot : {};
+  const incomingSnap = (incoming.frontSnapshot && typeof incoming.frontSnapshot === 'object') ? incoming.frontSnapshot : null;
+  if(incomingSnap){
+    out.frontSnapshot = Object.assign({}, baseSnap, incomingSnap);
+    out.frontSnapshot.frontCount = Math.max(Number(baseSnap.frontCount || 0) || 0, Number(incomingSnap.frontCount || 0) || 0, out.frontCount || 0);
+    out.frontSnapshot.blocks = Object.assign({}, (baseSnap.blocks && typeof baseSnap.blocks === 'object') ? baseSnap.blocks : {}, (incomingSnap.blocks && typeof incomingSnap.blocks === 'object') ? incomingSnap.blocks : {});
+  }else if(Object.keys(baseSnap).length) out.frontSnapshot = baseSnap;
+  if(incoming.mainTableHtml) out.mainTableHtml = incoming.mainTableHtml;
+  else if(!out.mainTableHtml && base.mainTableHtml) out.mainTableHtml = base.mainTableHtml;
+  if(incoming.staticTableHtml) out.staticTableHtml = incoming.staticTableHtml;
+  else if(!out.staticTableHtml && base.staticTableHtml) out.staticTableHtml = base.staticTableHtml;
+  return out;
+}
+function readInventarPrelucrariLocalPayload(){
+  let payload = null;
+  try{
+    if(typeof localStorage === 'undefined') return null;
+    const keys = [
+      'kad:inventar-prelucrari:monthly-v1',
+      'kad-prelucrari-grid:inventar-prelucrari:v2',
+      'kad-prelucrari-grid:inventar-prelucrari:v2:front-table-state:v1',
+      'kad-prelucrari-grid:inventar-prelucrari:v2:front-table-backup:v2',
+      'kad-prelucrari-grid:inventar-prelucrari:v2:front-hard-state:v4',
+      'kad-prelucrari-grid:inventar-prelucrari:v2:front-hard-backup:v4'
+    ];
+    keys.forEach(key=>{
+      try{ const raw = localStorage.getItem(key); if(raw) payload = mergeInventarPrelucrariPayload(payload, JSON.parse(raw)); }catch(_e){}
+    });
+    const mainHtml = localStorage.getItem('kad-prelucrari-grid:inventar-prelucrari:v2:main-table-html:v1') || '';
+    if(mainHtml){ if(!payload || typeof payload !== 'object') payload = {}; if(!payload.mainTableHtml) payload.mainTableHtml = mainHtml; }
+  }catch(_e){}
+  return payload;
+}
+async function loadInventarPrelucrariPayload(){
+  let payload = null;
+  const keys = ['inventar-prelucrari','inventar_prelucrari','inventar prelucrari','inventar-prelucrări','inventar_prelucrări','INVENTAR PRELUCRARI','INVENTAR PRELUCRĂRI'];
+  if(supa){
+    try{
+      const docs = await fetchDocsByKeys(keys);
+      docs.forEach(doc => { const data = unwrapPayload(doc.content ?? doc.data ?? null); if(data && typeof data === 'object') payload = mergeInventarPrelucrariPayload(payload, data); });
+    }catch(_e){}
+  }
+  payload = mergeInventarPrelucrariPayload(payload, readInventarPrelucrariLocalPayload());
+  try{
+    if((!payload || !payload.mainTableHtml) && typeof fetch === 'function' && typeof DOMParser !== 'undefined'){
+      const res = await fetch('inventar-prelucrari.html', { cache:'no-store' });
+      if(res && res.ok){
+        const html = await res.text();
+        const doc = new DOMParser().parseFromString(html, 'text/html');
+        const table = doc.querySelector('#mainExcelSheet');
+        if(table){ if(!payload || typeof payload !== 'object') payload = {}; payload.staticTableHtml = table.innerHTML; }
+      }
+    }
+  }catch(_e){}
+  return payload;
+}
+function pmTargetPeriod(offsetMonths){
+  const y = Number(state.an || 0), m = monthIndex(state.luna);
+  if(!y || !m) return { year:0, month:0 };
+  const base = y * 12 + (m - 1) + offsetMonths;
+  const year = Math.floor(base / 12);
+  const month = (base % 12) + 1;
+  return { year, month };
+}
+function pmTargetMonthKey(offsetMonths){ const p = pmTargetPeriod(offsetMonths); return p.year && p.month ? String(p.year) + '-' + String(p.month).padStart(2,'0') : ''; }
+function dateMatchesPmTarget(date, offsetMonths){ const p = pmTargetPeriod(offsetMonths); return !!(date && !Number.isNaN(date.getTime()) && p.year && p.month && date.getFullYear() === p.year && (date.getMonth()+1) === p.month); }
+function dateCodeValue(date){ return date && !Number.isNaN(date.getTime()) ? (date.getFullYear()*10000 + (date.getMonth()+1)*100 + date.getDate()) : 0; }
+function pmCellText(cell){ return String(cell && cell.textContent || '').replace(/\u00a0/g,' ').trim(); }
+function parsePmTableFromInnerHtml(html){
+  const raw = String(html || '');
+  if(!raw || typeof DOMParser === 'undefined') return null;
+  const doc = new DOMParser().parseFromString('<table>' + raw + '</table>', 'text/html');
+  return doc.querySelector('table');
+}
+function expandPmTableGrid(table){
+  const grid = [];
+  Array.from((table && table.rows) || []).forEach((row,rowIdx)=>{
+    if(!grid[rowIdx]) grid[rowIdx] = [];
+    let colIdx = 0;
+    Array.from(row.cells || []).forEach(cell=>{
+      while(grid[rowIdx][colIdx] !== undefined) colIdx++;
+      const text = pmCellText(cell);
+      const rowSpan = Math.max(1, Number(cell.rowSpan) || 1);
+      const colSpan = Math.max(1, Number(cell.colSpan) || 1);
+      for(let r=0;r<rowSpan;r++){ if(!grid[rowIdx+r]) grid[rowIdx+r] = []; for(let c=0;c<colSpan;c++) grid[rowIdx+r][colIdx+c] = text; }
+      colIdx += colSpan;
+    });
+  });
+  return grid;
+}
+function isPmBlockStart(grid,c){
+  const top0=grid[0]||[], top1=grid[1]||[], top2=grid[2]||[];
+  const labels=[top0[c+1],top0[c+2],top0[c+3],top1[c+1],top1[c+2],top1[c+3]].map(normKey);
+  const hasPacked=labels.some(v=>v.includes('stoc ambalat'));
+  const hasFinished=labels.some(v=>v.includes('stoc finite'));
+  const hasWip=labels.some(v=>v.includes('stoc wip'));
+  const modelHere=[top0[c],top1[c],top2[c]].map(normKey).some(v=>v==='model');
+  return modelHere && hasPacked && hasFinished && hasWip;
+}
+function resolvePmDateFromGrid(grid,startCol){
+  for(const rowIdx of [1,2,0]){ const row=grid[rowIdx]||[]; for(let c=startCol;c<=startCol+7;c++){ const d=parseDateValue(row[c]); if(d) return d; } }
+  for(let r=0;r<Math.min(grid.length,4);r++){ const row=grid[r]||[]; for(let c=Math.max(0,startCol-1);c<=startCol+8;c++){ const d=parseDateValue(row[c]); if(d) return d; } }
+  return null;
+}
+function addPmSnapshotValue(result,model,qty,date){
+  const models = resolveModelsFromText(model);
+  if(!models.length || !date || Number.isNaN(date.getTime())) return;
+  const code = dateCodeValue(date);
+  models.forEach(reper=>{
+    const current = result.get(reper);
+    if(!current || code > current.code) result.set(reper,{qty:toNum(qty),code});
+    else if(code === current.code) current.qty += toNum(qty);
+  });
+}
+function collectPmFromTable(table,result,offsetMonths){
+  const grid = expandPmTableGrid(table);
+  if(!grid.length) return;
+  const maxCols = grid.reduce((max,row)=>Math.max(max,(row||[]).length),0);
+  for(let startCol=0; startCol<maxCols; startCol++){
+    if(!isPmBlockStart(grid,startCol)) continue;
+    const date = resolvePmDateFromGrid(grid,startCol);
+    if(!dateMatchesPmTarget(date,offsetMonths)) continue;
+    for(let r=0;r<grid.length;r++){
+      const row = grid[r] || [];
+      const model = row[startCol];
+      if(!resolveModelsFromText(model).length) continue;
+      const qty = toNum(row[startCol+1]) + toNum(row[startCol+2]) + toNum(row[startCol+3]);
+      if(qty) addPmSnapshotValue(result, model, qty, date);
+    }
+  }
+}
+function collectPmFromBlockValues(block,result,offsetMonths){
+  if(!block || typeof block !== 'object') return;
+  const entries = Object.keys(block).map(key=>[Number(key), String(block[key] ?? '')]).filter(([key])=>Number.isFinite(key)).sort((a,b)=>a[0]-b[0]);
+  if(!entries.length) return;
+  const values = new Map(entries.map(([key,value])=>[key,value]));
+  const dateCandidates = entries.map(([key,value])=>({key,date:parseDateValue(value)})).filter(item=>item.date);
+  const selectedDates = dateCandidates.filter(item=>dateMatchesPmTarget(item.date,offsetMonths));
+  const fallbackDate = selectedDates.length ? selectedDates[0].date : (dateCandidates.length ? dateCandidates[0].date : null);
+  for(const [key,value] of entries){
+    const models = resolveModelsFromText(value);
+    if(!models.length) continue;
+    const rowOffsetV6 = key>=17 ? ((key-17)%8) : -1;
+    const rowOffsetLegacy = key>=12 ? ((key-12)%8) : -1;
+    if(rowOffsetV6>0 && rowOffsetV6<7) continue;
+    if(rowOffsetV6<0 && rowOffsetLegacy>0 && rowOffsetLegacy<7) continue;
+    const qty = toNum(values.get(key+1)) + toNum(values.get(key+2)) + toNum(values.get(key+3));
+    if(!qty) continue;
+    const date = selectedDates.length ? selectedDates[0].date : (dateCandidates.find(item=>Math.abs(item.key-key)<=12)?.date || fallbackDate);
+    if(!dateMatchesPmTarget(date,offsetMonths)) continue;
+    models.forEach(model => addPmSnapshotValue(result, model, qty, date));
+  }
+}
+function readStocPmFromMonthlyPayload(payload,offsetMonths){
+  const result = new Map();
+  if(!payload || typeof payload !== 'object' || !payload.months || typeof payload.months !== 'object') return result;
+  const key = pmTargetMonthKey(offsetMonths);
+  if(!key) return result;
+  const monthData = payload.months[key];
+  if(!monthData || typeof monthData !== 'object' || !monthData.rows || typeof monthData.rows !== 'object') return result;
+  Object.keys(monthData.rows).forEach(model=>{
+    const models = resolveModelsFromText(model);
+    if(!models.length) return;
+    const row = monthData.rows[model] || {};
+    const qty = toNum(row.ambalat) + toNum(row.finite) + toNum(row.wip);
+    models.forEach(reper => result.set(reper, (result.get(reper) || 0) + qty));
+  });
+  return result;
+}
+function aggregateStocPmForOffset(offsetMonths){
+  const payload = state.inventarPrelucrariPayload;
+  const result = new Map();
+  if(!payload || typeof payload !== 'object') return result;
+  const monthly = readStocPmFromMonthlyPayload(payload, offsetMonths);
+  monthly.forEach((qty,reper)=>result.set(reper, toNum(qty)));
+  const legacy = new Map();
+  const baseTable = parsePmTableFromInnerHtml(String(payload.mainTableHtml || payload.staticTableHtml || ''));
+  if(baseTable) collectPmFromTable(baseTable, legacy, offsetMonths);
+  const blocks = (payload.frontSnapshot && payload.frontSnapshot.blocks && typeof payload.frontSnapshot.blocks === 'object') ? payload.frontSnapshot.blocks : ((payload.blocks && typeof payload.blocks === 'object') ? payload.blocks : {});
+  Object.keys(blocks || {}).filter(key=>String(key).startsWith('front:')).sort((a,b)=>Number(String(a).split(':')[1]||0)-Number(String(b).split(':')[1]||0)).forEach(key=>{
+    collectPmFromBlockValues(blocks[key], legacy, offsetMonths);
+  });
+  legacy.forEach((entry,key)=>{ if(!result.has(key)) result.set(key, toNum(entry && entry.qty)); });
+  return result;
+}
+function aggregateStocPmInitialThisPeriod(){ return aggregateStocPmForOffset(0); }
+function aggregateStocPmThisPeriod(){ return aggregateStocPmForOffset(1); }
 function defectCodeFromValue(value){ const s = normText(value).toUpperCase(); const m = s.match(/(?:^|\D)(01|02|03|06|07|09|13|14|16)(?:\D|$)/); return m ? m[1] : ''; }
 function normalizeForjateRow(row){ const an=yearFromRow(row); const luna=lunaFromRow(row); const reper=canonicalReper(pick(row, ['reper','REPER','denumire reper forja','Denumire reper forja','BP','F'])); const cantitate=toNum(pick(row, ['buc_realizate','BUC_REALIZATE','buc realizate','Buc realizate','cantitate','Cantitate','Cantitate forjata [Buc.]','CB'])); if(!an||!luna||!reper) return null; return {an,luna,reper,cantitate}; }
 function normalizePmRow(row){ const an=yearFromRow(row); const luna=lunaFromRow(row); const reper=canonicalReper(pick(row, ['denumire_reper_forja','Denumire reper forja','denumire reper forja','reper','REPER','Denumire corecta reper','F','B'])); const code=defectCodeFromValue(pick(row, ['cod_defect','Cod defect','cod defect','Denumire cod','G','B'])); const qty=toNum(pick(row, ['piese_rebut_final','Piese rebut final  [buc]','Piese rebut final [buc]','piese rebut final','Sumă de Piese rebut final  [buc]','Q','C'])); const nok=toNum(pick(row, ['piese_neconforme','Piese necomforme                             [buc]','Piese necomforme [buc]','Piese neconforme [buc]','NOK'])); const rem=toNum(pick(row, ['piese_remaniabile','Piese remaniabile       [buc]','Piese remaniabile [buc]','remaniabile','Remaniabile'])); const prelucrate=toNum(pick(row, ['prelucrate','Prelucrate','PRELUCRATE','procesate','cantitate prelucrata','Cantitate prelucrata'])); if(!an||!luna||!reper||!code) return null; return {an,luna,reper,code,qty,nok,rem,prelucrate}; }
@@ -593,15 +850,34 @@ function ensureRow(map, reper){ if(!reper || !INVENTAR_MODEL_SET.has(reper)) ret
 function buildSummary(){
   const pmRows = state.docs.rebutPm.map(normalizePmRow).filter(Boolean).filter(r => String(r.an) === String(state.an) && r.luna === state.luna);
   const compiledRows = state.docs.rebut.map(normalizeCompiledRebutRow).filter(Boolean).filter(r => String(r.an) === String(state.an) && r.luna === state.luna);
-  const forjateRows = state.docs.forjate.map(normalizeForjateRow).filter(Boolean).filter(r => String(r.an) === String(state.an) && r.luna === state.luna);
+  const vanzariMap = aggregateVanzariThisPeriod();
+  const stocPmInitialMap = aggregateStocPmInitialThisPeriod();
+  const stocPmMap = aggregateStocPmThisPeriod();
   const map = new Map(); INVENTAR_PRELUCRARI_MODELS.forEach(model => ensureRow(map, model));
-  forjateRows.forEach(r => { const item = ensureRow(map, r.reper); if(item) item.forjatePrelucrate += toNum(r.cantitate); });
   if(pmRows.length){ pmRows.forEach(r => { const item = ensureRow(map, r.reper); if(!item) return; item[r.code] += toNum(r.qty); item.nok += toNum(r.nok || r.qty); item.rem += toNum(r.rem); if(r.prelucrate > item.pmPrelucrate) item.pmPrelucrate = r.prelucrate; }); }
   else { compiledRows.forEach(r => { const item = ensureRow(map, r.reper); if(!item) return; DEFECT_CODES.forEach(code => item[code] += toNum(r[code])); item.nok += toNum(r.nok || r.rebutDef); item.rem += toNum(r.rem); }); }
   compiledRows.forEach(r => { const item = ensureRow(map, r.reper); if(!item) return; item.compiledPrelucrate += toNum(r.prelucrate); if(!pmRows.length && toNum(r.nok)>0) item.nok = toNum(r.nok); if(!pmRows.length && toNum(r.rem)>0) item.rem = toNum(r.rem); });
-  state.rows = INVENTAR_PRELUCRARI_MODELS.map(model => map.get(model)).filter(Boolean).map(item => { const defectTotal = DEFECT_CODES.reduce((s,code)=>s+toNum(item[code]),0); item.rebutDef=defectTotal; item.nok=item.nok||defectTotal; item.prelucrate=item.pmPrelucrate||item.compiledPrelucrate||item.forjatePrelucrate||0; item.ok=item.prelucrate>0?Math.max(0,item.prelucrate-item.rebutDef):0; item.pctPrel=item.prelucrate>0?1:null; item.pctOk=item.prelucrate>0?item.ok/item.prelucrate:null; item.pctNok=item.prelucrate>0?item.nok/item.prelucrate:null; item.pctRem=item.prelucrate>0?item.rem/item.prelucrate:null; item.pctRebut=item.prelucrate>0?item.rebutDef/item.prelucrate:null; return item; });
+  state.rows = INVENTAR_PRELUCRARI_MODELS.map(model => map.get(model)).filter(Boolean).map(item => {
+    const defectTotal = DEFECT_CODES.reduce((s,code)=>s+toNum(item[code]),0);
+    const vanzari = toNum(vanzariMap.get(item.reper));
+    const stocPmInitial = toNum(stocPmInitialMap.get(item.reper));
+    const stocPm = toNum(stocPmMap.get(item.reper));
+    item.vanzari = vanzari;
+    item.stocPmInitial = stocPmInitial;
+    item.stocPm = stocPm;
+    item.prelucrate = vanzari - stocPmInitial + stocPm;
+    item.rebutDef = defectTotal;
+    item.nok = item.nok || defectTotal;
+    item.ok = item.prelucrate > 0 ? Math.max(0, item.prelucrate - item.rebutDef) : 0;
+    item.pctPrel = item.prelucrate > 0 ? 1 : null;
+    item.pctOk = item.prelucrate > 0 ? item.ok / item.prelucrate : null;
+    item.pctNok = item.prelucrate > 0 ? item.nok / item.prelucrate : null;
+    item.pctRem = item.prelucrate > 0 ? item.rem / item.prelucrate : null;
+    item.pctRebut = item.prelucrate > 0 ? item.rebutDef / item.prelucrate : null;
+    return item;
+  });
 }
-function collectAvailablePeriods(){ const all=[]; state.docs.forjate.map(normalizeForjateRow).filter(Boolean).forEach(r => all.push({an:r.an,luna:r.luna})); state.docs.rebutPm.map(normalizePmRow).filter(Boolean).forEach(r => all.push({an:r.an,luna:r.luna})); state.docs.rebut.map(normalizeCompiledRebutRow).filter(Boolean).forEach(r => all.push({an:r.an,luna:r.luna})); const years=Array.from(new Set(all.map(x=>x.an).filter(Boolean))).sort((a,b)=>b-a); state.years=years; if(!state.an) state.an=years[0]||String(new Date().getFullYear()); const months=Array.from(new Set(all.filter(x=>String(x.an)===String(state.an)).map(x=>x.luna).filter(Boolean))).sort((a,b)=>monthIndex(a)-monthIndex(b)); if(!state.luna || !months.includes(state.luna)) state.luna = months.includes(MONTHS[new Date().getMonth()]) ? MONTHS[new Date().getMonth()] : (months[0] || MONTHS[new Date().getMonth()]); return months; }
+function collectAvailablePeriods(){ const all=[]; state.docs.rebutPm.map(normalizePmRow).filter(Boolean).forEach(r => all.push({an:r.an,luna:r.luna})); state.docs.rebut.map(normalizeCompiledRebutRow).filter(Boolean).forEach(r => all.push({an:r.an,luna:r.luna})); state.docs.listaVanzari.map(normalizeListaVanzariRow).forEach(row => { const an=yearFromRow(row), luna=lunaFromRow(row); if(an && luna) all.push({an,luna}); }); const years=Array.from(new Set(all.map(x=>x.an).filter(Boolean))).sort((a,b)=>b-a); state.years=years; if(!state.an) state.an=years[0]||String(new Date().getFullYear()); const months=Array.from(new Set(all.filter(x=>String(x.an)===String(state.an)).map(x=>x.luna).filter(Boolean))).sort((a,b)=>monthIndex(a)-monthIndex(b)); if(!state.luna || !months.includes(state.luna)) state.luna = months.includes(MONTHS[new Date().getMonth()]) ? MONTHS[new Date().getMonth()] : (months[0] || MONTHS[new Date().getMonth()]); return months; }
 function renderSelectors(){ const months=collectAvailablePeriods(); els.selAn.innerHTML=(state.years.length?state.years:[String(new Date().getFullYear())]).map(y=>`<option value="${y}" ${String(y)===String(state.an)?'selected':''}>${y}</option>`).join(''); const monthOptions=months.length?months:MONTHS; els.selLuna.innerHTML=monthOptions.map(m=>`<option value="${m}" ${m===state.luna?'selected':''}>${capMonth(m)}</option>`).join(''); }
 function renderHeader(){
   const codeTop = DEFECT_CODES.map(code => `<th class="def-code group-start group-end" colspan="2">${code}</th>`).join('');
@@ -668,7 +944,7 @@ function renderTable(){
     ${totalDefectCells}`;
   els.tfoot.appendChild(trTotal);
 }
-async function readAllDocs(){ els.cloudText.textContent='Cloud: se încarcă...'; const [forjate,rebutPm,rebut] = await Promise.all([readSourceRows(SOURCE_CONFIGS.forjate).catch(()=> []), readSourceRows(SOURCE_CONFIGS.rebutPm).catch(()=> []), readSourceRows(SOURCE_CONFIGS.rebut).catch(()=> [])]); state.docs.forjate=forjate; state.docs.rebutPm=rebutPm; state.docs.rebut=rebut; els.cloudText.textContent='Cloud: conectat'; }
+async function readAllDocs(){ els.cloudText.textContent='Cloud: se încarcă...'; const [forjate,rebutPm,rebut,listaVanzari,inventarPrelucrariPayload] = await Promise.all([readSourceRows(SOURCE_CONFIGS.forjate).catch(()=> []), readSourceRows(SOURCE_CONFIGS.rebutPm).catch(()=> []), readSourceRows(SOURCE_CONFIGS.rebut).catch(()=> []), readSourceRowsAny(SOURCE_CONFIGS.listaVanzari).catch(()=> []), loadInventarPrelucrariPayload().catch(()=> null)]); state.docs.forjate=forjate; state.docs.rebutPm=rebutPm; state.docs.rebut=rebut; state.docs.listaVanzari=listaVanzari.map(normalizeListaVanzariRow); state.inventarPrelucrariPayload=inventarPrelucrariPayload; els.cloudText.textContent='Cloud: conectat'; }
 async function refreshAll(keepPeriod){ try{ await ensureSession(); await readAllDocs(); if(!keepPeriod){ state.an=''; state.luna=''; } renderSelectors(); buildSummary(); renderTable(); }catch(err){ console.error(err); els.cloudText.textContent='Cloud: eroare'; els.emptyState.textContent='Nu am putut încărca datele. ' + (err && err.message ? err.message : err); els.emptyState.classList.add('show'); els.table.classList.add('hidden'); } }
 els.selAn.addEventListener('change', () => { state.an=els.selAn.value; const months=collectAvailablePeriods(); if(!months.includes(state.luna)) state.luna=months[0]||state.luna; renderSelectors(); buildSummary(); renderTable(); });
 els.selLuna.addEventListener('change', () => { state.luna=els.selLuna.value; buildSummary(); renderTable(); });
