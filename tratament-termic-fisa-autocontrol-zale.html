@@ -838,7 +838,10 @@
       var TT_PARAM_KEYS = ['aust_z1','aust_z2','aust_z3','aust_z4','bazin_calire','duritate_calire','temp_remanenta','polimer','timp_scufundare','revenire_z1','revenire_z2','bazin_racire'];
       var TT_PARAM_CELL_INDEX = { aust_z1:2, aust_z2:3, aust_z3:4, aust_z4:5, bazin_calire:6, duritate_calire:7, temp_remanenta:8, polimer:9, timp_scufundare:10, revenire_z1:11, revenire_z2:12, bazin_racire:13 };
       var TT_PARAM_LABEL = { aust_z1:'Aust. zona 1', aust_z2:'Aust. zona 2', aust_z3:'Aust. zona 3', aust_z4:'Aust. zona 4', bazin_calire:'Bazin călire', duritate_calire:'Duritate după călire HRC', temp_remanenta:'Temp. remanență', polimer:'% Polimer', timp_scufundare:'Timp scufundare', revenire_z1:'Revenire zona 1', revenire_z2:'Revenire zona 2', bazin_racire:'Bazin răcire' };
-      var state = { canEdit:false, access:null, client:null, session:null, user:null, role:'viewer', repere:[], reperMap:new Map(), magnafluxSheets:[], magnafluxOperators:[], pinConfig:[], activeOperator:null, pinUnlocked:false, reper2PresetAfter:null, currentOperatorSheetId:null, adminSheetSnapshot:null, isViewingOperatorSheet:false, trackingDirty:false, loadingOperatorSheet:false, suppressTrackingSave:false, reportDirty:false, reportSavedForSheetId:'' };
+      var REPER2_PRESET_DELAY_MINUTES = 90;
+      var REPER2_PRESET_DELAYED_KEYS = ['timp_scufundare','revenire_z1','revenire_z2','bazin_racire'];
+      var reper2PresetDelayTimer = null;
+      var state = { canEdit:false, access:null, client:null, session:null, user:null, role:'viewer', repere:[], reperMap:new Map(), magnafluxSheets:[], magnafluxOperators:[], pinConfig:[], activeOperator:null, pinUnlocked:false, reper2PresetAfter:null, reper2PresetStartedAt:null, reper2PresetReper:'', currentOperatorSheetId:null, adminSheetSnapshot:null, isViewingOperatorSheet:false, trackingDirty:false, loadingOperatorSheet:false, suppressTrackingSave:false, reportDirty:false, reportSavedForSheetId:'' };
       var els = {};
 
       function qs(id){ return document.getElementById(id); }
@@ -1367,21 +1370,139 @@
         var row = getPresetRow('reper2');
         if(row && row.parentNode) row.parentNode.removeChild(row);
       }
-      function ensureReper2PresetAnchor(){
-        var reper2 = els.ttReper2 ? String(els.ttReper2.value || '').trim() : '';
-        if(!reper2){
-          state.reper2PresetAfter = null;
-          removeReper2PresetRow();
-          return null;
+      function clearReper2PresetDelayTimer(){
+        if(reper2PresetDelayTimer){
+          clearTimeout(reper2PresetDelayTimer);
+          reper2PresetDelayTimer = null;
         }
+      }
+      function resetReper2PresetTiming(){
+        state.reper2PresetAfter = null;
+        state.reper2PresetStartedAt = null;
+        state.reper2PresetReper = '';
+        clearReper2PresetDelayTimer();
+      }
+      function parseControlTimeMs(dateIso, timeText){
+        var match = String(timeText || '').trim().match(/^(\d{1,2}):(\d{2})$/);
+        if(!match) return NaN;
+        var hour = Number(match[1]);
+        var minute = Number(match[2]);
+        if(!Number.isFinite(hour) || !Number.isFinite(minute)) return NaN;
+        var date = String(dateIso || todayIso()).slice(0,10).split('-');
+        if(date.length !== 3) return NaN;
+        var dt = new Date(Number(date[0]), Number(date[1]) - 1, Number(date[2]), hour, minute, 0, 0);
+        if(currentShift && currentShift() === '3' && hour < 12) dt.setDate(dt.getDate() + 1);
+        return dt.getTime();
+      }
+      function getReper2PresetAnchorMs(){
+        var anchor = getDataRowByNumber(state.reper2PresetAfter);
+        var ora = anchor && anchor.cells && anchor.cells[1] ? textOf(anchor.cells[1]) : '';
+        var ms = parseControlTimeMs(currentWorkDateIso ? currentWorkDateIso() : todayIso(), ora);
+        return Number.isFinite(ms) ? ms : NaN;
+      }
+      function ensureReper2PresetTiming(){
+        var reper2 = els.ttReper2 ? String(els.ttReper2.value || '').trim() : '';
+        if(!reper2){ resetReper2PresetTiming(); return; }
+        var reperKey = normalizeTechReper ? normalizeTechReper(reper2) : norm(reper2);
+        if(state.reper2PresetReper && state.reper2PresetReper !== reperKey){
+          state.reper2PresetAfter = getLastEnteredDataRowNumber();
+          state.reper2PresetStartedAt = null;
+        }
+        state.reper2PresetReper = reperKey;
         if(state.reper2PresetAfter == null || state.reper2PresetAfter === ''){
           state.reper2PresetAfter = getLastEnteredDataRowNumber();
         }
+        if(!state.reper2PresetStartedAt){
+          var anchorMs = getReper2PresetAnchorMs();
+          state.reper2PresetStartedAt = new Date(Number.isFinite(anchorMs) ? anchorMs : Date.now()).toISOString();
+        }
+        scheduleReper2PresetDelayRefresh();
+      }
+      function isReper2DelayedParam(key){
+        return REPER2_PRESET_DELAYED_KEYS.indexOf(String(key || '')) >= 0;
+      }
+      function getReper2PresetStartMs(){
+        var ms = Date.parse(String(state.reper2PresetStartedAt || ''));
+        if(Number.isFinite(ms)) return ms;
+        ms = getReper2PresetAnchorMs();
+        return Number.isFinite(ms) ? ms : Date.now();
+      }
+      function isReper2PresetDelayDue(){
+        if(!(els.ttReper2 && String(els.ttReper2.value || '').trim())) return false;
+        return Date.now() - getReper2PresetStartMs() >= REPER2_PRESET_DELAY_MINUTES * 60000;
+      }
+      function setPresetCellDisplay(cell, key, value, presetId){
+        if(!cell) return false;
+        value = String(value || '').trim();
+        cell.removeAttribute('data-tt-param-missing');
+        cell.removeAttribute('data-tt-reper2-delay');
+        if(presetId === 'reper2' && isReper2DelayedParam(key) && !isReper2PresetDelayDue()){
+          if(value) cell.dataset.ttDelayedValue = value;
+          cell.textContent = '';
+          cell.setAttribute('data-tt-reper2-delay','1');
+          cell.title = 'Se afișează după 90 de minute de la pornirea REPER NR.2.';
+          return false;
+        }
+        if(value){
+          cell.textContent = value;
+          cell.dataset.autoTechValue = '1';
+          if(presetId === 'reper2' && isReper2DelayedParam(key)) cell.dataset.ttDelayedValue = value;
+          return true;
+        }
+        cell.textContent = '';
+        cell.setAttribute('data-tt-param-missing','1');
+        return false;
+      }
+      function refreshReper2PresetDelayedDisplay(){
+        var row = getPresetRow('reper2');
+        if(!row) return;
+        var due = isReper2PresetDelayDue();
+        REPER2_PRESET_DELAYED_KEYS.forEach(function(key){
+          var cell = row.querySelector('[data-tt-preset-cell="' + key + '"]');
+          if(!cell) return;
+          var stored = String(cell.dataset.ttDelayedValue || '').trim();
+          if(!due){
+            if(textOf(cell)) cell.dataset.ttDelayedValue = textOf(cell);
+            cell.textContent = '';
+            cell.removeAttribute('data-tt-param-missing');
+            cell.setAttribute('data-tt-reper2-delay','1');
+            cell.title = 'Se afișează după 90 de minute de la pornirea REPER NR.2.';
+          } else {
+            cell.removeAttribute('data-tt-reper2-delay');
+            if(stored){
+              cell.textContent = stored;
+              cell.dataset.autoTechValue = '1';
+              cell.removeAttribute('data-tt-param-missing');
+            } else if(!textOf(cell)){
+              cell.setAttribute('data-tt-param-missing','1');
+            }
+            cell.title = 'Limită prestabilită pentru REPER NR.2.';
+          }
+        });
+        validateMeasuredTemperatures();
+        scheduleReper2PresetDelayRefresh();
+      }
+      function scheduleReper2PresetDelayRefresh(){
+        clearReper2PresetDelayTimer();
+        if(!(els.ttReper2 && String(els.ttReper2.value || '').trim())) return;
+        var remaining = REPER2_PRESET_DELAY_MINUTES * 60000 - (Date.now() - getReper2PresetStartMs());
+        if(remaining > 0){
+          reper2PresetDelayTimer = setTimeout(refreshReper2PresetDelayedDisplay, Math.min(remaining + 250, 2147483647));
+        }
+      }
+      function ensureReper2PresetAnchor(){
+        var reper2 = els.ttReper2 ? String(els.ttReper2.value || '').trim() : '';
+        if(!reper2){
+          resetReper2PresetTiming();
+          removeReper2PresetRow();
+          return null;
+        }
+        ensureReper2PresetTiming();
         return String(state.reper2PresetAfter || '0');
       }
       function ensureReper2PresetRow(){
         var reper2 = els.ttReper2 ? String(els.ttReper2.value || '').trim() : '';
-        if(!reper2){ removeReper2PresetRow(); return null; }
+        if(!reper2){ resetReper2PresetTiming(); removeReper2PresetRow(); return null; }
         insertPresetRow();
         var afterNumber = ensureReper2PresetAnchor();
         var row = getPresetRow('reper2') || buildPresetRow('reper2', 'Temperaturi prestabilite REPER NR.2');
@@ -1390,6 +1511,7 @@
         if(anchor && anchor.parentNode && row.previousSibling !== anchor){
           anchor.parentNode.insertBefore(row, anchor.nextSibling);
         }
+        refreshReper2PresetDelayedDisplay();
         return row;
       }
       function tagTreatmentCells(){
@@ -2100,6 +2222,8 @@
           cells:collectDraftCells(),
           oraCtrl:collectOraCtrlValues(),
           reper2PresetAfter:state.reper2PresetAfter || '',
+          reper2PresetStartedAt:state.reper2PresetStartedAt || '',
+          reper2PresetReper:state.reper2PresetReper || '',
           report:collectReportPanelData(),
           updated_at:new Date().toISOString()
         };
@@ -2111,6 +2235,8 @@
           oraCtrl:collectOraCtrlValues(),
           report:collectReportPanelData(),
           reper2PresetAfter:state.reper2PresetAfter || '',
+          reper2PresetStartedAt:state.reper2PresetStartedAt || '',
+          reper2PresetReper:state.reper2PresetReper || '',
           currentOperatorSheetId:state.currentOperatorSheetId || null,
           activeOperator:state.activeOperator || null,
           trackingDirty:state.trackingDirty === true,
@@ -2143,6 +2269,8 @@
           clearSheetContentNoConfirm(false);
           if(snap){
             state.reper2PresetAfter = snap.reper2PresetAfter || null;
+            state.reper2PresetStartedAt = snap.reper2PresetStartedAt || null;
+            state.reper2PresetReper = snap.reper2PresetReper || '';
             loadHeaderFields(snap.fields || {});
             if((snap.fields || {}).reper2) ensureReper2PresetRow();
             restoreOraCtrlValues(snap.oraCtrl || {});
@@ -2350,7 +2478,7 @@
       function clearSheetContentNoConfirm(preserveOperator){
         document.querySelectorAll('.editable-cell[data-draft-cell]').forEach(function(td){ td.textContent = ''; td.classList.remove('tt-out-tolerance'); });
         document.querySelectorAll('[data-tt-ora-ctrl-cell]').forEach(function(td){ td.textContent = ''; });
-        state.reper2PresetAfter = null;
+        resetReper2PresetTiming();
         removeReper2PresetRow();
         var operatorName = preserveOperator ? activeSheetOperator() : '';
         loadHeaderFields({});
@@ -2380,6 +2508,8 @@
         fields.operatorTT = operatorName || fields.operatorTT || '';
         loadHeaderFields(fields);
         state.reper2PresetAfter = sheet.reper2PresetAfter || null;
+        state.reper2PresetStartedAt = sheet.reper2PresetStartedAt || null;
+        state.reper2PresetReper = sheet.reper2PresetReper || '';
         if(fields.reper2) ensureReper2PresetRow();
         restoreOraCtrlValues(sheet.oraCtrl || {});
         var cells = sheet.cells || {};
@@ -2686,17 +2816,9 @@
         TT_PARAM_KEYS.forEach(function(key){
           var cell = row.querySelector('[data-tt-preset-cell="' + key + '"]');
           if(!cell) return;
-          var value = String(params[key] || '').trim();
-          cell.removeAttribute('data-tt-param-missing');
-          if(value){
-            cell.textContent = value;
-            cell.dataset.autoTechValue = '1';
-            changed = true;
-          } else {
-            cell.textContent = '';
-            cell.setAttribute('data-tt-param-missing','1');
-          }
+          if(setPresetCellDisplay(cell, key, params[key], presetId)) changed = true;
         });
+        if(presetId === 'reper2') refreshReper2PresetDelayedDisplay();
         if(changed){
           validateMeasuredTemperatures();
           setChip(els.modeChip, 'Temperaturi preluate: ' + sourceReper, 'ok');
@@ -2705,7 +2827,7 @@
       }
       function clearPresetRow(presetId){
         var selector = presetId ? '[data-tt-preset-id="' + presetId + '"] [data-tt-preset-cell]' : '[data-tt-preset-cell]';
-        document.querySelectorAll(selector).forEach(function(cell){ cell.textContent = ''; cell.removeAttribute('data-tt-param-missing'); });
+        document.querySelectorAll(selector).forEach(function(cell){ cell.textContent = ''; cell.removeAttribute('data-tt-param-missing'); cell.removeAttribute('data-tt-reper2-delay'); delete cell.dataset.ttDelayedValue; });
         validateMeasuredTemperatures();
       }
       async function autoFillTreatmentParamsFromRepere(){
@@ -2723,6 +2845,7 @@
           }catch(error1){ console.warn('Nu am putut citi temperatura pentru REPER NR.1 ' + reper1, error1); clearPresetRow('reper1'); }
         }
         if(reper2){
+          ensureReper2PresetTiming();
           ensureReper2PresetRow();
           setChip(els.modeChip, 'Caut temperaturile setate REPER NR.2…', 'warn');
           try{
@@ -2731,7 +2854,7 @@
             else clearPresetRow('reper2');
           }catch(error2){ console.warn('Nu am putut citi temperatura pentru REPER NR.2 ' + reper2, error2); clearPresetRow('reper2'); }
         } else {
-          state.reper2PresetAfter = null;
+          resetReper2PresetTiming();
           removeReper2PresetRow();
         }
         validateMeasuredTemperatures();
@@ -3364,14 +3487,22 @@
             applyReperAuto(2);
             updateReportAutoFields();
             markReportDirty();
-            if(String(els.ttReper2.value || '').trim() && !state.reper2PresetAfter) state.reper2PresetAfter = getLastEnteredDataRowNumber();
-            if(!String(els.ttReper2.value || '').trim()) state.reper2PresetAfter = null;
+            if(String(els.ttReper2.value || '').trim()){
+              var nextReper2Key = normalizeTechReper ? normalizeTechReper(els.ttReper2.value) : norm(els.ttReper2.value);
+              if(!state.reper2PresetAfter || (state.reper2PresetReper && state.reper2PresetReper !== nextReper2Key)){
+                state.reper2PresetAfter = getLastEnteredDataRowNumber();
+                state.reper2PresetStartedAt = null;
+              }
+              ensureReper2PresetTiming();
+            }
+            if(!String(els.ttReper2.value || '').trim()) resetReper2PresetTiming();
             autoFillTreatmentParamsFromRepere();
             saveDraft();
             scheduleTrackingSave();
           });
           els.ttReper2.addEventListener('blur', function(){
             if(String(els.ttReper2.value || '').trim() && !state.reper2PresetAfter) state.reper2PresetAfter = getLastEnteredDataRowNumber();
+            if(String(els.ttReper2.value || '').trim()) ensureReper2PresetTiming();
             autoFillTreatmentParamsFromRepere();
             scheduleTrackingSave();
           });
@@ -3484,6 +3615,8 @@
         var data = getDraft();
         var cells = data.cells || {};
         state.reper2PresetAfter = data.reper2PresetAfter || null;
+        state.reper2PresetStartedAt = data.reper2PresetStartedAt || null;
+        state.reper2PresetReper = data.reper2PresetReper || '';
         loadHeaderFields(data.fields || {});
         if((data.fields || {}).reper2) ensureReper2PresetRow();
         restoreOraCtrlValues(data.oraCtrl || {});
@@ -3494,6 +3627,7 @@
           }
         });
         clearEmptyOraCtrlRows();
+        refreshReper2PresetDelayedDisplay();
       }
       function clearDraft(){
         if(!canEdit()) return;
