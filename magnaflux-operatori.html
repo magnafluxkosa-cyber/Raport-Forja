@@ -460,7 +460,8 @@
     const LIVE_DOC_PREFIX = 'magnaflux:operatori-live:';
     const LIVE_SESSION_TTL_MS = 45000;
     const LIVE_PUBLISH_INTERVAL_MS = 60000;
-    const LIVE_CLOUD_PUBLISH_MIN_MS = 120000;
+    const LIVE_CLOUD_PUBLISH_MIN_MS = 300000;
+    const LIVE_DOC_CLOUD_ENABLED = false;
     const PPTX_MAX_SIZE = 80 * 1024 * 1024;
     const PPTX_LABELS = {
       instructiuni: 'Instrucțiuni Magnaflux',
@@ -2010,6 +2011,7 @@ function allMaintenanceChecked(){
       if(!state.canEdit || !state.client || !state.user) return;
       if(!force && !state.activeOperator && shouldRequireOperatorPin()) return;
       await updateRealtimePresence(!!force);
+      if(!LIVE_DOC_CLOUD_ENABLED) return;
       const nowMs = Date.now();
       if(!force && state.liveCloudLastSaveMs && nowMs - state.liveCloudLastSaveMs < LIVE_CLOUD_PUBLISH_MIN_MS) return;
       const entry = buildLiveEntry(new Date().toISOString());
@@ -2029,6 +2031,7 @@ function allMaintenanceChecked(){
 
     async function removeLivePresence(){
       await untrackRealtimePresence();
+      if(!LIVE_DOC_CLOUD_ENABLED) return;
       if(isAdminAccount() || !state.client || !state.liveSessionId) return;
       try{
         await upsertDoc(liveDocKeyForSession(state.liveSessionId), {
@@ -2063,42 +2066,26 @@ function allMaintenanceChecked(){
       clearInterval(state.liveAdminPoll);
       state.liveAdminPoll = setInterval(()=>{
         if(el.liveOperatorsModal && el.liveOperatorsModal.classList.contains('show')) loadLiveOperators();
-      }, 30000);
+      }, 60000);
     }
 
     async function fetchPersonalLiveEntries(){
-      const entries = [];
-      try{
-        const res = await state.client.from('rf_documents').select('doc_key,content,data,updated_at').like('doc_key', LIVE_DOC_PREFIX + '%');
-        if(res.error && /data/i.test(String(res.error.message||''))){
-          const res2 = await state.client.from('rf_documents').select('doc_key,content,updated_at').like('doc_key', LIVE_DOC_PREFIX + '%');
-          if(res2.error) throw res2.error;
-          (res2.data || []).forEach(row=>{
-            const content = row.content || {};
-            if(content && content.entry && !content.offline) entries.push(content.entry);
-          });
-        }else{
-          if(res.error) throw res.error;
-          (res.data || []).forEach(row=>{
-            const content = row.content || row.data || {};
-            if(content && content.entry && !content.offline) entries.push(content.entry);
-          });
-        }
-      }catch(err){
-        console.warn('Nu am putut citi documentele live individuale', err);
-      }
-      return entries;
+      // Disk IO optimization: live status is handled through Supabase Realtime Presence.
+      // The old rf_documents prefix scan is disabled.
+      return [];
     }
 
     async function loadLiveOperators(){
       if(!isAdminAccount()) return;
       try{
         const entriesMap = new Map();
-        const doc = await fetchDoc(LIVE_DOC_KEY) || {};
-        const sessions = doc && doc.sessions && typeof doc.sessions === 'object' ? doc.sessions : {};
-        Object.values(sessions).forEach(entry=>{ if(entry && entry.id) entriesMap.set(entry.id, entry); });
-        const personalEntries = await fetchPersonalLiveEntries();
-        personalEntries.forEach(entry=>{ if(entry && entry.id) entriesMap.set(entry.id, entry); });
+        if(LIVE_DOC_CLOUD_ENABLED){
+          const doc = await fetchDoc(LIVE_DOC_KEY) || {};
+          const sessions = doc && doc.sessions && typeof doc.sessions === 'object' ? doc.sessions : {};
+          Object.values(sessions).forEach(entry=>{ if(entry && entry.id) entriesMap.set(entry.id, entry); });
+          const personalEntries = await fetchPersonalLiveEntries();
+          personalEntries.forEach(entry=>{ if(entry && entry.id) entriesMap.set(entry.id, entry); });
+        }
         (readRealtimePresenceEntries() || []).forEach(entry=>{ if(entry && entry.id) entriesMap.set(entry.id, entry); });
         state.liveEntries = Array.from(entriesMap.values()).filter(isLiveOnline).sort((a,b)=>String(a.operator||'').localeCompare(String(b.operator||''),'ro'));
         renderLiveOperators();
