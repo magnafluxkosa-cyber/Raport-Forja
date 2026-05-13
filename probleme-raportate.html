@@ -1200,6 +1200,11 @@
             <select id="fld-departament" name="departament"></select>
           </div>
 
+          <div class="field wide-12 hidden" id="editAuditNameField">
+            <label for="fld-editor-name">Numele persoanei care modifică</label>
+            <input id="fld-editor-name" name="editor_name" autocomplete="off" placeholder="Obligatoriu când se modifică un rând existent" />
+          </div>
+
           <div class="field wide-12">
             <label for="fld-observatii">Observații</label>
             <textarea id="fld-observatii" name="observatii"></textarea>
@@ -1288,6 +1293,7 @@
       modal: document.getElementById("editModal"),
       modalTitle: document.getElementById("modalTitle"),
       editForm: document.getElementById("editForm"),
+      editAuditNameField: document.getElementById("editAuditNameField"),
       excelInput: document.getElementById("excelInput"),
       btnCloseModal: document.getElementById("btnCloseModal"),
       btnCancelForm: document.getElementById("btnCancelForm"),
@@ -1314,6 +1320,7 @@
         reper: document.getElementById("fld-reper"),
         timp_minute: document.getElementById("fld-timp_minute"),
         observatii: document.getElementById("fld-observatii"),
+        editor_name: document.getElementById("fld-editor-name"),
         operatiune: document.getElementById("fld-operatiune"),
         departament: document.getElementById("fld-departament"),
         planificat: document.getElementById("fld-planificat")
@@ -2719,12 +2726,65 @@
       dom.modal.setAttribute("aria-hidden", "true");
     }
 
+    const EDIT_AUDIT_LABELS = {
+      an: "ANUL",
+      luna: "LUNA",
+      data: "DATA",
+      schimbul: "SCHIMBUL",
+      utilaj: "UTILAJ",
+      reper: "REPER",
+      timp_minute: "Timp Minute Pierdute",
+      observatii: "Observații",
+      operatiune: "Denumire operațiune",
+      departament: "Departament",
+      planificat: "Planificat (DA/NU)"
+    };
+
+    function auditDateTimeRo() {
+      const d = new Date();
+      const pad = value => String(value).padStart(2, "0");
+      return `${pad(d.getDate())}.${pad(d.getMonth() + 1)}.${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+    }
+
+    function auditValue(value) {
+      const text = String(value ?? "").replace(/\s+/g, " ").trim();
+      if (!text) return "-";
+      return text.length > 160 ? text.slice(0, 157) + "..." : text;
+    }
+
+    function collectEditChanges(originalRow, nextRow, typedObservatii) {
+      if (!originalRow || !nextRow) return [];
+      const source = normalizeRow(originalRow);
+      const target = { ...normalizeRow(nextRow), observatii: String(typedObservatii ?? "").replace(/\s+/g, " ").trim() };
+      return Object.keys(EDIT_AUDIT_LABELS).reduce((changes, key) => {
+        const oldValue = auditValue(source[key]);
+        const newValue = auditValue(target[key]);
+        if (oldValue !== newValue) {
+          changes.push({ key, label: EDIT_AUDIT_LABELS[key], oldValue, newValue });
+        }
+        return changes;
+      }, []);
+    }
+
+    function buildEditAuditText(editorName, changes) {
+      const details = changes.map(change => `${change.label}: "${change.oldValue}" -> "${change.newValue}"`).join("; ");
+      return `[${auditDateTimeRo()}] Modificat de: ${String(editorName || "").trim()} | ${details}`;
+    }
+
+    function setEditAuditUi(isEditing) {
+      if (!dom.editAuditNameField || !dom.form.editor_name) return;
+      dom.editAuditNameField.classList.toggle("hidden", !isEditing);
+      dom.form.editor_name.value = "";
+      dom.form.editor_name.required = false;
+    }
+
     function openModal(row = null) {
       if (row && !state.permissions.canEdit) return;
       if (!row && !state.permissions.canAdd) return;
       state.editingId = row ? row.id : null;
       dom.modalTitle.textContent = row ? "Editează problemă raportată" : "Adaugă problemă raportată";
       dom.editForm.reset();
+      setEditAuditUi(!!row);
       refreshSelectOptions();
       setDefaultFormValues();
 
@@ -2787,6 +2847,20 @@
       }
 
       const isEditing = !!state.editingId;
+      const originalRow = isEditing ? rowById(state.editingId) : null;
+      const typedObservatii = String(dom.form.observatii.value || "").trim();
+      const editChanges = isEditing ? collectEditChanges(originalRow, payload, typedObservatii) : [];
+
+      if (isEditing && editChanges.length) {
+        const editorName = String((dom.form.editor_name && dom.form.editor_name.value) || "").trim();
+        if (!editorName) {
+          alert("Pentru orice modificare trebuie completat numele persoanei care modifică.");
+          if (dom.form.editor_name) dom.form.editor_name.focus();
+          return;
+        }
+        const auditText = buildEditAuditText(editorName, editChanges);
+        payload.observatii = [typedObservatii, auditText].filter(Boolean).join(" | ");
+      }
 
       if (isEditing) {
         state.rows = state.rows.map(row => row.id === state.editingId ? payload : row);
