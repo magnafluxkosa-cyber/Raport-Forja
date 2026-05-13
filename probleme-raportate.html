@@ -1549,12 +1549,28 @@
       setBadge(dom.modeBadge, dom.dotMode, text, kind);
     }
 
+    function isAdminUser() {
+      const candidates = [
+        state.role,
+        state.user && state.user.role,
+        state.user && state.user.app_metadata && state.user.app_metadata.role,
+        state.user && state.user.app_metadata && state.user.app_metadata.user_role,
+        state.user && state.user.user_metadata && state.user.user_metadata.role,
+        state.user && state.user.user_metadata && state.user.user_metadata.user_role
+      ];
+      return candidates.some(value => {
+        const role = normalizeText(value);
+        return role === "admin" || role === "administrator" || role === "superadmin" || role.includes("admin");
+      });
+    }
+
     function applyPermissionsToUi() {
-      const canWrite = state.permissions.canAdd || state.permissions.canEdit;
-      dom.btnAdd.disabled = !state.permissions.canAdd;
+      const admin = isAdminUser();
+      const canWrite = admin || state.permissions.canAdd || state.permissions.canEdit;
+      dom.btnAdd.disabled = !(admin || state.permissions.canAdd);
       dom.btnImport.disabled = !canWrite;
       dom.btnSync.disabled = !canWrite;
-      dom.btnDelete.disabled = !state.permissions.canDelete;
+      dom.btnDelete.disabled = !(admin || state.permissions.canDelete);
     }
 
     function setDefaultFormValues() {
@@ -2800,14 +2816,16 @@
 
     function setEditAuditUi(isEditing) {
       if (!dom.editAuditNameField || !dom.form.editor_name) return;
-      dom.editAuditNameField.classList.toggle("hidden", !isEditing);
-      dom.form.editor_name.value = isEditing ? getSavedEditorName() : "";
+      const needsAuditName = !!isEditing && !isAdminUser();
+      dom.editAuditNameField.classList.toggle("hidden", !needsAuditName);
+      dom.form.editor_name.value = needsAuditName ? getSavedEditorName() : "";
       dom.form.editor_name.required = false;
     }
 
     function openModal(row = null) {
-      if (row && !state.permissions.canEdit) return;
-      if (!row && !state.permissions.canAdd) return;
+      const admin = isAdminUser();
+      if (row && !(admin || state.permissions.canEdit)) return;
+      if (!row && !(admin || state.permissions.canAdd)) return;
       state.editingId = row ? row.id : null;
       dom.modalTitle.textContent = row ? "Editează problemă raportată" : "Adaugă problemă raportată";
       dom.editForm.reset();
@@ -2843,7 +2861,8 @@
 
     function handleRowSave(event) {
       event.preventDefault();
-      if (!state.permissions.canAdd && !state.permissions.canEdit) return;
+      const admin = isAdminUser();
+      if (!(admin || state.permissions.canAdd || state.permissions.canEdit)) return;
 
       updateFormDatePartsFromData();
 
@@ -2878,7 +2897,7 @@
       const typedObservatii = String(dom.form.observatii.value || "").trim();
       const editChanges = isEditing ? collectEditChanges(originalRow, payload, typedObservatii) : [];
 
-      if (isEditing && editChanges.length) {
+      if (isEditing && editChanges.length && !admin) {
         const editorName = String((dom.form.editor_name && dom.form.editor_name.value) || "").trim();
         if (!editorName) {
           alert("Pentru orice modificare trebuie completat numele persoanei care modifică.");
@@ -2988,13 +3007,18 @@
 
 
 async function resolvePagePermissions() {
+  const admin = isAdminUser();
   const fallback = {
     canView: true,
-    canAdd: ['admin','editor','operator'].includes(state.role),
-    canEdit: ['admin','editor','operator'].includes(state.role),
-    canDelete: ['admin','editor'].includes(state.role)
+    canAdd: admin || ['admin','administrator','superadmin','editor','operator'].includes(state.role),
+    canEdit: admin || ['admin','administrator','superadmin','editor','operator'].includes(state.role),
+    canDelete: admin || ['admin','administrator','superadmin','editor'].includes(state.role)
   };
   state.permissions = fallback;
+  if (admin) {
+    if (typeof applyPermissionsToUi === 'function') applyPermissionsToUi();
+    return;
+  }
   try {
     if (window.ERPAuth && typeof window.ERPAuth.getPageAccess === 'function') {
       const access = await window.ERPAuth.getPageAccess('probleme-raportate', { user: state.user, role: state.role });
@@ -3433,8 +3457,9 @@ async function resolvePagePermissions() {
       renderTable();
     }
 
-    function deleteSelected() {
-      if (!state.permissions.canDelete) {
+    async function deleteSelected() {
+      const admin = isAdminUser();
+      if (!(admin || state.permissions.canDelete)) {
         alert("Contul curent nu are drept de ștergere.");
         return;
       }
@@ -3449,7 +3474,8 @@ async function resolvePagePermissions() {
         return;
       }
 
-      const row = rowById(state.selectedId);
+      const deleteId = String(state.selectedId);
+      const row = rowById(deleteId);
       if (!row) {
         alert("Rândul selectat nu mai există în datele curente. Reîmprospătează pagina și selectează din nou rândul.");
         state.selectedId = null;
@@ -3459,14 +3485,19 @@ async function resolvePagePermissions() {
 
       if (!confirm("Ștergi rândul selectat?")) return;
 
-      const deleteId = String(state.selectedId);
+      const beforeCount = state.rows.length;
       state.rows = state.rows.filter(item => !sameRowId(item.id, deleteId));
+      if (state.rows.length === beforeCount) {
+        alert("Rândul selectat nu a putut fi șters. Selectează din nou rândul și reîncearcă.");
+        return;
+      }
       state.selectedId = null;
       state.didInitYearGroups = true;
       state.source = "local";
       setModeStatus("Sursă: local modificat", "warning");
-      markDirty();
-      refreshUi(true);
+      markDirty("ștergere rând nesincronizată");
+      refreshUi(false);
+      await saveCloud(true);
     }
 
     function bindEvents() {
