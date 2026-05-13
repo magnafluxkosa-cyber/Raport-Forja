@@ -773,8 +773,41 @@ function pick(row, keys){
   for(const key of keys){ const hit = map.get(normKey(key)); if(hit != null && hit !== '') return hit; }
   return '';
 }
-function yearFromRow(row){ const d = parseDateValue(pick(row, ['data','DATA','date','Date','data_emiterii','data emiterii','Data emiterii','Data Emiterii','data inregistrare','Data inregistrare','Data \ninregistrare','C','BM'])); const an = Number(pick(row, ['an','AN','anul','ANUL','Anul','A','year','Year'])); return Number.isFinite(an) && an > 1900 ? an : (d ? d.getFullYear() : 0); }
-function lunaFromRow(row){ const lunaRaw = pick(row, ['luna','LUNA','Luna','B','month','Month']); const luna = normKey(lunaRaw); if(MONTHS.includes(luna)) return luna; const num = Number(lunaRaw); if(Number.isFinite(num) && num >= 1 && num <= 12) return monthFromNumber(num); const d = parseDateValue(pick(row, ['data','DATA','date','Date','data_emiterii','data emiterii','Data emiterii','Data Emiterii','data inregistrare','Data inregistrare','Data \ninregistrare','C','BM'])); return d ? MONTHS[d.getMonth()] : ''; }
+const PERIOD_YEAR_KEYS = ['an','AN','anul','ANUL','Anul','A','year','Year'];
+const PERIOD_MONTH_KEYS = ['luna','LUNA','Luna','B','month','Month'];
+const PERIOD_DATE_KEYS = ['data','DATA','date','Date','data_emiterii','data emiterii','Data emiterii','Data Emiterii','data_inregistrare','data inregistrare','Data inregistrare','Data Inregistrare','Data \ninregistrare','Data\ninregistrare','C','BM'];
+const MONTH_ALIASES = {
+  'ian':'ianuarie','ianuarie':'ianuarie','feb':'februarie','februarie':'februarie','mar':'martie','mart':'martie','martie':'martie','apr':'aprilie','aprilie':'aprilie','mai':'mai','iun':'iunie','iunie':'iunie','iul':'iulie','iulie':'iulie','aug':'august','august':'august','sep':'septembrie','sept':'septembrie','septembrie':'septembrie','oct':'octombrie','octombrie':'octombrie','noi':'noiembrie','nov':'noiembrie','noiembrie':'noiembrie','dec':'decembrie','decembrie':'decembrie'
+};
+function normalizeMonthValue(value){
+  const raw = normText(value);
+  if(!raw) return '';
+  const n = Number(raw);
+  if(Number.isFinite(n) && n >= 1 && n <= 12) return monthFromNumber(n);
+  const key = normKey(raw).replace(/[^a-z0-9 ]/g,' ').replace(/\s+/g,' ').trim();
+  if(MONTHS.includes(key)) return key;
+  if(MONTH_ALIASES[key]) return MONTH_ALIASES[key];
+  const compact = key.replace(/\s+/g,'');
+  if(MONTH_ALIASES[compact]) return MONTH_ALIASES[compact];
+  for(const m of MONTHS){ if(compact.includes(m)) return m; }
+  for(const alias of Object.keys(MONTH_ALIASES)){ if(alias.length >= 3 && compact.includes(alias)) return MONTH_ALIASES[alias]; }
+  return '';
+}
+function periodFromRow(row){
+  const d = parseDateValue(pick(row, PERIOD_DATE_KEYS));
+  const anRaw = pick(row, PERIOD_YEAR_KEYS);
+  const an = Number(anRaw);
+  const year = Number.isFinite(an) && an > 1900 ? an : (d ? d.getFullYear() : 0);
+  let luna = normalizeMonthValue(pick(row, PERIOD_MONTH_KEYS));
+  if(!luna && d) luna = MONTHS[d.getMonth()] || '';
+  return { an: year, luna };
+}
+function rowMatchesSelectedPeriod(row){
+  const period = periodFromRow(row);
+  return !!(period.an && period.luna && String(period.an) === String(state.an) && period.luna === state.luna);
+}
+function yearFromRow(row){ return periodFromRow(row).an; }
+function lunaFromRow(row){ return periodFromRow(row).luna; }
 function unwrapPayload(payload){ if(typeof payload === 'string'){ try{ return JSON.parse(payload); }catch(_){ return payload; } } return payload; }
 function resolveRowsPayload(payload){ payload = unwrapPayload(payload); if(!payload) return []; if(Array.isArray(payload)) return payload; for(const k of ['rows','data','items','records','entries','table']) if(Array.isArray(payload[k])) return payload[k]; return []; }
 let __DOC_COLS = null;
@@ -1061,21 +1094,80 @@ function aggregateStocPmForOffset(offsetMonths){
 }
 function aggregateStocPmInitialThisPeriod(){ return aggregateStocPmForOffset(0); }
 function aggregateStocPmThisPeriod(){ return aggregateStocPmForOffset(1); }
-function defectCodeFromValue(value){ const s = normText(value).toUpperCase(); const m = s.match(/(?:^|\D)(01|02|03|06|07|09|13|14|16)(?:\D|$)/); return m ? m[1] : ''; }
+function defectCodeFromValue(value){
+  const raw = normText(value).toUpperCase();
+  if(!raw) return '';
+  const onlyDigits = raw.replace(/[^0-9]/g,'');
+  if(/^\d{1,2}$/.test(onlyDigits)){
+    const padded = onlyDigits.padStart(2,'0');
+    if(DEFECT_CODES.includes(padded)) return padded;
+  }
+  const m = raw.match(/(?:^|\D)(01|02|03|06|07|09|13|14|16)(?:\D|$)/);
+  return m ? m[1] : '';
+}
 function normalizeForjateRow(row){ const an=yearFromRow(row); const luna=lunaFromRow(row); const reper=canonicalReper(pick(row, ['reper','REPER','denumire reper forja','Denumire reper forja','BP','F'])); const cantitate=toNum(pick(row, ['buc_realizate','BUC_REALIZATE','buc realizate','Buc realizate','cantitate','Cantitate','Cantitate forjata [Buc.]','CB'])); if(!an||!luna||!reper) return null; return {an,luna,reper,cantitate}; }
-function normalizePmRow(row){ const an=yearFromRow(row); const luna=lunaFromRow(row); const reper=canonicalReper(pick(row, ['denumire_reper_forja','Denumire reper forja','denumire reper forja','reper','REPER','Denumire corecta reper','F','B'])); const code=defectCodeFromValue(pick(row, ['cod_defect','Cod defect','cod defect','Denumire cod','G','B'])); const qty=toNum(pick(row, ['piese_rebut_final','Piese rebut final  [buc]','Piese rebut final [buc]','piese rebut final','Sumă de Piese rebut final  [buc]','Q','C'])); const nok=toNum(pick(row, ['piese_neconforme','Piese necomforme                             [buc]','Piese necomforme [buc]','Piese neconforme [buc]','NOK'])); const rem=toNum(pick(row, ['piese_remaniabile','Piese remaniabile       [buc]','Piese remaniabile [buc]','remaniabile','Remaniabile'])); const prelucrate=toNum(pick(row, ['prelucrate','Prelucrate','PRELUCRATE','procesate','cantitate prelucrata','Cantitate prelucrata'])); if(!an||!luna||!reper||!code) return null; return {an,luna,reper,code,qty,nok,rem,prelucrate}; }
-function normalizeCompiledRebutRow(row){ const an=yearFromRow(row); const luna=lunaFromRow(row); const reper=canonicalReper(pick(row, ['reper','REPER','Denumire reper forja','denumire reper forja','Denumire corecta reper'])); if(!an||!luna||!reper) return null; const out={ an,luna,reper, prelucrate:toNum(pick(row, ['prelucrate','Prelucrate','PRELUCRATE','cantitate','Cantitate','Cantitate forjata [Buc.]','Cantitate forjata','Total Forjat [Buc]'])), nok:toNum(pick(row, ['NOK','nok','piese neconforme','Piese necomforme [buc]','Piese neconforme [buc]'])), rem:toNum(pick(row, ['remaniabile','Remaniabile','Piese remaniabile [buc]','Piese remaniabile       [buc]'])), rebutDef:toNum(pick(row, ['REBUT DEFINITIV [buc]','Rebut definitiv','Rebut Total','Rebut Total [Buc.]','rebut_total','Rebut total'])) }; DEFECT_CODES.forEach(code => { out[code] = toNum(pick(row, [code, 'PM ' + code, 'pm_' + code, 'pm' + code, code + ' [buc]', code + ' buc'])); }); return out; }
+function normalizePmRow(row){
+  const period = periodFromRow(row);
+  const an = period.an;
+  const luna = period.luna;
+  const reper = canonicalReper(pick(row, ['denumire_reper_forja','Denumire reper forja','denumire reper forja','reper','REPER','Denumire corecta reper','Denumire corectă reper','F','B']));
+  const code = defectCodeFromValue(pick(row, ['cod_defect','Cod defect','cod defect','Denumire cod','G','B']));
+  const qty = toNum(pick(row, ['piese_rebut_final','Piese rebut final  [buc]','Piese rebut final [buc]','piese rebut final','Sumă de Piese rebut final  [buc]','Suma de Piese rebut final  [buc]','Q','C']));
+  const nok = toNum(pick(row, ['piese_neconforme','Piese necomforme                             [buc]','Piese necomforme [buc]','Piese neconforme [buc]','NOK']));
+  const rem = toNum(pick(row, ['piese_remaniabile','Piese remaniabile       [buc]','Piese remaniabile [buc]','remaniabile','Remaniabile']));
+  const prelucrate = toNum(pick(row, ['prelucrate','Prelucrate','PRELUCRATE','procesate','cantitate prelucrata','Cantitate prelucrata']));
+  if(!an || !luna || !reper || !code) return null;
+  return { an, luna, reper, code, qty, nok, rem, prelucrate };
+}
+function normalizeCompiledRebutRow(row){
+  const period = periodFromRow(row);
+  const an = period.an;
+  const luna = period.luna;
+  const reper = canonicalReper(pick(row, ['reper','REPER','Denumire reper forja','denumire reper forja','Denumire corecta reper','Denumire corectă reper']));
+  if(!an || !luna || !reper) return null;
+  const out = {
+    an,luna,reper,
+    prelucrate:toNum(pick(row, ['prelucrate','Prelucrate','PRELUCRATE','cantitate','Cantitate','Cantitate forjata [Buc.]','Cantitate forjata','Total Forjat [Buc]'])),
+    nok:toNum(pick(row, ['NOK','nok','piese neconforme','Piese necomforme [buc]','Piese neconforme [buc]'])),
+    rem:toNum(pick(row, ['remaniabile','Remaniabile','Piese remaniabile [buc]','Piese remaniabile       [buc]'])),
+    rebutDef:toNum(pick(row, ['REBUT DEFINITIV [buc]','Rebut definitiv','Rebut Total','Rebut Total [Buc.]','rebut_total','Rebut total']))
+  };
+  DEFECT_CODES.forEach(code => {
+    const numericCode = String(Number(code));
+    out[code] = toNum(pick(row, [code, numericCode, 'PM ' + code, 'PM ' + numericCode, 'pm_' + code, 'pm_' + numericCode, 'pm' + code, code + ' [buc]', numericCode + ' [buc]', code + ' buc', numericCode + ' buc']));
+  });
+  return out;
+}
 function ensureRow(map, reper){ if(!reper || !INVENTAR_MODEL_SET.has(reper)) return null; if(!map.has(reper)){ const item = { reper, prelucrate:0, pmPrelucrate:0, compiledPrelucrate:0, forjatePrelucrate:0, nok:0, rem:0 }; DEFECT_CODES.forEach(code => item[code]=0); map.set(reper,item); } return map.get(reper); }
 function buildSummary(){
-  const pmRows = state.docs.rebutPm.map(normalizePmRow).filter(Boolean).filter(r => String(r.an) === String(state.an) && r.luna === state.luna);
-  const compiledRows = state.docs.rebut.map(normalizeCompiledRebutRow).filter(Boolean).filter(r => String(r.an) === String(state.an) && r.luna === state.luna);
+  const pmRows = state.docs.rebutPm.filter(rowMatchesSelectedPeriod).map(normalizePmRow).filter(Boolean);
+  const compiledRows = state.docs.rebut.filter(rowMatchesSelectedPeriod).map(normalizeCompiledRebutRow).filter(Boolean);
   const vanzariMap = aggregateVanzariThisPeriod();
   const stocPmInitialMap = aggregateStocPmInitialThisPeriod();
   const stocPmMap = aggregateStocPmThisPeriod();
   const map = new Map(); INVENTAR_PRELUCRARI_MODELS.forEach(model => ensureRow(map, model));
-  if(pmRows.length){ pmRows.forEach(r => { const item = ensureRow(map, r.reper); if(!item) return; item[r.code] += toNum(r.qty); item.nok += toNum(r.nok || r.qty); item.rem += toNum(r.rem); if(r.prelucrate > item.pmPrelucrate) item.pmPrelucrate = r.prelucrate; }); }
-  else { compiledRows.forEach(r => { const item = ensureRow(map, r.reper); if(!item) return; DEFECT_CODES.forEach(code => item[code] += toNum(r[code])); item.nok += toNum(r.nok || r.rebutDef); item.rem += toNum(r.rem); }); }
-  compiledRows.forEach(r => { const item = ensureRow(map, r.reper); if(!item) return; item.compiledPrelucrate += toNum(r.prelucrate); if(!pmRows.length && toNum(r.nok)>0) item.nok = toNum(r.nok); if(!pmRows.length && toNum(r.rem)>0) item.rem = toNum(r.rem); });
+  if(pmRows.length){
+    pmRows.forEach(r => {
+      const item = ensureRow(map, r.reper); if(!item) return;
+      item[r.code] += toNum(r.qty);
+      item.nok += toNum(r.nok || r.qty);
+      item.rem += toNum(r.rem);
+      if(r.prelucrate > item.pmPrelucrate) item.pmPrelucrate = r.prelucrate;
+    });
+  } else {
+    compiledRows.forEach(r => {
+      const item = ensureRow(map, r.reper); if(!item) return;
+      DEFECT_CODES.forEach(code => item[code] += toNum(r[code]));
+      item.nok += toNum(r.nok || r.rebutDef);
+      item.rem += toNum(r.rem);
+    });
+  }
+  compiledRows.forEach(r => {
+    const item = ensureRow(map, r.reper); if(!item) return;
+    item.compiledPrelucrate += toNum(r.prelucrate);
+    if(!pmRows.length && toNum(r.nok)>0) item.nok = toNum(r.nok);
+    if(!pmRows.length && toNum(r.rem)>0) item.rem = toNum(r.rem);
+  });
   state.rows = INVENTAR_PRELUCRARI_MODELS.map(model => map.get(model)).filter(Boolean).map(item => {
     const defectTotal = DEFECT_CODES.reduce((s,code)=>s+toNum(item[code]),0);
     const vanzari = toNum(vanzariMap.get(item.reper));
@@ -1096,7 +1188,18 @@ function buildSummary(){
     return item;
   });
 }
-function collectAvailablePeriods(){ const all=[]; state.docs.rebutPm.map(normalizePmRow).filter(Boolean).forEach(r => all.push({an:r.an,luna:r.luna})); state.docs.rebut.map(normalizeCompiledRebutRow).filter(Boolean).forEach(r => all.push({an:r.an,luna:r.luna})); state.docs.listaVanzari.map(normalizeListaVanzariRow).forEach(row => { const an=yearFromRow(row), luna=lunaFromRow(row); if(an && luna) all.push({an,luna}); }); const years=Array.from(new Set(all.map(x=>x.an).filter(Boolean))).sort((a,b)=>b-a); state.years=years; if(!state.an) state.an=years[0]||String(new Date().getFullYear()); const months=Array.from(new Set(all.filter(x=>String(x.an)===String(state.an)).map(x=>x.luna).filter(Boolean))).sort((a,b)=>monthIndex(a)-monthIndex(b)); if(!state.luna || !months.includes(state.luna)) state.luna = months.includes(MONTHS[new Date().getMonth()]) ? MONTHS[new Date().getMonth()] : (months[0] || MONTHS[new Date().getMonth()]); return months; }
+function collectAvailablePeriods(){
+  const all=[];
+  state.docs.rebutPm.forEach(row => { const p=periodFromRow(row); if(p.an && p.luna && normalizePmRow(row)) all.push(p); });
+  state.docs.rebut.forEach(row => { const p=periodFromRow(row); if(p.an && p.luna && normalizeCompiledRebutRow(row)) all.push(p); });
+  state.docs.listaVanzari.map(normalizeListaVanzariRow).forEach(row => { const p=periodFromRow(row); if(p.an && p.luna) all.push(p); });
+  const years=Array.from(new Set(all.map(x=>x.an).filter(Boolean))).sort((a,b)=>b-a);
+  state.years=years;
+  if(!state.an) state.an=years[0]||String(new Date().getFullYear());
+  const months=Array.from(new Set(all.filter(x=>String(x.an)===String(state.an)).map(x=>x.luna).filter(Boolean))).sort((a,b)=>monthIndex(a)-monthIndex(b));
+  if(!state.luna || !months.includes(state.luna)) state.luna = months.includes(MONTHS[new Date().getMonth()]) ? MONTHS[new Date().getMonth()] : (months[0] || MONTHS[new Date().getMonth()]);
+  return months;
+}
 function renderSelectors(){ const months=collectAvailablePeriods(); els.selAn.innerHTML=(state.years.length?state.years:[String(new Date().getFullYear())]).map(y=>`<option value="${y}" ${String(y)===String(state.an)?'selected':''}>${y}</option>`).join(''); const monthOptions=months.length?months:MONTHS; els.selLuna.innerHTML=monthOptions.map(m=>`<option value="${m}" ${m===state.luna?'selected':''}>${capMonth(m)}</option>`).join(''); }
 function renderHeader(){
   const codeTop = DEFECT_CODES.map(code => `<th class="def-code group-start group-end" colspan="2" title="${escapeHtml(code + ' - ' + (DEFECT_LABELS[code] || ''))}"><span class="def-code-box"><span class="def-code-num">${code}</span><span class="def-code-label">${escapeHtml(DEFECT_LABELS[code] || '')}</span></span></th>`).join('');
