@@ -56,7 +56,7 @@ body{padding:0!important;}
 
   <section class="panel">
     <div class="chart-box" id="chartBox"></div>
-    <div class="legend" id="chartLegend">Graficul afișează automat ultima lună disponibilă și suprapune zonele: Aust. Z1/Z2/Z3/Z4, Bazin călire, Rev. Z1/Z2 și Bazin răcire.</div>
+    <div class="legend" id="chartLegend">Graficul afișează valorile măsurate și liniile punctate MIN/MAX pentru limitele inferioare și superioare ale fiecărui parametru.</div>
   </section>
 </div>
 <script>
@@ -114,6 +114,24 @@ function val(row,key){var v=row&&row.values&&row.values[key];if(v&&typeof v==='o
 function num(row,key){var v=row&&row.values&&row.values[key];if(v&&typeof v==='object'&&typeof v.number==='number')return v.number;var raw=String(val(row,key)).replace(',','.').match(/-?\d+(?:\.\d+)?/);return raw?Number(raw[0]):null}
 function limit(row,key){return row&&row.limits&&row.limits[key]||{}}
 function statusCell(row,key){var l=limit(row,key);if(l&&l.status)return l.status;return ''}
+function firstFiniteNumber(){for(var i=0;i<arguments.length;i++){var n=Number(arguments[i]);if(Number.isFinite(n))return n}return null}
+function parseLimitBounds(limitObj){
+  limitObj=limitObj||{};
+  var directMin=firstFiniteNumber(limitObj.min,limitObj.lower,limitObj.low,limitObj.lsl,limitObj.inf,limitObj.minimum);
+  var directMax=firstFiniteNumber(limitObj.max,limitObj.upper,limitObj.high,limitObj.usl,limitObj.sup,limitObj.maximum);
+  if(directMin!=null||directMax!=null)return {lower:directMin,upper:directMax};
+  var txt=String(limitObj.interval||limitObj.range||limitObj.preset||limitObj.text||'').replace(/,/g,'.').replace(/≤/g,'<=').replace(/≥/g,'>=').replace(/±/g,'±');
+  if(!txt)return {lower:null,upper:null};
+  var pm=txt.match(/(-?\d+(?:\.\d+)?)\s*(?:±|\+\/\-|\+\-)\s*(\d+(?:\.\d+)?)/);
+  if(pm){var c=Number(pm[1]),t=Number(pm[2]);if(Number.isFinite(c)&&Number.isFinite(t))return {lower:c-t,upper:c+t};}
+  var ge=txt.match(/(?:>=|>|MIN\.?|MINIM)\s*(-?\d+(?:\.\d+)?)/i);
+  var le=txt.match(/(?:<=|<|MAX\.?|MAXIM)\s*(-?\d+(?:\.\d+)?)/i);
+  if(ge||le){return {lower:ge?Number(ge[1]):null,upper:le?Number(le[1]):null};}
+  var nums=(txt.match(/-?\d+(?:\.\d+)?/g)||[]).map(Number).filter(Number.isFinite);
+  if(nums.length>=2){var a=nums[0],b=nums[1];return {lower:Math.min(a,b),upper:Math.max(a,b)};}
+  if(nums.length===1)return {lower:nums[0],upper:nums[0]};
+  return {lower:null,upper:null};
+}
 function isNok(row){if(row.status==='NOK')return true;return PARAMS.some(function(p){var l=limit(row,p[0]);return l&&l.ok===false})}
 function readLocalTrackingDoc(){try{var raw=localStorage.getItem(TRACKING_LOCAL_KEY);var doc=raw?JSON.parse(raw):null;return doc&&typeof doc==='object'?doc:null}catch(_){return null}}
 function rowMergeKey(row){if(row&&row.id)return 'id:'+String(row.id);return [row&&row.session_id||'',row&&row.reper_slot||'',row&&row.nr_crt||'',row&&row.date_iso||'',row&&row.ora_ctrl||'',row&&row.reper||''].join('|')}
@@ -205,8 +223,11 @@ function renderChart(rows){
       var v=num(r,key);
       if(v!=null&&Number.isFinite(v)){
         var l=limit(r,key)||{};
-        pts.push({i:i,label:(r.date_text||dateRo(r.date_iso))+' '+(r.ora_ctrl||''),reper:r.reper||'',v:v,preset:l.preset||'',key:key});
+        var bounds=parseLimitBounds(l);
+        pts.push({i:i,label:(r.date_text||dateRo(r.date_iso))+' '+(r.ora_ctrl||''),reper:r.reper||'',v:v,preset:l.preset||'',key:key,lower:bounds.lower,upper:bounds.upper});
         allValues.push(v);
+        if(Number.isFinite(bounds.lower))allValues.push(bounds.lower);
+        if(Number.isFinite(bounds.upper))allValues.push(bounds.upper);
       }
     });
     return {key:key,label:label,points:pts};
@@ -223,6 +244,23 @@ function renderChart(rows){
   function nice(v){if(!Number.isFinite(v))return '';if(Math.abs(v)>=100)return String(Math.round(v));return (Math.round(v*10)/10).toString().replace('.', ',')}
   function pointValueLabel(v){return Number.isFinite(v)?(Math.round(v*10)/10).toString().replace('.', ','):''}
   function xPos(i,w,padL,padR){return padL+(chartRows.length===1?(w-padL-padR)/2:i*(w-padL-padR)/Math.max(1,chartRows.length-1))}
+  function uniqueRounded(values){var seen=[],out=[];(values||[]).forEach(function(v){if(!Number.isFinite(v))return;var key=String(Math.round(v*1000)/1000);if(seen.indexOf(key)<0){seen.push(key);out.push(v)}});return out}
+  function limitLineSvg(points,boundKey,yFn,w,padL,padR,label,color,dash){
+    var pts=(points||[]).filter(function(p){return Number.isFinite(p&&p[boundKey])});
+    if(!pts.length)return '';
+    var vals=uniqueRounded(pts.map(function(p){return p[boundKey]}));
+    color=color||'#b52f2f';dash=dash||'7 5';
+    if(vals.length===1){
+      var yy=yFn(vals[0]);
+      return '<line x1="'+padL+'" y1="'+yy.toFixed(1)+'" x2="'+(w-padR)+'" y2="'+yy.toFixed(1)+'" stroke="'+color+'" stroke-width="1.7" stroke-dasharray="'+dash+'" opacity=".9"/>'+
+             '<text x="'+(w-padR-4)+'" y="'+(yy-4).toFixed(1)+'" font-size="10" font-weight="900" fill="'+color+'" text-anchor="end">'+esc(label+' '+nice(vals[0]))+'</text>';
+    }
+    var d=pts.map(function(p,idx){return (idx?'L':'M')+xPos(p.i,w,padL,padR).toFixed(1)+' '+yFn(p[boundKey]).toFixed(1)}).join(' ');
+    var last=pts[pts.length-1];
+    var lx=xPos(last.i,w,padL,padR),ly=yFn(last[boundKey]);
+    return '<path d="'+d+'" fill="none" stroke="'+color+'" stroke-width="1.7" stroke-dasharray="'+dash+'" opacity=".9" stroke-linecap="round" stroke-linejoin="round"/>'+
+           '<text x="'+Math.min(w-padR-4,lx+8).toFixed(1)+'" y="'+(ly-4).toFixed(1)+'" font-size="10" font-weight="900" fill="'+color+'">'+esc(label)+'</text>';
+  }
   function chartAutoWidth(count,padL,padR,minStep){var base=viewportChartWidth();count=Number(count)||0;var needed=padL+padR+Math.max(1,count-1)*(minStep||42);return Math.max(base,needed)}
   function chartLabelStep(count,w,padL,padR,labelPx){count=Number(count)||0;var maxLabels=Math.max(2,Math.floor(Math.max(1,w-padL-padR)/(labelPx||105)));return Math.max(1,Math.ceil(count/maxLabels))}
   var dayLabel=(els.dayFilter&&els.dayFilter.value)?(' · '+dateRo((chartRows[0]&&chartRows[0].date_iso)||'')):'';
@@ -239,7 +277,7 @@ function renderChart(rows){
         labels+='<text x="'+x.toFixed(1)+'" y="'+(h-22)+'" font-size="11" fill="#4d647a" text-anchor="middle" transform="rotate(-20 '+x.toFixed(1)+' '+(h-22)+')">'+esc(lbl.slice(0,16))+'</text>';
       }
     });
-    var lanes='',paths='',dots='';
+    var lanes='',limitLines='',paths='',dots='';
     series.forEach(function(s,si){
       var color=colors[si%colors.length],top=padT+si*laneH,bottom=top+laneH-16,mid=(top+bottom)/2;
       var vals=s.points.map(function(p){return p.v});
@@ -253,10 +291,12 @@ function renderChart(rows){
       lanes+='<text x="'+(padL-8)+'" y="'+(top+5)+'" font-size="10" fill="#4d647a" text-anchor="end">'+esc(nice(range.max))+'</text>';
       lanes+='<text x="'+(padL-8)+'" y="'+(bottom+4)+'" font-size="10" fill="#4d647a" text-anchor="end">'+esc(nice(range.min))+'</text>';
       var d=s.points.map(function(p,idx){return (idx?'L':'M')+xPos(p.i,w,padL,padR).toFixed(1)+' '+y(p.v).toFixed(1)}).join(' ');
+      limitLines+=limitLineSvg(s.points,'upper',y,w,padL,padR,'MAX','#b52f2f','8 5');
+      limitLines+=limitLineSvg(s.points,'lower',y,w,padL,padR,'MIN','#b52f2f','3 4');
       if(d)paths+='<path d="'+d+'" fill="none" stroke="'+color+'" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>';
       dots+=s.points.map(function(p){var cx=xPos(p.i,w,padL,padR),cy=y(p.v);var label=(s.points.length<=18)?'<text x="'+cx.toFixed(1)+'" y="'+(cy-7).toFixed(1)+'" font-size="10" font-weight="800" fill="'+color+'" text-anchor="middle">'+esc(pointValueLabel(p.v))+'</text>':'';return '<circle cx="'+cx.toFixed(1)+'" cy="'+cy.toFixed(1)+'" r="4" fill="'+color+'"><title>'+esc(p.label+' · '+p.reper+' · '+s.label+' = '+p.v+(p.preset?' · preset '+p.preset:''))+'</title></circle>'+label}).join('');
     });
-    els.chartBox.innerHTML='<svg width="'+w+'" height="'+h+'" viewBox="0 0 '+w+' '+h+'" role="img" aria-label="Grafic toate zonele"><rect x="0" y="0" width="'+w+'" height="'+h+'" fill="#fff"/><text x="'+padL+'" y="20" font-size="16" font-weight="900" fill="#102336">Toate zonele'+titleSuffix+'</text><text x="'+padL+'" y="39" font-size="12" font-weight="800" fill="#4d647a">Afișare normală: punctele sunt distribuite egal după înregistrările filtrate. Alege Zi pentru detaliu pe o zi.</text><line x1="'+padL+'" y1="'+padT+'" x2="'+padL+'" y2="'+(h-padB)+'" stroke="#8796a6"/><line x1="'+padL+'" y1="'+(h-padB)+'" x2="'+(w-padR)+'" y2="'+(h-padB)+'" stroke="#8796a6"/>'+lanes+paths+dots+labels+'</svg>';
+    els.chartBox.innerHTML='<svg width="'+w+'" height="'+h+'" viewBox="0 0 '+w+' '+h+'" role="img" aria-label="Grafic toate zonele"><rect x="0" y="0" width="'+w+'" height="'+h+'" fill="#fff"/><text x="'+padL+'" y="20" font-size="16" font-weight="900" fill="#102336">Toate zonele'+titleSuffix+'</text><text x="'+padL+'" y="39" font-size="12" font-weight="800" fill="#4d647a">Afișare normală: punctele sunt distribuite egal după înregistrările filtrate. Liniile punctate roșii indică limitele MIN/MAX.</text><line x1="'+padL+'" y1="'+padT+'" x2="'+padL+'" y2="'+(h-padB)+'" stroke="#8796a6"/><line x1="'+padL+'" y1="'+(h-padB)+'" x2="'+(w-padR)+'" y2="'+(h-padB)+'" stroke="#8796a6"/>'+lanes+limitLines+paths+dots+labels+'</svg>';
     return;
   }
   var padL=70,padR=30,padT=50,padB=68;
@@ -266,12 +306,12 @@ function renderChart(rows){
   function y(v){return padT+(range.max-v)*(h-padT-padB)/(range.max-range.min)}
   var grid='';
   for(var g=0;g<=5;g++){var gy=padT+g*(h-padT-padB)/5;var gv=range.max-g*(range.max-range.min)/5;grid+='<line x1="'+padL+'" y1="'+gy.toFixed(1)+'" x2="'+(w-padR)+'" y2="'+gy.toFixed(1)+'" stroke="#d8e1ea"/><text x="8" y="'+(gy+4).toFixed(1)+'" font-size="12" fill="#4d647a">'+esc(nice(gv))+'</text>'}
-  var paths='',dots='',legend='';
-  series.forEach(function(s,si){var color=colors[si%colors.length];var d=s.points.map(function(p,idx){return (idx?'L':'M')+x(p.i).toFixed(1)+' '+y(p.v).toFixed(1)}).join(' ');if(d)paths+='<path d="'+d+'" fill="none" stroke="'+color+'" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>';dots+=s.points.map(function(p){return '<circle cx="'+x(p.i).toFixed(1)+'" cy="'+y(p.v).toFixed(1)+'" r="4" fill="'+color+'"><title>'+esc(p.label+' · '+p.reper+' · '+s.label+' = '+p.v+(p.preset?' · preset '+p.preset:''))+'</title></circle>'+((s.points.length<=24)?'<text x="'+x(p.i).toFixed(1)+'" y="'+(y(p.v)-8).toFixed(1)+'" font-size="10" font-weight="800" fill="'+color+'" text-anchor="middle">'+esc(pointValueLabel(p.v))+'</text>':'')}).join('');legend+='<line x1="'+padL+'" y1="24" x2="'+(padL+22)+'" y2="24" stroke="'+color+'" stroke-width="4"/><text x="'+(padL+28)+'" y="28" font-size="12" font-weight="800" fill="#102336">'+esc(s.label)+'</text>'});
+  var limitLines='',paths='',dots='',legend='';
+  series.forEach(function(s,si){var color=colors[si%colors.length];var d=s.points.map(function(p,idx){return (idx?'L':'M')+x(p.i).toFixed(1)+' '+y(p.v).toFixed(1)}).join(' ');limitLines+=limitLineSvg(s.points,'upper',y,w,padL,padR,'MAX','#b52f2f','8 5');limitLines+=limitLineSvg(s.points,'lower',y,w,padL,padR,'MIN','#b52f2f','3 4');if(d)paths+='<path d="'+d+'" fill="none" stroke="'+color+'" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>';dots+=s.points.map(function(p){return '<circle cx="'+x(p.i).toFixed(1)+'" cy="'+y(p.v).toFixed(1)+'" r="4" fill="'+color+'"><title>'+esc(p.label+' · '+p.reper+' · '+s.label+' = '+p.v+(p.preset?' · preset '+p.preset:''))+'</title></circle>'+((s.points.length<=24)?'<text x="'+x(p.i).toFixed(1)+'" y="'+(y(p.v)-8).toFixed(1)+'" font-size="10" font-weight="800" fill="'+color+'" text-anchor="middle">'+esc(pointValueLabel(p.v))+'</text>':'')}).join('');legend+='<line x1="'+padL+'" y1="24" x2="'+(padL+22)+'" y2="24" stroke="'+color+'" stroke-width="4"/><text x="'+(padL+28)+'" y="28" font-size="12" font-weight="800" fill="#102336">'+esc(s.label)+'</text>'});
   var labels='',step=chartLabelStep(chartRows.length,w,padL,padR,105);
   chartRows.forEach(function(r,i){if(i%step===0||i===chartRows.length-1){var lbl=(r.date_text||dateRo(r.date_iso))+' '+(r.ora_ctrl||'');labels+='<text x="'+x(i).toFixed(1)+'" y="'+(h-22)+'" font-size="11" fill="#4d647a" text-anchor="middle" transform="rotate(-20 '+x(i).toFixed(1)+' '+(h-22)+')">'+esc(lbl.slice(0,16))+'</text>'}});
   var title='Parametru selectat';
-  els.chartBox.innerHTML='<svg width="'+w+'" height="'+h+'" viewBox="0 0 '+w+' '+h+'" role="img" aria-label="Grafic '+esc(title)+'"><rect x="0" y="0" width="'+w+'" height="'+h+'" fill="#fff"/><text x="'+padL+'" y="18" font-size="16" font-weight="900" fill="#102336">'+esc(title)+titleSuffix+'</text>'+legend+grid+'<line x1="'+padL+'" y1="'+padT+'" x2="'+padL+'" y2="'+(h-padB)+'" stroke="#8796a6"/><line x1="'+padL+'" y1="'+(h-padB)+'" x2="'+(w-padR)+'" y2="'+(h-padB)+'" stroke="#8796a6"/>'+paths+dots+labels+'</svg>'
+  els.chartBox.innerHTML='<svg width="'+w+'" height="'+h+'" viewBox="0 0 '+w+' '+h+'" role="img" aria-label="Grafic '+esc(title)+'"><rect x="0" y="0" width="'+w+'" height="'+h+'" fill="#fff"/><text x="'+padL+'" y="18" font-size="16" font-weight="900" fill="#102336">'+esc(title)+titleSuffix+'</text>'+legend+grid+'<line x1="'+padL+'" y1="'+padT+'" x2="'+padL+'" y2="'+(h-padB)+'" stroke="#8796a6"/><line x1="'+padL+'" y1="'+(h-padB)+'" x2="'+(w-padR)+'" y2="'+(h-padB)+'" stroke="#8796a6"/>'+limitLines+paths+dots+labels+'</svg>'
 }
 function render(){var rows=filteredRows();setChip(els.rowsChip,rows.length+' înregistrări',rows.length?'ok':'warn');renderTable(rows);renderChart(rows);updateDeleteSelectionUi();scrollTableToBottom()}
 function exportFileName(ext){var y=String(els.yearFilter&&els.yearFilter.value||'');var m=String(els.monthFilter&&els.monthFilter.value||'').padStart(2,'0');var d=els.dayFilter&&els.dayFilter.value?('_zi_'+String(els.dayFilter.value).padStart(2,'0')):'';return 'urmarire-temperaturi-tt_'+y+'_'+m+d+'.'+ext}
