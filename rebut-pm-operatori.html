@@ -50,6 +50,11 @@
     .recent th,.recent td{border:1px solid #5e88a7;padding:6px;font-size:12px;height:30px;text-align:center;white-space:nowrap}
     .recent th{background:#5b96cf;color:#fff;font-weight:900;position:sticky;top:0}
     .recent td.left{text-align:left}
+    .recent-table-wrap{width:100%;height:100%;min-height:0;overflow:auto;background:#fff;border:1px solid var(--panel-border);border-radius:12px;scrollbar-gutter:stable both-edges}
+    .recent{min-width:1760px;width:max-content}
+    .recent tr.row-editable{cursor:pointer}
+    .recent tr.row-editable:hover td{background:#dcecff}
+    .recent tr.editing td{background:#fff7d6}
     .empty{padding:22px;border:2px dashed var(--panel-border);border-radius:12px;background:#f7fbff;text-align:center;color:var(--muted);font-weight:900}
     .hidden{display:none!important}
     .modal-backdrop{position:fixed;inset:0;background:rgba(19,49,79,.32);display:none;align-items:center;justify-content:center;z-index:50;padding:18px}
@@ -126,8 +131,8 @@
       <section class="card">
         <div class="card-head">
           <div>
-            <div class="card-title">Ultimele rapoarte salvate</div>
-            <div class="card-sub">Confirmare rapidă pentru ce s-a introdus în Rebut PM.</div>
+            <div class="card-title">Toate rapoartele salvate</div>
+            <div class="card-sub">Tabel complet Rebut PM. Dublu click pe un rând pentru editare.</div>
           </div>
         </div>
         <div class="card-body">
@@ -526,6 +531,8 @@ let helperData = { reper_map: DEFAULT_REPER_MAP.map(x=>Object.assign({},x)), def
 let pinConfig = [];
 let activeOperator = '';
 let rows = [];
+let editingIndex = -1;
+let editingYear = String(CURRENT_YEAR);
 
 function normText(v){ return String(v == null ? '' : v).replace(/\s+/g,' ').trim(); }
 function normalizeEmail(v){ return String(v||'').trim().toLowerCase(); }
@@ -567,10 +574,104 @@ function showPin(){ if(!isOperatorAccount) return; els.pinModal.classList.add('s
 async function unlockPin(){ const pin=normText(els.pinInput.value); if(!pin){ els.pinMsg.textContent='Introdu PIN-ul.'; return; } const hash=await sha256(pin); const hit=pinConfig.find(r=>r.active!==false && r.pin_hash===hash); if(!hit){ els.pinMsg.textContent='PIN greșit sau operator inactiv.'; return; } els.pinInput.value=''; setOperator(hit.operator); toast('Fișă deschisă pentru '+hit.operator); }
 function renderPinAdmin(){ renderOperatorLists(); const rows=pinConfig.length?pinConfig:[{id:uuid(),operator:'',pin_hash:'',active:true}]; els.pinConfigBody.innerHTML=rows.map((r,i)=>`<tr data-i="${i}"><td><input data-pin-k="operator" list="pinOperatorList" value="${esc(r.operator||'')}" placeholder="Nume operator"></td><td><input data-pin-k="pin" type="password" placeholder="PIN nou"></td><td style="text-align:center"><input data-pin-k="active" type="checkbox" ${r.active!==false?'checked':''}></td><td><button class="btn danger" data-del-pin="${i}" type="button">Șterge</button></td></tr>`).join(''); els.pinConfigBody.querySelectorAll('[data-del-pin]').forEach(btn=>btn.addEventListener('click',()=>{ pinConfig.splice(Number(btn.dataset.delPin),1); renderPinAdmin(); })); }
 async function savePins(){ const out=[]; const trs=Array.from(els.pinConfigBody.querySelectorAll('tr')); for(const tr of trs){ const i=Number(tr.dataset.i); const old=pinConfig[i]||{}; const operator=normText(tr.querySelector('[data-pin-k="operator"]').value); const pin=normText(tr.querySelector('[data-pin-k="pin"]').value); const active=!!tr.querySelector('[data-pin-k="active"]').checked; if(!operator) continue; const pin_hash=pin?await sha256(pin):old.pin_hash; if(!pin_hash) continue; out.push({id:old.id||uuid(),operator,pin_hash,active}); } pinConfig=out; await upsertDoc(PIN_DOC_KEY, {page_key:PAGE_KEY, operators:pinConfig, updated_at:new Date().toISOString()}); els.pinAdminModal.classList.remove('show'); toast('PIN-urile au fost salvate.'); }
-function resetForm(){ els.fData.value=todayRo(); els.fSchimb.value=''; els.fNrReper.value=''; els.fDenumireReper.value=''; els.fCodDefect.value=''; els.fLoc.value=''; els.fOperator.value=activeOperator; els.fNeconforme.value=''; els.fRemaniabile.value=''; els.fCauza.value=''; els.fActiuni.value=''; renderLegend(''); }
+function clearEditState(){
+  editingIndex = -1;
+  editingYear = String(CURRENT_YEAR);
+  if(els.btnSave) els.btnSave.textContent = 'Salvează';
+}
+function resetForm(){
+  clearEditState();
+  els.fData.value=todayRo();
+  els.fSchimb.value='';
+  els.fNrReper.value='';
+  els.fDenumireReper.value='';
+  els.fCodDefect.value='';
+  els.fLoc.value='';
+  els.fOperator.value=activeOperator;
+  els.fNeconforme.value='';
+  els.fRemaniabile.value='';
+  els.fCauza.value='';
+  els.fActiuni.value='';
+  renderLegend('');
+}
+function setFormFromRow(row){
+  const r = row || {};
+  els.fData.value = formatDateRo(r.data || '') || todayRo();
+  els.fSchimb.value = normText(r.schimb || '');
+  els.fNrReper.value = normText(r.nr_reper || '');
+  els.fDenumireReper.value = normText(r.denumire_reper_forja || findDenumireForNrReper(r.nr_reper || '') || '');
+  els.fCodDefect.value = normText(r.cod_defect || '');
+  els.fLoc.value = normText(r.loc_depistare || '');
+  els.fOperator.value = normText(r.operator || activeOperator || '');
+  els.fNeconforme.value = toNum(r.piese_neconforme) || '';
+  els.fRemaniabile.value = toNum(r.piese_remaniabile) || '';
+  els.fCauza.value = normText(r.cauza || '');
+  els.fActiuni.value = normText(r.actiuni_corective || '');
+  renderLegend(r.cod_defect || '');
+}
+function startEditRow(index){
+  if(!canEdit) return;
+  if(isOperatorAccount && !activeOperator){ showPin(); return; }
+  const idx = Number(index);
+  if(!Number.isFinite(idx) || idx < 0 || idx >= rows.length) return;
+  const row = rows[idx];
+  editingIndex = idx;
+  editingYear = yearFromRow(row) || String(CURRENT_YEAR);
+  setFormFromRow(row);
+  if(els.btnSave) els.btnSave.textContent = 'Salvează modificarea';
+  renderRecent();
+  try{ els.fData.focus(); }catch(_e){}
+  toast('Rând încărcat pentru editare.');
+}
 function buildRowFromForm(){ const d=parseRoDate(els.fData.value); const cod=normText(els.fCodDefect.value); const defect=defectByCode(cod); const neconf=toNum(els.fNeconforme.value); const rem=toNum(els.fRemaniabile.value); const nr=normText(els.fNrReper.value); const den=findDenumireForNrReper(nr)||normText(els.fDenumireReper.value)||nr; return { an:d?String(d.getFullYear()):String(CURRENT_YEAR), luna:d?monthNameRo(d):'', data:formatDateRo(els.fData.value), nr_reper:nr, denumire_reper_forja:den, cod_defect:cod, provenienta:defect?defect.source:'', descriere_neconformitate_1:defect?defect.label:'', descriere_neconformitate:defect?defect.label:'', loc_depistare:normText(els.fLoc.value), schimb:normText(els.fSchimb.value), operator:normText(els.fOperator.value) || activeOperator, piese_neconforme:neconf, piese_remaniabile:rem, piese_conforme_dupa_remaniere:rem, piese_rebut_final:Math.max(0,neconf-rem), obs:'', cauza:normText(els.fCauza.value), actiuni_corective:normText(els.fActiuni.value) }; }
-async function saveForm(){ if(!canEdit) return; if(isOperatorAccount && !activeOperator){ showPin(); return; } const row=buildRowFromForm(); if(!row.data || !row.nr_reper || !row.cod_defect || !row.operator){ alert('Completează Data, Nr. reper, Cod defect și operatorul.'); return; } if(!row.piese_neconforme){ alert('Completează Piese neconforme.'); return; } const year=yearFromRow(row); const doc=await fetchDoc(getYearDocKey(year)).catch(()=>null); const current=hydrateRows(doc&&doc.payload&&Array.isArray(doc.payload.rows)?doc.payload.rows:[]); current.push(row); await saveRowsForYear(year,current); await loadYear(year); resetForm(); toast('Raport salvat în Rebut PM.'); }
-function renderRecent(){ const last=rows.slice(-30).reverse(); if(!last.length){ els.recentWrap.innerHTML='<div class="empty">Nu există rapoarte salvate în anul curent.</div>'; return; } els.recentWrap.innerHTML='<table class="recent"><thead><tr><th>Data</th><th>Sch.</th><th>Reper</th><th>Cod</th><th>Operator</th><th>Nec.</th><th>Rebut final</th></tr></thead><tbody>'+last.map(r=>`<tr><td>${esc(r.data)}</td><td>${esc(r.schimb)}</td><td class="left">${esc(r.denumire_reper_forja||r.nr_reper)}</td><td>${esc(r.cod_defect)}</td><td>${esc(r.operator)}</td><td>${toNum(r.piese_neconforme)||''}</td><td>${toNum(r.piese_rebut_final)||''}</td></tr>`).join('')+'</tbody></table>'; }
+async function saveForm(){
+  if(!canEdit) return;
+  if(isOperatorAccount && !activeOperator){ showPin(); return; }
+  const row=buildRowFromForm();
+  if(!row.data || !row.nr_reper || !row.cod_defect || !row.operator){ alert('Completează Data, Nr. reper, Cod defect și operatorul.'); return; }
+  if(!row.piese_neconforme){ alert('Completează Piese neconforme.'); return; }
+  const targetYear=yearFromRow(row);
+  const isEditing = editingIndex >= 0;
+  if(isEditing){
+    const sourceYear = editingYear || String(CURRENT_YEAR);
+    const sourceDoc = await fetchDoc(getYearDocKey(sourceYear)).catch(()=>null);
+    const sourceRows = hydrateRows(sourceDoc&&sourceDoc.payload&&Array.isArray(sourceDoc.payload.rows)?sourceDoc.payload.rows:[]);
+    if(editingIndex < 0 || editingIndex >= sourceRows.length){
+      alert('Rândul selectat pentru editare nu mai există. Apasă Refresh și încearcă din nou.');
+      clearEditState();
+      await loadYear(CURRENT_YEAR);
+      return;
+    }
+    if(String(targetYear) === String(sourceYear)){
+      sourceRows[editingIndex] = row;
+      await saveRowsForYear(sourceYear, sourceRows);
+    }else{
+      sourceRows.splice(editingIndex, 1);
+      await saveRowsForYear(sourceYear, sourceRows);
+      const targetDoc = await fetchDoc(getYearDocKey(targetYear)).catch(()=>null);
+      const targetRows = hydrateRows(targetDoc&&targetDoc.payload&&Array.isArray(targetDoc.payload.rows)?targetDoc.payload.rows:[]);
+      targetRows.push(row);
+      await saveRowsForYear(targetYear, targetRows);
+    }
+    await loadYear(CURRENT_YEAR);
+    resetForm();
+    toast('Raport modificat în Rebut PM.');
+    return;
+  }
+  const doc=await fetchDoc(getYearDocKey(targetYear)).catch(()=>null);
+  const current=hydrateRows(doc&&doc.payload&&Array.isArray(doc.payload.rows)?doc.payload.rows:[]);
+  current.push(row);
+  await saveRowsForYear(targetYear,current);
+  await loadYear(targetYear);
+  resetForm();
+  toast('Raport salvat în Rebut PM.');
+}
+function renderRecent(){
+  const entries=rows.map((r,index)=>({r,index})).reverse();
+  if(!entries.length){ els.recentWrap.innerHTML='<div class="empty">Nu există rapoarte salvate în anul curent.</div>'; return; }
+  els.recentWrap.innerHTML='<div class="recent-table-wrap"><table class="recent"><thead><tr><th>Anul</th><th>Luna</th><th>Data</th><th>Nr. reper</th><th>Denumire reper forjă</th><th>Cod defect</th><th>Proveniență</th><th>Descriere neconformitate</th><th>Loc depistare</th><th>Sch.</th><th>Operator</th><th>Piese neconforme</th><th>Piese remaniabile</th><th>Piese conforme după remaniere</th><th>Piese rebut final</th><th>Obs.</th><th>Cauza</th><th>Acțiuni corective</th></tr></thead><tbody>'+entries.map(({r,index})=>`<tr class="row-editable ${index===editingIndex?'editing':''}" data-index="${index}" title="Dublu click pentru editare"><td>${esc(r.an)}</td><td>${esc(r.luna)}</td><td>${esc(r.data)}</td><td>${esc(r.nr_reper)}</td><td class="left">${esc(r.denumire_reper_forja||r.nr_reper)}</td><td>${esc(r.cod_defect)}</td><td>${esc(r.provenienta)}</td><td class="left">${esc(r.descriere_neconformitate||r.descriere_neconformitate_1)}</td><td class="left">${esc(r.loc_depistare)}</td><td>${esc(r.schimb)}</td><td>${esc(r.operator)}</td><td>${toNum(r.piese_neconforme)||''}</td><td>${toNum(r.piese_remaniabile)||''}</td><td>${toNum(r.piese_conforme_dupa_remaniere)||''}</td><td>${toNum(r.piese_rebut_final)||''}</td><td class="left">${esc(r.obs)}</td><td class="left">${esc(r.cauza)}</td><td class="left">${esc(r.actiuni_corective)}</td></tr>`).join('')+'</tbody></table></div>';
+  els.recentWrap.querySelectorAll('tr[data-index]').forEach(tr=>tr.addEventListener('dblclick',()=>startEditRow(tr.dataset.index)));
+}
 async function ensureSession(){ supa=createClient(); if(window.ERPAuth && typeof window.ERPAuth.requireAuth==='function'){ const auth=await window.ERPAuth.requireAuth({next:'rebut-pm-operatori.html', redirectToLogin:true}); if(!auth) throw new Error('Sesiune lipsă'); currentUser=auth.user; currentRole=String(auth.role||'viewer').toLowerCase(); } else { const {data}=await supa.auth.getSession(); if(!data||!data.session){ window.location.href='login.html?next=rebut-pm-operatori.html'; throw new Error('Sesiune lipsă'); } currentUser=data.session.user; currentRole='viewer'; } const email=normalizeEmail(currentUser&&currentUser.email); isOperatorAccount=email===FORJA_CTC_EMAIL; if(isOperatorAccount){ canEdit=true; currentRole='operator'; } else if(currentRole==='admin'){ canEdit=true; } else if(window.ERPAuth && typeof window.ERPAuth.getPageAccess==='function'){ const access=await window.ERPAuth.getPageAccess(PAGE_KEY, {user:currentUser, role:currentRole}); if(!access || access.allowed===false){ window.location.href='index.html'; throw new Error('Fără acces'); } const p=access.permissions||{}; canEdit=p.can_add===true || p.can_edit===true; } els.accountText.textContent='Cont: '+(email||'-')+(isOperatorAccount?' • fără MFA':'' ); els.btnPinAdmin.classList.toggle('hidden', currentRole!=='admin'); els.btnNew.disabled=!canEdit; els.btnSave.disabled=!canEdit; applyOperatorInputMode(); if(isOperatorAccount){ document.body.classList.add('operator-account'); } }
 function bind(){ els.fNrReper.addEventListener('input',syncDenumire); els.fNrReper.addEventListener('change',syncDenumire); els.fCodDefect.addEventListener('input',()=>renderLegend(els.fCodDefect.value)); els.fCodDefect.addEventListener('change',()=>renderLegend(els.fCodDefect.value)); els.fOperator.addEventListener('change',()=>{ if(!isOperatorAccount) activeOperator = normText(els.fOperator.value); }); els.btnResetForm.addEventListener('click',resetForm); els.btnSave.addEventListener('click',()=>saveForm().catch(err=>{console.error(err); alert('Nu am putut salva raportul.\n'+(err&&err.message?err.message:err));})); els.btnNew.addEventListener('click',()=>{ if(isOperatorAccount&&!activeOperator) return showPin(); resetForm(); els.fData.focus(); }); els.btnRefresh.addEventListener('click',()=>loadYear(CURRENT_YEAR).catch(console.error)); els.btnLogout.addEventListener('click',async()=>{ try{ await supa.auth.signOut(); }catch(_){} window.location.href='login.html'; }); els.btnChangeOperator.addEventListener('click',()=>{ activeOperator=''; els.operatorText.textContent='Operator: -'; els.fOperator.value=''; showPin(); }); els.btnUnlock.addEventListener('click',unlockPin); els.pinInput.addEventListener('keydown',ev=>{ if(ev.key==='Enter') unlockPin(); }); els.btnPinAdmin.addEventListener('click',()=>{ renderPinAdmin(); els.pinAdminModal.classList.add('show'); }); els.btnClosePinAdmin.addEventListener('click',()=>els.pinAdminModal.classList.remove('show')); els.btnAddPinRow.addEventListener('click',()=>{ pinConfig.push({id:uuid(),operator:'',pin_hash:'',active:true}); renderPinAdmin(); }); els.btnSavePins.addEventListener('click',()=>savePins().catch(err=>{console.error(err); alert('Nu am putut salva PIN-urile.\n'+(err&&err.message?err.message:err));})); }
 (async function boot(){ try{ bind(); await ensureSession(); await loadHelper(); await loadPinConfig(); await loadYear(CURRENT_YEAR); resetForm(); if(isOperatorAccount) showPin(); }catch(err){ console.error(err); alert('Nu am putut încărca pagina operator Rebut PM.\n'+(err&&err.message?err.message:err)); } })();
