@@ -326,8 +326,15 @@
     };
     const cfg = window.RF_CONFIG || {};
     const sb = (cfg.SUPABASE_URL && cfg.SUPABASE_ANON_KEY && window.supabase) ? window.supabase.createClient(cfg.SUPABASE_URL, cfg.SUPABASE_ANON_KEY, { auth:{ persistSession:true, autoRefreshToken:true, detectSessionInUrl:true } }) : null;
-    const state = { session:null, users:[], selectedEmail:'', doc:{ users:{} }, pageRules:{}, accountAccess:{}, presence:{}, authUserEmails:new Set(), hasCanonicalAuthList:false, dirty:false, access:{ can_view:false, can_add:false, can_edit:false, can_delete:false }, roleDrafts:{}, aclPageFilter:'', aclButtonFilter:'' };
-    function canAclEdit(){ return !!(state.access && (state.access.can_edit === true || state.access.can_add === true)); }
+    const state = { session:null, currentRole:'viewer', users:[], selectedEmail:'', doc:{ users:{} }, pageRules:{}, accountAccess:{}, presence:{}, authUserEmails:new Set(), hasCanonicalAuthList:false, dirty:false, access:{ can_view:false, can_add:false, can_edit:false, can_delete:false }, roleDrafts:{}, aclPageFilter:'', aclButtonFilter:'' };
+    function currentSessionEmail(){ return normalizeEmail(state.session && state.session.user && state.session.user.email); }
+    function canAclEdit(){
+      const sessionEmail = currentSessionEmail();
+      const currentUser = state.users.find(u => normalizeEmail(u.email) === sessionEmail) || null;
+      const role = normalizeRole(state.currentRole || (currentUser && currentUser.role) || (state.session && state.session.user && state.session.user.app_metadata && state.session.user.app_metadata.role) || (state.session && state.session.user && state.session.user.user_metadata && state.session.user.user_metadata.role) || '');
+      if (role === 'admin') return true;
+      return !!(state.access && (state.access.can_edit === true || state.access.can_add === true));
+    }
     function applyAclReadOnly(){ const ro = !canAclEdit(); document.body.classList.toggle('acl-view-only', ro); try{ els.btnSave.disabled = ro; }catch(_e){} qsa('input[type="checkbox"], #txtSearch').forEach(el=>{ try{ if(el.id !== 'txtSearch') el.disabled = ro; }catch(_e){} }); ['btnCheckAll','btnHideAll','btnPageAll','btnPageNone','btnResetMfa','selAccountRole','selAccountStatus','txtAccountNote'].forEach(id=>{ try{ if(els[id]) els[id].disabled = ro; }catch(_e){} }); if(ro){ els.saveSub.textContent = 'Contul curent are doar drept de vizualizare pe această pagină.'; } }
 
     function setStatus(el, text, cls){ if (!el) return; el.textContent = text; el.className = 'status-value' + (cls ? ' ' + cls : ''); }
@@ -548,6 +555,7 @@
         if (window.ERPAuth && typeof window.ERPAuth.requireAuth === 'function') {
           const auth = await window.ERPAuth.requireAuth({ next:'helper-acl.html', redirectToLogin:true });
           state.session = { user: auth.user };
+          state.currentRole = normalizeRole(auth.role || (auth.user && auth.user.app_metadata && auth.user.app_metadata.role) || (auth.user && auth.user.user_metadata && auth.user.user_metadata.role) || 'viewer');
           const access = await window.ERPAuth.getPageAccess('helper-acl', { user: auth.user, role: auth.role });
           state.access = access && access.permissions ? access.permissions : state.access;
           if (state.access.can_view === false) {
@@ -565,6 +573,7 @@
         const session = data && data.session ? data.session : null;
         if (!session || !session.user){ setStatus(els.authStatus, 'Nelogat', 'err'); els.authSub.textContent = 'Te redirecționez la login.'; setTimeout(() => { window.location.href = 'login.html'; }, 500); return false; }
         state.session = session;
+        state.currentRole = normalizeRole((session.user && session.user.app_metadata && session.user.app_metadata.role) || (session.user && session.user.user_metadata && session.user.user_metadata.role) || 'viewer');
         setStatus(els.authStatus, 'Autentificat + MFA', 'ok');
         els.authSub.textContent = (session.user.email || 'Sesiune activă.') + ' MFA confirmat.';
         unlockMfaGuardView();
@@ -1383,13 +1392,34 @@
     }
 
     async function saveDoc(){
-      if (!canAclEdit()) return;
-      if (!state.selectedEmail) return;
-      const selected = state.users.find(u => u.email === state.selectedEmail) || null; if (!selected) return;
+      if (!canAclEdit()) {
+        setStatus(els.saveStatus, 'Fără drept', 'err');
+        els.saveSub.textContent = 'Contul curent nu are drept de salvare în Helper ACL. Verifică rolul admin sau permisiunea can_edit pentru helper-acl.';
+        try { alert('Nu ai drept de salvare în Helper ACL pe acest cont.'); } catch (_e) {}
+        return;
+      }
+      if (!state.selectedEmail) {
+        setStatus(els.saveStatus, 'Nimic de salvat', 'warn');
+        els.saveSub.textContent = 'Selectează mai întâi contul pentru care vrei să salvezi permisiunile.';
+        return;
+      }
+      const selected = state.users.find(u => u.email === state.selectedEmail) || null;
+      if (!selected) {
+        setStatus(els.saveStatus, 'Cont negăsit', 'err');
+        els.saveSub.textContent = 'Contul selectat nu mai există în lista încărcată. Reîncarcă pagina.';
+        return;
+      }
+      setStatus(els.saveStatus, 'Se salvează...', 'warn');
+      els.saveSub.textContent = 'Scriu permisiunile în cloud pentru ' + selected.email + '. Așteaptă confirmarea.';
       const stamp = new Date().toISOString();
 
-      const hiddenButtons = []; qsa('input[type="checkbox"][data-kind="button"]').forEach(chk => { if (!chk.checked) hiddenButtons.push(String(chk.getAttribute('data-key') || '').trim()); });
-      const cleanedHiddenButtons = Array.from(new Set(hiddenButtons.filter(Boolean)));
+      const hiddenSetForSave = currentHidden();
+      qsa('input[type="checkbox"][data-kind="button"]').forEach(chk => {
+        const key = String(chk.getAttribute('data-key') || '').trim();
+        if (!key) return;
+        if (chk.checked) hiddenSetForSave.delete(key); else hiddenSetForSave.add(key);
+      });
+      const cleanedHiddenButtons = Array.from(new Set(Array.from(hiddenSetForSave).filter(Boolean)));
       state.doc.users = state.doc.users || {};
       accountKeys(selected).forEach(key => { state.doc.users[key] = { hidden: cleanedHiddenButtons.slice(), account_email: normalizeEmail(selected.email), account_user_id: String(selected.user_id || '').trim() }; });
 
