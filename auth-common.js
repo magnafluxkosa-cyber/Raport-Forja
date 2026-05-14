@@ -2,6 +2,7 @@
   'use strict';
 
   const ADMIN_EMAIL = normalizeEmail(((window.ERP_FORJA_CONFIG || window.__ERP_FORJA_CONFIG__ || {}).ADMIN_EMAIL) || '');
+  const FORJA_CTC_OPERATOR_EMAIL = 'forja-ctc@forja.local';
   const STORAGE = {
     userId: 'rf_user_id',
     userEmail: 'rf_user_email',
@@ -13,6 +14,10 @@
 
   function normalizeEmail(value){
     return String(value || '').trim().toLowerCase();
+  }
+
+  function isForjaCtcOperatorAccount(value){
+    return normalizeEmail(value) === FORJA_CTC_OPERATOR_EMAIL;
   }
 
   function escapeHtml(value){
@@ -750,6 +755,11 @@
     try {
       const authState = await getCurrentUserWithRole();
       if(authState){
+        const currentPageKey = normalizePageKey(getCurrentPageName());
+        if(isForjaCtcOperatorAccount(authState.user && authState.user.email) && currentPageKey !== 'rebut-pm-operatori'){
+          window.location.href = 'rebut-pm-operatori.html';
+          return null;
+        }
         const status = authState.accountStatus || {};
         const isBlocked = status.is_active === false || status.is_banned === true;
         if(isBlocked){
@@ -845,6 +855,20 @@
 
     const cleanRole = String(role || 'viewer').toLowerCase();
     const fallbackPermissions = defaultPermissionsForRole(cleanRole);
+    const ctcOperatorPermissions = { can_view:true, can_add:true, can_edit:false, can_delete:false, can_export:false, can_import:false };
+    const deniedPermissions = { can_view:false, can_add:false, can_edit:false, can_delete:false, can_export:false, can_import:false };
+    if(user && isForjaCtcOperatorAccount(user.email)){
+      const allowed = settings.pageKey === 'rebut-pm-operatori';
+      return {
+        allowed: allowed,
+        user,
+        role: 'operator',
+        permissions: allowed ? ctcOperatorPermissions : deniedPermissions,
+        source: 'forja-ctc locked account',
+        strictUserAcl: true,
+        message: allowed ? '' : 'Contul Forja-CTC are acces doar la interfața Rebut PM Operatori.'
+      };
+    }
     const sb = getSupabaseClient();
     await registerAutoPage(sb, settings.pageKey);
 
@@ -874,7 +898,6 @@
     }
 
     const openPage = ['login','index'].includes(settings.pageKey);
-    const deniedPermissions = { can_view:false, can_add:false, can_edit:false, can_delete:false, can_export:false, can_import:false };
     return {
       allowed: openPage ? fallbackPermissions.can_view === true : false,
       user,
