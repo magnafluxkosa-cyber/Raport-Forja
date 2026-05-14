@@ -34,6 +34,11 @@
     .opSuggest div{padding:6px 8px;cursor:pointer;font-weight:700;color:#0f172a}
     .opSuggest div:hover,.opSuggest div.active{background:#dbeafe}
     .opInvalid{border-color:#b91c1c!important;background:#fee2e2!important}
+    .mpRequiredMissing{outline:2px solid #d97706!important;background:#fef3c7!important;border-color:#d97706!important}
+    .mpMeasureOk{background:#dcfce7!important;border-color:#16a34a!important;color:#14532d!important;font-weight:800}
+    .mpMeasureBad{background:#fee2e2!important;border-color:#dc2626!important;color:#7f1d1d!important;font-weight:800}
+    .mpReportOk{background:#dcfce7!important;color:#14532d!important;font-weight:800}
+    .mpReportBad{background:#fee2e2!important;color:#7f1d1d!important;font-weight:800}
 
     .mpControlCard{background:rgba(255,255,255,.68)}
     .mpControlGrid{display:grid;grid-template-columns:minmax(330px,.9fr) minmax(430px,1.1fr);gap:8px;align-items:start}
@@ -249,6 +254,75 @@ function mpHoursForShift(){const sh=String($('schimb')?.value||'1');return MP_HO
 function mpHourKey(v){const s=String(v??'').trim();const m=s.match(/^(\d{1,2})(?::00)?$/);return m?String(Number(m[1])):s;}
 function mpFormatTemp(v){let s=String(v??'').trim();if(!s)return'';s=s.replace(/\s*(?:°|º)?\s*C$/i,'').trim();return s?`${s} ºC`:'';}
 function mpCleanTemp(v){return mpFormatTemp(v);} 
+function mpDec(v){const n=Number(String(v??'').replace(',', '.'));return isFinite(n)?n:NaN;}
+function mpFirstNumber(txt){const m=String(txt??'').replace(',', '.').match(/-?\d+(?:\.\d+)?/);return m?Number(m[0]):NaN;}
+function mpToleranceRange(c){
+  const name=String(c?.name||'');const tol=String(c?.tol||'');const label=String(c?.label||'');
+  const txt=`${name} ${tol} ${label}`.replace(/,/g,'.');
+  if(/HB/i.test(txt)){const m=txt.match(/(\d+(?:\.\d+)?)\s*[-–]\s*(\d+(?:\.\d+)?)/);if(m)return{min:Number(m[1]),max:Number(m[2])};}
+  let nominal=mpFirstNumber(name);if(!isFinite(nominal))nominal=mpFirstNumber(label);if(!isFinite(nominal))nominal=mpFirstNumber(tol);
+  if(!isFinite(nominal))return null;
+  const pm=txt.match(/[±]\s*(\d+(?:\.\d+)?)/);
+  if(pm){const d=Number(pm[1]);return{min:nominal-d,max:nominal+d};}
+  const plus=txt.match(/[+＋]\s*(\d+(?:\.\d+)?)/);
+  const minus=txt.match(/[\/-]\s*(\d+(?:\.\d+)?)/);
+  if(plus||minus){const up=plus?Number(plus[1]):0;const down=minus?Number(minus[1]):0;return{min:nominal-down,max:nominal+up};}
+  return{min:nominal,max:nominal};
+}
+function mpValueInTolerance(c,value){
+  const range=mpToleranceRange(c);
+  const val=mpFirstNumber(value);
+  if(!clean(value))return null;
+  if(!range)return true;
+  if(!isFinite(val))return false;
+  return val>=range.min-1e-9&&val<=range.max+1e-9;
+}
+function mpSetMeasureClass(el,state){
+  if(!el)return;
+  el.classList.remove('mpMeasureOk','mpMeasureBad','mpRequiredMissing');
+  if(state==='ok')el.classList.add('mpMeasureOk');
+  if(state==='bad')el.classList.add('mpMeasureBad');
+  if(state==='missing')el.classList.add('mpRequiredMissing');
+}
+function mpApplyFieldColor(el,c,tpl){
+  if(!el)return;
+  const value=clean(el.value);
+  if(!value){mpSetMeasureClass(el,'');return;}
+  if(el.tagName==='SELECT'||mpIsOkNotOkCote(tpl,c)){const v=upper(value);mpSetMeasureClass(el,(v==='OK')?'ok':'bad');return;}
+  mpSetMeasureClass(el,mpValueInTolerance(c,value)?'ok':'bad');
+}
+function mpApplyAutocontrolColors(){
+  const tpl=mpFindTemplate($('reper')?.value);if(!tpl)return;const cotes=tpl.cotes||[];
+  document.querySelectorAll('#mpAutocontrol tr[data-mpauto-row]').forEach(tr=>{
+    tr.querySelectorAll('.mpAutoVal').forEach(el=>{const idx=Number(String(el.dataset.cote||'').replace('c',''));mpApplyFieldColor(el,cotes[idx]||{},tpl);});
+    ['.mpAutoTemp','.mpAutoAspect'].forEach(sel=>{const el=tr.querySelector(sel);if(el&&clean(el.value))el.classList.remove('mpRequiredMissing');});
+  });
+}
+function mpReportMeasureClass(tpl,c,value){
+  if(!clean(value))return'';
+  if(mpIsOkNotOkCote(tpl,c)){const v=upper(value);return v==='OK'?'mpReportOk':'mpReportBad';}
+  return mpValueInTolerance(c,value)?'mpReportOk':'mpReportBad';
+}
+function mpClearRequiredMarkers(){document.querySelectorAll('.mpRequiredMissing').forEach(el=>el.classList.remove('mpRequiredMissing'));}
+function mpValidateRequiredControls(row){
+  const miss=[];mpClearRequiredMarkers();
+  if(norm(row.ciocan)!=='MP')return miss;
+  (MP_DD51_GROUPS||[]).forEach(g=>{(g.items||[]).forEach((txt,i)=>{
+    const nr=i+1;const rec=(row.mp_dd51||[]).find(x=>String(x.group)===String(g.key)&&Number(x.nr)===nr);
+    if(!rec||!(rec.checked||rec.bifat)){miss.push(`DD-51 ${g.key}.${nr} - ${txt}`);const tr=[...document.querySelectorAll('#mpChecklist tr[data-mpchk]')].find(x=>x.dataset.mpchk===`${g.key}-${nr}`);const chk=tr&&tr.querySelector('.mpChkStatus');if(chk)chk.classList.add('mpRequiredMissing');}
+  })});
+  const tpl=mpFindTemplate(row.reper);
+  if(!tpl){miss.push(`Fișă autocontrol reper - nu există fișă mapată pentru ${row.reper||'reperul ales'}`);return miss;}
+  const cotes=tpl.cotes||[];const auto=row.mp_autocontrol||{};const rows=Array.isArray(auto.rows)?auto.rows:[];
+  mpHoursForShift().forEach(h=>{
+    const rec=rows.find(x=>String(x.ora)===String(h)||mpHourKey(x.ora)===mpHourKey(h))||{values:{}};
+    const tr=[...document.querySelectorAll('#mpAutocontrol tr[data-mpauto-row]')].find(x=>String(x.dataset.mpautoRow)===String(h));
+    cotes.forEach((c,i)=>{const val=clean(rec.values&&rec.values['c'+i]);if(!val){miss.push(`Fișă autocontrol ora ${h} - ${c.name||c.label||('cota '+(i+1))}`);const el=tr&&tr.querySelector(`.mpAutoVal[data-cote="c${i}"]`);if(el)el.classList.add('mpRequiredMissing');}});
+    if(!clean(rec.temp)){miss.push(`Fișă autocontrol ora ${h} - TEMP. PIR. FINAL`);const el=tr&&tr.querySelector('.mpAutoTemp');if(el)el.classList.add('mpRequiredMissing');}
+    if(!clean(rec.aspect)){miss.push(`Fișă autocontrol ora ${h} - ASPECTUL PIESELOR`);const el=tr&&tr.querySelector('.mpAutoAspect');if(el)el.classList.add('mpRequiredMissing');}
+  });
+  return miss;
+}
 function htmlEsc(v){return String(v??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
 function mpStatusOptions(v){const s=clean(v)||'OK';return ['OK','NOK','N/A'].map(x=>`<option value="${x}" ${x===s?'selected':''}>${x}</option>`).join('')}
 function mpFindTemplate(reper){const rNorm=norm(reper),rNo=nospace(reper);let best=null;Object.values(MP_AUTOCONTROL_TEMPLATES).forEach(t=>{(t.aliases||[]).forEach(a=>{const an=norm(a),ao=nospace(a);if(an&&((an===rNorm)||(ao===rNo)||rNorm.includes(an)||rNo.includes(ao)))best=t;})});return best}
@@ -258,7 +332,7 @@ function collectMpChecklist(){if(norm($('utilaj')?.value)!=='MP')return[];const 
 function mpInputVal(saved,rowKey,coteKey,field){const rows=(saved&&Array.isArray(saved.rows))?saved.rows:[];const key=String(rowKey??'');const r=rows.find(x=>String(x.ora)===key||mpHourKey(x.ora)===mpHourKey(key));if(!r)return'';if(field==='temp')return mpFormatTemp(r.temp||'');if(field==='aspect')return r.aspect||'';return (r.values&&r.values[coteKey])||'';}
 function mpIsOkNotOkCote(tpl,c){const text=norm(`${tpl?.mode||''} ${c?.label||''} ${c?.name||''} ${c?.tol||''}`);return String(tpl?.mode||'')==='calibru_cald'||text.includes('T NT')||text.includes('TNT');}
 function mpOkNotOptions(v){const s=upper(v);return `<option value="" ${s?'':'selected'}></option><option value="OK" ${s==='OK'?'selected':''}>OK</option><option value="NOT OK" ${s==='NOT OK'||s==='NOK'?'selected':''}>NOT OK</option>`;}
-function renderMpAutocontrol(saved){const el=$('mpAutocontrol');if(!el)return;const isMP=norm($('utilaj')?.value)==='MP';if(!isMP){el.innerHTML='';return;}const reper=upper($('reper')?.value);const tpl=mpFindTemplate(reper);if(!reper){el.innerHTML='<div class="mpMissing">Alege reperul pentru a afișa automat fișa de autocontrol.</div>';return;}if(!tpl){el.innerHTML='<div class="mpMissing">Nu există încă fișă de autocontrol mapată pentru reperul selectat: '+htmlEsc(reper)+'.</div>';return;}const cotes=tpl.cotes||[];const savedData=(saved&&saved.template_key===tpl.sheet)?saved:{};let head='<tr><th>Ora</th>'+cotes.map((c,i)=>`<th class="mpCoteHead"><div>${htmlEsc(c.name||c.label)}</div><small>${htmlEsc(c.tol||'')}</small></th>`).join('');head+='<th class="mpTempHead">TEMP. PIR. FINAL</th>';head+='<th class="mpAspectHead">ASPECTUL PIESELOR</th></tr>';const body=mpHoursForShift().map(h=>{let row=`<tr data-mpauto-row="${h}"><td class="mpOra">${h}</td>`;cotes.forEach((c,i)=>{const key='c'+i;const val=mpInputVal(savedData,h,key,'val');if(mpIsOkNotOkCote(tpl,c)){row+=`<td><select class="mpAutoVal mpAutoChoice" data-cote="${key}">${mpOkNotOptions(val)}</select></td>`}else{row+=`<td><input class="mpAutoVal" data-cote="${key}" value="${htmlEsc(val)}"></td>`}});row+=`<td><input class="mpAutoTemp" inputmode="decimal" value="${htmlEsc(mpFormatTemp(mpInputVal(savedData,h,'','temp')))}"></td>`;row+=`<td><input class="mpAutoAspect" value="${htmlEsc(mpInputVal(savedData,h,'','aspect'))}"></td></tr>`;return row;}).join('');el.innerHTML=`<div class="mpNote"><b>Reper:</b> ${htmlEsc(reper)} &nbsp; <b>Fișă:</b> ${htmlEsc(tpl.sheet)} &nbsp; <b>Tip:</b> ${tpl.mode==='calibru_cald'?'calibru la cald T/NT':'cote măsurate'}</div><table class="mpMiniTable"><thead>${head}</thead><tbody>${body}</tbody></table>`;}
+function renderMpAutocontrol(saved){const el=$('mpAutocontrol');if(!el)return;const isMP=norm($('utilaj')?.value)==='MP';if(!isMP){el.innerHTML='';return;}const reper=upper($('reper')?.value);const tpl=mpFindTemplate(reper);if(!reper){el.innerHTML='<div class="mpMissing">Alege reperul pentru a afișa automat fișa de autocontrol.</div>';return;}if(!tpl){el.innerHTML='<div class="mpMissing">Nu există încă fișă de autocontrol mapată pentru reperul selectat: '+htmlEsc(reper)+'.</div>';return;}const cotes=tpl.cotes||[];const savedData=(saved&&saved.template_key===tpl.sheet)?saved:{};let head='<tr><th>Ora</th>'+cotes.map((c,i)=>`<th class="mpCoteHead"><div>${htmlEsc(c.name||c.label)}</div><small>${htmlEsc(c.tol||'')}</small></th>`).join('');head+='<th class="mpTempHead">TEMP. PIR. FINAL</th>';head+='<th class="mpAspectHead">ASPECTUL PIESELOR</th></tr>';const body=mpHoursForShift().map(h=>{let row=`<tr data-mpauto-row="${h}"><td class="mpOra">${h}</td>`;cotes.forEach((c,i)=>{const key='c'+i;const val=mpInputVal(savedData,h,key,'val');if(mpIsOkNotOkCote(tpl,c)){row+=`<td><select class="mpAutoVal mpAutoChoice" data-cote="${key}">${mpOkNotOptions(val)}</select></td>`}else{row+=`<td><input class="mpAutoVal" data-cote="${key}" value="${htmlEsc(val)}"></td>`}});row+=`<td><input class="mpAutoTemp" inputmode="decimal" value="${htmlEsc(mpFormatTemp(mpInputVal(savedData,h,'','temp')))}"></td>`;row+=`<td><input class="mpAutoAspect" value="${htmlEsc(mpInputVal(savedData,h,'','aspect'))}"></td></tr>`;return row;}).join('');el.innerHTML=`<div class="mpNote"><b>Reper:</b> ${htmlEsc(reper)} &nbsp; <b>Fișă:</b> ${htmlEsc(tpl.sheet)} &nbsp; <b>Tip:</b> ${tpl.mode==='calibru_cald'?'calibru la cald T/NT':'cote măsurate'}</div><table class="mpMiniTable"><thead>${head}</thead><tbody>${body}</tbody></table>`;mpApplyAutocontrolColors();}
 function collectMpAutocontrol(){if(norm($('utilaj')?.value)!=='MP')return null;const reper=upper($('reper')?.value);const tpl=mpFindTemplate(reper);if(!tpl)return {reper,template_key:'',sheet:'',rows:[]};const rows=[];document.querySelectorAll('#mpAutocontrol tr[data-mpauto-row]').forEach(tr=>{const rec={ora:tr.dataset.mpautoRow,values:{},temp:mpCleanTemp(tr.querySelector('.mpAutoTemp')?.value),aspect:clean(tr.querySelector('.mpAutoAspect')?.value)};tr.querySelectorAll('.mpAutoVal').forEach(inp=>{rec.values[inp.dataset.cote]=clean(inp.value)});rows.push(rec)});return {reper,template_key:tpl.sheet,sheet:tpl.sheet,mode:tpl.mode,cotes:tpl.cotes||[],hasTemp:true,rows};}
 function renderMpControl(savedCheck,savedAuto){const isMP=norm($('utilaj')?.value)==='MP';const card=$('mpControlCard');if(card)card.classList.toggle('auto-hidden',!isMP);if(!isMP)return;renderMpInstructions();renderMpChecklist(savedCheck||[]);renderMpAutocontrol(savedAuto||null);}
 const DEFAULT_OPERATIUNI=['Incalzire SDV [Min]','Pauza de masa [Min]','Schimbare reper [Min]','Reglaj [Min]','Opriri neplanificate [Min]'];
@@ -520,7 +594,7 @@ async function deleteProblemeForReport(reportId,year){let baseRows=await readPro
 async function loadOps(){const d=await readDoc(OPS_DOC);REPORTS=(d.payload&&Array.isArray(d.payload.rows))?d.payload.rows:[];renderTable()}async function saveOps(){await writeDoc(OPS_DOC,{app:'RAPORT_FORJA_OPERATORI',version:1,updated_at:nowIso(),rows:REPORTS})}
 async function loadForjateYear(y){const d=await readDoc(FORJATE_PREFIX+y);return(d.payload&&Array.isArray(d.payload.rows))?d.payload.rows:[]}async function saveForjateYear(y,rows){const ts=nowIso();await writeDoc(FORJATE_PREFIX+y,{app:'FORJATE',version:1,year:y,updated_at:ts,rows});let idx={years:[],updatedAtByYear:{}};try{const d=await readDoc(FORJATE_INDEX);if(d.payload){idx.years=Array.isArray(d.payload.years)?d.payload.years:[];idx.updatedAtByYear=d.payload.updatedAtByYear||{}}}catch(e){}if(!idx.years.includes(y))idx.years.push(y);idx.updatedAtByYear[y]=ts;await writeDoc(FORJATE_INDEX,{app:'FORJATE_INDEX',version:1,years:idx.years.sort(),currentYear:String(new Date().getFullYear()),updatedAtByYear:idx.updatedAtByYear,savedAt:ts,updated_at:ts})}
 function readForm(){const data=dateToDMY($('data').value);const isMP=norm($('utilaj').value)==='MP';const row={id:EDIT_ID||uuid(),created_at:nowIso(),an:yearFromDMY(data),luna:monthNameFromDMY(data),data,schimb:clean($('schimb').value),ciocan:clean($('utilaj').value),reper:upper($('reper').value),diametru:clean($('diam').value),calitate:clean($('calitate').value),marcaj:upper($('marcaj').value),cod_cat_dk:upper($('codcat').value),cod_cat_marc:'',matrita_sup:upper($('matritaSup').value),inaltime_sup:toNum($('inaltimeSup').value),matrita_inf:upper($('matritaInf').value),inaltime_inf:toNum($('inaltimeInf').value),portmatrita:isMP?upper($('portmatrita').value):'',total_ore_lucrate:toNum($('totalOreLucrate').value)||8,buc_realizate:toNum($('buc').value),rebut:toNum($('rebut').value),tact_sec:toNum($('tact').value),schimbare_reper_min:toNum($('tl_schimbare')?.value),reglaj_min:toNum($('tl_reglaj')?.value),opriri_min:(toNum($('tl_oprire1')?.value)+toNum($('tl_oprire2')?.value)+toNum($('tl_oprire3')?.value)+toNum($('tl_oprire4')?.value)),incalzire_sdv_min:toNum($('tl_incalzire')?.value),pauza_masa_min:toNum($('tl_pauza')?.value),kg_buc_debitat:0,kg_buc_forjat:0};if(isMP){row.mp_dd51=collectMpChecklist();row.mp_autocontrol=collectMpAutocontrol();}return recalc(row)}
-function validate(row,ops,timeLoss){const miss=[];const badOps=invalidOperatorInputs();const badSefi=invalidSefInputs();if(badOps.length)miss.push('Operator invalid (alege din lista Helper Data)');if(badSefi.length)badSefi.forEach(x=>miss.push(x));if(!row.data)miss.push('Data');if(!row.schimb)miss.push('Schimbul');if(!row.ciocan)miss.push('Utilaj');if(!row.reper)miss.push('Reper');if(!(row.buc_realizate>0))miss.push('Cantitate produsă');if(row.rebut<0)miss.push('Rebut corect');if(!row.marcaj)miss.push('Marcaj matriță');if(!row.cod_cat_dk)miss.push('Cod KAT/CAT');if(!row.matrita_sup)miss.push('Matriță superioară');if(!(row.inaltime_sup>0))miss.push('Înălțime superioară');if(!row.matrita_inf)miss.push('Matriță inferioară');if(!(row.inaltime_inf>0))miss.push('Înălțime inferioară');if(norm(row.ciocan)==='MP'&&!row.portmatrita)miss.push('Denumire portmatriță');if(!(toNum(row.total_ore_lucrate)>0))miss.push('Total ore lucrate');(timeLoss||[]).forEach(t=>{const hasMin=!!t.rawMinute;const hasDep=!!clean(t.departament);const hasObs=!!clean(t.observatii);const hasOp=!!clean(t.operatiune);if(t.required&&!hasMin)miss.push(t.title+' minute');if(hasMin&&t.minute<0)miss.push(t.title+' minute corecte');if(hasObs){if(!hasOp)miss.push(t.title+' denumire operațiune');if(!hasMin||!(t.minute>0))miss.push(t.title+' minute');if(!hasDep)miss.push(t.title+' departament');}else if(!t.required){/* fără observații nu obligă operațiune, minute sau departament */}});if(!row.diametru)miss.push('Dimensiune oțel automată');if(!row.calitate)miss.push('Calitate oțel automată');if(!row.tact_sec)miss.push('Tact automat');return miss}
+function validate(row,ops,timeLoss){const miss=[];const badOps=invalidOperatorInputs();const badSefi=invalidSefInputs();if(badOps.length)miss.push('Operator invalid (alege din lista Helper Data)');if(badSefi.length)badSefi.forEach(x=>miss.push(x));if(!row.data)miss.push('Data');if(!row.schimb)miss.push('Schimbul');if(!row.ciocan)miss.push('Utilaj');if(!row.reper)miss.push('Reper');if(!(row.buc_realizate>0))miss.push('Cantitate produsă');if(row.rebut<0)miss.push('Rebut corect');if(!row.marcaj)miss.push('Marcaj matriță');if(!row.cod_cat_dk)miss.push('Cod KAT/CAT');if(!row.matrita_sup)miss.push('Matriță superioară');if(!(row.inaltime_sup>0))miss.push('Înălțime superioară');if(!row.matrita_inf)miss.push('Matriță inferioară');if(!(row.inaltime_inf>0))miss.push('Înălțime inferioară');if(norm(row.ciocan)==='MP'&&!row.portmatrita)miss.push('Denumire portmatriță');if(!(toNum(row.total_ore_lucrate)>0))miss.push('Total ore lucrate');if(norm(row.ciocan)==='MP')miss.push(...mpValidateRequiredControls(row));(timeLoss||[]).forEach(t=>{const hasMin=!!t.rawMinute;const hasDep=!!clean(t.departament);const hasObs=!!clean(t.observatii);const hasOp=!!clean(t.operatiune);if(t.required&&!hasMin)miss.push(t.title+' minute');if(hasMin&&t.minute<0)miss.push(t.title+' minute corecte');if(hasObs){if(!hasOp)miss.push(t.title+' denumire operațiune');if(!hasMin||!(t.minute>0))miss.push(t.title+' minute');if(!hasDep)miss.push(t.title+' departament');}else if(!t.required){/* fără observații nu obligă operațiune, minute sau departament */}});if(!row.diametru)miss.push('Dimensiune oțel automată');if(!row.calitate)miss.push('Calitate oțel automată');if(!row.tact_sec)miss.push('Tact automat');return miss}
 
 function resetSaveButtons(){
   IS_SAVING=false;
@@ -628,7 +702,8 @@ function reportAutocontrolHtml(r){
   if(!a||!Array.isArray(a.rows)||!a.rows.length)return '<div class="reportEmpty">Nu există fișă autocontrol salvată pentru acest raport.</div>';
   const cotes=Array.isArray(a.cotes)?a.cotes:[];
   const head=`<tr><th>Ora</th>${cotes.map(c=>`<th>${reportSafe(c.name||c.label)}<br><small>${reportSafe(c.tol||'')}</small></th>`).join('')}<th>TEMP. PIR. FINAL</th><th>ASPECTUL PIESELOR</th></tr>`;
-  const body=a.rows.map(row=>`<tr><td>${reportSafe(row.ora)}</td>${cotes.map((c,i)=>`<td>${reportSafe(row.values&&row.values['c'+i])}</td>`).join('')}<td>${reportSafe(row.temp)}</td><td>${reportSafe(row.aspect)}</td></tr>`).join('');
+  const tpl={mode:a.mode||'',sheet:a.sheet||a.template_key||''};
+  const body=a.rows.map(row=>`<tr><td>${reportSafe(row.ora)}</td>${cotes.map((c,i)=>{const v=row.values&&row.values['c'+i];const cls=mpReportMeasureClass(tpl,c,v);return `<td class="${cls}">${reportSafe(v)}</td>`}).join('')}<td>${reportSafe(row.temp)}</td><td>${reportSafe(row.aspect)}</td></tr>`).join('');
   return `<div class="reportSummaryLine">Fișă: ${reportSafe(a.sheet||a.template_key)} • Reper: ${reportSafe(a.reper||r.reper)}</div><table><thead>${head}</thead><tbody>${body}</tbody></table>`;
 }
 function reportMainDataHtml(r){
@@ -687,6 +762,18 @@ if($('btnSaveSefEchipa'))$('btnSaveSefEchipa').onclick=async()=>{if(!IS_ADMIN){$
 
 document.addEventListener('blur',e=>{if(e.target&&e.target.classList&&e.target.classList.contains('mpAutoTemp'))e.target.value=mpFormatTemp(e.target.value)},true);
 document.addEventListener('change',e=>{if(e.target&&e.target.classList&&e.target.classList.contains('mpAutoTemp'))e.target.value=mpFormatTemp(e.target.value)});
+document.addEventListener('input',e=>{
+  if(e.target&&e.target.classList&&(e.target.classList.contains('mpAutoVal')||e.target.classList.contains('mpAutoTemp')||e.target.classList.contains('mpAutoAspect'))){
+    if(clean(e.target.value))e.target.classList.remove('mpRequiredMissing');
+    mpApplyAutocontrolColors();
+  }
+});
+document.addEventListener('change',e=>{
+  if(e.target&&e.target.classList&&(e.target.classList.contains('mpAutoVal')||e.target.classList.contains('mpAutoTemp')||e.target.classList.contains('mpAutoAspect')||e.target.classList.contains('mpChkStatus'))){
+    if(e.target.checked||clean(e.target.value))e.target.classList.remove('mpRequiredMissing');
+    mpApplyAutocontrolColors();
+  }
+});
 
 /* SAVE_BUTTON_SAFETY_RESET */
 document.addEventListener('click',e=>{
