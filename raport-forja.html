@@ -38,10 +38,10 @@
     .opSuggest div:hover,.opSuggest div.active{background:#dbeafe}
     .opInvalid{border-color:#b91c1c!important;background:#fee2e2!important}
     .mpRequiredMissing{outline:2px solid #d97706!important;background:#fef3c7!important;border-color:#d97706!important}
-    .mpMeasureOk{background:#dcfce7!important;border-color:#16a34a!important;color:#14532d!important;font-weight:800}
-    .mpMeasureBad{background:#fee2e2!important;border-color:#dc2626!important;color:#7f1d1d!important;font-weight:800}
-    .mpReportOk{background:#dcfce7!important;color:#14532d!important;font-weight:800}
-    .mpReportBad{background:#fee2e2!important;color:#7f1d1d!important;font-weight:800}
+    .mpMeasureOk{background:#fff!important;border:2px solid #16a34a!important;color:#15803d!important;-webkit-text-fill-color:#15803d!important;font-weight:900!important}
+    .mpMeasureBad{background:#fff!important;border:2px solid #dc2626!important;color:#b91c1c!important;-webkit-text-fill-color:#b91c1c!important;font-weight:900!important}
+    .mpReportOk{background:#fff!important;color:#15803d!important;font-weight:900!important}
+    .mpReportBad{background:#fff!important;color:#b91c1c!important;font-weight:900!important}
 
     .mpControlCard{background:rgba(255,255,255,.68)}
     .mpControlGrid{display:grid;grid-template-columns:minmax(330px,.9fr) minmax(430px,1.1fr);gap:8px;align-items:start}
@@ -304,27 +304,61 @@ function mpHourKey(v){const s=String(v??'').trim();const m=s.match(/^(\d{1,2})(?
 function mpFormatTemp(v){let s=String(v??'').trim();if(!s)return'';s=s.replace(/\s*(?:°|º)?\s*C$/i,'').trim();return s?`${s} ºC`:'';}
 function mpCleanTemp(v){return mpFormatTemp(v);} 
 function mpDec(v){const n=Number(String(v??'').replace(',', '.'));return isFinite(n)?n:NaN;}
-function mpFirstNumber(txt){const m=String(txt??'').replace(',', '.').match(/-?\d+(?:\.\d+)?/);return m?Number(m[0]):NaN;}
+function mpNormalizeNumberText(txt){return String(txt??'').replace(/,/g,'.').replace(/[−–—]/g,'-');}
+function mpTolNumber(raw){
+  let s=String(raw??'').trim().replace(',','.');
+  if(!s)return NaN;
+  if(/^\d+$/.test(s)&&s.length>1&&s[0]==='0')return Number('0.'+s.slice(1));
+  return Number(s);
+}
+function mpFirstNumber(txt){
+  const m=mpNormalizeNumberText(txt).match(/-?\d+(?:\.\d+)?/);
+  return m?mpTolNumber(m[0]):NaN;
+}
 function mpToleranceRange(c){
-  const name=String(c?.name||'');const tol=String(c?.tol||'');const label=String(c?.label||'');
-  const txt=`${name} ${tol} ${label}`.replace(/,/g,'.');
-  if(/HB|HRC/i.test(txt)){const m=txt.match(/(\d+(?:\.\d+)?)\s*[-–—]\s*(\d+(?:\.\d+)?)/);if(m)return{min:Number(m[1]),max:Number(m[2])};}
-  const plainRange=txt.match(/(\d+(?:\.\d+)?)\s*[-–—]\s*(\d+(?:\.\d+)?)/);
-  if(plainRange&&!/[±+＋]/.test(txt))return{min:Number(plainRange[1]),max:Number(plainRange[2])};
-  let nominal=mpFirstNumber(name);if(!isFinite(nominal))nominal=mpFirstNumber(label);if(!isFinite(nominal))nominal=mpFirstNumber(tol);
-  if(!isFinite(nominal))return null;
-  const pm=txt.match(/[±]\s*(\d+(?:\.\d+)?)/);
-  if(pm){const d=Number(pm[1]);return{min:nominal-d,max:nominal+d};}
-  const plus=txt.match(/[+＋]\s*(\d+(?:\.\d+)?)/);
-  const minus=txt.match(/[\/-]\s*(\d+(?:\.\d+)?)/);
-  if(plus||minus){const up=plus?Number(plus[1]):0;const down=minus?Number(minus[1]):0;return{min:nominal-down,max:nominal+up};}
+  const nameRaw=String(c?.name||'');
+  const tolRaw=String(c?.tol||'');
+  const labelRaw=String(c?.label||'');
+  const name=mpNormalizeNumberText(nameRaw);
+  const tol=mpNormalizeNumberText(tolRaw);
+  const label=mpNormalizeNumberText(labelRaw);
+  const allText=`${name} ${tol} ${label}`;
+  if(/OK\s*\/?\s*NOT\s*OK|T\s*\/?\s*NT|TRECE\s*\/?\s*NU\s*TRECE/i.test(allText))return null;
+
+  const hb=allText.match(/(\d+(?:\.\d+)?)\s*[-]\s*(\d+(?:\.\d+)?)\s*(?:HB|HRC)/i);
+  if(hb)return{min:mpTolNumber(hb[1]),max:mpTolNumber(hb[2])};
+
+  const nominal=mpFirstNumber(nameRaw) || mpFirstNumber(labelRaw);
+  const hasNominal=isFinite(nominal);
+  const tolText=`${tol} ${label}`;
+
+  const symmetric=tolText.match(/[±]\s*(\d+(?:\.\d+)?|\d+)/);
+  if(hasNominal&&symmetric){
+    const d=mpTolNumber(symmetric[1]);
+    return{min:nominal-d,max:nominal+d};
+  }
+
+  const plus=tolText.match(/[+＋]\s*(\d+(?:\.\d+)?|\d+)/);
+  const minus=tolText.match(/(?:^|\s|\/)-\s*(\d+(?:\.\d+)?|\d+)/);
+  if(hasNominal&&(plus||minus)){
+    const up=plus?mpTolNumber(plus[1]):0;
+    const down=minus?mpTolNumber(minus[1]):0;
+    return{min:nominal-down,max:nominal+up};
+  }
+
+  const plainRange=allText.match(/(\d+(?:\.\d+)?)\s*[-]\s*(\d+(?:\.\d+)?)/);
+  if(plainRange&&!/[±+＋]/.test(allText)){
+    const a=mpTolNumber(plainRange[1]),b=mpTolNumber(plainRange[2]);
+    return{min:Math.min(a,b),max:Math.max(a,b)};
+  }
   return null;
 }
 function mpValueInTolerance(c,value){
+  const valueText=clean(value);
+  if(!valueText)return null;
   const range=mpToleranceRange(c);
-  const val=mpFirstNumber(value);
-  if(!clean(value))return null;
-  if(!range)return true;
+  if(!range)return null;
+  const val=mpFirstNumber(valueText);
   if(!isFinite(val))return false;
   return val>=range.min-1e-9&&val<=range.max+1e-9;
 }
