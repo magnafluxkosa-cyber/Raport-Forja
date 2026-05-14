@@ -6,6 +6,8 @@
   <title>Raport forja - K.A.D</title>
   <script src="./rf-config.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js" referrerpolicy="no-referrer"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js" referrerpolicy="no-referrer"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js" referrerpolicy="no-referrer"></script>
   <style>
     :root{--bg:#b7d7f0;--panel:#eaf4ff;--head:#cfe3f6;--line:#1f2937;--blue:#1e5a96;--blue2:#174777;--red:#b91c1c;--green:#15803d;--muted:#475569;--white:#fff;--violet:#ede9fe;}
@@ -852,12 +854,30 @@ function fisaPrintableHtml(r){
 function openFisaView(id){const r=REPORTS.find(x=>String(x.id)===String(id));if(!r)return;$('fisaViewTitle').textContent=`Fișă salvată - ${r.data||''} - ${r.reper||''}`;$('fisaPrintArea').innerHTML=fisaPrintableHtml(r);$('fisaViewModal').style.display='flex';}
 
 function safePdfFileName(value){return String(value||'fisa_autocontrol').normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^A-Za-z0-9._-]+/g,'_').replace(/^_+|_+$/g,'').slice(0,140)||'fisa_autocontrol';}
+async function applyFisaPdfTwoPageStyle(holder,clone){
+  const st=document.createElement('style');
+  st.textContent=`
+    .fisaPdfCompact{width:287mm!important;max-width:287mm!important;margin:0!important;padding:3mm!important;border:0!important;background:#fff!important;font-family:Calibri,Arial,sans-serif!important;color:#111!important;}
+    .fisaPdfCompact h1{font-size:14px!important;margin:0 0 4px!important;line-height:1.05!important;letter-spacing:.03em!important;}
+    .fisaPdfCompact h2{font-size:10px!important;margin:5px 0 2px!important;line-height:1.05!important;}
+    .fisaPdfCompact table{font-size:8.4px!important;margin-bottom:3px!important;border-collapse:collapse!important;line-height:1.05!important;}
+    .fisaPdfCompact th,.fisaPdfCompact td{padding:1.6px 2.5px!important;line-height:1.05!important;vertical-align:middle!important;}
+    .fisaPdfCompact th{font-weight:900!important;}
+    .fisaPdfCompact .fisaHeader td:first-child{width:95px!important;}
+    .fisaPdfCompact .reportSummaryLine{font-size:8.8px!important;margin:0 0 2px!important;line-height:1.05!important;}
+    .fisaPdfCompact .fisaFooter{font-size:8.6px!important;margin-top:4px!important;gap:10px!important;}
+    .fisaPdfCompact .fisaFooter div{min-width:150px!important;padding-top:2px!important;}
+  `;
+  holder.appendChild(st);
+  clone.classList.add('fisaPdfCompact');
+}
 async function saveFisaPdfDirect(){
   const btn=$('btnPrintFisa');
   const area=$('fisaPrintArea');
   const sheet=area&&area.querySelector('.fisaSheet');
   if(!sheet){showValidation('PDF','Nu există fișă deschisă pentru salvare PDF.',false);return;}
-  if(!window.html2pdf){showValidation('PDF','Generatorul PDF nu s-a încărcat. Verifică conexiunea la internet și reîncearcă.',false);return;}
+  const JsPDF=window.jspdf?.jsPDF||window.jsPDF;
+  if(!window.html2canvas||!JsPDF){showValidation('PDF','Generatorul PDF nu s-a încărcat. Verifică conexiunea la internet și reîncearcă.',false);return;}
   const oldText=btn?btn.textContent:'';
   if(btn){btn.disabled=true;btn.textContent='Se generează PDF...';}
   const title=$('fisaViewTitle')?.textContent||'Fisa salvata';
@@ -869,24 +889,46 @@ async function saveFisaPdfDirect(){
   holder.style.width='287mm';
   holder.style.background='#ffffff';
   holder.style.zIndex='-1';
+  holder.style.overflow='visible';
   const clone=sheet.cloneNode(true);
-  clone.style.width='287mm';
-  clone.style.maxWidth='287mm';
-  clone.style.margin='0';
-  clone.style.padding='4mm';
-  clone.style.border='0';
   clone.style.background='#ffffff';
+  applyFisaPdfTwoPageStyle(holder,clone);
   holder.appendChild(clone);
   document.body.appendChild(holder);
   try{
-    await window.html2pdf().set({
-      margin:[5,5,5,5],
-      filename:fileName,
-      image:{type:'jpeg',quality:0.98},
-      html2canvas:{scale:2,useCORS:true,backgroundColor:'#ffffff',scrollX:0,scrollY:0},
-      jsPDF:{unit:'mm',format:'a4',orientation:'landscape'},
-      pagebreak:{mode:['css','legacy'],avoid:['tr','.fisaHeader','.fisaFooter']}
-    }).from(clone).save();
+    await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+    const canvas=await window.html2canvas(clone,{scale:2,useCORS:true,backgroundColor:'#ffffff',scrollX:0,scrollY:0,windowWidth:clone.scrollWidth,windowHeight:clone.scrollHeight});
+    const pdf=new JsPDF({unit:'mm',format:'a4',orientation:'landscape'});
+    const pageW=pdf.internal.pageSize.getWidth();
+    const pageH=pdf.internal.pageSize.getHeight();
+    const margin=5;
+    const contentW=pageW-margin*2;
+    const contentH=pageH-margin*2;
+    let mmPerPx=contentW/canvas.width;
+    let slicePx=Math.floor(contentH/mmPerPx);
+    let pages=Math.ceil(canvas.height/slicePx);
+    if(pages>2){
+      slicePx=Math.ceil(canvas.height/2);
+      mmPerPx=contentH/slicePx;
+      pages=2;
+    }
+    const imgW=canvas.width*mmPerPx;
+    const x=margin+Math.max(0,(contentW-imgW)/2);
+    for(let page=0;page<pages;page++){
+      if(page>0)pdf.addPage();
+      const yPx=page*slicePx;
+      const hPx=Math.min(slicePx,canvas.height-yPx);
+      const pageCanvas=document.createElement('canvas');
+      pageCanvas.width=canvas.width;
+      pageCanvas.height=hPx;
+      const ctx=pageCanvas.getContext('2d');
+      ctx.fillStyle='#ffffff';
+      ctx.fillRect(0,0,pageCanvas.width,pageCanvas.height);
+      ctx.drawImage(canvas,0,yPx,canvas.width,hPx,0,0,canvas.width,hPx);
+      const imgData=pageCanvas.toDataURL('image/jpeg',0.98);
+      pdf.addImage(imgData,'JPEG',x,margin,imgW,hPx*mmPerPx,undefined,'FAST');
+    }
+    pdf.save(fileName);
   }catch(e){
     showValidation('PDF','Eroare la salvarea PDF: '+(e&&e.message?e.message:e),false);
   }finally{
