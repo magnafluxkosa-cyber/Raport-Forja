@@ -355,9 +355,7 @@
       var userPerm = userMap[pageKey] || buildPermissions(null);
       return { allowed:userPerm.can_view === true, role:role, permissions:userPerm, accountStatus:status, source:'user acl strict', message:userPerm.can_view === true ? '' : 'Nu ai acces în această pagină.' };
     }
-    var roleMap = await loadRoleAcl(sb, role);
-    var rolePerm = roleMap[pageKey] || buildPermissions(null);
-    return { allowed:rolePerm.can_view === true, role:role, permissions:rolePerm, accountStatus:status, source:'role acl strict', message:rolePerm.can_view === true ? '' : 'Nu ai acces în această pagină.' };
+    return { allowed:false, role:role, permissions:buildPermissions(null), accountStatus:status, source:'no explicit user acl deny', message:'Nu ai acces în această pagină. Cere acces de la admin.' };
   }
 
   function renderDenied(title, message){

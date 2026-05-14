@@ -848,10 +848,36 @@
     const sb = getSupabaseClient();
     await registerAutoPage(sb, settings.pageKey);
 
+    const openPage = ['login','index'].includes(settings.pageKey);
+    const deniedPermissions = { can_view:false, can_add:false, can_edit:false, can_delete:false, can_export:false, can_import:false };
+
+    if(openPage){
+      return {
+        allowed: fallbackPermissions.can_view === true,
+        user,
+        role: cleanRole,
+        permissions: fallbackPermissions,
+        source: 'open page explicit-safe',
+        message: ''
+      };
+    }
+
+    if(cleanRole === 'admin'){
+      return {
+        allowed: true,
+        user,
+        role: cleanRole,
+        permissions: fallbackPermissions,
+        source: 'admin',
+        strictUserAcl: false,
+        message: ''
+      };
+    }
+
     if(user){
       const strictMap = await loadUserPermissionMap(sb, user);
       if(strictMap && strictMap.size){
-        const matched = strictMap.get(settings.pageKey) || { can_view:false, can_add:false, can_edit:false, can_delete:false, can_export:false, can_import:false };
+        const matched = strictMap.get(settings.pageKey) || deniedPermissions;
         return {
           allowed: matched.can_view === true,
           user,
@@ -864,24 +890,14 @@
       }
     }
 
-    if(window.RF_ACL && typeof window.RF_ACL.resolvePageAccess === 'function'){
-      const access = await window.RF_ACL.resolvePageAccess(settings.pageKey, {
-        client: sb,
-        user,
-        role
-      });
-      return Object.assign({ user, role: access && access.role ? access.role : cleanRole }, access || {});
-    }
-
-    const openPage = ['login','index'].includes(settings.pageKey);
-    const deniedPermissions = { can_view:false, can_add:false, can_edit:false, can_delete:false, can_export:false, can_import:false };
     return {
-      allowed: openPage ? fallbackPermissions.can_view === true : false,
+      allowed: false,
       user,
       role: cleanRole,
-      permissions: openPage ? fallbackPermissions : deniedPermissions,
-      source: openPage ? 'open page fallback' : 'deny by default fallback',
-      message: openPage ? '' : 'ACL indisponibil. Acces blocat preventiv.'
+      permissions: deniedPermissions,
+      source: 'no explicit user acl deny',
+      strictUserAcl: true,
+      message: 'Nu ai acces în această foaie. Cere acces de la admin.'
     };
   }
 
