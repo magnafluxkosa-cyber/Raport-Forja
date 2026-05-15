@@ -3581,32 +3581,106 @@ async function applyDomPermissions(pageKey, root, options) {
     style.id = 'rf-dashboard-back-style';
     style.textContent = '' +
       '.rf-dashboard-back-auto{' +
-        'position:fixed;top:14px;right:14px;z-index:9998;' +
-        'display:inline-flex;align-items:center;justify-content:center;gap:8px;' +
-        'min-height:38px;padding:0 14px;border-radius:12px;' +
-        'border:1px solid #1d1d1d;background:#2f6fa9;color:#fff;' +
-        'font-family:Arial,Helvetica,sans-serif;font-size:14px;font-weight:700;' +
-        'text-decoration:none;box-shadow:0 8px 18px rgba(15,23,42,.18);' +
+        'position:static!important;top:auto!important;right:auto!important;left:auto!important;bottom:auto!important;' +
+        'display:inline-flex;align-items:center;justify-content:center;gap:7px;' +
+        'height:38px;min-height:38px;padding:0 14px;border-radius:10px;' +
+        'border:1px solid #255986;background:#2f6fa9;color:#fff;' +
+        'font-family:Arial,Helvetica,sans-serif;font-size:12px;font-weight:900;' +
+        'line-height:1;text-decoration:none;box-shadow:none;white-space:nowrap;' +
+        'flex:0 0 auto;align-self:center;margin:0;box-sizing:border-box;' +
       '}' +
       '.rf-dashboard-back-auto:hover{filter:brightness(.96);}' +
-      '@media (max-width:700px){.rf-dashboard-back-auto{top:10px;right:10px;min-height:34px;padding:0 10px;font-size:12px;border-radius:10px;}}';
+      '.rf-dashboard-back-strip{box-sizing:border-box;width:100%;display:flex;justify-content:flex-end;align-items:center;padding:8px 14px 0 14px;position:relative;z-index:1;pointer-events:none;}' +
+      '.rf-dashboard-back-strip .rf-dashboard-back-auto{pointer-events:auto;}' +
+      '@media (max-width:700px){.rf-dashboard-back-auto{height:34px;min-height:34px;padding:0 10px;font-size:12px;border-radius:9px;}.rf-dashboard-back-strip{padding:8px 10px 0 10px;}}';
     (document.head || document.documentElement).appendChild(style);
   }
 
-  function ensureAutoButton() {
-    if (document.querySelector('.rf-dashboard-back-auto')) return;
-    ensureStyle();
+  function textOf(el) {
+    return normalize((el && (el.innerText || el.textContent || el.value || el.getAttribute('aria-label') || '') || '').replace(/\s+/g, ' '));
+  }
+
+  function visibleNearTop(el) {
+    if (!isVisible(el)) return false;
+    try {
+      var r = el.getBoundingClientRect();
+      return r && r.top < Math.max(260, Math.round(window.innerHeight * 0.35));
+    } catch (_) {
+      return true;
+    }
+  }
+
+  function findDashboardBackHost() {
+    var selectors = [
+      '.topbar-right','.top-actions','.header-actions','.page-actions','.toolbar-actions','.toolbar-right',
+      '.actions','.form-actions','.controls','.btn-row','.buttons','.toolbar','.topbar','header'
+    ];
+    for (var i = 0; i < selectors.length; i++) {
+      var list = Array.prototype.slice.call(document.querySelectorAll(selectors[i]));
+      for (var j = 0; j < list.length; j++) {
+        var host = list[j];
+        if (!host || !visibleNearTop(host)) continue;
+        if (host.querySelector && host.querySelector('button,a[href],input[type="button"],input[type="submit"],[role="button"]')) return host;
+      }
+    }
+
+    var controls = Array.prototype.slice.call(document.querySelectorAll('button,a[href],input[type="button"],input[type="submit"],[role="button"]'));
+    for (var k = 0; k < controls.length; k++) {
+      var t = textOf(controls[k]);
+      if (!visibleNearTop(controls[k])) continue;
+      if (t.indexOf('logout') !== -1 || t.indexOf('refresh') !== -1 || t.indexOf('reincarca') !== -1 || t.indexOf('actualizeaza') !== -1) {
+        return controls[k].parentElement || null;
+      }
+    }
+    return null;
+  }
+
+  function makeAutoButton() {
     var a = document.createElement('a');
     a.className = 'rf-dashboard-back-auto';
     a.href = 'index.html';
     a.setAttribute('data-rf-dashboard-back', 'auto');
     a.textContent = 'Înapoi la Dashboard';
-    document.body.appendChild(a);
+    return a;
+  }
+
+  function insertAutoButtonInHost(host, a) {
+    if (!host) return false;
+    if (host.querySelector && host.querySelector('.rf-dashboard-back-auto')) return true;
+    var controls = Array.prototype.slice.call(host.querySelectorAll('button,a[href],input[type="button"],input[type="submit"],[role="button"]'));
+    var before = null;
+    for (var i = 0; i < controls.length; i++) {
+      var t = textOf(controls[i]);
+      if (t.indexOf('logout') !== -1 || t.indexOf('deconect') !== -1 || t.indexOf('iesire') !== -1 || t.indexOf('ieșire') !== -1) {
+        before = controls[i];
+        break;
+      }
+    }
+    if (before && before.parentNode === host) host.insertBefore(a, before);
+    else host.appendChild(a);
+    return true;
+  }
+
+  function ensureAutoButton() {
+    if (document.querySelector('.rf-dashboard-back-auto')) return;
+    ensureStyle();
+    var a = makeAutoButton();
+    var host = findDashboardBackHost();
+    if (host && insertAutoButtonInHost(host, a)) return;
+
+    var strip = document.createElement('div');
+    strip.className = 'rf-dashboard-back-strip';
+    strip.setAttribute('data-rf-dashboard-back-strip', 'auto');
+    strip.appendChild(a);
+    document.body.insertBefore(strip, document.body.firstChild || null);
   }
 
   function removeAutoButton() {
     Array.prototype.slice.call(document.querySelectorAll('.rf-dashboard-back-auto')).forEach(function (el) {
       if (el && el.parentNode) el.parentNode.removeChild(el);
+    });
+    Array.prototype.slice.call(document.querySelectorAll('[data-rf-dashboard-back-strip="auto"]')).forEach(function (el) {
+      if (el && el.parentNode && !el.querySelector('.rf-dashboard-back-auto')) el.parentNode.removeChild(el);
     });
   }
 
