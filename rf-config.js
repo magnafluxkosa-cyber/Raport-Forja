@@ -3415,3 +3415,255 @@ async function applyDomPermissions(pageKey, root, options) {
 })(window);
 
 
+
+
+(function () {
+  'use strict';
+
+  if (window.__RF_DASHBOARD_BACK_BUTTON__) return;
+  window.__RF_DASHBOARD_BACK_BUTTON__ = true;
+
+  var EXCLUDED_PAGES = {
+    'index': true,
+    'login': true,
+    'access-gate': true,
+    'mfa-setup': true,
+    'mfa-verify': true
+  };
+
+  function normalize(value) {
+    return String(value == null ? '' : value)
+      .trim()
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '');
+  }
+
+  function normalizeRole(value) {
+    return normalize(value).replace(/\s+/g, '-');
+  }
+
+  function currentPageKey() {
+    var file = '';
+    try {
+      file = (window.location.pathname.split('/').pop() || '').trim();
+    } catch (_) {}
+    if (!file) file = 'index.html';
+    return normalize(file.replace(/\.html$/i, ''));
+  }
+
+  function readStorage(key) {
+    try {
+      return (window.localStorage && localStorage.getItem(key)) || (window.sessionStorage && sessionStorage.getItem(key)) || '';
+    } catch (_) {
+      return '';
+    }
+  }
+
+  function readRoleSync() {
+    var boot = window.__RF_ACL_PAGE_BOOT__ || null;
+    if (boot && boot.pageAccess && boot.pageAccess.role) return normalizeRole(boot.pageAccess.role);
+    if (window.__PAGE_ACCESS__ && window.__PAGE_ACCESS__.role) return normalizeRole(window.__PAGE_ACCESS__.role);
+    var role = readStorage('rf_user_role');
+    if (role) return normalizeRole(role);
+    return '';
+  }
+
+  async function resolveRole() {
+    var role = readRoleSync();
+    if (role) return role;
+
+    try {
+      if (window.ERPAuth && typeof window.ERPAuth.getCurrentUserWithRole === 'function') {
+        var state = await window.ERPAuth.getCurrentUserWithRole();
+        role = normalizeRole(state && state.role);
+        if (role) return role;
+      }
+    } catch (_) {}
+
+    try {
+      if (window.ERPAuth && typeof window.ERPAuth.getSession === 'function' && typeof window.ERPAuth.resolveUserRole === 'function') {
+        var session = await window.ERPAuth.getSession();
+        var user = session && session.user;
+        if (user) {
+          role = normalizeRole(await window.ERPAuth.resolveUserRole(user));
+          if (role) return role;
+        }
+      }
+    } catch (_) {}
+
+    try {
+      if (window.RF_ACL && typeof window.RF_ACL.resolveRole === 'function' && window.createRfSupabaseClient) {
+        var sb = window.createRfSupabaseClient();
+        if (sb && sb.auth && typeof sb.auth.getUser === 'function') {
+          var result = await sb.auth.getUser();
+          var user2 = result && result.data && result.data.user;
+          if (user2) {
+            var resolved = await window.RF_ACL.resolveRole(sb, user2);
+            role = normalizeRole(resolved && (resolved.role || resolved));
+            if (role) return role;
+          }
+        }
+      }
+    } catch (_) {}
+
+    return readRoleSync();
+  }
+
+  function isOperatorRole(role) {
+    return normalizeRole(role) === 'operator';
+  }
+
+  function isDashboardHref(href) {
+    href = String(href || '').trim();
+    if (!href) return false;
+    return /(^|\/)(?:\.\/)?index\.html(?:$|[?#])/i.test(href) || /^(?:\.\/)?index\.html(?:$|[?#])/i.test(href);
+  }
+
+  function isDashboardCandidate(el) {
+    if (!el || el.nodeType !== 1) return false;
+    if (el.hasAttribute('data-rf-no-dashboard-back')) return false;
+    var tag = el.tagName ? el.tagName.toLowerCase() : '';
+    if (!/^(a|button|input)$/i.test(tag) && el.getAttribute('role') !== 'button') return false;
+
+    var text = normalize((el.innerText || el.textContent || el.value || el.getAttribute('aria-label') || '').replace(/\s+/g, ' '));
+    var href = el.getAttribute('href') || '';
+    var onclick = el.getAttribute('onclick') || '';
+    var hrefToIndex = isDashboardHref(href);
+    var clickToIndex = /index\.html/i.test(onclick);
+    var saysDashboard = text.indexOf('dashboard') !== -1;
+    var saysBackIndex = text.indexOf('inapoi') !== -1 && text.indexOf('index') !== -1;
+
+    return saysDashboard || saysBackIndex || ((hrefToIndex || clickToIndex) && (text.indexOf('inapoi') !== -1 || text.indexOf('dashboard') !== -1 || text.indexOf('index') !== -1));
+  }
+
+  function dashboardCandidates() {
+    return Array.prototype.slice.call(document.querySelectorAll('a[href],button,input[type="button"],input[type="submit"],[role="button"]')).filter(isDashboardCandidate);
+  }
+
+  function isVisible(el) {
+    if (!el || el.getAttribute('aria-hidden') === 'true') return false;
+    var style = null;
+    try { style = window.getComputedStyle(el); } catch (_) {}
+    if (style && (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0)) return false;
+    return !!(el.offsetWidth || el.offsetHeight || (el.getClientRects && el.getClientRects().length));
+  }
+
+  function rememberAndHide(el) {
+    if (!el || el.getAttribute('data-rf-dashboard-hidden-by-role') === '1') return;
+    el.setAttribute('data-rf-dashboard-hidden-by-role', '1');
+    el.setAttribute('data-rf-dashboard-old-display', el.style.display || '');
+    el.setAttribute('data-rf-dashboard-old-aria-hidden', el.getAttribute('aria-hidden') || '');
+    el.style.display = 'none';
+    el.setAttribute('aria-hidden', 'true');
+    if ('disabled' in el) {
+      el.setAttribute('data-rf-dashboard-old-disabled', el.disabled ? '1' : '0');
+      el.disabled = true;
+    }
+  }
+
+  function restoreIfHiddenByRole(el) {
+    if (!el || el.getAttribute('data-rf-dashboard-hidden-by-role') !== '1') return;
+    el.style.display = el.getAttribute('data-rf-dashboard-old-display') || '';
+    var oldAria = el.getAttribute('data-rf-dashboard-old-aria-hidden') || '';
+    if (oldAria) el.setAttribute('aria-hidden', oldAria);
+    else el.removeAttribute('aria-hidden');
+    if ('disabled' in el && el.getAttribute('data-rf-dashboard-old-disabled') === '0') el.disabled = false;
+    el.removeAttribute('data-rf-dashboard-hidden-by-role');
+    el.removeAttribute('data-rf-dashboard-old-display');
+    el.removeAttribute('data-rf-dashboard-old-aria-hidden');
+    el.removeAttribute('data-rf-dashboard-old-disabled');
+  }
+
+  function ensureStyle() {
+    if (document.getElementById('rf-dashboard-back-style')) return;
+    var style = document.createElement('style');
+    style.id = 'rf-dashboard-back-style';
+    style.textContent = '' +
+      '.rf-dashboard-back-auto{' +
+        'position:fixed;top:14px;right:14px;z-index:9998;' +
+        'display:inline-flex;align-items:center;justify-content:center;gap:8px;' +
+        'min-height:38px;padding:0 14px;border-radius:12px;' +
+        'border:1px solid #1d1d1d;background:#2f6fa9;color:#fff;' +
+        'font-family:Arial,Helvetica,sans-serif;font-size:14px;font-weight:700;' +
+        'text-decoration:none;box-shadow:0 8px 18px rgba(15,23,42,.18);' +
+      '}' +
+      '.rf-dashboard-back-auto:hover{filter:brightness(.96);}' +
+      '@media (max-width:700px){.rf-dashboard-back-auto{top:10px;right:10px;min-height:34px;padding:0 10px;font-size:12px;border-radius:10px;}}';
+    (document.head || document.documentElement).appendChild(style);
+  }
+
+  function ensureAutoButton() {
+    if (document.querySelector('.rf-dashboard-back-auto')) return;
+    ensureStyle();
+    var a = document.createElement('a');
+    a.className = 'rf-dashboard-back-auto';
+    a.href = 'index.html';
+    a.setAttribute('data-rf-dashboard-back', 'auto');
+    a.textContent = 'Înapoi la Dashboard';
+    document.body.appendChild(a);
+  }
+
+  function removeAutoButton() {
+    Array.prototype.slice.call(document.querySelectorAll('.rf-dashboard-back-auto')).forEach(function (el) {
+      if (el && el.parentNode) el.parentNode.removeChild(el);
+    });
+  }
+
+  var refreshing = false;
+  async function refreshDashboardBackButton() {
+    if (refreshing) return;
+    var pageKey = currentPageKey();
+    if (EXCLUDED_PAGES[pageKey]) return;
+    if (!document.body) return;
+
+    refreshing = true;
+    try {
+      var role = await resolveRole();
+      var operator = isOperatorRole(role);
+      var items = dashboardCandidates();
+
+      if (operator) {
+        removeAutoButton();
+        items.forEach(rememberAndHide);
+        return;
+      }
+
+      items.forEach(restoreIfHiddenByRole);
+      items = dashboardCandidates().filter(function (el) { return !el.classList.contains('rf-dashboard-back-auto'); });
+      var hasVisibleExisting = items.some(isVisible);
+      if (hasVisibleExisting) removeAutoButton();
+      else ensureAutoButton();
+    } finally {
+      refreshing = false;
+    }
+  }
+
+  function scheduleRefresh(delay) {
+    window.setTimeout(function () { refreshDashboardBackButton().catch(function () {}); }, delay || 0);
+  }
+
+  function startDashboardBackButton() {
+    scheduleRefresh(0);
+    scheduleRefresh(400);
+    scheduleRefresh(1200);
+    scheduleRefresh(2500);
+
+    try {
+      var observer = new MutationObserver(function () { scheduleRefresh(80); });
+      observer.observe(document.documentElement, { childList: true, subtree: true });
+    } catch (_) {}
+
+    window.addEventListener('storage', function (ev) {
+      if (!ev || ev.key === 'rf_user_role' || ev.key === 'rf_user_email') scheduleRefresh(0);
+    });
+    window.addEventListener('focus', function () { scheduleRefresh(0); });
+    window.addEventListener('pageshow', function () { scheduleRefresh(0); });
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', startDashboardBackButton, { once: true });
+  } else {
+    startDashboardBackButton();
+  }
+})();
