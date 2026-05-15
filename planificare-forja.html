@@ -172,6 +172,7 @@
     td.slot-plan{position:relative}
     .plan-floating-tooltip{position:fixed;left:-9999px;top:-9999px;z-index:9999;width:232px;max-width:min(232px,calc(100vw - 24px));padding:10px 12px;border-radius:14px;background:linear-gradient(180deg,#12376b 0%,#0f2748 100%);color:#eff6ff;border:1px solid rgba(191,219,254,.34);box-shadow:0 18px 40px rgba(15,23,42,.34);pointer-events:none}
     .plan-floating-tooltip.is-alert{background:linear-gradient(180deg,#7f1d3a 0%,#581c32 100%);border-color:rgba(254,202,202,.32)}
+    .plan-floating-tooltip.is-problems{width:370px;max-width:min(370px,calc(100vw - 24px));background:linear-gradient(180deg,#2f1d7f 0%,#1f164f 100%);border-color:rgba(221,214,254,.36)}
     .plan-tip-badge{display:inline-flex;align-items:center;gap:6px;font-size:10px;font-weight:800;letter-spacing:.02em;text-transform:uppercase;padding:3px 8px;border-radius:999px;margin-bottom:8px;background:rgba(255,255,255,.12);color:#ffffff}
     .plan-tip-section + .plan-tip-section{margin-top:8px;padding-top:8px;border-top:1px solid rgba(255,255,255,.12)}
     .plan-tip-section-title{font-size:10px;font-weight:800;letter-spacing:.03em;text-transform:uppercase;margin-bottom:6px;color:#bfdbfe}
@@ -416,7 +417,7 @@
 
 
     /* Fișe salvate din Raport Forjă vizibile direct din REALIZAT */
-    .realized-fisa-trigger{cursor:pointer;text-decoration:underline;text-underline-offset:2px;color:inherit !important;font-weight:inherit !important;}
+    .realized-fisa-trigger{cursor:pointer;text-decoration:underline;text-underline-offset:2px;}
     .realized-fisa-trigger:hover{background:transparent !important;box-shadow:none !important;text-decoration:underline;}
     .plan-fisa-backdrop{position:fixed;inset:0;z-index:10120;display:none;align-items:center;justify-content:center;padding:14px;background:rgba(9,19,38,.48);backdrop-filter:blur(5px)}
     .plan-fisa-backdrop.is-open{display:flex}
@@ -677,6 +678,7 @@
     const DOC_KEY = 'planificare-forja';
     const LEGACY_DOC_KEY = 'forjate';
     const FORJATE_DOC_PREFIX = 'forjate:';
+    const PROBLEME_DOC_BASE_KEYS = ['probleme-raportate','probleme_raportate','Probleme Raportate'];
     const TABLE_UI_STORAGE_KEY = 'planificare-forja:table-ui:v1';
     const MACHINE_ORDER = ['5 T CHINA','MP','1,25 T','2,5 T','3 T BR','3 T ZR'];
     const MONTHS = ['Ianuarie','Februarie','Martie','Aprilie','Mai','Iunie','Iulie','August','Septembrie','Octombrie','Noiembrie','Decembrie'];
@@ -801,6 +803,10 @@
       isEditing: false,
       forjateSummary: Object.create(null),
       forjateFiseByCell: Object.create(null),
+      problemeByDateMachine: Object.create(null),
+      loadedProblemeYears: new Set(),
+      attemptedProblemeYears: new Set(),
+      problemeSource: Object.create(null),
       loadedForjateYears: new Set(),
       attemptedForjateYears: new Set(),
       yearLiveSource: Object.create(null),
@@ -2419,6 +2425,108 @@ function getDefaultPermissions(role){
       const key = buildRealizedKey(row && row.data, machine, reper);
       return (state.forjateFiseByCell && state.forjateFiseByCell[key]) ? state.forjateFiseByCell[key] : [];
     }
+    function buildProblemeCellKey(dataIso, machine){
+      return [safeText(dataIso), normalizeMachineKey(machine)].join('|');
+    }
+    function normalizeProblemeRow(row, index){
+      const dataIso = normalizeDateAny(pick(row, ['data','DATA','Data','date','Date']));
+      const explicitYear = trimText(pick(row, ['an','AN','ANUL','Anul','year','Year']));
+      const utilaj = normalizeMachineKey(pick(row, ['utilaj','UTILAJ','Utilaj','ciocan','CIOCAN','linie','Linie']));
+      const reper = trimText(pick(row, ['reper','REPER','Reper'])).toUpperCase();
+      const schimb = trimText(pick(row, ['schimbul','SCHIMBUL','schimb','Schimb','D']));
+      const minute = toNumber(pick(row, ['timp_minute','Timp Minute Pierdute','TIMP MINUTE PIERDUTE','minute','Minute','I']));
+      const observatii = trimText(pick(row, ['observatii','Observații','Observatii','OBSERVAȚII','OBSERVATII','J'])).replace(/_x000D_/g, ' ');
+      const operatiune = trimText(pick(row, ['operatiune','Denumire operațiune','Denumire operatie','DENUMIRE OPERAȚIUNE','DENUMIRE OPERATIUNE','H']));
+      const departament = trimText(pick(row, ['departament','Departament','DEPARTAMENT','K']));
+      const planificat = trimText(pick(row, ['planificat','Planificat (DA/NU)','PLANIFICAT','Planificat']));
+      const an = /^\d{4}$/.test(explicitYear) ? explicitYear : (dataIso ? dataIso.slice(0,4) : '');
+      return { id: trimText(pick(row, ['id','ID','_id'])) || ('problema-' + index), data:dataIso, an, utilaj, reper, schimb, minute, observatii, operatiune, departament, planificat };
+    }
+    function problemSignature(item){
+      return [item.data,item.utilaj,item.reper,item.schimb,item.minute,item.operatiune,item.departament,item.observatii].map(safeText).join('|');
+    }
+    function clearProblemeForYear(year){
+      const cleanYear = trimText(year);
+      if(!cleanYear) return;
+      Object.keys(state.problemeByDateMachine || Object.create(null)).forEach(key => {
+        if(key.startsWith(cleanYear + '-')) delete state.problemeByDateMachine[key];
+      });
+    }
+    function mergeProblemeByDateMachine(rows, year){
+      let added = 0;
+      const seenByKey = Object.create(null);
+      Object.keys(state.problemeByDateMachine || Object.create(null)).forEach(key => {
+        seenByKey[key] = new Set((state.problemeByDateMachine[key] || []).map(problemSignature));
+      });
+      (rows || []).forEach((row, index) => {
+        const item = normalizeProblemeRow(row, index);
+        if(year && String(item.an) !== String(year)) return;
+        if(!item.data || !item.utilaj) return;
+        if(!item.operatiune && !item.observatii && !item.minute) return;
+        const key = buildProblemeCellKey(item.data, item.utilaj);
+        if(!state.problemeByDateMachine[key]) state.problemeByDateMachine[key] = [];
+        if(!seenByKey[key]) seenByKey[key] = new Set();
+        const sig = problemSignature(item);
+        if(seenByKey[key].has(sig)) return;
+        seenByKey[key].add(sig);
+        state.problemeByDateMachine[key].push(item);
+        added += 1;
+      });
+      Object.keys(state.problemeByDateMachine || Object.create(null)).forEach(key => {
+        state.problemeByDateMachine[key].sort((a,b) => String(a.schimb || '').localeCompare(String(b.schimb || ''), 'ro') || String(a.operatiune || '').localeCompare(String(b.operatiune || ''), 'ro'));
+      });
+      return added;
+    }
+    async function ensureProblemeYearLoaded(year, forceRefresh){
+      const cleanYear = trimText(year);
+      if(!cleanYear) return;
+      if(forceRefresh){
+        state.loadedProblemeYears.delete(cleanYear);
+        state.attemptedProblemeYears.delete(cleanYear);
+        clearProblemeForYear(cleanYear);
+      }
+      if(state.attemptedProblemeYears.has(cleanYear)) return;
+      state.attemptedProblemeYears.add(cleanYear);
+      const keys = [];
+      PROBLEME_DOC_BASE_KEYS.forEach(base => keys.push(base + ':' + cleanYear));
+      PROBLEME_DOC_BASE_KEYS.forEach(base => keys.push(base));
+      const docs = await queryDocsByKeys(keys);
+      let totalAdded = 0;
+      docs.forEach(doc => {
+        const payload = doc && (doc.content || doc.data);
+        const rows = extractRowsPayload(payload);
+        if(rows.length) totalAdded += mergeProblemeByDateMachine(rows, cleanYear);
+      });
+      if(totalAdded > 0){
+        state.loadedProblemeYears.add(cleanYear);
+        state.problemeSource[cleanYear] = 'Probleme raportate';
+      }else{
+        state.problemeSource[cleanYear] = '-';
+      }
+    }
+    function getProblemeForSlot(row, machine){
+      const key = buildProblemeCellKey(row && row.data, machine);
+      return (state.problemeByDateMachine && state.problemeByDateMachine[key]) ? state.problemeByDateMachine[key] : [];
+    }
+    function buildProblemeTooltipHtml(items, row, machine){
+      const list = Array.isArray(items) ? items : [];
+      if(!list.length) return '';
+      const totalMinute = list.reduce((sum, item) => sum + Math.max(0, toNumber(item.minute)), 0);
+      const maxItems = 8;
+      const shown = list.slice(0, maxItems);
+      return '<div class="plan-tip-badge">Probleme raportate</div>'
+        + '<div class="plan-tip-section"><div class="plan-tip-section-title">' + escapeHtml(normalizeMachineKey(machine) + ' • ' + isoToDisplay(row && row.data)) + '</div>'
+        + '<div class="plan-tip-grid"><div class="plan-tip-row"><div class="plan-tip-label">Total minute pierdute</div><div class="plan-tip-value">' + escapeHtml(roMaybeNumber(totalMinute)) + ' min</div></div>'
+        + '<div class="plan-tip-row"><div class="plan-tip-label">Rânduri probleme</div><div class="plan-tip-value">' + list.length + '</div></div></div></div>'
+        + '<div class="plan-tip-section"><div class="plan-tip-section-title">Detalii</div><div class="plan-tip-grid">'
+        + shown.map(item => {
+          const title = [item.schimb ? ('Sch. ' + item.schimb) : '', item.reper || '', item.operatiune || 'Problemă'].filter(Boolean).join(' • ');
+          const detail = [item.minute ? (roMaybeNumber(item.minute) + ' min') : '', item.departament || '', item.observatii || ''].filter(Boolean).join(' — ');
+          return '<div class="plan-tip-row is-block"><div class="plan-tip-label">' + escapeHtml(title) + '</div><div class="plan-tip-value">' + escapeHtml(detail || '—') + '</div></div>';
+        }).join('')
+        + (list.length > maxItems ? '<div class="plan-tip-row is-block"><div class="plan-tip-label">Încă ' + (list.length - maxItems) + ' rânduri neafișate</div><div class="plan-tip-value">Deschide Probleme raportate pentru lista completă.</div></div>' : '')
+        + '</div></div>';
+    }
     function planFisaSafe(value){
       const s = trimText(value);
       return s ? escapeHtml(s) : '—';
@@ -3355,7 +3463,7 @@ function getDefaultPermissions(role){
       activePlanTooltipCell = null;
     }
     function getPlanTooltipCellFromTarget(target){
-      return target && target.closest ? target.closest('td.slot-plan[data-tooltip-html],td.slot-reper[data-tooltip-html]') : null;
+      return target && target.closest ? target.closest('td.slot-plan[data-tooltip-html],td.slot-reper[data-tooltip-html],td.slot-real[data-tooltip-html]') : null;
     }
     function positionPlanTooltip(cell){
       if(!planTooltipEl || !cell || planTooltipEl.hidden) return;
@@ -3382,7 +3490,8 @@ function getDefaultPermissions(role){
       if(!html) return hidePlanTooltip();
       const tip = ensurePlanTooltip();
       tip.innerHTML = html;
-      tip.className = 'plan-floating-tooltip' + ((cell.getAttribute('data-tooltip-tone') === 'alert') ? ' is-alert' : '');
+      const tooltipType = trimText(cell.getAttribute('data-tooltip-type'));
+      tip.className = 'plan-floating-tooltip' + ((cell.getAttribute('data-tooltip-tone') === 'alert') ? ' is-alert' : '') + (tooltipType === 'problems' ? ' is-problems' : '');
       tip.hidden = false;
       activePlanTooltipCell = cell;
       positionPlanTooltip(cell);
@@ -5337,6 +5446,7 @@ function getDefaultPermissions(role){
             const realized = getRealizedForSlot(row, machine, slot);
             const fiseForCell = getFiseForSlot(row, machine, slot);
             const fisaKey = fiseForCell.length ? buildRealizedKey(row && row.data, machine, slot && slot.reper) : '';
+            const problemeForCell = getProblemeForSlot(row, machine);
             const readOnly = state.canEdit ? '' : ' readonly';
             const planValue = Math.max(0, Math.round(toNumber(slot.planificat)));
             const calc = state.stockCalcByCell[cellCalcKey(row.id, machine)] || null;
@@ -5353,13 +5463,15 @@ function getDefaultPermissions(role){
             const realizedDisplay = (realized.value || planValue || trimText(slot.reper)) ? roMaybeNumber(realized.value) : '';
             const realizedClass = (planValue > 0 && realized.value >= planValue) ? 'ok' : ((planValue > 0 && realized.value < planValue && realized.value > 0) ? 'warn' : '');
             const fisaTriggerClass = fiseForCell.length ? ' realized-fisa-trigger' : '';
-            const fisaTriggerAttrs = fiseForCell.length ? (' data-fisa-key="' + escapeHtml(fisaKey) + '" title="Click pentru vizualizare fișă salvată"') : '';
+            const fisaTriggerAttrs = fiseForCell.length ? (' data-fisa-key="' + escapeHtml(fisaKey) + '" aria-label="Click pentru vizualizare fișă salvată"') : '';
+            const problemeTooltipHtml = realizedDisplay ? buildProblemeTooltipHtml(problemeForCell, row, machine) : '';
+            const problemeTooltipAttrs = problemeTooltipHtml ? (' data-tooltip-html="' + escapeHtml(problemeTooltipHtml) + '" data-tooltip-tone="alert" data-tooltip-type="problems"') : '';
             const hideReperDuplicate = !!(mask.hideReper && !readyItems.length);
             const hidePlanDuplicate = !!mask.hidePlan;
             return `
               <td class="slot-reper ${tdReperClass}${slotCoveredClass}"${tooltipAttrs}><input class="cell-input left${hideReperDuplicate ? ' dup-hidden' : ''}" list="repereList" data-row-id="${escapeHtml(row.id)}" data-machine="${escapeHtml(machine)}" data-field="reper" value="${escapeHtml(slot.reper)}"${readOnly}></td>
               <td class="slot-plan ${tdPlanClass}"${tooltipAttrs}><input class="cell-input${hidePlanDuplicate ? ' dup-hidden' : ''}" type="number" min="0" step="1" data-row-id="${escapeHtml(row.id)}" data-machine="${escapeHtml(machine)}" data-field="planificat" value="${escapeHtml(planDisplay)}"${readOnly}></td>
-              <td class="slot-real group-end${fiseForCell.length ? ' has-fisa' : ''}"><div class="readonly ${realized.source === 'live' ? 'live' : 'seed'} ${realizedClass}${fisaTriggerClass}"${fisaTriggerAttrs}>${escapeHtml(realizedDisplay)}</div></td>
+              <td class="slot-real group-end${fiseForCell.length ? ' has-fisa' : ''}"${problemeTooltipAttrs}><div class="readonly ${realized.source === 'live' ? 'live' : 'seed'} ${realizedClass}${fisaTriggerClass}"${fisaTriggerAttrs}>${escapeHtml(realizedDisplay)}</div></td>
             `;
           }).join('');
           rowHtml.push(`<tr class="${escapeHtml(highlight.rowClass)}${hoverClass}${selectedClass}" data-row-id="${escapeHtml(row.id)}">
@@ -7066,6 +7178,7 @@ function addRow(){
       if(!state.activeYear) return;
       const results = await Promise.allSettled([
         ensureForjateYearLoaded(state.activeYear, !!force),
+        ensureProblemeYearLoaded(state.activeYear, !!force),
         refreshSupportData(!!force)
       ]);
       results.forEach(result => {
