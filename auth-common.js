@@ -443,16 +443,18 @@
       ));
     }
 
-    const mirror = await readLatestRfDocument(sb, 'dashboard_acl_v1');
-    const roots = [mirror && mirror.user_permissions, mirror && mirror.user_grants];
-    roots.forEach(root => {
-      if(!root || typeof root !== 'object' || !email || !root[email] || typeof root[email] !== 'object') return;
-      Object.keys(root[email]).forEach(key => {
-        const normalized = normalizePageKey(key);
-        if(!normalized) return;
-        map.set(normalized, buildPermissions(root[email][key]));
+    if(!map.size){
+      const mirror = await readLatestRfDocument(sb, 'dashboard_acl_v1');
+      const roots = [mirror && mirror.user_permissions, mirror && mirror.user_grants];
+      roots.forEach(root => {
+        if(!root || typeof root !== 'object' || !email || !root[email] || typeof root[email] !== 'object') return;
+        Object.keys(root[email]).forEach(key => {
+          const normalized = normalizePageKey(key);
+          if(!normalized) return;
+          map.set(normalized, buildPermissions(root[email][key]));
+        });
       });
-    });
+    }
 
     return map;
   }

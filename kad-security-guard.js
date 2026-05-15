@@ -311,16 +311,18 @@
       if(Array.isArray(byEmail)) all = all.concat(byEmail);
     }
     var map = rowToMap(all);
-    try {
-      var mirror = await readDoc(sb, 'dashboard_acl_v1');
-      ['user_permissions','user_grants'].forEach(function(rootKey){
-        var root = mirror && mirror[rootKey] && typeof mirror[rootKey] === 'object' ? mirror[rootKey] : null;
-        var userRoot = root && email && root[email] && typeof root[email] === 'object' ? root[email] : null;
-        if(userRoot){
-          Object.keys(userRoot).forEach(function(pageKey){ map[normalizePageKey(pageKey)] = buildPermissions(userRoot[pageKey]); });
-        }
-      });
-    } catch(_) {}
+    if(!mapHasEntries(map)){
+      try {
+        var mirror = await readDoc(sb, 'dashboard_acl_v1');
+        ['user_permissions','user_grants'].forEach(function(rootKey){
+          var root = mirror && mirror[rootKey] && typeof mirror[rootKey] === 'object' ? mirror[rootKey] : null;
+          var userRoot = root && email && root[email] && typeof root[email] === 'object' ? root[email] : null;
+          if(userRoot){
+            Object.keys(userRoot).forEach(function(pageKey){ map[normalizePageKey(pageKey)] = buildPermissions(userRoot[pageKey]); });
+          }
+        });
+      } catch(_) {}
+    }
     return map;
   }
 

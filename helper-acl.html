@@ -832,6 +832,31 @@
       return rows;
     }
 
+    function applyPageRuleFromMirror(email, pageKey, value){
+      const cleanEmail = normalizeEmail(email);
+      const cleanKey = normalizeKey(pageKey);
+      if (!cleanEmail || !cleanKey) return;
+      if (!state.pageRules[cleanEmail]) state.pageRules[cleanEmail] = {};
+      if (Object.prototype.hasOwnProperty.call(state.pageRules[cleanEmail], cleanKey)) return;
+      state.pageRules[cleanEmail][cleanKey] = normalizePagePerm(value);
+    }
+
+    async function loadPageRulesFromMirrorFallback(){
+      try {
+        const mirror = await readDocByKey('dashboard_acl_v1');
+        if (!mirror || typeof mirror !== 'object') return;
+        ['user_permissions','user_grants'].forEach(rootKey => {
+          const root = mirror[rootKey] && typeof mirror[rootKey] === 'object' ? mirror[rootKey] : null;
+          if (!root) return;
+          Object.keys(root).forEach(email => {
+            const rows = root[email] && typeof root[email] === 'object' ? root[email] : null;
+            if (!rows) return;
+            Object.keys(rows).forEach(pageKey => applyPageRuleFromMirror(email, pageKey, rows[pageKey]));
+          });
+        });
+      } catch (_) {}
+    }
+
     async function loadPageRules(){
       state.pageRules = {};
       try {
@@ -845,6 +870,7 @@
           });
         }
       } catch (_) {}
+      await loadPageRulesFromMirrorFallback();
     }
 
     async function loadAutoRegisteredPages(){
@@ -1391,6 +1417,42 @@
       return { ok:false, error:lastErr };
     }
 
+    function samePagePerm(a, b){
+      const left = normalizePagePerm(a);
+      const right = normalizePagePerm(b);
+      return ['can_view','can_add','can_edit','can_delete','can_export','can_import'].every(key => left[key] === right[key]);
+    }
+
+    async function verifyUserPagePermissionsSaved(email, userId, expectedRows){
+      const cleanEmail = normalizeEmail(email);
+      const cleanUserId = String(userId || '').trim();
+      const expected = Array.isArray(expectedRows) ? expectedRows : [];
+      const actualByKey = new Map();
+      let rows = [];
+      if (cleanEmail) {
+        const byEmail = await sb.from('user_page_permissions').select('email,user_id,page_key,can_view,can_add,can_edit,can_delete,can_export,can_import').ilike('email', cleanEmail).limit(10000);
+        if (byEmail && byEmail.error) throw byEmail.error;
+        if (Array.isArray(byEmail && byEmail.data)) rows = rows.concat(byEmail.data);
+      }
+      if (cleanUserId) {
+        const byUser = await sb.from('user_page_permissions').select('email,user_id,page_key,can_view,can_add,can_edit,can_delete,can_export,can_import').eq('user_id', cleanUserId).limit(10000);
+        if (byUser && byUser.error) throw byUser.error;
+        if (Array.isArray(byUser && byUser.data)) rows = rows.concat(byUser.data);
+      }
+      rows.forEach(row => {
+        const key = normalizeKey(row && row.page_key);
+        if (key) actualByKey.set(key, row);
+      });
+      for (const expectedRow of expected) {
+        const key = normalizeKey(expectedRow && expectedRow.page_key);
+        if (!key) continue;
+        const actual = actualByKey.get(key);
+        if (!actual) return { ok:false, message:'Lipsește confirmarea pentru pagina: ' + key };
+        if (!samePagePerm(actual, expectedRow)) return { ok:false, message:'Confirmarea nu corespunde pentru pagina: ' + key };
+      }
+      return { ok:true };
+    }
+
     async function saveDoc(){
       if (!canAclEdit()) {
         setStatus(els.saveStatus, 'Fără drept', 'err');
@@ -1522,11 +1584,25 @@
         }
         const resIns = await sb.from('user_page_permissions').insert(pageRows);
         if (resIns && resIns.error) throw resIns.error;
+        const verify = await verifyUserPagePermissionsSaved(email, selected.user_id, pageRows);
+        if (!verify.ok) throw new Error(verify.message || 'Permisiunile nu au fost confirmate după salvare.');
         pageOk = true;
       } catch (err) { pageErr = err; }
 
-      if (!buttonTableOk && !savePrimary.ok && !saveMirror.ok && !pageOk && !accountOk && !saveAccountMirror.ok && !roleOk) {
-        const lastErr = roleErr || pageErr || accountErr || buttonTableErr || savePrimary.error || saveMirror.error || saveAccountMirror.error;
+      if (!pageOk) {
+        setStatus(els.saveStatus, 'Eroare ACL', 'err');
+        els.saveSub.textContent = pageErr && pageErr.message ? pageErr.message : 'Permisiunile pe foi nu au fost salvate confirmat în user_page_permissions. Nu folosesc salvare parțială.';
+        return;
+      }
+
+      if (!buttonTableOk) {
+        setStatus(els.saveStatus, 'Eroare butoane', 'err');
+        els.saveSub.textContent = buttonTableErr && buttonTableErr.message ? buttonTableErr.message : 'Vizibilitatea butoanelor nu a fost salvată confirmat în user_index_visibility. Nu folosesc salvare parțială.';
+        return;
+      }
+
+      if (!savePrimary.ok && !saveMirror.ok && !accountOk && !saveAccountMirror.ok && !roleOk) {
+        const lastErr = roleErr || accountErr || savePrimary.error || saveMirror.error || saveAccountMirror.error;
         setStatus(els.saveStatus, 'Eroare', 'err');
         els.saveSub.textContent = lastErr && lastErr.message ? lastErr.message : 'Nu am putut salva setările.';
         return;
