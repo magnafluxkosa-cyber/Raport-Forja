@@ -650,18 +650,11 @@ async function queryDocsByPrefix(prefix){
   const pref = toStr(prefix);
   if(!pref) return [];
   if(labelCache.docsPrefix.has(pref)) return labelCache.docsPrefix.get(pref);
-  const sb = await createSupabase();
-  if(!(sb && authState && authState.user)) return [];
-  try{
-    const { data, error } = await sb.from('rf_documents').select('doc_key,content,data,updated_at').like('doc_key', pref + '%');
-    if(error) throw error;
-    const docs = Array.isArray(data) ? data : [];
-    labelCache.docsPrefix.set(pref, docs);
-    return docs;
-  }catch(err){
-    console.warn('Nu am putut încărca documentele prefix pentru etichete.', err);
-    return [];
-  }
+  // Disk IO optimization: prefix scans on rf_documents are disabled.
+  // Existing exact document keys remain loaded through queryDocsByKeys().
+  const docs = [];
+  labelCache.docsPrefix.set(pref, docs);
+  return docs;
 }
 
 async function readDocRowsByPriority(docKeys){
@@ -718,16 +711,34 @@ async function loadIntrariRowsForYears(years){
   labelCache.intrari.set(cacheKey, deduped);
   return deduped;
 }
+function isLabelDateLike(value){
+  const s = toStr(value).trim();
+  if(!s) return false;
+  return /^(\d{1,2}[\.\/\-]\d{1,2}[\.\/\-]\d{2,4}|\d{4}[\.\/\-]\d{1,2}[\.\/\-]\d{1,2})$/.test(s);
+}
 function normalizeZaleLabelRow(raw, index){
-  const obj = Array.isArray(raw) ? {
-    an: raw[0], luna: raw[1], data_livrarii: raw[2], nr_transport: raw[3]
-  } : (raw || {});
-  const delivery = normalizeDate(pickFirst(obj, ['data_livrarii','data livrarii','Data Livrarii','data_livrare','data livrare']));
+  let obj;
+  if(Array.isArray(raw)){
+    const hasActualDate = isLabelDateLike(raw[3]);
+    obj = {
+      an: raw[0],
+      luna: raw[1],
+      data_livrarii: raw[2],
+      data_livrare_actualizata: hasActualDate ? raw[3] : '',
+      nr_transport: hasActualDate ? (raw[5] || raw[4] || '') : raw[3]
+    };
+  }else{
+    obj = raw || {};
+  }
+  const delivery = normalizeDate(pickFirst(obj, ['data_livrarii','data livrarii','Data Livrarii','Data livrării','data_livrare','data livrare','Data livrare','Data livrării planificată','Data livrare planificată']));
+  const deliveryActualizata = normalizeDate(pickFirst(obj, ['data_livrare_actualizata','data_livrarii_actualizata','data_actuala_livrare','data_livrare_reprogramata','data_reprogramata','Data livrare actualizată','Data livrare actualizata','Data actuală livrare','Data actuala livrare','Data nouă livrare','Data noua livrare']));
+  const effectiveDelivery = deliveryActualizata || delivery;
   return {
     id: toStr(pickFirst(obj, ['id','_id'])) || ('zale-label-' + index),
     nr_transport: toStr(pickFirst(obj, ['nr_transport','nr transport','Nr. Transport','Nr Transport','transport','nr'])),
     data_livrarii: delivery,
-    data_livrarii_iso: displayToIso(delivery)
+    data_livrare_actualizata: deliveryActualizata,
+    data_livrarii_iso: displayToIso(effectiveDelivery)
   };
 }
 async function loadZaleRowsForLabels(){
@@ -896,7 +907,7 @@ function buildSarjaQuantityDisplay(totalQty, sarjaEntries){
 
 function buildLabelPayloads(transport, transportRows, intrariRows, zaleRows, mrcRows, mrcMapRows, clientLabel){
   const deliveryRow = (zaleRows || []).find(row => toStr(row.nr_transport) === toStr(transport));
-  const deliveryDate = deliveryRow && deliveryRow.data_livrarii ? deliveryRow.data_livrarii : normalizeDate(transportRows[0] && transportRows[0].data);
+  const deliveryDate = deliveryRow && (deliveryRow.data_livrare_actualizata || deliveryRow.data_livrarii) ? (deliveryRow.data_livrare_actualizata || deliveryRow.data_livrarii) : normalizeDate(transportRows[0] && transportRows[0].data);
   const codeToSarje = new Map();
   (intrariRows || []).forEach(row => {
     const key = toStr(row.cod_intern).toUpperCase();
