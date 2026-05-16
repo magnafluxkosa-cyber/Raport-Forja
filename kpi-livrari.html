@@ -271,8 +271,8 @@
           updatedDate: actual,
           updatedAccepted: acceptedByClient,
           effectiveDate: effective,
-          year: normalizeYear(src.an) || yearFromDate(planned),
-          month: normalizeMonth(src.luna) || monthFromDate(planned),
+          year: yearFromDate(planned) || normalizeYear(src.an),
+          month: monthFromDate(planned) || normalizeMonth(src.luna),
           transport: toStr(src.nr_transport || src.nr_transp || src['Nr. Transport'] || src['Nr Transport'] || src.transport),
           partA: source.partA,
           partB: source.partB,
@@ -312,16 +312,16 @@
           const rows=[]; let latest=0;
           SOURCES.forEach(source=>{
             const doc=(source.docKeys||[source.pageKey]).map(key=>byKey.get(key)).find(Boolean);
-            let sourceRows=[];
+            const seedRows=Array.isArray(source.seedRows)?source.seedRows:[];
+            let sourceRows=seedRows;
             let sourceType='seed local';
             if(doc){
               const payload=doc.content ?? doc.data ?? null;
-              sourceRows=payloadRows(payload);
-              sourceType='cloud';
+              const cloudRows=payloadRows(payload);
+              sourceRows=mergeSourceRows(seedRows,cloudRows,source);
+              sourceType='cloud + istoric local';
               const ts=doc.updated_at?new Date(doc.updated_at).getTime():0;
               if(Number.isFinite(ts) && ts>latest) latest=ts;
-            } else {
-              sourceRows=Array.isArray(source.seedRows)?source.seedRows:[];
             }
             sourceRows.forEach(raw=>{const row=normalizeZaleRow(raw,source,sourceType); if(row) rows.push(row);});
           });
@@ -335,6 +335,22 @@
       }
       function formatDateTime(date){if(!date || Number.isNaN(date.getTime())) return '--'; return String(date.getDate()).padStart(2,'0')+'.'+String(date.getMonth()+1).padStart(2,'0')+'.'+date.getFullYear()+' '+String(date.getHours()).padStart(2,'0')+':'+String(date.getMinutes()).padStart(2,'0');}
       function sortRows(rows){return rows.slice().sort((a,b)=>(dateKey(a.plannedDate)||'9999').localeCompare(dateKey(b.plannedDate)||'9999') || String(a.sourceLabel).localeCompare(String(b.sourceLabel),'ro') || toInt(a.transport)-toInt(b.transport));}
+      function rowYearKey(row){return yearFromDate(row && row.plannedDate) || normalizeYear(row && row.year);}
+      function rowMonthKey(row){return monthFromDate(row && row.plannedDate) || normalizeMonth(row && row.month);}
+      function sourceRowMergeKey(row,source,index){
+        const planned=normalizeDate(pick(row,['data_livrarii','data_livrare','data','Data livrării','Data livrarii','Data Livrarii']));
+        const transport=toStr(row && (row.nr_transport || row.nr_transp || row['Nr. Transport'] || row['Nr Transport'] || row.transport));
+        const id=toStr(row && row.id);
+        if(id) return 'id|'+id;
+        if(transport || planned) return 'tr|'+source.pageKey+'|'+transport+'|'+planned;
+        return 'idx|'+source.pageKey+'|'+index;
+      }
+      function mergeSourceRows(seedRows,cloudRows,source){
+        const map=new Map();
+        (Array.isArray(seedRows)?seedRows:[]).forEach((row,index)=>map.set(sourceRowMergeKey(row,source,index),row));
+        (Array.isArray(cloudRows)?cloudRows:[]).forEach((row,index)=>map.set(sourceRowMergeKey(row,source,index),row));
+        return Array.from(map.values());
+      }
       function fillFilters(){
         const currentYear=els.yearSelect.value;
         const currentMonth=els.monthSelect.value;
@@ -350,8 +366,8 @@
         const m=normalizeMonth(els.monthSelect.value);
         const src=toStr(els.sourceSelect.value);
         return sortRows(state.allRows.filter(row=>{
-          if(y && row.year!==y) return false;
-          if(m && normalizeMonth(row.month)!==m) return false;
+          if(y && rowYearKey(row)!==y) return false;
+          if(m && rowMonthKey(row)!==m) return false;
           if(src && row.sourceKey!==src) return false;
           return true;
         }));
@@ -372,7 +388,7 @@
         const y=normalizeYear(els.yearSelect.value);
         const src=toStr(els.sourceSelect.value);
         return state.allRows.filter(row=>{
-          if(y && row.year!==y) return false;
+          if(y && rowYearKey(row)!==y) return false;
           if(src && row.sourceKey!==src) return false;
           return true;
         });
@@ -383,7 +399,7 @@
         const selectedSource=toStr(els.sourceSelect.value);
         const sourceLabel=selectedSource ? ((SOURCES.find(s=>s.pageKey===selectedSource)||{}).label || selectedSource) : 'toate foile de zale';
         const stats=MONTHS.map(month=>{
-          const rows=baseRows.filter(row=>normalizeMonth(row.month)===month);
+          const rows=baseRows.filter(row=>rowMonthKey(row)===month);
           const delayed=rows.filter(row=>Number(row.delay)>0);
           const accepted=delayed.filter(row=>row.updatedAccepted);
           const penalized=delayed.filter(row=>!row.updatedAccepted);
