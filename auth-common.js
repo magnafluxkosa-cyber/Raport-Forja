@@ -93,6 +93,110 @@
   let globalCreateClientPatched = false;
   let sessionMaintenanceStarted = false;
 
+  /* Egress guard: cache identical Supabase REST GET reads briefly in memory.
+     It does not cache authentication/ACL queries and is cleared after any write. */
+  const REST_EGRESS_CACHE_MAX_ENTRIES = 40;
+  const REST_EGRESS_CACHE_MAX_CHARS = 8 * 1024 * 1024;
+  const restEgressCache = new Map();
+  const restEgressInflight = new Map();
+
+  function getRequestMethod(input, init){
+    return String((init && init.method) || (input && input.method) || 'GET').toUpperCase();
+  }
+
+  function requestUrlString(input){
+    return String((typeof input === 'string' ? input : (input && input.url)) || '');
+  }
+
+  function getHeaderValue(headers, name){
+    const wanted = String(name || '').toLowerCase();
+    if(!headers) return '';
+    try{
+      if(typeof headers.get === 'function') return String(headers.get(name) || headers.get(wanted) || '');
+      if(Array.isArray(headers)){
+        const found = headers.find(pair => Array.isArray(pair) && String(pair[0] || '').toLowerCase() === wanted);
+        return found ? String(found[1] || '') : '';
+      }
+      const direct = headers[name] || headers[wanted] || headers[name.toLowerCase()] || '';
+      return String(direct || '');
+    }catch(_e){ return ''; }
+  }
+
+  function isSensitiveRestUrl(rawUrl){
+    return /\/(profiles|rf_acl|page_permissions|user_page_permissions|field_permissions|user_account_access|user_index_visibility)(\?|$)/i.test(rawUrl);
+  }
+
+  function shouldUseRestEgressCache(input, init){
+    if(getRequestMethod(input, init) !== 'GET') return false;
+    const rawUrl = requestUrlString(input);
+    if(!/\/rest\/v1\//i.test(rawUrl)) return false;
+    if(isSensitiveRestUrl(rawUrl)) return false;
+    return /\/(rf_documents|rf_helper_|helper_)/i.test(rawUrl);
+  }
+
+  function restEgressCacheTtl(rawUrl){
+    if(/\/rf_helper_|\/helper_/i.test(rawUrl)) return 5 * 60 * 1000;
+    if(/\/rf_documents/i.test(rawUrl)) return 60 * 1000;
+    return 30 * 1000;
+  }
+
+  function restEgressKey(input, init){
+    const rawUrl = requestUrlString(input);
+    const initHeaders = init && init.headers ? init.headers : null;
+    const inputHeaders = input && input.headers ? input.headers : null;
+    const range = getHeaderValue(initHeaders, 'range') || getHeaderValue(inputHeaders, 'range');
+    const prefer = getHeaderValue(initHeaders, 'prefer') || getHeaderValue(inputHeaders, 'prefer');
+    const userHint = [safeGetItem(STORAGE.userId), safeGetItem(STORAGE.userEmail)].filter(Boolean).join('|');
+    return [userHint, rawUrl, range, prefer].join('::');
+  }
+
+  function trimRestEgressCache(){
+    while(restEgressCache.size > REST_EGRESS_CACHE_MAX_ENTRIES){
+      const first = restEgressCache.keys().next().value;
+      if(first == null) break;
+      restEgressCache.delete(first);
+    }
+  }
+
+  function clearRestEgressCache(){
+    try{ restEgressCache.clear(); restEgressInflight.clear(); }catch(_e){}
+  }
+
+  function responseFromRestInfo(info){
+    return new Response(info.text || '', {
+      status: info.status || 200,
+      statusText: info.statusText || 'OK',
+      headers: info.headers || []
+    });
+  }
+
+  function getCachedRestResponse(key){
+    const item = restEgressCache.get(key);
+    if(!item) return null;
+    if(item.expiresAt && item.expiresAt < Date.now()){
+      restEgressCache.delete(key);
+      return null;
+    }
+    return responseFromRestInfo(item);
+  }
+
+  async function cacheableRestInfo(response, rawUrl){
+    try{
+      if(!response || !response.ok || typeof response.clone !== 'function') return null;
+      const contentType = getHeaderValue(response.headers, 'content-type');
+      if(contentType && !/json/i.test(contentType)) return null;
+      const text = await response.clone().text();
+      if(text.length > REST_EGRESS_CACHE_MAX_CHARS) return null;
+      return {
+        text,
+        status: response.status,
+        statusText: response.statusText,
+        headers: Array.from(response.headers.entries ? response.headers.entries() : []),
+        expiresAt: Date.now() + restEgressCacheTtl(rawUrl)
+      };
+    }catch(_e){ return null; }
+  }
+
   function isMutatingRequest(input, init){
     const method = String((init && init.method) || (input && input.method) || 'GET').toUpperCase();
     return !['GET','HEAD','OPTIONS'].includes(method);
@@ -166,7 +270,8 @@
   function makeSessionAwareFetch(client, originalFetch){
     const nativeFetch = originalFetch || (typeof fetch === 'function' ? fetch.bind(window) : null);
     if(!nativeFetch) return originalFetch;
-    return async function(input, init){
+
+    async function doFetch(input, init){
       if(shouldRefreshBeforeFetch(input, init)){
         await ensureFreshSession(client, { force:false, redirect:false });
       }
@@ -178,6 +283,40 @@
         }
       }
       return response;
+    }
+
+    return async function(input, init){
+      if(isMutatingRequest(input, init)) clearRestEgressCache();
+      if(!shouldUseRestEgressCache(input, init)) return doFetch(input, init);
+
+      const key = restEgressKey(input, init);
+      const cached = getCachedRestResponse(key);
+      if(cached) return cached;
+
+      if(restEgressInflight.has(key)){
+        try{
+          const existing = await restEgressInflight.get(key);
+          if(existing && existing.info) return responseFromRestInfo(existing.info);
+        }catch(_e){}
+      }
+
+      const rawUrl = requestUrlString(input);
+      const pending = (async function(){
+        const response = await doFetch(input, init);
+        const info = await cacheableRestInfo(response, rawUrl);
+        if(info){
+          restEgressCache.set(key, info);
+          trimRestEgressCache();
+        }
+        return { response, info };
+      })();
+      restEgressInflight.set(key, pending);
+      try{
+        const result = await pending;
+        return result.response;
+      }finally{
+        restEgressInflight.delete(key);
+      }
     };
   }
 
@@ -196,10 +335,10 @@
         try{ ensureFreshSession(client, { force: !!force, redirect:false }); }catch(_e){}
       });
     };
-    window.addEventListener('focus', function(){ refreshAll(true); });
-    window.addEventListener('pageshow', function(){ refreshAll(true); });
-    document.addEventListener('visibilitychange', function(){ if(!document.hidden) refreshAll(true); });
-    window.setInterval(function(){ if(!document.hidden) refreshAll(false); }, 4 * 60 * 1000);
+    window.addEventListener('focus', function(){ refreshAll(false); });
+    window.addEventListener('pageshow', function(){ refreshAll(false); });
+    document.addEventListener('visibilitychange', function(){ if(!document.hidden) refreshAll(false); });
+    window.setInterval(function(){ if(!document.hidden) refreshAll(false); }, 10 * 60 * 1000);
   }
 
   function patchSupabaseCreateClient(){
@@ -1109,7 +1248,7 @@
 
   async function refreshHiddenIndexButtons(force){
     const now = nowMs();
-    if (!force && now - lastRun < 60000) return;
+    if (!force && now - lastRun < 300000) return;
     lastRun = now;
     const user = await getUser();
     if (!user) return;
@@ -1177,10 +1316,10 @@
     installDashboardNavigationSync();
     try { if ('BroadcastChannel' in window) { bc = new BroadcastChannel('rf-index-visibility'); } } catch(_) {}
     refreshHiddenIndexButtons(true);
-    window.addEventListener('focus', () => { refreshHiddenIndexButtons(true); });
-    window.addEventListener('pageshow', () => { refreshHiddenIndexButtons(true); });
-    document.addEventListener('visibilitychange', () => { if (!document.hidden) refreshHiddenIndexButtons(true); });
-    timer = window.setInterval(() => { if (!document.hidden) refreshHiddenIndexButtons(false); }, 60000);
+    window.addEventListener('focus', () => { refreshHiddenIndexButtons(false); });
+    window.addEventListener('pageshow', () => { refreshHiddenIndexButtons(false); });
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) refreshHiddenIndexButtons(false); });
+    timer = window.setInterval(() => { if (!document.hidden) refreshHiddenIndexButtons(false); }, 300000);
     try {
       const sb = window.ERPAuth && typeof window.ERPAuth.getSupabaseClient === 'function' ? window.ERPAuth.getSupabaseClient() : null;
       if (sb) {
@@ -1219,7 +1358,7 @@
   'use strict';
 
   const CHANNEL_NAME = 'rf-online-users';
-  const HEARTBEAT_MS = 25000;
+  const HEARTBEAT_MS = 120000;
   let started = false;
   let channel = null;
   let timer = null;
@@ -1363,8 +1502,13 @@
 
   let timer = null;
   let running = false;
+  let lastCheckAt = 0;
+  const ACCOUNT_STATUS_CHECK_MIN_MS = 300000;
 
-  async function checkNow(){
+  async function checkNow(force){
+    const now = Date.now();
+    if(!force && now - lastCheckAt < ACCOUNT_STATUS_CHECK_MIN_MS) return;
+    lastCheckAt = now;
     try {
       if(!window.ERPAuth || typeof window.ERPAuth.getCurrentUserWithRole !== 'function') return;
       const authState = await window.ERPAuth.getCurrentUserWithRole();
@@ -1383,10 +1527,10 @@
   function start(){
     if(running) return;
     running = true;
-    checkNow();
-    timer = window.setInterval(checkNow, 120000);
-    window.addEventListener('focus', checkNow);
-    document.addEventListener('visibilitychange', function(){ if(document.hidden !== true) checkNow(); });
+    checkNow(true);
+    timer = window.setInterval(function(){ checkNow(false); }, ACCOUNT_STATUS_CHECK_MIN_MS);
+    window.addEventListener('focus', function(){ checkNow(false); });
+    document.addEventListener('visibilitychange', function(){ if(document.hidden !== true) checkNow(false); });
   }
 
   function stop(){
