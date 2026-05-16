@@ -1510,6 +1510,42 @@
 
     @media (min-width:1400px){.cost-grid{grid-template-columns:1fr 1fr}.cost-card.is-prices{grid-column:1 / -1}.cost-scroll{max-height:38vh}}
 
+
+    /* Export Excel 1:1 */
+    #btnExportExcel.exporting{
+      opacity:.78!important;
+      cursor:wait!important;
+    }
+    body.kad-excel-exporting{
+      overflow:visible!important;
+      height:auto!important;
+      min-height:auto!important;
+    }
+    body.kad-excel-exporting .page,
+    body.kad-excel-exporting .table-shell,
+    body.kad-excel-exporting .table-wrap,
+    body.kad-excel-exporting .cost-section,
+    body.kad-excel-exporting .cost-scroll,
+    body.kad-excel-exporting .rebut-chart-body,
+    body.kad-excel-exporting .fq-chart-body{
+      overflow:visible!important;
+      height:auto!important;
+      max-height:none!important;
+      min-height:0!important;
+    }
+    body.kad-excel-exporting .analysis-table thead th,
+    body.kad-excel-exporting .cost-table thead th,
+    body.kad-excel-exporting .cost-table tfoot td,
+    body.kad-excel-exporting .cost-table td.cost-reper,
+    body.kad-excel-exporting .cost-table th.cost-reper,
+    body.kad-excel-exporting .cost-head{
+      position:static!important;
+      left:auto!important;
+      top:auto!important;
+      bottom:auto!important;
+      z-index:auto!important;
+    }
+
 </style>
 </head>
 <body>
@@ -1522,7 +1558,7 @@
           <div class="title">Analiză Rebut Calitate</div>
         </div>
       </div>
-      <div class="top-actions"><button class="ghost-btn primary" id="btnRefresh" type="button">Refresh cloud</button></div>
+      <div class="top-actions"><button class="ghost-btn primary" id="btnExportExcel" type="button">Export Excel 1:1</button><button class="ghost-btn primary" id="btnRefresh" type="button">Refresh cloud</button></div>
     </div>
 
     <div class="controls">
@@ -1729,7 +1765,7 @@ const SOURCE_CONFIGS = {
 };
 
 const els = {
-  selLuna:document.getElementById('selLuna'), selAn:document.getElementById('selAn'), cloudText:document.getElementById('cloudText'), rowsText:document.getElementById('rowsText'), btnRefresh:document.getElementById('btnRefresh'),
+  selLuna:document.getElementById('selLuna'), selAn:document.getElementById('selAn'), cloudText:document.getElementById('cloudText'), rowsText:document.getElementById('rowsText'), btnRefresh:document.getElementById('btnRefresh'), btnExportExcel:document.getElementById('btnExportExcel'),
   thead:document.getElementById('thead'), tbody:document.getElementById('tbody'), tfoot:document.getElementById('tfoot'), table:document.getElementById('pmTable'), emptyState:document.getElementById('emptyState'), colorPalette:document.getElementById('colorPalette'), chkOnlyData:document.getElementById('chkOnlyData'),
   rebutChartZone:document.getElementById('rebutChartZone'), rebutChartBody:document.getElementById('rebutChartBody'), rebutChartTotal:document.getElementById('rebutChartTotal'),
   rebutTypeChartBody:document.getElementById('rebutTypeChartBody'), rebutTypeChartTotal:document.getElementById('rebutTypeChartTotal'),
@@ -2887,6 +2923,253 @@ function renderCostReperCharts(rows){
   }).join('');
 }
 
+
+const EXPORT_LIB_PROMISES = {};
+function loadExportScriptOnce(globalName, url){
+  if(window[globalName]) return Promise.resolve(window[globalName]);
+  if(EXPORT_LIB_PROMISES[globalName]) return EXPORT_LIB_PROMISES[globalName];
+  EXPORT_LIB_PROMISES[globalName] = new Promise((resolve, reject) => {
+    const existing = document.querySelector('script[data-export-lib="' + globalName + '"]');
+    if(existing){
+      existing.addEventListener('load', () => resolve(window[globalName]), { once:true });
+      existing.addEventListener('error', () => reject(new Error('Nu s-a putut încărca biblioteca de export: ' + globalName)), { once:true });
+      return;
+    }
+    const script = document.createElement('script');
+    script.src = url;
+    script.async = true;
+    script.defer = true;
+    script.setAttribute('data-export-lib', globalName);
+    script.onload = () => resolve(window[globalName]);
+    script.onerror = () => reject(new Error('Nu s-a putut încărca biblioteca de export: ' + globalName));
+    document.head.appendChild(script);
+  });
+  return EXPORT_LIB_PROMISES[globalName];
+}
+async function ensureExcelExportLibraries(){
+  await loadExportScriptOnce('ExcelJS', 'https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js');
+  await loadExportScriptOnce('html2canvas', 'https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js');
+  if(!window.ExcelJS || !window.html2canvas) throw new Error('Bibliotecile pentru export Excel nu sunt disponibile.');
+}
+function exportSafeName(value){
+  return normText(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-zA-Z0-9_-]+/g,'-').replace(/^-+|-+$/g,'').toLowerCase() || 'export';
+}
+function rememberStyleChange(stack, el, prop, value, priority){
+  if(!el || !el.style) return;
+  stack.push([el, prop, el.style.getPropertyValue(prop), el.style.getPropertyPriority(prop)]);
+  el.style.setProperty(prop, value, priority || 'important');
+}
+function restoreStyleChanges(stack){
+  for(let i=stack.length-1;i>=0;i--){
+    const [el, prop, oldValue, oldPriority] = stack[i];
+    try{
+      if(oldValue) el.style.setProperty(prop, oldValue, oldPriority || '');
+      else el.style.removeProperty(prop);
+    }catch(_e){}
+  }
+}
+function getActiveExportElement(){
+  const page = document.querySelector('.page');
+  return page || document.body;
+}
+function prepareExportLayout(target){
+  const stack = [];
+  document.body.classList.add('kad-excel-exporting');
+  const width = Math.max(1280, window.innerWidth || 0, (target && target.scrollWidth) || 0, document.documentElement.scrollWidth || 0);
+  rememberStyleChange(stack, document.documentElement, 'overflow', 'visible');
+  rememberStyleChange(stack, document.documentElement, 'height', 'auto');
+  rememberStyleChange(stack, document.documentElement, 'min-height', 'auto');
+  rememberStyleChange(stack, document.documentElement, 'width', width + 'px');
+  rememberStyleChange(stack, document.body, 'overflow', 'visible');
+  rememberStyleChange(stack, document.body, 'height', 'auto');
+  rememberStyleChange(stack, document.body, 'min-height', 'auto');
+  rememberStyleChange(stack, document.body, 'width', width + 'px');
+  [document.querySelector('.page'), document.querySelector('.table-shell'), document.getElementById('tableWrap')].forEach(el => {
+    rememberStyleChange(stack, el, 'overflow', 'visible');
+    rememberStyleChange(stack, el, 'height', 'auto');
+    rememberStyleChange(stack, el, 'max-height', 'none');
+    rememberStyleChange(stack, el, 'min-height', '0');
+    rememberStyleChange(stack, el, 'width', width + 'px');
+  });
+  document.querySelectorAll('.cost-scroll,.rebut-chart-body,.fq-chart-body,.table-wrap').forEach(el => {
+    rememberStyleChange(stack, el, 'overflow', 'visible');
+    rememberStyleChange(stack, el, 'height', 'auto');
+    rememberStyleChange(stack, el, 'max-height', 'none');
+  });
+  return () => { restoreStyleChanges(stack); document.body.classList.remove('kad-excel-exporting'); };
+}
+async function captureExportCanvas(target){
+  const restore = prepareExportLayout(target);
+  try{
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const width = Math.ceil(Math.max(target.scrollWidth, target.getBoundingClientRect().width, 1));
+    const height = Math.ceil(Math.max(target.scrollHeight, target.getBoundingClientRect().height, 1));
+    const scale = Math.max(1, Math.min(2, 18000 / Math.max(width, height)));
+    return await window.html2canvas(target, {
+      backgroundColor:'#f2f8fe',
+      scale:scale,
+      useCORS:true,
+      allowTaint:true,
+      logging:false,
+      width:width,
+      height:height,
+      windowWidth:Math.max(width, document.documentElement.scrollWidth || width),
+      windowHeight:Math.max(height, document.documentElement.scrollHeight || height),
+      scrollX:0,
+      scrollY:0
+    });
+  }finally{
+    restore();
+  }
+}
+function styleExcelCellFromDom(cell, domCell){
+  if(!cell || !domCell || !window.getComputedStyle) return;
+  const cs = window.getComputedStyle(domCell);
+  const bg = cssColorToArgb(cs.backgroundColor);
+  const color = cssColorToArgb(cs.color);
+  cell.alignment = { vertical:'middle', horizontal:(cs.textAlign === 'left' ? 'left' : (cs.textAlign === 'right' ? 'right' : 'center')), wrapText:true };
+  cell.font = { name:'Calibri', size:9, bold:(Number(cs.fontWeight) >= 700 || String(cs.fontWeight).toLowerCase() === 'bold'), color: color ? { argb:color } : undefined };
+  if(bg) cell.fill = { type:'pattern', pattern:'solid', fgColor:{ argb:bg } };
+  cell.border = { top:{style:'thin',color:{argb:'FFC1CFDB'}}, left:{style:'thin',color:{argb:'FFC1CFDB'}}, bottom:{style:'thin',color:{argb:'FFC1CFDB'}}, right:{style:'thin',color:{argb:'FFC1CFDB'}} };
+}
+function cssColorToArgb(value){
+  const s = String(value || '').trim();
+  if(!s || s === 'transparent') return '';
+  const rgba = s.match(/^rgba?\(([^)]+)\)$/i);
+  if(rgba){
+    const parts = rgba[1].split(',').map(v => v.trim());
+    const r = Math.max(0, Math.min(255, Math.round(Number(parts[0]) || 0)));
+    const g = Math.max(0, Math.min(255, Math.round(Number(parts[1]) || 0)));
+    const b = Math.max(0, Math.min(255, Math.round(Number(parts[2]) || 0)));
+    const a = parts.length > 3 ? Math.max(0, Math.min(1, Number(parts[3]))) : 1;
+    if(a <= 0) return '';
+    return 'FF' + [r,g,b].map(n => n.toString(16).padStart(2,'0')).join('').toUpperCase();
+  }
+  const hex = s.match(/^#([0-9a-f]{3}|[0-9a-f]{6})$/i);
+  if(hex){
+    let h = hex[1];
+    if(h.length === 3) h = h.split('').map(ch => ch + ch).join('');
+    return 'FF' + h.toUpperCase();
+  }
+  return '';
+}
+function cellTextToExcelValue(text){
+  const raw = normText(text).replace(/–/g,'');
+  if(!raw) return '';
+  if(/^[-+]?\d{1,3}(\.\d{3})*(,\d+)?\s*€$/.test(raw) || /^[-+]?\d+(,\d+)?\s*€$/.test(raw)) return toNum(raw.replace('€',''));
+  if(/^[-+]?\d{1,3}(\.\d{3})*(,\d+)?%$/.test(raw) || /^[-+]?\d+(,\d+)?%$/.test(raw)) return toNum(raw.replace('%','')) / 100;
+  if(/^[-+]?\d{1,3}(\.\d{3})*(,\d+)?$/.test(raw) || /^[-+]?\d+(,\d+)?$/.test(raw)) return toNum(raw);
+  return raw;
+}
+function addDomTableWorksheet(workbook, table, name){
+  if(!workbook || !table) return;
+  const safe = String(name || 'Tabel').slice(0,31);
+  const ws = workbook.addWorksheet(safe, { views:[{ state:'frozen', ySplit:1 }] });
+  const grid = [];
+  const merges = [];
+  Array.from(table.rows || []).forEach((row, rIdx) => {
+    if(!grid[rIdx]) grid[rIdx] = [];
+    let cIdx = 0;
+    Array.from(row.cells || []).forEach(domCell => {
+      while(grid[rIdx][cIdx]) cIdx++;
+      const rowSpan = Math.max(1, Number(domCell.rowSpan) || 1);
+      const colSpan = Math.max(1, Number(domCell.colSpan) || 1);
+      grid[rIdx][cIdx] = { domCell, text:normText(domCell.textContent) };
+      for(let rr=0; rr<rowSpan; rr++){
+        if(!grid[rIdx+rr]) grid[rIdx+rr] = [];
+        for(let cc=0; cc<colSpan; cc++){
+          if(rr || cc) grid[rIdx+rr][cIdx+cc] = { covered:true };
+        }
+      }
+      if(rowSpan > 1 || colSpan > 1) merges.push([rIdx+1, cIdx+1, rIdx+rowSpan, cIdx+colSpan]);
+      cIdx += colSpan;
+    });
+  });
+  const rowCount = grid.length;
+  const colCount = grid.reduce((max,row)=>Math.max(max, (row || []).length), 0);
+  for(let r=0; r<rowCount; r++){
+    const excelRow = ws.getRow(r+1);
+    const domRow = table.rows[r];
+    if(domRow) excelRow.height = Math.max(16, Math.min(70, (domRow.getBoundingClientRect().height || 22) * 0.75));
+    for(let c=0; c<colCount; c++){
+      const slot = grid[r] && grid[r][c];
+      const cell = ws.getCell(r+1,c+1);
+      if(slot && !slot.covered){
+        cell.value = cellTextToExcelValue(slot.text);
+        styleExcelCellFromDom(cell, slot.domCell);
+      }
+    }
+  }
+  for(let c=0; c<colCount; c++){
+    let widthPx = 80;
+    for(let r=0; r<Math.min(rowCount, 20); r++){
+      const slot = grid[r] && grid[r][c];
+      if(slot && slot.domCell){ widthPx = Math.max(widthPx, slot.domCell.getBoundingClientRect().width || 80); break; }
+    }
+    ws.getColumn(c+1).width = Math.max(8, Math.min(28, widthPx / 7));
+  }
+  merges.forEach(m => { try{ ws.mergeCells(m[0],m[1],m[2],m[3]); }catch(_e){} });
+}
+function addActiveDataSheets(workbook){
+  if(state.view === 'cost'){
+    addDomTableWorksheet(workbook, els.costPmTable, 'Cost PM');
+    addDomTableWorksheet(workbook, els.costFjTable, 'Cost FJ');
+    addDomTableWorksheet(workbook, els.costPriceTable, 'Preturi');
+  }else{
+    addDomTableWorksheet(workbook, els.table, 'Analiza calitate');
+    if(els.forjaQualityTable && !els.forjaQualityTable.classList.contains('hidden')) addDomTableWorksheet(workbook, els.forjaQualityTable, 'Analiza forja');
+  }
+}
+async function exportExcelOneToOne(){
+  if(!els.btnExportExcel) return;
+  const oldText = els.btnExportExcel.textContent;
+  try{
+    els.btnExportExcel.disabled = true;
+    els.btnExportExcel.classList.add('exporting');
+    els.btnExportExcel.textContent = 'Se exportă...';
+    await ensureExcelExportLibraries();
+    const target = getActiveExportElement();
+    const canvas = await captureExportCanvas(target);
+    const workbook = new window.ExcelJS.Workbook();
+    workbook.creator = 'K.A.D';
+    workbook.created = new Date();
+    workbook.modified = new Date();
+    const sheet = workbook.addWorksheet('Export 1-1', { views:[{ showGridLines:false }] });
+    sheet.pageSetup = { orientation:'landscape', fitToPage:true, fitToWidth:1, fitToHeight:0, paperSize:9 };
+    sheet.properties.defaultRowHeight = 18;
+    const imgData = canvas.toDataURL('image/png');
+    const imgId = workbook.addImage({ base64:imgData, extension:'png' });
+    const cssWidth = Math.round(canvas.width / Math.max(1, window.devicePixelRatio || 1));
+    const cssHeight = Math.round(canvas.height / Math.max(1, window.devicePixelRatio || 1));
+    const imageWidth = Math.max(900, Math.round(target.scrollWidth || cssWidth));
+    const imageHeight = Math.max(400, Math.round(target.scrollHeight || cssHeight));
+    sheet.addImage(imgId, { tl:{ col:0, row:0 }, ext:{ width:imageWidth, height:imageHeight } });
+    for(let i=1; i<=Math.max(12, Math.ceil(imageWidth / 110)); i++) sheet.getColumn(i).width = 16;
+    for(let i=1; i<=Math.max(20, Math.ceil(imageHeight / 22)); i++) sheet.getRow(i).height = 18;
+    sheet.getCell('A1').value = '';
+    addActiveDataSheets(workbook);
+    const buffer = await workbook.xlsx.writeBuffer();
+    const blob = new Blob([buffer], { type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const luna = exportSafeName(state.luna || 'luna');
+    const an = exportSafeName(state.an || 'an');
+    const viewName = state.view === 'cost' ? 'cost-rebut' : 'analiza-calitate';
+    a.href = url;
+    a.download = 'analiza-rebut-calitate-' + viewName + '-' + an + '-' + luna + '.xlsx';
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => { try{ URL.revokeObjectURL(url); a.remove(); }catch(_e){} }, 1000);
+  }catch(err){
+    console.error(err);
+    window.alert('Nu am putut exporta Excel 1:1: ' + (err && err.message ? err.message : err));
+  }finally{
+    els.btnExportExcel.disabled = false;
+    els.btnExportExcel.classList.remove('exporting');
+    els.btnExportExcel.textContent = oldText;
+  }
+}
+
 function renderCostAnalysis(renderPrices){
   const rows = buildCostRows(state.an);
   if(els.costSection) els.costSection.classList.remove('hidden');
@@ -2958,6 +3241,7 @@ async function refreshAll(keepPeriod){ try{ await ensureSession(); await readAll
 els.selAn.addEventListener('change', () => { state.an=els.selAn.value; const months=collectAvailablePeriods(); if(!months.includes(state.luna)) state.luna=months[0]||state.luna; renderSelectors(); buildSummary(); renderTable(); });
 els.selLuna.addEventListener('change', () => { state.luna=els.selLuna.value; buildSummary(); renderTable(); });
 els.btnRefresh.addEventListener('click', () => refreshAll(true));
+if(els.btnExportExcel) els.btnExportExcel.addEventListener('click', exportExcelOneToOne);
 if(els.chkOnlyData) els.chkOnlyData.addEventListener('change', renderTable);
 if(els.btnViewQuality) els.btnViewQuality.addEventListener('click', () => setActiveView('quality'));
 if(els.btnViewCost) els.btnViewCost.addEventListener('click', () => setActiveView('cost'));
