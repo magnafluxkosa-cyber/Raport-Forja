@@ -1558,7 +1558,7 @@
           <div class="title">Analiză Rebut Calitate</div>
         </div>
       </div>
-      <div class="top-actions"><button class="ghost-btn primary" id="btnExportExcel" type="button">Export Excel 1:1</button><button class="ghost-btn primary" id="btnRefresh" type="button">Refresh cloud</button></div>
+      <div class="top-actions"><button class="ghost-btn primary" id="btnExportExcel" type="button">Export Excel date + grafice</button><button class="ghost-btn primary" id="btnRefresh" type="button">Refresh cloud</button></div>
     </div>
 
     <div class="controls">
@@ -2924,6 +2924,7 @@ function renderCostReperCharts(rows){
 }
 
 
+
 const EXPORT_LIB_PROMISES = {};
 function loadExportScriptOnce(globalName, url){
   if(window[globalName]) return Promise.resolve(window[globalName]);
@@ -2948,177 +2949,356 @@ function loadExportScriptOnce(globalName, url){
 }
 async function ensureExcelExportLibraries(){
   await loadExportScriptOnce('ExcelJS', 'https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js');
-  await loadExportScriptOnce('html2canvas', 'https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js');
-  if(!window.ExcelJS || !window.html2canvas) throw new Error('Bibliotecile pentru export Excel nu sunt disponibile.');
+  await loadExportScriptOnce('JSZip', 'https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js');
+  if(!window.ExcelJS || !window.JSZip) throw new Error('Bibliotecile pentru export Excel nu sunt disponibile.');
 }
 function exportSafeName(value){
   return normText(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-zA-Z0-9_-]+/g,'-').replace(/^-+|-+$/g,'').toLowerCase() || 'export';
 }
-function rememberStyleChange(stack, el, prop, value, priority){
-  if(!el || !el.style) return;
-  stack.push([el, prop, el.style.getPropertyValue(prop), el.style.getPropertyPriority(prop)]);
-  el.style.setProperty(prop, value, priority || 'important');
+function excelCol(n){
+  let s = '';
+  n = Math.max(1, Number(n) || 1);
+  while(n > 0){
+    const m = (n - 1) % 26;
+    s = String.fromCharCode(65 + m) + s;
+    n = Math.floor((n - 1) / 26);
+  }
+  return s;
 }
-function restoreStyleChanges(stack){
-  for(let i=stack.length-1;i>=0;i--){
-    const [el, prop, oldValue, oldPriority] = stack[i];
-    try{
-      if(oldValue) el.style.setProperty(prop, oldValue, oldPriority || '');
-      else el.style.removeProperty(prop);
-    }catch(_e){}
+function excelRef(row, col){ return '$' + excelCol(col) + '$' + row; }
+function quoteSheetName(name){ return "'" + String(name || '').replace(/'/g, "''") + "'"; }
+function sheetRange(sheetName, r1, c1, r2, c2){ return quoteSheetName(sheetName) + '!' + excelRef(r1,c1) + ':' + excelRef(r2,c2); }
+function xmlEscape(value){ return String(value == null ? '' : value).replace(/[&<>"]/g, s => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[s])); }
+function excelNum(value){ const n = Number(value || 0); return Number.isFinite(n) ? n : 0; }
+function excelPct(value){ const n = Number(value); return Number.isFinite(n) ? n : null; }
+function setCell(cell, value, style){
+  if(!cell) return;
+  cell.value = value;
+  applyExcelStyle(cell, style || {});
+}
+function applyExcelStyle(cell, style){
+  const palette = {
+    head:'FFFBFDFF', blue:'FFE4F1FB', green:'FFE5F6EB', amber:'FFFFF4DC', red:'FFFFEBEB', violet:'FFEEF0FF', total:'FFEAF4FD', white:'FFFFFFFF', text:'FF071B2F', muted:'FF40586F', darkBlue:'FF0B2F57'
+  };
+  const fill = style.fill ? (palette[style.fill] || style.fill) : null;
+  const color = style.color ? (palette[style.color] || style.color) : palette.text;
+  cell.font = { name:'Calibri', size: style.size || 10, bold: !!style.bold, color:{ argb:color } };
+  cell.alignment = { vertical:'middle', horizontal:style.align || 'center', wrapText: style.wrap !== false };
+  if(fill) cell.fill = { type:'pattern', pattern:'solid', fgColor:{ argb:fill } };
+  cell.border = {
+    top:{style:'thin', color:{argb:'FFC1CFDB'}}, left:{style:'thin', color:{argb:'FFC1CFDB'}},
+    bottom:{style:'thin', color:{argb:'FFC1CFDB'}}, right:{style:'thin', color:{argb:'FFC1CFDB'}}
+  };
+  if(style.numFmt) cell.numFmt = style.numFmt;
+}
+function styleWorksheetDefaults(ws){
+  ws.properties.defaultRowHeight = 18;
+  ws.views = [{ state:'frozen', ySplit:1 }];
+  ws.eachRow(row => { row.height = Math.max(row.height || 18, 18); });
+}
+function applyAutoFilter(ws, row, col1, col2){
+  try{ ws.autoFilter = { from:{ row, column:col1 }, to:{ row, column:col2 } }; }catch(_e){}
+}
+function addTitle(ws, title, subtitle, lastCol){
+  const row = ws.getRow(1);
+  ws.mergeCells(1,1,1,lastCol);
+  setCell(ws.getCell(1,1), title, { fill:'blue', bold:true, size:14, align:'left' });
+  row.height = 24;
+  if(subtitle){
+    ws.mergeCells(2,1,2,lastCol);
+    setCell(ws.getCell(2,1), subtitle, { fill:'white', bold:true, size:10, color:'muted', align:'left' });
   }
 }
-function getActiveExportElement(){
-  const page = document.querySelector('.page');
-  return page || document.body;
-}
-function prepareExportLayout(target){
-  const stack = [];
-  document.body.classList.add('kad-excel-exporting');
-  const width = Math.max(1280, window.innerWidth || 0, (target && target.scrollWidth) || 0, document.documentElement.scrollWidth || 0);
-  rememberStyleChange(stack, document.documentElement, 'overflow', 'visible');
-  rememberStyleChange(stack, document.documentElement, 'height', 'auto');
-  rememberStyleChange(stack, document.documentElement, 'min-height', 'auto');
-  rememberStyleChange(stack, document.documentElement, 'width', width + 'px');
-  rememberStyleChange(stack, document.body, 'overflow', 'visible');
-  rememberStyleChange(stack, document.body, 'height', 'auto');
-  rememberStyleChange(stack, document.body, 'min-height', 'auto');
-  rememberStyleChange(stack, document.body, 'width', width + 'px');
-  [document.querySelector('.page'), document.querySelector('.table-shell'), document.getElementById('tableWrap')].forEach(el => {
-    rememberStyleChange(stack, el, 'overflow', 'visible');
-    rememberStyleChange(stack, el, 'height', 'auto');
-    rememberStyleChange(stack, el, 'max-height', 'none');
-    rememberStyleChange(stack, el, 'min-height', '0');
-    rememberStyleChange(stack, el, 'width', width + 'px');
-  });
-  document.querySelectorAll('.cost-scroll,.rebut-chart-body,.fq-chart-body,.table-wrap').forEach(el => {
-    rememberStyleChange(stack, el, 'overflow', 'visible');
-    rememberStyleChange(stack, el, 'height', 'auto');
-    rememberStyleChange(stack, el, 'max-height', 'none');
-  });
-  return () => { restoreStyleChanges(stack); document.body.classList.remove('kad-excel-exporting'); };
-}
-async function captureExportCanvas(target){
-  const restore = prepareExportLayout(target);
-  try{
-    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-    const width = Math.ceil(Math.max(target.scrollWidth, target.getBoundingClientRect().width, 1));
-    const height = Math.ceil(Math.max(target.scrollHeight, target.getBoundingClientRect().height, 1));
-    const scale = Math.max(1, Math.min(2, 18000 / Math.max(width, height)));
-    return await window.html2canvas(target, {
-      backgroundColor:'#f2f8fe',
-      scale:scale,
-      useCORS:true,
-      allowTaint:true,
-      logging:false,
-      width:width,
-      height:height,
-      windowWidth:Math.max(width, document.documentElement.scrollWidth || width),
-      windowHeight:Math.max(height, document.documentElement.scrollHeight || height),
-      scrollX:0,
-      scrollY:0
-    });
-  }finally{
-    restore();
-  }
-}
-function styleExcelCellFromDom(cell, domCell){
-  if(!cell || !domCell || !window.getComputedStyle) return;
-  const cs = window.getComputedStyle(domCell);
-  const bg = cssColorToArgb(cs.backgroundColor);
-  const color = cssColorToArgb(cs.color);
-  cell.alignment = { vertical:'middle', horizontal:(cs.textAlign === 'left' ? 'left' : (cs.textAlign === 'right' ? 'right' : 'center')), wrapText:true };
-  cell.font = { name:'Calibri', size:9, bold:(Number(cs.fontWeight) >= 700 || String(cs.fontWeight).toLowerCase() === 'bold'), color: color ? { argb:color } : undefined };
-  if(bg) cell.fill = { type:'pattern', pattern:'solid', fgColor:{ argb:bg } };
-  cell.border = { top:{style:'thin',color:{argb:'FFC1CFDB'}}, left:{style:'thin',color:{argb:'FFC1CFDB'}}, bottom:{style:'thin',color:{argb:'FFC1CFDB'}}, right:{style:'thin',color:{argb:'FFC1CFDB'}} };
-}
-function cssColorToArgb(value){
-  const s = String(value || '').trim();
-  if(!s || s === 'transparent') return '';
-  const rgba = s.match(/^rgba?\(([^)]+)\)$/i);
-  if(rgba){
-    const parts = rgba[1].split(',').map(v => v.trim());
-    const r = Math.max(0, Math.min(255, Math.round(Number(parts[0]) || 0)));
-    const g = Math.max(0, Math.min(255, Math.round(Number(parts[1]) || 0)));
-    const b = Math.max(0, Math.min(255, Math.round(Number(parts[2]) || 0)));
-    const a = parts.length > 3 ? Math.max(0, Math.min(1, Number(parts[3]))) : 1;
-    if(a <= 0) return '';
-    return 'FF' + [r,g,b].map(n => n.toString(16).padStart(2,'0')).join('').toUpperCase();
-  }
-  const hex = s.match(/^#([0-9a-f]{3}|[0-9a-f]{6})$/i);
-  if(hex){
-    let h = hex[1];
-    if(h.length === 3) h = h.split('').map(ch => ch + ch).join('');
-    return 'FF' + h.toUpperCase();
-  }
-  return '';
-}
-function cellTextToExcelValue(text){
-  const raw = normText(text).replace(/–/g,'');
-  if(!raw) return '';
-  if(/^[-+]?\d{1,3}(\.\d{3})*(,\d+)?\s*€$/.test(raw) || /^[-+]?\d+(,\d+)?\s*€$/.test(raw)) return toNum(raw.replace('€',''));
-  if(/^[-+]?\d{1,3}(\.\d{3})*(,\d+)?%$/.test(raw) || /^[-+]?\d+(,\d+)?%$/.test(raw)) return toNum(raw.replace('%','')) / 100;
-  if(/^[-+]?\d{1,3}(\.\d{3})*(,\d+)?$/.test(raw) || /^[-+]?\d+(,\d+)?$/.test(raw)) return toNum(raw);
-  return raw;
-}
-function addDomTableWorksheet(workbook, table, name){
-  if(!workbook || !table) return;
-  const safe = String(name || 'Tabel').slice(0,31);
-  const ws = workbook.addWorksheet(safe, { views:[{ state:'frozen', ySplit:1 }] });
-  const grid = [];
-  const merges = [];
-  Array.from(table.rows || []).forEach((row, rIdx) => {
-    if(!grid[rIdx]) grid[rIdx] = [];
-    let cIdx = 0;
-    Array.from(row.cells || []).forEach(domCell => {
-      while(grid[rIdx][cIdx]) cIdx++;
-      const rowSpan = Math.max(1, Number(domCell.rowSpan) || 1);
-      const colSpan = Math.max(1, Number(domCell.colSpan) || 1);
-      grid[rIdx][cIdx] = { domCell, text:normText(domCell.textContent) };
-      for(let rr=0; rr<rowSpan; rr++){
-        if(!grid[rIdx+rr]) grid[rIdx+rr] = [];
-        for(let cc=0; cc<colSpan; cc++){
-          if(rr || cc) grid[rIdx+rr][cIdx+cc] = { covered:true };
-        }
-      }
-      if(rowSpan > 1 || colSpan > 1) merges.push([rIdx+1, cIdx+1, rIdx+rowSpan, cIdx+colSpan]);
-      cIdx += colSpan;
+function addArrayTable(ws, startRow, startCol, headers, rows, options){
+  options = options || {};
+  const headerRow = ws.getRow(startRow);
+  headers.forEach((h, idx) => setCell(headerRow.getCell(startCol + idx), h, { fill:options.headerFill || 'head', bold:true, size:10, align:'center' }));
+  rows.forEach((rowValues, rIdx) => {
+    const row = ws.getRow(startRow + 1 + rIdx);
+    rowValues.forEach((value, cIdx) => {
+      const colIdx = startCol + cIdx;
+      const colOpt = (options.colStyles && options.colStyles[cIdx]) || {};
+      setCell(row.getCell(colIdx), value, Object.assign({ fill:(rIdx % 2 ? 'white' : (options.altFill || 'white')), bold:false, size:10, align: cIdx === 0 ? 'left' : 'center' }, colOpt));
     });
   });
-  const rowCount = grid.length;
-  const colCount = grid.reduce((max,row)=>Math.max(max, (row || []).length), 0);
-  for(let r=0; r<rowCount; r++){
-    const excelRow = ws.getRow(r+1);
-    const domRow = table.rows[r];
-    if(domRow) excelRow.height = Math.max(16, Math.min(70, (domRow.getBoundingClientRect().height || 22) * 0.75));
-    for(let c=0; c<colCount; c++){
-      const slot = grid[r] && grid[r][c];
-      const cell = ws.getCell(r+1,c+1);
-      if(slot && !slot.covered){
-        cell.value = cellTextToExcelValue(slot.text);
-        styleExcelCellFromDom(cell, slot.domCell);
-      }
-    }
-  }
-  for(let c=0; c<colCount; c++){
-    let widthPx = 80;
-    for(let r=0; r<Math.min(rowCount, 20); r++){
-      const slot = grid[r] && grid[r][c];
-      if(slot && slot.domCell){ widthPx = Math.max(widthPx, slot.domCell.getBoundingClientRect().width || 80); break; }
-    }
-    ws.getColumn(c+1).width = Math.max(8, Math.min(28, widthPx / 7));
-  }
-  merges.forEach(m => { try{ ws.mergeCells(m[0],m[1],m[2],m[3]); }catch(_e){} });
+  const totalRows = rows.length + 1;
+  const totalCols = headers.length;
+  for(let c=0;c<totalCols;c++) ws.getColumn(startCol+c).width = (options.widths && options.widths[c]) || (c===0 ? 20 : 12);
+  applyAutoFilter(ws, startRow, startCol, startCol + totalCols - 1);
+  return { startRow, startCol, endRow:startRow + totalRows - 1, endCol:startCol + totalCols - 1 };
 }
-function addActiveDataSheets(workbook){
+function writeQualityDataSheet(workbook){
+  const ws = workbook.addWorksheet('Analiza calitate');
+  const rows = visibleRows();
+  const headers = ['Reper','Prelucrate buc','Prelucrate %','OK buc','OK %','NOK buc','NOK %','Remaniabile buc','Remaniabile %','Rebut total buc','Rebut total %'];
+  DEFECT_CODES.forEach(code => { headers.push(code + ' buc'); headers.push(code + ' %'); });
+  addTitle(ws, 'Analiză Rebut Calitate', 'Luna: ' + capMonth(state.luna) + ' • An: ' + state.an + ' • date exportate ca celule editabile', headers.length);
+  const data = rows.map(r => {
+    const arr = [r.reper, excelNum(r.prelucrate), excelPct(r.pctPrel), excelNum(r.ok), excelPct(r.pctOk), excelNum(r.nok), excelPct(r.pctNok), excelNum(r.rem), excelPct(r.pctRem), excelNum(r.rebutDef), excelPct(r.pctRebut)];
+    DEFECT_CODES.forEach(code => {
+      const qty = excelNum(r[code]);
+      arr.push(qty);
+      arr.push(r.rebutDef > 0 ? qty / r.rebutDef : null);
+    });
+    return arr;
+  });
+  const table = addArrayTable(ws, 4, 1, headers, data, {
+    headerFill:'head', widths:headers.map((_,i)=>i===0?22:12),
+    colStyles:headers.map((h,i) => {
+      const isPct = String(h).includes('%');
+      let fill = 'white';
+      if(i===0) fill='blue'; else if(String(h).includes('OK')) fill='green'; else if(String(h).includes('NOK')) fill='amber'; else if(String(h).includes('Remaniabile')) fill='violet'; else if(String(h).includes('Rebut') || DEFECT_CODES.some(code => String(h).startsWith(code))) fill='red';
+      return { fill, bold:i===0, numFmt:isPct?'0.00%':'#,##0' };
+    })
+  });
+  const totalRowIdx = table.endRow + 1;
+  setCell(ws.getCell(totalRowIdx,1), 'TOTAL', { fill:'total', bold:true, align:'left' });
+  for(let c=2; c<=headers.length; c++){
+    const h = headers[c-1];
+    const cell = ws.getCell(totalRowIdx,c);
+    if(String(h).includes('%')){
+      if(c===3) cell.value = { formula:'IF(B' + totalRowIdx + '>0,1,"")' };
+      else if(c===5) cell.value = { formula:'IF(B' + totalRowIdx + '>0,D' + totalRowIdx + '/B' + totalRowIdx + ',"")' };
+      else if(c===7) cell.value = { formula:'IF(B' + totalRowIdx + '>0,F' + totalRowIdx + '/B' + totalRowIdx + ',"")' };
+      else if(c===9) cell.value = { formula:'IF(B' + totalRowIdx + '>0,H' + totalRowIdx + '/B' + totalRowIdx + ',"")' };
+      else if(c===11) cell.value = { formula:'IF(B' + totalRowIdx + '>0,J' + totalRowIdx + '/B' + totalRowIdx + ',"")' };
+      else cell.value = { formula:'IF(J' + totalRowIdx + '>0,' + excelCol(c-1) + totalRowIdx + '/J' + totalRowIdx + ',"")' };
+      applyExcelStyle(cell, { fill:'total', bold:true, numFmt:'0.00%' });
+    }else{
+      cell.value = { formula:'SUM(' + excelCol(c) + '5:' + excelCol(c) + table.endRow + ')' };
+      applyExcelStyle(cell, { fill:'total', bold:true, numFmt:'#,##0' });
+    }
+  }
+  styleWorksheetDefaults(ws);
+  return ws;
+}
+function writeForjaQualitySheet(workbook){
+  const rows = buildForjaQualityRows();
+  const headers = ['Reper','Cantitate forjată','Cantitate OK','Rebut forjă','% FJ','Remedieri'];
+  MAGNAFLUX_DEFECT_CODES.forEach(code => headers.push(code));
+  headers.push('Total MF','% MF','Rebut forjă depistat în PM','% PM','Rebut total','% total');
+  const ws = workbook.addWorksheet('Analiza forja');
+  addTitle(ws, 'Analiză Rebut Forjă', 'Luna: ' + capMonth(state.luna) + ' • An: ' + state.an, headers.length);
+  const data = rows.map(r => {
+    const arr = [r.reper, excelNum(r.totalForjat), excelNum(r.ok), excelNum(r.rebutFj), excelPct(r.pctRebutFj), excelNum(r.remedieri)];
+    MAGNAFLUX_DEFECT_CODES.forEach(code => arr.push(excelNum(r[code])));
+    arr.push(excelNum(r.mfTotal), excelPct(r.pctMf), excelNum(r.pmDetected), excelPct(r.pctPmDetected), excelNum(r.rebutTotal), excelPct(r.pctRebutTotal));
+    return arr;
+  });
+  addArrayTable(ws, 4, 1, headers, data, {
+    widths:headers.map((_,i)=>i===0?22:12),
+    colStyles:headers.map(h => {
+      const isPct = String(h).includes('%');
+      let fill='white';
+      if(h==='Reper') fill='blue'; else if(String(h).includes('OK')) fill='green'; else if(String(h).includes('Rebut') || h==='Total MF') fill='red'; else if(String(h).includes('Remedieri')) fill='violet';
+      return { fill, numFmt:isPct?'0.00%':'#,##0' };
+    })
+  });
+  styleWorksheetDefaults(ws);
+  return ws;
+}
+function topItems(items, limit){ return (items || []).filter(x => x && x.label && excelNum(x.value) > 0).sort((a,b)=>excelNum(b.value)-excelNum(a.value) || String(a.label).localeCompare(String(b.label), 'ro')).slice(0, limit || 20); }
+function addChartDataBlock(ws, startRow, title, headers, rows){
+  ws.mergeCells(startRow,1,startRow,Math.max(3, headers.length));
+  setCell(ws.getCell(startRow,1), title, { fill:'blue', bold:true, size:12, align:'left' });
+  headers.forEach((h,i)=>setCell(ws.getCell(startRow+1,1+i), h, { fill:'head', bold:true }));
+  rows.forEach((r,ri)=>r.forEach((v,ci)=>setCell(ws.getCell(startRow+2+ri,1+ci), v, { fill:ri%2?'white':'blue', align:ci===0?'left':'center', numFmt:ci===0?'':'#,##0.00' })));
+  headers.forEach((_,i)=>{ ws.getColumn(1+i).width = i===0 ? 24 : 14; });
+  return { headerRow:startRow+1, firstRow:startRow+2, lastRow:startRow+1+Math.max(1, rows.length), firstCol:1, lastCol:headers.length, count:rows.length };
+}
+function writeQualityChartsSheet(workbook, chartRequests){
+  const ws = workbook.addWorksheet('Grafice calitate');
+  ws.views = [{ showGridLines:false }];
+  addTitle(ws, 'Grafice native Excel - Analiză Rebut Calitate', 'Graficele sunt obiecte Excel bazate pe date, nu imagini.', 10);
+  let row = 4;
+  const qRows = visibleRows();
+  const rebutData = topItems(qRows.map(r => ({ label:r.reper, value:excelNum(r.rebutDef) })), 20);
+  const b1 = addChartDataBlock(ws, row, 'Rebut total PM pe reper', ['Reper','Rebut total buc'], rebutData.map(x => [x.label, x.value]));
+  if(rebutData.length) chartRequests.push({ sheetName:ws.name, title:'Rebut total PM pe reper', from:{col:4,row:row}, to:{col:13,row:row+16}, catRef:sheetRange(ws.name,b1.firstRow,1,b1.firstRow+rebutData.length-1,1), series:[{ nameRef:sheetRange(ws.name,b1.headerRow,2,b1.headerRow,2), valRef:sheetRange(ws.name,b1.firstRow,2,b1.firstRow+rebutData.length-1,2), color:'2F80ED' }] });
+  row += Math.max(22, rebutData.length + 4);
+  const typeData = topItems(DEFECT_CODES.map(code => ({ label:code + ' - ' + (DEFECT_LABELS[code] || ''), value:qRows.reduce((sum,r)=>sum+excelNum(r[code]),0) })), 20);
+  const b2 = addChartDataBlock(ws, row, 'Rebut pe tip defect PM', ['Tip defect','Cantitate buc'], typeData.map(x => [x.label, x.value]));
+  if(typeData.length) chartRequests.push({ sheetName:ws.name, title:'Rebut pe tip defect PM', from:{col:4,row:row}, to:{col:13,row:row+16}, catRef:sheetRange(ws.name,b2.firstRow,1,b2.firstRow+typeData.length-1,1), series:[{ nameRef:sheetRange(ws.name,b2.headerRow,2,b2.headerRow,2), valRef:sheetRange(ws.name,b2.firstRow,2,b2.firstRow+typeData.length-1,2), color:'EF4444' }] });
+  row += Math.max(22, typeData.length + 4);
+  const sculaData = topItems(qRows.map(r => ({ label:r.reper, value:excelNum(r['16']) })), 20);
+  const b3 = addChartDataBlock(ws, row, '16 - PM - Scula ruptă pe reper', ['Reper','Cantitate buc'], sculaData.map(x => [x.label, x.value]));
+  if(sculaData.length) chartRequests.push({ sheetName:ws.name, title:'16 - PM - Scula ruptă pe reper', from:{col:4,row:row}, to:{col:13,row:row+16}, catRef:sheetRange(ws.name,b3.firstRow,1,b3.firstRow+sculaData.length-1,1), series:[{ nameRef:sheetRange(ws.name,b3.headerRow,2,b3.headerRow,2), valRef:sheetRange(ws.name,b3.firstRow,2,b3.firstRow+sculaData.length-1,2), color:'7C3AED' }] });
+  const forjaRows = buildForjaQualityRows();
+  row += Math.max(22, sculaData.length + 4);
+  const forjaData = topItems(forjaRows.map(r => ({ label:r.reper, value:excelNum(r.rebutTotal) })), 20);
+  const b4 = addChartDataBlock(ws, row, 'Rebut total forjă pe reper', ['Reper','Rebut total buc'], forjaData.map(x => [x.label, x.value]));
+  if(forjaData.length) chartRequests.push({ sheetName:ws.name, title:'Rebut total forjă pe reper', from:{col:4,row:row}, to:{col:13,row:row+16}, catRef:sheetRange(ws.name,b4.firstRow,1,b4.firstRow+forjaData.length-1,1), series:[{ nameRef:sheetRange(ws.name,b4.headerRow,2,b4.headerRow,2), valRef:sheetRange(ws.name,b4.firstRow,2,b4.firstRow+forjaData.length-1,2), color:'F97316' }] });
+  styleWorksheetDefaults(ws);
+  return ws;
+}
+function writeCostSheets(workbook){
+  const rows = buildCostRows(state.an);
+  function writeCostMatrix(name, type){
+    const ws = workbook.addWorksheet(name);
+    const isPm = type === 'pm';
+    const key = isPm ? 'pm' : 'fj';
+    const qtyKey = isPm ? 'pmTotalQty' : 'fjTotalQty';
+    const costKey = isPm ? 'pmCost' : 'fjCost';
+    const headers = ['Reper'].concat(MONTHS.map(m=>capMonth(m).slice(0,3).toUpperCase()), ['Total buc','Total cost €']);
+    addTitle(ws, name, 'An: ' + state.an + ' • valori în euro, celule editabile', headers.length);
+    const data = rows.filter(r => excelNum(r[qtyKey]) || excelNum(r.price)).map(r => [r.reper].concat(r[key].map(q => excelNum(q) * excelNum(r.price)), [excelNum(r[qtyKey]), excelNum(r[costKey])]));
+    addArrayTable(ws, 4, 1, headers, data, { widths:headers.map((_,i)=>i===0?22:13), colStyles:headers.map((_,i)=>({ fill:i===0?'blue':(isPm?'green':'amber'), numFmt:i===0?'':(i>=1&&i<=12?'#,##0.00 €':'#,##0.00') })) });
+    styleWorksheetDefaults(ws);
+    return ws;
+  }
+  writeCostMatrix('Cost PM', 'pm');
+  writeCostMatrix('Cost FJ', 'fj');
+  const priceWs = workbook.addWorksheet('Preturi');
+  const headers = ['Reper','Preț / buc €','Rebut PM buc','Rebut FJ buc','Cost total €'];
+  addTitle(priceWs, 'Preț / bucată pe reper și an', 'An: ' + state.an + ' • date reale, nu imagine', headers.length);
+  const data = rows.map(r => [r.reper, excelNum(r.price), excelNum(r.pmTotalQty), excelNum(r.fjTotalQty), excelNum(r.pmCost) + excelNum(r.fjCost)]);
+  addArrayTable(priceWs, 4, 1, headers, data, { widths:[24,14,14,14,16], colStyles:[{fill:'blue'},{numFmt:'#,##0.00 €'},{numFmt:'#,##0'},{numFmt:'#,##0'},{numFmt:'#,##0.00 €', fill:'total'}] });
+  styleWorksheetDefaults(priceWs);
+  return rows;
+}
+function writeCostChartsSheet(workbook, costRows, chartRequests){
+  const ws = workbook.addWorksheet('Grafice cost');
+  ws.views = [{ showGridLines:false }];
+  addTitle(ws, 'Grafice native Excel - Cost rebut', 'PM, FJ și distribuție lunară. Graficele sunt obiecte Excel bazate pe date.', 10);
+  const relevant = (costRows || []).filter(r => excelNum(r.pmCost) + excelNum(r.fjCost) > 0).sort((a,b)=>excelNum(b.pmCost+b.fjCost)-excelNum(a.pmCost+a.fjCost));
+  let row = 4;
+  const totalData = topItems(relevant.map(r => ({ label:r.reper, value:excelNum(r.pmCost) + excelNum(r.fjCost) })), 20);
+  const b1 = addChartDataBlock(ws, row, 'Cost total pe reper', ['Reper','Cost total €'], totalData.map(x => [x.label, x.value]));
+  if(totalData.length) chartRequests.push({ sheetName:ws.name, title:'Cost total pe reper', from:{col:4,row:row}, to:{col:13,row:row+16}, catRef:sheetRange(ws.name,b1.firstRow,1,b1.firstRow+totalData.length-1,1), series:[{ nameRef:sheetRange(ws.name,b1.headerRow,2,b1.headerRow,2), valRef:sheetRange(ws.name,b1.firstRow,2,b1.firstRow+totalData.length-1,2), color:'2F80ED' }] });
+  row += Math.max(22, totalData.length + 4);
+  const split = relevant.slice(0,20).map(r => [r.reper, excelNum(r.pmCost), excelNum(r.fjCost)]);
+  const b2 = addChartDataBlock(ws, row, 'PM vs FJ pe reper', ['Reper','PM €','FJ + MF €'], split);
+  if(split.length) chartRequests.push({ sheetName:ws.name, title:'PM vs FJ pe reper', from:{col:5,row:row}, to:{col:14,row:row+16}, catRef:sheetRange(ws.name,b2.firstRow,1,b2.firstRow+split.length-1,1), series:[{ nameRef:sheetRange(ws.name,b2.headerRow,2,b2.headerRow,2), valRef:sheetRange(ws.name,b2.firstRow,2,b2.firstRow+split.length-1,2), color:'16A34A' }, { nameRef:sheetRange(ws.name,b2.headerRow,3,b2.headerRow,3), valRef:sheetRange(ws.name,b2.firstRow,3,b2.firstRow+split.length-1,3), color:'F97316' }] });
+  row += Math.max(22, split.length + 4);
+  const monthRows = MONTHS.map((m,idx) => {
+    const pm = relevant.reduce((s,r)=>s + excelNum(r.pm && r.pm[idx]) * excelNum(r.price),0);
+    const fj = relevant.reduce((s,r)=>s + excelNum(r.fj && r.fj[idx]) * excelNum(r.price),0);
+    return [capMonth(m), pm, fj, pm+fj];
+  });
+  const b3 = addChartDataBlock(ws, row, 'Cost lunar PM / FJ', ['Luna','PM €','FJ + MF €','Total €'], monthRows);
+  chartRequests.push({ sheetName:ws.name, title:'Cost lunar PM / FJ', from:{col:6,row:row}, to:{col:15,row:row+16}, catRef:sheetRange(ws.name,b3.firstRow,1,b3.firstRow+monthRows.length-1,1), series:[{ nameRef:sheetRange(ws.name,b3.headerRow,2,b3.headerRow,2), valRef:sheetRange(ws.name,b3.firstRow,2,b3.firstRow+monthRows.length-1,2), color:'16A34A' }, { nameRef:sheetRange(ws.name,b3.headerRow,3,b3.headerRow,3), valRef:sheetRange(ws.name,b3.firstRow,3,b3.firstRow+monthRows.length-1,3), color:'F97316' }, { nameRef:sheetRange(ws.name,b3.headerRow,4,b3.headerRow,4), valRef:sheetRange(ws.name,b3.firstRow,4,b3.firstRow+monthRows.length-1,4), color:'2F80ED' }] });
+  styleWorksheetDefaults(ws);
+  return ws;
+}
+function buildExcelWorkbookData(chartRequests){
+  const workbook = new window.ExcelJS.Workbook();
+  workbook.creator = 'K.A.D';
+  workbook.created = new Date();
+  workbook.modified = new Date();
+  workbook.calcProperties = workbook.calcProperties || {};
+  workbook.calcProperties.fullCalcOnLoad = true;
   if(state.view === 'cost'){
-    addDomTableWorksheet(workbook, els.costPmTable, 'Cost PM');
-    addDomTableWorksheet(workbook, els.costFjTable, 'Cost FJ');
-    addDomTableWorksheet(workbook, els.costPriceTable, 'Preturi');
+    const rows = writeCostSheets(workbook);
+    writeCostChartsSheet(workbook, rows, chartRequests);
   }else{
-    addDomTableWorksheet(workbook, els.table, 'Analiza calitate');
-    if(els.forjaQualityTable && !els.forjaQualityTable.classList.contains('hidden')) addDomTableWorksheet(workbook, els.forjaQualityTable, 'Analiza forja');
+    writeQualityDataSheet(workbook);
+    writeForjaQualitySheet(workbook);
+    writeQualityChartsSheet(workbook, chartRequests);
   }
+  workbook.eachSheet(ws => {
+    ws.pageSetup = { orientation:'landscape', fitToPage:true, fitToWidth:1, fitToHeight:0, paperSize:9 };
+  });
+  return workbook;
+}
+function colorSpPr(hex){
+  hex = String(hex || '2F80ED').replace('#','').toUpperCase();
+  return '<c:spPr><a:solidFill><a:srgbClr val="' + xmlEscape(hex) + '"/></a:solidFill><a:ln><a:noFill/></a:ln></c:spPr>';
+}
+function chartTitleXml(title){
+  return '<c:title><c:tx><c:rich><a:bodyPr/><a:lstStyle/><a:p><a:r><a:rPr lang="ro-RO" sz="1200" b="1"/><a:t>' + xmlEscape(title) + '</a:t></a:r></a:p></c:rich></c:tx><c:layout/><c:overlay val="0"/></c:title>';
+}
+function makeChartXml(chart, chartIndex){
+  const catAx = 100000 + chartIndex * 2;
+  const valAx = 100001 + chartIndex * 2;
+  const seriesXml = (chart.series || []).map((s, idx) => '<c:ser><c:idx val="' + idx + '"/><c:order val="' + idx + '"/><c:tx><c:strRef><c:f>' + xmlEscape(s.nameRef) + '</c:f></c:strRef></c:tx>' + colorSpPr(s.color) + '<c:cat><c:strRef><c:f>' + xmlEscape(chart.catRef) + '</c:f></c:strRef></c:cat><c:val><c:numRef><c:f>' + xmlEscape(s.valRef) + '</c:f></c:numRef></c:val></c:ser>').join('');
+  const legend = (chart.series || []).length > 1 ? '<c:legend><c:legendPos val="r"/><c:layout/><c:overlay val="0"/></c:legend>' : '';
+  return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+  '<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">' +
+  '<c:date1904 val="0"/><c:lang val="ro-RO"/><c:roundedCorners val="0"/><c:chart>' + chartTitleXml(chart.title || 'Grafic') + '<c:autoTitleDeleted val="0"/><c:plotArea><c:layout/>' +
+  '<c:barChart><c:barDir val="col"/><c:grouping val="clustered"/><c:varyColors val="0"/>' + seriesXml + '<c:axId val="' + catAx + '"/><c:axId val="' + valAx + '"/></c:barChart>' +
+  '<c:catAx><c:axId val="' + catAx + '"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:axPos val="b"/><c:tickLblPos val="nextTo"/><c:crossAx val="' + valAx + '"/><c:crosses val="autoZero"/><c:auto val="1"/><c:lblAlgn val="ctr"/><c:lblOffset val="100"/></c:catAx>' +
+  '<c:valAx><c:axId val="' + valAx + '"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:axPos val="l"/><c:majorGridlines/><c:numFmt formatCode="#,##0" sourceLinked="1"/><c:tickLblPos val="nextTo"/><c:crossAx val="' + catAx + '"/><c:crosses val="autoZero"/><c:crossBetween val="between"/></c:valAx>' +
+  '</c:plotArea>' + legend + '<c:plotVisOnly val="1"/><c:dispBlanksAs val="gap"/><c:showDLblsOverMax val="0"/></c:chart><c:printSettings><c:headerFooter/><c:pageMargins b="0.75" l="0.7" r="0.7" t="0.75" header="0.3" footer="0.3"/><c:pageSetup/></c:printSettings></c:chartSpace>';
+}
+function makeDrawingXml(charts, firstChartIndex){
+  const anchors = (charts || []).map((chart, idx) => {
+    const rid = 'rId' + (idx + 1);
+    const id = 2 + idx;
+    const f = chart.from || { col:4, row:1 };
+    const t = chart.to || { col:13, row:18 };
+    return '<xdr:twoCellAnchor editAs="oneCell"><xdr:from><xdr:col>' + Math.max(0, f.col - 1) + '</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>' + Math.max(0, f.row - 1) + '</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:from><xdr:to><xdr:col>' + Math.max(1, t.col - 1) + '</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>' + Math.max(1, t.row - 1) + '</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:to><xdr:graphicFrame macro=""><xdr:nvGraphicFramePr><xdr:cNvPr id="' + id + '" name="Chart ' + id + '"/><xdr:cNvGraphicFramePr/></xdr:nvGraphicFramePr><xdr:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/></xdr:xfrm><a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/chart"><c:chart xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" r:id="' + rid + '"/></a:graphicData></a:graphic></xdr:graphicFrame><xdr:clientData/></xdr:twoCellAnchor>';
+  }).join('');
+  return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">' + anchors + '</xdr:wsDr>';
+}
+function makeDrawingRelsXml(charts, firstChartIndex){
+  const rels = (charts || []).map((chart, idx) => '<Relationship Id="rId' + (idx + 1) + '" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart" Target="../charts/chart' + (firstChartIndex + idx) + '.xml"/>').join('');
+  return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' + rels + '</Relationships>';
+}
+function getNextRid(relsXml){
+  const ids = Array.from(String(relsXml || '').matchAll(/Id="rId(\d+)"/g)).map(m => Number(m[1])).filter(Number.isFinite);
+  return 'rId' + ((ids.length ? Math.max.apply(null, ids) : 0) + 1);
+}
+function ensureContentTypeOverride(ctXml, partName, contentType){
+  if(ctXml.includes('PartName="' + partName + '"')) return ctXml;
+  return ctXml.replace('</Types>', '<Override PartName="' + partName + '" ContentType="' + contentType + '"/></Types>');
+}
+function getSheetPathByName(zip, workbookXml, workbookRelsXml, sheetName){
+  const parser = new DOMParser();
+  const wbDoc = parser.parseFromString(workbookXml, 'application/xml');
+  const relDoc = parser.parseFromString(workbookRelsXml, 'application/xml');
+  const sheets = Array.from(wbDoc.getElementsByTagName('sheet'));
+  const targetSheet = sheets.find(s => s.getAttribute('name') === sheetName);
+  if(!targetSheet) return '';
+  const rid = targetSheet.getAttribute('r:id') || targetSheet.getAttributeNS('http://schemas.openxmlformats.org/officeDocument/2006/relationships','id');
+  if(!rid) return '';
+  const rels = Array.from(relDoc.getElementsByTagName('Relationship'));
+  const rel = rels.find(r => r.getAttribute('Id') === rid);
+  if(!rel) return '';
+  let target = rel.getAttribute('Target') || '';
+  target = target.replace(/^\//,'');
+  if(!target.startsWith('xl/')) target = 'xl/' + target.replace(/^\.\.\//,'');
+  return target;
+}
+async function injectNativeExcelCharts(buffer, chartRequests){
+  const requests = (chartRequests || []).filter(c => c && c.sheetName && c.series && c.series.length && c.catRef);
+  if(!requests.length) return buffer;
+  const zip = await window.JSZip.loadAsync(buffer);
+  const workbookXml = await zip.file('xl/workbook.xml').async('string');
+  const workbookRelsXml = await zip.file('xl/_rels/workbook.xml.rels').async('string');
+  const grouped = new Map();
+  requests.forEach(req => { if(!grouped.has(req.sheetName)) grouped.set(req.sheetName, []); grouped.get(req.sheetName).push(req); });
+  let ctXml = await zip.file('[Content_Types].xml').async('string');
+  let chartIndex = 1;
+  let drawingIndex = 1;
+  for(const [sheetName, charts] of grouped.entries()){
+    const sheetPath = getSheetPathByName(zip, workbookXml, workbookRelsXml, sheetName);
+    if(!sheetPath || !zip.file(sheetPath)) continue;
+    const drawingPath = 'xl/drawings/drawing' + drawingIndex + '.xml';
+    const drawingRelsPath = 'xl/drawings/_rels/drawing' + drawingIndex + '.xml.rels';
+    zip.file(drawingPath, makeDrawingXml(charts, chartIndex));
+    zip.file(drawingRelsPath, makeDrawingRelsXml(charts, chartIndex));
+    charts.forEach((chart, idx) => {
+      zip.file('xl/charts/chart' + (chartIndex + idx) + '.xml', makeChartXml(chart, chartIndex + idx));
+      ctXml = ensureContentTypeOverride(ctXml, '/xl/charts/chart' + (chartIndex + idx) + '.xml', 'application/vnd.openxmlformats-officedocument.drawingml.chart+xml');
+    });
+    ctXml = ensureContentTypeOverride(ctXml, '/xl/drawings/drawing' + drawingIndex + '.xml', 'application/vnd.openxmlformats-officedocument.drawing+xml');
+    const relPath = sheetPath.replace('xl/worksheets/', 'xl/worksheets/_rels/') + '.rels';
+    let relXml = zip.file(relPath) ? await zip.file(relPath).async('string') : '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"></Relationships>';
+    const drawingRid = getNextRid(relXml);
+    relXml = relXml.replace('</Relationships>', '<Relationship Id="' + drawingRid + '" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing" Target="../drawings/drawing' + drawingIndex + '.xml"/></Relationships>');
+    zip.file(relPath, relXml);
+    let sheetXml = await zip.file(sheetPath).async('string');
+    if(!sheetXml.includes('xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"')) sheetXml = sheetXml.replace('<worksheet ', '<worksheet xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" ');
+    sheetXml = sheetXml.replace(/<drawing[^>]*\/>/g, '');
+    const drawingTag = '<drawing r:id="' + drawingRid + '"/>';
+    if(sheetXml.includes('<extLst')) sheetXml = sheetXml.replace('<extLst', drawingTag + '<extLst');
+    else sheetXml = sheetXml.replace('</worksheet>', drawingTag + '</worksheet>');
+    zip.file(sheetPath, sheetXml);
+    chartIndex += charts.length;
+    drawingIndex += 1;
+  }
+  zip.file('[Content_Types].xml', ctXml);
+  return await zip.generateAsync({ type:'blob' });
 }
 async function exportExcelOneToOne(){
   if(!els.btnExportExcel) return;
@@ -3128,29 +3308,12 @@ async function exportExcelOneToOne(){
     els.btnExportExcel.classList.add('exporting');
     els.btnExportExcel.textContent = 'Se exportă...';
     await ensureExcelExportLibraries();
-    const target = getActiveExportElement();
-    const canvas = await captureExportCanvas(target);
-    const workbook = new window.ExcelJS.Workbook();
-    workbook.creator = 'K.A.D';
-    workbook.created = new Date();
-    workbook.modified = new Date();
-    const sheet = workbook.addWorksheet('Export 1-1', { views:[{ showGridLines:false }] });
-    sheet.pageSetup = { orientation:'landscape', fitToPage:true, fitToWidth:1, fitToHeight:0, paperSize:9 };
-    sheet.properties.defaultRowHeight = 18;
-    const imgData = canvas.toDataURL('image/png');
-    const imgId = workbook.addImage({ base64:imgData, extension:'png' });
-    const cssWidth = Math.round(canvas.width / Math.max(1, window.devicePixelRatio || 1));
-    const cssHeight = Math.round(canvas.height / Math.max(1, window.devicePixelRatio || 1));
-    const imageWidth = Math.max(900, Math.round(target.scrollWidth || cssWidth));
-    const imageHeight = Math.max(400, Math.round(target.scrollHeight || cssHeight));
-    sheet.addImage(imgId, { tl:{ col:0, row:0 }, ext:{ width:imageWidth, height:imageHeight } });
-    for(let i=1; i<=Math.max(12, Math.ceil(imageWidth / 110)); i++) sheet.getColumn(i).width = 16;
-    for(let i=1; i<=Math.max(20, Math.ceil(imageHeight / 22)); i++) sheet.getRow(i).height = 18;
-    sheet.getCell('A1').value = '';
-    addActiveDataSheets(workbook);
+    const chartRequests = [];
+    const workbook = buildExcelWorkbookData(chartRequests);
     const buffer = await workbook.xlsx.writeBuffer();
-    const blob = new Blob([buffer], { type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
-    const url = URL.createObjectURL(blob);
+    const blob = await injectNativeExcelCharts(buffer, chartRequests);
+    const finalBlob = blob instanceof Blob ? blob : new Blob([blob], { type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    const url = URL.createObjectURL(finalBlob);
     const a = document.createElement('a');
     const luna = exportSafeName(state.luna || 'luna');
     const an = exportSafeName(state.an || 'an');
@@ -3162,7 +3325,7 @@ async function exportExcelOneToOne(){
     setTimeout(() => { try{ URL.revokeObjectURL(url); a.remove(); }catch(_e){} }, 1000);
   }catch(err){
     console.error(err);
-    window.alert('Nu am putut exporta Excel 1:1: ' + (err && err.message ? err.message : err));
+    window.alert('Nu am putut exporta Excel cu date și grafice: ' + (err && err.message ? err.message : err));
   }finally{
     els.btnExportExcel.disabled = false;
     els.btnExportExcel.classList.remove('exporting');
