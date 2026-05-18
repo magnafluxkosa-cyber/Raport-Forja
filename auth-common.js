@@ -897,9 +897,12 @@
       const authState = await getCurrentUserWithRole();
       if(authState){
         const currentPageKey = normalizePageKey(getCurrentPageName());
-        if(isForjaCtcOperatorAccount(authState.user && authState.user.email) && currentPageKey !== 'rebut-pm-operatori'){
-          window.location.href = 'rebut-pm-operatori.html';
-          return null;
+        if(isForjaCtcOperatorAccount(authState.user && authState.user.email)){
+          const allowedForCtc = ['fisa-control-ctc-forja','rebut-pm-operatori'];
+          if(allowedForCtc.indexOf(currentPageKey) === -1){
+            window.location.href = 'fisa-control-ctc-forja.html';
+            return null;
+          }
         }
         const status = authState.accountStatus || {};
         const isBlocked = status.is_active === false || status.is_banned === true;
@@ -996,10 +999,11 @@
 
     const cleanRole = String(role || 'viewer').toLowerCase();
     const fallbackPermissions = defaultPermissionsForRole(cleanRole);
-    const ctcOperatorPermissions = { can_view:true, can_add:true, can_edit:false, can_delete:false, can_export:false, can_import:false };
+    const ctcOperatorPermissions = { can_view:true, can_add:true, can_edit:true, can_delete:false, can_export:false, can_import:false };
     const deniedPermissions = { can_view:false, can_add:false, can_edit:false, can_delete:false, can_export:false, can_import:false };
     if(user && isForjaCtcOperatorAccount(user.email)){
-      const allowed = settings.pageKey === 'rebut-pm-operatori';
+      const allowedForCtc = ['fisa-control-ctc-forja','rebut-pm-operatori'];
+      const allowed = allowedForCtc.indexOf(settings.pageKey) !== -1;
       return {
         allowed: allowed,
         user,
@@ -1007,7 +1011,7 @@
         permissions: allowed ? ctcOperatorPermissions : deniedPermissions,
         source: 'forja-ctc locked account',
         strictUserAcl: true,
-        message: allowed ? '' : 'Contul Forja-CTC are acces doar la interfața Rebut PM Operatori.'
+        message: allowed ? '' : 'Contul Forja-CTC are acces doar la fișele operator dedicate.'
       };
     }
     const sb = getSupabaseClient();
