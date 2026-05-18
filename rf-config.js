@@ -1188,7 +1188,7 @@ function getControlCatalogForPage(pageKey) {
   }
 
   var INITIAL_PAGE_KEY = inferPageKey(window.location.pathname);
-  var AUTH_UTILITY_PAGE_KEYS = ['index', 'login', 'access-gate', 'mfa-setup', 'mfa-verify'];
+  var AUTH_UTILITY_PAGE_KEYS = ['index', 'login', 'access-gate', 'mfa-setup', 'mfa-verify', 'forja-ctc-pin'];
   function isAuthUtilityPage(pageKey) {
     return AUTH_UTILITY_PAGE_KEYS.indexOf(String(pageKey || '').trim().toLowerCase()) !== -1;
   }
