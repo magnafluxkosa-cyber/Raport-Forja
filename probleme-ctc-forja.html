@@ -17,7 +17,7 @@
 </head>
 <body data-page-key="probleme-ctc-forja">
 <div class="page">
-  <header class="topbar"><div><div class="title">PROBLEME CTC FORJA</div><div style="font-size:12px;font-weight:800;color:#52677e">Rânduri transferate automat din Fișa de control CTC Forja.</div></div><div class="actions"><a class="btn" href="index.html">Înapoi la Dashboard</a><a class="btn" href="fisa-control-ctc-forja.html">Fișă CTC Forja</a><button class="btn" id="btnRefresh" type="button">Actualizează</button><button class="btn primary" id="btnExport" type="button">Export Excel</button><button class="btn danger" id="btnLogout" type="button">Logout</button></div></header>
+  <header class="topbar"><div><div class="title">PROBLEME CTC FORJA</div><div style="font-size:12px;font-weight:800;color:#52677e">Rânduri transferate automat din Fișa de control CTC Forja.</div></div><div class="actions"><a class="btn" href="index.html">Înapoi la Dashboard</a><a class="btn" href="fisa-control-ctc-forja.html">Fișă CTC Forja</a><button class="btn" id="btnRefresh" type="button">Actualizează</button><button class="btn" id="btnImport" type="button">Import Excel</button><input class="hidden" id="importFile" type="file" accept=".xlsx,.xls" /><button class="btn primary" id="btnExport" type="button">Export Excel</button><button class="btn danger" id="btnLogout" type="button">Logout</button></div></header>
   <section class="card"><div class="filters"><div class="field"><label>An</label><select class="select" id="filterYear"></select></div><div class="field"><label>Luna</label><select class="select" id="filterMonth"></select></div><div class="field"><label>Căutare</label><input class="input" id="filterSearch" placeholder="Reper / operator / problemă / utilaj"></div><button class="btn" id="btnClear" type="button">Șterge filtrele</button><span class="chip warn" id="syncChip">Cloud: -</span></div></section>
   <section class="card table-card"><div class="table-wrap"><table class="table" id="tbl"><thead><tr><th>ANUL</th><th>LUNA</th><th>DATA</th><th>SCHIMBUL</th><th>UTILAJ</th><th>REPER</th><th>COD MATRIȚĂ</th><th>COD MATERIAL</th><th>Nr. Ladă</th><th>Cantitate forjată</th><th>Probleme apărute în timpul forjării</th><th>Control Magnaflux</th><th>Operator</th></tr></thead><tbody id="tbody"></tbody></table><div class="empty hidden" id="empty">Nu există probleme CTC Forja pentru filtrul selectat.</div></div></section>
 </div>
@@ -28,13 +28,97 @@ const MONTHS=['','Ianuarie','Februarie','Martie','Aprilie','Mai','Iunie','Iulie'
 let supa=null,currentUser=null,currentRole='viewer',rows=[];const $=id=>document.getElementById(id);const els={year:$('filterYear'),month:$('filterMonth'),search:$('filterSearch'),tbody:$('tbody'),empty:$('empty'),sync:$('syncChip')};
 function norm(v){return String(v==null?'':v).trim()}function key(v){return norm(v).toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^A-Z0-9]+/g,'')}function esc(v){return String(v==null?'':v).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}function setSync(t,c){els.sync.textContent=t;els.sync.className='chip '+(c||'warn')}function createClient(){if(window.ERPAuth&&window.ERPAuth.getSupabaseClient)return window.ERPAuth.getSupabaseClient();const cfg=window.RF_CONFIG||{};return window.supabase.createClient(cfg.SUPABASE_URL,cfg.SUPABASE_ANON_KEY,{auth:{persistSession:true,autoRefreshToken:true,detectSessionInUrl:true}})}
 async function fetchDoc(docKey){const {data,error}=await supa.from(DOC_TABLE).select('doc_key,content,data,updated_at').eq('doc_key',docKey).maybeSingle();if(error)throw error;return data?(data.content||data.data||null):null}
+async function upsertDoc(docKey,payload){const ts=new Date().toISOString();const {error}=await supa.from(DOC_TABLE).upsert({doc_key:docKey,content:Object.assign({},payload,{updated_at:ts}),updated_at:ts},{onConflict:'doc_key'});if(error)throw error;return ts}
+async function updateIndexYear(year){const doc=await fetchDoc(INDEX).catch(()=>null)||{};const years=new Set(Array.isArray(doc.years)?doc.years.map(String):[]);years.add(String(year));await upsertDoc(INDEX,Object.assign({},doc,{page_key:PAGE_KEY,years:Array.from(years).sort(),currentYear:new Date().getFullYear()}))}
 async function ensureSession(){supa=createClient();const auth=window.ERPAuth&&window.ERPAuth.requireAuth?await window.ERPAuth.requireAuth({next:PAGE_KEY+'.html',redirectToLogin:true}):null;if(auth){currentUser=auth.user;currentRole=String(auth.role||'viewer').toLowerCase()}else{const {data}=await supa.auth.getSession();if(!data.session){location.href='login.html?next='+PAGE_KEY+'.html';throw new Error('Sesiune lipsă')}currentUser=data.session.user;currentRole='viewer'}if(window.ERPAuth&&window.ERPAuth.getPageAccess){const access=await window.ERPAuth.getPageAccess(PAGE_KEY,{user:currentUser,role:currentRole});if(!access||access.allowed===false){location.href='index.html';throw new Error('Fără acces')}}}
 function initFilters(){const y=new Date().getFullYear();els.year.innerHTML=Array.from({length:7},(_,i)=>y-3+i).map(v=>`<option value="${v}" ${v===y?'selected':''}>${v}</option>`).join('');els.month.innerHTML='<option value="">Toate</option>'+MONTHS.slice(1).map((m,i)=>`<option value="${i+1}">${m}</option>`).join('');els.month.value=String(new Date().getMonth()+1)}
 async function loadRows(){setSync('Cloud: citesc…','warn');const y=els.year.value||String(new Date().getFullYear());const doc=await fetchDoc(PREFIX+y).catch(()=>null);rows=Array.isArray(doc&&doc.rows)?doc.rows:[];setSync('Cloud: ON','ok');render()}
 function filtered(){const m=Number(els.month.value||0),q=key(els.search.value);return rows.filter(r=>(!m||Number(r.luna_num)===m)&&(!q||key([r.an,r.luna,r.data,r.schimbul,r.utilaj,r.reper,r.cod_matrita,r.cod_material,r.nr_lada,r.cantitate_forjata,r.probleme,r.control_magnaflux,r.operator].join(' ')).includes(q))).sort((a,b)=>String(a.data||'').localeCompare(String(b.data||''))||String(a.nr_lada||'').localeCompare(String(b.nr_lada||''),'ro',{numeric:true}))}
 function render(){const data=filtered();els.tbody.innerHTML=data.map(r=>`<tr><td>${esc(r.an)}</td><td>${esc(r.luna)}</td><td>${esc(r.data)}</td><td>${esc(r.schimbul)}</td><td>${esc(r.utilaj)}</td><td>${esc(r.reper)}</td><td>${esc(r.cod_matrita)}</td><td>${esc(r.cod_material)}</td><td>${esc(r.nr_lada)}</td><td>${esc(r.cantitate_forjata)}</td><td class="left">${esc(r.probleme)}</td><td class="left">${esc(r.control_magnaflux)}</td><td>${esc(r.operator)}</td></tr>`).join('');els.empty.classList.toggle('hidden',data.length>0)}
+
+function excelSerialToISO(v){
+  const n=Number(v);
+  if(!Number.isFinite(n))return '';
+  try{const d=XLSX.SSF.parse_date_code(n);if(d&&d.y&&d.m&&d.d)return String(d.y).padStart(4,'0')+'-'+String(d.m).padStart(2,'0')+'-'+String(d.d).padStart(2,'0')}catch(_){ }
+  const dt=new Date(Math.round((n-25569)*86400*1000));
+  if(Number.isNaN(dt.getTime()))return '';
+  return dt.toISOString().slice(0,10);
+}
+function parseDateValue(v){
+  if(v instanceof Date&&!Number.isNaN(v.getTime())){const d=new Date(v);d.setMinutes(d.getMinutes()-d.getTimezoneOffset());return d.toISOString().slice(0,10)}
+  if(typeof v==='number')return excelSerialToISO(v);
+  const s=norm(v);if(!s)return '';
+  let m=s.match(/^(\d{1,2})[.\/-](\d{1,2})[.\/-](\d{2,4})$/);if(m){let y=Number(m[3]);if(y<100)y+=2000;return String(y).padStart(4,'0')+'-'+String(Number(m[2])).padStart(2,'0')+'-'+String(Number(m[1])).padStart(2,'0')}
+  m=s.match(/^(\d{4})[.\/-](\d{1,2})[.\/-](\d{1,2})$/);if(m)return String(Number(m[1])).padStart(4,'0')+'-'+String(Number(m[2])).padStart(2,'0')+'-'+String(Number(m[3])).padStart(2,'0');
+  const d=new Date(s);if(!Number.isNaN(d.getTime())){d.setMinutes(d.getMinutes()-d.getTimezoneOffset());return d.toISOString().slice(0,10)}
+  return '';
+}
+function monthNo(v){const k=key(v);const map={IANUARIE:1,FEBRUARIE:2,MARTIE:3,APRILIE:4,MAI:5,IUNIE:6,IULIE:7,AUGUST:8,SEPTEMBRIE:9,OCTOMBRIE:10,NOIEMBRIE:11,DECEMBRIE:12,JANUARY:1,FEBRUARY:2,MARCH:3,APRIL:4,MAY:5,JUNE:6,JULY:7,SEPTEMBER:9,OCTOBER:10,NOVEMBER:11,DECEMBER:12};return map[k]||Number(v)||0}
+function rowValue(row,names){
+  const wanted=names.map(key);
+  for(const k0 of Object.keys(row)){if(wanted.includes(key(k0)))return row[k0]}
+  return '';
+}
+function importSignature(r){return [r.an,r.luna_num,r.data,r.schimbul,r.utilaj,r.reper,r.cod_matrita,r.cod_material,r.nr_lada,r.cantitate_forjata,r.probleme,r.control_magnaflux,r.operator].map(v=>key(v)).join('|')}
+function mapImportedRow(row,idx){
+  const rawDate=rowValue(row,['DATA','Data']);
+  const data=parseDateValue(rawDate);
+  const an=norm(rowValue(row,['ANUL','AN','An']))||(data?data.slice(0,4):'');
+  let lunaNum=monthNo(rowValue(row,['LUNA','Lună','Luna']));
+  if(!lunaNum&&data)lunaNum=Number(data.slice(5,7));
+  const luna=MONTHS[lunaNum]||norm(rowValue(row,['LUNA','Lună','Luna']));
+  const out={
+    id:'imp-'+Date.now()+'-'+idx+'-'+Math.random().toString(16).slice(2),
+    an:String(an||''),
+    luna:luna,
+    luna_num:lunaNum||0,
+    data:data,
+    schimbul:norm(rowValue(row,['SCHIMBUL','SCHIMB','Schimbul','Schimb'])),
+    utilaj:norm(rowValue(row,['UTILAJ','Utilaj'])),
+    reper:norm(rowValue(row,['REPER','Reper'])).toUpperCase(),
+    cod_matrita:norm(rowValue(row,['COD MATRITA','COD MATRIȚĂ','Cod matrita','Cod matriță'])).toUpperCase(),
+    cod_material:norm(rowValue(row,['COD MATERIAL','Cod material'])).toUpperCase(),
+    nr_lada:norm(rowValue(row,['Nr lada','Nr. lada','Nr. Ladă','Nr Lada'])),
+    cantitate_forjata:norm(rowValue(row,['Cantitate forjata','Cantitate forjată','BUC. FORJATE','Buc. Forjate'])),
+    probleme:norm(rowValue(row,['Probleme aparute in timpul forjarii','Probleme apărute în timpul forjării','PROBLEME APARUTE IN TIMPUL FORJARII'])),
+    control_magnaflux:norm(rowValue(row,['Control Magnaflux','CONTROL MAGNAFLUX'])),
+    operator:norm(rowValue(row,['Operator','CONTROL','Control'])),
+    updated_at:new Date().toISOString()
+  };
+  if(!out.an&&out.data)out.an=out.data.slice(0,4);
+  if(!out.luna&&out.luna_num)out.luna=MONTHS[out.luna_num];
+  return out;
+}
+async function importExcelFile(file){
+  if(!window.XLSX){alert('Librăria Excel nu este încărcată.');return}
+  if(!file)return;
+  setSync('Cloud: import Excel…','warn');
+  const buf=await file.arrayBuffer();
+  const wb=XLSX.read(buf,{type:'array',cellDates:true});
+  const ws=wb.Sheets[wb.SheetNames[0]];
+  const rawRows=XLSX.utils.sheet_to_json(ws,{defval:'',raw:true});
+  const mapped=rawRows.map(mapImportedRow).filter(r=>r.an&&r.data&&(r.reper||r.probleme||r.cantitate_forjata||r.nr_lada));
+  if(!mapped.length){setSync('Cloud: ON','ok');alert('Nu am găsit rânduri valide în Excel. Verifică antetul și structura fișierului.');return}
+  const byYear={};mapped.forEach(r=>{(byYear[String(r.an)]||(byYear[String(r.an)]=[])).push(r)});
+  let added=0,skipped=0;
+  for(const year of Object.keys(byYear)){
+    const doc=await fetchDoc(PREFIX+year).catch(()=>null)||{};
+    let existing=Array.isArray(doc.rows)?doc.rows.slice():[];
+    const sigs=new Set(existing.map(importSignature));
+    byYear[year].forEach(r=>{const sig=importSignature(r);if(sigs.has(sig)){skipped++;return;}sigs.add(sig);existing.push(r);added++;});
+    existing.sort((a,b)=>String(a.data||'').localeCompare(String(b.data||''))||String(a.nr_lada||'').localeCompare(String(b.nr_lada||''),'ro',{numeric:true}));
+    await upsertDoc(PREFIX+year,{page_key:PAGE_KEY,year:String(year),rows:existing});
+    await updateIndexYear(year);
+  }
+  const importedYears=Object.keys(byYear).sort();
+  if(importedYears.includes(els.year.value))await loadRows();
+  else {els.year.value=importedYears[0]||els.year.value;await loadRows();}
+  setSync('Cloud: importat','ok');
+  alert('Import finalizat. Rânduri adăugate: '+added+(skipped?'. Duplicate ignorate: '+skipped+'.':''));
+}
+
 function exportExcel(){if(!window.XLSX){alert('Librăria Excel nu este încărcată.');return}const data=filtered();const aoa=[['ANUL','LUNA','DATA','SCHIMBUL','UTILAJ','REPER','COD MATRIȚĂ','COD MATERIAL','Nr. Ladă','Cantitate forjată','Probleme apărute în timpul forjării','Control Magnaflux','Operator'],...data.map(r=>[r.an,r.luna,r.data,r.schimbul,r.utilaj,r.reper,r.cod_matrita,r.cod_material,r.nr_lada,r.cantitate_forjata,r.probleme,r.control_magnaflux,r.operator])];const ws=XLSX.utils.aoa_to_sheet(aoa);ws['!cols']=[10,14,14,10,12,16,16,16,12,18,42,32,22].map(w=>({wch:w}));const range=XLSX.utils.decode_range(ws['!ref']);for(let R=0;R<=range.e.r;R++){for(let C=0;C<=range.e.c;C++){const addr=XLSX.utils.encode_cell({r:R,c:C});if(!ws[addr])continue;ws[addr].s={font:{name:'Calibri',sz:12,bold:R===0},fill:R===0?{fgColor:{rgb:'CFE3F6'}}:undefined,border:{top:{style:'thin',color:{rgb:'1F2937'}},bottom:{style:'thin',color:{rgb:'1F2937'}},left:{style:'thin',color:{rgb:'1F2937'}},right:{style:'thin',color:{rgb:'1F2937'}}},alignment:{horizontal:C===10||C===11?'left':'center',vertical:'center',wrapText:true}}}}const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,'Probleme CTC forja');XLSX.writeFile(wb,'probleme_ctc_forja.xlsx')}
-function bind(){els.year.onchange=loadRows;els.month.onchange=render;els.search.oninput=render;$('btnRefresh').onclick=loadRows;$('btnClear').onclick=()=>{els.search.value='';els.month.value='';render()};$('btnExport').onclick=exportExcel;$('btnLogout').onclick=async()=>{try{await supa.auth.signOut()}catch(_){}location.href='login.html'}}
+function bind(){els.year.onchange=loadRows;els.month.onchange=render;els.search.oninput=render;$('btnRefresh').onclick=loadRows;$('btnClear').onclick=()=>{els.search.value='';els.month.value='';render()};$('btnExport').onclick=exportExcel;$('btnImport').onclick=()=>$('importFile').click();$('importFile').onchange=ev=>{const file=ev.target.files&&ev.target.files[0];importExcelFile(file).catch(e=>{console.error(e);setSync('Cloud: eroare','warn');alert('Importul Excel nu a reușit: '+(e.message||e))}).finally(()=>{ev.target.value=''})};$('btnLogout').onclick=async()=>{try{await supa.auth.signOut()}catch(_){}location.href='login.html'}}
 async function start(){await ensureSession();initFilters();bind();await loadRows()}start().catch(e=>{console.error(e);alert('Pagina nu a putut porni: '+(e.message||e))});
 })();
 </script>
