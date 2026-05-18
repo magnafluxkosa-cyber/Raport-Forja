@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="ro">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PIN CTC Forja - K.A.D</title>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="./rf-config.js"></script>
+  <script src="./auth-common.js"></script>
+  <style>
+    *{box-sizing:border-box}
+    html,body{height:100%;margin:0;font-family:Calibri,Arial,sans-serif;background:#0b1f35;color:#fff;overflow:hidden}
+    body{display:flex;align-items:center;justify-content:center;padding:18px}
+    .gate{width:min(460px,100%);background:#eef6ff;color:#0b1f35;border:1px solid #8aaac6;border-radius:18px;box-shadow:0 22px 70px rgba(0,0,0,.42);padding:22px}
+    .title{font-size:24px;font-weight:900;text-align:center;letter-spacing:.02em;margin-bottom:6px}
+    .sub{font-size:13px;font-weight:800;text-align:center;color:#49627c;margin-bottom:18px;line-height:1.3}
+    .pin{width:100%;height:58px;border:2px solid #7398b8;border-radius:14px;background:#fff;color:#071f38;text-align:center;font-size:28px;font-weight:900;letter-spacing:10px;outline:none}
+    .pin:focus{border-color:#2f6fa9;box-shadow:0 0 0 4px rgba(47,111,169,.18)}
+    .btn{width:100%;height:42px;border:1px solid #214d75;border-radius:12px;background:#2f6fa9;color:#fff;font-weight:900;font-size:14px;cursor:pointer;margin-top:12px}
+    .btn:hover{filter:brightness(.96)}
+    .msg{min-height:34px;margin-top:12px;border:1px solid #c9d8e6;border-radius:12px;background:#fff;color:#854d0e;font-weight:900;font-size:13px;display:flex;align-items:center;justify-content:center;text-align:center;padding:7px 10px;line-height:1.2}
+    .msg.ok{color:#14532d;background:#e9f8ee;border-color:#9fd3ad}.msg.bad{color:#8f1d1d;background:#ffe8e8;border-color:#e2aaa9}
+    .small{margin-top:12px;text-align:center;color:#58728c;font-size:11px;font-weight:800}
+  </style>
+</head>
+<body data-page-key="forja-ctc-pin">
+  <main class="gate" aria-label="PIN CTC Forja">
+    <div class="title">PIN CTC Forja</div>
+    <div class="sub">Introdu PIN-ul operatorului. Pagina corectă se deschide automat în funcție de PIN.</div>
+    <input id="pinInput" class="pin" type="password" inputmode="numeric" autocomplete="off" placeholder="PIN" />
+    <button id="btnOpen" class="btn" type="button">Deschide fișa</button>
+    <div id="msg" class="msg">Se verifică sesiunea...</div>
+    <div class="small">Pe acest ecran nu se afișează nicio fișă până la validarea PIN-ului.</div>
+  </main>
+<script>
+(function(){
+'use strict';
+const FORJA_CTC_EMAIL='forja-ctc@forja.local';
+const DOC_TABLE='rf_documents';
+const TARGETS=[
+  {page_key:'fisa-control-ctc-forja', title:'FIȘĂ DE CONTROL CTC FORJA', url:'fisa-control-ctc-forja.html', pin_doc:'fisa-control-ctc-forja-pins'},
+  {page_key:'rebut-pm-operatori', title:'REBUT PM OPERATORI', url:'rebut-pm-operatori.html', pin_doc:'rebut-pm-operatori-pins'}
+];
+const el={pin:document.getElementById('pinInput'),btn:document.getElementById('btnOpen'),msg:document.getElementById('msg')};
+let supa=null,authState=null,pinRows=[];
+function norm(v){return String(v==null?'':v).trim()}
+function email(v){return norm(v).toLowerCase()}
+function pageKeyFromFile(v){return norm(v).split('?')[0].split('#')[0].replace(/\.html$/i,'').toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'')}
+function setMsg(text,kind){el.msg.textContent=text;el.msg.className='msg '+(kind||'')}
+function getNextKey(){try{return pageKeyFromFile(new URLSearchParams(window.location.search).get('next')||'')}catch(_){return ''}}
+function client(){if(window.ERPAuth&&typeof window.ERPAuth.getSupabaseClient==='function')return window.ERPAuth.getSupabaseClient();const cfg=window.RF_CONFIG||{};return window.supabase.createClient(cfg.SUPABASE_URL,cfg.SUPABASE_ANON_KEY,{auth:{persistSession:true,autoRefreshToken:true,detectSessionInUrl:true}})}
+async function sha256(text){const hash=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(String(text||'')));return Array.from(new Uint8Array(hash)).map(b=>b.toString(16).padStart(2,'0')).join('')}
+async function fetchDoc(docKey){const res=await supa.from(DOC_TABLE).select('doc_key,content,data,updated_at').eq('doc_key',docKey).maybeSingle();if(res.error)throw res.error;const payload=res.data?(res.data.content||res.data.data||{}):{};return payload&&typeof payload==='object'?payload:{}}
+function extractOperators(payload){
+  if(Array.isArray(payload.operators))return payload.operators;
+  if(payload.payload&&Array.isArray(payload.payload.operators))return payload.payload.operators;
+  if(Array.isArray(payload.rows))return payload.rows;
+  return [];
+}
+async function loadPins(){
+  const all=[];
+  for(const target of TARGETS){
+    const payload=await fetchDoc(target.pin_doc).catch(()=>({}));
+    extractOperators(payload).forEach(row=>{
+      const operator=norm(row&&row.operator);
+      const pin_hash=norm(row&&row.pin_hash);
+      const active=!row || row.active!==false;
+      if(operator&&pin_hash&&active) all.push({operator,pin_hash,target});
+    });
+  }
+  pinRows=all;
+}
+function storeUnlock(match){
+  const until=Date.now()+12*60*60*1000;
+  try{
+    sessionStorage.setItem('kad:forja-ctc:unlocked-page', match.target.page_key);
+    sessionStorage.setItem('kad:forja-ctc:operator', match.operator);
+    sessionStorage.setItem('kad:forja-ctc:target-title', match.target.title);
+    sessionStorage.setItem('kad:forja-ctc:unlocked-until', String(until));
+  }catch(_){ }
+}
+async function unlock(){
+  const pin=norm(el.pin.value);
+  if(!pin){setMsg('Introdu PIN-ul.','bad');return;}
+  el.btn.disabled=true;
+  setMsg('Se verifică PIN-ul...','');
+  try{
+    const hash=await sha256(pin);
+    const matches=pinRows.filter(r=>r.pin_hash===hash);
+    if(!matches.length){setMsg('PIN greșit sau operator inactiv.','bad');return;}
+    const nextKey=getNextKey();
+    let chosen=null;
+    if(nextKey) chosen=matches.find(r=>r.target.page_key===nextKey)||null;
+    if(!chosen && matches.length===1) chosen=matches[0];
+    if(!chosen){setMsg('Același PIN este folosit pe mai multe fișe. Configurează PIN-uri diferite pentru fiecare fișă.','bad');return;}
+    storeUnlock(chosen);
+    setMsg('PIN valid. Se deschide '+chosen.target.title+'...','ok');
+    window.location.replace(chosen.target.url);
+  }catch(err){console.error(err);setMsg('Nu am putut verifica PIN-ul. Reîncearcă.','bad')}
+  finally{el.btn.disabled=false;}
+}
+async function start(){
+  supa=client();
+  if(window.ERPAuth&&typeof window.ERPAuth.requireAuth==='function'){
+    authState=await window.ERPAuth.requireAuth({next:'forja-ctc-pin.html',redirectToLogin:true});
+  }else{
+    const res=await supa.auth.getSession();
+    authState=res&&res.data&&res.data.session?{user:res.data.session.user,role:'viewer'}:null;
+    if(!authState){window.location.href='login.html?next=forja-ctc-pin.html';return;}
+  }
+  const currentEmail=email(authState&&authState.user&&authState.user.email);
+  const role=email(authState&&authState.role);
+  if(currentEmail!==FORJA_CTC_EMAIL && role!=='admin'){
+    window.location.href='index.html';
+    return;
+  }
+  await loadPins();
+  if(!pinRows.length)setMsg('Nu există PIN-uri configurate pentru fișele CTC. Configurează PIN-urile din paginile dedicate.','bad');
+  else setMsg('Introdu PIN-ul operatorului.','');
+  setTimeout(()=>{try{el.pin.focus()}catch(_){}},80);
+}
+el.btn.addEventListener('click',unlock);
+el.pin.addEventListener('keydown',ev=>{if(ev.key==='Enter')unlock()});
+start().catch(err=>{console.error(err);setMsg('Pagina PIN nu a putut porni.','bad')});
+})();
+</script>
+</body>
+</html>

@@ -898,10 +898,26 @@
       if(authState){
         const currentPageKey = normalizePageKey(getCurrentPageName());
         if(isForjaCtcOperatorAccount(authState.user && authState.user.email)){
-          const allowedForCtc = ['fisa-control-ctc-forja','rebut-pm-operatori'];
+          const allowedForCtc = ['forja-ctc-pin','fisa-control-ctc-forja','rebut-pm-operatori'];
+          const pinPageKey = 'forja-ctc-pin';
+          const currentFileName = getCurrentPageName();
           if(allowedForCtc.indexOf(currentPageKey) === -1){
-            window.location.href = 'fisa-control-ctc-forja.html';
+            window.location.href = 'forja-ctc-pin.html';
             return null;
+          }
+          if(currentPageKey !== pinPageKey){
+            let unlockedPage = '';
+            let unlockedUntil = 0;
+            try {
+              unlockedPage = normalizePageKey(sessionStorage.getItem('kad:forja-ctc:unlocked-page') || '');
+              unlockedUntil = Number(sessionStorage.getItem('kad:forja-ctc:unlocked-until') || 0);
+            } catch (_) {}
+            if(unlockedPage !== currentPageKey || !unlockedUntil || unlockedUntil < Date.now()){
+              const pinUrl = new URL('forja-ctc-pin.html', window.location.href);
+              pinUrl.searchParams.set('next', currentFileName);
+              window.location.href = pinUrl.toString();
+              return null;
+            }
           }
         }
         const status = authState.accountStatus || {};
@@ -1002,7 +1018,7 @@
     const ctcOperatorPermissions = { can_view:true, can_add:true, can_edit:true, can_delete:false, can_export:false, can_import:false };
     const deniedPermissions = { can_view:false, can_add:false, can_edit:false, can_delete:false, can_export:false, can_import:false };
     if(user && isForjaCtcOperatorAccount(user.email)){
-      const allowedForCtc = ['fisa-control-ctc-forja','rebut-pm-operatori'];
+      const allowedForCtc = ['forja-ctc-pin','fisa-control-ctc-forja','rebut-pm-operatori'];
       const allowed = allowedForCtc.indexOf(settings.pageKey) !== -1;
       return {
         allowed: allowed,
