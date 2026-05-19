@@ -1,7 +1,7 @@
 (function(window, document){
   'use strict';
 
-  var VERSION = '20260519-5';
+  var VERSION = '20260519-6';
   var LOGIN_PAGE = 'login.html';
   var SUPABASE_CDN = 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2';
   var PENDING_ATTR = 'data-kad-boot-pending';
@@ -182,8 +182,12 @@
 
   function runInternal(fn){
     state.internalDepth += 1;
-    try { return Promise.resolve(fn()); }
-    finally { state.internalDepth -= 1; }
+    try {
+      return Promise.resolve(fn()).finally(function(){ state.internalDepth -= 1; });
+    } catch(error) {
+      state.internalDepth -= 1;
+      return Promise.reject(error);
+    }
   }
 
   function installFetchGate(){
@@ -305,7 +309,6 @@
   }
 
   async function ensureRuntime(){
-    await loadScriptOnce('./supabase-config.js', function(){ return !!(window.ERP_FORJA_CONFIG || window.__ERP_FORJA_CONFIG__ || window.RF_SUPABASE_URL); });
     if(!window.supabase || typeof window.supabase.createClient !== 'function'){
       await loadScriptOnce(SUPABASE_CDN, function(){ return !!(window.supabase && typeof window.supabase.createClient === 'function'); });
     }
