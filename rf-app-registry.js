@@ -40,7 +40,8 @@
         { type:'group', key:'group-mentenanta', label:'MENTENANTA', panelId:'subMentenanta', panelMode:'flat', sections:[{ key:'group-mentenanta-links', label:'Pagini', sectionId:'mentenantaLinks', layout:'subgrid', items:[ page('registru-mentenanta','Registru de mentenanta') ] }] },
         { type:'page', key:'helper-data', label:'HELPER-DATA', href:'helper-data.html' },
         { type:'page', key:'helper-acl', label:'HELPER-ACL', href:'helper-acl.html' },
-        { type:'page', key:'mapare-nume-notificari', label:'MAPARE NUME NOTIFICĂRI', href:'mapare-nume-notificari.html' }
+        { type:'page', key:'mapare-nume-notificari', label:'MAPARE NUME NOTIFICĂRI', href:'mapare-nume-notificari.html' },
+        { type:'page', key:'istoric-notificari', label:'ISTORIC NOTIFICĂRI', href:'istoric-notificari.html' }
       ]
     },
     helperAcl: {
@@ -54,7 +55,7 @@
         { key:'resurse-umane-pages', label:'Resurse umane / Pontaje', items:[ ['pontaj-forja','PONTAJ FORJA'],['pontaj-mecanici','PONTAJ MECANICI'],['pontaj-ctc','PONTAJ CTC'],['pontaj-prelucrari-mecanice','PONTAJ PRELUCRĂRI MECANICE'],['raport-forja-operatori-ore','ORE OPERATORI FORJĂ'],['bonus-lunar','BONUS LUNAR'] ] },
         { key:'sdv-pages', label:'Foi SDV', items:[ ['stoc-matrite','STOC MATRIȚE'],['urmarire-matrite','URMĂRIRE MATRIȚE'],['progres-matrite','PROGRES MATRIȚE'],['utilaje-matrite','UTILAJE MATRIȚE'],['repere-matrite','REPERE MATRIȚE'] ] },
         { key:'mentenanta-pages', label:'Foi MENTENANȚĂ', items:[ ['registru-mentenanta','REGISTRU DE MENTENANȚĂ'] ] },
-        { key:'helper-pages', label:'Helper / Administrare', items:[ ['helper','HELPER'],['helper-data','HELPER-DATA'],['helper-acl','HELPER-ACL'],['mapare-nume-notificari','MAPARE NUME NOTIFICĂRI'] ] }
+        { key:'helper-pages', label:'Helper / Administrare', items:[ ['helper','HELPER'],['helper-data','HELPER-DATA'],['helper-acl','HELPER-ACL'],['mapare-nume-notificari','MAPARE NUME NOTIFICĂRI'],['istoric-notificari','ISTORIC NOTIFICĂRI'] ] }
       ]
     }
   };
