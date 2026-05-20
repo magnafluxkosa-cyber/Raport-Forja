@@ -435,7 +435,7 @@
       + '.kad-notif-bell:hover{background:#eef7ff}.kad-notif-bell.has-new{background:#fff0f0;border-color:#f2b8b8;color:#8f1a1a}.kad-notif-bell-icon{font-size:15px;line-height:1}.kad-notif-bell-count{display:none;min-width:18px;height:18px;padding:0 5px;border-radius:999px;background:#dc2626;color:#fff;font-size:10px;line-height:18px;text-align:center}.kad-notif-bell.has-new .kad-notif-bell-count{display:inline-block}\n'
       + '.kad-notif-panel{position:fixed;right:12px;top:50px;bottom:auto;width:min(420px,calc(100vw - 28px));max-height:min(620px,calc(100vh - 72px));z-index:2147482501;display:none;flex-direction:column;overflow:hidden;border:1px solid #b7c8d7;border-radius:16px;background:#fff;box-shadow:0 22px 54px rgba(31,72,105,.28);font-family:Calibri,Arial,sans-serif;color:#10213d}.kad-notif-panel.open{display:flex}\n'
       + '.kad-notif-head{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:10px 12px;background:linear-gradient(180deg,#eef7ff,#e4f0fb);border-bottom:1px solid #c8d8e6}.kad-notif-title{font-size:13px;font-weight:950;text-transform:uppercase}.kad-notif-actions{display:flex;align-items:center;gap:6px}.kad-notif-action{height:24px;border:1px solid #b7c8d7;border-radius:8px;background:#fff;color:#244967;font-size:10px;font-weight:900;cursor:pointer}.kad-notif-action.primary{background:#2f6fa9;color:#fff;border-color:#285f91}.kad-notif-action:hover{filter:brightness(.98)}\n'
-      + '.kad-notif-list{overflow:auto;max-height:540px;background:#f7fbff;padding:8px}.kad-notif-item{border:1px solid #d6e3ef;border-radius:12px;background:#fff;margin:0 0 8px 0;padding:9px 10px;box-shadow:0 3px 10px rgba(31,72,105,.07)}.kad-notif-item.unread{border-color:#f2b8b8;background:#fffafa;box-shadow:inset 3px 0 0 #dc2626,0 3px 10px rgba(31,72,105,.07)}.kad-notif-item-title{font-size:12px;font-weight:950;color:#071b2f;margin-bottom:3px}.kad-notif-item-msg{font-size:11px;font-weight:800;color:#40586f;line-height:1.25;white-space:normal}.kad-notif-meta{margin-top:6px;font-size:9.5px;font-weight:850;color:#7b8fa3}.kad-notif-empty{padding:22px;text-align:center;color:#60778e;font-weight:900;font-size:12px;border:1px dashed #cbd9e6;border-radius:12px;background:#fff}\n'
+      + '.kad-notif-list{overflow:auto;max-height:540px;background:#f7fbff;padding:8px}.kad-notif-item{border:1px solid #d6e3ef;border-radius:12px;background:#fff;margin:0 0 8px 0;padding:9px 10px;box-shadow:0 3px 10px rgba(31,72,105,.07)}.kad-notif-item.unread{border-color:#f2b8b8;background:#fffafa;box-shadow:inset 3px 0 0 #dc2626,0 3px 10px rgba(31,72,105,.07)}.kad-notif-item-top{display:flex;align-items:flex-start;justify-content:space-between;gap:8px;margin-bottom:3px}.kad-notif-item-title{font-size:12px;font-weight:950;color:#071b2f;margin:0;line-height:1.15;min-width:0}.kad-notif-delete{height:21px;min-width:54px;border:1px solid #f2b8b8;border-radius:8px;background:#fff0f0;color:#8f1a1a;font-size:9px;font-weight:950;cursor:pointer;flex:0 0 auto;padding:0 7px}.kad-notif-delete:hover{background:#fee2e2}.kad-notif-item-msg{font-size:11px;font-weight:800;color:#40586f;line-height:1.25;white-space:normal}.kad-notif-meta{margin-top:6px;font-size:9.5px;font-weight:850;color:#7b8fa3}.kad-notif-empty{padding:22px;text-align:center;color:#60778e;font-weight:900;font-size:12px;border:1px dashed #cbd9e6;border-radius:12px;background:#fff}\n'
       + '.kad-notif-toast{position:fixed;right:12px;top:50px;bottom:auto;z-index:2147482600;max-width:min(380px,calc(100vw - 28px));border:1px solid #f2b8b8;border-radius:14px;background:#fffafa;color:#10213d;box-shadow:0 18px 42px rgba(31,72,105,.24);padding:10px 12px;font:900 12px Calibri,Arial,sans-serif;display:none}.kad-notif-toast.show{display:block;animation:kadNotifIn .18s ease-out}.kad-notif-toast-title{color:#8f1a1a;font-weight:950;margin-bottom:3px}.kad-notif-toast-msg{font-size:11px;color:#40586f;line-height:1.25}\n'
       + '.kad-notif-inline-host{display:flex!important;align-items:center!important;gap:6px!important;flex-wrap:nowrap!important}\n'
       + '@keyframes kadNotifIn{from{opacity:0;transform:translateY(-8px)}to{opacity:1;transform:translateY(0)}}\n'
@@ -555,6 +555,17 @@
     bell.addEventListener('click', function(){ togglePanel(); });
     panel.querySelector('[data-kad-notif-refresh]').addEventListener('click', function(){ fetchNotifications(true); });
     panel.querySelector('[data-kad-notif-read]').addEventListener('click', function(){ markAllVisibleRead(); });
+    els.list.addEventListener('click', function(ev){
+      var del = ev.target && ev.target.closest ? ev.target.closest('[data-kad-notif-delete]') : null;
+      if (del){
+        ev.preventDefault();
+        ev.stopPropagation();
+        deleteNotificationForMe(del.getAttribute('data-kad-notif-delete'));
+        return;
+      }
+      var item = ev.target && ev.target.closest ? ev.target.closest('[data-kad-notif-id]') : null;
+      if (item) markOneRead(item.getAttribute('data-kad-notif-id'));
+    });
     document.addEventListener('click', function(ev){
       if (!isOpen) return;
       if (panel.contains(ev.target) || bell.contains(ev.target)) return;
@@ -599,7 +610,7 @@
       var meta = [pageNameFor(n.page_key || ''), formatDate(n.created_at || n.createdAt), actorNameForNotification(n)].filter(Boolean).join(' • ');
       var url = n.page_key ? (normKey(n.page_key) + '.html') : '';
       return '<div class="kad-notif-item ' + (unread ? 'unread' : '') + '" data-kad-notif-id="' + escapeHtml(id) + '">'
-        + '<div class="kad-notif-item-title">' + escapeHtml(n.title || 'Notificare K.A.D') + '</div>'
+        + '<div class="kad-notif-item-top"><div class="kad-notif-item-title">' + escapeHtml(n.title || 'Notificare K.A.D') + '</div><button type="button" class="kad-notif-delete" data-kad-notif-delete="' + escapeHtml(id) + '" title="Șterge notificarea doar pentru mine">Șterge</button></div>'
         + '<div class="kad-notif-item-msg">' + escapeHtml(messageForNotification(n)) + '</div>'
         + '<div class="kad-notif-meta">' + escapeHtml(meta) + (url ? ' • ' + escapeHtml(url) : '') + '</div>'
         + '</div>';
@@ -614,15 +625,33 @@
     window.clearTimeout(showToast._t);
     showToast._t = window.setTimeout(function(){ if(els.toast) els.toast.classList.remove('show'); }, 6500);
   }
-  async function fetchReads(ids){
-    if (!ids.length || !currentEmail) return new Set();
+  async function fetchReadStates(ids){
+    var empty = { read:new Set(), deleted:new Set() };
+    if (!ids.length || !currentEmail) return empty;
     var sb = getClient();
-    if (!sb) return new Set();
+    if (!sb) return empty;
     try{
-      var res = await sb.from(READS_TABLE).select('notification_id').eq('user_email', currentEmail).in('notification_id', ids);
-      if (res.error) return new Set();
-      return new Set((res.data || []).map(function(row){ return normText(row.notification_id); }).filter(Boolean));
-    }catch(_e){ return new Set(); }
+      var res = await sb.from(READS_TABLE).select('notification_id,read_at,deleted_at').eq('user_email', currentEmail).in('notification_id', ids);
+      if (res.error) throw res.error;
+      var read = new Set();
+      var deleted = new Set();
+      (res.data || []).forEach(function(row){
+        var id = normText(row.notification_id);
+        if (!id) return;
+        if (row.deleted_at) deleted.add(id);
+        else if (row.read_at != null) read.add(id);
+      });
+      return { read:read, deleted:deleted };
+    }catch(_e){
+      try{
+        var fallback = await sb.from(READS_TABLE).select('notification_id,read_at').eq('user_email', currentEmail).in('notification_id', ids);
+        if (fallback.error) return empty;
+        return {
+          read:new Set((fallback.data || []).map(function(row){ return normText(row.notification_id); }).filter(Boolean)),
+          deleted:new Set()
+        };
+      }catch(_e2){ return empty; }
+    }
   }
   async function fetchNotifications(force){
     if (!currentEmail) await getUser();
@@ -635,10 +664,12 @@
       var res = await sb.from(NOTIF_TABLE).select('id,page_key,page_name,category,type,title,message,details,entity_key,created_by_email,created_by_name,created_at').order('created_at', { ascending:false }).limit(LIST_LIMIT);
       if (res.error) throw res.error;
       var visible = await filterVisibleNotifications(res.data || []);
-      allNotifications = visible;
       var ids = visible.map(function(n){ return normText(n.id); }).filter(Boolean);
-      var reads = await fetchReads(ids);
-      unreadIds = new Set(ids.filter(function(id){ return !reads.has(id); }));
+      var states = await fetchReadStates(ids);
+      visible = visible.filter(function(n){ return !states.deleted.has(normText(n.id)); });
+      allNotifications = visible;
+      var keptIds = visible.map(function(n){ return normText(n.id); }).filter(Boolean);
+      unreadIds = new Set(keptIds.filter(function(id){ return !states.read.has(id); }));
       renderList();
     }catch(e){
       if (uiReady) els.list.innerHTML = '<div class="kad-notif-empty">Notificările nu sunt active încă. Verifică dacă tabelele Supabase au fost create.</div>';
@@ -662,6 +693,23 @@
     try{ await sb.from(READS_TABLE).upsert({ notification_id:id, user_email:currentEmail, read_at:nowIso() }, { onConflict:'notification_id,user_email' }); }catch(_e){}
     unreadIds.delete(id);
     renderList();
+  }
+  async function deleteNotificationForMe(id){
+    id = normText(id);
+    if (!id) return;
+    if (!currentEmail) await getUser();
+    var sb = getClient();
+    if (!sb || !currentEmail) return;
+    var ts = nowIso();
+    try{
+      var res = await sb.from(READS_TABLE).upsert({ notification_id:id, user_email:currentEmail, read_at:ts, deleted_at:ts }, { onConflict:'notification_id,user_email' });
+      if (res && res.error) throw res.error;
+      unreadIds.delete(id);
+      allNotifications = (allNotifications || []).filter(function(n){ return normText(n.id) !== id; });
+      renderList();
+    }catch(e){
+      try{ window.alert('Nu am putut șterge notificarea. Verifică dacă SQL-ul pentru deleted_at a fost rulat.'); }catch(_e){}
+    }
   }
   async function createNotification(input, options){
     options = options || {};
@@ -763,6 +811,7 @@
     refresh:function(){ return fetchNotifications(true); },
     markAllRead:markAllVisibleRead,
     markRead:markOneRead,
+    deleteForMe:deleteNotificationForMe,
     notify:createNotification,
     captureMutation:captureMutation,
     refreshDisplayName:function(){ return resolveCurrentDisplayName(true); },
