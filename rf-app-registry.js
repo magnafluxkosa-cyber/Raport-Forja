@@ -38,10 +38,7 @@
         { type:'group', key:'group-resurse-umane', label:'RESURSE UMANE', panelId:'subResurseUmane', panelMode:'tabs', sections:[{ key:'group-resurse-umane-pontaje', buttonKey:'group-resurse-umane-pontaje', label:'PONTAJE', sectionId:'resurseUmanePontaje', layout:'subgrid', items:[ page('pontaj-forja','PONTAJ FORJA'), page('pontaj-mecanici','PONTAJ MECANICI'), page('pontaj-ctc','PONTAJ CTC'), page('pontaj-prelucrari-mecanice','PONTAJ PRELUCRĂRI MECANICE'), page('raport-forja-operatori-ore','ORE OPERATORI FORJĂ'), page('bonus-lunar','BONUS LUNAR') ] }] },
         { type:'group', key:'group-sdv', label:'SDV', panelId:'subSdv', panelMode:'flat', sections:[{ key:'group-sdv-links', label:'Pagini', sectionId:'sdvLinks', layout:'subgrid', items:[ page('stoc-matrite','STOC MATRIȚE'), page('urmarire-matrite','URMĂRIRE MATRIȚE'), page('progres-matrite','PROGRES MATRIȚE'), page('utilaje-matrite','UTILAJE MATRIȚE'), page('repere-matrite','REPERE MATRIȚE') ] }] },
         { type:'group', key:'group-mentenanta', label:'MENTENANTA', panelId:'subMentenanta', panelMode:'flat', sections:[{ key:'group-mentenanta-links', label:'Pagini', sectionId:'mentenantaLinks', layout:'subgrid', items:[ page('registru-mentenanta','Registru de mentenanta') ] }] },
-        { type:'page', key:'helper-data', label:'HELPER-DATA', href:'helper-data.html' },
-        { type:'page', key:'helper-acl', label:'HELPER-ACL', href:'helper-acl.html' },
-        { type:'page', key:'mapare-nume-notificari', label:'MAPARE NUME NOTIFICĂRI', href:'mapare-nume-notificari.html' },
-        { type:'page', key:'istoric-notificari', label:'ISTORIC NOTIFICĂRI', href:'istoric-notificari.html' }
+        { type:'group', key:'group-administrator', label:'ADMINISTRATOR', panelId:'subAdministrator', panelMode:'flat', sections:[{ key:'group-administrator-links', label:'Pagini', sectionId:'administratorLinks', layout:'subgrid', items:[ page('helper-data','HELPER-DATA'), page('helper-acl','HELPER-ACL'), page('mapare-nume-notificari','MAPARE NUME NOTIFICĂRI'), page('istoric-notificari','ISTORIC NOTIFICĂRI') ] }] }
       ]
     },
     helperAcl: {
@@ -55,7 +52,7 @@
         { key:'resurse-umane-pages', label:'Resurse umane / Pontaje', items:[ ['pontaj-forja','PONTAJ FORJA'],['pontaj-mecanici','PONTAJ MECANICI'],['pontaj-ctc','PONTAJ CTC'],['pontaj-prelucrari-mecanice','PONTAJ PRELUCRĂRI MECANICE'],['raport-forja-operatori-ore','ORE OPERATORI FORJĂ'],['bonus-lunar','BONUS LUNAR'] ] },
         { key:'sdv-pages', label:'Foi SDV', items:[ ['stoc-matrite','STOC MATRIȚE'],['urmarire-matrite','URMĂRIRE MATRIȚE'],['progres-matrite','PROGRES MATRIȚE'],['utilaje-matrite','UTILAJE MATRIȚE'],['repere-matrite','REPERE MATRIȚE'] ] },
         { key:'mentenanta-pages', label:'Foi MENTENANȚĂ', items:[ ['registru-mentenanta','REGISTRU DE MENTENANȚĂ'] ] },
-        { key:'helper-pages', label:'Helper / Administrare', items:[ ['helper','HELPER'],['helper-data','HELPER-DATA'],['helper-acl','HELPER-ACL'],['mapare-nume-notificari','MAPARE NUME NOTIFICĂRI'],['istoric-notificari','ISTORIC NOTIFICĂRI'] ] }
+        { key:'helper-pages', label:'Administrator', items:[ ['helper','HELPER'],['helper-data','HELPER-DATA'],['helper-acl','HELPER-ACL'],['mapare-nume-notificari','MAPARE NUME NOTIFICĂRI'],['istoric-notificari','ISTORIC NOTIFICĂRI'] ] }
       ]
     }
   };
@@ -92,7 +89,8 @@
     { key:'planificari', label:'Submeniul PLANIFICĂRI', items: flattenIndexButtons([indexItemByKey('group-planificari')], []).filter(function(entry){ return entry[0] !== 'group-planificari'; }) },
     { key:'resurse-umane', label:'Submeniul RESURSE UMANE', items: flattenIndexButtons([indexItemByKey('group-resurse-umane')], []).filter(function(entry){ return entry[0] !== 'group-resurse-umane'; }) },
     { key:'sdv', label:'Submeniul SDV', items: flattenIndexButtons([indexItemByKey('group-sdv')], []).filter(function(entry){ return entry[0] !== 'group-sdv'; }) },
-    { key:'mentenanta', label:'Submeniul MENTENANTA', items: flattenIndexButtons([indexItemByKey('group-mentenanta')], []).filter(function(entry){ return entry[0] !== 'group-mentenanta'; }) }
+    { key:'mentenanta', label:'Submeniul MENTENANTA', items: flattenIndexButtons([indexItemByKey('group-mentenanta')], []).filter(function(entry){ return entry[0] !== 'group-mentenanta'; }) },
+    { key:'administrator', label:'Submeniul ADMINISTRATOR', items: flattenIndexButtons([indexItemByKey('group-administrator')], []).filter(function(entry){ return entry[0] !== 'group-administrator'; }) }
   ];
 
 
@@ -119,7 +117,7 @@
   registry.getManagedPageEntries = function(){
     var out = [];
     registry.helperAcl.pageGroups.forEach(function(group){ (group.items || []).forEach(function(entry){ out.push({ page_key: entry[0], page_name: entry[1] }); }); });
-    [{ page_key:'group-resurse-umane', page_name:'Grup / Resurse umane' }, { page_key:'group-resurse-umane-pontaje', page_name:'Grup / Resurse umane / Pontaje' }].forEach(function(item){ out.push(item); });
+    [{ page_key:'group-resurse-umane', page_name:'Grup / Resurse umane' }, { page_key:'group-resurse-umane-pontaje', page_name:'Grup / Resurse umane / Pontaje' }, { page_key:'group-administrator', page_name:'Grup / Administrator' }].forEach(function(item){ out.push(item); });
     return out;
   };
   registry.patchAclCatalog = function(){
