@@ -12,6 +12,8 @@
   var client = null;
   var currentUser = null;
   var currentEmail = '';
+  var currentDisplayName = '';
+  var displayNameCache = {};
   var initialized = false;
   var uiReady = false;
   var lastFetchAt = 0;
@@ -146,11 +148,74 @@
       source_doc_key: docKey
     };
   }
-  function currentUserName(){
+  function looksLikeEmail(v){
+    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normText(v));
+  }
+  function localPartToName(email){
+    var local = normText(email).split('@')[0] || '';
+    local = local.replace(/[._-]+/g, ' ').replace(/\s+/g, ' ').trim();
+    if (!local) return 'Utilizator';
+    return local.replace(/\b\S/g, function(c){ return c.toUpperCase(); });
+  }
+  function sanitizeDisplayName(name, email){
+    name = normText(name);
+    email = normText(email);
+    if (name && !looksLikeEmail(name)) return name;
+    if (email) return localPartToName(email);
+    return 'Utilizator';
+  }
+  function currentUserMetadataName(){
     var meta = currentUser && (currentUser.user_metadata || currentUser.raw_user_meta_data || {});
-    var name = normText(meta && (meta.full_name || meta.name || meta.display_name));
-    if (name) return name;
-    return currentEmail || 'Utilizator';
+    return normText(meta && (meta.full_name || meta.name || meta.display_name));
+  }
+  function currentUserName(){
+    if (currentDisplayName) return currentDisplayName;
+    var metaName = currentUserMetadataName();
+    if (metaName && !looksLikeEmail(metaName)) return metaName;
+    return sanitizeDisplayName('', currentEmail);
+  }
+  async function resolveCurrentDisplayName(force){
+    if (!currentEmail) await getUser();
+    if (!currentEmail) return 'Utilizator';
+    if (!force && displayNameCache[currentEmail]){
+      currentDisplayName = displayNameCache[currentEmail];
+      return currentDisplayName;
+    }
+    var metaName = currentUserMetadataName();
+    var name = sanitizeDisplayName(metaName, currentEmail);
+    var sb = getClient();
+    if (sb){
+      try{
+        var q = sb.from('profiles').select('display_name,email,user_id').limit(1);
+        if (currentUser && currentUser.id) q = q.eq('user_id', currentUser.id);
+        else q = q.ilike('email', currentEmail);
+        var res = await q.maybeSingle();
+        if (!res.error && res.data){
+          name = sanitizeDisplayName(res.data.display_name, currentEmail);
+        }else if (currentEmail){
+          var res2 = await sb.from('profiles').select('display_name,email').ilike('email', currentEmail).limit(1).maybeSingle();
+          if (!res2.error && res2.data) name = sanitizeDisplayName(res2.data.display_name, currentEmail);
+        }
+      }catch(_e){}
+    }
+    currentDisplayName = name;
+    displayNameCache[currentEmail] = name;
+    return name;
+  }
+  function actorNameForNotification(n){
+    n = n || {};
+    var email = normText(n.created_by_email || '');
+    var name = normText(n.created_by_name || '');
+    if (email && currentEmail && email.toLowerCase() === currentEmail.toLowerCase() && currentDisplayName) return currentDisplayName;
+    return sanitizeDisplayName(name, email);
+  }
+  function messageForNotification(n){
+    n = n || {};
+    var msg = normText(n.message || '');
+    var email = normText(n.created_by_email || '');
+    var name = actorNameForNotification(n);
+    if (msg && email && name && msg.indexOf(email) >= 0) msg = msg.split(email).join(name);
+    return msg;
   }
   function shouldSkipMutation(ctx){
     ctx = ctx || {};
@@ -333,11 +398,11 @@
     els.list.innerHTML = items.map(function(n){
       var id = normText(n.id);
       var unread = unreadIds.has(id);
-      var meta = [pageNameFor(n.page_key || ''), formatDate(n.created_at || n.createdAt), normText(n.created_by_name || n.created_by_email || '')].filter(Boolean).join(' • ');
+      var meta = [pageNameFor(n.page_key || ''), formatDate(n.created_at || n.createdAt), actorNameForNotification(n)].filter(Boolean).join(' • ');
       var url = n.page_key ? (normKey(n.page_key) + '.html') : '';
       return '<div class="kad-notif-item ' + (unread ? 'unread' : '') + '" data-kad-notif-id="' + escapeHtml(id) + '">'
         + '<div class="kad-notif-item-title">' + escapeHtml(n.title || 'Notificare K.A.D') + '</div>'
-        + '<div class="kad-notif-item-msg">' + escapeHtml(n.message || '') + '</div>'
+        + '<div class="kad-notif-item-msg">' + escapeHtml(messageForNotification(n)) + '</div>'
         + '<div class="kad-notif-meta">' + escapeHtml(meta) + (url ? ' • ' + escapeHtml(url) : '') + '</div>'
         + '</div>';
     }).join('');
@@ -346,7 +411,7 @@
   function showToast(n){
     if (!uiReady || !n) return;
     els.toastTitle.textContent = n.title || 'Notificare K.A.D';
-    els.toastMsg.textContent = n.message || '';
+    els.toastMsg.textContent = messageForNotification(n);
     els.toast.classList.add('show');
     window.clearTimeout(showToast._t);
     showToast._t = window.setTimeout(function(){ if(els.toast) els.toast.classList.remove('show'); }, 6500);
@@ -405,6 +470,7 @@
     var sb = getClient();
     if (!sb) return null;
     if (!currentEmail) await getUser();
+    await resolveCurrentDisplayName(false);
     var n = Object.assign({}, input || {});
     n.page_key = normKey(n.page_key || pageFromLocation());
     n.page_name = normText(n.page_name) || pageNameFor(n.page_key);
@@ -433,6 +499,7 @@
     if (shouldSkipMutation(ctx)) return;
     await getUser();
     if (!currentEmail) return;
+    await resolveCurrentDisplayName(false);
     var n = inferNotificationFromMutation(ctx || {});
     if (!n.page_key) return;
     if (isDuplicateAuto(n)) return;
@@ -481,6 +548,7 @@
     buildUi();
     await getUser();
     if (!currentEmail) return;
+    await resolveCurrentDisplayName(false);
     await fetchNotifications(true);
     startRealtime();
     await flushQueuedMutations();
@@ -494,7 +562,8 @@
     markAllRead:markAllVisibleRead,
     markRead:markOneRead,
     notify:createNotification,
-    captureMutation:captureMutation
+    captureMutation:captureMutation,
+    refreshDisplayName:function(){ return resolveCurrentDisplayName(true); }
   };
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init, { once:true });
