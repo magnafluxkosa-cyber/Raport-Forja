@@ -431,7 +431,7 @@
     style.id = 'kadNotificationsStyle';
     style.textContent = '\n'
       + '.kad-notif-bell{position:fixed;right:12px;top:10px;bottom:auto;z-index:2147482500;display:flex;align-items:center;justify-content:center;gap:6px;height:32px;min-width:38px;padding:0 10px;border-radius:999px;border:1px solid #b7c8d7;background:#ffffff;color:#10213d;box-shadow:0 8px 22px rgba(31,72,105,.18);font:900 12px Calibri,Arial,sans-serif;cursor:pointer;box-sizing:border-box;white-space:nowrap}\n'
-      + '.kad-notif-bell.kad-notif-inline{position:relative!important;right:auto!important;top:auto!important;bottom:auto!important;z-index:50;flex:0 0 auto;margin-left:6px;box-shadow:0 2px 7px rgba(31,72,105,.12)}\n'
+      + '.kad-notif-bell.kad-notif-inline{position:fixed!important;right:12px!important;top:10px!important;bottom:auto!important;z-index:2147482500!important;flex:0 0 auto;box-shadow:0 8px 22px rgba(31,72,105,.18)}\n'
       + '.kad-notif-bell:hover{background:#eef7ff}.kad-notif-bell.has-new{background:#fff0f0;border-color:#f2b8b8;color:#8f1a1a}.kad-notif-bell-icon{font-size:15px;line-height:1}.kad-notif-bell-count{display:none;min-width:18px;height:18px;padding:0 5px;border-radius:999px;background:#dc2626;color:#fff;font-size:10px;line-height:18px;text-align:center}.kad-notif-bell.has-new .kad-notif-bell-count{display:inline-block}\n'
       + '.kad-notif-panel{position:fixed;right:12px;top:50px;bottom:auto;width:min(420px,calc(100vw - 28px));max-height:min(620px,calc(100vh - 72px));z-index:2147482501;display:none;flex-direction:column;overflow:hidden;border:1px solid #b7c8d7;border-radius:16px;background:#fff;box-shadow:0 22px 54px rgba(31,72,105,.28);font-family:Calibri,Arial,sans-serif;color:#10213d}.kad-notif-panel.open{display:flex}\n'
       + '.kad-notif-head{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:10px 12px;background:linear-gradient(180deg,#eef7ff,#e4f0fb);border-bottom:1px solid #c8d8e6}.kad-notif-title{font-size:13px;font-weight:950;text-transform:uppercase}.kad-notif-actions{display:flex;align-items:center;gap:6px}.kad-notif-action{height:24px;border:1px solid #b7c8d7;border-radius:8px;background:#fff;color:#244967;font-size:10px;font-weight:900;cursor:pointer}.kad-notif-action.primary{background:#2f6fa9;color:#fff;border-color:#285f91}.kad-notif-action:hover{filter:brightness(.98)}\n'
@@ -472,49 +472,70 @@
   function rectsOverlap(a,b){
     return !!(a && b && a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top);
   }
-  function placeFloatingBellSafely(){
-    if (!els.bell || els.bell.classList.contains('kad-notif-inline')) return;
-    var bell = els.bell;
+  function getTopInteractiveRects(){
+    var selectors = 'button,a,input,select,textarea,[role="button"],.ghost-btn,.back-btn,.btn,.button,.top-actions,.controls,.toolbar,.topbar,.page-actions,.header-actions';
+    var out = [];
+    var candidates = Array.prototype.slice.call(document.querySelectorAll(selectors));
+    for (var i=0;i<candidates.length;i++){
+      var el = candidates[i];
+      if (!el || el === els.bell || (els.bell && els.bell.contains(el)) || (els.panel && els.panel.contains(el)) || (els.toast && els.toast.contains(el))) continue;
+      if (el.closest && (el.closest('.kad-notif-panel') || el.closest('.kad-notif-toast'))) continue;
+      if (!isVisibleBox(el)) continue;
+      var r = el.getBoundingClientRect();
+      if (r.top > 150 || r.bottom < 0) continue;
+      out.push(r);
+    }
+    return out;
+  }
+  function virtualBellRect(top, right, w, h){
     var vw = Math.max(document.documentElement.clientWidth || 0, window.innerWidth || 0);
+    return { left: vw - right - w, right: vw - right, top: top, bottom: top + h, width: w, height: h };
+  }
+  function placeFloatingBellSafely(){
+    if (!els.bell) return;
+    var bell = els.bell;
+    bell.classList.remove('kad-notif-inline');
     var right = 12;
     var top = 10;
+    var w = Math.max(38, bell.offsetWidth || 38);
+    var h = Math.max(30, bell.offsetHeight || 32);
+    var rects = getTopInteractiveRects();
+    function overlapsAny(y){
+      var b = virtualBellRect(y, right, w, h);
+      for (var i=0;i<rects.length;i++) if (rectsOverlap(b, rects[i])) return rects[i];
+      return null;
+    }
+    var hit = overlapsAny(top);
+    if (hit){
+      top = Math.min(150, Math.max(46, hit.bottom + 8));
+      for (var pass=0; pass<24; pass++){
+        hit = overlapsAny(top);
+        if (!hit) break;
+        top = Math.min(150, Math.max(top + 6, hit.bottom + 8));
+      }
+      if (overlapsAny(top)){
+        for (var y=8; y<=160; y+=4){
+          if (!overlapsAny(y)){ top = y; break; }
+        }
+      }
+    }
+    bell.style.position = 'fixed';
     bell.style.right = right + 'px';
     bell.style.top = top + 'px';
-    var selectors = 'button,a,input,select,textarea,[role="button"],.ghost-btn,.back-btn,.btn,.button';
-    for (var pass=0; pass<12; pass++){
-      var b = bell.getBoundingClientRect();
-      var hit = null;
-      var candidates = Array.prototype.slice.call(document.querySelectorAll(selectors));
-      for (var i=0;i<candidates.length;i++){
-        var el = candidates[i];
-        if (el === bell || bell.contains(el) || (els.panel && els.panel.contains(el)) || (els.toast && els.toast.contains(el))) continue;
-        if (!isVisibleBox(el)) continue;
-        var r = el.getBoundingClientRect();
-        if (r.top > 120 || r.bottom < 0) continue;
-        if (rectsOverlap(b, r)){ hit = r; break; }
-      }
-      if (!hit) break;
-      right = Math.max(right + 1, vw - hit.left + 8);
-      if (right > vw - 54){
-        right = 12;
-        top = Math.min(86, Math.max(44, hit.bottom + 8));
-      }
-      bell.style.right = right + 'px';
-      bell.style.top = top + 'px';
+    bell.style.bottom = 'auto';
+    if (els.panel){
+      els.panel.style.right = right + 'px';
+      els.panel.style.top = Math.min(top + 40, Math.max(46, (window.innerHeight || 700) - 90)) + 'px';
+      els.panel.style.bottom = 'auto';
     }
-    if (els.panel){ els.panel.style.right = right + 'px'; els.panel.style.top = (top + 40) + 'px'; }
-    if (els.toast){ els.toast.style.right = right + 'px'; els.toast.style.top = (top + 40) + 'px'; }
+    if (els.toast){
+      els.toast.style.right = right + 'px';
+      els.toast.style.top = Math.min(top + 40, Math.max(46, (window.innerHeight || 700) - 90)) + 'px';
+      els.toast.style.bottom = 'auto';
+    }
   }
   function dockNotificationBell(){
     if (!els.bell) return;
-    var host = findNotificationInlineHost();
-    if (host){
-      host.classList.add('kad-notif-inline-host');
-      els.bell.classList.add('kad-notif-inline');
-      try{ host.appendChild(els.bell); }catch(_e){}
-      return;
-    }
-    els.bell.classList.remove('kad-notif-inline');
     placeFloatingBellSafely();
   }
   function buildUi(){
