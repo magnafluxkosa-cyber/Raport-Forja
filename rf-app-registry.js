@@ -37,6 +37,7 @@
         { type:'group', key:'group-planificari', label:'PLANIFICĂRI', panelId:'subPlanificari', panelMode:'flat', sections:[{ key:'group-planificari-links', label:'Pagini', sectionId:'planificariLinks', layout:'subgrid', items:[ page('planificare-forja','PLANIFICARE FORJĂ'), page('comenzi-livrare','COMENZI LIVRARE'), page('lista-vanzari','LISTA VÂNZĂRI'), page('mrc-necesar-otel','MRC / NECESAR OȚEL'), page('mrc-comenzi-otel','COMENZI OȚEL'), page('mrc-comenzi-saptamanale','COMENZI SĂPTĂMÂNALE') ] }] },
         { type:'group', key:'group-resurse-umane', label:'RESURSE UMANE', panelId:'subResurseUmane', panelMode:'tabs', sections:[{ key:'group-resurse-umane-pontaje', buttonKey:'group-resurse-umane-pontaje', label:'PONTAJE', sectionId:'resurseUmanePontaje', layout:'subgrid', items:[ page('pontaj-forja','PONTAJ FORJA'), page('pontaj-mecanici','PONTAJ MECANICI'), page('pontaj-ctc','PONTAJ CTC'), page('pontaj-prelucrari-mecanice','PONTAJ PRELUCRĂRI MECANICE'), page('raport-forja-operatori-ore','ORE OPERATORI FORJĂ'), page('bonus-lunar','BONUS LUNAR') ] }] },
         { type:'group', key:'group-sdv', label:'SDV', panelId:'subSdv', panelMode:'flat', sections:[{ key:'group-sdv-links', label:'Pagini', sectionId:'sdvLinks', layout:'subgrid', items:[ page('stoc-matrite','STOC MATRIȚE'), page('urmarire-matrite','URMĂRIRE MATRIȚE'), page('progres-matrite','PROGRES MATRIȚE'), page('utilaje-matrite','UTILAJE MATRIȚE'), page('repere-matrite','REPERE MATRIȚE') ] }] },
+        { type:'group', key:'group-mentenanta', label:'MENTENANTA', panelId:'subMentenanta', panelMode:'flat', sections:[{ key:'group-mentenanta-links', label:'Pagini', sectionId:'mentenantaLinks', layout:'subgrid', items:[ page('registru-mentenanta','Registru de mentenanta') ] }] },
         { type:'page', key:'helper-data', label:'HELPER-DATA', href:'helper-data.html' },
         { type:'page', key:'helper-acl', label:'HELPER-ACL', href:'helper-acl.html' }
       ]
@@ -51,6 +52,7 @@
         { key:'ops-pages', label:'Probleme / Investiții / Planificări', items:[ ['probleme-raportate','PROBLEME RAPORTATE'],['urmarire-actiuni-progres','URMĂRIRE ACȚIUNI ȘI PROGRES'],['imbunatatire-continua','ÎMBUNĂTĂȚIRE CONTINUĂ'],['investitii','INVESTIȚII'],['kpi','KPI PRODUCȚIE'],['kpi-livrari','KPI LIVRĂRI'],['planificare-forja','PLANIFICARE FORJĂ'],['comenzi-livrare','COMENZI LIVRARE'],['lista-vanzari','LISTA VÂNZĂRI'],['mrc-necesar-otel','MRC / NECESAR OȚEL'],['mrc-comenzi-otel','COMENZI OȚEL'],['mrc-comenzi-saptamanale','COMENZI SĂPTĂMÂNALE'],['tratament-termic-rapoarte','T.T RAPOARTE'],['tratament-termic-probleme','T.T PROBLEME'],['tratament-termic-fise-tehnologice','T.T FIȘE TEHNOLOGICE'],['tratament-termic-fisa-autocontrol-zale','T.T FIȘĂ AUTOCONTROL ZALE'],['urmarire-temperaturi-tt','T.T URMĂRIRE TEMPERATURI'],['tratament-termic-documente','T.T RAPOARTE EXCEL / WORD'] ] },
         { key:'resurse-umane-pages', label:'Resurse umane / Pontaje', items:[ ['pontaj-forja','PONTAJ FORJA'],['pontaj-mecanici','PONTAJ MECANICI'],['pontaj-ctc','PONTAJ CTC'],['pontaj-prelucrari-mecanice','PONTAJ PRELUCRĂRI MECANICE'],['raport-forja-operatori-ore','ORE OPERATORI FORJĂ'],['bonus-lunar','BONUS LUNAR'] ] },
         { key:'sdv-pages', label:'Foi SDV', items:[ ['stoc-matrite','STOC MATRIȚE'],['urmarire-matrite','URMĂRIRE MATRIȚE'],['progres-matrite','PROGRES MATRIȚE'],['utilaje-matrite','UTILAJE MATRIȚE'],['repere-matrite','REPERE MATRIȚE'] ] },
+        { key:'mentenanta-pages', label:'Foi MENTENANȚĂ', items:[ ['registru-mentenanta','REGISTRU DE MENTENANȚĂ'] ] },
         { key:'helper-pages', label:'Helper / Administrare', items:[ ['helper','HELPER'],['helper-data','HELPER-DATA'],['helper-acl','HELPER-ACL'] ] }
       ]
     }
@@ -87,7 +89,8 @@
     { key:'kpi', label:'Submeniul KPI', items: flattenIndexButtons([indexItemByKey('group-kpi')], []).filter(function(entry){ return entry[0] !== 'group-kpi'; }) },
     { key:'planificari', label:'Submeniul PLANIFICĂRI', items: flattenIndexButtons([indexItemByKey('group-planificari')], []).filter(function(entry){ return entry[0] !== 'group-planificari'; }) },
     { key:'resurse-umane', label:'Submeniul RESURSE UMANE', items: flattenIndexButtons([indexItemByKey('group-resurse-umane')], []).filter(function(entry){ return entry[0] !== 'group-resurse-umane'; }) },
-    { key:'sdv', label:'Submeniul SDV', items: flattenIndexButtons([indexItemByKey('group-sdv')], []).filter(function(entry){ return entry[0] !== 'group-sdv'; }) }
+    { key:'sdv', label:'Submeniul SDV', items: flattenIndexButtons([indexItemByKey('group-sdv')], []).filter(function(entry){ return entry[0] !== 'group-sdv'; }) },
+    { key:'mentenanta', label:'Submeniul MENTENANTA', items: flattenIndexButtons([indexItemByKey('group-mentenanta')], []).filter(function(entry){ return entry[0] !== 'group-mentenanta'; }) }
   ];
 
 
