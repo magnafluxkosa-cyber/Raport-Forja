@@ -3746,7 +3746,7 @@ async function applyDomPermissions(pageKey, root, options) {
 (function(window, document){
   'use strict';
 
-  var IDLE_TIMEOUT_MS = 20 * 60 * 1000;
+  var IDLE_TIMEOUT_MS = 8 * 60 * 60 * 1000;
   var CHECK_INTERVAL_MS = 15 * 1000;
   var ACTIVITY_THROTTLE_MS = 1500;
   var LAST_ACTIVITY_KEY = 'rf_idle_last_activity_at';
