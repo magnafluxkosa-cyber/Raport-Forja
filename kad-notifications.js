@@ -434,7 +434,7 @@
       + '.kad-notif-bell.kad-notif-inline{position:fixed!important;right:12px!important;top:10px!important;bottom:auto!important;z-index:2147482500!important;flex:0 0 auto;box-shadow:0 8px 22px rgba(31,72,105,.18)}\n'
       + '.kad-notif-bell:hover{background:#eef7ff}.kad-notif-bell.has-new{background:#fff0f0;border-color:#f2b8b8;color:#8f1a1a}.kad-notif-bell-icon{font-size:15px;line-height:1}.kad-notif-bell-count{display:none;min-width:18px;height:18px;padding:0 5px;border-radius:999px;background:#dc2626;color:#fff;font-size:10px;line-height:18px;text-align:center}.kad-notif-bell.has-new .kad-notif-bell-count{display:inline-block}\n'
       + '.kad-notif-panel{position:fixed;right:12px;top:50px;bottom:auto;width:min(420px,calc(100vw - 28px));max-height:min(620px,calc(100vh - 72px));z-index:2147482501;display:none;flex-direction:column;overflow:hidden;border:1px solid #b7c8d7;border-radius:16px;background:#fff;box-shadow:0 22px 54px rgba(31,72,105,.28);font-family:Calibri,Arial,sans-serif;color:#10213d}.kad-notif-panel.open{display:flex}\n'
-      + '.kad-notif-head{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:10px 12px;background:linear-gradient(180deg,#eef7ff,#e4f0fb);border-bottom:1px solid #c8d8e6}.kad-notif-title{font-size:13px;font-weight:950;text-transform:uppercase}.kad-notif-actions{display:flex;align-items:center;gap:6px}.kad-notif-action{height:24px;border:1px solid #b7c8d7;border-radius:8px;background:#fff;color:#244967;font-size:10px;font-weight:900;cursor:pointer}.kad-notif-action.primary{background:#2f6fa9;color:#fff;border-color:#285f91}.kad-notif-action:hover{filter:brightness(.98)}\n'
+      + '.kad-notif-head{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:10px 12px;background:linear-gradient(180deg,#eef7ff,#e4f0fb);border-bottom:1px solid #c8d8e6}.kad-notif-title{font-size:13px;font-weight:950;text-transform:uppercase}.kad-notif-actions{display:flex;align-items:center;gap:6px}.kad-notif-action{height:24px;border:1px solid #b7c8d7;border-radius:8px;background:#fff;color:#244967;font-size:10px;font-weight:900;cursor:pointer}.kad-notif-action.primary{background:#2f6fa9;color:#fff;border-color:#285f91}.kad-notif-action.danger{background:#fff0f0;color:#8f1a1a;border-color:#f2b8b8}.kad-notif-action.danger:hover{background:#fee2e2}.kad-notif-action:hover{filter:brightness(.98)}\n'
       + '.kad-notif-list{overflow:auto;max-height:540px;background:#f7fbff;padding:8px}.kad-notif-item{border:1px solid #d6e3ef;border-radius:12px;background:#fff;margin:0 0 8px 0;padding:9px 10px;box-shadow:0 3px 10px rgba(31,72,105,.07)}.kad-notif-item.unread{border-color:#f2b8b8;background:#fffafa;box-shadow:inset 3px 0 0 #dc2626,0 3px 10px rgba(31,72,105,.07)}.kad-notif-item-top{display:flex;align-items:flex-start;justify-content:space-between;gap:8px;margin-bottom:3px}.kad-notif-item-title{font-size:12px;font-weight:950;color:#071b2f;margin:0;line-height:1.15;min-width:0}.kad-notif-delete{height:21px;min-width:54px;border:1px solid #f2b8b8;border-radius:8px;background:#fff0f0;color:#8f1a1a;font-size:9px;font-weight:950;cursor:pointer;flex:0 0 auto;padding:0 7px}.kad-notif-delete:hover{background:#fee2e2}.kad-notif-item-msg{font-size:11px;font-weight:800;color:#40586f;line-height:1.25;white-space:normal}.kad-notif-meta{margin-top:6px;font-size:9.5px;font-weight:850;color:#7b8fa3}.kad-notif-empty{padding:22px;text-align:center;color:#60778e;font-weight:900;font-size:12px;border:1px dashed #cbd9e6;border-radius:12px;background:#fff}\n'
       + '.kad-notif-toast{position:fixed;right:12px;top:50px;bottom:auto;z-index:2147482600;max-width:min(380px,calc(100vw - 28px));border:1px solid #f2b8b8;border-radius:14px;background:#fffafa;color:#10213d;box-shadow:0 18px 42px rgba(31,72,105,.24);padding:10px 12px;font:900 12px Calibri,Arial,sans-serif;display:none}.kad-notif-toast.show{display:block;animation:kadNotifIn .18s ease-out}.kad-notif-toast-title{color:#8f1a1a;font-weight:950;margin-bottom:3px}.kad-notif-toast-msg{font-size:11px;color:#40586f;line-height:1.25}\n'
       + '.kad-notif-inline-host{display:flex!important;align-items:center!important;gap:6px!important;flex-wrap:nowrap!important}\n'
@@ -549,7 +549,7 @@
 
     var panel = document.createElement('div');
     panel.className = 'kad-notif-panel';
-    panel.innerHTML = '<div class="kad-notif-head"><div><div class="kad-notif-title">Notificări</div></div><div class="kad-notif-actions"><button type="button" class="kad-notif-action" data-kad-notif-refresh>Refresh</button><button type="button" class="kad-notif-action primary" data-kad-notif-read>Marchează văzut</button></div></div><div class="kad-notif-list"><div class="kad-notif-empty">Se încarcă notificările...</div></div>';
+    panel.innerHTML = '<div class="kad-notif-head"><div><div class="kad-notif-title">Notificări</div></div><div class="kad-notif-actions"><button type="button" class="kad-notif-action" data-kad-notif-refresh>Refresh</button><button type="button" class="kad-notif-action primary" data-kad-notif-read>Marchează văzut</button><button type="button" class="kad-notif-action danger" data-kad-notif-delete-all>Șterge toate</button></div></div><div class="kad-notif-list"><div class="kad-notif-empty">Se încarcă notificările...</div></div>';
 
     var toast = document.createElement('div');
     toast.className = 'kad-notif-toast';
@@ -576,6 +576,7 @@
     bell.addEventListener('click', function(){ togglePanel(); });
     panel.querySelector('[data-kad-notif-refresh]').addEventListener('click', function(){ fetchNotifications(true); });
     panel.querySelector('[data-kad-notif-read]').addEventListener('click', function(){ markAllVisibleRead(); });
+    panel.querySelector('[data-kad-notif-delete-all]').addEventListener('click', function(){ deleteAllVisibleForMe(); });
     els.list.addEventListener('click', function(ev){
       var del = ev.target && ev.target.closest ? ev.target.closest('[data-kad-notif-delete]') : null;
       if (del){
@@ -631,7 +632,7 @@
       var meta = [pageNameFor(n.page_key || ''), formatDate(n.created_at || n.createdAt), actorNameForNotification(n)].filter(Boolean).join(' • ');
       var url = n.page_key ? (normKey(n.page_key) + '.html') : '';
       return '<div class="kad-notif-item ' + (unread ? 'unread' : '') + '" data-kad-notif-id="' + escapeHtml(id) + '">'
-        + '<div class="kad-notif-item-top"><div class="kad-notif-item-title">' + escapeHtml(n.title || 'Notificare K.A.D') + '</div><button type="button" class="kad-notif-delete" data-kad-notif-delete="' + escapeHtml(id) + '" title="Șterge notificarea doar pentru mine">Șterge</button></div>'
+        + '<div class="kad-notif-item-top"><div class="kad-notif-item-title">' + escapeHtml(n.title || 'Notificare K.A.D') + '</div></div>'
         + '<div class="kad-notif-item-msg">' + escapeHtml(messageForNotification(n)) + '</div>'
         + '<div class="kad-notif-meta">' + escapeHtml(meta) + (url ? ' • ' + escapeHtml(url) : '') + '</div>'
         + '</div>';
@@ -730,6 +731,30 @@
       renderList();
     }catch(e){
       try{ window.alert('Nu am putut șterge notificarea. Verifică dacă SQL-ul pentru deleted_at a fost rulat.'); }catch(_e){}
+    }
+  }
+
+  async function deleteAllVisibleForMe(){
+    if (!currentEmail) await getUser();
+    var sb = getClient();
+    if (!sb || !currentEmail) return;
+    var ids = (allNotifications || []).map(function(n){ return normText(n && n.id); }).filter(Boolean);
+    if (!ids.length) return;
+    var ok = true;
+    try{
+      ok = window.confirm('Ștergi toate notificările afișate pentru contul tău? Ele rămân în istoric pentru audit.');
+    }catch(_e){ ok = true; }
+    if (!ok) return;
+    var ts = nowIso();
+    var rows = ids.map(function(id){ return { notification_id:id, user_email:currentEmail, read_at:ts, deleted_at:ts }; });
+    try{
+      var res = await sb.from(READS_TABLE).upsert(rows, { onConflict:'notification_id,user_email' });
+      if (res && res.error) throw res.error;
+      unreadIds.clear();
+      allNotifications = [];
+      renderList();
+    }catch(e){
+      try{ window.alert('Nu am putut șterge toate notificările. Verifică dacă SQL-ul pentru deleted_at a fost rulat.'); }catch(_e){}
     }
   }
   async function createNotification(input, options){
@@ -833,6 +858,7 @@
     markAllRead:markAllVisibleRead,
     markRead:markOneRead,
     deleteForMe:deleteNotificationForMe,
+    deleteAllForMe:deleteAllVisibleForMe,
     notify:createNotification,
     captureMutation:captureMutation,
     refreshDisplayName:function(){ return resolveCurrentDisplayName(true); },
