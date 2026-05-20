@@ -18,6 +18,7 @@
     { page_key: 'helper', page_name: 'Helper' },
     { page_key: 'helper-data', page_name: 'Helper Data' },
     { page_key: 'helper-acl', page_name: 'Helper ACL' },
+    { page_key: 'mapare-nume-notificari', page_name: 'Mapare nume notificări' },
     { page_key: 'numeralkod', page_name: 'Numeral KOD' },
     { page_key: 'intrari-otel', page_name: 'Intrări Oțel' },
     { page_key: 'debitate', page_name: 'Debitate' },
@@ -4061,7 +4062,7 @@ async function applyDomPermissions(pageKey, root, options) {
     if (document.getElementById('kadNotificationsScript')) return;
     var script = document.createElement('script');
     script.id = 'kadNotificationsScript';
-    script.src = './kad-notifications.js?v=20260520-global';
+    script.src = './kad-notifications.js?v=20260520-map-admin';
     script.defer = true;
     document.head.appendChild(script);
   }
