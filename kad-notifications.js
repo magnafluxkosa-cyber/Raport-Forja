@@ -6,6 +6,7 @@
 
   var NOTIF_TABLE = 'kad_notifications';
   var READS_TABLE = 'kad_notification_reads';
+  var ACTOR_MAP_TABLE = 'kad_actor_name_map';
   var REFRESH_MIN_MS = 15000;
   var LIST_LIMIT = 80;
   var realtimeChannel = null;
@@ -13,6 +14,8 @@
   var currentUser = null;
   var currentEmail = '';
   var currentDisplayName = '';
+  var currentActorNameOverride = '';
+  var currentActorPin = '';
   var displayNameCache = {};
   var initialized = false;
   var uiReady = false;
@@ -122,7 +125,7 @@
     else if (method === 'upsert') actionWord = 'salvat/modificat date';
     else if (method === 'delete') actionWord = 'șters date';
 
-    var actor = currentUserName();
+    var actor = normText(ctx.actor_name) || currentUserName();
     var title = 'Modificare în ' + pageName;
     if (method === 'insert') title = 'Date noi în ' + pageName;
     if (method === 'delete') title = 'Ștergere în ' + pageName;
@@ -168,18 +171,86 @@
     var meta = currentUser && (currentUser.user_metadata || currentUser.raw_user_meta_data || {});
     return normText(meta && (meta.full_name || meta.name || meta.display_name));
   }
+  function readStorageValue(keys){
+    keys = keys || [];
+    for (var i=0;i<keys.length;i++){
+      var key = keys[i];
+      try{
+        var v = window.sessionStorage && window.sessionStorage.getItem(key);
+        if (normText(v)) return normText(v);
+      }catch(_e){}
+      try{
+        var v2 = window.localStorage && window.localStorage.getItem(key);
+        if (normText(v2)) return normText(v2);
+      }catch(_e){}
+    }
+    return '';
+  }
+  function storedActorName(){
+    return readStorageValue([
+      'kad_actor_name','kad_current_actor_name','kad_operator_name','kad_current_operator_name',
+      'rf_operator_name','operator_name','operatorName','currentOperatorName','nume_operator','numeOperator'
+    ]);
+  }
+  function storedActorPin(){
+    return readStorageValue([
+      'kad_actor_pin','kad_current_actor_pin','kad_operator_pin','kad_current_operator_pin',
+      'rf_operator_pin','operator_pin','operatorPin','currentOperatorPin','pin_operator','pinOperator'
+    ]);
+  }
   function currentUserName(){
+    if (currentActorNameOverride) return currentActorNameOverride;
+    var storedName = storedActorName();
+    if (storedName && !looksLikeEmail(storedName)) return storedName;
     if (currentDisplayName) return currentDisplayName;
     var metaName = currentUserMetadataName();
     if (metaName && !looksLikeEmail(metaName)) return metaName;
     return sanitizeDisplayName('', currentEmail);
   }
+  async function resolveActorNameFromMap(email, pin){
+    var sb = getClient();
+    email = normText(email || currentEmail).toLowerCase();
+    pin = normText(pin || '');
+    if (!sb) return '';
+    try{
+      if (typeof sb.rpc === 'function'){
+        var rpc = await sb.rpc('kad_resolve_actor_name', { p_email: email || null, p_pin: pin || null });
+        if (!rpc.error && normText(rpc.data)) return sanitizeDisplayName(rpc.data, email);
+      }
+    }catch(_e){}
+    try{
+      if (pin){
+        // Fallback doar dacă tabela permite SELECT. Recomandat este RPC-ul security definer de mai sus.
+        var pinRes = await sb.from(ACTOR_MAP_TABLE).select('display_name').eq('actor_type','pin').eq('is_active', true).eq('pin_code', pin).limit(1).maybeSingle();
+        if (!pinRes.error && pinRes.data && normText(pinRes.data.display_name)) return sanitizeDisplayName(pinRes.data.display_name, email);
+      }
+    }catch(_e){}
+    try{
+      if (email){
+        var mailRes = await sb.from(ACTOR_MAP_TABLE).select('display_name').eq('actor_type','account').eq('is_active', true).ilike('email', email).limit(1).maybeSingle();
+        if (!mailRes.error && mailRes.data && normText(mailRes.data.display_name)) return sanitizeDisplayName(mailRes.data.display_name, email);
+      }
+    }catch(_e){}
+    return '';
+  }
   async function resolveCurrentDisplayName(force){
     if (!currentEmail) await getUser();
-    if (!currentEmail) return 'Utilizator';
-    if (!force && displayNameCache[currentEmail]){
-      currentDisplayName = displayNameCache[currentEmail];
+    var explicitName = currentActorNameOverride || storedActorName();
+    if (explicitName && !looksLikeEmail(explicitName)){
+      currentDisplayName = explicitName;
       return currentDisplayName;
+    }
+    var pin = currentActorPin || storedActorPin();
+    var cacheKey = (currentEmail || '') + '|' + (pin ? 'pin:' + pin : 'account');
+    if (!force && displayNameCache[cacheKey]){
+      currentDisplayName = displayNameCache[cacheKey];
+      return currentDisplayName;
+    }
+    var mapped = await resolveActorNameFromMap(currentEmail, pin);
+    if (mapped){
+      currentDisplayName = mapped;
+      displayNameCache[cacheKey] = mapped;
+      return mapped;
     }
     var metaName = currentUserMetadataName();
     var name = sanitizeDisplayName(metaName, currentEmail);
@@ -188,18 +259,13 @@
       try{
         var q = sb.from('profiles').select('display_name,email,user_id').limit(1);
         if (currentUser && currentUser.id) q = q.eq('user_id', currentUser.id);
-        else q = q.ilike('email', currentEmail);
+        else if (currentEmail) q = q.ilike('email', currentEmail);
         var res = await q.maybeSingle();
-        if (!res.error && res.data){
-          name = sanitizeDisplayName(res.data.display_name, currentEmail);
-        }else if (currentEmail){
-          var res2 = await sb.from('profiles').select('display_name,email').ilike('email', currentEmail).limit(1).maybeSingle();
-          if (!res2.error && res2.data) name = sanitizeDisplayName(res2.data.display_name, currentEmail);
-        }
+        if (!res.error && res.data) name = sanitizeDisplayName(res.data.display_name, currentEmail);
       }catch(_e){}
     }
     currentDisplayName = name;
-    displayNameCache[currentEmail] = name;
+    displayNameCache[cacheKey] = name;
     return name;
   }
   function actorNameForNotification(n){
@@ -216,6 +282,57 @@
     var name = actorNameForNotification(n);
     if (msg && email && name && msg.indexOf(email) >= 0) msg = msg.split(email).join(name);
     return msg;
+  }
+  function findValueInPayload(payload, keyMatchers){
+    keyMatchers = keyMatchers || [];
+    if (!payload) return '';
+    if (Array.isArray(payload)){
+      for (var i=0;i<payload.length;i++){
+        var hit = findValueInPayload(payload[i], keyMatchers);
+        if (hit) return hit;
+      }
+      return '';
+    }
+    if (typeof payload !== 'object') return '';
+    var keys = Object.keys(payload);
+    for (var k=0;k<keys.length;k++){
+      var key = normKey(keys[k]);
+      var val = payload[keys[k]];
+      for (var m=0;m<keyMatchers.length;m++){
+        if (keyMatchers[m](key, val)) return normText(val);
+      }
+    }
+    for (var j=0;j<keys.length;j++){
+      var nested = payload[keys[j]];
+      if (nested && typeof nested === 'object'){
+        var nestedHit = findValueInPayload(nested, keyMatchers);
+        if (nestedHit) return nestedHit;
+      }
+    }
+    return '';
+  }
+  function extractActorNameFromPayload(payload){
+    return findValueInPayload(payload, [
+      function(key,val){ return /^(operator|operator-name|nume-operator|nume-operatori|autor|created-by-name|modified-by-name|responsabil|utilizator)$/.test(key) && normText(val) && !looksLikeEmail(val); }
+    ]);
+  }
+  function extractActorPinFromPayload(payload){
+    return findValueInPayload(payload, [
+      function(key,val){ return /^(pin|operator-pin|pin-operator|cod-pin|operator-code|cod-operator)$/.test(key) && normText(val); }
+    ]);
+  }
+  async function resolveActorNameFromContext(ctx){
+    ctx = ctx || {};
+    var explicit = normText(ctx.actor_name || ctx.created_by_name || ctx.modified_by_name || '');
+    if (explicit && !looksLikeEmail(explicit)) return explicit;
+    var payloadName = extractActorNameFromPayload(ctx.payload);
+    if (payloadName && !looksLikeEmail(payloadName)) return payloadName;
+    var pin = normText(ctx.actor_pin || extractActorPinFromPayload(ctx.payload) || currentActorPin || storedActorPin());
+    if (pin){
+      var mappedPin = await resolveActorNameFromMap(currentEmail, pin);
+      if (mappedPin) return mappedPin;
+    }
+    return currentUserName();
   }
   function shouldSkipMutation(ctx){
     ctx = ctx || {};
@@ -472,16 +589,18 @@
     if (!currentEmail) await getUser();
     await resolveCurrentDisplayName(false);
     var n = Object.assign({}, input || {});
+    var explicitActor = normText(n.actor_name || n.created_by_name || '');
+    if (!explicitActor && n.actor_pin) explicitActor = await resolveActorNameFromMap(currentEmail, n.actor_pin);
     n.page_key = normKey(n.page_key || pageFromLocation());
     n.page_name = normText(n.page_name) || pageNameFor(n.page_key);
     n.category = normText(n.category) || 'general';
     n.type = normText(n.type) || 'save';
     n.title = normText(n.title) || ('Modificare în ' + n.page_name);
-    n.message = normText(n.message) || (currentUserName() + ' a salvat date în ' + n.page_name + '.');
+    n.message = normText(n.message) || ((explicitActor || currentUserName()) + ' a salvat date în ' + n.page_name + '.');
     n.details = n.details && typeof n.details === 'object' ? n.details : (n.details ? { text:String(n.details) } : {});
     n.entity_key = normText(n.entity_key || n.source_doc_key || '');
     n.created_by_email = currentEmail || null;
-    n.created_by_name = currentUserName();
+    n.created_by_name = sanitizeDisplayName(explicitActor || currentUserName(), currentEmail);
     n.created_at = nowIso();
     if (!n.source_table) n.source_table = normText(n.details && n.details.source_table) || null;
     if (!n.source_doc_key) n.source_doc_key = normText(n.details && n.details.source_doc_key) || null;
@@ -500,6 +619,8 @@
     await getUser();
     if (!currentEmail) return;
     await resolveCurrentDisplayName(false);
+    ctx = ctx || {};
+    ctx.actor_name = await resolveActorNameFromContext(ctx);
     var n = inferNotificationFromMutation(ctx || {});
     if (!n.page_key) return;
     if (isDuplicateAuto(n)) return;
@@ -563,7 +684,23 @@
     markRead:markOneRead,
     notify:createNotification,
     captureMutation:captureMutation,
-    refreshDisplayName:function(){ return resolveCurrentDisplayName(true); }
+    refreshDisplayName:function(){ return resolveCurrentDisplayName(true); },
+    setActorName:function(name, persist){
+      currentActorNameOverride = sanitizeDisplayName(name, currentEmail);
+      currentDisplayName = currentActorNameOverride;
+      try{ (persist === true ? window.localStorage : window.sessionStorage).setItem('kad_actor_name', currentActorNameOverride); }catch(_e){}
+      return currentActorNameOverride;
+    },
+    setActorPin:function(pin, persist){
+      currentActorPin = normText(pin);
+      try{ (persist === true ? window.localStorage : window.sessionStorage).setItem('kad_actor_pin', currentActorPin); }catch(_e){}
+      return resolveCurrentDisplayName(true);
+    },
+    clearActor:function(){
+      currentActorNameOverride = ''; currentActorPin = ''; currentDisplayName = '';
+      try{ window.sessionStorage.removeItem('kad_actor_name'); window.sessionStorage.removeItem('kad_actor_pin'); }catch(_e){}
+      try{ window.localStorage.removeItem('kad_actor_name'); window.localStorage.removeItem('kad_actor_pin'); }catch(_e){}
+    }
   };
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init, { once:true });
