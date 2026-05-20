@@ -3741,3 +3741,208 @@ async function applyDomPermissions(pageKey, root, options) {
     startDashboardBackButton();
   }
 })();
+
+/* GLOBAL IDLE AUTO-LOGOUT */
+(function(window, document){
+  'use strict';
+
+  var IDLE_TIMEOUT_MS = 20 * 60 * 1000;
+  var CHECK_INTERVAL_MS = 15 * 1000;
+  var ACTIVITY_THROTTLE_MS = 1500;
+  var LAST_ACTIVITY_KEY = 'rf_idle_last_activity_at';
+  var LOGOUT_EVENT_KEY = 'rf_idle_logout_event_at';
+  var LOGIN_PAGE = 'login.html';
+  var EXCLUDED_PAGES = {
+    'login': true,
+    'access-gate': true
+  };
+
+  var started = false;
+  var loggingOut = false;
+  var activityTimer = null;
+  var checkTimer = null;
+  var lastActivityWriteAt = 0;
+
+  function now(){ return Date.now ? Date.now() : new Date().getTime(); }
+
+  function pageKey(){
+    try{
+      var name = String(window.location.pathname || '').split('/').pop() || 'index.html';
+      return String(name || 'index.html').split('?')[0].split('#')[0].replace(/\.html$/i, '').toLowerCase() || 'index';
+    }catch(_){ return 'index'; }
+  }
+
+  function currentFileName(){
+    try{
+      return String(window.location.pathname || '').split('/').pop() || 'index.html';
+    }catch(_){ return 'index.html'; }
+  }
+
+  function safeGet(store, key){ try{ return store.getItem(key); }catch(_){ return null; } }
+  function safeSet(store, key, value){ try{ store.setItem(key, value); }catch(_){} }
+  function safeRemove(store, key){ try{ store.removeItem(key); }catch(_){} }
+
+  function readNumber(key){
+    var raw = safeGet(window.localStorage, key) || safeGet(window.sessionStorage, key) || '';
+    var value = Number(raw || 0);
+    return Number.isFinite(value) ? value : 0;
+  }
+
+  function hasAuthToken(){
+    try{
+      if(safeGet(window.localStorage, 'rf_user_id') || safeGet(window.localStorage, 'rf_user_email')) return true;
+      if(safeGet(window.sessionStorage, 'rf_user_id') || safeGet(window.sessionStorage, 'rf_user_email')) return true;
+      if(safeGet(window.localStorage, 'rf_uid') || safeGet(window.localStorage, 'rf_email')) return true;
+      if(safeGet(window.sessionStorage, 'rf_uid') || safeGet(window.sessionStorage, 'rf_email')) return true;
+    }catch(_){}
+
+    try{
+      var stores = [window.localStorage, window.sessionStorage];
+      for(var s = 0; s < stores.length; s += 1){
+        var store = stores[s];
+        for(var i = 0; i < store.length; i += 1){
+          var key = store.key(i) || '';
+          if(key.indexOf('sb-') !== 0 || key.indexOf('-auth-token') === -1) continue;
+          var raw = safeGet(store, key);
+          if(raw && raw !== 'null' && raw !== 'undefined') return true;
+        }
+      }
+    }catch(_){}
+    return false;
+  }
+
+  function clearLocalAuthState(){
+    ['rf_user_id','rf_user_email','rf_user_role','rf_login_at','rf_uid','rf_email','rf_role','rf_login_ts','rf_force_stay_on_login','rf_acl_denied_message'].forEach(function(key){
+      safeRemove(window.localStorage, key);
+      safeRemove(window.sessionStorage, key);
+    });
+  }
+
+  function buildLoginUrl(){
+    var url = new URL(LOGIN_PAGE, window.location.href);
+    url.searchParams.set('reason', 'idle');
+    url.searchParams.set('next', currentFileName());
+    url.searchParams.set('t', String(now()));
+    return url.toString();
+  }
+
+  function redirectToLogin(){
+    var target = buildLoginUrl();
+    try{ window.location.replace(target); }
+    catch(_){ window.location.href = target; }
+  }
+
+  function rememberActivity(force){
+    var t = now();
+    if(!force && t - lastActivityWriteAt < ACTIVITY_THROTTLE_MS) return;
+    lastActivityWriteAt = t;
+    safeSet(window.localStorage, LAST_ACTIVITY_KEY, String(t));
+    safeSet(window.sessionStorage, LAST_ACTIVITY_KEY, String(t));
+  }
+
+  function getLastActivity(){
+    return readNumber(LAST_ACTIVITY_KEY);
+  }
+
+  function shouldLogout(){
+    if(!hasAuthToken()) return false;
+    var last = getLastActivity();
+    if(!last){
+      rememberActivity(true);
+      return false;
+    }
+    return now() - last >= IDLE_TIMEOUT_MS;
+  }
+
+  function getSupabaseClientForLogout(){
+    try{
+      if(window.ERPAuth && typeof window.ERPAuth.getSupabaseClient === 'function') return window.ERPAuth.getSupabaseClient();
+    }catch(_){}
+    try{
+      if(window.createRfSupabaseClient && typeof window.createRfSupabaseClient === 'function') return window.createRfSupabaseClient();
+    }catch(_){}
+    try{
+      if(window.supabase && typeof window.supabase.createClient === 'function'){
+        var cfg = window.RF_CONFIG || window.ERP_FORJA_CONFIG || window.__ERP_FORJA_CONFIG__ || {};
+        var url = String(cfg.SUPABASE_URL || cfg.supabaseUrl || window.RF_SUPABASE_URL || '').trim();
+        var key = String(cfg.SUPABASE_ANON_KEY || cfg.supabaseAnonKey || window.RF_SUPABASE_ANON_KEY || '').trim();
+        if(url && key) return window.supabase.createClient(url, key, { auth:{ persistSession:true, autoRefreshToken:true, detectSessionInUrl:true } });
+      }
+    }catch(_){}
+    return null;
+  }
+
+  async function performIdleLogout(){
+    if(loggingOut) return;
+    loggingOut = true;
+    safeSet(window.localStorage, LOGOUT_EVENT_KEY, String(now()));
+    safeRemove(window.localStorage, LAST_ACTIVITY_KEY);
+    safeRemove(window.sessionStorage, LAST_ACTIVITY_KEY);
+
+    try{
+      if(window.ERPAuth && typeof window.ERPAuth.signOut === 'function'){
+        await window.ERPAuth.signOut({ redirectTo: buildLoginUrl() });
+        return;
+      }
+    }catch(_){}
+
+    try{
+      var sb = getSupabaseClientForLogout();
+      if(sb && sb.auth && typeof sb.auth.signOut === 'function') await sb.auth.signOut();
+    }catch(_){}
+
+    clearLocalAuthState();
+    redirectToLogin();
+  }
+
+  function checkIdle(){
+    if(EXCLUDED_PAGES[pageKey()]) return;
+    if(shouldLogout()) performIdleLogout();
+  }
+
+  function onActivity(){
+    if(loggingOut || EXCLUDED_PAGES[pageKey()]) return;
+    if(shouldLogout()){
+      performIdleLogout();
+      return;
+    }
+    rememberActivity(false);
+  }
+
+  function onStorage(event){
+    if(!event) return;
+    if(event.key === LOGOUT_EVENT_KEY && event.newValue){
+      performIdleLogout();
+    }
+  }
+
+  function start(){
+    if(started || EXCLUDED_PAGES[pageKey()]) return;
+    started = true;
+    if(!getLastActivity()) rememberActivity(true);
+
+    ['mousedown','mousemove','keydown','wheel','scroll','touchstart','pointerdown'].forEach(function(type){
+      window.addEventListener(type, onActivity, { passive:true, capture:true });
+    });
+    window.addEventListener('focus', onActivity);
+    window.addEventListener('pageshow', onActivity);
+    window.addEventListener('storage', onStorage);
+    document.addEventListener('visibilitychange', function(){ if(document.hidden !== true) onActivity(); });
+
+    checkTimer = window.setInterval(checkIdle, CHECK_INTERVAL_MS);
+    activityTimer = window.setInterval(function(){
+      if(document.hidden !== true) checkIdle();
+    }, CHECK_INTERVAL_MS);
+    checkIdle();
+  }
+
+  window.RF_IDLE_LOGOUT = {
+    timeoutMs: IDLE_TIMEOUT_MS,
+    reset: function(){ rememberActivity(true); },
+    check: checkIdle,
+    logoutNow: performIdleLogout
+  };
+
+  if(document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start, { once:true });
+  else start();
+})(window, document);
