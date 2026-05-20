@@ -430,15 +430,92 @@
     var style = document.createElement('style');
     style.id = 'kadNotificationsStyle';
     style.textContent = '\n'
-      + '.kad-notif-bell{position:fixed;right:18px;bottom:18px;top:auto;z-index:2147482500;display:flex;align-items:center;gap:6px;height:32px;min-width:38px;padding:0 10px;border-radius:999px;border:1px solid #b7c8d7;background:#ffffff;color:#10213d;box-shadow:0 8px 22px rgba(31,72,105,.18);font:900 12px Calibri,Arial,sans-serif;cursor:pointer}\n'
+      + '.kad-notif-bell{position:fixed;right:12px;top:10px;bottom:auto;z-index:2147482500;display:flex;align-items:center;justify-content:center;gap:6px;height:32px;min-width:38px;padding:0 10px;border-radius:999px;border:1px solid #b7c8d7;background:#ffffff;color:#10213d;box-shadow:0 8px 22px rgba(31,72,105,.18);font:900 12px Calibri,Arial,sans-serif;cursor:pointer;box-sizing:border-box;white-space:nowrap}\n'
+      + '.kad-notif-bell.kad-notif-inline{position:relative!important;right:auto!important;top:auto!important;bottom:auto!important;z-index:50;flex:0 0 auto;margin-left:6px;box-shadow:0 2px 7px rgba(31,72,105,.12)}\n'
       + '.kad-notif-bell:hover{background:#eef7ff}.kad-notif-bell.has-new{background:#fff0f0;border-color:#f2b8b8;color:#8f1a1a}.kad-notif-bell-icon{font-size:15px;line-height:1}.kad-notif-bell-count{display:none;min-width:18px;height:18px;padding:0 5px;border-radius:999px;background:#dc2626;color:#fff;font-size:10px;line-height:18px;text-align:center}.kad-notif-bell.has-new .kad-notif-bell-count{display:inline-block}\n'
-      + '.kad-notif-panel{position:fixed;right:18px;bottom:62px;top:auto;width:min(420px,calc(100vw - 28px));max-height:min(620px,calc(100vh - 90px));z-index:2147482501;display:none;flex-direction:column;overflow:hidden;border:1px solid #b7c8d7;border-radius:16px;background:#fff;box-shadow:0 22px 54px rgba(31,72,105,.28);font-family:Calibri,Arial,sans-serif;color:#10213d}.kad-notif-panel.open{display:flex}\n'
+      + '.kad-notif-panel{position:fixed;right:12px;top:50px;bottom:auto;width:min(420px,calc(100vw - 28px));max-height:min(620px,calc(100vh - 72px));z-index:2147482501;display:none;flex-direction:column;overflow:hidden;border:1px solid #b7c8d7;border-radius:16px;background:#fff;box-shadow:0 22px 54px rgba(31,72,105,.28);font-family:Calibri,Arial,sans-serif;color:#10213d}.kad-notif-panel.open{display:flex}\n'
       + '.kad-notif-head{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:10px 12px;background:linear-gradient(180deg,#eef7ff,#e4f0fb);border-bottom:1px solid #c8d8e6}.kad-notif-title{font-size:13px;font-weight:950;text-transform:uppercase}.kad-notif-actions{display:flex;align-items:center;gap:6px}.kad-notif-action{height:24px;border:1px solid #b7c8d7;border-radius:8px;background:#fff;color:#244967;font-size:10px;font-weight:900;cursor:pointer}.kad-notif-action.primary{background:#2f6fa9;color:#fff;border-color:#285f91}.kad-notif-action:hover{filter:brightness(.98)}\n'
       + '.kad-notif-list{overflow:auto;max-height:540px;background:#f7fbff;padding:8px}.kad-notif-item{border:1px solid #d6e3ef;border-radius:12px;background:#fff;margin:0 0 8px 0;padding:9px 10px;box-shadow:0 3px 10px rgba(31,72,105,.07)}.kad-notif-item.unread{border-color:#f2b8b8;background:#fffafa;box-shadow:inset 3px 0 0 #dc2626,0 3px 10px rgba(31,72,105,.07)}.kad-notif-item-title{font-size:12px;font-weight:950;color:#071b2f;margin-bottom:3px}.kad-notif-item-msg{font-size:11px;font-weight:800;color:#40586f;line-height:1.25;white-space:normal}.kad-notif-meta{margin-top:6px;font-size:9.5px;font-weight:850;color:#7b8fa3}.kad-notif-empty{padding:22px;text-align:center;color:#60778e;font-weight:900;font-size:12px;border:1px dashed #cbd9e6;border-radius:12px;background:#fff}\n'
-      + '.kad-notif-toast{position:fixed;right:18px;bottom:62px;top:auto;z-index:2147482600;max-width:min(380px,calc(100vw - 28px));border:1px solid #f2b8b8;border-radius:14px;background:#fffafa;color:#10213d;box-shadow:0 18px 42px rgba(31,72,105,.24);padding:10px 12px;font:900 12px Calibri,Arial,sans-serif;display:none}.kad-notif-toast.show{display:block;animation:kadNotifIn .18s ease-out}.kad-notif-toast-title{color:#8f1a1a;font-weight:950;margin-bottom:3px}.kad-notif-toast-msg{font-size:11px;color:#40586f;line-height:1.25}\n'
+      + '.kad-notif-toast{position:fixed;right:12px;top:50px;bottom:auto;z-index:2147482600;max-width:min(380px,calc(100vw - 28px));border:1px solid #f2b8b8;border-radius:14px;background:#fffafa;color:#10213d;box-shadow:0 18px 42px rgba(31,72,105,.24);padding:10px 12px;font:900 12px Calibri,Arial,sans-serif;display:none}.kad-notif-toast.show{display:block;animation:kadNotifIn .18s ease-out}.kad-notif-toast-title{color:#8f1a1a;font-weight:950;margin-bottom:3px}.kad-notif-toast-msg{font-size:11px;color:#40586f;line-height:1.25}\n'
+      + '.kad-notif-inline-host{display:flex!important;align-items:center!important;gap:6px!important;flex-wrap:nowrap!important}\n'
       + '@keyframes kadNotifIn{from{opacity:0;transform:translateY(-8px)}to{opacity:1;transform:translateY(0)}}\n'
-      + '@media(max-width:700px){.kad-notif-bell{right:8px;bottom:8px;top:auto;height:30px}.kad-notif-panel{right:8px;bottom:46px;top:auto;width:calc(100vw - 16px);max-height:calc(100vh - 62px)}.kad-notif-toast{right:8px;bottom:46px;top:auto}}\n';
+      + '@media(max-width:700px){.kad-notif-bell{right:8px;top:8px;height:30px}.kad-notif-panel{right:8px;top:46px;width:calc(100vw - 16px);max-height:calc(100vh - 62px)}.kad-notif-toast{right:8px;top:46px}}\n';
     document.head.appendChild(style);
+  }
+  function isVisibleBox(el){
+    if (!el || !el.getBoundingClientRect) return false;
+    var r = el.getBoundingClientRect();
+    if (r.width < 20 || r.height < 18) return false;
+    var st = window.getComputedStyle ? window.getComputedStyle(el) : null;
+    if (st && (st.display === 'none' || st.visibility === 'hidden' || Number(st.opacity || 1) === 0)) return false;
+    return true;
+  }
+  function findNotificationInlineHost(){
+    var selectors = [
+      '.top-actions', '.header-actions', '.page-actions', '.toolbar-actions', '.action-buttons',
+      '.controls .actions', '.controls', '.topbar', '.toolbar', '.page-toolbar', '.header', 'header',
+      '.kad-shell-header', '.kad-shell-topbar', '.kad-shell-toolbar', '.kad-nav-header'
+    ];
+    for (var i=0;i<selectors.length;i++){
+      var list = Array.prototype.slice.call(document.querySelectorAll(selectors[i]));
+      for (var j=0;j<list.length;j++){
+        var host = list[j];
+        if (!host || host.closest('.kad-notif-panel') || host.closest('.kad-notif-toast')) continue;
+        if (!isVisibleBox(host)) continue;
+        var r = host.getBoundingClientRect();
+        if (r.top < -4 || r.top > 130 || r.width < 160) continue;
+        return host;
+      }
+    }
+    return null;
+  }
+  function rectsOverlap(a,b){
+    return !!(a && b && a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top);
+  }
+  function placeFloatingBellSafely(){
+    if (!els.bell || els.bell.classList.contains('kad-notif-inline')) return;
+    var bell = els.bell;
+    var vw = Math.max(document.documentElement.clientWidth || 0, window.innerWidth || 0);
+    var right = 12;
+    var top = 10;
+    bell.style.right = right + 'px';
+    bell.style.top = top + 'px';
+    var selectors = 'button,a,input,select,textarea,[role="button"],.ghost-btn,.back-btn,.btn,.button';
+    for (var pass=0; pass<12; pass++){
+      var b = bell.getBoundingClientRect();
+      var hit = null;
+      var candidates = Array.prototype.slice.call(document.querySelectorAll(selectors));
+      for (var i=0;i<candidates.length;i++){
+        var el = candidates[i];
+        if (el === bell || bell.contains(el) || (els.panel && els.panel.contains(el)) || (els.toast && els.toast.contains(el))) continue;
+        if (!isVisibleBox(el)) continue;
+        var r = el.getBoundingClientRect();
+        if (r.top > 120 || r.bottom < 0) continue;
+        if (rectsOverlap(b, r)){ hit = r; break; }
+      }
+      if (!hit) break;
+      right = Math.max(right + 1, vw - hit.left + 8);
+      if (right > vw - 54){
+        right = 12;
+        top = Math.min(86, Math.max(44, hit.bottom + 8));
+      }
+      bell.style.right = right + 'px';
+      bell.style.top = top + 'px';
+    }
+    if (els.panel){ els.panel.style.right = right + 'px'; els.panel.style.top = (top + 40) + 'px'; }
+    if (els.toast){ els.toast.style.right = right + 'px'; els.toast.style.top = (top + 40) + 'px'; }
+  }
+  function dockNotificationBell(){
+    if (!els.bell) return;
+    var host = findNotificationInlineHost();
+    if (host){
+      host.classList.add('kad-notif-inline-host');
+      els.bell.classList.add('kad-notif-inline');
+      try{ host.appendChild(els.bell); }catch(_e){}
+      return;
+    }
+    els.bell.classList.remove('kad-notif-inline');
+    placeFloatingBellSafely();
   }
   function buildUi(){
     if (uiReady || isExcludedPage()) return;
@@ -470,6 +547,10 @@
     els.toastTitle = toast.querySelector('.kad-notif-toast-title');
     els.toastMsg = toast.querySelector('.kad-notif-toast-msg');
     uiReady = true;
+    dockNotificationBell();
+    window.setTimeout(dockNotificationBell, 250);
+    window.setTimeout(dockNotificationBell, 1000);
+    window.addEventListener('resize', function(){ window.setTimeout(dockNotificationBell, 50); });
 
     bell.addEventListener('click', function(){ togglePanel(); });
     panel.querySelector('[data-kad-notif-refresh]').addEventListener('click', function(){ fetchNotifications(true); });
