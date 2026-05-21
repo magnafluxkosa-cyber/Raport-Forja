@@ -1,4 +1,4 @@
-/* K.A.D global notifications - live, creat doar la salvare/modificare. FIX delete fallback local v2 */
+/* K.A.D global notifications - live, creat doar la salvare/modificare. */
 (function(window, document){
   'use strict';
   if (window.__KAD_NOTIFICATIONS_READY__) return;
@@ -30,35 +30,6 @@
   var AUTO_PAGE_COOLDOWN_MS = 60000;
   var isOpen = false;
   var els = {};
-
-  function localDeletedStorageKey(){
-    return 'kad_notification_deleted_ids:' + String(currentEmail || 'local').toLowerCase();
-  }
-  function readLocalDeletedIds(){
-    try{
-      var raw = window.localStorage && window.localStorage.getItem(localDeletedStorageKey());
-      var arr = raw ? JSON.parse(raw) : [];
-      return new Set(Array.isArray(arr) ? arr.map(normText).filter(Boolean) : []);
-    }catch(_e){ return new Set(); }
-  }
-  function writeLocalDeletedIds(set){
-    try{
-      var arr = Array.from(set || []).map(normText).filter(Boolean).slice(-2000);
-      if (window.localStorage) window.localStorage.setItem(localDeletedStorageKey(), JSON.stringify(arr));
-    }catch(_e){}
-  }
-  function addLocalDeletedIds(ids){
-    var set = readLocalDeletedIds();
-    (ids || []).forEach(function(id){ id = normText(id); if (id) set.add(id); });
-    writeLocalDeletedIds(set);
-    return set;
-  }
-  function removeDeletedFromUi(ids){
-    var del = new Set((ids || []).map(normText).filter(Boolean));
-    del.forEach(function(id){ unreadIds.delete(id); });
-    allNotifications = (allNotifications || []).filter(function(n){ return !del.has(normText(n.id)); });
-    renderList();
-  }
 
   function normText(v){ return String(v == null ? '' : v).replace(/\s+/g, ' ').trim(); }
   function normKey(v){
@@ -932,8 +903,33 @@
     window.clearTimeout(showToast._t);
     showToast._t = window.setTimeout(function(){ if(els.toast) els.toast.classList.remove('show'); }, 6500);
   }
+  function localDeletedStorageKey(){
+    return 'kad_notifications_deleted_local:' + (currentEmail || 'anonymous');
+  }
+  function getLocalDeletedIds(){
+    try{
+      var raw = window.localStorage && window.localStorage.getItem(localDeletedStorageKey());
+      var arr = raw ? JSON.parse(raw) : [];
+      if (!Array.isArray(arr)) arr = [];
+      return new Set(arr.map(function(x){ return normText(x); }).filter(Boolean));
+    }catch(_e){ return new Set(); }
+  }
+  function saveLocalDeletedIds(set){
+    try{
+      var arr = Array.from(set || []).filter(Boolean).slice(-1000);
+      if (window.localStorage) window.localStorage.setItem(localDeletedStorageKey(), JSON.stringify(arr));
+    }catch(_e){}
+  }
+  function addLocalDeletedIds(ids){
+    var set = getLocalDeletedIds();
+    (ids || []).forEach(function(id){ id = normText(id); if (id) set.add(id); });
+    saveLocalDeletedIds(set);
+    return set;
+  }
+
   async function fetchReadStates(ids){
-    var empty = { read:new Set(), deleted:new Set() };
+    var localDeleted = getLocalDeletedIds();
+    var empty = { read:new Set(), deleted:new Set(Array.from(localDeleted)) };
     if (!ids.length || !currentEmail) return empty;
     var sb = getClient();
     if (!sb) return empty;
@@ -941,7 +937,7 @@
       var res = await sb.from(READS_TABLE).select('notification_id,read_at,deleted_at').eq('user_email', currentEmail).in('notification_id', ids);
       if (res.error) throw res.error;
       var read = new Set();
-      var deleted = new Set();
+      var deleted = new Set(Array.from(localDeleted));
       (res.data || []).forEach(function(row){
         var id = normText(row.notification_id);
         if (!id) return;
@@ -955,7 +951,7 @@
         if (fallback.error) return empty;
         return {
           read:new Set((fallback.data || []).map(function(row){ return normText(row.notification_id); }).filter(Boolean)),
-          deleted:new Set()
+          deleted:new Set(Array.from(localDeleted))
         };
       }catch(_e2){ return empty; }
     }
@@ -968,11 +964,15 @@
     if (!force && t - lastFetchAt < REFRESH_MIN_MS) return;
     lastFetchAt = t;
     try{
-      var res = await sb.from(NOTIF_TABLE).select('id,page_key,page_name,category,type,title,message,details,entity_key,created_by_email,created_by_name,created_at').order('created_at', { ascending:false }).limit(LIST_LIMIT);
-      if (res.error) throw res.error;
-      var fallbackRows = await fetchFallbackNotifications();
+      var mainRows = [];
+      try{
+        var res = await sb.from(NOTIF_TABLE).select('id,page_key,page_name,category,type,title,message,details,entity_key,created_by_email,created_by_name,created_at').order('created_at', { ascending:false }).limit(LIST_LIMIT);
+        if (!res.error) mainRows = res.data || [];
+      }catch(_mainErr){ mainRows = []; }
+      var fallbackRows = [];
+      try{ fallbackRows = await fetchFallbackNotifications(); }catch(_fbErr){ fallbackRows = []; }
       var mergedMap = {};
-      (res.data || []).concat(fallbackRows || []).forEach(function(n){
+      (mainRows || []).concat(fallbackRows || []).forEach(function(n){
         var id = normText(n && n.id);
         if (id && !mergedMap[id]) mergedMap[id] = n;
       });
@@ -980,17 +980,13 @@
       var visible = await filterVisibleNotifications(merged);
       var ids = visible.map(function(n){ return normText(n.id); }).filter(Boolean);
       var states = await fetchReadStates(ids);
-      var localDeleted = readLocalDeletedIds();
-      visible = visible.filter(function(n){
-        var id = normText(n.id);
-        return !states.deleted.has(id) && !localDeleted.has(id);
-      });
+      visible = visible.filter(function(n){ return !states.deleted.has(normText(n.id)); });
       allNotifications = visible;
       var keptIds = visible.map(function(n){ return normText(n.id); }).filter(Boolean);
       unreadIds = new Set(keptIds.filter(function(id){ return !states.read.has(id); }));
       renderList();
     }catch(e){
-      if (uiReady) els.list.innerHTML = '<div class="kad-notif-empty">Notificările nu sunt active încă. Verifică dacă tabelele Supabase au fost create.</div>';
+      if (uiReady) els.list.innerHTML = '<div class="kad-notif-empty">Nu pot încărca notificările momentan. Reîncearcă Refresh.</div>';
       updateBell();
     }
   }
@@ -1018,26 +1014,21 @@
     if (!currentEmail) await getUser();
     var sb = getClient();
     var ts = nowIso();
-    var persisted = false;
-    if (sb && currentEmail){
-      try{
+    try{
+      if (sb && currentEmail){
         var res = await sb.from(READS_TABLE).upsert({ notification_id:id, user_email:currentEmail, read_at:ts, deleted_at:ts }, { onConflict:'notification_id,user_email' });
         if (res && res.error) throw res.error;
-        persisted = true;
-      }catch(_e1){
-        try{
-          var upd = await sb.from(READS_TABLE).update({ read_at:ts, deleted_at:ts }).eq('notification_id', id).eq('user_email', currentEmail);
-          if (upd && !upd.error) persisted = true;
-        }catch(_e2){}
-        if (!persisted){
-          try{ await sb.from(READS_TABLE).upsert({ notification_id:id, user_email:currentEmail, read_at:ts }, { onConflict:'notification_id,user_email' }); }catch(_e3){}
-        }
       }
+    }catch(e){
+      try{
+        if (sb && currentEmail) await sb.from(READS_TABLE).upsert({ notification_id:id, user_email:currentEmail, read_at:ts }, { onConflict:'notification_id,user_email' });
+      }catch(_e2){}
     }
-    if (!persisted) addLocalDeletedIds([id]);
-    removeDeletedFromUi([id]);
+    addLocalDeletedIds([id]);
+    unreadIds.delete(id);
+    allNotifications = (allNotifications || []).filter(function(n){ return normText(n.id) !== id; });
+    renderList();
   }
-
 
   async function deleteAllVisibleForMe(){
     if (!currentEmail) await getUser();
@@ -1050,30 +1041,25 @@
     }catch(_e){ ok = true; }
     if (!ok) return;
     var ts = nowIso();
-    var persisted = false;
-    if (sb && currentEmail){
-      var rows = ids.map(function(id){ return { notification_id:id, user_email:currentEmail, read_at:ts, deleted_at:ts }; });
-      try{
+    try{
+      if (sb && currentEmail){
+        var rows = ids.map(function(id){ return { notification_id:id, user_email:currentEmail, read_at:ts, deleted_at:ts }; });
         var res = await sb.from(READS_TABLE).upsert(rows, { onConflict:'notification_id,user_email' });
         if (res && res.error) throw res.error;
-        persisted = true;
-      }catch(_e1){
-        try{
-          var upd = await sb.from(READS_TABLE).update({ read_at:ts, deleted_at:ts }).eq('user_email', currentEmail).in('notification_id', ids);
-          if (upd && !upd.error) persisted = true;
-        }catch(_e2){}
-        if (!persisted){
-          try{
-            var readRows = ids.map(function(id){ return { notification_id:id, user_email:currentEmail, read_at:ts }; });
-            await sb.from(READS_TABLE).upsert(readRows, { onConflict:'notification_id,user_email' });
-          }catch(_e3){}
-        }
       }
+    }catch(e){
+      try{
+        if (sb && currentEmail){
+          var rows2 = ids.map(function(id){ return { notification_id:id, user_email:currentEmail, read_at:ts }; });
+          await sb.from(READS_TABLE).upsert(rows2, { onConflict:'notification_id,user_email' });
+        }
+      }catch(_e2){}
     }
-    if (!persisted) addLocalDeletedIds(ids);
-    removeDeletedFromUi(ids);
+    addLocalDeletedIds(ids);
+    unreadIds.clear();
+    allNotifications = [];
+    renderList();
   }
-
   async function createNotification(input, options){
     options = options || {};
     var sb = getClient();
