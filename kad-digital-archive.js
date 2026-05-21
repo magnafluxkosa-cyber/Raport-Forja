@@ -348,6 +348,145 @@
     }catch(_e){ return []; }
   }
 
+
+
+  function shouldSkipAutoAudit(tableName, payload){
+    var table = lower(tableName);
+    if(!table) return true;
+    if(table === lower(AUDIT_TABLE) || table === lower(VERSION_TABLE)) return true;
+    try{
+      var data = payload == null ? null : payload;
+      var arr = Array.isArray(data) ? data : [data];
+      if(table === 'rf_documents'){
+        for(var i=0;i<arr.length;i+=1){
+          var k = norm(arr[i] && (arr[i].doc_key || arr[i].document_key || arr[i].id));
+          if(k.indexOf('kad_audit__') === 0 || k.indexOf('kad_version__') === 0) return true;
+        }
+      }
+    }catch(_e){}
+    return false;
+  }
+
+  function summarizePayload(payload){
+    try{
+      if(Array.isArray(payload)){
+        return {
+          rows_count: payload.length,
+          first_row: compactJson(payload[0] || null, 20000),
+          last_row: compactJson(payload[payload.length-1] || null, 20000)
+        };
+      }
+      return compactJson(payload || {}, 50000);
+    }catch(_e){ return { preview:String(payload == null ? '' : payload).slice(0, 2000) }; }
+  }
+
+  function guessDocumentKey(pageKey, tableName, action, payload){
+    try{
+      var d = Array.isArray(payload) ? (payload[0] || {}) : (payload || {});
+      return norm(d.doc_key || d.document_key || d.document_id || d.measurement_key || d.id || d.key) || (normalizePageKey(pageKey) + ':' + lower(tableName) + ':' + lower(action));
+    }catch(_e){ return normalizePageKey(pageKey) + ':' + lower(tableName) + ':' + lower(action); }
+  }
+
+  function wrapQueryBuilderForAudit(builder, meta){
+    if(!builder || builder.__kadAuditWrapped) return builder;
+    try{ builder.__kadAuditWrapped = true; }catch(_e){}
+    return new Proxy(builder, {
+      get:function(target, prop, receiver){
+        if(prop === 'then'){
+          return function(onFulfilled, onRejected){
+            return target.then(function(res){
+              try{
+                if(res && !res.error && meta && !shouldSkipAutoAudit(meta.tableName, meta.payload)){
+                  var payloadSummary = summarizePayload(meta.payload);
+                  var count = Array.isArray(meta.payload) ? meta.payload.length : (meta.payload ? 1 : 0);
+                  logAudit({
+                    sb:meta.client,
+                    pageKey:meta.pageKey,
+                    tableName:meta.tableName,
+                    documentType:meta.documentType || meta.pageKey,
+                    documentId:guessDocumentKey(meta.pageKey, meta.tableName, meta.action, meta.payload),
+                    action:meta.action,
+                    method:'auto-supabase-' + lower(meta.action),
+                    status:'SALVAT',
+                    newData:{
+                      page_key:meta.pageKey,
+                      table_name:meta.tableName,
+                      action:meta.action,
+                      rows_count:count,
+                      payload:payloadSummary
+                    },
+                    source:'auto-page-supabase-interceptor'
+                  }).catch(function(){});
+                }
+              }catch(_e){}
+              return onFulfilled ? onFulfilled(res) : res;
+            }, onRejected);
+          };
+        }
+        return Reflect.get(target, prop, receiver);
+      }
+    });
+  }
+
+  function wrapTableForAudit(tableObj, meta){
+    if(!tableObj || tableObj.__kadAuditTableWrapped) return tableObj;
+    try{ tableObj.__kadAuditTableWrapped = true; }catch(_e){}
+    return new Proxy(tableObj, {
+      get:function(target, prop, receiver){
+        var value = Reflect.get(target, prop, receiver);
+        if(['insert','upsert','update','delete'].indexOf(String(prop)) >= 0 && typeof value === 'function'){
+          return function(){
+            var args = Array.prototype.slice.call(arguments);
+            var action = String(prop).toUpperCase();
+            var payload = prop === 'delete' ? { delete_requested:true } : args[0];
+            var builder = value.apply(target, args);
+            return wrapQueryBuilderForAudit(builder, Object.assign({}, meta, { action:action, payload:payload }));
+          };
+        }
+        return value;
+      }
+    });
+  }
+
+  function wrapClientForAudit(client, options){
+    if(!client || client.__kadAuditClientWrapped) return client;
+    options = options || {};
+    try{ client.__kadAuditClientWrapped = true; }catch(_e){}
+    var originalFrom = client.from;
+    if(typeof originalFrom !== 'function') return client;
+    client.from = function(tableName){
+      var tableObj = originalFrom.apply(client, arguments);
+      return wrapTableForAudit(tableObj, {
+        client:client,
+        pageKey:normalizePageKey(options.pageKey || window.__KAD_ARCHIVE_PAGE_KEY__ || ''),
+        documentType:normalizePageKey(options.documentType || options.pageKey || window.__KAD_ARCHIVE_PAGE_KEY__ || ''),
+        tableName:tableName
+      });
+    };
+    return client;
+  }
+
+  function installSupabaseAuditInterceptor(options){
+    options = options || {};
+    var pageKey = normalizePageKey(options.pageKey || window.__KAD_ARCHIVE_PAGE_KEY__ || '');
+    if(!pageKey) return false;
+    window.__KAD_ARCHIVE_PAGE_KEY__ = pageKey;
+    var supaGlobal = window.supabase;
+    if(!supaGlobal || typeof supaGlobal.createClient !== 'function') return false;
+    if(supaGlobal.__kadAuditCreateClientWrapped) return true;
+    var originalCreateClient = supaGlobal.createClient;
+    supaGlobal.createClient = function(){
+      var client = originalCreateClient.apply(supaGlobal, arguments);
+      return wrapClientForAudit(client, options);
+    };
+    try{ supaGlobal.__kadAuditCreateClientWrapped = true; }catch(_e){}
+    try{
+      if(window.__RF_SHARED_SUPABASE__) wrapClientForAudit(window.__RF_SHARED_SUPABASE__, options);
+      if(window.__KAD_SECURITY_SUPABASE__) wrapClientForAudit(window.__KAD_SECURITY_SUPABASE__, options);
+    }catch(_e){}
+    return true;
+  }
+
   window.KADDigitalArchive = {
     version: ARCHIVE_VERSION,
     safeMode:true,
@@ -359,6 +498,8 @@
     recordExport:recordExport,
     listVersions:listVersions,
     listAuditLogs:listAuditLogs,
+    installSupabaseAuditInterceptor:installSupabaseAuditInterceptor,
+    wrapClientForAudit:wrapClientForAudit,
     sha256:sha256
   };
 })(window);
