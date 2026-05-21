@@ -21,8 +21,7 @@
     { page_key: 'helper-acl', page_name: 'Helper ACL' },
     { page_key: 'mapare-nume-notificari', page_name: 'Mapare nume notificări' },
     { page_key: 'istoric-notificari', page_name: 'Istoric notificări' },
-    { page_key: 'raport-forja', page_name: 'Raport forja' },
-    { page_key: 'arhiva-rapoarte-productie', page_name: 'Arhivă rapoarte producție' },
+    { page_key: 'arhiva-digitala', page_name: 'Arhivă digitală' },
     { page_key: 'numeralkod', page_name: 'Numeral KOD' },
     { page_key: 'intrari-otel', page_name: 'Intrări Oțel' },
     { page_key: 'debitate', page_name: 'Debitate' },
@@ -112,8 +111,7 @@ var PAGE_CONTROL_OVERRIDES = Object.freeze({
     Object.freeze({ control_key:'nav.helper-acl', control_label:'Buton HELPER-ACL', control_type:'action' }),
     Object.freeze({ control_key:'nav.mapare-nume-notificari', control_label:'Buton MAPARE NUME NOTIFICĂRI', control_type:'action' }),
     Object.freeze({ control_key:'nav.istoric-notificari', control_label:'Buton ISTORIC NOTIFICĂRI', control_type:'action' }),
-        Object.freeze({ control_key:'nav.arhiva-rapoarte-productie', control_label:'Buton ARHIVĂ RAPOARTE PRODUCȚIE', control_type:'action' }),
-    Object.freeze({ control_key:'nav.numeralkod', control_label:'Buton NUMERALKOD', control_type:'action' }),
+        Object.freeze({ control_key:'nav.numeralkod', control_label:'Buton NUMERALKOD', control_type:'action' }),
     Object.freeze({ control_key:'nav.intrari-otel', control_label:'Buton INTRĂRI OȚEL', control_type:'action' }),
     Object.freeze({ control_key:'nav.debitate', control_label:'Buton DEBITATE', control_type:'action' }),
     Object.freeze({ control_key:'nav.forjate', control_label:'Buton FORJATE', control_type:'action' }),
@@ -206,6 +204,11 @@ var PAGE_CONTROL_OVERRIDES = Object.freeze({
     Object.freeze({ control_key:'field.cod-defect', control_label:'Selector Cod defect', control_type:'field' }),
     Object.freeze({ control_key:'field.cauza', control_label:'Câmp Cauză', control_type:'field' }),
     Object.freeze({ control_key:'field.actiuni-corective', control_label:'Câmp Acțiuni corective', control_type:'field' })
+  ]),
+  'arhiva-digitala': Object.freeze([
+    Object.freeze({ control_key:'archive.view', control_label:'Vizualizare arhivă digitală', control_type:'field' }),
+    Object.freeze({ control_key:'archive.export', control_label:'Export arhivă digitală', control_type:'action' }),
+    Object.freeze({ control_key:'archive.versions', control_label:'Vizualizare versiuni documente', control_type:'field' })
   ]),
   'forjate': Object.freeze([
     Object.freeze({ control_key:'field.reper', control_label:'Câmp Reper', control_type:'field' }),
@@ -3956,6 +3959,353 @@ async function applyDomPermissions(pageKey, root, options) {
 
   if(document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start, { once:true });
   else start();
+})(window, document);
+
+
+/* === K.A.D DIGITAL ARCHIVE BOOTSTRAP ===
+   Modul comun pentru audit digital: captează automat mutațiile Supabase de pe paginile K.A.D.
+*/
+(function(window, document){
+  'use strict';
+  if (window.__KAD_DIGITAL_ARCHIVE_BOOTSTRAP__) return;
+  window.__KAD_DIGITAL_ARCHIVE_BOOTSTRAP__ = true;
+
+  var AUDIT_TABLE = 'kad_audit_log';
+  var VERSIONS_TABLE = 'kad_document_versions';
+  var INTERNAL_TABLES = {
+    kad_audit_log:true,
+    kad_document_versions:true,
+    kad_notifications:true,
+    kad_notification_reads:true,
+    kad_user_activity:true
+  };
+  var MAX_AUDIT_JSON_CHARS = 28000;
+  var MAX_VERSION_JSON_CHARS = 1800000;
+  var queue = [];
+  var flushing = false;
+
+  function norm(v){ return String(v == null ? '' : v).replace(/\s+/g,' ').trim(); }
+  function lower(v){ return norm(v).toLowerCase(); }
+  function safeCall(fn){ try{ return fn(); }catch(_e){ return null; } }
+  function nowIso(){ return new Date().toISOString(); }
+  function pageKeyFromLocation(){
+    var raw = String((window.location && window.location.pathname) || '').split('/').pop() || 'index.html';
+    return raw.replace(/\.html?$/i,'').trim() || 'index';
+  }
+  function cfg(){ return window.RF_CONFIG || window.ERP_FORJA_CONFIG || window.__ERP_FORJA_CONFIG__ || {}; }
+  function looksLikeExcludedPage(){
+    var p = pageKeyFromLocation();
+    return p === 'login' || p === 'mfa-setup' || p === 'mfa-verify' || p === 'access-gate';
+  }
+  function safeJsonStringify(value){
+    try{ return JSON.stringify(value == null ? null : value); }catch(_e){ return 'null'; }
+  }
+  function byteLen(str){
+    try{ return new Blob([String(str || '')]).size; }catch(_e){ return String(str || '').length; }
+  }
+  function stableClone(value, maxChars){
+    var raw = safeJsonStringify(value);
+    if (raw.length <= maxChars) {
+      try{ return JSON.parse(raw); }catch(_e){ return value == null ? null : value; }
+    }
+    return {
+      _kad_archived_compact:true,
+      _kad_original_json_chars:raw.length,
+      _kad_original_bytes:byteLen(raw),
+      _kad_preview:raw.slice(0, Math.max(1000, Math.min(maxChars, 12000)))
+    };
+  }
+  function summarizePayload(payload){
+    if (!payload) return null;
+    if (Array.isArray(payload)) return payload.slice(0,20).map(summarizePayload);
+    if (typeof payload !== 'object') return payload;
+    var out = {};
+    Object.keys(payload).forEach(function(k){
+      var v = payload[k];
+      var lk = lower(k);
+      if (lk === 'content' || lk === 'data' || lk === 'payload' || lk === 'rows' || lk === 'items') {
+        var raw = safeJsonStringify(v);
+        out[k] = {
+          _kad_summary:true,
+          type:Array.isArray(v) ? 'array' : typeof v,
+          length:Array.isArray(v) ? v.length : undefined,
+          json_chars:raw.length,
+          bytes:byteLen(raw)
+        };
+        return;
+      }
+      if (v && typeof v === 'object') out[k] = stableClone(v, 4000);
+      else out[k] = v;
+    });
+    return stableClone(out, MAX_AUDIT_JSON_CHARS);
+  }
+  async function sha256Hex(input){
+    try{
+      if (!window.crypto || !window.crypto.subtle) return '';
+      var data = new TextEncoder().encode(String(input || ''));
+      var hash = await window.crypto.subtle.digest('SHA-256', data);
+      return Array.prototype.map.call(new Uint8Array(hash), function(b){ return b.toString(16).padStart(2,'0'); }).join('');
+    }catch(_e){ return ''; }
+  }
+  function requestDeviceInfo(){
+    var nav = window.navigator || {};
+    return [norm(nav.platform), norm(nav.userAgent)].filter(Boolean).join(' | ').slice(0, 900);
+  }
+  function pickDocKey(payload){
+    if (!payload) return '';
+    if (Array.isArray(payload)){
+      for (var i=0;i<payload.length;i++){ var hit = pickDocKey(payload[i]); if (hit) return hit; }
+      return '';
+    }
+    if (typeof payload === 'object') return norm(payload.doc_key || payload.document_key || payload.key || payload.id || payload.uuid || '');
+    return '';
+  }
+  function pickSnapshot(payload){
+    if (!payload) return null;
+    if (Array.isArray(payload)) return payload.length === 1 ? pickSnapshot(payload[0]) : payload;
+    if (typeof payload !== 'object') return payload;
+    if (payload.content != null) return payload.content;
+    if (payload.data != null) return payload.data;
+    return payload;
+  }
+  function actionFromMethod(method){
+    method = lower(method);
+    if (method === 'insert') return 'CREATE';
+    if (method === 'update') return 'UPDATE';
+    if (method === 'upsert') return 'UPSERT';
+    if (method === 'delete') return 'DELETE';
+    return method.toUpperCase() || 'MUTATION';
+  }
+  function shouldSkip(ctx){
+    ctx = ctx || {};
+    var table = lower(ctx.table);
+    var method = lower(ctx.method);
+    if (!table || INTERNAL_TABLES[table]) return true;
+    if (!/^(insert|upsert|update|delete)$/.test(method)) return true;
+    if (looksLikeExcludedPage()) return true;
+    return false;
+  }
+  async function getUser(client){
+    var user = null;
+    try{
+      if (client && client.auth && typeof client.auth.getUser === 'function'){
+        var u = await client.auth.getUser();
+        user = u && u.data && u.data.user ? u.data.user : null;
+      }
+    }catch(_e){}
+    if (!user){
+      try{
+        if (client && client.auth && typeof client.auth.getSession === 'function'){
+          var s = await client.auth.getSession();
+          user = s && s.data && s.data.session && s.data.session.user ? s.data.session.user : null;
+        }
+      }catch(_e){}
+    }
+    return user || null;
+  }
+  function actorNameFromStorage(){
+    var keys = ['kad_actor_name','kad_current_actor_name','kad_operator_name','rf_operator_name','operatorName','numeOperator','nume_operator'];
+    for (var i=0;i<keys.length;i++){
+      var v = safeCall(function(){ return window.sessionStorage && window.sessionStorage.getItem(keys[i]); }) || safeCall(function(){ return window.localStorage && window.localStorage.getItem(keys[i]); });
+      if (norm(v)) return norm(v);
+    }
+    return '';
+  }
+  function entityFromContext(ctx){
+    var doc = norm(ctx.doc_key || pickDocKey(ctx.payload));
+    if (doc) return doc;
+    var table = norm(ctx.table);
+    var payload = ctx.payload;
+    if (payload && !Array.isArray(payload) && typeof payload === 'object'){
+      var id = norm(payload.id || payload.uuid || payload.key || payload.cod || payload.reper || '');
+      if (id) return table + ':' + id;
+    }
+    return table + ':' + pageKeyFromLocation();
+  }
+  function getBuilderUrl(builder){
+    return norm(safeCall(function(){ return builder && builder.url ? String(builder.url) : ''; }) || '');
+  }
+  function compactQueryInfo(builder, ctx){
+    var url = getBuilderUrl(builder);
+    var info = { captured_from:'supabase-wrapper', captured_at:nowIso() };
+    if (url) {
+      try{
+        var u = new URL(url);
+        info.path = u.pathname;
+        info.query = u.search ? u.search.slice(1) : '';
+      }catch(_e){ info.url = url.slice(0, 1400); }
+    }
+    if (ctx && ctx.result_count != null) info.result_count = ctx.result_count;
+    return info;
+  }
+  function auditRow(ctx, user, builder){
+    var payloadSummary = summarizePayload(ctx.payload);
+    var docKey = norm(ctx.doc_key || pickDocKey(ctx.payload));
+    var email = lower(user && user.email);
+    var meta = (user && (user.user_metadata || user.raw_user_meta_data)) || {};
+    var actor = norm(ctx.actor_name || actorNameFromStorage() || meta.full_name || meta.name || meta.display_name || email);
+    return {
+      user_id: user && user.id ? user.id : null,
+      user_email: email || null,
+      actor_name: actor || null,
+      action: actionFromMethod(ctx.method),
+      method: lower(ctx.method),
+      table_name: norm(ctx.table),
+      page_key: norm(ctx.page_key || pageKeyFromLocation()),
+      document_key: docKey || null,
+      entity_key: entityFromContext(ctx),
+      old_data: null,
+      new_data: payloadSummary,
+      query_info: compactQueryInfo(builder, ctx),
+      device_info: requestDeviceInfo(),
+      source: 'frontend-global-supabase-wrapper',
+      success: true,
+      created_at: nowIso()
+    };
+  }
+  async function versionRow(ctx, user){
+    var table = lower(ctx.table);
+    var payload = ctx.payload;
+    var docKey = norm(ctx.doc_key || pickDocKey(payload));
+    if (!docKey && table !== 'rf_documents') return null;
+    if (table !== 'rf_documents') return null;
+    var snapshot = pickSnapshot(payload);
+    var raw = safeJsonStringify(snapshot);
+    var compact = raw.length > MAX_VERSION_JSON_CHARS ? stableClone(snapshot, MAX_VERSION_JSON_CHARS) : snapshot;
+    var finalRaw = safeJsonStringify(compact);
+    return {
+      document_key: docKey || entityFromContext(ctx),
+      page_key: norm(ctx.page_key || pageKeyFromLocation()),
+      source_table: norm(ctx.table),
+      action: actionFromMethod(ctx.method),
+      snapshot_data: compact,
+      snapshot_hash: await sha256Hex(finalRaw),
+      payload_bytes: byteLen(finalRaw),
+      created_by: user && user.id ? user.id : null,
+      created_by_email: lower(user && user.email) || null,
+      created_at: nowIso()
+    };
+  }
+  function getArchiveClient(client){
+    if (client && typeof client.from === 'function') return client;
+    if (window.__RF_SHARED_SUPABASE__) return window.__RF_SHARED_SUPABASE__;
+    if (window.createRfSupabaseClient) return safeCall(function(){ return window.createRfSupabaseClient(); });
+    if (window.supabase && typeof window.supabase.createClient === 'function'){
+      var c = cfg();
+      var url = norm(c.SUPABASE_URL || c.supabaseUrl || '');
+      var key = norm(c.SUPABASE_ANON_KEY || c.supabaseAnonKey || '');
+      if (url && key) return safeCall(function(){ return window.supabase.createClient(url, key, { auth:{ persistSession:true, autoRefreshToken:true, detectSessionInUrl:true } }); });
+    }
+    return null;
+  }
+  async function persistMutation(ctx, builder){
+    if (shouldSkip(ctx)) return;
+    var sb = getArchiveClient(ctx.client);
+    if (!sb || typeof sb.from !== 'function') return;
+    var user = await getUser(sb);
+    var row = auditRow(ctx, user, builder);
+    try{ await sb.from(AUDIT_TABLE).insert(row); }catch(_e){}
+    try{
+      var version = await versionRow(ctx, user);
+      if (version) await sb.from(VERSIONS_TABLE).insert(version);
+    }catch(_e){}
+  }
+  function enqueue(ctx, builder){
+    if (shouldSkip(ctx)) return;
+    queue.push({ ctx:ctx, builder:builder });
+    if (!flushing) {
+      flushing = true;
+      window.setTimeout(flush, 30);
+    }
+  }
+  async function flush(){
+    var batch = queue.splice(0, 25);
+    for (var i=0;i<batch.length;i++){
+      await persistMutation(batch[i].ctx, batch[i].builder);
+    }
+    if (queue.length) window.setTimeout(flush, 80);
+    else flushing = false;
+  }
+  function patchResultBuilder(builder, ctx){
+    if (!builder || builder.__KAD_DIGITAL_ARCHIVE_RESULT_PATCHED__) return builder;
+    if (typeof builder.then !== 'function') return builder;
+    builder.__KAD_DIGITAL_ARCHIVE_RESULT_PATCHED__ = true;
+    var originalThen = builder.then;
+    builder.then = function(onFulfilled, onRejected){
+      return originalThen.call(this, function(result){
+        try{
+          if (result && !result.error) {
+            ctx.result_count = Array.isArray(result.data) ? result.data.length : (result.data ? 1 : 0);
+            enqueue(ctx, builder);
+          }
+        }catch(_e){}
+        return typeof onFulfilled === 'function' ? onFulfilled(result) : result;
+      }, onRejected);
+    };
+    return builder;
+  }
+  function patchMutationMethod(builder, tableName, client, methodName){
+    if (!builder || typeof builder[methodName] !== 'function') return;
+    var flag = '__KAD_DIGITAL_ARCHIVE_' + methodName.toUpperCase() + '_PATCHED__';
+    if (builder[flag]) return;
+    builder[flag] = true;
+    var original = builder[methodName];
+    builder[methodName] = function(){
+      var args = Array.prototype.slice.call(arguments);
+      var payload = args[0];
+      var ctx = {
+        table:norm(tableName),
+        method:methodName,
+        payload:payload,
+        doc_key:pickDocKey(payload),
+        page_key:pageKeyFromLocation(),
+        client:client,
+        captured_at:nowIso()
+      };
+      var result = original.apply(this, args);
+      return patchResultBuilder(result, ctx);
+    };
+  }
+  function patchBuilder(builder, tableName, client){
+    if (!builder || builder.__KAD_DIGITAL_ARCHIVE_BUILDER_PATCHED__) return builder;
+    builder.__KAD_DIGITAL_ARCHIVE_BUILDER_PATCHED__ = true;
+    ['insert','upsert','update','delete'].forEach(function(method){ patchMutationMethod(builder, tableName, client, method); });
+    return builder;
+  }
+  function patchClient(client){
+    if (!client || client.__KAD_DIGITAL_ARCHIVE_CLIENT_PATCHED__) return client;
+    if (typeof client.from !== 'function') return client;
+    client.__KAD_DIGITAL_ARCHIVE_CLIENT_PATCHED__ = true;
+    var originalFrom = client.from.bind(client);
+    client.from = function(tableName){
+      var builder = originalFrom(tableName);
+      return patchBuilder(builder, tableName, client);
+    };
+    return client;
+  }
+  window.__KAD_DIGITAL_ARCHIVE_CAPTURE__ = function(ctx){ enqueue(ctx || {}, null); };
+  window.__KAD_PATCH_DIGITAL_ARCHIVE_CLIENT__ = patchClient;
+
+  function patchSupabaseFactory(){
+    if (!window.supabase || typeof window.supabase.createClient !== 'function') return false;
+    if (window.supabase.__KAD_DIGITAL_ARCHIVE_FACTORY_PATCHED__) return true;
+    window.supabase.__KAD_DIGITAL_ARCHIVE_FACTORY_PATCHED__ = true;
+    var originalCreateClient = window.supabase.createClient.bind(window.supabase);
+    window.supabase.createClient = function(){
+      var client = originalCreateClient.apply(window.supabase, arguments);
+      return patchClient(client);
+    };
+    safeCall(function(){ if (window.__RF_SHARED_SUPABASE__) patchClient(window.__RF_SHARED_SUPABASE__); });
+    safeCall(function(){ if (window.__RF_SUPABASE_SINGLETON__ && window.__RF_SUPABASE_SINGLETON__.client) patchClient(window.__RF_SUPABASE_SINGLETON__.client); });
+    return true;
+  }
+  if (!patchSupabaseFactory()){
+    var tries = 0;
+    var timer = window.setInterval(function(){
+      tries += 1;
+      if (patchSupabaseFactory() || tries > 80) window.clearInterval(timer);
+    }, 50);
+  }
 })(window, document);
 
 /* === K.A.D GLOBAL NOTIFICATIONS BOOTSTRAP ===
