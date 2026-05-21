@@ -19,8 +19,6 @@
   var displayNameCache = {};
   var initialized = false;
   var uiReady = false;
-  var PATCH_FLAG = '__kad_notifications_mutation_patch_v2__';
-  var PATCHED_CLIENTS = (typeof WeakSet !== 'undefined') ? new WeakSet() : null;
   var lastFetchAt = 0;
   var unreadIds = new Set();
   var allNotifications = [];
@@ -129,7 +127,7 @@
     var actionWord = 'salvat date';
     if (method === 'insert') actionWord = 'adăugat date noi';
     else if (method === 'update') actionWord = 'modificat date';
-    else if (method === 'upsert') actionWord = 'adăugat/modificat date';
+    else if (method === 'upsert') actionWord = 'salvat/modificat date';
     else if (method === 'delete') actionWord = 'șters date';
 
     var actor = normText(ctx.actor_name) || currentUserName();
@@ -464,119 +462,158 @@
     pending.timer = window.setTimeout(function(){ flushPendingPageNotification(key); }, delay);
   }
 
-  function safeGetDocKeyFromMutation(ctx){
-    ctx = ctx || {};
-    return normText(ctx.doc_key || extractDocKey(ctx.payload) || extractDocKey(ctx.result) || '');
-  }
-  function shouldSkipNotificationPatchContext(ctx){
-    ctx = ctx || {};
-    var table = normText(ctx.table).toLowerCase();
-    var docKey = safeGetDocKeyFromMutation(ctx).toLowerCase();
-    if (table === 'kad_audit_log' || table === 'kad_document_versions' || table === 'kad_backup_log') return true;
-    if (table === 'kad_notifications' || table === 'kad_notification_reads') return true;
-    if (docKey.indexOf('kad_audit') === 0 || docKey.indexOf('kad-document-version') === 0 || docKey.indexOf('kad_document_version') === 0) return true;
-    if (docKey.indexOf('backup-date-kad') === 0 || docKey.indexOf('kad_backup') === 0) return true;
-    return false;
-  }
-  function notifyMutationAfterSuccess(ctx, response){
-    ctx = ctx || {};
-    if (response && response.error) return;
-    if (shouldSkipNotificationPatchContext(ctx)) return;
-    ctx.result = response && response.data;
-    ctx.doc_key = safeGetDocKeyFromMutation(ctx);
-    window.setTimeout(function(){
+
+
+  /* KAD_NOTIF_ARCHIVE_BRIDGE_V2
+     Legă notificările de arhiva digitală K.A.D. și oferă fallback în rf_documents
+     când kad_notifications este blocat de RLS. */
+  var FALLBACK_NOTIF_PREFIX = 'kad-notification:';
+  var archiveBridgeInstalled = false;
+  var archiveBridgeTimer = null;
+  var fallbackDocCols = null;
+
+  async function detectFallbackDocCols(){
+    if (fallbackDocCols) return fallbackDocCols;
+    var sb = getClient();
+    if (!sb) return ['content'];
+    var cols = [];
+    for (var i=0;i<['content','data'].length;i++){
+      var c = ['content','data'][i];
       try{
-        if (window.KAD_NOTIFICATIONS && typeof window.KAD_NOTIFICATIONS.captureMutation === 'function') {
-          window.KAD_NOTIFICATIONS.captureMutation(ctx);
-        } else {
-          window.__KAD_NOTIFICATION_QUEUE__ = window.__KAD_NOTIFICATION_QUEUE__ || [];
-          window.__KAD_NOTIFICATION_QUEUE__.push(ctx);
-        }
-      }catch(_e){}
-    }, 0);
-  }
-  function patchMutationThenable(builder, ctx){
-    if (!builder || typeof builder !== 'object') return builder;
-    try{
-      if (!builder.__kad_notif_ctx__) Object.defineProperty(builder, '__kad_notif_ctx__', { value:ctx, configurable:true });
-    }catch(_e){ builder.__kad_notif_ctx__ = ctx; }
-    if (!builder.__kad_notif_then_patched__ && typeof builder.then === 'function'){
-      var originalThen = builder.then;
-      try{
-        Object.defineProperty(builder, '__kad_notif_then_patched__', { value:true, configurable:true });
-        builder.then = function(onFulfilled, onRejected){
-          var self = this;
-          return originalThen.call(self, function(response){
-            try{
-              if (!self.__kad_notif_sent__){
-                self.__kad_notif_sent__ = true;
-                notifyMutationAfterSuccess(self.__kad_notif_ctx__ || ctx, response);
-              }
-            }catch(_e){}
-            return typeof onFulfilled === 'function' ? onFulfilled(response) : response;
-          }, onRejected);
-        };
+        var res = await sb.from('rf_documents').select(c).limit(1);
+        if (!res.error) cols.push(c);
       }catch(_e){}
     }
-    ['select','eq','neq','gt','gte','lt','lte','match','is','in','contains','containedBy','range','order','limit','single','maybeSingle','returns','throwOnError','csv','geojson','explain','rollback','abortSignal'].forEach(function(method){
-      if (typeof builder[method] !== 'function' || builder[method].__kad_notif_chain_patched__) return;
-      var original = builder[method];
-      var wrapped = function(){
-        var result = original.apply(this, arguments);
-        return patchMutationThenable(result || this, this.__kad_notif_ctx__ || ctx);
-      };
-      wrapped.__kad_notif_chain_patched__ = true;
-      try{ builder[method] = wrapped; }catch(_e){}
-    });
-    return builder;
+    fallbackDocCols = cols.length ? cols : ['content'];
+    return fallbackDocCols;
   }
-  function patchTableBuilder(builder, table){
-    if (!builder || typeof builder !== 'object') return builder;
-    if (builder.__kad_notif_table_patched__) return builder;
-    try{ Object.defineProperty(builder, '__kad_notif_table_patched__', { value:true, configurable:true }); }catch(_e){ builder.__kad_notif_table_patched__ = true; }
-    ['insert','upsert','update','delete'].forEach(function(method){
-      if (typeof builder[method] !== 'function' || builder[method].__kad_notif_mutation_patched__) return;
-      var original = builder[method];
-      var wrapped = function(){
-        var args = Array.prototype.slice.call(arguments);
-        var payload = args.length ? args[0] : null;
-        var ctx = {
-          table: table,
-          method: method,
-          payload: payload,
-          doc_key: extractDocKey(payload),
-          page_key: pageFromLocation(),
-          actor_name: currentUserName(),
-          captured_by: 'kad-notifications-patch-v2'
-        };
-        var result = original.apply(this, arguments);
-        return patchMutationThenable(result, ctx);
-      };
-      wrapped.__kad_notif_mutation_patched__ = true;
-      try{ builder[method] = wrapped; }catch(_e){}
-    });
-    return builder;
+  async function writeFallbackNotification(n){
+    var sb = getClient();
+    if (!sb || !n) return null;
+    try{
+      var cols = await detectFallbackDocCols();
+      var id = normText(n.id) || (FALLBACK_NOTIF_PREFIX + Date.now() + ':' + Math.random().toString(36).slice(2));
+      if (id.indexOf(FALLBACK_NOTIF_PREFIX) !== 0) id = FALLBACK_NOTIF_PREFIX + id;
+      var payload = Object.assign({}, n, { id:id, fallback_storage:true, updated_at:nowIso() });
+      var row = { doc_key:id, updated_at:nowIso() };
+      if (cols.indexOf('content') >= 0) row.content = payload;
+      else row.data = payload;
+      var res = await sb.from('rf_documents').upsert(row, { onConflict:'doc_key' }).select('doc_key').maybeSingle();
+      if (res && res.error) throw res.error;
+      return payload;
+    }catch(e){
+      try{ console.warn('[KAD Notifications] Fallback rf_documents eșuat:', e && e.message ? e.message : e); }catch(_e){}
+      return null;
+    }
   }
-  function installSupabaseMutationPatch(sb){
-    if (!sb || typeof sb.from !== 'function') return sb;
-    try{ if (PATCHED_CLIENTS && PATCHED_CLIENTS.has(sb)) return sb; }catch(_e){}
-    if (sb[PATCH_FLAG]) return sb;
-    var originalFrom = sb.from;
-    var wrappedFrom = function(table){
-      var builder = originalFrom.apply(this, arguments);
-      return patchTableBuilder(builder, table);
+  async function fetchFallbackNotifications(){
+    var sb = getClient();
+    if (!sb) return [];
+    try{
+      var cols = await detectFallbackDocCols();
+      var selectCols = ['doc_key','updated_at'].concat(cols).join(',');
+      var res = await sb.from('rf_documents').select(selectCols).ilike('doc_key', FALLBACK_NOTIF_PREFIX + '%').order('updated_at', { ascending:false }).limit(LIST_LIMIT);
+      if (res.error) throw res.error;
+      return (res.data || []).map(function(r){
+        var payload = r.content || r.data || {};
+        if (!payload || typeof payload !== 'object') payload = {};
+        payload.id = normText(payload.id || r.doc_key);
+        payload.created_at = payload.created_at || r.updated_at;
+        payload.fallback_storage = true;
+        return payload;
+      }).filter(function(n){ return !!normText(n.id); });
+    }catch(_e){ return []; }
+  }
+  function actionLabelRo(action){
+    action = normText(action).toUpperCase();
+    if (action === 'CREATE' || action === 'INSERT') return 'adăugat date noi';
+    if (action === 'UPDATE' || action === 'EDIT') return 'modificat date';
+    if (action === 'DELETE' || action === 'ANULAT' || action === 'CANCEL') return 'șters/anulat date';
+    if (action.indexOf('EXPORT') === 0) return 'exportat date';
+    if (action === 'APPROVE' || action === 'APROBAT') return 'aprobat documentul';
+    return 'salvat date';
+  }
+  function notificationFromArchiveArgs(args){
+    var input = args && args[0] && typeof args[0] === 'object' ? args[0] : {};
+    var newData = input.newData || input.new_data || null;
+    var oldData = input.oldData || input.old_data || null;
+    var data = newData || oldData || {};
+    var action = normText(input.action || (oldData && newData ? 'UPDATE' : (newData ? 'CREATE' : 'SAVE'))).toUpperCase();
+    var pageKey = normKey(input.pageKey || input.page_key || data.page_key || pageFromLocation());
+    var pageName = pageNameFor(pageKey);
+    var actor = currentUserName();
+    var docId = normText(input.documentId || input.document_id || data.document_id || data.id || input.entity_key || '');
+    var docNo = normText(input.documentNo || input.document_no || data.document_no || '');
+    var reason = normText(input.reason || data.change_reason || '');
+    var title = 'Modificare în ' + pageName;
+    if (action === 'CREATE' || action === 'INSERT') title = 'Date noi în ' + pageName;
+    if (action === 'DELETE' || action === 'ANULAT') title = 'Ștergere/Anulare în ' + pageName;
+    if (action.indexOf('EXPORT') === 0) title = 'Export în ' + pageName;
+    var msg = actor + ' a ' + actionLabelRo(action) + ' în ' + pageName + '.';
+    if (docNo) msg += ' Document: ' + docNo + '.';
+    else if (docId) msg += ' ID: ' + docId + '.';
+    return {
+      page_key: pageKey,
+      page_name: pageName,
+      category: 'archive-action',
+      type: action.toLowerCase(),
+      title: title,
+      message: msg,
+      details: {
+        action: action,
+        document_id: docId,
+        document_no: docNo,
+        reason: reason,
+        old_data: oldData,
+        new_data: newData,
+        captured_at: nowIso(),
+        source: 'KADDigitalArchive'
+      },
+      entity_key: docId || docNo || (pageKey + ':' + Date.now()),
+      source_table: 'rf_documents',
+      source_doc_key: docId || docNo || ''
     };
-    try{ wrappedFrom.__kad_original_from__ = originalFrom; }catch(_e){}
-    try{ sb.from = wrappedFrom; }catch(_e){ return sb; }
-    try{ Object.defineProperty(sb, PATCH_FLAG, { value:true, configurable:true }); }catch(_e){ sb[PATCH_FLAG] = true; }
-    try{ if (PATCHED_CLIENTS) PATCHED_CLIENTS.add(sb); }catch(_e){}
-    return sb;
   }
-  var previousPatchHook = window.__KAD_PATCH_SUPABASE_CLIENT__;
-  window.__KAD_PATCH_SUPABASE_CLIENT__ = function(sb){
-    try{ if (typeof previousPatchHook === 'function') previousPatchHook(sb); }catch(_e){}
-    return installSupabaseMutationPatch(sb);
-  };
+  function wrapDigitalArchive(){
+    if (archiveBridgeInstalled) return true;
+    var api = window.KADDigitalArchive;
+    if (!api || typeof api !== 'object') return false;
+    ['recordChange','recordExport'].forEach(function(method){
+      if (typeof api[method] !== 'function' || api[method].__kadNotifWrapped) return;
+      var original = api[method];
+      var wrapped = async function(){
+        var args = arguments;
+        var result;
+        try{ result = await original.apply(this, args); }
+        finally{
+          try{
+            await getUser();
+            await resolveCurrentDisplayName(false);
+            var n = notificationFromArchiveArgs(args);
+            await createNotification(n, { local:true });
+            await fetchNotifications(true);
+          }catch(e){ try{ console.warn('[KAD Notifications] Archive bridge failed:', e && e.message ? e.message : e); }catch(_e){} }
+        }
+        return result;
+      };
+      wrapped.__kadNotifWrapped = true;
+      api[method] = wrapped;
+    });
+    archiveBridgeInstalled = true;
+    return true;
+  }
+  function startArchiveBridgeWatcher(){
+    if (wrapDigitalArchive()) return;
+    if (archiveBridgeTimer) return;
+    var tries = 0;
+    archiveBridgeTimer = window.setInterval(function(){
+      tries += 1;
+      if (wrapDigitalArchive() || tries > 80){
+        window.clearInterval(archiveBridgeTimer);
+        archiveBridgeTimer = null;
+      }
+    }, 250);
+  }
 
   function getClient(){
     if (client) return client;
@@ -596,7 +633,6 @@
       }
     }
     try{ if (client && window.__KAD_PATCH_SUPABASE_CLIENT__) window.__KAD_PATCH_SUPABASE_CLIENT__(client); }catch(_e){}
-    installSupabaseMutationPatch(client);
     return client;
   }
   async function getUser(){
@@ -905,7 +941,14 @@
     try{
       var res = await sb.from(NOTIF_TABLE).select('id,page_key,page_name,category,type,title,message,details,entity_key,created_by_email,created_by_name,created_at').order('created_at', { ascending:false }).limit(LIST_LIMIT);
       if (res.error) throw res.error;
-      var visible = await filterVisibleNotifications(res.data || []);
+      var fallbackRows = await fetchFallbackNotifications();
+      var mergedMap = {};
+      (res.data || []).concat(fallbackRows || []).forEach(function(n){
+        var id = normText(n && n.id);
+        if (id && !mergedMap[id]) mergedMap[id] = n;
+      });
+      var merged = Object.keys(mergedMap).map(function(id){ return mergedMap[id]; }).sort(function(a,b){ return String(b.created_at || b.createdAt || '').localeCompare(String(a.created_at || a.createdAt || '')); }).slice(0, LIST_LIMIT);
+      var visible = await filterVisibleNotifications(merged);
       var ids = visible.map(function(n){ return normText(n.id); }).filter(Boolean);
       var states = await fetchReadStates(ids);
       visible = visible.filter(function(n){ return !states.deleted.has(normText(n.id)); });
@@ -1005,7 +1048,12 @@
       if (options.local === true && res.data) handleIncoming(res.data, false);
       return res.data || null;
     }catch(e){
-      try{ console.warn('[KAD Notifications] Inserarea notificării a eșuat:', e && e.message ? e.message : e); }catch(_e){}
+      try{ console.warn('[KAD Notifications] Inserarea notificării a eșuat, încerc fallback rf_documents:', e && e.message ? e.message : e); }catch(_e){}
+      var fallback = await writeFallbackNotification(n);
+      if (fallback){
+        if (options.local === true) handleIncoming(fallback, false);
+        return fallback;
+      }
       return null;
     }
   }
@@ -1064,6 +1112,7 @@
     await getUser();
     if (!currentEmail) return;
     await resolveCurrentDisplayName(false);
+    startArchiveBridgeWatcher();
     await fetchNotifications(true);
     startRealtime();
     await flushQueuedMutations();
@@ -1081,6 +1130,7 @@
     notify:createNotification,
     captureMutation:captureMutation,
     flushGroupedNotifications:function(){ pendingPageNotifications.forEach(function(_value, key){ flushPendingPageNotification(key); }); },
+    installArchiveBridge:startArchiveBridgeWatcher,
     refreshDisplayName:function(){ return resolveCurrentDisplayName(true); },
     setActorName:function(name, persist){
       currentActorNameOverride = sanitizeDisplayName(name, currentEmail);
