@@ -22,6 +22,7 @@
     { page_key: 'mapare-nume-notificari', page_name: 'Mapare nume notificări' },
     { page_key: 'istoric-notificari', page_name: 'Istoric notificări' },
     { page_key: 'arhiva-digitala', page_name: 'Arhivă digitală' },
+    { page_key: 'backup-date-kad', page_name: 'Backup date K.A.D' },
     { page_key: 'numeralkod', page_name: 'Numeral KOD' },
     { page_key: 'intrari-otel', page_name: 'Intrări Oțel' },
     { page_key: 'debitate', page_name: 'Debitate' },
@@ -111,6 +112,8 @@ var PAGE_CONTROL_OVERRIDES = Object.freeze({
     Object.freeze({ control_key:'nav.helper-acl', control_label:'Buton HELPER-ACL', control_type:'action' }),
     Object.freeze({ control_key:'nav.mapare-nume-notificari', control_label:'Buton MAPARE NUME NOTIFICĂRI', control_type:'action' }),
     Object.freeze({ control_key:'nav.istoric-notificari', control_label:'Buton ISTORIC NOTIFICĂRI', control_type:'action' }),
+    Object.freeze({ control_key:'nav.arhiva-digitala', control_label:'Buton ARHIVĂ DIGITALĂ', control_type:'action' }),
+    Object.freeze({ control_key:'nav.backup-date-kad', control_label:'Buton BACKUP DATE K.A.D', control_type:'action' }),
         Object.freeze({ control_key:'nav.numeralkod', control_label:'Buton NUMERALKOD', control_type:'action' }),
     Object.freeze({ control_key:'nav.intrari-otel', control_label:'Buton INTRĂRI OȚEL', control_type:'action' }),
     Object.freeze({ control_key:'nav.debitate', control_label:'Buton DEBITATE', control_type:'action' }),
@@ -209,6 +212,10 @@ var PAGE_CONTROL_OVERRIDES = Object.freeze({
     Object.freeze({ control_key:'archive.view', control_label:'Vizualizare arhivă digitală', control_type:'field' }),
     Object.freeze({ control_key:'archive.export', control_label:'Export arhivă digitală', control_type:'action' }),
     Object.freeze({ control_key:'archive.versions', control_label:'Vizualizare versiuni documente', control_type:'field' })
+  ]),
+  'backup-date-kad': Object.freeze([
+    Object.freeze({ control_key:'backup.generate', control_label:'Generare backup date', control_type:'action' }),
+    Object.freeze({ control_key:'backup.select', control_label:'Selectare tabele backup', control_type:'field' })
   ]),
   'forjate': Object.freeze([
     Object.freeze({ control_key:'field.reper', control_label:'Câmp Reper', control_type:'field' }),
