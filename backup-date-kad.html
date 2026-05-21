@@ -35,7 +35,7 @@
       <div class="card">
         <div class="cardHead"><span>Foi incluse în backup</span><span id="userText" class="muted"></span></div>
         <div class="cardBody">
-          <div class="note"><strong>Backupul descarcă doar datele foilor de lucru.</strong> Pentru fiecare foaie selectată se creează JSON + Excel (.xlsx). Nu citește Helper, ACL, audit, profiluri sau tabele de administrator.</div>
+          <div class="note"><strong>Backupul descarcă doar datele foilor de lucru.</strong> Pentru fiecare foaie selectată se creează JSON pentru restaurare + Excel (.xlsx) cu tabelul efectiv al foii, nu cu JSON brut. Nu citește Helper, ACL, audit, profiluri sau tabele de administrator.</div>
           <div class="note warn" style="margin-top:8px"><strong>Restaurarea suprascrie documentele selectate din backup înapoi în <code>rf_documents</code>.</strong> Folosește restaurarea doar când vrei să recuperezi date șterse/stricate.</div>
 
           <div class="controls">
@@ -173,28 +173,151 @@
   function csv(rows){ if(!rows || !rows.length) return ''; var keys=[]; rows.forEach(function(r){ Object.keys(r||{}).forEach(function(k){ if(keys.indexOf(k)<0) keys.push(k); }); }); var out=[keys.map(csvCell).join(',')]; rows.forEach(function(r){ out.push(keys.map(function(k){ return csvCell(formatCsvValue(r ? r[k] : '')); }).join(',')); }); return out.join('\n'); }
   function contentPayload(row){ return row && row.content != null ? row.content : (row && row.data != null ? row.data : null); }
   function bytes(v){ var raw=''; try{ raw=JSON.stringify(v==null?null:v); }catch(_e){ raw=String(v==null?'':v); } try{return new Blob([raw]).size;}catch(_e){return raw.length;} }
-  function buildSheetRows(pageKey, rows){
-    return rows.map(function(r){
+  var PAGE_HEADERS = {
+    'intrari-otel':['AN','LUNA','DATA','DIAMETRU OȚEL','CALITATE OȚEL','COD INTERN OȚEL','ȘARJĂ MATERIAL','CANTITATE KG','PRETEST','FURNIZOR'],
+    'debitate':['AN','LUNA','DATA','ECHIPAMENT','REPER','DIAMETRU OȚEL','CALITATE OȚEL','KG/BUC','LUNGIME DEBITAT (MM)','COD INTERN OȚEL','CANTITATE (BUC)','SCHIMBUL','TOTAL KG DEBITAT','OPERATOR'],
+    'forjate':['AN','LUNA','DATA','SCHIMBUL','LINIE FORJARE','REPER','DIMENSIUNE OȚEL','CALITATE OȚEL','MARCAJ MATRIȚĂ','COD INTERN MATERIAL','COD CAT','MATRIȚĂ SUPERIOARĂ','ÎNĂLȚIME MF SUP','MATRIȚĂ INFERIOARĂ','ÎNĂLȚIME MF INF','COMBINARE MATRIȚE','DENUMIRE PORTMATRIȚĂ','BUC REALIZATE','REBUT','PLANIFICAT','KG SEMIFABRICAT DEBITAT','KG FORJATE','TACT','SCHIMBARE REPER','REGLAJ','OPRIRI NEPLANIFICATE','ÎNCĂLZIRE SDV','PAUZĂ DE MASĂ','TIMP DISPONIBIL','DISPONIBILITATE','PERFORMANȚĂ','PROCENT CALITATE','OEE'],
+    'magnaflux':['AN','LUNA','DATA','SCHIMBUL','UTILAJ','REPER','BUCĂȚI VERIFICATE','BUCĂȚI RESPINSE','OPERATOR','OBSERVAȚII'],
+    'duritate':['AN','LUNA','DATA','SCHIMBUL','REPER','VALOARE DURITATE','REZULTAT','OPERATOR','OBSERVAȚII'],
+    'probleme-raportate':['AN','LUNA','DATA','SCHIMBUL','UTILAJ','REPER','BUC REALIZATE','DENUMIRE OPERAȚIUNE','TIMP MINUTE PIERDUTE','OBSERVAȚII','DEPARTAMENT'],
+    'ambalare':['AN','LUNA','DATA','REPER','COD CAT','CANTITATE','OPERATOR','OBSERVAȚII'],
+    'lista-vanzari':['AN','LUNA','DATA','COD ARTICOL','NUME ART.','CANTITATE','CLIENT'],
+    'comenzi-livrare':['AN','LUNA','DATA LIVRARE','REPER','CANTITATE','CLIENT','OBSERVAȚII']
+  };
+
+  function normalizePayload(v){
+    if(v == null) return null;
+    if(typeof v === 'string'){
+      var t = v.trim();
+      if(!t) return null;
+      try{ return JSON.parse(t); }catch(_e){ return v; }
+    }
+    return v;
+  }
+  function firstArrayPayload(payload){
+    payload = normalizePayload(payload);
+    if(!payload) return [];
+    if(Array.isArray(payload)) return payload;
+    var candidates = ['rows','items','data','records','list','rapoarte','entries'];
+    for(var i=0;i<candidates.length;i+=1){
+      var v = payload[candidates[i]];
+      if(Array.isArray(v)) return v;
+    }
+    return [];
+  }
+  function isProbablyHeaderRow(row){
+    if(!Array.isArray(row)) return false;
+    var joined = row.map(function(x){ return lower(x); }).join('|');
+    return joined.indexOf('an')>=0 && (joined.indexOf('luna')>=0 || joined.indexOf('data')>=0);
+  }
+  function normalizeCellValue(v){
+    if(v == null) return '';
+    if(typeof v === 'object'){
+      if(v.value != null) return normalizeCellValue(v.value);
+      if(v.text != null) return normalizeCellValue(v.text);
+      if(v.label != null) return normalizeCellValue(v.label);
+      try{ return JSON.stringify(v); }catch(_e){ return String(v); }
+    }
+    return v;
+  }
+  function makeUniqueHeaders(headers){
+    var seen = {};
+    return headers.map(function(h,idx){
+      h = String(h == null || h === '' ? ('Coloana '+(idx+1)) : h).trim();
+      var base = h, n = 1;
+      while(seen[h]){ n += 1; h = base + ' ' + n; }
+      seen[h] = true;
+      return h;
+    });
+  }
+  function rowsArrayToObjects(pageKey, arr){
+    if(!arr || !arr.length) return [];
+    var headers = PAGE_HEADERS[pageKey] ? PAGE_HEADERS[pageKey].slice() : [];
+    var dataRows = arr.slice();
+    if(Array.isArray(dataRows[0]) && isProbablyHeaderRow(dataRows[0])){
+      headers = dataRows[0].map(normalizeCellValue);
+      dataRows = dataRows.slice(1);
+    }
+    var maxLen = headers.length;
+    dataRows.forEach(function(r){ if(Array.isArray(r)) maxLen = Math.max(maxLen, r.length); });
+    while(headers.length < maxLen) headers.push('Coloana '+(headers.length+1));
+    headers = makeUniqueHeaders(headers);
+    return dataRows.map(function(r){
+      if(!Array.isArray(r)) return objectFlatRow(r);
+      var o = {};
+      headers.forEach(function(h,i){ o[h] = normalizeCellValue(r[i]); });
+      return o;
+    });
+  }
+  function objectFlatRow(obj){
+    if(!obj || typeof obj !== 'object') return {'Valoare':normalizeCellValue(obj)};
+    var out = {};
+    Object.keys(obj).forEach(function(k){ out[k] = normalizeCellValue(obj[k]); });
+    return out;
+  }
+  function extractTableRowsFromDoc(pageKey, doc){
+    var payload = normalizePayload(contentPayload(doc));
+    var arr = firstArrayPayload(payload);
+    if(arr && arr.length){
+      if(Array.isArray(arr[0])) return rowsArrayToObjects(pageKey, arr);
+      return arr.map(objectFlatRow);
+    }
+    return [];
+  }
+  function buildCleanSheetRows(pageKey, docs){
+    var all = [];
+    (docs || []).forEach(function(doc){
+      var rows = extractTableRowsFromDoc(pageKey, doc);
+      rows.forEach(function(r){ all.push(r); });
+    });
+    return all;
+  }
+  function buildDocumentIndexRows(pageKey, docs){
+    return (docs || []).map(function(r){
       var key = docKey(r);
       var payload = contentPayload(r);
-      var preview = '';
-      try{ preview = JSON.stringify(payload == null ? r : payload); }catch(_e){ preview = String(payload == null ? '' : payload); }
-      if(preview.length > 28000) preview = preview.slice(0,28000) + '...';
-      return { pagina: pageKey, document: key, actualizat_la: r.updated_at || r.created_at || '', marime_bytes: bytes(payload), json_preview: preview };
+      return {
+        'FOAIE': pageLabel(pageKey),
+        'DOCUMENT': key,
+        'ACTUALIZAT LA': r.updated_at || r.created_at || '',
+        'MĂRIME': bytes(payload),
+        'OBSERVAȚIE': 'Document păstrat în JSON pentru restaurare; nu are tabel rows/items detectabil.'
+      };
     });
+  }
+  function autosizeWorksheet(ws, rows){
+    var cols = [];
+    var range = XLSX.utils.decode_range(ws['!ref'] || 'A1:A1');
+    for(var C = range.s.c; C <= range.e.c; ++C){
+      var max = 10;
+      for(var R = range.s.r; R <= Math.min(range.e.r, 250); ++R){
+        var cell = ws[XLSX.utils.encode_cell({r:R,c:C})];
+        if(cell && cell.v != null) max = Math.max(max, String(cell.v).length + 2);
+      }
+      cols.push({wch: Math.min(Math.max(max, 10), 34)});
+    }
+    ws['!cols'] = cols;
+    ws['!autofilter'] = { ref: ws['!ref'] || 'A1:A1' };
+  }
+  function addSheetFromRows(wb, sheetName, rows){
+    var safeSheet = safeName(sheetName).slice(0,31) || 'Foaie';
+    var ws = XLSX.utils.json_to_sheet(rows && rows.length ? rows : [{'INFO':'Nu există rânduri pentru filtrul selectat.'}]);
+    autosizeWorksheet(ws, rows || []);
+    XLSX.utils.book_append_sheet(wb, ws, safeSheet);
   }
   function makeWorkbook(groups){
     var wb = XLSX.utils.book_new();
     var summary = [];
+    var documentIndex = [];
     Object.keys(groups).forEach(function(pageKey){
-      var rows = groups[pageKey] || [];
-      summary.push({ foaie: pageLabel(pageKey), page_key: pageKey, documente: rows.length });
-      var sheetRows = buildSheetRows(pageKey, rows);
-      var ws = XLSX.utils.json_to_sheet(sheetRows.length ? sheetRows : [{ pagina:pageKey, document:'', actualizat_la:'', marime_bytes:0, json_preview:'' }]);
-      XLSX.utils.book_append_sheet(wb, ws, safeName(pageLabel(pageKey)).slice(0,31));
+      var docs = groups[pageKey] || [];
+      var tableRows = buildCleanSheetRows(pageKey, docs);
+      summary.push({ 'FOAIE':pageLabel(pageKey), 'PAGE_KEY':pageKey, 'DOCUMENTE JSON':docs.length, 'RÂNDURI EXCEL':tableRows.length });
+      documentIndex = documentIndex.concat(buildDocumentIndexRows(pageKey, docs));
+      addSheetFromRows(wb, pageLabel(pageKey), tableRows.length ? tableRows : buildDocumentIndexRows(pageKey, docs));
     });
-    var wsSummary = XLSX.utils.json_to_sheet(summary);
-    XLSX.utils.book_append_sheet(wb, wsSummary, 'SUMAR');
+    addSheetFromRows(wb, 'SUMAR', summary);
+    addSheetFromRows(wb, 'INDEX DOCUMENTE', documentIndex);
     return XLSX.write(wb, {bookType:'xlsx', type:'array'});
   }
   async function loadRfDocuments(){
@@ -257,7 +380,7 @@
       var zip = new JSZip();
       var started = new Date();
       var manifest = { type:'KAD_SHEETS_BACKUP', generated_at:started.toISOString(), generated_by:state.user ? state.user.email : '', version:'sheets-json-xlsx-restore-v1', source_table:'rf_documents', excluded:'Helper / ACL / Audit / Administrator', pages:[], total_documents:0 };
-      zip.file('README_BACKUP_RESTAURARE_KAD.txt', 'Backup date foi K.A.D.\nGenerat la: '+started.toLocaleString('ro-RO')+'\nGenerat de: '+(state.user&&state.user.email?state.user.email:'')+'\n\nConține JSON + Excel (.xlsx) pentru foile selectate.\nNu include Helper, ACL, Audit, profiluri sau tabele de administrator.\nRestaurarea se face înapoi în rf_documents, pe baza doc_key.\n');
+      zip.file('README_BACKUP_RESTAURARE_KAD.txt', 'Backup date foi K.A.D.\nGenerat la: '+started.toLocaleString('ro-RO')+'\nGenerat de: '+(state.user&&state.user.email?state.user.email:'')+'\n\nConține JSON pentru restaurare + Excel (.xlsx) cu tabelele efective ale foilor selectate.\nNu include Helper, ACL, Audit, profiluri sau tabele de administrator.\nRestaurarea se face înapoi în rf_documents, pe baza doc_key.\n');
       Object.keys(groups).forEach(function(pageKey){
         var docs = groups[pageKey] || [];
         var folder = zip.folder('json').folder(safeName(pageKey));
