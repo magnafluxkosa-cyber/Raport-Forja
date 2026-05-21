@@ -6,6 +6,7 @@
   <title>Raport forja - K.A.D</title>
   <script src="./rf-config.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="./kad-digital-archive.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js" referrerpolicy="no-referrer"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js" referrerpolicy="no-referrer"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js" referrerpolicy="no-referrer"></script>
@@ -768,6 +769,64 @@ function showValidation(title,items,ok){
   m.style.display='flex';
 }
 if($('btnCloseValidation'))$('btnCloseValidation').onclick=()=>{$('validationModal').style.display='none';};
+
+async function prepareRaportForjaArchiveRow(row,old,ops){
+  try{
+    if(window.KADDigitalArchive&&typeof window.KADDigitalArchive.prepareDocumentRow==='function'){
+      return await window.KADDigitalArchive.prepareDocumentRow({
+        sb:sb,
+        user:USER,
+        pageKey:PAGE_KEY,
+        documentType:'raport-forja',
+        documentPrefix:'RF',
+        row:row,
+        oldData:old||null
+      });
+    }
+  }catch(e){console.warn('Arhiva digitală: nu am putut pregăti metadatele raportului',e)}
+  return row;
+}
+async function recordRaportForjaArchiveChange(oldData,newData,action,reason){
+  try{
+    if(window.KADDigitalArchive&&typeof window.KADDigitalArchive.recordChange==='function'){
+      await window.KADDigitalArchive.recordChange({
+        sb:sb,
+        user:USER,
+        pageKey:PAGE_KEY,
+        documentType:'raport-forja',
+        documentPrefix:'RF',
+        action:action,
+        oldData:oldData||null,
+        newData:newData||null,
+        documentId:(newData&&newData.document_id)||(oldData&&oldData.document_id)||(newData&&newData.id)||(oldData&&oldData.id)||'',
+        documentNo:(newData&&newData.document_no)||(oldData&&oldData.document_no)||'',
+        versionNo:(newData&&newData.version_no)||(newData&&newData.audit_version)||null,
+        status:(newData&&newData.document_status)||(newData&&newData.status)||'',
+        reason:reason||''
+      });
+    }
+  }catch(e){console.warn('Arhiva digitală: nu am putut salva auditul raportului',e)}
+}
+async function recordRaportForjaArchiveExport(row,format){
+  try{
+    if(window.KADDigitalArchive&&typeof window.KADDigitalArchive.recordExport==='function'){
+      await window.KADDigitalArchive.recordExport({
+        sb:sb,
+        user:USER,
+        pageKey:PAGE_KEY,
+        documentType:'raport-forja',
+        documentPrefix:'RF',
+        action:'EXPORT_'+String(format||'FILE').toUpperCase(),
+        newData:row||null,
+        documentId:(row&&row.document_id)||(row&&row.id)||'',
+        documentNo:(row&&row.document_no)||'',
+        versionNo:(row&&row.version_no)||(row&&row.audit_version)||null,
+        status:(row&&row.document_status)||(row&&row.status)||'',
+        reason:'Export fișă / raport în format '+String(format||'FILE').toUpperCase()
+      });
+    }
+  }catch(e){console.warn('Arhiva digitală: nu am putut salva auditul exportului',e)}
+}
 async function saveReport(){
   if(IS_SAVING)return false;
   IS_SAVING=true;
@@ -779,12 +838,14 @@ async function saveReport(){
     showValidation('Raportul nu a fost salvat','Nu ai drept de editare.',false);
     return false;
   }
-  const row=readForm(),ops=[...collectSefiEchipa(),...collectOperators()],timeLoss=collectTimeLoss(),miss=validate(row,ops,timeLoss);
+  let row=readForm();
+  const ops=[...collectSefiEchipa(),...collectOperators()],timeLoss=collectTimeLoss(),miss=validate(row,ops,timeLoss);
   row.time_loss=timeLoss;
   if(miss.length){$('msg').className='msg bad';$('msg').textContent='Lipsesc / sunt greșite: '+miss.join(', ');showValidation('Raportul nu a fost salvat', ['Nu a fost salvat pentru că lipsește:'].concat(miss), false);resetSaveButtons();return false}
   try{
     setCloud('Cloud: salvez…','warn');
     const old=REPORTS.find(r=>r.id===row.id);
+    row=await prepareRaportForjaArchiveRow(row,old,ops);
     if(old&&String(old.an)!==String(row.an)){
       let oldRows=await loadForjateYear(old.an);
       oldRows=oldRows.filter(r=>r.id!==row.id);
@@ -804,6 +865,7 @@ async function saveReport(){
     let programMsg='';
     try{const synced=await syncProgramUtilajeFromReport(row);if(synced)programMsg=' Orele peste 8 au fost trecute automat în Program utilaje.'}catch(pe){console.warn('Program utilaje sync error',pe);programMsg=' Raport salvat, dar Program utilaje nu a putut fi actualizat automat.'}
     await saveOps();
+    await recordRaportForjaArchiveChange(old,savedReport,old?'UPDATE':'CREATE',old?'Corectare raport':'Salvare raport nou');
     clearReportDraft();
     const wasEdit=!!EDIT_ID;
     EDIT_ID=null;
@@ -985,6 +1047,7 @@ async function saveFisaPdfDirect(){
       pdf.addImage(imgData,'JPEG',x,margin,imgW,hPx*mmPerPx,undefined,'FAST');
     }
     pdf.save(fileName);
+    await recordRaportForjaArchiveExport(r,'PDF');
   }catch(e){
     showValidation('PDF','Eroare la salvarea PDF: '+(e&&e.message?e.message:e),false);
   }finally{
@@ -1000,12 +1063,12 @@ async function deleteFisaOnly(id){
     r.mp_dd51=[];r.mp_autocontrol=null;r.saved_at=nowIso();
     let rows=await loadForjateYear(r.an);
     const ix=rows.findIndex(x=>String(x.id)===String(id));
-    if(ix>=0){rows[ix]={...rows[ix],mp_dd51:[],mp_autocontrol:null};await saveForjateYear(r.an,rows);}
+    if(ix>=0){const before={...rows[ix]};rows[ix]={...rows[ix],mp_dd51:[],mp_autocontrol:null,updated_at:nowIso()};await saveForjateYear(r.an,rows);await recordRaportForjaArchiveChange(before,rows[ix],'UPDATE','Ștergere fișă DD-51 / autocontrol');}
     await saveOps();renderTable();renderFiseList();showValidation('Fișă ștearsă','Fișa DD-51/autocontrol a fost ștearsă. Raportul zilnic a rămas salvat.',true);
   }catch(e){showValidation('Eroare ștergere','Eroare ștergere fișă: '+(e.message||e),false);}
 }
 
-function putForm(r){$('data').value=dmyToInput(r.data);$('schimb').value=r.schimb||'1';$('utilaj').value=r.ciocan||'';togglePortmatrita();$('portmatrita').value=r.portmatrita||'';$('totalOreLucrate').value=r.total_ore_lucrate||'8';$('reper').value=r.reper||'';$('buc').value=r.buc_realizate||'';$('rebut').value=r.rebut||0;$('marcaj').value=r.marcaj||'';$('codcat').value=r.cod_cat_dk||'';$('matritaSup').value=r.matrita_sup||'';$('inaltimeSup').value=r.inaltime_sup||'';$('matritaInf').value=r.matrita_inf||'';$('inaltimeInf').value=r.inaltime_inf||'';renderTimeLoss(Array.isArray(r.time_loss)?r.time_loss:[{key:'pauza',minute:r.pauza_masa_min,operatiune:'Pauza de masa [Min]',departament:''},{key:'incalzire',minute:r.incalzire_sdv_min,operatiune:'Incalzire SDV [Min]',departament:'Tehnologia Procesului'},{key:'schimbare',minute:r.schimbare_reper_min,operatiune:'Schimbare reper [Min]',departament:'Productie'},{key:'reglaj',minute:r.reglaj_min,operatiune:'Reglaj [Min]',departament:'Productie'},{key:'oprire1',minute:r.opriri_min,operatiune:'Opriri neplanificate [Min]',departament:'',observatii:''},{key:'oprire2',minute:'',operatiune:'Opriri neplanificate [Min]',departament:'',observatii:''},{key:'oprire3',minute:'',operatiune:'Opriri neplanificate [Min]',departament:'',observatii:''},{key:'oprire4',minute:'',operatiune:'Opriri neplanificate [Min]',departament:'',observatii:''}]);renderSefiEchipa(r.operatori||[]);renderOperators(r.operatori||[]);renderMpControl(r.mp_dd51||[],r.mp_autocontrol||null);updateAutoPreview()}function openEdit(id){if(!IS_ADMIN&&!ACCESS.can_edit)return;const r=REPORTS.find(x=>x.id===id);if(!r)return;EDIT_ID=id;document.querySelectorAll('tr').forEach(tr=>tr.style.outline='');const tr=document.querySelector(`tr[data-id="${id}"]`);if(tr)tr.style.outline='2px solid #1e5a96';putForm(r);setEditModeUI(true);setTimeout(()=>{$('formCard')?.scrollIntoView({behavior:'smooth',block:'start'});},80)}async function deleteCurrent(){if(!IS_ADMIN){showValidation('Acces restricționat','Doar rolul ADMIN poate șterge rânduri salvate.',false);return;}if(!EDIT_ID)return;const old=REPORTS.find(r=>r.id===EDIT_ID);if(!old)return;let rows=await loadForjateYear(old.an);rows=rows.filter(r=>r.id!==EDIT_ID);REPORTS=REPORTS.filter(r=>r.id!==EDIT_ID);await saveForjateYear(old.an,rows);await deleteProblemeForReport(EDIT_ID,old.an);await deleteProgramUtilajeForReport(old);await saveOps();clearReportDraft();EDIT_ID=null;$('modal').style.display='none';renderTable();clearForm();setEditModeUI(false);}
+function putForm(r){$('data').value=dmyToInput(r.data);$('schimb').value=r.schimb||'1';$('utilaj').value=r.ciocan||'';togglePortmatrita();$('portmatrita').value=r.portmatrita||'';$('totalOreLucrate').value=r.total_ore_lucrate||'8';$('reper').value=r.reper||'';$('buc').value=r.buc_realizate||'';$('rebut').value=r.rebut||0;$('marcaj').value=r.marcaj||'';$('codcat').value=r.cod_cat_dk||'';$('matritaSup').value=r.matrita_sup||'';$('inaltimeSup').value=r.inaltime_sup||'';$('matritaInf').value=r.matrita_inf||'';$('inaltimeInf').value=r.inaltime_inf||'';renderTimeLoss(Array.isArray(r.time_loss)?r.time_loss:[{key:'pauza',minute:r.pauza_masa_min,operatiune:'Pauza de masa [Min]',departament:''},{key:'incalzire',minute:r.incalzire_sdv_min,operatiune:'Incalzire SDV [Min]',departament:'Tehnologia Procesului'},{key:'schimbare',minute:r.schimbare_reper_min,operatiune:'Schimbare reper [Min]',departament:'Productie'},{key:'reglaj',minute:r.reglaj_min,operatiune:'Reglaj [Min]',departament:'Productie'},{key:'oprire1',minute:r.opriri_min,operatiune:'Opriri neplanificate [Min]',departament:'',observatii:''},{key:'oprire2',minute:'',operatiune:'Opriri neplanificate [Min]',departament:'',observatii:''},{key:'oprire3',minute:'',operatiune:'Opriri neplanificate [Min]',departament:'',observatii:''},{key:'oprire4',minute:'',operatiune:'Opriri neplanificate [Min]',departament:'',observatii:''}]);renderSefiEchipa(r.operatori||[]);renderOperators(r.operatori||[]);renderMpControl(r.mp_dd51||[],r.mp_autocontrol||null);updateAutoPreview()}function openEdit(id){if(!IS_ADMIN&&!ACCESS.can_edit)return;const r=REPORTS.find(x=>x.id===id);if(!r)return;EDIT_ID=id;document.querySelectorAll('tr').forEach(tr=>tr.style.outline='');const tr=document.querySelector(`tr[data-id="${id}"]`);if(tr)tr.style.outline='2px solid #1e5a96';putForm(r);setEditModeUI(true);setTimeout(()=>{$('formCard')?.scrollIntoView({behavior:'smooth',block:'start'});},80)}async function deleteCurrent(){if(!IS_ADMIN){showValidation('Acces restricționat','Doar rolul ADMIN poate șterge rânduri salvate.',false);return;}if(!EDIT_ID)return;const old=REPORTS.find(r=>r.id===EDIT_ID);if(!old)return;let rows=await loadForjateYear(old.an);rows=rows.filter(r=>r.id!==EDIT_ID);REPORTS=REPORTS.filter(r=>r.id!==EDIT_ID);await saveForjateYear(old.an,rows);await deleteProblemeForReport(EDIT_ID,old.an);await deleteProgramUtilajeForReport(old);await saveOps();await recordRaportForjaArchiveChange(old,{...old,deleted:true,deleted_at:nowIso(),document_status:'Anulat',status:'Anulat'},'DELETE','Ștergere / anulare raport');clearReportDraft();EDIT_ID=null;$('modal').style.display='none';renderTable();clearForm();setEditModeUI(false);}
 $('utilaj').addEventListener('change',()=>{togglePortmatrita();renderOperators([]);renderMpControl([],null);updateAutoPreview()});$('schimb').addEventListener('change',()=>{renderMpControl([],null);updateAutoPreview()});$('timeLossWrap')?.addEventListener('input',updateAutoPreview);$('timeLossWrap')?.addEventListener('change',updateAutoPreview);$('reper').addEventListener('change',()=>{renderMpControl([],null);updateAutoPreview()});$('reper').addEventListener('input',updateAutoPreview);['data','schimb','buc','rebut','marcaj','codcat','matritaSup','inaltimeSup','matritaInf','inaltimeInf','portmatrita'].forEach(id=>$(id).addEventListener('input',updateAutoPreview));$('totalOreLucrate').addEventListener('input',()=>{const savedCheck=collectMpChecklist();const savedAuto=collectMpAutocontrol();renderMpControl(savedCheck,savedAuto);updateAutoPreview();});
 if($('btnAddSefEchipa'))$('btnAddSefEchipa').onclick=()=>{if(!IS_ADMIN){showValidation('Acces restricționat','Doar rolul ADMIN poate adăuga șef de echipă.',false);return;}$('newSefEchipa').value='';$('sefMsg').textContent='';$('sefModal').style.display='flex';};
 if($('btnCloseSefModal'))$('btnCloseSefModal').onclick=()=>{$('sefModal').style.display='none';};
