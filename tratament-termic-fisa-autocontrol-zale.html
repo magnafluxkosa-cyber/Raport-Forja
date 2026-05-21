@@ -234,6 +234,18 @@
     .tt-operator-sheets-table td.left{text-align:left;}
     .tt-operator-sheets-empty{padding:22px;text-align:center;color:#4d647a;font-weight:900;}
 
+    .tt-pdf-export-root{background:#fff;color:#000;font-family:Calibri,Arial,sans-serif;padding:10px;width:1120px;box-sizing:border-box;}
+    .tt-pdf-export-title{font-size:18px;font-weight:900;text-align:center;margin:0 0 6px 0;color:#000;}
+    .tt-pdf-export-meta{display:grid;grid-template-columns:repeat(4,1fr);gap:4px;margin:0 0 8px 0;font-size:11px;font-weight:800;color:#000;}
+    .tt-pdf-export-meta div{border:1px solid #000;padding:4px;background:#eef5fb;}
+    .tt-pdf-export-root .sheet-viewport{transform:none!important;width:100%!important;}
+    .tt-pdf-export-root .excel-form-table{width:100%!important;max-width:100%!important;}
+    .tt-pdf-export-root .topbar,.tt-pdf-export-root .toolbar,.tt-pdf-export-root .tt-report-actions{display:none!important;}
+    .tt-pdf-export-root input,.tt-pdf-export-root select,.tt-pdf-export-root textarea{border:0!important;background:transparent!important;color:#000!important;font:inherit!important;text-align:center!important;}
+    .tt-pdf-control-value{display:block;width:100%;height:100%;min-height:20px;line-height:1.15;text-align:center;font-weight:900;color:#000;white-space:pre-wrap;}
+    .tt-pdf-export-root .tt-report-card{margin-top:10px;border:1px solid #000!important;box-shadow:none!important;}
+    .tt-pdf-export-root .tt-report-hidden{display:none!important;}
+
 
 
     .tt-report-card{
@@ -889,12 +901,13 @@
 </div>
 <div class="tt-operator-sheets-wrap">
 <table class="tt-operator-sheets-table">
-<thead><tr><th>Data</th><th>Operator</th><th>Schimb</th><th>Reper 1</th><th>Reper 2</th><th>Reper 3</th><th>Reper 4</th><th>Ultima salvare</th><th>Acțiune</th><th>Ștergere</th></tr></thead>
+<thead><tr><th>Data</th><th>Operator</th><th>Schimb</th><th>Reper 1</th><th>Reper 2</th><th>Reper 3</th><th>Reper 4</th><th>Ultima salvare</th><th>Acțiune</th><th>PDF</th><th>Ștergere</th></tr></thead>
 <tbody id="operatorSheetsBody"></tbody>
 </table>
 </div>
 </div>
 <div class="modal-footer">
+<button class="btn secondary" id="btnExportOperatorSheetsPdf" type="button">Export PDF listă</button>
 <button class="btn secondary" id="btnCloseOperatorSheets" type="button">Închide</button>
 </div>
 </div>
@@ -2928,6 +2941,194 @@
           alert('Nu am putut șterge fișa: ' + (error && error.message || error));
         }
       }
+      function operatorSheetPdfFileName(sheet){
+        var date = String(sheet && (sheet.date_iso || sheet.date_text) || todayIso()).replace(/[^0-9]/g,'').slice(0,8) || todayIso().replace(/-/g,'');
+        var op = safeStoragePart(sheet && sheet.operator || 'operator');
+        var sch = safeStoragePart(sheet && sheet.shift || 'schimb');
+        return 'fisa_operator_tt_' + op + '_' + date + '_' + sch + '.pdf';
+      }
+      function valueFromPdfControl(el){
+        if(!el) return '';
+        var tag = String(el.tagName || '').toLowerCase();
+        if(tag === 'select'){
+          var opt = el.options && el.selectedIndex >= 0 ? el.options[el.selectedIndex] : null;
+          return opt ? (opt.textContent || opt.value || '') : (el.value || '');
+        }
+        return el.value != null ? el.value : (el.textContent || '');
+      }
+      function normalizeControlsForPdf(root){
+        if(!root) return root;
+        root.querySelectorAll('input,select,textarea').forEach(function(el){
+          var span = document.createElement('span');
+          span.className = 'tt-pdf-control-value';
+          span.textContent = valueFromPdfControl(el);
+          if(el.id) span.setAttribute('data-source-id', el.id);
+          el.parentNode.replaceChild(span, el);
+        });
+        root.querySelectorAll('button,.modal-backdrop,.tt-report-actions,datalist').forEach(function(el){ el.remove(); });
+        return root;
+      }
+      function captureSheetSnapshotForPdf(){
+        return collectAdminSheetSnapshot();
+      }
+      function restoreSheetSnapshotForPdf(snapshot, previous){
+        if(!snapshot) return;
+        state.loadingOperatorSheet = true;
+        state.suppressTrackingSave = true;
+        try{
+          state.activeOperator = snapshot.activeOperator || null;
+          state.currentOperatorSheetId = snapshot.currentOperatorSheetId || null;
+          state.reperPresetTiming = snapshot.reperPresetTiming || {};
+          state.reper2PresetAfter = snapshot.reper2PresetAfter || null;
+          state.reper2PresetStartedAt = snapshot.reper2PresetStartedAt || null;
+          state.reper2PresetReper = snapshot.reper2PresetReper || '';
+          clearSheetContentNoConfirm(true);
+          loadHeaderFields(snapshot.fields || {});
+          TT_REPER_SLOTS.slice(1).forEach(function(slot){ if((snapshot.fields || {})['reper' + slot]) ensureSlotPresetRow(slot); });
+          restoreOraCtrlValues(snapshot.oraCtrl || {});
+          var cells = snapshot.cells || {};
+          document.querySelectorAll('.editable-cell[data-draft-cell]').forEach(function(td){
+            var key = td.getAttribute('data-draft-cell');
+            td.textContent = Object.prototype.hasOwnProperty.call(cells, key) ? cells[key] : '';
+          });
+          loadReportPanelData(snapshot.report || {});
+          clearEmptyOraCtrlRows();
+          syncReper2PresetTimingWithRenderedRows();
+          updateMagnafluxOperatorNames();
+          autoFillTreatmentParamsFromRepere();
+          validateMeasuredTemperatures();
+          fitSheet();
+          state.trackingDirty = snapshot.trackingDirty === true;
+          state.reportDirty = snapshot.reportDirty === true;
+          state.reportSavedForSheetId = snapshot.reportSavedForSheetId || '';
+          if(previous){
+            state.isViewingOperatorSheet = previous.isViewingOperatorSheet;
+            state.adminSheetSnapshot = previous.adminSheetSnapshot;
+            state.adminManualDirty = previous.adminManualDirty;
+          }
+          updateBackToAdminSheetButton();
+        }finally{
+          state.loadingOperatorSheet = false;
+          state.suppressTrackingSave = false;
+        }
+      }
+      function buildOperatorSheetPdfRoot(sheet){
+        var root = document.createElement('div');
+        root.className = 'tt-pdf-export-root';
+        var title = document.createElement('div');
+        title.className = 'tt-pdf-export-title';
+        title.textContent = 'FIȘĂ OPERATOR T.T. - TRATAMENT TERMIC';
+        root.appendChild(title);
+        var meta = document.createElement('div');
+        meta.className = 'tt-pdf-export-meta';
+        meta.innerHTML = '<div>Data: <b>' + escHtml(sheet.date_text || dateRo(sheet.date_iso)) + '</b></div>' +
+          '<div>Operator: <b>' + escHtml(sheet.operator || '') + '</b></div>' +
+          '<div>Schimb: <b>' + escHtml(sheet.shift ? shiftInfo(sheet.shift).label : '') + '</b></div>' +
+          '<div>Ultima salvare: <b>' + escHtml(String(sheet.updated_at || '').replace('T',' ').slice(0,16)) + '</b></div>';
+        root.appendChild(meta);
+        var sheetClone = document.getElementById('sheetViewport') ? document.getElementById('sheetViewport').cloneNode(true) : null;
+        if(sheetClone){
+          normalizeControlsForPdf(sheetClone);
+          root.appendChild(sheetClone);
+        }
+        var reportClone = document.getElementById('ttReportCard') ? document.getElementById('ttReportCard').cloneNode(true) : null;
+        if(reportClone){
+          normalizeControlsForPdf(reportClone);
+          root.appendChild(reportClone);
+        }
+        return root;
+      }
+      function loadHtml2PdfLibrary(){
+        return new Promise(function(resolve, reject){
+          if(window.html2pdf) return resolve(window.html2pdf);
+          var existing = document.querySelector('script[data-kad-html2pdf]');
+          if(existing){
+            existing.addEventListener('load', function(){ resolve(window.html2pdf); }, { once:true });
+            existing.addEventListener('error', reject, { once:true });
+            return;
+          }
+          var script = document.createElement('script');
+          script.src = 'https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js';
+          script.async = true;
+          script.setAttribute('data-kad-html2pdf','1');
+          script.onload = function(){ resolve(window.html2pdf); };
+          script.onerror = function(){ reject(new Error('Nu s-a putut încărca modulul PDF.')); };
+          document.head.appendChild(script);
+        });
+      }
+      function fallbackPrintOperatorSheet(root, title){
+        var w = window.open('', '_blank');
+        if(!w){ alert('Browserul a blocat fereastra PDF. Permite pop-up pentru kad-system.ro.'); return; }
+        w.document.open();
+        w.document.write('<!doctype html><html><head><meta charset="utf-8"><title>' + escHtml(title) + '</title><style>' +
+          'body{margin:8mm;background:#fff;color:#000;font-family:Calibri,Arial,sans-serif}.tt-pdf-export-root{width:100%;padding:0}.excel-form-table,.tt-report-excel{width:100%;border-collapse:collapse;table-layout:fixed}.excel-form-table td,.tt-report-excel th,.tt-report-excel td{border:1px solid #000!important;padding:2px!important;font-size:8px!important;line-height:1.05!important;text-align:center!important;color:#000!important}.tt-report-excel th{background:#d9ebfa!important;font-weight:900}.tt-pdf-export-title{text-align:center;font-weight:900;font-size:15px;margin-bottom:5px}.tt-pdf-export-meta{display:grid;grid-template-columns:repeat(4,1fr);gap:3px;margin-bottom:6px;font-size:9px}.tt-pdf-export-meta div{border:1px solid #000;padding:3px;background:#eef5fb}.tt-pdf-control-value{display:block;white-space:pre-wrap;font-weight:900}.tt-report-actions,.topbar,button,datalist{display:none!important}@page{size:A4 landscape;margin:6mm}' +
+          '</style></head><body>' + root.outerHTML + '<script>setTimeout(function(){window.print();},350);<\/script></body></html>');
+        w.document.close();
+      }
+      async function exportOperatorSheetPdf(sheet){
+        if(!sheet) return;
+        var snapshot = captureSheetSnapshotForPdf();
+        var previous = { isViewingOperatorSheet:state.isViewingOperatorSheet, adminSheetSnapshot:state.adminSheetSnapshot, adminManualDirty:state.adminManualDirty };
+        var filename = operatorSheetPdfFileName(sheet);
+        setChip(els.operatorSheetsMsg, 'Se generează PDF...', 'warn');
+        try{
+          applySheetData(sheet);
+          await new Promise(function(resolve){ setTimeout(resolve, 120); });
+          var root = buildOperatorSheetPdfRoot(sheet);
+          try{
+            var html2pdf = await loadHtml2PdfLibrary();
+            var holder = document.createElement('div');
+            holder.style.position = 'fixed';
+            holder.style.left = '-10000px';
+            holder.style.top = '0';
+            holder.appendChild(root);
+            document.body.appendChild(holder);
+            await html2pdf().set({
+              margin: [4,4,4,4],
+              filename: filename,
+              image: { type:'jpeg', quality:0.98 },
+              html2canvas: { scale:1.45, useCORS:true, backgroundColor:'#ffffff', scrollX:0, scrollY:0 },
+              jsPDF: { unit:'mm', format:'a4', orientation:'landscape' },
+              pagebreak: { mode:['avoid-all','css','legacy'] }
+            }).from(root).save();
+            holder.remove();
+          }catch(pdfError){
+            fallbackPrintOperatorSheet(root, filename);
+          }
+          setChip(els.operatorSheetsMsg, 'PDF generat', 'ok');
+        }finally{
+          restoreSheetSnapshotForPdf(snapshot, previous);
+        }
+      }
+      async function exportVisibleOperatorSheetsPdf(){
+        var rows = Array.from(els.operatorSheetsBody ? els.operatorSheetsBody.querySelectorAll('[data-sheet-id]') : []);
+        var ids = rows.map(function(row){ return row.getAttribute('data-sheet-id'); }).filter(Boolean);
+        var sheets = ids.map(function(id){ return (OPERATOR_SHEETS_CACHE || []).find(function(s){ return String(s.id || '') === String(id); }); }).filter(Boolean);
+        if(!sheets.length){ alert('Nu există fișe vizibile de exportat.'); return; }
+        var root = document.createElement('div');
+        root.className = 'tt-pdf-export-root';
+        var title = document.createElement('div');
+        title.className = 'tt-pdf-export-title';
+        title.textContent = 'LISTĂ FIȘE OPERATORI T.T.';
+        root.appendChild(title);
+        var table = document.createElement('table');
+        table.className = 'tt-operator-sheets-table';
+        table.innerHTML = '<thead><tr><th>Data</th><th>Operator</th><th>Schimb</th><th>Reper 1</th><th>Reper 2</th><th>Reper 3</th><th>Reper 4</th><th>Ultima salvare</th></tr></thead><tbody>' + sheets.map(function(sheet){
+          return '<tr><td>' + escHtml(sheet.date_text || dateRo(sheet.date_iso)) + '</td><td>' + escHtml(sheet.operator || '') + '</td><td>' + escHtml(sheet.shift ? shiftInfo(sheet.shift).label : '') + '</td><td>' + escHtml(sheet.reper1 || '') + '</td><td>' + escHtml(sheet.reper2 || '') + '</td><td>' + escHtml(sheet.reper3 || '') + '</td><td>' + escHtml(sheet.reper4 || '') + '</td><td>' + escHtml(String(sheet.updated_at || '').replace('T',' ').slice(0,16)) + '</td></tr>';
+        }).join('') + '</tbody>';
+        root.appendChild(table);
+        var filename = 'lista_fise_operatori_tt_' + todayIso().replace(/-/g,'') + '.pdf';
+        setChip(els.operatorSheetsMsg, 'Se generează PDF listă...', 'warn');
+        try{
+          var html2pdf = await loadHtml2PdfLibrary();
+          var holder = document.createElement('div');
+          holder.style.position = 'fixed'; holder.style.left = '-10000px'; holder.style.top = '0'; holder.appendChild(root); document.body.appendChild(holder);
+          await html2pdf().set({ margin:[8,8,8,8], filename:filename, image:{type:'jpeg',quality:0.98}, html2canvas:{scale:1.8,useCORS:true,backgroundColor:'#ffffff'}, jsPDF:{unit:'mm',format:'a4',orientation:'landscape'} }).from(root).save();
+          holder.remove();
+        }catch(error){ fallbackPrintOperatorSheet(root, filename); }
+        setChip(els.operatorSheetsMsg, 'PDF listă generat', 'ok');
+      }
+
       function renderOperatorSheetsList(){
         if(!els.operatorSheetsBody) return;
         var q = norm(els.operatorSheetsSearch ? els.operatorSheetsSearch.value : '');
@@ -2937,7 +3138,7 @@
           return norm(pack).indexOf(q) >= 0;
         });
         if(!sheets.length){
-          els.operatorSheetsBody.innerHTML = '<tr><td colspan="10" class="tt-operator-sheets-empty">Nu există fișe salvate pentru filtrul selectat.</td></tr>';
+          els.operatorSheetsBody.innerHTML = '<tr><td colspan="11" class="tt-operator-sheets-empty">Nu există fișe salvate pentru filtrul selectat.</td></tr>';
           setChip(els.operatorSheetsMsg, '0 fișe', 'warn');
           return;
         }
@@ -2952,6 +3153,7 @@
             '<td class="left">' + escHtml(sheet.reper4 || '') + '</td>' +
             '<td>' + escHtml(String(sheet.updated_at || '').replace('T',' ').slice(0,16)) + '</td>' +
             '<td><button class="btn secondary" type="button" data-open-operator-sheet="' + escHtml(sheet.id || '') + '">Deschide</button></td>' +
+            '<td><button class="btn secondary" type="button" data-export-operator-sheet-pdf="' + escHtml(sheet.id || '') + '">PDF</button></td>' +
             '<td><button class="btn danger" type="button" data-delete-operator-sheet="' + escHtml(sheet.id || '') + '">Șterge</button></td>' +
           '</tr>';
         }).join('');
@@ -2969,6 +3171,16 @@
               state.trackingDirty = false;
               setChip(els.modeChip, 'Vizualizare fișă: ' + (sheet.operator || ''), 'ok');
             }
+          });
+        });
+        els.operatorSheetsBody.querySelectorAll('[data-export-operator-sheet-pdf]').forEach(function(btn){
+          btn.addEventListener('click', function(){
+            var id = btn.getAttribute('data-export-operator-sheet-pdf');
+            var sheet = (OPERATOR_SHEETS_CACHE || []).find(function(s){ return String(s.id || '') === String(id || ''); });
+            if(sheet) exportOperatorSheetPdf(sheet).catch(function(error){
+              console.error(error);
+              alert('Nu am putut genera PDF-ul: ' + (error && error.message || error));
+            });
           });
         });
         els.operatorSheetsBody.querySelectorAll('[data-delete-operator-sheet]').forEach(function(btn){
@@ -5112,6 +5324,7 @@
         els.operatorSheetsSearch = qs('operatorSheetsSearch');
         els.operatorSheetsMsg = qs('operatorSheetsMsg');
         els.btnRefreshOperatorSheets = qs('btnRefreshOperatorSheets');
+        els.btnExportOperatorSheetsPdf = qs('btnExportOperatorSheetsPdf');
         els.btnCloseOperatorSheets = qs('btnCloseOperatorSheets');
 
         els.ttReportStatus = qs('ttReportStatus');
