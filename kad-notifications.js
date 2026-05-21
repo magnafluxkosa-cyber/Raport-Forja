@@ -19,6 +19,8 @@
   var displayNameCache = {};
   var initialized = false;
   var uiReady = false;
+  var PATCH_FLAG = '__kad_notifications_mutation_patch_v2__';
+  var PATCHED_CLIENTS = (typeof WeakSet !== 'undefined') ? new WeakSet() : null;
   var lastFetchAt = 0;
   var unreadIds = new Set();
   var allNotifications = [];
@@ -127,7 +129,7 @@
     var actionWord = 'salvat date';
     if (method === 'insert') actionWord = 'adăugat date noi';
     else if (method === 'update') actionWord = 'modificat date';
-    else if (method === 'upsert') actionWord = 'salvat/modificat date';
+    else if (method === 'upsert') actionWord = 'adăugat/modificat date';
     else if (method === 'delete') actionWord = 'șters date';
 
     var actor = normText(ctx.actor_name) || currentUserName();
@@ -462,6 +464,120 @@
     pending.timer = window.setTimeout(function(){ flushPendingPageNotification(key); }, delay);
   }
 
+  function safeGetDocKeyFromMutation(ctx){
+    ctx = ctx || {};
+    return normText(ctx.doc_key || extractDocKey(ctx.payload) || extractDocKey(ctx.result) || '');
+  }
+  function shouldSkipNotificationPatchContext(ctx){
+    ctx = ctx || {};
+    var table = normText(ctx.table).toLowerCase();
+    var docKey = safeGetDocKeyFromMutation(ctx).toLowerCase();
+    if (table === 'kad_audit_log' || table === 'kad_document_versions' || table === 'kad_backup_log') return true;
+    if (table === 'kad_notifications' || table === 'kad_notification_reads') return true;
+    if (docKey.indexOf('kad_audit') === 0 || docKey.indexOf('kad-document-version') === 0 || docKey.indexOf('kad_document_version') === 0) return true;
+    if (docKey.indexOf('backup-date-kad') === 0 || docKey.indexOf('kad_backup') === 0) return true;
+    return false;
+  }
+  function notifyMutationAfterSuccess(ctx, response){
+    ctx = ctx || {};
+    if (response && response.error) return;
+    if (shouldSkipNotificationPatchContext(ctx)) return;
+    ctx.result = response && response.data;
+    ctx.doc_key = safeGetDocKeyFromMutation(ctx);
+    window.setTimeout(function(){
+      try{
+        if (window.KAD_NOTIFICATIONS && typeof window.KAD_NOTIFICATIONS.captureMutation === 'function') {
+          window.KAD_NOTIFICATIONS.captureMutation(ctx);
+        } else {
+          window.__KAD_NOTIFICATION_QUEUE__ = window.__KAD_NOTIFICATION_QUEUE__ || [];
+          window.__KAD_NOTIFICATION_QUEUE__.push(ctx);
+        }
+      }catch(_e){}
+    }, 0);
+  }
+  function patchMutationThenable(builder, ctx){
+    if (!builder || typeof builder !== 'object') return builder;
+    try{
+      if (!builder.__kad_notif_ctx__) Object.defineProperty(builder, '__kad_notif_ctx__', { value:ctx, configurable:true });
+    }catch(_e){ builder.__kad_notif_ctx__ = ctx; }
+    if (!builder.__kad_notif_then_patched__ && typeof builder.then === 'function'){
+      var originalThen = builder.then;
+      try{
+        Object.defineProperty(builder, '__kad_notif_then_patched__', { value:true, configurable:true });
+        builder.then = function(onFulfilled, onRejected){
+          var self = this;
+          return originalThen.call(self, function(response){
+            try{
+              if (!self.__kad_notif_sent__){
+                self.__kad_notif_sent__ = true;
+                notifyMutationAfterSuccess(self.__kad_notif_ctx__ || ctx, response);
+              }
+            }catch(_e){}
+            return typeof onFulfilled === 'function' ? onFulfilled(response) : response;
+          }, onRejected);
+        };
+      }catch(_e){}
+    }
+    ['select','eq','neq','gt','gte','lt','lte','match','is','in','contains','containedBy','range','order','limit','single','maybeSingle','returns','throwOnError','csv','geojson','explain','rollback','abortSignal'].forEach(function(method){
+      if (typeof builder[method] !== 'function' || builder[method].__kad_notif_chain_patched__) return;
+      var original = builder[method];
+      var wrapped = function(){
+        var result = original.apply(this, arguments);
+        return patchMutationThenable(result || this, this.__kad_notif_ctx__ || ctx);
+      };
+      wrapped.__kad_notif_chain_patched__ = true;
+      try{ builder[method] = wrapped; }catch(_e){}
+    });
+    return builder;
+  }
+  function patchTableBuilder(builder, table){
+    if (!builder || typeof builder !== 'object') return builder;
+    if (builder.__kad_notif_table_patched__) return builder;
+    try{ Object.defineProperty(builder, '__kad_notif_table_patched__', { value:true, configurable:true }); }catch(_e){ builder.__kad_notif_table_patched__ = true; }
+    ['insert','upsert','update','delete'].forEach(function(method){
+      if (typeof builder[method] !== 'function' || builder[method].__kad_notif_mutation_patched__) return;
+      var original = builder[method];
+      var wrapped = function(){
+        var args = Array.prototype.slice.call(arguments);
+        var payload = args.length ? args[0] : null;
+        var ctx = {
+          table: table,
+          method: method,
+          payload: payload,
+          doc_key: extractDocKey(payload),
+          page_key: pageFromLocation(),
+          actor_name: currentUserName(),
+          captured_by: 'kad-notifications-patch-v2'
+        };
+        var result = original.apply(this, arguments);
+        return patchMutationThenable(result, ctx);
+      };
+      wrapped.__kad_notif_mutation_patched__ = true;
+      try{ builder[method] = wrapped; }catch(_e){}
+    });
+    return builder;
+  }
+  function installSupabaseMutationPatch(sb){
+    if (!sb || typeof sb.from !== 'function') return sb;
+    try{ if (PATCHED_CLIENTS && PATCHED_CLIENTS.has(sb)) return sb; }catch(_e){}
+    if (sb[PATCH_FLAG]) return sb;
+    var originalFrom = sb.from;
+    var wrappedFrom = function(table){
+      var builder = originalFrom.apply(this, arguments);
+      return patchTableBuilder(builder, table);
+    };
+    try{ wrappedFrom.__kad_original_from__ = originalFrom; }catch(_e){}
+    try{ sb.from = wrappedFrom; }catch(_e){ return sb; }
+    try{ Object.defineProperty(sb, PATCH_FLAG, { value:true, configurable:true }); }catch(_e){ sb[PATCH_FLAG] = true; }
+    try{ if (PATCHED_CLIENTS) PATCHED_CLIENTS.add(sb); }catch(_e){}
+    return sb;
+  }
+  var previousPatchHook = window.__KAD_PATCH_SUPABASE_CLIENT__;
+  window.__KAD_PATCH_SUPABASE_CLIENT__ = function(sb){
+    try{ if (typeof previousPatchHook === 'function') previousPatchHook(sb); }catch(_e){}
+    return installSupabaseMutationPatch(sb);
+  };
+
   function getClient(){
     if (client) return client;
     try{
@@ -480,6 +596,7 @@
       }
     }
     try{ if (client && window.__KAD_PATCH_SUPABASE_CLIENT__) window.__KAD_PATCH_SUPABASE_CLIENT__(client); }catch(_e){}
+    installSupabaseMutationPatch(client);
     return client;
   }
   async function getUser(){
