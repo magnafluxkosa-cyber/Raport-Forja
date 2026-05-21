@@ -1770,6 +1770,7 @@ function applyFilters(){
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="rf-config.js"></script>
+<script src="./kad-digital-archive.js"></script>
 <script>
 (function(){
   const PAGE_KEY = 'intrari-otel';
@@ -1846,6 +1847,58 @@ function applyFilters(){
 
   function nowIso(){
     return new Date().toISOString();
+  }
+
+  const ARCHIVE_HEADERS = ["Anul","LUNA","Data Intrare","Dimensiune Otel","Calitate otel","Cod intern otel (3 litere)","Sarja material (furnizor)","Cantitate (kg)","PRETEST","Furnizor"];
+
+  function archiveRowObject(vals){
+    const row = Array.isArray(vals) ? vals.slice(0, 10) : [];
+    while (row.length < 10) row.push('');
+    const obj = {};
+    ARCHIVE_HEADERS.forEach((h, i) => { obj[h] = row[i] ?? ''; });
+    obj.an = row[0] ?? '';
+    obj.luna = row[1] ?? '';
+    obj.data_intrare = row[2] ?? '';
+    obj.dimensiune_otel = row[3] ?? '';
+    obj.calitate_otel = row[4] ?? '';
+    obj.cod_intern_otel = row[5] ?? '';
+    obj.sarja_material = row[6] ?? '';
+    obj.cantitate_kg = row[7] ?? '';
+    obj.pretest = row[8] ?? '';
+    obj.furnizor = row[9] ?? '';
+    return obj;
+  }
+
+  function archiveRowKey(vals, index){
+    const r = archiveRowObject(vals);
+    return ['intrari-otel', r.an, r.data_intrare, r.dimensiune_otel, r.calitate_otel, r.cod_intern_otel, r.sarja_material, index == null ? '' : index].join('|');
+  }
+
+  function archiveFire(options){
+    try{
+      if (!window.KADDigitalArchive || typeof window.KADDigitalArchive.recordChange !== 'function') return;
+      const payload = Object.assign({
+        sb: APP.supa,
+        pageKey: PAGE_KEY,
+        tableName: 'rf_documents',
+        documentType: 'intrari-otel',
+        source: 'intrari-otel-safe-page'
+      }, options || {});
+      window.KADDigitalArchive.recordChange(payload).catch(function(e){ console.warn('KAD archive skipped:', e && (e.message || e)); });
+    }catch(e){ console.warn('KAD archive skipped:', e && (e.message || e)); }
+  }
+
+  function archiveExport(action, payload){
+    try{
+      if (!window.KADDigitalArchive || typeof window.KADDigitalArchive.recordExport !== 'function') return;
+      window.KADDigitalArchive.recordExport(Object.assign({
+        sb: APP.supa,
+        pageKey: PAGE_KEY,
+        tableName: 'rf_documents',
+        documentType: 'intrari-otel',
+        source: 'intrari-otel-safe-page'
+      }, payload || {}, { action: action || 'EXPORT' })).catch(function(e){ console.warn('KAD archive export skipped:', e && (e.message || e)); });
+    }catch(e){ console.warn('KAD archive export skipped:', e && (e.message || e)); }
   }
 
   function uniqueSorted(values){
@@ -2941,6 +2994,7 @@ function applyFilters(){
     a.click();
     a.remove();
     URL.revokeObjectURL(url);
+    archiveExport('EXPORT', { method:'export-json', documentId:getYearDocKey(y), documentNo:'INTRARI-OTEL-' + y, newData:{ format:'json', year:y, rows:getRowsForYear(y).length } });
   }
 
   async function importJSON(){
@@ -2971,6 +3025,15 @@ function applyFilters(){
           saveYearLocal(y, grouped[y], nowIso());
           markPending(y);
           try{ queuePushYear(y); }catch(_e){}
+          archiveFire({
+            action: 'IMPORT',
+            method: 'import-json',
+            documentId: getYearDocKey(y),
+            documentNo: 'INTRARI-OTEL-' + y,
+            status: 'SALVAT',
+            newData: { document_status:'SALVAT', year:y, rows:(grouped[y]||[]).length, format:'json' },
+            reason: 'Import JSON Intrări Oțel'
+          });
         });
 
         if (touchedYears.length) {
@@ -2996,6 +3059,7 @@ function applyFilters(){
       const wb = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(wb, ws, "INTRARI_OTEL");
       XLSX.writeFile(wb, `INTRARI_OTEL_${y}_${new Date().toISOString().slice(0,10)}.xlsx`);
+      archiveExport('EXPORT', { method:'export-xlsx', documentId:getYearDocKey(y), documentNo:'INTRARI-OTEL-' + y, newData:{ format:'xlsx', year:y, rows:getRowsForYear(y).length } });
     });
   }
 
@@ -3111,6 +3175,15 @@ function applyFilters(){
           saveYearLocal(y, grouped[y], nowIso());
           markPending(y);
           try{ queuePushYear(y); }catch(_e){}
+          archiveFire({
+            action: 'IMPORT',
+            method: 'import-xlsx',
+            documentId: getYearDocKey(y),
+            documentNo: 'INTRARI-OTEL-' + y,
+            status: 'SALVAT',
+            newData: { document_status:'SALVAT', year:y, rows:(grouped[y]||[]).length, format:'xlsx' },
+            reason: 'Import Excel Intrări Oțel'
+          });
         });
 
         if (touchedYears.length) {
@@ -3177,14 +3250,20 @@ function applyFilters(){
     const targetYear = normalizeYearValue(row[0]) || (normalizeYearValue(activeYear) || String(CURRENT_YEAR));
     const currentYear = normalizeYearValue(activeYear) || String(CURRENT_YEAR);
     let touchedYears = [targetYear];
+    let auditAction = 'CREATE';
+    let auditOldRow = null;
+    let auditIndex = null;
 
     if (typeof __EDIT_TR !== 'undefined' && __EDIT_TR) {
       const editIndex = getRowIndexFromTr(__EDIT_TR);
+      auditIndex = editIndex;
       const currentList = [...getRowsForYear(currentYear)];
       if (editIndex < 0 || editIndex >= currentList.length) {
         alert('Nu am găsit rândul pentru editare.');
         return;
       }
+      auditAction = 'UPDATE';
+      auditOldRow = currentList[editIndex] ? currentList[editIndex].slice(0, 10) : null;
       if (targetYear === currentYear) {
         currentList[editIndex] = row;
         saveYearLocal(currentYear, currentList, nowIso());
@@ -3193,14 +3272,28 @@ function applyFilters(){
         saveYearLocal(currentYear, currentList, nowIso());
         const targetList = [...getRowsForYear(targetYear)];
         targetList.push(row);
+        auditIndex = targetList.length - 1;
         saveYearLocal(targetYear, targetList, nowIso());
         touchedYears = [currentYear, targetYear];
       }
     } else {
       const targetList = [...getRowsForYear(targetYear)];
       targetList.push(row);
+      auditIndex = targetList.length - 1;
       saveYearLocal(targetYear, targetList, nowIso());
     }
+
+    archiveFire({
+      action: auditAction,
+      method: auditAction === 'CREATE' ? 'add-row' : 'edit-row',
+      documentId: archiveRowKey(row, auditIndex),
+      documentNo: 'INTRARI-OTEL-' + targetYear,
+      versionNo: 1,
+      status: 'SALVAT',
+      oldData: auditOldRow ? archiveRowObject(auditOldRow) : null,
+      newData: Object.assign({ document_status:'SALVAT', index_rand:auditIndex }, archiveRowObject(row)),
+      reason: auditAction === 'UPDATE' ? 'Modificare rând Intrări Oțel' : 'Adăugare rând Intrări Oțel'
+    });
 
     markDirty(touchedYears);
 
@@ -3214,13 +3307,30 @@ function applyFilters(){
   function deleteCurrentRow(){
     if (!guardAction(APP.permissions.can_delete, 'Nu ai drept de ștergere pe această pagină.')) return;
     if (typeof __EDIT_TR === 'undefined' || !__EDIT_TR) return;
-    const ok = confirm('Sigur vrei să ștergi acest rând?');
+    const ok = confirm('Sigur vrei să anulezi/ștergi acest rând? Rândul va dispărea din foaie, dar rămâne urmă în Arhivă digitală.');
     if (!ok) return;
+    const reason = prompt('Motiv anulare/ștergere rând Intrări Oțel:');
+    if (!reason || !String(reason).trim()) {
+      alert('Motivul este obligatoriu pentru anulare/ștergere.');
+      return;
+    }
 
     const y = normalizeYearValue(activeYear) || String(CURRENT_YEAR);
     const idx = getRowIndexFromTr(__EDIT_TR);
     const list = [...getRowsForYear(y)];
     if (idx >= 0 && idx < list.length) {
+      const oldRow = list[idx] ? list[idx].slice(0, 10) : null;
+      archiveFire({
+        action: 'DELETE',
+        method: 'cancel-row',
+        documentId: oldRow ? archiveRowKey(oldRow, idx) : ('intrari-otel|' + y + '|row|' + idx),
+        documentNo: 'INTRARI-OTEL-' + y,
+        versionNo: 1,
+        status: 'ANULAT',
+        oldData: oldRow ? archiveRowObject(oldRow) : null,
+        newData: { document_status:'ANULAT', index_rand:idx, motiv:String(reason).trim() },
+        reason: String(reason).trim()
+      });
       list.splice(idx, 1);
       saveYearLocal(y, list, nowIso());
       markDirty(y);
@@ -3341,6 +3451,16 @@ function applyFilters(){
     try{
       const payload = getYearPayload(y, getRowsForYear(y), yearMeta[y]?.updated_at || nowIso());
       await saveDocument(getYearDocKey(y), payload);
+      archiveFire({
+        action: 'UPSERT',
+        method: 'sync-year-document',
+        documentId: getYearDocKey(y),
+        documentNo: 'INTRARI-OTEL-' + y,
+        versionNo: Number(payload.audit_version || payload.version_no || 1) || 1,
+        status: 'SALVAT',
+        newData: Object.assign({ document_status:'SALVAT', document_key:getYearDocKey(y), page_key:PAGE_KEY }, payload),
+        reason: 'Sincronizare document anual Intrări Oțel'
+      });
       saveYearLocal(y, getRowsForYear(y), payload.updated_at);
       mergeCloudIndex([y], { [y]: payload.updated_at });
       await pushCloudIndex([y]);
