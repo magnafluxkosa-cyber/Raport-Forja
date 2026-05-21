@@ -133,13 +133,69 @@
   async function loadAll(){ await Promise.all([loadAudit(),loadVersions(),loadDocs()]); render(); }
   async function tryRpc(name, args){ if(!state.sb || typeof state.sb.rpc !== 'function') return null; try{ var res = await state.sb.rpc(name, args || {}); if(res && !res.error && Array.isArray(res.data)) return res.data; }catch(_e){} return null; }
   async function loadAudit(){
-    try{ var rpcRows = await tryRpc('kad_archive_get_audit', { p_limit: 1500 }); if(rpcRows){ state.audit = rpcRows; return; } var res=await state.sb.from('kad_audit_log').select('id,created_at,action,method,page_key,table_name,document_key,entity_key,user_email,actor_name,new_data,old_data,query_info,device_info,source').order('created_at',{ascending:false}).limit(1500); if(res.error) throw res.error; state.audit=res.data||[]; }
-    catch(e){ state.audit=[]; $('auditBody').innerHTML='<tr><td colspan="7" class="status">Nu pot citi audit log. Rulează setup-arhiva-digitala-kad-sigur.sql, apoi reîmprospătează pagina.</td></tr>'; }
+    var rows = [];
+    try{
+      var rpcRows = await tryRpc('kad_archive_get_audit', { p_limit: 1500 });
+      if(rpcRows){ rows = rpcRows; }
+      else {
+        var res=await state.sb.from('kad_audit_log').select('id,created_at,action,method,page_key,table_name,document_key,entity_key,user_email,actor_name,new_data,old_data,query_info,device_info,source').order('created_at',{ascending:false}).limit(1500);
+        if(res.error) throw res.error;
+        rows=res.data||[];
+      }
+    }catch(e){ rows=[]; }
+    try{
+      var fb = await loadArchiveFallbackDocs('audit');
+      rows = mergeArchiveRows(rows, fb, 'audit');
+    }catch(_e){}
+    state.audit = rows.sort(function(a,b){ return String(b.created_at||'').localeCompare(String(a.created_at||'')); });
   }
+
   async function loadVersions(){
-    try{ var rpcRows = await tryRpc('kad_archive_get_versions', { p_limit: 1500 }); if(rpcRows){ state.versions = rpcRows; return; } var res=await state.sb.from('kad_document_versions').select('id,created_at,document_key,page_key,version_no,source_table,action,snapshot_hash,payload_bytes,created_by_email,snapshot_data').order('created_at',{ascending:false}).limit(1500); if(res.error) throw res.error; state.versions=res.data||[]; }
-    catch(e){ state.versions=[]; $('versionsBody').innerHTML='<tr><td colspan="8" class="status">Nu pot citi versiunile documentelor. Rulează setup-arhiva-digitala-kad-sigur.sql, apoi reîmprospătează pagina.</td></tr>'; }
+    var rows = [];
+    try{
+      var rpcRows = await tryRpc('kad_archive_get_versions', { p_limit: 1500 });
+      if(rpcRows){ rows = rpcRows; }
+      else {
+        var res=await state.sb.from('kad_document_versions').select('id,created_at,document_key,page_key,version_no,source_table,action,snapshot_hash,payload_bytes,created_by_email,snapshot_data').order('created_at',{ascending:false}).limit(1500);
+        if(res.error) throw res.error;
+        rows=res.data||[];
+      }
+    }catch(e){ rows=[]; }
+    try{
+      var fb = await loadArchiveFallbackDocs('version');
+      rows = mergeArchiveRows(rows, fb, 'version');
+    }catch(_e){}
+    state.versions = rows.sort(function(a,b){ return String(b.created_at||'').localeCompare(String(a.created_at||'')); });
   }
+
+  function parseContentPayload(r){
+    var payload = r && r.content != null ? r.content : (r && r.data != null ? r.data : null);
+    if(typeof payload === 'string'){
+      try{ return JSON.parse(payload); }catch(_e){ return null; }
+    }
+    return payload && typeof payload === 'object' ? payload : null;
+  }
+  async function loadArchiveFallbackDocs(kind){
+    var rows=[];
+    var selects=['doc_key,content,data,updated_at','doc_key,content,updated_at','doc_key,data,updated_at','doc_key,updated_at'];
+    for(var i=0;i<selects.length;i+=1){
+      try{
+        var res = await state.sb.from('rf_documents').select(selects[i]).or('doc_key.ilike.kad_audit__%,doc_key.ilike.kad_version__%').limit(1500);
+        if(res && !res.error){ rows=res.data||[]; break; }
+      }catch(_e){}
+    }
+    return (rows||[]).map(function(r){ var p=parseContentPayload(r); if(!p) return null; p.__fallback_doc_key = r.doc_key; p.created_at = p.created_at || r.updated_at; return p; }).filter(function(p){ return p && p._kad_archive_type===kind; });
+  }
+  function mergeArchiveRows(primary, fallback, kind){
+    var seen={};
+    (primary||[]).forEach(function(r){ seen[(r.id||'')+'|'+(r.created_at||'')+'|'+(r.document_key||'')+'|'+(r.action||'')]=1; });
+    (fallback||[]).forEach(function(r){
+      var k=(r.id||'')+'|'+(r.created_at||'')+'|'+(r.document_key||'')+'|'+(r.action||'');
+      if(!seen[k]){ r.source = r.source || 'rf_documents-fallback'; primary.push(r); seen[k]=1; }
+    });
+    return primary||[];
+  }
+
   async function queryDocsWithFallback(){
     var attempts = [
       { select:'doc_key,content,data,updated_at', order:'updated_at' },
@@ -193,7 +249,7 @@
     if(state.tab==='audit' && !a.length && d.length) setTab('docs');
   }
   function detailsButton(kind,idx){ return '<button class="detailsBtn" type="button" data-kind="'+kind+'" data-idx="'+idx+'">Detalii</button>'; }
-  function renderAudit(rows){ if(!rows.length){ $('auditBody').innerHTML='<tr><td colspan="7" class="status">Nu există audit pentru filtrul selectat. Auditul se umple numai cu salvările/modificările noi făcute după instalarea variantei sigure.</td></tr>'; return; } $('auditBody').innerHTML=rows.map(function(r,i){ var cls = r.action==='DELETE'?'red':(r.action==='CREATE'?'green':''); return '<tr><td>'+esc(fmtDate(r.created_at))+'</td><td><span class="pill '+cls+'">'+esc(r.action||r.method||'')+'</span></td><td>'+esc(r.page_key||'')+'</td><td>'+esc(r.table_name||'')+'</td><td>'+esc(r.document_key||r.entity_key||'')+'</td><td>'+esc(r.actor_name||r.user_email||'')+'</td><td>'+detailsButton('audit',i)+'</td></tr>'; }).join(''); bindDetails(rows,'audit'); }
+  function renderAudit(rows){ if(!rows.length){ $('auditBody').innerHTML='<tr><td colspan="7" class="status">Nu există audit pentru filtrul selectat. Dacă tocmai ai salvat, apasă Reîmprospătează și verifică filtrul Pagină.</td></tr>'; return; } $('auditBody').innerHTML=rows.map(function(r,i){ var cls = r.action==='DELETE'?'red':(r.action==='CREATE'?'green':''); return '<tr><td>'+esc(fmtDate(r.created_at))+'</td><td><span class="pill '+cls+'">'+esc(r.action||r.method||'')+'</span></td><td>'+esc(r.page_key||'')+'</td><td>'+esc(r.table_name||'')+'</td><td>'+esc(r.document_key||r.entity_key||'')+'</td><td>'+esc(r.actor_name||r.user_email||'')+'</td><td>'+detailsButton('audit',i)+'</td></tr>'; }).join(''); bindDetails(rows,'audit'); }
   function renderVersions(rows){ if(!rows.length){ $('versionsBody').innerHTML='<tr><td colspan="8" class="status">Nu există versiuni noi pentru filtrul selectat. Versiunile se creează numai pentru salvările integrate după instalarea variantei sigure.</td></tr>'; return; } $('versionsBody').innerHTML=rows.map(function(r,i){ return '<tr><td>'+esc(fmtDate(r.created_at))+'</td><td><span class="pill">v'+esc(r.version_no||'')+'</span></td><td>'+esc(r.document_key||'')+'</td><td>'+esc(r.page_key||'')+'</td><td>'+esc(r.action||'')+'</td><td class="muted">'+esc((r.snapshot_hash||'').slice(0,16))+'</td><td>'+esc(r.created_by_email||'')+'</td><td>'+detailsButton('versions',i)+'</td></tr>'; }).join(''); bindDetails(rows,'versions'); }
   function renderDocs(rows){ if(state.docsError){ $('docsBody').innerHTML='<tr><td colspan="7" class="status">Nu pot citi documentele existente din rf_documents: '+esc(state.docsError)+'</td></tr>'; return; } if(!rows.length){ $('docsBody').innerHTML='<tr><td colspan="7" class="status">Nu există documente existente pentru filtrul selectat.</td></tr>'; return; } $('docsBody').innerHTML=rows.map(function(r,i){ return '<tr><td>'+esc(fmtDate(r.updated_at||r.created_at))+'</td><td><span class="pill yellow">EXISTENT</span></td><td>'+esc(r.page_key||'')+'</td><td>'+esc(r.table_name||'rf_documents')+'</td><td>'+esc(r.document_key||'')+'</td><td>'+esc(formatBytes(r.payload_bytes||0))+'</td><td>'+detailsButton('docs',i)+'</td></tr>'; }).join(''); bindDetails(rows,'docs'); }
   function formatBytes(n){ n=Number(n||0); if(n>1024*1024) return (n/1024/1024).toFixed(1)+' MB'; if(n>1024) return (n/1024).toFixed(1)+' KB'; return n+' B'; }

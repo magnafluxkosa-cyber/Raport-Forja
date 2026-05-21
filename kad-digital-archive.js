@@ -138,6 +138,34 @@
     return row;
   }
 
+
+  function auditDocKey(prefix, pageKey, documentKey){
+    var stamp = new Date().toISOString().replace(/[-:.TZ]/g,'').slice(0,14);
+    var rnd = Math.random().toString(16).slice(2,8);
+    var cleanPage = normalizePageKey(pageKey || 'unknown').replace(/[^a-z0-9_-]+/gi,'-');
+    var cleanDoc = norm(documentKey || '').replace(/[^a-z0-9_-]+/gi,'-').slice(0,80) || rnd;
+    return (prefix || 'kad_audit') + '__' + cleanPage + '__' + stamp + '__' + cleanDoc + '__' + rnd;
+  }
+
+  async function writeRfDocumentFallback(sb, key, payload){
+    if(!sb || typeof sb.from !== 'function') return { ok:false, skipped:true, reason:'no_supabase_client' };
+    var rows = [
+      { doc_key:key, content:payload, updated_at:nowIso() },
+      { doc_key:key, data:payload, updated_at:nowIso() },
+      { doc_key:key, content:payload },
+      { doc_key:key, data:payload }
+    ];
+    var lastErr = null;
+    for(var i=0;i<rows.length;i+=1){
+      try{
+        var res = await sb.from('rf_documents').upsert(rows[i], { onConflict:'doc_key' });
+        if(res && !res.error) return { ok:true, stored:'rf_documents', doc_key:key };
+        lastErr = res && res.error ? res.error : lastErr;
+      }catch(e){ lastErr = e; }
+    }
+    return { ok:false, error:lastErr, doc_key:key };
+  }
+
   async function saveVersion(options){
     options = options || {};
     var sb = options.sb || createClient();
@@ -171,7 +199,27 @@
       if(res && res.error) throw res.error;
       return { ok:true, stored:'table', row:row };
     }catch(e){
-      return { ok:false, error:e, row:row };
+      var key = auditDocKey('kad_version', pageKey, documentKey);
+      var fb = await writeRfDocumentFallback(sb, key, {
+        _kad_archive_type:'version',
+        created_at:row.created_at || nowIso(),
+        document_key:row.document_key,
+        document_no:row.document_no,
+        document_type:row.document_type,
+        page_key:row.page_key,
+        version_no:row.version_no,
+        source_table:row.source_table,
+        action:row.action,
+        status:row.status,
+        reason:row.reason,
+        snapshot_hash:row.snapshot_hash,
+        payload_bytes:row.payload_bytes,
+        created_by:row.created_by,
+        created_by_email:row.created_by_email,
+        snapshot_data:row.snapshot_data,
+        table_error:e && (e.message || e.details || e.code) || null
+      });
+      return { ok:!!fb.ok, fallback:true, error:e, fallbackResult:fb, row:row };
     }
   }
 
@@ -212,7 +260,34 @@
       if(res && res.error) throw res.error;
       return { ok:true, stored:'table', row:row };
     }catch(e){
-      return { ok:false, error:e, row:row };
+      var key = auditDocKey('kad_audit', pageKey, documentKey || row.entity_key || row.document_no);
+      var fb = await writeRfDocumentFallback(sb, key, {
+        _kad_archive_type:'audit',
+        id:null,
+        created_at:row.created_at || nowIso(),
+        user_id:row.user_id,
+        user_email:row.user_email,
+        actor_name:row.actor_name,
+        action:row.action,
+        method:row.method,
+        page_key:row.page_key,
+        table_name:row.table_name,
+        document_key:row.document_key,
+        entity_key:row.entity_key,
+        document_type:row.document_type,
+        document_no:row.document_no,
+        version_no:row.version_no,
+        status:row.status,
+        reason:row.reason,
+        old_data:row.old_data,
+        new_data:row.new_data,
+        query_info:row.query_info,
+        device_info:row.device_info,
+        source:'rf_documents-fallback',
+        success:true,
+        table_error:e && (e.message || e.details || e.code) || null
+      });
+      return { ok:!!fb.ok, fallback:true, error:e, fallbackResult:fb, row:row };
     }
   }
 
