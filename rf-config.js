@@ -4067,7 +4067,7 @@ async function applyDomPermissions(pageKey, root, options) {
     if (document.getElementById('kadNotificationsScript')) return;
     var script = document.createElement('script');
     script.id = 'kadNotificationsScript';
-    script.src = './kad-notifications.js?v=20260520-map-admin';
+    script.src = './kad-notifications.js?v=20260521-page-grouped';
     script.defer = true;
     document.head.appendChild(script);
   }

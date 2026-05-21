@@ -23,6 +23,11 @@
   var unreadIds = new Set();
   var allNotifications = [];
   var recentAutoNotifications = new Map();
+  var pendingPageNotifications = new Map();
+  var recentPageAutoNotificationAt = new Map();
+  var AUTO_PAGE_DEBOUNCE_MS = 3500;
+  var AUTO_PAGE_MAX_WAIT_MS = 20000;
+  var AUTO_PAGE_COOLDOWN_MS = 60000;
   var isOpen = false;
   var els = {};
 
@@ -357,6 +362,104 @@
     if (t - last < 5000) return true;
     recentAutoNotifications.set(key, t);
     return false;
+  }
+  function addSetValue(obj, value){
+    value = normText(value);
+    if (!value) return;
+    obj[value] = true;
+  }
+  function objectKeys(obj){
+    return Object.keys(obj || {}).filter(Boolean);
+  }
+  function truncateList(list, limit){
+    list = list || [];
+    limit = limit || 20;
+    return list.slice(0, limit);
+  }
+  function groupedAutoKey(n, actor){
+    return [normKey(n && n.page_key), normKey(actor || currentUserName())].join('|');
+  }
+  function pageCooldownKey(pending){
+    return [normKey(pending && pending.page_key), normKey(pending && pending.actor_name)].join('|');
+  }
+  function buildGroupedAutoNotification(pending){
+    var methods = objectKeys(pending.methods);
+    var sourceTables = objectKeys(pending.source_tables);
+    var sourceDocKeys = objectKeys(pending.source_doc_keys);
+    var actor = normText(pending.actor_name) || currentUserName();
+    var pageName = normText(pending.page_name) || pageNameFor(pending.page_key);
+    return {
+      page_key: normKey(pending.page_key),
+      page_name: pageName,
+      category: 'auto-page-save',
+      type: 'page_change',
+      title: 'Modificare în ' + pageName,
+      message: actor + ' a făcut modificări în ' + pageName + '.',
+      details: {
+        grouped: true,
+        mutation_count: pending.count || 1,
+        methods: methods,
+        source_tables: truncateList(sourceTables, 20),
+        source_doc_keys: truncateList(sourceDocKeys, 20),
+        source_page: pending.source_page || pageFromLocation(),
+        first_captured_at: pending.first_iso,
+        last_captured_at: pending.last_iso
+      },
+      entity_key: 'auto-page:' + normKey(pending.page_key),
+      source_table: sourceTables[0] || null,
+      source_doc_key: sourceDocKeys[0] || null,
+      actor_name: actor
+    };
+  }
+  async function flushPendingPageNotification(key){
+    var pending = pendingPageNotifications.get(key);
+    if (!pending) return;
+    pendingPageNotifications.delete(key);
+    if (pending.timer) window.clearTimeout(pending.timer);
+
+    var t = Date.now();
+    recentPageAutoNotificationAt.forEach(function(value, mapKey){
+      if (t - value > AUTO_PAGE_COOLDOWN_MS * 4) recentPageAutoNotificationAt.delete(mapKey);
+    });
+    var cooldownKey = pageCooldownKey(pending);
+    var last = recentPageAutoNotificationAt.get(cooldownKey) || 0;
+    if (t - last < AUTO_PAGE_COOLDOWN_MS) return;
+    recentPageAutoNotificationAt.set(cooldownKey, t);
+
+    await createNotification(buildGroupedAutoNotification(pending), { local:false });
+  }
+  function schedulePageAutoNotification(n, ctx){
+    n = n || {}; ctx = ctx || {};
+    var actor = normText(ctx.actor_name) || currentUserName();
+    var key = groupedAutoKey(n, actor);
+    var t = Date.now();
+    var pending = pendingPageNotifications.get(key);
+    if (!pending){
+      pending = {
+        page_key: normKey(n.page_key),
+        page_name: normText(n.page_name) || pageNameFor(n.page_key),
+        actor_name: actor,
+        source_page: pageFromLocation(),
+        methods: {},
+        source_tables: {},
+        source_doc_keys: {},
+        count: 0,
+        first_ms: t,
+        first_iso: nowIso(),
+        last_iso: nowIso(),
+        timer: null
+      };
+      pendingPageNotifications.set(key, pending);
+    }
+    pending.count += 1;
+    pending.last_iso = nowIso();
+    addSetValue(pending.methods, n.type || ctx.method || 'save');
+    addSetValue(pending.source_tables, n.source_table || ctx.table || '');
+    addSetValue(pending.source_doc_keys, n.source_doc_key || ctx.doc_key || '');
+
+    if (pending.timer) window.clearTimeout(pending.timer);
+    var delay = (t - pending.first_ms >= AUTO_PAGE_MAX_WAIT_MS) ? 250 : AUTO_PAGE_DEBOUNCE_MS;
+    pending.timer = window.setTimeout(function(){ flushPendingPageNotification(key); }, delay);
   }
 
   function getClient(){
@@ -798,10 +901,9 @@
     ctx.actor_name = await resolveActorNameFromContext(ctx);
     var n = inferNotificationFromMutation(ctx || {});
     if (!n.page_key) return;
-    if (isDuplicateAuto(n)) return;
     var allowed = await canViewPage(n.page_key);
     if (!allowed) return;
-    await createNotification(n, { local:false });
+    schedulePageAutoNotification(n, ctx);
   }
   async function handleIncoming(n, fromRealtime){
     if (!n || !normText(n.id)) return;
@@ -861,6 +963,7 @@
     deleteAllForMe:deleteAllVisibleForMe,
     notify:createNotification,
     captureMutation:captureMutation,
+    flushGroupedNotifications:function(){ pendingPageNotifications.forEach(function(_value, key){ flushPendingPageNotification(key); }); },
     refreshDisplayName:function(){ return resolveCurrentDisplayName(true); },
     setActorName:function(name, persist){
       currentActorNameOverride = sanitizeDisplayName(name, currentEmail);
