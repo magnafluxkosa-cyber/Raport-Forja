@@ -26,6 +26,8 @@
     { page_key: 'numeralkod', page_name: 'Numeral KOD' },
     { page_key: 'intrari-otel', page_name: 'Intrări Oțel' },
     { page_key: 'debitate', page_name: 'Debitate' },
+    { page_key: 'operator-debitare', page_name: 'Operator Debitare' },
+    { page_key: 'operator-debitare-pin', page_name: 'PIN Operator Debitare' },
     { page_key: 'forjate', page_name: 'Forjate' },
     { page_key: 'eficienta', page_name: 'Eficiență' },
     { page_key: 'program-utilaje', page_name: 'Program Utilaje' },
@@ -117,6 +119,7 @@ var PAGE_CONTROL_OVERRIDES = Object.freeze({
         Object.freeze({ control_key:'nav.numeralkod', control_label:'Buton NUMERALKOD', control_type:'action' }),
     Object.freeze({ control_key:'nav.intrari-otel', control_label:'Buton INTRĂRI OȚEL', control_type:'action' }),
     Object.freeze({ control_key:'nav.debitate', control_label:'Buton DEBITATE', control_type:'action' }),
+    Object.freeze({ control_key:'nav.operator-debitare', control_label:'Buton OPERATOR DEBITARE', control_type:'action' }),
     Object.freeze({ control_key:'nav.forjate', control_label:'Buton FORJATE', control_type:'action' }),
     Object.freeze({ control_key:'nav.program-utilaje', control_label:'Buton PROGRAM UTILAJE', control_type:'action' }),
     Object.freeze({ control_key:'nav.zale-9k-6628-29', control_label:'Buton 9K-6628/29', control_type:'action' }),
@@ -1209,7 +1212,7 @@ function getControlCatalogForPage(pageKey) {
   }
 
   var INITIAL_PAGE_KEY = inferPageKey(window.location.pathname);
-  var AUTH_UTILITY_PAGE_KEYS = ['index', 'login', 'access-gate', 'mfa-setup', 'mfa-verify', 'forja-ctc-pin'];
+  var AUTH_UTILITY_PAGE_KEYS = ['index', 'login', 'access-gate', 'mfa-setup', 'mfa-verify', 'forja-ctc-pin', 'operator-debitare-pin'];
   function isAuthUtilityPage(pageKey) {
     return AUTH_UTILITY_PAGE_KEYS.indexOf(String(pageKey || '').trim().toLowerCase()) !== -1;
   }

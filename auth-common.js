@@ -3,6 +3,7 @@
 
   const ADMIN_EMAIL = normalizeEmail(((window.ERP_FORJA_CONFIG || window.__ERP_FORJA_CONFIG__ || {}).ADMIN_EMAIL) || '');
   const FORJA_CTC_OPERATOR_EMAIL = 'forja-ctc@forja.local';
+  const DEBITARE_OPERATOR_EMAIL = 'debitare@pre.local';
   const STORAGE = {
     userId: 'rf_user_id',
     userEmail: 'rf_user_email',
@@ -18,6 +19,10 @@
 
   function isForjaCtcOperatorAccount(value){
     return normalizeEmail(value) === FORJA_CTC_OPERATOR_EMAIL;
+  }
+
+  function isDebitareOperatorAccount(value){
+    return normalizeEmail(value) === DEBITARE_OPERATOR_EMAIL;
   }
 
   function escapeHtml(value){
@@ -920,6 +925,30 @@
             }
           }
         }
+        if(isDebitareOperatorAccount(authState.user && authState.user.email)){
+          const allowedForDebitare = ['operator-debitare-pin','operator-debitare'];
+          const pinPageKey = 'operator-debitare-pin';
+          const currentFileName = getCurrentPageName();
+          if(allowedForDebitare.indexOf(currentPageKey) === -1){
+            window.location.href = 'operator-debitare-pin.html';
+            return null;
+          }
+          if(currentPageKey !== pinPageKey){
+            let unlockedOperator = '';
+            let unlockedUntil = 0;
+            try {
+              const payload = JSON.parse(sessionStorage.getItem('kad:operator-debitare:unlock') || '{}');
+              unlockedOperator = String(payload && payload.operator || '').trim();
+              unlockedUntil = Number(payload && payload.until || 0);
+            } catch (_) {}
+            if(!unlockedOperator || !unlockedUntil || unlockedUntil < Date.now()){
+              const pinUrl = new URL('operator-debitare-pin.html', window.location.href);
+              pinUrl.searchParams.set('next', currentFileName);
+              window.location.href = pinUrl.toString();
+              return null;
+            }
+          }
+        }
         const status = authState.accountStatus || {};
         const isBlocked = status.is_active === false || status.is_banned === true;
         if(isBlocked){
@@ -1017,6 +1046,20 @@
     const fallbackPermissions = defaultPermissionsForRole(cleanRole);
     const ctcOperatorPermissions = { can_view:true, can_add:true, can_edit:true, can_delete:false, can_export:false, can_import:false };
     const deniedPermissions = { can_view:false, can_add:false, can_edit:false, can_delete:false, can_export:false, can_import:false };
+    if(user && isDebitareOperatorAccount(user.email)){
+      const allowedForDebitare = ['operator-debitare-pin','operator-debitare'];
+      const allowed = allowedForDebitare.indexOf(settings.pageKey) !== -1;
+      const debitareOperatorPermissions = { can_view:true, can_add:true, can_edit:true, can_delete:false, can_export:true, can_import:false };
+      return {
+        allowed: allowed,
+        user,
+        role: 'operator',
+        permissions: allowed ? debitareOperatorPermissions : deniedPermissions,
+        source: 'operator debitare locked account',
+        strictUserAcl: true,
+        message: allowed ? '' : 'Contul Debitare are acces doar la foaia operator debitare.'
+      };
+    }
     if(user && isForjaCtcOperatorAccount(user.email)){
       const allowedForCtc = ['forja-ctc-pin','fisa-control-ctc-forja','rebut-pm-operatori'];
       const allowed = allowedForCtc.indexOf(settings.pageKey) !== -1;
