@@ -28,7 +28,7 @@
       <div class="actions">
         <button class="btn" id="btnBack" type="button">Înapoi la Dashboard</button>
         <button class="btn" id="btnRefresh" type="button" data-rf-control="cloud.refresh">Reîmprospătează</button>
-        <button class="btn green" id="btnSyncOperatorDocs" type="button" data-rf-control="archive-documents.sync">Sincronizează fișe operatori</button>
+        <button class="btn green" id="btnSyncOperatorDocs" type="button" data-rf-control="archive-documents.sync">Sincronizează fișe T.T.</button>
         <button class="btn primary" id="btnExport" type="button" data-rf-control="archive-documents.export">Export CSV</button>
       </div>
     </div>
@@ -236,17 +236,90 @@
     return Array.from(new Set(years)).sort();
   }
   function addAuto(out, meta){ if(meta && meta.source_uid) out.push(meta); }
+  function withTimeout(promise, ms, message){
+    var timer=null;
+    return Promise.race([
+      promise,
+      new Promise(function(_, reject){ timer=setTimeout(function(){ reject(new Error(message || 'Operația a durat prea mult.')); }, ms || 10000); })
+    ]).finally(function(){ if(timer) clearTimeout(timer); });
+  }
+  function parseJsonSafe(raw){ try{ return raw ? JSON.parse(raw) : null; }catch(_){ return null; } }
+  function ttDeletedSet(doc){
+    var set=new Set(); doc=doc||{};
+    (Array.isArray(doc.deleted_ids)?doc.deleted_ids:[]).forEach(function(id){ id=norm(id); if(id) set.add(id); });
+    (Array.isArray(doc.deleted_sheet_ids)?doc.deleted_sheet_ids:[]).forEach(function(id){ id=norm(id); if(id) set.add(id); });
+    return set;
+  }
+  function extractTTSheets(doc){
+    doc=doc||{};
+    var list=[];
+    if(Array.isArray(doc)) list=doc;
+    else if(Array.isArray(doc.sheets)) list=doc.sheets;
+    else if(Array.isArray(doc.rows)) list=doc.rows;
+    else if(Array.isArray(doc.items)) list=doc.items;
+    else if(doc.data && Array.isArray(doc.data.sheets)) list=doc.data.sheets;
+    else if(doc.content && Array.isArray(doc.content.sheets)) list=doc.content.sheets;
+    var deleted=ttDeletedSet(doc);
+    return list.filter(function(s){ return s && norm(s.id) && !deleted.has(norm(s.id)); });
+  }
+  function ttSheetHasContent(s){
+    if(!s) return false;
+    if(norm(s.operator) || norm(s.reper1) || norm(s.reper2) || norm(s.reper3) || norm(s.reper4)) return true;
+    if(s.cells && Object.keys(s.cells).length) return true;
+    if(s.oraCtrl && Object.keys(s.oraCtrl).length) return true;
+    if(s.report && typeof s.report==='object' && JSON.stringify(s.report)!=='{}') return true;
+    return false;
+  }
+  function mergeTTSheets(docs){
+    var deleted=new Set(), map=new Map();
+    (docs||[]).forEach(function(doc){ ttDeletedSet(doc).forEach(function(id){ deleted.add(id); }); });
+    function ms(s){ var n=Date.parse(norm(s && (s.updated_at || s.synced_at || s.saved_at || s.created_at))); return Number.isFinite(n)?n:0; }
+    (docs||[]).forEach(function(doc){
+      extractTTSheets(doc).forEach(function(s){
+        var id=norm(s.id); if(!id || deleted.has(id) || !ttSheetHasContent(s)) return;
+        var old=map.get(id);
+        if(!old || ms(s)>=ms(old)) map.set(id,s);
+      });
+    });
+    var arr=Array.from(map.values());
+    arr.sort(function(a,b){ return String(b.date_iso||b.updated_at||'').localeCompare(String(a.date_iso||a.updated_at||''),'ro',{numeric:true}); });
+    return arr;
+  }
+  function readLocalTTSheetsDoc(){
+    var key='kad_tratament-termic:fise-operatori-autocontrol-tt';
+    var doc=parseJsonSafe(localStorage.getItem(key));
+    if(doc && typeof doc==='object') return doc;
+    return null;
+  }
+  function ttShiftLabel(s){
+    var v=norm(s && s.shift);
+    if(v==='1') return 'Schimb 1 · 06:00-14:00';
+    if(v==='2') return 'Schimb 2 · 14:00-22:00';
+    if(v==='3') return 'Schimb 3 · 22:00-06:00';
+    return norm(s && s.shift_interval) || (v ? 'Schimb '+v : '');
+  }
   async function collectTTAutoDocs(out){
     var key='tratament-termic:fise-operatori-autocontrol-tt';
+    var docs=[], info={remote:false, local:false, remoteCount:0, localCount:0, total:0, error:''};
     try{
-      var d=await readDoc(key), p=payload(d)||{}, sheets=Array.isArray(p.sheets)?p.sheets:[];
-      sheets.forEach(function(s){
-        var date=toIsoDate(s.date_iso || s.date_text || s.updated_at) || today();
-        var rep=compactText([s.reper1,s.reper2,s.reper3,s.reper4]);
-        var cats=compactText([s.codCat1,s.codCat2,s.codCat3,s.codCat4]);
-        addAuto(out,{ source_uid:'tt-autocontrol:'+(s.id||[s.operator,date,s.shift,rep].join(':')), source_doc_key:key, source_page:'tratament-termic-fisa-autocontrol-zale.html', source_row_id:s.id||'', document_type:'Fișă autocontrol T.T.', category:'Fișe operatori', retention:'15 ani', document_date:date, part_no:rep, cat_code:cats, lot_no:'', source:'Tratament Termic Autocontrol', title:'Fișă autocontrol T.T. - '+compactText([s.operator,date,s.shift_interval||('Schimb '+(s.shift||'')),rep],' / '), created_by_name:s.operator||'', source_snapshot:s });
-      });
-    }catch(e){ console.warn('Sincronizare TT autocontrol eșuată', e); }
+      var d=await withTimeout(readDoc(key), 9000, 'Citirea fișelor T.T. din cloud a durat prea mult.');
+      var p=payload(d)||{};
+      info.remote=true; info.remoteCount=extractTTSheets(p).length;
+      docs.push(p);
+    }catch(e){ info.error = e && e.message ? e.message : String(e || ''); console.warn('Sincronizare TT autocontrol cloud eșuată', e); }
+    try{
+      var local=readLocalTTSheetsDoc();
+      if(local){ info.local=true; info.localCount=extractTTSheets(local).length; docs.push(local); }
+    }catch(e){ console.warn('Sincronizare TT autocontrol local eșuată', e); }
+    var sheets=mergeTTSheets(docs);
+    info.total=sheets.length;
+    state.ttSyncInfo=info;
+    sheets.forEach(function(s){
+      var date=toIsoDate(s.date_iso || s.date_text || s.updated_at || s.created_at) || today();
+      var rep=compactText([s.reper1,s.reper2,s.reper3,s.reper4]);
+      var cats=compactText([s.codCat1,s.codCat2,s.codCat3,s.codCat4]);
+      addAuto(out,{ source_uid:'tt-autocontrol:'+(s.id||[s.operator,date,s.shift,rep].join(':')), source_doc_key:key, source_page:'tratament-termic-fisa-autocontrol-zale.html', source_row_id:s.id||'', document_type:'Fișă autocontrol T.T.', category:'Fișe operatori', retention:'15 ani', document_date:date, part_no:rep, cat_code:cats, lot_no:'', source:'Tratament Termic Autocontrol', title:'Fișă autocontrol T.T. - '+compactText([s.operator,date,ttShiftLabel(s),rep],' / '), created_by_name:s.operator||'', source_snapshot:s });
+    });
   }
   async function collectRaportForjaAutoDocs(out){
     var key='raport-forja-operatori';
@@ -331,13 +404,9 @@
   }
   async function collectAutoDocumentMetas(){
     var out=[];
+    /* Pasul curent: legăm sigur prima sursă reală - Fișe autocontrol T.T.
+       Celelalte surse rămân în cod pentru etapele următoare, dar nu sunt apelate aici ca să nu blocheze sincronizarea. */
     await collectTTAutoDocs(out);
-    await collectRaportForjaAutoDocs(out);
-    await collectCtcForjaAutoDocs(out);
-    await collectIntrariOtelAutoDocs(out);
-    await collectDebitareAutoDocs(out);
-    await collectMagnafluxAutoDocs(out);
-    await collectDuritateAutoDocs(out);
     var seen=new Set();
     return out.filter(function(x){ if(!x.source_uid || seen.has(x.source_uid)) return false; seen.add(x.source_uid); return true; });
   }
@@ -346,10 +415,17 @@
     if(!state.canAdd && !state.canEdit){ alert('Nu ai drept de sincronizare în Arhivă Documente.'); return; }
     state.syncing=true;
     var btn=$('btnSyncOperatorDocs'); if(btn){ btn.disabled=true; btn.textContent='Sincronizez...'; }
-    setStatus('Sincronizez fișele salvate de operatori...', '');
+    setStatus('Sincronizez fișele autocontrol T.T....', '');
     try{
       await loadRows();
       var metas=await collectAutoDocumentMetas();
+      var syncInfo=state.ttSyncInfo || {total:0,remoteCount:0,localCount:0,error:''};
+      if(!metas.length){
+        render();
+        var extra = syncInfo.error ? ' Detaliu: ' + syncInfo.error : '';
+        setStatus('Nu am găsit fișe autocontrol T.T. salvate. Verifică dacă există fișe salvate în pagina Tratament Termic Autocontrol și dacă s-au sincronizat în cloud.' + extra, 'err');
+        return;
+      }
       var added=0, updated=0, same=0, deleted=0;
       for(var i=0;i<metas.length;i++){
         var r=await upsertAutoMeta(metas[i]);
@@ -357,11 +433,11 @@
       }
       state.rows.sort(function(a,b){ return String(b.updated_at || b.created_at || '').localeCompare(String(a.updated_at || a.created_at || '')); });
       await saveIndex();
-      await audit('SYNC', { id:'auto-sync', document_no:'AUTO-SYNC', document_type:'Fișe operatori', status:'Activ' }, 'Sincronizare fișe operatori: +' + added + ', actualizate ' + updated + ', neschimbate ' + same + ', șterse ignorate ' + deleted);
+      await audit('SYNC', { id:'auto-sync-tt', document_no:'AUTO-SYNC-TT', document_type:'Fișă autocontrol T.T.', status:'Activ' }, 'Sincronizare fișe autocontrol T.T.: citite ' + syncInfo.total + ', +' + added + ', actualizate ' + updated + ', neschimbate ' + same + ', șterse ignorate ' + deleted);
       render();
-      setStatus('Sincronizare finalizată: +' + added + ' noi, ' + updated + ' actualizate, ' + same + ' deja existente.', 'ok');
-    }catch(e){ console.error(e); setStatus(e && e.message ? e.message : 'Eroare la sincronizarea fișelor operatori.', 'err'); }
-    finally{ state.syncing=false; if(btn){ btn.disabled=!(state.canAdd||state.canEdit); btn.textContent='Sincronizează fișe operatori'; } }
+      setStatus('Sincronizare T.T. finalizată: citite ' + syncInfo.total + ' fișe, +' + added + ' noi, ' + updated + ' actualizate, ' + same + ' deja existente.', 'ok');
+    }catch(e){ console.error(e); setStatus(e && e.message ? e.message : 'Eroare la sincronizarea fișelor T.T.', 'err'); }
+    finally{ state.syncing=false; if(btn){ btn.disabled=!(state.canAdd||state.canEdit); btn.textContent='Sincronizează fișe T.T.'; } }
   }
   function clone(v){ try{ return JSON.parse(JSON.stringify(v)); }catch(e){ return v; } }
   async function readDoc(key){
@@ -557,6 +633,12 @@
     $('drawerTitle').textContent='Detalii document '+(r.document_no||'');
     var rows=[['Număr document',r.document_no],['Tip document',r.document_type],['Categorie',r.category],['Retenție',r.retention],['Data documentului',formatDate(r.document_date)],['Data expirării',formatDate(r.expiry_date)],['Reper',r.part_no],['Cod CAT',r.cat_code],['Lot / Sarjă',r.lot_no],['Revizie',r.revision],['Sursă',r.source],['Status',r.status],['Creat de',r.created_by_name+' / '+r.created_by_email],['Ultima modificare',formatDateTime(r.updated_at)+' / '+(r.updated_by_email||'')],['Observații',r.notes],['Tip înregistrare',r.auto_archived?'Automată din fișă operator':'Manuală'],['Fișă sursă',compactText([r.source_page,r.source_doc_key,r.source_row_id],' / ')]];
     var html='<div class="detailsGrid">'+rows.map(function(x){ return '<div>'+esc(x[0])+'</div><div>'+esc(x[1]||'')+'</div>'; }).join('')+'</div>';
+    if(r.auto_archived && r.source_snapshot && r.document_type==='Fișă autocontrol T.T.'){
+      var s=r.source_snapshot||{};
+      html+='<div class="viewerBox"><div class="viewerHead"><span>Fișă T.T. salvată automat</span><span class="muted">'+esc(s.id||'')+'</span></div><div class="viewerBody"><div class="detailsGrid">'+
+        [['Data',s.date_text||formatDate(s.date_iso)],['Operator',s.operator],['Schimb',ttShiftLabel(s)],['Reper 1',s.reper1],['Reper 2',s.reper2],['Reper 3',s.reper3],['Reper 4',s.reper4],['Cod CAT 1',s.codCat1],['Cod CAT 2',s.codCat2],['Cod CAT 3',s.codCat3],['Cod CAT 4',s.codCat4],['Ultima salvare',formatDateTime(s.updated_at||s.synced_at)]].map(function(x){return '<div>'+esc(x[0])+'</div><div>'+esc(x[1]||'')+'</div>';}).join('')+
+      '</div><div class="hint" style="margin-top:8px">Aceasta este fișa salvată de operator, citită din sursa Tratament Termic Autocontrol. PDF-ul original se generează în pagina sursă.</div></div></div>';
+    }
     if(r.file){ html+='<div class="viewerBox"><div class="viewerHead"><span>'+esc(r.file.name||'Fișier')+' • '+esc(formatBytes(r.file.size))+'</span><span><button class="btn mini" id="drawerOpenFile" type="button">Deschide</button> <button class="btn mini" id="drawerDownloadFile" type="button">Descarcă</button></span></div><div class="viewerBody"><div class="hint">Fișierul se deschide într-o filă nouă sau se descarcă, în funcție de browser și tip.</div></div></div>'; }
     var localAudit=state.audit.filter(function(a){ return a.document_id===r.id || a.document_no===r.document_no; }).slice(0,20);
     if(localAudit.length){ html+='<div class="auditBox">'+localAudit.map(function(a){ return '<div class="auditItem"><b>'+esc(a.action)+'</b> • '+esc(formatDateTime(a.at))+' • '+esc(a.user_email||'')+'<br>'+esc(a.details||'')+'</div>'; }).join('')+'</div>'; }
