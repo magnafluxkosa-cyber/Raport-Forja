@@ -760,36 +760,77 @@
     if(snap.report) extra+=buildNestedTable('Raport / observații', snap.report);
     return '<div class="autoSheet"><h2 class="autoSheetTitle">'+esc(title)+'</h2><div class="autoSheetSub">Arhivă Documente K.A.D - înregistrare generată automat din pagina sursă</div><div class="autoSheetMeta">'+meta.map(function(x){ return '<div class="lbl">'+esc(x[0])+'</div><div>'+esc(x[1]||'')+'</div>'; }).join('')+'</div><table class="autoSheetTable"><thead><tr><th>Câmp fișă</th><th>Valoare completată</th></tr></thead><tbody>'+rowsHtml+'</tbody></table>'+extra+'<div class="autoSheetFooter"><div class="autoSign">Operator</div><div class="autoSign">Verificat</div><div class="autoSign">Data arhivării</div></div></div>';
   }
-  function ensurePrintArea(){
-    var area=$('printArea');
-    if(!area){ area=document.createElement('div'); area.id='printArea'; document.body.appendChild(area); }
-    return area;
+  function loadScriptOnce(src){
+    return new Promise(function(resolve,reject){
+      var existing=document.querySelector('script[src="'+src.replace(/"/g,'\\"')+'"]');
+      if(existing){
+        if(existing.getAttribute('data-loaded')==='1') resolve();
+        else existing.addEventListener('load',function(){ resolve(); },{once:true});
+        return;
+      }
+      var sc=document.createElement('script');
+      sc.src=src;
+      sc.async=true;
+      sc.onload=function(){ sc.setAttribute('data-loaded','1'); resolve(); };
+      sc.onerror=function(){ reject(new Error('Nu s-a putut încărca biblioteca pentru generarea PDF.'));
+      };
+      document.head.appendChild(sc);
+    });
   }
-  function printAutoSheet(id){
+  async function ensurePdfLibrary(){
+    if(window.html2pdf) return;
+    await loadScriptOnce('https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js');
+    if(!window.html2pdf) throw new Error('Biblioteca PDF nu este disponibilă.');
+  }
+  function pdfFileNameFor(row){
+    var base=safeName(compactText([row && row.document_no, row && row.document_type, row && row.part_no], '_') || 'fisa_operator');
+    return base.replace(/_+$/,'') + '.pdf';
+  }
+  async function downloadAutoSheetPdf(id){
     var r=state.rows.find(function(x){ return x.id===id; });
     if(!r || !r.auto_archived){ alert('Această înregistrare nu este fișă automată.'); return; }
-    var area=ensurePrintArea();
-    area.innerHTML=buildAutoSheetHtml(r,false);
-    document.body.classList.add('print-auto-sheet');
-    var cleanup=function(){ document.body.classList.remove('print-auto-sheet'); area.innerHTML=''; window.removeEventListener('afterprint', cleanup); };
-    window.addEventListener('afterprint', cleanup);
-    setTimeout(function(){
-      try{ window.focus(); window.print(); }
-      catch(e){ cleanup(); alert('Nu pot deschide dialogul de print/PDF.'); }
-      setTimeout(function(){ if(document.body.classList.contains('print-auto-sheet')) cleanup(); }, 2500);
-    }, 80);
+    var holder=document.createElement('div');
+    holder.style.position='fixed';
+    holder.style.left='-20000px';
+    holder.style.top='0';
+    holder.style.width='1120px';
+    holder.style.background='#ffffff';
+    holder.style.zIndex='-1';
+    holder.innerHTML=buildAutoSheetHtml(r,false);
+    document.body.appendChild(holder);
+    try{
+      setStatus('Generez PDF...', '');
+      await ensurePdfLibrary();
+      var options={
+        margin:[6,6,6,6],
+        filename:pdfFileNameFor(r),
+        image:{type:'jpeg',quality:0.98},
+        html2canvas:{scale:2,useCORS:true,backgroundColor:'#ffffff',logging:false,scrollX:0,scrollY:0},
+        jsPDF:{unit:'mm',format:'a4',orientation:'landscape'},
+        pagebreak:{mode:['css','legacy']}
+      };
+      await window.html2pdf().set(options).from(holder).save();
+      setStatus('PDF generat.', 'ok');
+    }catch(e){
+      console.error(e);
+      alert(e && e.message ? e.message : 'Nu pot genera PDF-ul automat.');
+      setStatus('Nu pot genera PDF-ul.', 'err');
+    }finally{
+      holder.remove();
+    }
   }
   function openAutoSheet(id, printMode){
     var r=state.rows.find(function(x){ return x.id===id; });
     if(!r || !r.auto_archived){ alert('Această înregistrare nu este fișă automată.'); return; }
-    if(printMode){ printAutoSheet(id); return; }
+    if(printMode){ downloadAutoSheetPdf(id); return; }
     $('drawerTitle').textContent='Fișă '+(r.document_no || r.document_type || 'operator');
     var html='<div class="viewerBox"><div class="viewerHead"><span>'+esc(r.document_type || 'Fișă operator')+'</span><span><button class="btn mini" id="drawerPdfFromSheet" type="button">PDF</button></span></div><div class="viewerBody">'+buildAutoSheetHtml(r,false)+'</div></div>';
     $('drawerBody').innerHTML=html;
     $('drawer').classList.add('open');
-    var p=$('drawerPdfFromSheet'); if(p) p.onclick=function(){ printAutoSheet(id); };
+    var p=$('drawerPdfFromSheet'); if(p) p.onclick=function(){ downloadAutoSheetPdf(id); };
   }
-  function showDetails(id){
+
+    function showDetails(id){
     var r=state.rows.find(function(x){ return x.id===id; }); if(!r) return;
     $('drawerTitle').textContent='Detalii document '+(r.document_no||'');
     var rows=[['Număr document',r.document_no],['Tip document',r.document_type],['Categorie',r.category],['Retenție',r.retention],['Data documentului',formatDate(r.document_date)],['Data expirării',formatDate(r.expiry_date)],['Reper',r.part_no],['Cod CAT',r.cat_code],['Lot / Sarjă',r.lot_no],['Revizie',r.revision],['Sursă',r.source],['Status',r.status],['Creat de',createdActorName(r)],['Ultima modificare',compactText([formatDateTime(r.updated_at),updatedActorName(r)],' / ')],['Observații',r.notes],['Tip înregistrare',r.auto_archived?'Automată din fișă operator':'Manuală'],['Fișă sursă',compactText([r.source_page,r.source_doc_key,r.source_row_id],' / ')]];
