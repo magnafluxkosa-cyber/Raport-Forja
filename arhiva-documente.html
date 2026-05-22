@@ -104,7 +104,7 @@
   var STORAGE_BUCKET = 'kad-documente';
   var STORAGE_PREFIX = 'arhiva-documente';
   var MAX_RF_FILE_BYTES = 4500000;
-  var state = { sb:null, auth:null, access:null, rows:[], audit:[], editingId:'', canAdd:false, canEdit:false, canDelete:false, canExport:false, syncing:false };
+  var state = { sb:null, auth:null, access:null, rows:[], audit:[], editingId:'', canAdd:false, canEdit:false, canDelete:false, canExport:false, syncing:false, actorNamesByEmail:{} };
   var DOC_TYPES = [
     ['PPAP','Calitate','Viața piesei + 15 ani'],
     ['FAI - First Article Inspection','Calitate','Viața piesei + 15 ani'],
@@ -144,7 +144,46 @@
   function nowIso(){ return new Date().toISOString(); }
   function uid(){ return (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : ('doc_'+Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,8)); }
   function userEmail(){ return norm(state.auth && state.auth.user && state.auth.user.email).toLowerCase(); }
-  function userName(){ var u=state.auth && state.auth.user || {}; var m=u.user_metadata || {}; return norm(m.full_name || m.name || m.display_name || u.email || ''); }
+  function mappedNameForEmail(email){
+    var e=norm(email).toLowerCase();
+    return e && state.actorNamesByEmail && state.actorNamesByEmail[e] ? state.actorNamesByEmail[e] : '';
+  }
+  function userName(){
+    var u=state.auth && state.auth.user || {}; var m=u.user_metadata || {}; var email=userEmail();
+    var mapped=mappedNameForEmail(email);
+    var profile=norm(m.full_name || m.name || m.display_name || '');
+    if(mapped) return mapped;
+    if(profile && profile.toLowerCase()!==email) return profile;
+    return profile || email;
+  }
+  async function loadActorNameMappings(){
+    var map={};
+    try{
+      var res=await state.sb.rpc('kad_list_actor_accounts');
+      if(res && !res.error && Array.isArray(res.data)){
+        res.data.forEach(function(r){
+          var e=norm(r && r.email).toLowerCase();
+          var n=norm(r && (r.mapped_display_name || r.effective_display_name || r.profile_display_name));
+          if(e && n && n.toLowerCase()!==e) map[e]=n;
+        });
+      }else if(res && res.error){ console.warn('Mapare nume notificări indisponibilă:', res.error); }
+    }catch(e){ console.warn('Nu pot citi Mapare nume notificări.', e); }
+    state.actorNamesByEmail=map;
+  }
+  function displayActorName(emailValue, fallbackName){
+    var e=norm(emailValue).toLowerCase();
+    var mapped=mappedNameForEmail(e);
+    if(mapped) return mapped;
+    var n=norm(fallbackName);
+    if(n && n.toLowerCase()!==e && n.indexOf('@')<0) return n;
+    if(n && n.indexOf('/')>=0){
+      var first=norm(n.split('/')[0]);
+      if(first && first.indexOf('@')<0) return first;
+    }
+    return n && n.indexOf('@')<0 ? n : '';
+  }
+  function updatedActorName(r){ r=r||{}; return displayActorName(r.updated_by_email || r.created_by_email, r.updated_by_name || r.created_by_name); }
+  function createdActorName(r){ r=r||{}; return displayActorName(r.created_by_email, r.created_by_name); }
   function setStatus(msg,type){ var el=$('formStatus'); el.textContent=msg||''; el.className='status '+(type||''); }
   function formatDate(v){ if(!v) return ''; if(v==='PERMANENT') return 'PERMANENT'; if(/^\d{4}-\d{2}-\d{2}$/.test(v)){ var p=v.split('-'); return p[2]+'.'+p[1]+'.'+p[0]; } return v; }
   function formatDateTime(v){ if(!v) return ''; try{ return new Date(v).toLocaleString('ro-RO',{year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'}); }catch(e){ return v; } }
@@ -417,6 +456,7 @@
     var btn=$('btnSyncOperatorDocs'); if(btn){ btn.disabled=true; btn.textContent='Sincronizez...'; }
     setStatus('Sincronizez fișele autocontrol T.T....', '');
     try{
+      await loadActorNameMappings();
       await loadRows();
       var metas=await collectAutoDocumentMetas();
       var syncInfo=state.ttSyncInfo || {total:0,remoteCount:0,localCount:0,error:''};
@@ -609,7 +649,7 @@
     return state.rows.filter(function(r){
       if(!st && r.status==='Șters') return false;
       if(cat && r.category!==cat) return false; if(typ && r.document_type!==typ) return false; if(st && (r.status||'Activ')!==st) return false; if(ret && r.retention!==ret) return false;
-      if(q){ var hay=low([r.document_no,r.document_type,r.category,r.part_no,r.cat_code,r.lot_no,r.revision,r.source,r.title,r.notes,r.created_by_email,r.created_by_name,r.updated_by_email,r.updated_by_name,r.source_uid,r.source_doc_key,r.source_page].join(' ')); if(hay.indexOf(q)<0) return false; }
+      if(q){ var hay=low([r.document_no,r.document_type,r.category,r.part_no,r.cat_code,r.lot_no,r.revision,r.source,r.title,r.notes,r.created_by_email,r.created_by_name,r.updated_by_email,r.updated_by_name,createdActorName(r),updatedActorName(r),r.source_uid,r.source_doc_key,r.source_page].join(' ')); if(hay.indexOf(q)<0) return false; }
       return true;
     });
   }
@@ -624,14 +664,14 @@
     tb.innerHTML=rows.map(function(r){
       var file = r.file ? '<span class="pill green">'+esc(r.file.name || 'Fișier')+'</span><div class="muted">'+esc(formatBytes(r.file.size))+'</div>' : (r.auto_archived ? '<span class="pill yellow">fișă automată</span><div class="muted">'+esc(r.source||'')+'</div>' : '<span class="pill gray">fără fișier</span>');
       var actions='<div class="rowActions"><button class="btn mini" data-act="view" data-id="'+esc(r.id)+'">Detalii</button>'+(r.file?'<button class="btn mini" data-act="open" data-id="'+esc(r.id)+'">PDF / Fișier</button><button class="btn mini" data-act="download" data-id="'+esc(r.id)+'">Descarcă</button>':'')+(state.canEdit?'<button class="btn mini" data-act="edit" data-id="'+esc(r.id)+'">Editează</button>':'')+(state.canDelete?'<button class="btn mini red" data-act="delete" data-id="'+esc(r.id)+'">Șterge</button>':'')+'</div>';
-      return '<tr><td>'+esc(formatDate(r.document_date))+'<div class="muted">'+esc(r.document_no||'')+'</div></td><td class="wrap"><b>'+esc(r.document_type||'')+'</b><div class="muted">'+esc(r.title||'')+'</div></td><td>'+esc(r.category||'')+'</td><td>'+esc(r.part_no||'')+'<div class="muted">'+esc(r.cat_code||'')+'</div></td><td>'+esc(r.lot_no||'')+'<div class="muted">Rev. '+esc(r.revision||'')+'</div></td><td>'+esc(r.updated_by_name||r.created_by_name||'')+'<div class="muted">'+esc(r.updated_by_email||r.created_by_email||'')+'</div></td><td class="wrap">'+esc(r.retention||'')+'</td><td>'+esc(formatDate(r.expiry_date))+'</td><td>'+statusPill(r)+'</td><td class="wrap">'+file+'</td><td>'+actions+'</td></tr>';
+      return '<tr><td>'+esc(formatDate(r.document_date))+'<div class="muted">'+esc(r.document_no||'')+'</div></td><td class="wrap"><b>'+esc(r.document_type||'')+'</b><div class="muted">'+esc(r.title||'')+'</div></td><td>'+esc(r.category||'')+'</td><td>'+esc(r.part_no||'')+'<div class="muted">'+esc(r.cat_code||'')+'</div></td><td>'+esc(r.lot_no||'')+'<div class="muted">Rev. '+esc(r.revision||'')+'</div></td><td>'+esc(updatedActorName(r))+'</td><td class="wrap">'+esc(r.retention||'')+'</td><td>'+esc(formatDate(r.expiry_date))+'</td><td>'+statusPill(r)+'</td><td class="wrap">'+file+'</td><td>'+actions+'</td></tr>';
     }).join('');
     tb.querySelectorAll('button[data-act]').forEach(function(btn){ btn.onclick=function(){ var id=btn.getAttribute('data-id'), act=btn.getAttribute('data-act'); if(act==='view') showDetails(id); if(act==='open') openRow(id,false); if(act==='download') openRow(id,true); if(act==='edit') editRow(id); if(act==='delete') softDelete(id); }; });
   }
   function showDetails(id){
     var r=state.rows.find(function(x){ return x.id===id; }); if(!r) return;
     $('drawerTitle').textContent='Detalii document '+(r.document_no||'');
-    var rows=[['Număr document',r.document_no],['Tip document',r.document_type],['Categorie',r.category],['Retenție',r.retention],['Data documentului',formatDate(r.document_date)],['Data expirării',formatDate(r.expiry_date)],['Reper',r.part_no],['Cod CAT',r.cat_code],['Lot / Sarjă',r.lot_no],['Revizie',r.revision],['Sursă',r.source],['Status',r.status],['Creat de',r.created_by_name+' / '+r.created_by_email],['Ultima modificare',formatDateTime(r.updated_at)+' / '+(r.updated_by_email||'')],['Observații',r.notes],['Tip înregistrare',r.auto_archived?'Automată din fișă operator':'Manuală'],['Fișă sursă',compactText([r.source_page,r.source_doc_key,r.source_row_id],' / ')]];
+    var rows=[['Număr document',r.document_no],['Tip document',r.document_type],['Categorie',r.category],['Retenție',r.retention],['Data documentului',formatDate(r.document_date)],['Data expirării',formatDate(r.expiry_date)],['Reper',r.part_no],['Cod CAT',r.cat_code],['Lot / Sarjă',r.lot_no],['Revizie',r.revision],['Sursă',r.source],['Status',r.status],['Creat de',createdActorName(r)],['Ultima modificare',compactText([formatDateTime(r.updated_at),updatedActorName(r)],' / ')],['Observații',r.notes],['Tip înregistrare',r.auto_archived?'Automată din fișă operator':'Manuală'],['Fișă sursă',compactText([r.source_page,r.source_doc_key,r.source_row_id],' / ')]];
     var html='<div class="detailsGrid">'+rows.map(function(x){ return '<div>'+esc(x[0])+'</div><div>'+esc(x[1]||'')+'</div>'; }).join('')+'</div>';
     if(r.auto_archived && r.source_snapshot && r.document_type==='Fișă autocontrol T.T.'){
       var s=r.source_snapshot||{};
@@ -641,7 +681,7 @@
     }
     if(r.file){ html+='<div class="viewerBox"><div class="viewerHead"><span>'+esc(r.file.name||'Fișier')+' • '+esc(formatBytes(r.file.size))+'</span><span><button class="btn mini" id="drawerOpenFile" type="button">Deschide</button> <button class="btn mini" id="drawerDownloadFile" type="button">Descarcă</button></span></div><div class="viewerBody"><div class="hint">Fișierul se deschide într-o filă nouă sau se descarcă, în funcție de browser și tip.</div></div></div>'; }
     var localAudit=state.audit.filter(function(a){ return a.document_id===r.id || a.document_no===r.document_no; }).slice(0,20);
-    if(localAudit.length){ html+='<div class="auditBox">'+localAudit.map(function(a){ return '<div class="auditItem"><b>'+esc(a.action)+'</b> • '+esc(formatDateTime(a.at))+' • '+esc(a.user_email||'')+'<br>'+esc(a.details||'')+'</div>'; }).join('')+'</div>'; }
+    if(localAudit.length){ html+='<div class="auditBox">'+localAudit.map(function(a){ return '<div class="auditItem"><b>'+esc(a.action)+'</b> • '+esc(formatDateTime(a.at))+' • '+esc(displayActorName(a.user_email,a.user_name))+'<br>'+esc(a.details||'')+'</div>'; }).join('')+'</div>'; }
     $('drawerBody').innerHTML=html;
     $('drawer').classList.add('open');
     var o=$('drawerOpenFile'), d=$('drawerDownloadFile'); if(o) o.onclick=function(){ openRow(id,false); }; if(d) d.onclick=function(){ openRow(id,true); };
@@ -660,7 +700,7 @@
     if(!state.canExport){ alert('Nu ai drept de export.'); return; }
     var rows=filteredRows();
     var head=['Număr document','Data','Tip','Categorie','Reper','Cod CAT','Lot/Sarjă','Revizie','Sursă','Retenție','Expirare','Status','Fișier','Utilizator','Observații'];
-    var csv=[head].concat(rows.map(function(r){ return [r.document_no,r.document_date,r.document_type,r.category,r.part_no,r.cat_code,r.lot_no,r.revision,r.source,r.retention,r.expiry_date,r.status,r.file&&r.file.name||'',r.updated_by_email||r.created_by_email,r.notes]; })).map(function(row){ return row.map(function(v){ return '"'+String(v==null?'':v).replace(/"/g,'""')+'"'; }).join(';'); }).join('\n');
+    var csv=[head].concat(rows.map(function(r){ return [r.document_no,r.document_date,r.document_type,r.category,r.part_no,r.cat_code,r.lot_no,r.revision,r.source,r.retention,r.expiry_date,r.status,r.file&&r.file.name||'',updatedActorName(r),r.notes]; })).map(function(row){ return row.map(function(v){ return '"'+String(v==null?'':v).replace(/"/g,'""')+'"'; }).join(';'); }).join('\n');
     var blob=new Blob(['\ufeff'+csv],{type:'text/csv;charset=utf-8'}); var url=URL.createObjectURL(blob); var a=document.createElement('a'); a.href=url; a.download='arhiva-documente.csv'; document.body.appendChild(a); a.click(); a.remove(); setTimeout(function(){URL.revokeObjectURL(url);},30000);
   }
   function applyViewOnly(){
@@ -683,13 +723,14 @@
       state.canAdd=p.can_add===true || p.can_edit===true; state.canEdit=p.can_edit===true; state.canDelete=p.can_delete===true; state.canExport=p.can_export===true;
       initLists(); applyViewOnly(); bind();
       try{ if(window.RF_ACL && typeof window.RF_ACL.applyDomPermissions==='function') await window.RF_ACL.applyDomPermissions(PAGE_KEY,document,{client:state.sb,pageAccess:state.access,user:state.auth.user}); }catch(e){}
+      await loadActorNameMappings();
       await loadRows(); render(); document.body.classList.remove('booting');
     }catch(e){ console.error(e); showLock(e && e.message ? e.message : 'Nu pot încărca Arhiva Documente.'); document.body.classList.remove('booting'); }
   }
   function showLock(msg){ $('lockMsg').textContent=msg; $('lock').classList.remove('hidden'); $('app').classList.add('hidden'); document.body.classList.remove('booting'); }
   function bind(){
     $('btnBack').onclick=function(){ location.href='index.html'; }; $('lockBack').onclick=function(){ location.href='index.html'; }; $('drawerClose').onclick=function(){ $('drawer').classList.remove('open'); };
-    $('btnRefresh').onclick=async function(){ await loadRows(); render(); };
+    $('btnRefresh').onclick=async function(){ await loadActorNameMappings(); await loadRows(); render(); };
     $('btnExport').onclick=exportCsv; if($('btnSyncOperatorDocs')) $('btnSyncOperatorDocs').onclick=syncOperatorDocuments; $('btnSave').onclick=saveCurrent; $('btnClear').onclick=clearForm;
     $('docType').onchange=applyDocTypeDefaults; $('docDate').onchange=function(){ $('expiryDate').value=calcExpiry($('docDate').value,$('retention').value); }; $('retention').onchange=function(){ $('expiryDate').value=calcExpiry($('docDate').value,$('retention').value); };
     ['q','filterCategory','filterType','filterStatus','filterRetention'].forEach(function(id){ $(id).addEventListener('input',render); $(id).addEventListener('change',render); });
