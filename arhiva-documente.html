@@ -778,18 +778,19 @@
     });
   }
   async function ensurePdfLibrary(){
-    if(window.html2pdf) return;
-    await loadScriptOnce('https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js');
-    if(!window.html2pdf) throw new Error('Biblioteca PDF nu este disponibilă.');
+    if(!window.html2canvas){
+      await loadScriptOnce('https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js');
+    }
+    if(!(window.jspdf && window.jspdf.jsPDF)){
+      await loadScriptOnce('https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js');
+    }
+    if(!window.html2canvas || !(window.jspdf && window.jspdf.jsPDF)) throw new Error('Biblioteca PDF nu este disponibilă.');
   }
   function pdfFileNameFor(row){
     var base=safeName(compactText([row && row.document_no, row && row.document_type, row && row.part_no], '_') || 'fisa_operator');
     return base.replace(/_+$/,'') + '.pdf';
   }
-  async function downloadAutoSheetPdf(id){
-    var r=state.rows.find(function(x){ return x.id===id; });
-    if(!r || !r.auto_archived){ alert('Această înregistrare nu este fișă automată.'); return; }
-
+  function makePdfCapturePage(row){
     var holder=document.createElement('div');
     holder.style.position='fixed';
     holder.style.left='0';
@@ -802,8 +803,9 @@
     holder.style.opacity='1';
     holder.style.padding='0';
     holder.style.margin='0';
+    holder.style.overflow='hidden';
     holder.setAttribute('aria-hidden','true');
-    holder.innerHTML='<div class="autoPdfPage">'+buildAutoSheetHtml(r,false)+'</div>';
+    holder.innerHTML='<div class="autoPdfPage">'+buildAutoSheetHtml(row,false)+'</div>';
 
     var page=holder.querySelector('.autoPdfPage');
     page.style.width='1120px';
@@ -812,38 +814,85 @@
     page.style.padding='0';
     page.style.margin='0';
     page.style.boxSizing='border-box';
-    page.style.display='block';
+    page.style.display='flex';
+    page.style.justifyContent='center';
+    page.style.alignItems='flex-start';
 
     var sheet=page.querySelector('.autoSheet');
     if(sheet){
       sheet.style.width='980px';
       sheet.style.maxWidth='980px';
-      sheet.style.margin='0 auto';
+      sheet.style.margin='0';
       sheet.style.boxSizing='border-box';
     }
+    return { holder:holder, page:page };
+  }
+  async function downloadAutoSheetPdf(id){
+    var r=state.rows.find(function(x){ return x.id===id; });
+    if(!r || !r.auto_archived){ alert('Această înregistrare nu este fișă automată.'); return; }
 
-    document.body.appendChild(holder);
+    var capture=makePdfCapturePage(r);
+    document.body.appendChild(capture.holder);
     try{
       setStatus('Generez PDF...', '');
       await ensurePdfLibrary();
       await new Promise(function(resolve){ requestAnimationFrame(function(){ requestAnimationFrame(resolve); }); });
-      var canvasHeight=Math.max(794, page.scrollHeight + 30);
-      var options={
-        margin:[6,6,6,6],
-        filename:pdfFileNameFor(r),
-        image:{type:'jpeg',quality:0.98},
-        html2canvas:{scale:2,useCORS:true,backgroundColor:'#ffffff',logging:false,scrollX:0,scrollY:0,windowWidth:1120,windowHeight:canvasHeight},
-        jsPDF:{unit:'mm',format:'a4',orientation:'landscape'},
-        pagebreak:{mode:['avoid-all','css','legacy']}
-      };
-      await window.html2pdf().set(options).from(page).save();
+
+      var page=capture.page;
+      var pageHeight=Math.max(794, page.scrollHeight + 20);
+      page.style.height=pageHeight+'px';
+
+      var canvas=await window.html2canvas(page,{
+        scale:2,
+        useCORS:true,
+        allowTaint:true,
+        backgroundColor:'#ffffff',
+        logging:false,
+        scrollX:0,
+        scrollY:0,
+        windowWidth:1120,
+        windowHeight:pageHeight
+      });
+
+      var jsPDF=window.jspdf.jsPDF;
+      var pdf=new jsPDF({orientation:'landscape',unit:'mm',format:'a4'});
+      var pdfW=pdf.internal.pageSize.getWidth();
+      var pdfH=pdf.internal.pageSize.getHeight();
+      var marginX=10;
+      var marginY=8;
+      var imgW=pdfW - (marginX * 2);
+      var pageInnerH=pdfH - (marginY * 2);
+      var slicePx=Math.floor(canvas.width * pageInnerH / imgW);
+      if(!slicePx || slicePx<1) slicePx=canvas.height;
+
+      var y=0;
+      var first=true;
+      while(y < canvas.height){
+        var h=Math.min(slicePx, canvas.height - y);
+        var piece=document.createElement('canvas');
+        piece.width=canvas.width;
+        piece.height=h;
+        var ctx=piece.getContext('2d');
+        ctx.fillStyle='#ffffff';
+        ctx.fillRect(0,0,piece.width,piece.height);
+        ctx.drawImage(canvas,0,y,canvas.width,h,0,0,canvas.width,h);
+        var imgData=piece.toDataURL('image/jpeg',0.98);
+        var imgH=h * imgW / canvas.width;
+        var x=(pdfW - imgW) / 2;
+        if(!first) pdf.addPage('a4','landscape');
+        pdf.addImage(imgData,'JPEG',x,marginY,imgW,imgH,undefined,'FAST');
+        first=false;
+        y += h;
+      }
+
+      pdf.save(pdfFileNameFor(r));
       setStatus('PDF generat.', 'ok');
     }catch(e){
       console.error(e);
       alert(e && e.message ? e.message : 'Nu pot genera PDF-ul automat.');
       setStatus('Nu pot genera PDF-ul.', 'err');
     }finally{
-      holder.remove();
+      capture.holder.remove();
     }
   }
 
