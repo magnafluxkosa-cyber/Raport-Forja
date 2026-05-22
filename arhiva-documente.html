@@ -28,7 +28,7 @@
       <div class="actions">
         <button class="btn" id="btnBack" type="button">Înapoi la Dashboard</button>
         <button class="btn" id="btnRefresh" type="button" data-rf-control="cloud.refresh">Reîmprospătează</button>
-        <button class="btn green" id="btnSyncOperatorDocs" type="button" data-rf-control="archive-documents.sync">Sincronizează fișe T.T.</button>
+        <button class="btn green" id="btnSyncOperatorDocs" type="button" data-rf-control="archive-documents.sync">Sincronizează toate fișele</button>
         <button class="btn primary" id="btnExport" type="button" data-rf-control="archive-documents.export">Export CSV</button>
       </div>
     </div>
@@ -184,6 +184,7 @@
   }
   function updatedActorName(r){ r=r||{}; return displayActorName(r.updated_by_email || r.created_by_email, r.updated_by_name || r.created_by_name); }
   function createdActorName(r){ r=r||{}; return displayActorName(r.created_by_email, r.created_by_name); }
+  function primaryActorName(r){ return r && r.auto_archived ? createdActorName(r) : updatedActorName(r); }
   function setStatus(msg,type){ var el=$('formStatus'); el.textContent=msg||''; el.className='status '+(type||''); }
   function formatDate(v){ if(!v) return ''; if(v==='PERMANENT') return 'PERMANENT'; if(/^\d{4}-\d{2}-\d{2}$/.test(v)){ var p=v.split('-'); return p[2]+'.'+p[1]+'.'+p[0]; } return v; }
   function formatDateTime(v){ if(!v) return ''; try{ return new Date(v).toLocaleString('ro-RO',{year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'}); }catch(e){ return v; } }
@@ -441,29 +442,47 @@
       });
     }catch(e){ console.warn('Sincronizare Duritate eșuată', e); }
   }
+  async function safeCollectAuto(label, collector, out, timeoutMs){
+    var before=out.length;
+    try{
+      await withTimeout(Promise.resolve().then(function(){ return collector(out); }), timeoutMs || 14000, 'Sincronizarea sursei '+label+' a durat prea mult.');
+      return { label:label, ok:true, count:Math.max(0,out.length-before), error:'' };
+    }catch(e){
+      console.warn('Sincronizare '+label+' eșuată', e);
+      return { label:label, ok:false, count:Math.max(0,out.length-before), error:e && e.message ? e.message : String(e || '') };
+    }
+  }
   async function collectAutoDocumentMetas(){
     var out=[];
-    /* Pasul curent: legăm sigur prima sursă reală - Fișe autocontrol T.T.
-       Celelalte surse rămân în cod pentru etapele următoare, dar nu sunt apelate aici ca să nu blocheze sincronizarea. */
-    await collectTTAutoDocs(out);
+    var stats=[];
+    stats.push(await safeCollectAuto('Fișe autocontrol T.T.', collectTTAutoDocs, out, 12000));
+    stats.push(await safeCollectAuto('Raport Forja', collectRaportForjaAutoDocs, out, 12000));
+    stats.push(await safeCollectAuto('Duritate', collectDuritateAutoDocs, out, 12000));
+    stats.push(await safeCollectAuto('Intrări Oțel', collectIntrariOtelAutoDocs, out, 14000));
+    stats.push(await safeCollectAuto('Debitare', collectDebitareAutoDocs, out, 14000));
+    stats.push(await safeCollectAuto('Magnaflux', collectMagnafluxAutoDocs, out, 14000));
+    stats.push(await safeCollectAuto('Fișă control CTC Forja', collectCtcForjaAutoDocs, out, 14000));
     var seen=new Set();
-    return out.filter(function(x){ if(!x.source_uid || seen.has(x.source_uid)) return false; seen.add(x.source_uid); return true; });
+    var clean=out.filter(function(x){ if(!x.source_uid || seen.has(x.source_uid)) return false; seen.add(x.source_uid); return true; });
+    state.allSyncInfo={ stats:stats, total:clean.length, errors:stats.filter(function(s){ return !s.ok; }) };
+    return clean;
   }
   async function syncOperatorDocuments(){
     if(state.syncing) return;
     if(!state.canAdd && !state.canEdit){ alert('Nu ai drept de sincronizare în Arhivă Documente.'); return; }
     state.syncing=true;
     var btn=$('btnSyncOperatorDocs'); if(btn){ btn.disabled=true; btn.textContent='Sincronizez...'; }
-    setStatus('Sincronizez fișele autocontrol T.T....', '');
+    setStatus('Sincronizez toate fișele operatorilor...', '');
     try{
       await loadActorNameMappings();
       await loadRows();
       var metas=await collectAutoDocumentMetas();
-      var syncInfo=state.ttSyncInfo || {total:0,remoteCount:0,localCount:0,error:''};
+      var syncInfo=state.allSyncInfo || {stats:[],total:0,errors:[]};
+      var summary=(syncInfo.stats||[]).map(function(s){ return s.label + ': ' + (s.ok ? s.count : 'eroare'); }).join(' | ');
       if(!metas.length){
         render();
-        var extra = syncInfo.error ? ' Detaliu: ' + syncInfo.error : '';
-        setStatus('Nu am găsit fișe autocontrol T.T. salvate. Verifică dacă există fișe salvate în pagina Tratament Termic Autocontrol și dacă s-au sincronizat în cloud.' + extra, 'err');
+        var err=(syncInfo.errors||[]).map(function(s){ return s.label + ': ' + s.error; }).filter(Boolean).join(' | ');
+        setStatus('Nu am găsit fișe salvate în sursele verificate. Surse verificate: ' + (summary || 'T.T., Raport Forja, Duritate, Intrări Oțel, Debitare, Magnaflux, CTC') + (err ? '. Detalii: ' + err : ''), 'err');
         return;
       }
       var added=0, updated=0, same=0, deleted=0;
@@ -473,11 +492,11 @@
       }
       state.rows.sort(function(a,b){ return String(b.updated_at || b.created_at || '').localeCompare(String(a.updated_at || a.created_at || '')); });
       await saveIndex();
-      await audit('SYNC', { id:'auto-sync-tt', document_no:'AUTO-SYNC-TT', document_type:'Fișă autocontrol T.T.', status:'Activ' }, 'Sincronizare fișe autocontrol T.T.: citite ' + syncInfo.total + ', +' + added + ', actualizate ' + updated + ', neschimbate ' + same + ', șterse ignorate ' + deleted);
+      await audit('SYNC', { id:'auto-sync-all', document_no:'AUTO-SYNC-ALL', document_type:'Fișe operatori', status:'Activ' }, 'Sincronizare toate fișele operatorilor: surse [' + summary + '], total ' + metas.length + ', +' + added + ', actualizate ' + updated + ', neschimbate ' + same + ', șterse ignorate ' + deleted);
       render();
-      setStatus('Sincronizare T.T. finalizată: citite ' + syncInfo.total + ' fișe, +' + added + ' noi, ' + updated + ' actualizate, ' + same + ' deja existente.', 'ok');
-    }catch(e){ console.error(e); setStatus(e && e.message ? e.message : 'Eroare la sincronizarea fișelor T.T.', 'err'); }
-    finally{ state.syncing=false; if(btn){ btn.disabled=!(state.canAdd||state.canEdit); btn.textContent='Sincronizează fișe T.T.'; } }
+      setStatus('Sincronizare finalizată: ' + metas.length + ' fișe citite, +' + added + ' noi, ' + updated + ' actualizate, ' + same + ' deja existente. Surse: ' + summary, 'ok');
+    }catch(e){ console.error(e); setStatus(e && e.message ? e.message : 'Eroare la sincronizarea fișelor operatorilor.', 'err'); }
+    finally{ state.syncing=false; if(btn){ btn.disabled=!(state.canAdd||state.canEdit); btn.textContent='Sincronizează toate fișele'; } }
   }
   function clone(v){ try{ return JSON.parse(JSON.stringify(v)); }catch(e){ return v; } }
   async function readDoc(key){
@@ -664,7 +683,7 @@
     tb.innerHTML=rows.map(function(r){
       var file = r.file ? '<span class="pill green">'+esc(r.file.name || 'Fișier')+'</span><div class="muted">'+esc(formatBytes(r.file.size))+'</div>' : (r.auto_archived ? '<span class="pill yellow">fișă automată</span><div class="muted">'+esc(r.source||'')+'</div>' : '<span class="pill gray">fără fișier</span>');
       var actions='<div class="rowActions"><button class="btn mini" data-act="view" data-id="'+esc(r.id)+'">Detalii</button>'+(r.file?'<button class="btn mini" data-act="open" data-id="'+esc(r.id)+'">PDF / Fișier</button><button class="btn mini" data-act="download" data-id="'+esc(r.id)+'">Descarcă</button>':'')+(state.canEdit?'<button class="btn mini" data-act="edit" data-id="'+esc(r.id)+'">Editează</button>':'')+(state.canDelete?'<button class="btn mini red" data-act="delete" data-id="'+esc(r.id)+'">Șterge</button>':'')+'</div>';
-      return '<tr><td>'+esc(formatDate(r.document_date))+'<div class="muted">'+esc(r.document_no||'')+'</div></td><td class="wrap"><b>'+esc(r.document_type||'')+'</b><div class="muted">'+esc(r.title||'')+'</div></td><td>'+esc(r.category||'')+'</td><td>'+esc(r.part_no||'')+'<div class="muted">'+esc(r.cat_code||'')+'</div></td><td>'+esc(r.lot_no||'')+'<div class="muted">Rev. '+esc(r.revision||'')+'</div></td><td>'+esc(updatedActorName(r))+'</td><td class="wrap">'+esc(r.retention||'')+'</td><td>'+esc(formatDate(r.expiry_date))+'</td><td>'+statusPill(r)+'</td><td class="wrap">'+file+'</td><td>'+actions+'</td></tr>';
+      return '<tr><td>'+esc(formatDate(r.document_date))+'<div class="muted">'+esc(r.document_no||'')+'</div></td><td class="wrap"><b>'+esc(r.document_type||'')+'</b><div class="muted">'+esc(r.title||'')+'</div></td><td>'+esc(r.category||'')+'</td><td>'+esc(r.part_no||'')+'<div class="muted">'+esc(r.cat_code||'')+'</div></td><td>'+esc(r.lot_no||'')+'<div class="muted">Rev. '+esc(r.revision||'')+'</div></td><td>'+esc(primaryActorName(r))+'</td><td class="wrap">'+esc(r.retention||'')+'</td><td>'+esc(formatDate(r.expiry_date))+'</td><td>'+statusPill(r)+'</td><td class="wrap">'+file+'</td><td>'+actions+'</td></tr>';
     }).join('');
     tb.querySelectorAll('button[data-act]').forEach(function(btn){ btn.onclick=function(){ var id=btn.getAttribute('data-id'), act=btn.getAttribute('data-act'); if(act==='view') showDetails(id); if(act==='open') openRow(id,false); if(act==='download') openRow(id,true); if(act==='edit') editRow(id); if(act==='delete') softDelete(id); }; });
   }
@@ -678,6 +697,18 @@
       html+='<div class="viewerBox"><div class="viewerHead"><span>Fișă T.T. salvată automat</span><span class="muted">'+esc(s.id||'')+'</span></div><div class="viewerBody"><div class="detailsGrid">'+
         [['Data',s.date_text||formatDate(s.date_iso)],['Operator',s.operator],['Schimb',ttShiftLabel(s)],['Reper 1',s.reper1],['Reper 2',s.reper2],['Reper 3',s.reper3],['Reper 4',s.reper4],['Cod CAT 1',s.codCat1],['Cod CAT 2',s.codCat2],['Cod CAT 3',s.codCat3],['Cod CAT 4',s.codCat4],['Ultima salvare',formatDateTime(s.updated_at||s.synced_at)]].map(function(x){return '<div>'+esc(x[0])+'</div><div>'+esc(x[1]||'')+'</div>';}).join('')+
       '</div><div class="hint" style="margin-top:8px">Aceasta este fișa salvată de operator, citită din sursa Tratament Termic Autocontrol. PDF-ul original se generează în pagina sursă.</div></div></div>';
+    }else if(r.auto_archived && r.source_snapshot){
+      var snap=r.source_snapshot||{};
+      var keys=['data','date','measurement_date_ro','measurement_time','operator','operator_name','schimb','schimbul','utilaj','echipament','linie','ciocan','reper','reper_complet','cod_cat','cat_code','sarja','sarja_material','material','cantitate','realizat','rebut','status'];
+      var used={};
+      var pairs=[];
+      keys.forEach(function(k){ if(Object.prototype.hasOwnProperty.call(snap,k) && norm(snap[k]) && !used[k]){ used[k]=true; pairs.push([k, snap[k]]); } });
+      Object.keys(snap).slice(0,24).forEach(function(k){ if(pairs.length>=18) return; if(!used[k] && ['string','number','boolean'].indexOf(typeof snap[k])>=0 && norm(snap[k])){ used[k]=true; pairs.push([k, snap[k]]); } });
+      if(pairs.length){
+        html+='<div class="viewerBox"><div class="viewerHead"><span>Înregistrare sursă automată</span><span class="muted">'+esc(r.source||'')+'</span></div><div class="viewerBody"><div class="detailsGrid">'+
+          pairs.map(function(x){ return '<div>'+esc(x[0])+'</div><div>'+esc(x[1])+'</div>'; }).join('')+
+        '</div><div class="hint" style="margin-top:8px">Aceasta este înregistrarea citită automat din pagina sursă.</div></div></div>';
+      }
     }
     if(r.file){ html+='<div class="viewerBox"><div class="viewerHead"><span>'+esc(r.file.name||'Fișier')+' • '+esc(formatBytes(r.file.size))+'</span><span><button class="btn mini" id="drawerOpenFile" type="button">Deschide</button> <button class="btn mini" id="drawerDownloadFile" type="button">Descarcă</button></span></div><div class="viewerBody"><div class="hint">Fișierul se deschide într-o filă nouă sau se descarcă, în funcție de browser și tip.</div></div></div>'; }
     var localAudit=state.audit.filter(function(a){ return a.document_id===r.id || a.document_no===r.document_no; }).slice(0,20);
@@ -700,7 +731,7 @@
     if(!state.canExport){ alert('Nu ai drept de export.'); return; }
     var rows=filteredRows();
     var head=['Număr document','Data','Tip','Categorie','Reper','Cod CAT','Lot/Sarjă','Revizie','Sursă','Retenție','Expirare','Status','Fișier','Utilizator','Observații'];
-    var csv=[head].concat(rows.map(function(r){ return [r.document_no,r.document_date,r.document_type,r.category,r.part_no,r.cat_code,r.lot_no,r.revision,r.source,r.retention,r.expiry_date,r.status,r.file&&r.file.name||'',updatedActorName(r),r.notes]; })).map(function(row){ return row.map(function(v){ return '"'+String(v==null?'':v).replace(/"/g,'""')+'"'; }).join(';'); }).join('\n');
+    var csv=[head].concat(rows.map(function(r){ return [r.document_no,r.document_date,r.document_type,r.category,r.part_no,r.cat_code,r.lot_no,r.revision,r.source,r.retention,r.expiry_date,r.status,r.file&&r.file.name||'',primaryActorName(r),r.notes]; })).map(function(row){ return row.map(function(v){ return '"'+String(v==null?'':v).replace(/"/g,'""')+'"'; }).join(';'); }).join('\n');
     var blob=new Blob(['\ufeff'+csv],{type:'text/csv;charset=utf-8'}); var url=URL.createObjectURL(blob); var a=document.createElement('a'); a.href=url; a.download='arhiva-documente.csv'; document.body.appendChild(a); a.click(); a.remove(); setTimeout(function(){URL.revokeObjectURL(url);},30000);
   }
   function applyViewOnly(){
