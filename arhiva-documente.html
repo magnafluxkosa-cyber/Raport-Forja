@@ -134,7 +134,7 @@
       <div class="actions">
         <button class="btn" id="btnBack" type="button">Înapoi la Dashboard</button>
         <button class="btn" id="btnRefresh" type="button" data-rf-control="cloud.refresh">Reîmprospătează</button>
-        <button class="btn green" id="btnSyncOperatorDocs" type="button" data-rf-control="archive-documents.sync">Sincronizează toate fișele</button>
+        <button class="btn green" id="btnSyncOperatorDocs" type="button" data-rf-control="archive-documents.sync" title="Dacă alegi un Tip în filtrul din dreapta, sincronizează rapid doar acel tip. Dacă Tip este Toate, sincronizează toate sursele în mod rapid.">Sincronizează toate fișele</button>
         <button class="btn primary" id="btnExport" type="button" data-rf-control="archive-documents.export">Export CSV</button>
       </div>
     </div>
@@ -224,7 +224,9 @@
   var STORAGE_BUCKET = 'kad-documente';
   var STORAGE_PREFIX = 'arhiva-documente';
   var MAX_RF_FILE_BYTES = 4500000;
-  var state = { sb:null, auth:null, access:null, rows:[], audit:[], editingId:'', canAdd:false, canEdit:false, canDelete:false, canExport:false, syncing:false, actorNamesByEmail:{} };
+  var QUICK_SYNC_DURITATE_LIMIT = 120;
+  var FILTERED_SYNC_DURITATE_LIMIT = 300;
+  var state = { sb:null, auth:null, access:null, rows:[], audit:[], editingId:'', canAdd:false, canEdit:false, canDelete:false, canExport:false, syncing:false, actorNamesByEmail:{}, syncOnlyType:'' };
   var DOC_TYPES = [
     ['PPAP','Calitate','Viața piesei + 15 ani'],
     ['FAI - First Article Inspection','Calitate','Viața piesei + 15 ani'],
@@ -563,7 +565,8 @@
   }
   async function collectDuritateAutoDocs(out){
     try{
-      var res=await state.sb.from('rf_duritate_masuratori').select('*').order('measurement_datetime',{ascending:false}).limit(1000);
+      var duritateLimit = state.syncOnlyType === 'Duritate' ? FILTERED_SYNC_DURITATE_LIMIT : QUICK_SYNC_DURITATE_LIMIT;
+      var res=await state.sb.from('rf_duritate_masuratori').select('*').order('measurement_datetime',{ascending:false}).limit(duritateLimit);
       if(res && res.error) throw res.error;
       (res.data||[]).forEach(function(r){
         var date=pickDate(r);
@@ -581,38 +584,57 @@
       return { label:label, ok:false, count:Math.max(0,out.length-before), error:e && e.message ? e.message : String(e || '') };
     }
   }
-  async function collectAutoDocumentMetas(){
+  function selectedArchiveSyncType(){
+    var el=$('filterType');
+    return el ? norm(el.value) : '';
+  }
+  function autoSyncCollectors(){
+    return [
+      { type:'Fișă autocontrol T.T.', label:'Fișe autocontrol T.T.', fn:collectTTAutoDocs, timeout:12000 },
+      { type:'Raport Forja', label:'Raport Forja', fn:collectRaportForjaAutoDocs, timeout:12000 },
+      { type:'Duritate', label:'Duritate', fn:collectDuritateAutoDocs, timeout:12000 },
+      { type:'Intrări Oțel', label:'Intrări Oțel', fn:collectIntrariOtelAutoDocs, timeout:14000 },
+      { type:'Debitare', label:'Debitare', fn:collectDebitareAutoDocs, timeout:14000 },
+      { type:'Magnaflux', label:'Magnaflux', fn:collectMagnafluxAutoDocs, timeout:14000 },
+      { type:'Fișă control CTC Forja', label:'Fișă control CTC Forja', fn:collectCtcForjaAutoDocs, timeout:14000 }
+    ];
+  }
+  async function collectAutoDocumentMetas(onlyType){
     var out=[];
     var stats=[];
-    stats.push(await safeCollectAuto('Fișe autocontrol T.T.', collectTTAutoDocs, out, 12000));
-    stats.push(await safeCollectAuto('Raport Forja', collectRaportForjaAutoDocs, out, 12000));
-    stats.push(await safeCollectAuto('Duritate', collectDuritateAutoDocs, out, 12000));
-    stats.push(await safeCollectAuto('Intrări Oțel', collectIntrariOtelAutoDocs, out, 14000));
-    stats.push(await safeCollectAuto('Debitare', collectDebitareAutoDocs, out, 14000));
-    stats.push(await safeCollectAuto('Magnaflux', collectMagnafluxAutoDocs, out, 14000));
-    stats.push(await safeCollectAuto('Fișă control CTC Forja', collectCtcForjaAutoDocs, out, 14000));
+    var wanted=norm(onlyType);
+    var collectors=autoSyncCollectors().filter(function(c){ return !wanted || c.type===wanted; });
+    if(!collectors.length && wanted){
+      state.allSyncInfo={ stats:[], total:0, errors:[{label:wanted, ok:false, count:0, error:'Tipul selectat nu are sursă de sincronizare definită.'}] };
+      return [];
+    }
+    for(var i=0;i<collectors.length;i++){
+      stats.push(await safeCollectAuto(collectors[i].label, collectors[i].fn, out, collectors[i].timeout));
+    }
     var seen=new Set();
     var clean=out.filter(function(x){ if(!x.source_uid || seen.has(x.source_uid)) return false; seen.add(x.source_uid); return true; });
-    state.allSyncInfo={ stats:stats, total:clean.length, errors:stats.filter(function(s){ return !s.ok; }) };
+    state.allSyncInfo={ stats:stats, total:clean.length, errors:stats.filter(function(s){ return !s.ok; }), onlyType:wanted };
     return clean;
   }
   async function syncOperatorDocuments(){
     if(state.syncing) return;
     if(!state.canAdd && !state.canEdit){ alert('Nu ai drept de sincronizare în Arhivă Documente.'); return; }
     state.syncing=true;
-    var btn=$('btnSyncOperatorDocs'); if(btn){ btn.disabled=true; btn.textContent='Sincronizez...'; }
-    setStatus('Sincronizez toate fișele operatorilor...', '');
+    var selectedType=selectedArchiveSyncType();
+    state.syncOnlyType=selectedType;
+    var btn=$('btnSyncOperatorDocs'); if(btn){ btn.disabled=true; btn.textContent=selectedType ? ('Sincronizez '+selectedType+'...') : 'Sincronizez...'; }
+    setStatus(selectedType ? ('Sincronizez rapid doar tipul selectat: '+selectedType+'...') : 'Sincronizez toate fișele operatorilor în mod rapid...', '');
     try{
       await loadActorNameMappings();
       await loadRows();
       try{ await loadTTArchiveTempSettingsRows(true); }catch(e){ console.warn('Setările tehnologice T.T. nu au putut fi citite la sincronizare.', e); }
-      var metas=await collectAutoDocumentMetas();
+      var metas=await collectAutoDocumentMetas(selectedType);
       var syncInfo=state.allSyncInfo || {stats:[],total:0,errors:[]};
       var summary=(syncInfo.stats||[]).map(function(s){ return s.label + ': ' + (s.ok ? s.count : 'eroare'); }).join(' | ');
       if(!metas.length){
         render();
         var err=(syncInfo.errors||[]).map(function(s){ return s.label + ': ' + s.error; }).filter(Boolean).join(' | ');
-        setStatus('Nu am găsit fișe salvate în sursele verificate. Surse verificate: ' + (summary || 'T.T., Raport Forja, Duritate, Intrări Oțel, Debitare, Magnaflux, CTC') + (err ? '. Detalii: ' + err : ''), 'err');
+        setStatus((selectedType ? ('Nu am găsit fișe salvate pentru '+selectedType+'. ') : 'Nu am găsit fișe salvate în sursele verificate. ') + 'Surse verificate: ' + (summary || (selectedType || 'T.T., Raport Forja, Duritate, Intrări Oțel, Debitare, Magnaflux, CTC')) + (err ? '. Detalii: ' + err : ''), 'err');
         return;
       }
       var added=0, updated=0, same=0, deleted=0;
@@ -622,11 +644,11 @@
       }
       state.rows.sort(function(a,b){ return String(b.updated_at || b.created_at || '').localeCompare(String(a.updated_at || a.created_at || '')); });
       await saveIndex();
-      await audit('SYNC', { id:'auto-sync-all', document_no:'AUTO-SYNC-ALL', document_type:'Fișe operatori', status:'Activ' }, 'Sincronizare toate fișele operatorilor: surse [' + summary + '], total ' + metas.length + ', +' + added + ', actualizate ' + updated + ', neschimbate ' + same + ', șterse ignorate ' + deleted);
+      await audit('SYNC', { id:selectedType ? ('auto-sync-'+selectedType) : 'auto-sync-all', document_no:selectedType ? ('AUTO-SYNC-'+selectedType) : 'AUTO-SYNC-ALL', document_type:selectedType || 'Fișe operatori', status:'Activ' }, (selectedType ? ('Sincronizare rapidă '+selectedType) : 'Sincronizare rapidă toate fișele operatorilor') + ': surse [' + summary + '], total ' + metas.length + ', +' + added + ', actualizate ' + updated + ', neschimbate ' + same + ', șterse ignorate ' + deleted);
       render();
-      setStatus('Sincronizare finalizată: ' + metas.length + ' fișe citite, +' + added + ' noi, ' + updated + ' actualizate, ' + same + ' deja existente. Surse: ' + summary, 'ok');
+      setStatus((selectedType ? ('Sincronizare rapidă '+selectedType+' finalizată: ') : 'Sincronizare rapidă finalizată: ') + metas.length + ' fișe citite, +' + added + ' noi, ' + updated + ' actualizate, ' + same + ' deja existente. Surse: ' + summary, 'ok');
     }catch(e){ console.error(e); setStatus(e && e.message ? e.message : 'Eroare la sincronizarea fișelor operatorilor.', 'err'); }
-    finally{ state.syncing=false; if(btn){ btn.disabled=!(state.canAdd||state.canEdit); btn.textContent='Sincronizează toate fișele'; } }
+    finally{ state.syncOnlyType=''; state.syncing=false; if(btn){ btn.disabled=!(state.canAdd||state.canEdit); btn.textContent='Sincronizează toate fișele'; } }
   }
   function clone(v){ try{ return JSON.parse(JSON.stringify(v)); }catch(e){ return v; } }
   async function readDoc(key){
