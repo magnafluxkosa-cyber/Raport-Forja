@@ -22,7 +22,6 @@
     { page_key: 'mapare-nume-notificari', page_name: 'Mapare nume notificări' },
     { page_key: 'istoric-notificari', page_name: 'Istoric notificări' },
     { page_key: 'arhiva-digitala', page_name: 'Arhivă digitală' },
-    { page_key: 'operatori', page_name: 'Operatori / Fișe operatori' },
     { page_key: 'backup-date-kad', page_name: 'Backup date K.A.D' },
     { page_key: 'numeralkod', page_name: 'Numeral KOD' },
     { page_key: 'intrari-otel', page_name: 'Intrări Oțel' },
@@ -108,7 +107,6 @@ var PAGE_CONTROL_OVERRIDES = Object.freeze({
     Object.freeze({ control_key:'nav.kpi', control_label:'Buton KPI', control_type:'action' }),
     Object.freeze({ control_key:'nav.group-planificari', control_label:'Buton PLANIFICĂRI', control_type:'action' }),
     Object.freeze({ control_key:'nav.group-resurse-umane', control_label:'Buton RESURSE UMANE', control_type:'action' }),
-    Object.freeze({ control_key:'nav.operatori', control_label:'Buton OPERATORI', control_type:'action' }),
     Object.freeze({ control_key:'nav.group-administrator', control_label:'Buton ADMINISTRATOR', control_type:'action' }),
     Object.freeze({ control_key:'nav.helper-data', control_label:'Buton HELPER-DATA', control_type:'action' }),
     Object.freeze({ control_key:'nav.helper-acl', control_label:'Buton HELPER-ACL', control_type:'action' }),
@@ -2653,34 +2651,6 @@ async function applyDomPermissions(pageKey, root, options) {
         ['section.operator-sheet','Fișă operator Magnaflux'],
         ['section.pin-config','Configurare PIN-uri operatori']
       ])
-    }),
-    'operatori': Object.freeze({
-      hint: 'Operatori / Fișe operatori este arhiva centrală a fișelor completate de operatori. View-only permite vizualizare și PDF; editarea și ștergerea sunt controlate separat prin ACL.',
-      items: uniqueCatalog([].concat(
-        entries([
-          ['rows.filter','Filtrare / căutare fișe'],
-          ['cloud.refresh','Reîmprospătare arhivă'],
-          ['data.export','Export CSV'],
-          ['pdf.open','Vizualizare / salvare PDF'],
-          ['rows.edit','Editare fișă'],
-          ['rows.delete','Ștergere fișă']
-        ], 'action'),
-        entries([
-          ['field.categorie','Filtru / câmp Categorie fișă'],
-          ['field.data','Filtru / câmp Dată'],
-          ['field.schimb','Câmp Schimb'],
-          ['field.operator','Câmp Operator'],
-          ['field.reper','Câmp Reper / document'],
-          ['field.utilaj','Câmp Utilaj / echipament'],
-          ['field.observatii','Câmp Observații']
-        ], 'field'),
-        entries([
-          ['section.table-main','Tabel arhivă fișe operatori'],
-          ['section.details','Panou detalii fișă'],
-          ['section.pdf','Vizualizare / salvare PDF'],
-          ['section.source-link','Deschidere pagină sursă']
-        ], 'section')
-      ))
     }),
     'probleme-raportate': Object.freeze({
       hint: 'Probleme raportate: formular, filtre, tabel principal și sumar minute pierdute.',
