@@ -597,21 +597,35 @@
   
   var INTRARI_OTEL_LOOKUP_ARCHIVE = null;
   function raportForjaNormalizeSarjaArchive(v){ return low(String(v || '').replace(/rev\.?/ig,'').replace(/[^0-9A-Za-z]+/g,' ')).replace(/\s+/g,'').trim(); }
+  function raportForjaNormalizeCodeArchive(v){ return low(String(v || '').replace(/[^0-9A-Za-z]+/g,'')).trim(); }
+  function raportForjaNormalizeMaterialArchive(v){ return low(String(v || '').replace(/[^0-9A-Za-z]+/g,'')).trim(); }
+  function raportForjaDateMsArchive(v){
+    var raw=norm(v); if(!raw) return 0;
+    var iso=toIsoDate(raw); if(iso){ var t=Date.parse(iso+'T00:00:00'); return Number.isFinite(t)?t:0; }
+    var m=raw.match(/^(\d{1,2})[.\/\-](\d{1,2})[.\/\-](\d{4})$/);
+    if(m){ var t2=Date.parse(m[3]+'-'+String(m[2]).padStart(2,'0')+'-'+String(m[1]).padStart(2,'0')+'T00:00:00'); return Number.isFinite(t2)?t2:0; }
+    var t3=Date.parse(raw); return Number.isFinite(t3)?t3:0;
+  }
   function intrariOtelArchiveObjFromRow(r){
     if(Array.isArray(r)) return {an:r[0],luna:r[1],data:r[2],diametru:r[3],calitate:r[4],cod_intern:r[5],sarja:r[6],cantitate:r[7],pretest:r[8],furnizor:r[9]};
     r=r||{};
     return {
       an:pick(r,['an','An','ANUL','Anul']), luna:pick(r,['luna','Luna','LUNA']), data:pick(r,['data','Data','DATA','data_intrare','Data Intrare']),
-      diametru:pick(r,['diametru','diametru_otel','Dimensiune Otel','Dimensiune oțel','DIAMETRU']),
+      diametru:pick(r,['diametru','diametru_otel','dimensiune_otel','Dimensiune Otel','Dimensiune oțel','DIAMETRU']),
       calitate:pick(r,['calitate','calitate_otel','Calitate otel','CALITATE']),
       cod_intern:pick(r,['numeral','cod_intern','cod_intern_otel','Cod intern otel (3 litere)','Cod Oțel CALITATE','NUMERAL KOD PREMAGRO']),
       sarja:pick(r,['sarja','cod_sarja','Sarja material (furnizor)','Cod Sarja FURNIZOR','sarja_material','lot_sarja']),
       cantitate:pick(r,['cantitate','Cantitate (kg)','cantitate_kg']), pretest:pick(r,['pretest','PRETEST','certificat']), furnizor:pick(r,['furnizor','Furnizor'])
     };
   }
+  function raportForjaPushLookupArchive(map, key, obj){
+    key=norm(key); if(!key) return;
+    if(!map[key]) map[key]=[];
+    map[key].push(obj);
+  }
   async function loadIntrariOtelLookupArchive(force){
     if(INTRARI_OTEL_LOOKUP_ARCHIVE && !force) return INTRARI_OTEL_LOOKUP_ARCHIVE;
-    var bySarja={};
+    var bySarja={}, byCodIntern={}, byCodCalitate={}, byCodCalitateDiametru={};
     try{
       var years=await yearsFromIndex('intrari-otel:index');
       for(var i=0;i<years.length;i++){
@@ -620,24 +634,64 @@
           var d=await readDoc(key), p=payload(d)||{}, rows=Array.isArray(p.rows)?p.rows:[];
           rows.forEach(function(raw){
             var obj=intrariOtelArchiveObjFromRow(raw);
+            obj.sarja=norm(obj.sarja); obj.cod_intern=norm(obj.cod_intern); obj.diametru=norm(obj.diametru); obj.calitate=norm(obj.calitate); obj.furnizor=norm(obj.furnizor); obj.data=norm(obj.data); obj.pretest=norm(obj.pretest);
+            obj._date_ms=raportForjaDateMsArchive(obj.data);
             var sk=raportForjaNormalizeSarjaArchive(obj.sarja);
-            if(!sk) return;
-            if(!bySarja[sk]) bySarja[sk]={sarja:obj.sarja||'', cod_intern:obj.cod_intern||'', diametru:obj.diametru||'', calitate:obj.calitate||'', furnizor:obj.furnizor||'', data:obj.data||'', pretest:obj.pretest||''};
+            if(sk && !bySarja[sk]) bySarja[sk]=obj;
+            var ck=raportForjaNormalizeCodeArchive(obj.cod_intern);
+            if(ck){
+              raportForjaPushLookupArchive(byCodIntern, ck, obj);
+              var calKey=raportForjaNormalizeMaterialArchive(obj.calitate);
+              var diaKey=raportForjaNormalizeMaterialArchive(obj.diametru);
+              if(calKey) raportForjaPushLookupArchive(byCodCalitate, ck+'|'+calKey, obj);
+              if(calKey && diaKey) raportForjaPushLookupArchive(byCodCalitateDiametru, ck+'|'+calKey+'|'+diaKey, obj);
+            }
           });
         }catch(e){ console.warn('Nu pot citi Intrări Oțel pentru lookup Raport Forja: '+key, e); }
       }
     }catch(e){ console.warn('Lookup Intrări Oțel indisponibil pentru Raport Forja.', e); }
-    INTRARI_OTEL_LOOKUP_ARCHIVE={bySarja:bySarja};
+    [byCodIntern,byCodCalitate,byCodCalitateDiametru].forEach(function(map){
+      Object.keys(map).forEach(function(k){ map[k].sort(function(a,b){ return (b._date_ms||0)-(a._date_ms||0); }); });
+    });
+    INTRARI_OTEL_LOOKUP_ARCHIVE={bySarja:bySarja,byCodIntern:byCodIntern,byCodCalitate:byCodCalitate,byCodCalitateDiametru:byCodCalitateDiametru};
     return INTRARI_OTEL_LOOKUP_ARCHIVE;
+  }
+  function raportForjaPickMaterialCodeArchive(s){
+    s=s||{};
+    var v=pick(s,['codcat','cod_cat','codCAT','cat_code','cod_cat_reper','cod_cat_dk','cod_kat','cod_kat_cat','COD_CAT_DK','Cod KAT / CAT','cod_material','cod_intern_material','cod_intern_otel','cod_intern','numeral','material_code','material']);
+    if(!v && s.fields) v=pick(s.fields,['codcat','cod_cat','codCAT','cat_code','cod_cat_dk','cod_kat','Cod KAT / CAT','cod_material','cod_intern_material','cod_intern_otel','cod_intern','numeral','material_code','material']);
+    return norm(v);
+  }
+  function raportForjaChooseIntrariCandidateArchive(list, reportDateMs){
+    list=(list||[]).filter(Boolean);
+    if(!list.length) return null;
+    if(reportDateMs){
+      for(var i=0;i<list.length;i++){ if(!list[i]._date_ms || list[i]._date_ms<=reportDateMs) return list[i]; }
+    }
+    return list[0] || null;
   }
   function lookupIntrariOtelForRaportArchive(row){
     row=row||{};
     var s=row.source_snapshot || row;
     var sarja=pick(s,['sarja_material','sarja','cod_sarja','lot_sarja','lot','lot_no','nr_sarja','sarja_furnizor','Sarja material (furnizor)','Cod Sarja FURNIZOR']);
     if(!sarja && s.fields) sarja=pick(s.fields,['sarja_material','sarja','cod_sarja','lot_sarja','Sarja material (furnizor)','Cod Sarja FURNIZOR']);
-    var lk=INTRARI_OTEL_LOOKUP_ARCHIVE && INTRARI_OTEL_LOOKUP_ARCHIVE.bySarja || {};
-    var found=sarja ? lk[raportForjaNormalizeSarjaArchive(sarja)] : null;
-    return found || null;
+    var lk=INTRARI_OTEL_LOOKUP_ARCHIVE || {};
+    var found=sarja ? ((lk.bySarja || {})[raportForjaNormalizeSarjaArchive(sarja)]) : null;
+    if(found) return found;
+    var codeKey=raportForjaNormalizeCodeArchive(raportForjaPickMaterialCodeArchive(s));
+    if(!codeKey) return null;
+    var calitate=pick(s,['calitate','calitate_otel','steel_grade','Calitate otel','CALITATE']);
+    if(!calitate && s.fields) calitate=pick(s.fields,['calitate','calitate_otel','steel_grade','Calitate otel','CALITATE']);
+    var diametru=pick(s,['diametru','diametru_otel','dimensiune_otel','Dimensiune Otel','DIAMETRU']);
+    if(!diametru && s.fields) diametru=pick(s.fields,['diametru','diametru_otel','dimensiune_otel','Dimensiune Otel','DIAMETRU']);
+    var calKey=raportForjaNormalizeMaterialArchive(calitate);
+    var diaKey=raportForjaNormalizeMaterialArchive(diametru);
+    var reportDateMs=raportForjaDateMsArchive(pick(s,['data','date','date_iso','document_date','DATA']) || row.document_date);
+    var list=null;
+    if(calKey && diaKey) list=(lk.byCodCalitateDiametru || {})[codeKey+'|'+calKey+'|'+diaKey];
+    if(!list && calKey) list=(lk.byCodCalitate || {})[codeKey+'|'+calKey];
+    if(!list) list=(lk.byCodIntern || {})[codeKey];
+    return raportForjaChooseIntrariCandidateArchive(list, reportDateMs);
   }
   function raportForjaOperatorFromSnapshot(s){
     s=s||{};
@@ -665,11 +719,9 @@
     s=s||{};
     var sarja=pick(s,['sarja_material','sarja','cod_sarja','lot_sarja','lot','lot_no','nr_sarja','sarja_furnizor','Sarja material (furnizor)','Cod Sarja FURNIZOR']);
     if(!sarja && s.fields) sarja=pick(s.fields,['sarja_material','sarja','cod_sarja','lot_sarja','Sarja material (furnizor)','Cod Sarja FURNIZOR']);
-    var cod=pick(s,['cod_material','cod_intern_material','cod_intern_otel','cod_intern','numeral','material_code','material']);
-    if(!cod && s.fields) cod=pick(s.fields,['cod_material','cod_intern_material','cod_intern_otel','cod_intern','numeral','material_code','material']);
     var intrari=s._intrari_otel_lookup || lookupIntrariOtelForRaportArchive(s);
-    if(intrari){ cod=cod || intrari.cod_intern || ''; sarja=sarja || intrari.sarja || ''; }
-    return compactText([cod,sarja], ' / ');
+    if(intrari && norm(intrari.sarja)) sarja=intrari.sarja;
+    return norm(sarja);
   }
 async function collectRaportForjaAutoDocs(out){
     var key='raport-forja-operatori';
@@ -2214,6 +2266,7 @@ async function collectRaportForjaAutoDocs(out){
   async function downloadAutoSheetPdf(id){
     var r=await getFullArchiveRow(id);
     if(!r || !r.auto_archived){ alert('Această înregistrare nu este fișă automată.'); return; }
+    r=await prepareRaportForjaLookupForRow(r);
 
     var capture=makePdfCapturePage(r);
     document.body.appendChild(capture.holder);
@@ -2343,9 +2396,23 @@ async function collectRaportForjaAutoDocs(out){
     }
   }
 
+  async function prepareRaportForjaLookupForRow(row){
+    if(!isRaportForjaAutoSheet(row)) return row;
+    try{ await loadIntrariOtelLookupArchive(false); }catch(e){ console.warn('Lookup Intrări Oțel pentru Raport Forja indisponibil.', e); }
+    var s=row && row.source_snapshot;
+    if(s){
+      var intrari=lookupIntrariOtelForRaportArchive(s);
+      if(intrari) s._intrari_otel_lookup=intrari;
+      row.cat_code=raportForjaCodCatFromSnapshot(s) || row.cat_code || '';
+      row.lot_no=raportForjaMaterialSarjaFromSnapshot(s) || row.lot_no || '';
+    }
+    return row;
+  }
+
   async function openAutoSheet(id, printMode){
     var r=await getFullArchiveRow(id);
     if(!r || !r.auto_archived){ alert('Această înregistrare nu este fișă automată.'); return; }
+    r=await prepareRaportForjaLookupForRow(r);
     if(printMode){ downloadAutoSheetPdf(id); return; }
     $('drawerTitle').textContent='Fișă '+(r.document_no || r.document_type || 'operator');
     var html='<div class="viewerBox"><div class="viewerHead"><span>'+esc(r.document_type || 'Fișă operator')+'</span><span><button class="btn mini" id="drawerPdfFromSheet" type="button">PDF</button></span></div><div class="viewerBody">'+buildAutoSheetHtml(r,false)+'</div></div>';
@@ -2356,6 +2423,7 @@ async function collectRaportForjaAutoDocs(out){
 
     async function showDetails(id){
     var r=await getFullArchiveRow(id); if(!r) return;
+    r=await prepareRaportForjaLookupForRow(r);
     $('drawerTitle').textContent='Detalii document '+(r.document_no||'');
     var rows=[['Număr document',r.document_no],['Tip document',r.document_type],['Categorie',r.category],['Retenție',r.retention],['Data documentului',formatDate(r.document_date)],['Data expirării',formatDate(r.expiry_date)],['Reper',r.part_no],['Cod CAT',r.cat_code],['Lot / Sarjă',r.lot_no],['Revizie',r.revision],['Sursă',r.source],['Status',r.status],['Creat de',createdActorName(r)],['Ultima modificare',compactText([formatDateTime(r.updated_at),updatedActorName(r)],' / ')],['Observații',r.notes],['Tip înregistrare',r.auto_archived?'Automată din fișă operator':'Manuală'],['Fișă sursă',compactText([r.source_page,r.source_doc_key,r.source_row_id],' / ')]];
     var html='<div class="detailsGrid">'+rows.map(function(x){ return '<div>'+esc(x[0])+'</div><div>'+esc(x[1]||'')+'</div>'; }).join('')+'</div>';
