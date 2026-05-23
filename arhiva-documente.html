@@ -308,6 +308,7 @@
   var INDEX_KEY = 'arhiva-documente:index:v2';
   var LEGACY_INDEX_KEY = 'arhiva-documente:index';
   var AUDIT_KEY = 'arhiva-documente:audit';
+  var AUDIT_TABLE = 'kad_archive_audit_log';
   var DOC_PREFIX = 'arhiva-documente:doc:';
   var FILE_PREFIX = 'arhiva-documente:file:';
   var STORAGE_BUCKET = 'kad-documente';
@@ -1491,7 +1492,7 @@ async function collectRaportForjaAutoDocs(out){
       ['Format', fileStatus],
       ['Identificare', archiveIndexCompleteness(row)],
       ['Acces controlat', 'Autentificare + ACL pe pagină: can_view / can_edit / can_delete / can_export.'],
-      ['Audit trail', 'Se urmăresc creare, modificare, sincronizare, vizualizare, fișă, PDF, fișier, export și ștergere logică.'],
+      ['Audit trail', 'Se urmăresc creare, modificare, sincronizare, vizualizare, fișă, PDF, fișier, export și ștergere logică; dacă tabela server-side este creată, logul este append-only în Supabase.'],
       ['Protecție modificare', row.auto_archived || row.archive_locked ? 'Fișă blocată pentru editare directă în arhivă; se corectează în pagina sursă și se resincronizează.' : 'Modificările manuale sunt controlate prin drepturi ACL, versiune și istoric.'],
       ['Original fizic', original ? 'Pentru acest tip este recomandată păstrarea/identificarea originalului fizic conform cerințelor clientului.' : 'Nu este marcat ca document cu original fizic obligatoriu.'],
       ['Backup / criptare', 'Control infrastructură: arhiva trebuie inclusă în backup regulat; transmisia este prin conexiune securizată, iar criptarea la stocare se verifică în platforma de stocare.']
@@ -1571,21 +1572,80 @@ async function collectRaportForjaAutoDocs(out){
     state.rows=rows.filter(function(r){ return r && r.id; }).sort(function(a,b){ return String(b.updated_at || b.created_at || '').localeCompare(String(a.updated_at || a.created_at || '')); });
     clearArchiveFastCaches();
     scheduleArchiveSearchWarmup();
-    try{ var ad=await readDoc(AUDIT_KEY); var ap=payload(ad); state.audit=Array.isArray(ap && ap.items)?ap.items:[]; }catch(e){ state.audit=[]; }
+    try{ await loadServerAudit(true); }
+    catch(e){
+      try{ var ad=await readDoc(AUDIT_KEY); var ap=payload(ad); state.audit=Array.isArray(ap && ap.items)?ap.items:[]; }catch(_e){ state.audit=[]; }
+    }
   }
   async function saveIndex(){
     var lightRows=archiveIndexRows(state.rows);
     await writeDoc(INDEX_KEY,{ rows:lightRows, updated_at:nowIso(), count:lightRows.length, index_type:'metadata_only_v2' });
   }
+  function normalizeAuditRecord(a){
+    a=a||{};
+    return {
+      id:a.id || uid(),
+      at:a.at || a.created_at || nowIso(),
+      page:a.page || a.page_key || PAGE_KEY,
+      action:a.action || '',
+      document_id:a.document_id || a.documentId || '',
+      document_no:a.document_no || a.documentNo || '',
+      document_type:a.document_type || a.documentType || '',
+      document_status:a.document_status || '',
+      user_email:a.user_email || a.actor_email || '',
+      user_name:a.user_name || a.actor_name || '',
+      details:a.details || '',
+      user_agent:a.user_agent || ''
+    };
+  }
+  async function loadServerAudit(force){
+    if(!state.sb) return [];
+    try{
+      var res=await state.sb.from(AUDIT_TABLE).select('id,created_at,page_key,action,document_id,document_no,document_type,document_status,user_email,user_name,details,user_agent').eq('page_key',PAGE_KEY).order('created_at',{ascending:false}).limit(3000);
+      if(res && res.error) throw res.error;
+      var rows=(res.data||[]).map(function(x){ return normalizeAuditRecord({ id:x.id, at:x.created_at, page:x.page_key, action:x.action, document_id:x.document_id, document_no:x.document_no, document_type:x.document_type, document_status:x.document_status, user_email:x.user_email, user_name:x.user_name, details:x.details, user_agent:x.user_agent }); });
+      if(force || rows.length) state.audit=rows;
+      return rows;
+    }catch(e){
+      if(force) throw e;
+      return [];
+    }
+  }
+  async function writeServerAudit(item){
+    if(!state.sb || !item) return false;
+    var payloadRow={
+      id:item.id,
+      page_key:item.page || PAGE_KEY,
+      action:item.action || '',
+      document_id:item.document_id || '',
+      document_no:item.document_no || '',
+      document_type:item.document_type || '',
+      document_status:item.document_status || '',
+      user_email:item.user_email || userEmail(),
+      user_name:item.user_name || userName(),
+      details:item.details || '',
+      user_agent:item.user_agent || ((navigator && navigator.userAgent) || ''),
+      source:'arhiva-documente.html'
+    };
+    try{
+      var res=await state.sb.from(AUDIT_TABLE).insert(payloadRow);
+      if(res && res.error) throw res.error;
+      return true;
+    }catch(e){
+      try{
+        if(window.KADArchive && typeof window.KADArchive.logAudit === 'function'){
+          await window.KADArchive.logAudit({ sb:state.sb, user:state.auth && state.auth.user, pageKey:PAGE_KEY, action:item.action, documentId:item.document_id, documentType:item.document_type, documentNo:item.document_no, newData:payloadRow, source:'arhiva-documente-server-audit' });
+          return true;
+        }
+      }catch(_e){}
+      return false;
+    }
+  }
   async function audit(action, row, details){
     var item={ id:uid(), at:nowIso(), page:PAGE_KEY, action:action, document_id:row && row.id || '', document_no:row && row.document_no || '', document_type:row && row.document_type || '', document_status:row && row.status || '', user_email:userEmail(), user_name:userName(), details:details||'', user_agent:(navigator && navigator.userAgent) || '' };
     state.audit.unshift(item); state.audit=state.audit.slice(0,3000);
     try{ await writeDoc(AUDIT_KEY,{ items:state.audit, updated_at:nowIso() }); }catch(e){}
-    try{
-      if(window.KADArchive && typeof window.KADArchive.logAudit === 'function'){
-        await window.KADArchive.logAudit({ sb:state.sb, user:state.auth && state.auth.user, pageKey:PAGE_KEY, action:action, documentId:row && row.id, documentType:row && row.document_type, documentNo:row && row.document_no, newData:row, source:'arhiva-documente' });
-      }
-    }catch(e){}
+    try{ await writeServerAudit(item); }catch(e){}
   }
   function collectForm(){
     var id=state.editingId || uid();
@@ -3652,8 +3712,9 @@ async function collectRaportForjaAutoDocs(out){
     var csv=[head].concat(rows.map(function(r){ return [r.document_no,r.document_date,r.document_type,r.category,r.part_no,r.cat_code,r.lot_no,r.revision,r.source,r.retention,r.expiry_date,r.status,r.file&&r.file.name||'',primaryActorName(r),r.notes]; })).map(function(row){ return row.map(function(v){ return '"'+String(v==null?'':v).replace(/"/g,'""')+'"'; }).join(';'); }).join('\n');
     var blob=new Blob(['\ufeff'+csv],{type:'text/csv;charset=utf-8'}); var url=URL.createObjectURL(blob); var a=document.createElement('a'); a.href=url; a.download='arhiva-documente.csv'; document.body.appendChild(a); a.click(); a.remove(); audit('EXPORT_CSV',{id:'export-csv',document_no:'EXPORT-CSV',document_type:'Arhivă Documente',status:'Activ'},'export listă documente: '+rows.length+' rânduri').catch(function(){}); setTimeout(function(){URL.revokeObjectURL(url);},30000);
   }
-  function exportAuditCsv(){
+  async function exportAuditCsv(){
     if(!state.canExport){ alert('Nu ai drept de export audit.'); return; }
+    try{ await loadServerAudit(true); }catch(e){}
     var rows=(state.audit||[]).slice();
     var head=['Data/Ora','Acțiune','Număr document','Tip document','ID document','Utilizator','Email','Detalii','Pagină','Browser'];
     var csv=[head].concat(rows.map(function(a){ return [formatDateTime(a.at),a.action,a.document_no,a.document_type||'',a.document_id,displayActorName(a.user_email,a.user_name),a.user_email,a.details,a.page||PAGE_KEY,a.user_agent||'']; })).map(function(row){ return row.map(function(v){ return '"'+String(v==null?'':v).replace(/"/g,'""')+'"'; }).join(';'); }).join('\n');
@@ -3682,7 +3743,7 @@ async function collectRaportForjaAutoDocs(out){
       try{ if(window.RF_ACL && typeof window.RF_ACL.applyDomPermissions==='function') await window.RF_ACL.applyDomPermissions(PAGE_KEY,document,{client:state.sb,pageAccess:state.access,user:state.auth.user}); }catch(e){}
       await loadActorNameMappings();
       try{ await loadTTArchiveTempSettingsRows(true); }catch(e){}
-      await loadRows(); render(); document.body.classList.remove('booting'); preloadPdfLibraryIdle();
+      await loadRows(); render(); document.body.classList.remove('booting'); preloadPdfLibraryIdle(); audit('PAGE_OPEN',{id:'page-open',document_no:'PAGE-OPEN',document_type:'Arhivă Documente',status:'Activ'},'deschidere pagină Arhivă Documente').catch(function(){});
     }catch(e){ console.error(e); showLock(e && e.message ? e.message : 'Nu pot încărca Arhiva Documente.'); document.body.classList.remove('booting'); }
   }
   function showLock(msg){ $('lockMsg').textContent=msg; $('lock').classList.remove('hidden'); $('app').classList.add('hidden'); document.body.classList.remove('booting'); }
