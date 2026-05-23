@@ -2068,16 +2068,146 @@ async function collectRaportForjaAutoDocs(out){
   function magnafluxDate(row){ return formatDate(toIsoDate(magnafluxGet(row,['data','date','date_iso','document_date','DATA'])) || (row && row.document_date) || ''); }
   function magnafluxOperator(row){ return magnafluxGet(row,['operator','operator_name','created_by_name','updated_by_name','nume_operator','Operator']) || createdActorName(row) || primaryActorName(row) || updatedActorName(row); }
   function magnafluxNumber(v){
-    var n=Number(String(v == null ? '' : v).replace(/\./g,'').replace(',','.').replace(/[^0-9.\-]/g,''));
+    var raw=norm(v);
+    if(raw==='') return '';
+    if(typeof v === 'number'){
+      if(!Number.isFinite(v) || v===0) return '';
+      return Math.abs(v-Math.round(v))<0.000001 ? String(Math.round(v)) : String(v).replace('.',',');
+    }
+    var cleaned=raw.replace(/\s+/g,'').replace(/[^0-9,.-]/g,'');
+    if(!cleaned || cleaned==='-' || cleaned==='.' || cleaned===',') return '';
+    var n;
+    if(cleaned.indexOf(',')>=0){
+      n=Number(cleaned.replace(/\./g,'').replace(',','.'));
+    }else if(/^[-]?\d+\.\d{1,2}$/.test(cleaned)){
+      n=Number(cleaned);
+    }else{
+      n=Number(cleaned.replace(/\./g,''));
+    }
     if(!Number.isFinite(n) || n===0) return '';
-    return Math.abs(n-Math.round(n))<0.000001 ? String(Math.round(n)) : String(v).replace('.',',');
+    return Math.abs(n-Math.round(n))<0.000001 ? String(Math.round(n)) : String(n).replace('.',',');
+  }
+  function magnafluxPickRow(r, keys){
+    r=r||{};
+    keys=Array.isArray(keys)?keys:[keys];
+    for(var i=0;i<keys.length;i++){
+      var k=keys[i];
+      if(Object.prototype.hasOwnProperty.call(r,k) && norm(r[k])) return norm(r[k]);
+      var lower=String(k).toLowerCase();
+      if(Object.prototype.hasOwnProperty.call(r,lower) && norm(r[lower])) return norm(r[lower]);
+      var upper=String(k).toUpperCase();
+      if(Object.prototype.hasOwnProperty.call(r,upper) && norm(r[upper])) return norm(r[upper]);
+    }
+    return '';
+  }
+  function magnafluxCountRaw(r, keys){
+    var v=magnafluxPickRow(r, keys);
+    return v;
+  }
+  function magnafluxCountNumber(v){
+    var raw=norm(v);
+    if(raw==='') return NaN;
+    if(typeof v === 'number') return Number.isFinite(v) ? v : NaN;
+    var cleaned=raw.replace(/\s+/g,'').replace(/[^0-9,.-]/g,'');
+    if(!cleaned || cleaned==='-' || cleaned==='.' || cleaned===',') return NaN;
+    if(cleaned.indexOf(',')>=0) return Number(cleaned.replace(/\./g,'').replace(',','.'));
+    if(/^[-]?\d+\.\d{1,2}$/.test(cleaned)) return Number(cleaned);
+    return Number(cleaned.replace(/\./g,''));
+  }
+  function magnafluxFormatDistributed(n){
+    if(!Number.isFinite(n) || n===0) return '';
+    return Math.abs(n-Math.round(n))<0.000001 ? String(Math.round(n)) : String(n).replace('.',',');
+  }
+  function magnafluxSplitTotalValue(value, totalRows, idx){
+    var n=magnafluxCountNumber(value);
+    if(!Number.isFinite(n) || !totalRows || totalRows<=1) return value;
+    var absSmall=Math.abs(n) <= totalRows && Math.abs(n-Math.round(n))<0.000001;
+    if(absSmall) return idx < Math.abs(Math.round(n)) ? (n<0 ? '-1' : '1') : '';
+    var base=Math.floor(n / totalRows);
+    var rem=Math.round(n - base * totalRows);
+    var val=base + (idx < Math.abs(rem) ? (rem<0 ? -1 : 1) : 0);
+    return magnafluxFormatDistributed(val);
+  }
+  function magnafluxLadaText(r){
+    return magnafluxPickRow(r,['nr_serie','nr_lada','nr_ladă','nrLada','lada','ladă','lazi','lăzi','box','box_no','sarja','sarja_material','lot']);
+  }
+  function magnafluxLadaListFromText(value){
+    var raw=norm(value);
+    if(!raw) return [];
+    var nums=(raw.match(/\d+/g)||[]).map(function(x){ return Number(x); }).filter(function(n){ return Number.isFinite(n); });
+    if(!nums.length) return [raw];
+    var hasRangeDots=/\.\.\.|…/.test(raw);
+    var simpleRange=raw.match(/^\s*(\d+)\s*[-–—]\s*(\d+)\s*$/);
+    if(hasRangeDots || simpleRange){
+      var start=hasRangeDots ? nums[0] : Number(simpleRange[1]);
+      var end=hasRangeDots ? nums[nums.length-1] : Number(simpleRange[2]);
+      if(Number.isFinite(start) && Number.isFinite(end) && Math.abs(end-start)<=200){
+        var arr=[];
+        var step=start<=end ? 1 : -1;
+        for(var n=start; step>0 ? n<=end : n>=end; n+=step) arr.push(String(n));
+        return arr;
+      }
+    }
+    if(/[;,/]/.test(raw)){
+      return nums.map(function(n){ return String(n); });
+    }
+    if(nums.length>2 && /[-–—]/.test(raw)){
+      var a=nums[0], b=nums[nums.length-1];
+      if(Math.abs(b-a)<=200){
+        var out=[]; var st=a<=b?1:-1;
+        for(var x=a; st>0 ? x<=b : x>=b; x+=st) out.push(String(x));
+        return out;
+      }
+    }
+    return [raw];
+  }
+  function magnafluxExpandedRow(r, lada, idx, total){
+    var out=Object.assign({}, r || {});
+    out.nr_serie=lada;
+    out.nr_lada=lada;
+    out.reper=magnafluxPickRow(r,['reper','part_no','reper_forjat','reperForjat']) || out.reper || '';
+    out.cod_cat=magnafluxPickRow(r,['cod_cat','cat_code','codCAT','cod cat','codCat']) || out.cod_cat || '';
+    out.val_magnetica=magnafluxPickRow(r,['val_magnetica','valoare_magnetica','valoareMagnetica','valoare magnetică','Valoare Magnetică','magnetic_value']) || out.val_magnetica || '';
+    out.val_electrica=magnafluxPickRow(r,['val_electrica','valoare_electrica','valoareElectrica','valoare electrică','Valoare Electrică','electric_value']) || out.val_electrica || '';
+    var defs={
+      controlate:['controlate','CONTROLATE','cantitate_controlata','cantitateControlata','controlat','verificate','cantitate'],
+      acceptate:['acceptate','ACCEPTATE','ok','OK','bune','acceptat'],
+      rz:['rz','RZ'], bav:['bav','BAV'], snc:['snc','SNC','planeit','sablare_necorespunzatoare'], lov:['lov','LOV','Lov'],
+      lm:['lm','LM'], ibt:['ibt','IBT'], sm:['sm','SM'], ftt:['ftt','FTT'], fl:['fl','FL'], lmc:['lmc','LMC'], des:['des','DES'], as:['as','AS'], fb:['fb','FB']
+    };
+    Object.keys(defs).forEach(function(k){
+      var raw=magnafluxCountRaw(r,defs[k]);
+      if(norm(raw)) out[k]=magnafluxSplitTotalValue(raw,total,idx);
+    });
+    return out;
+  }
+  function magnafluxExpandRowsByLada(rows){
+    var expanded=[];
+    (rows||[]).forEach(function(r){
+      r=r||{};
+      var raw=magnafluxLadaText(r);
+      var ladas=magnafluxLadaListFromText(raw);
+      if(ladas.length>1){
+        ladas.forEach(function(lada,idx){ expanded.push(magnafluxExpandedRow(r,lada,idx,ladas.length)); });
+      }else{
+        expanded.push(r);
+      }
+    });
+    return expanded;
   }
   function magnafluxRows(row){
     var s=magnafluxSnapshot(row)||{};
-    if(Array.isArray(s.rows) && s.rows.length) return s.rows;
-    if(Array.isArray(s.rows_used) && s.rows_used.length) return s.rows_used;
-    if(Array.isArray(s.groups) && s.groups.length) return s.groups.map(function(g){ return Object.assign({}, g, { nr_serie:g.nr_lada || g.sarja || g.sarja_material || '', snc:g.snc || g.planeit || 0 }); });
-    return [s];
+    var arrays=['rows','rows_used','items','entries','records','lazi','ladas','verificari','verificări','verificari_lazi','details','detalii'];
+    for(var i=0;i<arrays.length;i++){
+      var a=s[arrays[i]];
+      if(Array.isArray(a) && a.length) return magnafluxExpandRowsByLada(a);
+    }
+    if(Array.isArray(s.groups) && s.groups.length){
+      return magnafluxExpandRowsByLada(s.groups.map(function(g){
+        return Object.assign({}, g, { nr_serie:g.nr_lada || g.nr_serie || g.sarja || g.sarja_material || '', snc:g.snc || g.planeit || 0 });
+      }));
+    }
+    return magnafluxExpandRowsByLada([s]);
   }
   function magnafluxMaint(row){
     var s=magnafluxSnapshot(row)||{};
@@ -2102,17 +2232,23 @@ async function collectRaportForjaAutoDocs(out){
     var remKeys=['rz','bav','snc','lov'];
     function rowVal(r,k){
       if(!r) return '';
-      if(k==='nr_serie') return norm(r.nr_serie || r.nr_lada || r.sarja || r.sarja_material || '');
-      if(k==='snc') return magnafluxNumber(r.snc || r.planeit || 0);
-      if(['controlate','acceptate','rz','bav','lov','lm','ibt','sm','ftt','fl','lmc','des','as','fb'].indexOf(k)>=0) return magnafluxNumber(r[k]);
-      return norm(r[k]);
+      if(k==='nr_serie') return magnafluxPickRow(r,['nr_serie','nr_lada','nr_ladă','nrLada','lada','ladă','sarja','sarja_material','lot']);
+      if(k==='reper') return magnafluxPickRow(r,['reper','part_no','reper_forjat','reperForjat']);
+      if(k==='cod_cat') return magnafluxPickRow(r,['cod_cat','cat_code','codCAT','cod cat','codCat']);
+      if(k==='val_magnetica') return magnafluxPickRow(r,['val_magnetica','valoare_magnetica','valoareMagnetica','valoare magnetică','Valoare Magnetică','magnetic_value']);
+      if(k==='val_electrica') return magnafluxPickRow(r,['val_electrica','valoare_electrica','valoareElectrica','valoare electrică','Valoare Electrică','electric_value']);
+      if(k==='controlate') return magnafluxNumber(magnafluxCountRaw(r,['controlate','cantitate_controlata','cantitateControlata','controlat','verificate','cantitate']));
+      if(k==='acceptate') return magnafluxNumber(magnafluxCountRaw(r,['acceptate','ok','bune','acceptat']));
+      if(k==='snc') return magnafluxNumber(magnafluxCountRaw(r,['snc','planeit','sablare_necorespunzatoare']));
+      if(['rz','bav','lov','lm','ibt','sm','ftt','fl','lmc','des','as','fb'].indexOf(k)>=0) return magnafluxNumber(magnafluxCountRaw(r,[k,k.toUpperCase()]));
+      return magnafluxPickRow(r,[k]);
     }
-    var rows=magnafluxRows(row).filter(function(r){ return norm(r && (r.reper || r.part_no || r.reper_forjat)) || Number(r && (r.controlate||0))>0; });
+    var rows=magnafluxRows(row).filter(function(r){ return norm(rowVal(r,'reper')) || norm(rowVal(r,'nr_serie')) || Number(magnafluxCountNumber(rowVal(r,'controlate'))||0)>0; });
     var minMagRows=Math.max(10, rows.length);
     while(rows.length<minMagRows) rows.push({});
     var entryRows=rows.map(function(r,idx){
-      var reper=norm(r.reper || r.part_no || r.reper_forjat || '');
-      var cod=norm(r.cod_cat || r.cat_code || r.codCAT || '');
+      var reper=rowVal(r,'reper');
+      var cod=rowVal(r,'cod_cat');
       return '<tr class="magFullRow"><td class="center">'+(idx+1)+'</td><td>'+esc(rowVal(r,'nr_serie'))+'</td><td>'+esc(reper)+'</td><td>'+esc(cod)+'</td><td>'+esc(rowVal(r,'val_magnetica'))+'</td><td>'+esc(rowVal(r,'val_electrica'))+'</td><td class="num">'+esc(rowVal(r,'controlate'))+'</td><td class="num">'+esc(rowVal(r,'acceptate'))+'</td>'+defectKeys.map(function(k){ return '<td class="num '+(remKeys.indexOf(k)>=0?'magYellow':'')+'">'+esc(rowVal(r,k))+'</td>'; }).join('')+'</tr>';
     }).join('');
     var maint=magnafluxMaint(row);
