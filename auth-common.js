@@ -99,11 +99,35 @@
   let sessionMaintenanceStarted = false;
 
   /* Egress guard: cache identical Supabase REST GET reads briefly in memory.
-     It does not cache authentication/ACL queries and is cleared after any write. */
-  const REST_EGRESS_CACHE_MAX_ENTRIES = 40;
+     ACL/security reads are cached only for a very short time, per user, and the cache is cleared after any write. */
+  const REST_EGRESS_CACHE_MAX_ENTRIES = 160;
   const REST_EGRESS_CACHE_MAX_CHARS = 8 * 1024 * 1024;
   const restEgressCache = new Map();
   const restEgressInflight = new Map();
+  const ROLE_CACHE_TTL_MS = 60 * 1000;
+  const PERMISSION_MAP_CACHE_TTL_MS = 30 * 1000;
+  const ACCOUNT_STATUS_CACHE_TTL_MS = 30 * 1000;
+  const roleCache = new Map();
+  const permissionMapCache = new Map();
+  const accountStatusCache = new Map();
+
+  function cacheGet(map, key){
+    try{
+      const item = map && map.get ? map.get(key) : null;
+      if(!item) return null;
+      if(item.expiresAt && item.expiresAt < Date.now()){ map.delete(key); return null; }
+      return item.value;
+    }catch(_e){ return null; }
+  }
+
+  function cacheSet(map, key, value, ttl){
+    try{ if(map && map.set) map.set(key, { value:value, expiresAt:Date.now() + Number(ttl || 0) }); }catch(_e){}
+    return value;
+  }
+
+  function clearRuntimeSecurityCaches(){
+    try{ roleCache.clear(); permissionMapCache.clear(); accountStatusCache.clear(); }catch(_e){}
+  }
 
   function getRequestMethod(input, init){
     return String((init && init.method) || (input && input.method) || 'GET').toUpperCase();
@@ -131,15 +155,23 @@
     return /\/(profiles|rf_acl|page_permissions|user_page_permissions|field_permissions|user_account_access|user_index_visibility)(\?|$)/i.test(rawUrl);
   }
 
+  function isShortLivedSecurityCacheUrl(rawUrl){
+    return /\/(profiles|user_page_permissions|field_permissions|user_account_access|user_control_permissions|user_index_visibility)(\?|$)/i.test(rawUrl);
+  }
+
   function shouldUseRestEgressCache(input, init){
     if(getRequestMethod(input, init) !== 'GET') return false;
     const rawUrl = requestUrlString(input);
     if(!/\/rest\/v1\//i.test(rawUrl)) return false;
+    if(isShortLivedSecurityCacheUrl(rawUrl)) return true;
     if(isSensitiveRestUrl(rawUrl)) return false;
     return /\/(rf_documents|rf_helper_|helper_)/i.test(rawUrl);
   }
 
   function restEgressCacheTtl(rawUrl){
+    if(/\/user_account_access/i.test(rawUrl)) return 15 * 1000;
+    if(/\/(user_page_permissions|field_permissions|user_control_permissions|user_index_visibility)/i.test(rawUrl)) return 30 * 1000;
+    if(/\/profiles/i.test(rawUrl)) return 60 * 1000;
     if(/\/rf_helper_|\/helper_/i.test(rawUrl)) return 5 * 60 * 1000;
     if(/\/rf_documents/i.test(rawUrl)) return 60 * 1000;
     return 30 * 1000;
@@ -164,7 +196,7 @@
   }
 
   function clearRestEgressCache(){
-    try{ restEgressCache.clear(); restEgressInflight.clear(); }catch(_e){}
+    try{ restEgressCache.clear(); restEgressInflight.clear(); clearRuntimeSecurityCaches(); }catch(_e){}
   }
 
   function responseFromRestInfo(info){
@@ -517,7 +549,7 @@
           .select('content,data,updated_at')
           .eq('doc_key', docKey)
           .order('updated_at', { ascending:false })
-          .limit(50)
+          .limit(1)
       );
       if(Array.isArray(data) && data.length){
         return pickLatestObject(data, 'content') || pickLatestObject(data, 'data') || null;
@@ -536,6 +568,8 @@
     const key = normalizePageKey(pageKey);
     if(!sb || !key || ['login','index'].includes(key)) return;
     const stamp = new Date().toISOString();
+    const sessionKey = 'rf_auto_page_registered:' + key;
+    try { if(sessionStorage.getItem(sessionKey) === '1') return; } catch(_e) {}
     try{
       const existingRows = await maybeSelect(
         sb.from('rf_documents')
@@ -546,12 +580,14 @@
       );
       const current = Array.isArray(existingRows) && existingRows.length ? ((existingRows[0] && (existingRows[0].content || existingRows[0].data)) || {}) : {};
       const pages = Array.isArray(current.pages) ? current.pages.slice() : [];
-      if(!pages.some(function(p){ return normalizePageKey(p && (p.page_key || p.key)) === key; })){
-        pages.push({ page_key:key, label:autoPageLabelFromKey(key), href:key + '.html', group:'Pagini noi / automate', updated_at:stamp });
-        const payload = { app:'RF_AUTO_PAGES', version:1, updated_at:stamp, pages:pages };
-        const body = { doc_key:'rf_auto_pages_v1', content:payload, updated_at:stamp };
-        try{ await sb.from('rf_documents').upsert(body, { onConflict:'doc_key' }); }catch(_e){}
+      if(pages.some(function(p){ return normalizePageKey(p && (p.page_key || p.key)) === key; })){
+        try { sessionStorage.setItem(sessionKey, '1'); } catch(_e) {}
+        return;
       }
+      pages.push({ page_key:key, label:autoPageLabelFromKey(key), href:key + '.html', group:'Pagini noi / automate', updated_at:stamp });
+      const payload = { app:'RF_AUTO_PAGES', version:1, updated_at:stamp, pages:pages };
+      const body = { doc_key:'rf_auto_pages_v1', content:payload, updated_at:stamp };
+      try{ await sb.from('rf_documents').upsert(body, { onConflict:'doc_key' }); try { sessionStorage.setItem(sessionKey, '1'); } catch(_e) {} }catch(_e){}
     }catch(_e){}
   }
 
@@ -560,6 +596,9 @@
     const email = normalizeEmail(user && user.email);
     const userId = String(user && user.id || '').trim();
     if(!sb || (!email && !userId)) return map;
+    const cacheKey = 'permission-map:' + userId + ':' + email;
+    const cachedMapEntries = cacheGet(permissionMapCache, cacheKey);
+    if(Array.isArray(cachedMapEntries)) return new Map(cachedMapEntries);
 
     const pushRows = (rows) => {
       (Array.isArray(rows) ? rows : []).forEach(row => {
@@ -582,7 +621,7 @@
       pushRows(await maybeSelect(
         sb.from('user_page_permissions')
           .select('page_key,can_view,can_add,can_edit,can_delete,can_export,can_import')
-          .ilike('email', email)
+          .eq('email', email)
           .limit(5000)
       ));
     }
@@ -600,6 +639,7 @@
       });
     }
 
+    cacheSet(permissionMapCache, cacheKey, Array.from(map.entries()), PERMISSION_MAP_CACHE_TTL_MS);
     return map;
   }
 
@@ -708,12 +748,16 @@
     }
 
     const sb = getSupabaseClient();
+    const cacheKey = 'role:' + String(user.id || '').trim() + ':' + email;
+    const cachedRole = cacheGet(roleCache, cacheKey);
+    if(cachedRole) return cachedRole;
 
     if(window.RF_ACL && typeof window.RF_ACL.resolveRole === 'function'){
       try {
         const resolved = await window.RF_ACL.resolveRole(sb, user);
         const aclRole = String(resolved && resolved.role || '').trim().toLowerCase();
         if(['viewer','operator','editor','admin'].includes(aclRole)){
+          cacheSet(roleCache, cacheKey, aclRole, ROLE_CACHE_TTL_MS);
           return aclRole;
         }
       } catch (_) {
@@ -733,6 +777,7 @@
       try {
         const role = String(await attempt() || '').trim().toLowerCase();
         if(['viewer','operator','editor','admin'].includes(role)){
+          cacheSet(roleCache, cacheKey, role, ROLE_CACHE_TTL_MS);
           return role;
         }
       } catch (_) {
@@ -740,6 +785,7 @@
       }
     }
 
+    cacheSet(roleCache, cacheKey, 'viewer', ROLE_CACHE_TTL_MS);
     return 'viewer';
   }
 
@@ -750,6 +796,9 @@
     if(!user || (!email && !userId)){
       return { is_active:true, is_banned:false, note:'', ban_reason:'', updated_at:'' };
     }
+    const cacheKey = 'account-status:' + userId + ':' + email;
+    const cachedStatus = cacheGet(accountStatusCache, cacheKey);
+    if(cachedStatus) return Object.assign({}, cachedStatus);
 
     function normalizeStatusRow(row){
       if(!row || typeof row !== 'object'){
@@ -805,7 +854,7 @@
         const byEmail = await maybeSelect(
           sb.from('user_account_access')
             .select('user_id,email,is_active,is_banned,note,updated_at')
-            .ilike('email', email)
+            .eq('email', email)
             .order('updated_at', { ascending:false })
             .limit(50)
         );
@@ -831,13 +880,16 @@
 
       const best = pickLatest(candidates);
       if(best){
+        cacheSet(accountStatusCache, cacheKey, best, ACCOUNT_STATUS_CACHE_TTL_MS);
         return best;
       }
     } catch (_) {
       // fallback safe open when status source is unavailable
     }
 
-    return { is_active:true, is_banned:false, note:'', ban_reason:'', updated_at:'' };
+    const defaultStatus = { is_active:true, is_banned:false, note:'', ban_reason:'', updated_at:'' };
+    cacheSet(accountStatusCache, cacheKey, defaultStatus, ACCOUNT_STATUS_CACHE_TTL_MS);
+    return defaultStatus;
   }
 
   async function getSession(){
@@ -1385,7 +1437,9 @@
     timer = window.setInterval(() => { if (!document.hidden) refreshHiddenIndexButtons(false); }, 300000);
     try {
       const sb = window.ERPAuth && typeof window.ERPAuth.getSupabaseClient === 'function' ? window.ERPAuth.getSupabaseClient() : null;
-      if (sb) {
+      let realtimeEnabled = window.KAD_ENABLE_INDEX_VISIBILITY_REALTIME === true;
+      try { realtimeEnabled = realtimeEnabled || localStorage.getItem('KAD_ENABLE_INDEX_VISIBILITY_REALTIME') === '1'; } catch(_) {}
+      if (sb && realtimeEnabled) {
         channel = sb.channel('rf-shared-index-visibility')
           .on('postgres_changes', { event:'*', schema:'public', table:'user_index_visibility' }, async (payload) => {
             const user = await getUser();
