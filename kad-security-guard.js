@@ -387,45 +387,86 @@
     if(!mount()) document.addEventListener('DOMContentLoaded', mount, { once:true });
   }
 
+  function controlText(el){
+    if(!el) return '';
+    var attrs = [];
+    try {
+      attrs = [el.id, el.name, el.className, el.getAttribute('aria-label'), el.title, el.placeholder, el.textContent, el.value, el.getAttribute('data-rf-control'), el.getAttribute('data-action'), el.getAttribute('data-act')];
+    } catch(_) { attrs = []; }
+    return attrs.map(function(v){ return String(v || '').toLowerCase(); }).join(' ');
+  }
+
   function isFilterControl(el){
     if(!el || !el.matches) return false;
     if(el.matches('[data-acl-filter], .th-filter, .th-filter-select, #filterRow input, #filterRow select')) return true;
     if(el.closest('[data-acl-filter], .filters, .filtersBar, .filter-row, #filterRow, .toolbar-filters, .table-filters, .search-box, .searchbar')) return true;
-    var text = [el.id, el.name, el.className, el.getAttribute('aria-label'), el.placeholder, el.textContent]
-      .map(function(v){ return String(v || '').toLowerCase(); }).join(' ');
-    if(/salv|save|adaug|add\b|edit|delete|sterg|șterg|import|upload|submit|actualiz|update/.test(text)) return false;
+    var text = controlText(el);
+    if(/salv|save|adaug|add\b|edit|delete|sterg|șterg|remove|import|upload|submit|actualiz|update|sincron|sync|export|pdf|download|descarc/.test(text)) return false;
     return /filter|filtru|search|caut|căut|sort|luna|lună|an\b|year|month|operator|schimb|data|date|reper|utilaj|status/.test(text);
   }
 
-  function isMutatingControl(el){
-    if(!el || !el.matches) return false;
-    if(el.matches('input[type="file"], input[type="submit"], button[type="submit"]')) return true;
-    if(el.matches('[contenteditable="true"], [data-rf-mutating], [data-mutating], [data-editable]')) return true;
-    var text = [el.id, el.name, el.className, el.getAttribute('aria-label'), el.title, el.textContent, el.value]
-      .map(function(v){ return String(v || '').toLowerCase(); }).join(' ');
-    return /salv|save|adaug|add\b|nou\b|new\b|edit|delete|sterg|șterg|remove|import|upload|submit|actualiz|update|cloud.*save|salvează/.test(text);
+  function requiredPermissionForControl(el){
+    if(!el || !el.matches || isFilterControl(el)) return '';
+    var text = controlText(el);
+    if(el.matches('input[type="file"]') || /import|upload|incarc|încarc/.test(text)) return 'import';
+    if(/delete|sterg|șterg|remove|trash|cos|coș/.test(text)) return 'delete';
+    if(/export|download|descarc|pdf|excel|csv/.test(text)) return 'export';
+    if(/adaug|add\b|nou\b|new\b|plus/.test(text)) return 'add';
+    if(el.matches('input[type="submit"], button[type="submit"]')) return 'edit';
+    if(el.matches('[contenteditable="true"], [data-rf-mutating], [data-mutating], [data-editable]')) return 'edit';
+    if(/salv|save|edit|actualiz|update|submit|sincron|sync|cloud.*save|salvează|trimite|run|ruleaz/.test(text)) return 'edit';
+    if(el.matches('input,textarea,select')) return 'edit';
+    return '';
   }
 
-  function applyReadonly(permissions){
+  function isMutatingControl(el){
+    return !!requiredPermissionForControl(el);
+  }
+
+  function permissionAllowed(required, permissions){
+    if(!required) return true;
     var canEdit = permissions && permissions.can_edit === true;
     var canAdd = permissions && permissions.can_add === true;
     var canDelete = permissions && permissions.can_delete === true;
-    var canImport = permissions && permissions.can_import === true;
-    window.__PAGE_ACCESS__ = Object.assign({}, permissions || {}, { can_edit:canEdit, can_add:canAdd, can_delete:canDelete, can_import:canImport });
+    var canImport = permissions && (permissions.can_import === true || canEdit === true);
+    var canExport = permissions && (permissions.can_export === true || canEdit === true);
+    if(required === 'delete') return canDelete === true;
+    if(required === 'import') return canImport === true;
+    if(required === 'export') return canExport === true;
+    if(required === 'add') return canAdd === true || canEdit === true;
+    if(required === 'edit') return canEdit === true;
+    return false;
+  }
+
+  function disableControl(el){
+    try { el.disabled = true; } catch(_) {}
+    try { el.setAttribute('readonly','readonly'); } catch(_) {}
+    try { el.setAttribute('aria-disabled','true'); } catch(_) {}
+    try { el.setAttribute('data-kad-acl-disabled','1'); } catch(_) {}
+    try { el.style.pointerEvents = 'none'; } catch(_) {}
+    try { el.style.opacity = el.style.opacity || '.55'; } catch(_) {}
+  }
+
+  function applyReadonly(permissions){
+    permissions = permissions || {};
+    var canEdit = permissions.can_edit === true;
+    var canAdd = permissions.can_add === true;
+    var canDelete = permissions.can_delete === true;
+    var canImport = permissions.can_import === true || canEdit === true;
+    var canExport = permissions.can_export === true || canEdit === true;
+    var effectivePermissions = Object.assign({}, permissions, { can_edit:canEdit, can_add:canAdd, can_delete:canDelete, can_import:canImport, can_export:canExport });
+    window.__PAGE_ACCESS__ = effectivePermissions;
     window.__CAN_EDIT__ = canEdit === true;
-    if(canEdit) return;
-    try { document.documentElement.classList.add('kad-readonly', 'readonly'); } catch(_) {}
+    if(!canEdit) {
+      try { document.documentElement.classList.add('kad-readonly', 'readonly'); } catch(_) {}
+    }
     function lock(root){
       var scope = root && root.querySelectorAll ? root : document;
-      var nodes = scope.querySelectorAll('input, textarea, select, button, [contenteditable="true"], [data-rf-mutating], [data-mutating], [data-editable]');
+      var nodes = scope.querySelectorAll('input, textarea, select, button, a, [role="button"], [contenteditable="true"], [data-rf-mutating], [data-mutating], [data-editable]');
       nodes.forEach(function(el){
         if(isFilterControl(el)) return;
-        if(isMutatingControl(el) || el.matches('[contenteditable="true"], [data-rf-mutating], [data-mutating], [data-editable]')){
-          try { el.disabled = true; } catch(_) {}
-          try { el.setAttribute('readonly','readonly'); } catch(_) {}
-          try { el.setAttribute('aria-disabled','true'); } catch(_) {}
-          try { el.style.pointerEvents = 'none'; } catch(_) {}
-        }
+        var required = requiredPermissionForControl(el);
+        if(required && !permissionAllowed(required, effectivePermissions)) disableControl(el);
       });
     }
     if(document.readyState === 'loading') document.addEventListener('DOMContentLoaded', function(){ lock(document); }, { once:true });
@@ -443,7 +484,9 @@
       document.addEventListener(type, function(event){
         var target = event.target;
         if(target && isFilterControl(target)) return;
-        if(target && (target.matches && (target.matches('input,textarea,select,[contenteditable="true"]') || isMutatingControl(target.closest ? (target.closest('button,[data-rf-mutating],[data-mutating],[data-editable]') || target) : target)))){
+        var el = target && target.closest ? (target.closest('button, input, textarea, select, a, [role="button"], [contenteditable="true"], [data-rf-mutating], [data-mutating], [data-editable]') || target) : target;
+        var required = requiredPermissionForControl(el);
+        if(required && !permissionAllowed(required, effectivePermissions)){
           event.preventDefault(); event.stopImmediatePropagation();
         }
       }, true);
@@ -451,7 +494,8 @@
     document.addEventListener('click', function(event){
       var el = event.target && event.target.closest ? event.target.closest('button, input[type="button"], input[type="submit"], a, [role="button"], [data-rf-mutating], [data-mutating], [data-editable]') : null;
       if(!el || isFilterControl(el)) return;
-      if(isMutatingControl(el)){
+      var required = requiredPermissionForControl(el);
+      if(required && !permissionAllowed(required, effectivePermissions)){
         event.preventDefault(); event.stopImmediatePropagation();
       }
     }, true);
