@@ -306,6 +306,11 @@
   var CATEGORIES = ['Calitate','Inginerie','Achiziții și Furnizori','Logistică și Trasabilitate','EHS','Producție','Fișe operatori'];
   var RETENTIONS = ['Viața piesei + 15 ani','15 ani','10 ani','Permanent','Versiunea curentă + 10 ani','10 ani după expirare','7 ani','30 ani','Personalizat'];
   var SOURCES = ['Manual','Raport Forja','Tratament Termic Autocontrol','Duritate','Intrări Oțel','Debitare','Magnaflux','Fișă control CTC Forja','Rebut','Probleme raportate','Furnizor','Client','Logistică'];
+  var FILTER_RENDER_BATCH = 180;
+  var filterRenderTimer = null;
+  var tableRenderTimer = null;
+  var tableRenderToken = 0;
+  var metricsCache = { signature:'', active:0, expired:0, files:0, categories:0 };
   var $ = function(id){ return document.getElementById(id); };
   function norm(v){ return String(v == null ? '' : v).replace(/\s+/g,' ').trim(); }
   function low(v){ return norm(v).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,''); }
@@ -355,6 +360,45 @@
   function updatedActorName(r){ r=r||{}; return displayActorName(r.updated_by_email || r.created_by_email, r.updated_by_name || r.created_by_name); }
   function createdActorName(r){ r=r||{}; return displayActorName(r.created_by_email, r.created_by_name); }
   function primaryActorName(r){ return r && r.auto_archived ? createdActorName(r) : updatedActorName(r); }
+  function archiveSearchText(r){
+    r=r||{};
+    if(typeof r._archiveSearchText === 'string') return r._archiveSearchText;
+    var text=low([r.document_no,r.document_type,r.category,r.part_no,r.cat_code,r.lot_no,r.revision,r.source,r.title,r.notes,r.created_by_email,r.created_by_name,r.updated_by_email,r.updated_by_name,createdActorName(r),updatedActorName(r),r.source_uid,r.source_doc_key,r.source_page].join(' '));
+    try{ Object.defineProperty(r,'_archiveSearchText',{value:text,writable:true,configurable:true,enumerable:false}); }catch(e){ r._archiveSearchText=text; }
+    return text;
+  }
+  function clearArchiveFastCaches(){
+    metricsCache.signature='';
+    (state.rows||[]).forEach(function(r){ if(r && Object.prototype.hasOwnProperty.call(r,'_archiveSearchText')){ try{ delete r._archiveSearchText; }catch(e){ r._archiveSearchText=''; } } });
+  }
+  function rowsSignature(){
+    var rows=state.rows||[], first=rows[0]||{}, last=rows[rows.length-1]||{};
+    return rows.length+'|'+(first.updated_at||first.created_at||'')+'|'+(last.updated_at||last.created_at||'')+'|'+(first.status||'')+'|'+(last.status||'');
+  }
+  function updateMetrics(){
+    var sig=rowsSignature();
+    if(metricsCache.signature!==sig){
+      var active=0, expired=0, files=0, cats={};
+      (state.rows||[]).forEach(function(r){
+        if(!r) return;
+        if((r.status||'Activ')!=='Șters'){
+          if(!isExpired(r)) active++;
+          if(r.category) cats[r.category]=true;
+        }
+        if(isExpired(r)) expired++;
+        if(r.file) files++;
+      });
+      metricsCache={ signature:sig, active:active, expired:expired, files:files, categories:Object.keys(cats).length };
+    }
+    $('mActive').textContent=metricsCache.active;
+    $('mExpired').textContent=metricsCache.expired;
+    $('mFiles').textContent=metricsCache.files;
+    $('mCategories').textContent=metricsCache.categories;
+  }
+  function scheduleRender(delay){
+    if(filterRenderTimer) clearTimeout(filterRenderTimer);
+    filterRenderTimer=setTimeout(function(){ filterRenderTimer=null; render(); }, typeof delay==='number' ? delay : 160);
+  }
   function setStatus(msg,type){ var el=$('formStatus'); el.textContent=msg||''; el.className='status '+(type||''); }
   function syncUiYield(){ return new Promise(function(resolve){ setTimeout(resolve, 0); }); }
   function showSyncProgress(title, detail, total){
@@ -1080,6 +1124,7 @@ async function collectRaportForjaAutoDocs(out){
       }catch(e){}
     }
     state.rows=rows.filter(function(r){ return r && r.id; }).sort(function(a,b){ return String(b.updated_at || b.created_at || '').localeCompare(String(a.updated_at || a.created_at || '')); });
+    clearArchiveFastCaches();
     try{ var ad=await readDoc(AUDIT_KEY); var ap=payload(ad); state.audit=Array.isArray(ap && ap.items)?ap.items:[]; }catch(e){ state.audit=[]; }
   }
   async function saveIndex(){
@@ -1143,6 +1188,7 @@ async function collectRaportForjaAutoDocs(out){
       await writeDoc(DOC_PREFIX+row.id,row);
       await saveIndex();
       await audit(oldIndex>=0?'UPDATE':'CREATE',row,'salvare document arhivă');
+      clearArchiveFastCaches();
       clearForm();
       render();
       setStatus('Document salvat în arhivă.', 'ok');
@@ -1155,32 +1201,51 @@ async function collectRaportForjaAutoDocs(out){
     if(!state.canDelete){ alert('Nu ai drept de ștergere.'); return; }
     if(!confirm('Ștergi documentul din lista activă? Auditul rămâne păstrat.')) return;
     r.status='Șters'; r.deleted_at=nowIso(); r.deleted_by_email=userEmail(); r.updated_at=nowIso(); r.updated_by_email=userEmail();
-    await writeDoc(DOC_PREFIX+r.id,r); await saveIndex(); await audit('DELETE',r,'ștergere logică din arhivă'); render();
+    await writeDoc(DOC_PREFIX+r.id,r); clearArchiveFastCaches(); await saveIndex(); await audit('DELETE',r,'ștergere logică din arhivă'); render();
   }
   function filteredRows(){
     var q=low($('q').value), cat=$('filterCategory').value, typ=$('filterType').value, st=$('filterStatus').value, ret=$('filterRetention').value;
+    var terms=q ? q.split(' ').filter(Boolean) : [];
     return state.rows.filter(function(r){
       if(!st && r.status==='Șters') return false;
       if(cat && r.category!==cat) return false; if(typ && r.document_type!==typ) return false; if(st && (r.status||'Activ')!==st) return false; if(ret && r.retention!==ret) return false;
-      if(q){ var hay=low([r.document_no,r.document_type,r.category,r.part_no,r.cat_code,r.lot_no,r.revision,r.source,r.title,r.notes,r.created_by_email,r.created_by_name,r.updated_by_email,r.updated_by_name,createdActorName(r),updatedActorName(r),r.source_uid,r.source_doc_key,r.source_page].join(' ')); if(hay.indexOf(q)<0) return false; }
+      if(terms.length){ var hay=archiveSearchText(r); for(var i=0;i<terms.length;i++){ if(hay.indexOf(terms[i])<0) return false; } }
       return true;
     });
   }
+  function rowHtml(r){
+    var file = r.file ? '<span class="pill green">'+esc(r.file.name || 'Fișier')+'</span><div class="muted">'+esc(formatBytes(r.file.size))+'</div>' : (r.auto_archived ? '<span class="pill yellow">fișă automată</span><div class="muted">'+esc(r.source||'')+'</div>' : '<span class="pill gray">fără fișier</span>');
+    var autoActions = r.auto_archived ? '<button class="btn mini" data-act="sheet" data-id="'+esc(r.id)+'">Fișă</button><button class="btn mini" data-act="pdf" data-id="'+esc(r.id)+'">PDF</button>' : '';
+    var actions='<div class="rowActions"><button class="btn mini" data-act="view" data-id="'+esc(r.id)+'">Detalii</button>'+autoActions+(r.file?'<button class="btn mini" data-act="open" data-id="'+esc(r.id)+'">PDF / Fișier</button><button class="btn mini" data-act="download" data-id="'+esc(r.id)+'">Descarcă</button>':'')+(state.canEdit?'<button class="btn mini" data-act="edit" data-id="'+esc(r.id)+'">Editează</button>':'')+(state.canDelete?'<button class="btn mini red" data-act="delete" data-id="'+esc(r.id)+'">Șterge</button>':'')+'</div>';
+    return '<tr><td>'+esc(formatDate(r.document_date))+'<div class="muted">'+esc(r.document_no||'')+'</div></td><td class="wrap"><b>'+esc(r.document_type||'')+'</b><div class="muted">'+esc(r.title||'')+'</div></td><td>'+esc(r.category||'')+'</td><td>'+esc(r.part_no||'')+'<div class="muted">'+esc(r.cat_code||'')+'</div></td><td>'+esc(r.lot_no||'')+'<div class="muted">Rev. '+esc(r.revision||'')+'</div></td><td>'+esc(primaryActorName(r))+'</td><td class="wrap">'+esc(r.retention||'')+'</td><td>'+esc(formatDate(r.expiry_date))+'</td><td>'+statusPill(r)+'</td><td class="wrap">'+file+'</td><td>'+actions+'</td></tr>';
+  }
+  function renderRowsChunked(tb, rows, token, start){
+    if(token!==tableRenderToken) return;
+    var end=Math.min(start+FILTER_RENDER_BATCH, rows.length);
+    var html=rows.slice(start,end).map(rowHtml).join('');
+    if(start===0) tb.innerHTML=html;
+    else tb.insertAdjacentHTML('beforeend',html);
+    if(end<rows.length){
+      tableRenderTimer=setTimeout(function(){ renderRowsChunked(tb, rows, token, end); }, 0);
+    }else{
+      tableRenderTimer=null;
+    }
+  }
+  function handleTableAction(evt){
+    var target=evt && evt.target;
+    var btn=target && target.closest ? target.closest('button[data-act]') : null;
+    if(!btn) return;
+    var id=btn.getAttribute('data-id'), act=btn.getAttribute('data-act');
+    if(act==='view') showDetails(id); if(act==='sheet') openAutoSheet(id,false); if(act==='pdf') openAutoSheet(id,true); if(act==='open') openRow(id,false); if(act==='download') openRow(id,true); if(act==='edit') editRow(id); if(act==='delete') softDelete(id);
+  }
   function render(){
+    if(tableRenderTimer){ clearTimeout(tableRenderTimer); tableRenderTimer=null; }
+    var token=++tableRenderToken;
     var rows=filteredRows();
-    $('mActive').textContent=state.rows.filter(function(r){ return (r.status||'Activ')!=='Șters' && !isExpired(r); }).length;
-    $('mExpired').textContent=state.rows.filter(isExpired).length;
-    $('mFiles').textContent=state.rows.filter(function(r){ return !!r.file; }).length;
-    $('mCategories').textContent=new Set(state.rows.filter(function(r){ return (r.status||'Activ')!=='Șters'; }).map(function(r){ return r.category; }).filter(Boolean)).size;
+    updateMetrics();
     var tb=$('tbody');
     if(!rows.length){ tb.innerHTML='<tr><td colspan="11" class="empty">Nu există documente pentru filtrele selectate.</td></tr>'; return; }
-    tb.innerHTML=rows.map(function(r){
-      var file = r.file ? '<span class="pill green">'+esc(r.file.name || 'Fișier')+'</span><div class="muted">'+esc(formatBytes(r.file.size))+'</div>' : (r.auto_archived ? '<span class="pill yellow">fișă automată</span><div class="muted">'+esc(r.source||'')+'</div>' : '<span class="pill gray">fără fișier</span>');
-      var autoActions = r.auto_archived ? '<button class="btn mini" data-act="sheet" data-id="'+esc(r.id)+'">Fișă</button><button class="btn mini" data-act="pdf" data-id="'+esc(r.id)+'">PDF</button>' : '';
-      var actions='<div class="rowActions"><button class="btn mini" data-act="view" data-id="'+esc(r.id)+'">Detalii</button>'+autoActions+(r.file?'<button class="btn mini" data-act="open" data-id="'+esc(r.id)+'">PDF / Fișier</button><button class="btn mini" data-act="download" data-id="'+esc(r.id)+'">Descarcă</button>':'')+(state.canEdit?'<button class="btn mini" data-act="edit" data-id="'+esc(r.id)+'">Editează</button>':'')+(state.canDelete?'<button class="btn mini red" data-act="delete" data-id="'+esc(r.id)+'">Șterge</button>':'')+'</div>';
-      return '<tr><td>'+esc(formatDate(r.document_date))+'<div class="muted">'+esc(r.document_no||'')+'</div></td><td class="wrap"><b>'+esc(r.document_type||'')+'</b><div class="muted">'+esc(r.title||'')+'</div></td><td>'+esc(r.category||'')+'</td><td>'+esc(r.part_no||'')+'<div class="muted">'+esc(r.cat_code||'')+'</div></td><td>'+esc(r.lot_no||'')+'<div class="muted">Rev. '+esc(r.revision||'')+'</div></td><td>'+esc(primaryActorName(r))+'</td><td class="wrap">'+esc(r.retention||'')+'</td><td>'+esc(formatDate(r.expiry_date))+'</td><td>'+statusPill(r)+'</td><td class="wrap">'+file+'</td><td>'+actions+'</td></tr>';
-    }).join('');
-    tb.querySelectorAll('button[data-act]').forEach(function(btn){ btn.onclick=function(){ var id=btn.getAttribute('data-id'), act=btn.getAttribute('data-act'); if(act==='view') showDetails(id); if(act==='sheet') openAutoSheet(id,false); if(act==='pdf') openAutoSheet(id,true); if(act==='open') openRow(id,false); if(act==='download') openRow(id,true); if(act==='edit') editRow(id); if(act==='delete') softDelete(id); }; });
+    renderRowsChunked(tb, rows, token, 0);
   }
   function labelFromKey(k){
     var map={
@@ -2797,7 +2862,9 @@ async function collectRaportForjaAutoDocs(out){
     $('btnRefresh').onclick=async function(){ await loadActorNameMappings(); try{ await loadTTArchiveTempSettingsRows(true); }catch(e){} await loadRows(); render(); };
     $('btnExport').onclick=exportCsv; if($('btnSyncOperatorDocs')) $('btnSyncOperatorDocs').onclick=syncOperatorDocuments; $('btnSave').onclick=saveCurrent; $('btnClear').onclick=clearForm;
     $('docType').onchange=applyDocTypeDefaults; $('docDate').onchange=function(){ $('expiryDate').value=calcExpiry($('docDate').value,$('retention').value); }; $('retention').onchange=function(){ $('expiryDate').value=calcExpiry($('docDate').value,$('retention').value); };
-    ['q','filterCategory','filterType','filterStatus','filterRetention'].forEach(function(id){ $(id).addEventListener('input',render); $(id).addEventListener('change',render); });
+    if($('tbody')) $('tbody').onclick=handleTableAction;
+    if($('q')) $('q').addEventListener('input',function(){ scheduleRender(220); });
+    ['filterCategory','filterType','filterStatus','filterRetention'].forEach(function(id){ var el=$(id); if(el){ el.addEventListener('change',function(){ scheduleRender(0); }); } });
   }
   boot();
 })();
