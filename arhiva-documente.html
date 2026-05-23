@@ -992,6 +992,84 @@ async function collectRaportForjaAutoDocs(out){
   }
   function archivePlural(count, one, many){ return String(count || 0)+' '+(Number(count||0)===1 ? one : many); }
 
+  function archiveDailySourceConfig(row){
+    row=row||{};
+    var y=String(row.document_date || '').slice(0,4) || String(new Date().getFullYear());
+    if(isIntrariOtelAutoSheet(row)) return { type:'Intrări Oțel', keys:[row.source_doc_key || ('intrari-otel:'+y)], mapper:function(r,idx){ var obj=Array.isArray(r)?{an:r[0],luna:r[1],data:r[2],diametru:r[3],calitate:r[4],numeral:r[5],sarja:r[6],cantitate:r[7],pretest:r[8],furnizor:r[9],operator:r[10]}:Object.assign({}, r || {}); obj._archive_row_id=obj.id || obj.row_id || obj.sarja || String(idx); return obj; } };
+    if(isDebitareAutoSheet(row)) return { type:'Debitare', keys:[row.source_doc_key || ('debitate:'+y)], mapper:function(r,idx){ var obj=Array.isArray(r)?{an:r[0],luna:r[1],data:r[2],echipament:r[3],reper:r[4],diametru:r[5],calitate:r[6],kg_buc:r[7],lungime_debitat:r[8],cod_intern_otel:r[9],cantitate:r[10],schimbul:r[11],total_kg:r[12],operator:r[13]}:Object.assign({}, r || {}); obj._archive_row_id=obj.id || obj.row_id || String(idx); return obj; } };
+    if(isRaportForjaAutoSheet(row)) return { type:'Raport Forja', keys:[row.source_doc_key || 'raport-forja-operatori'], mapper:function(r,idx){ var obj=Object.assign({}, r || {}); var intrariInfo=lookupIntrariOtelForRaportArchive(obj); if(intrariInfo) obj._intrari_otel_lookup=intrariInfo; obj._archive_row_id=obj.id || obj.row_id || String(idx); return obj; } };
+    if(isCtcForjaAutoSheet(row)) return { type:'Fișă control CTC Forja', keys:[row.source_doc_key || ('ctc-forja-fise:'+y)], mapper:function(r,idx){ var obj=Object.assign({}, r || {}); obj._archive_row_id=obj.id || obj.row_id || String(idx); return obj; } };
+    return null;
+  }
+  function archiveRowsForDateFromPayload(payloadObj, config, date){
+    var p=payloadObj || {}, rows=[];
+    if(Array.isArray(p.rows)) rows=p.rows;
+    else if(Array.isArray(p)) rows=p;
+    else if(Array.isArray(p.items)) rows=p.items;
+    if(!rows.length) return [];
+    var wanted=archiveDailyGroupKey(date);
+    var out=[];
+    rows.forEach(function(raw,idx){
+      var obj=config && typeof config.mapper==='function' ? config.mapper(raw,idx) : Object.assign({}, raw || {});
+      if(!obj) return;
+      var d=archiveDailyGroupKey(pickDate(obj));
+      if(d===wanted){ obj._archive_source_index=idx; obj._archive_document_date=d; out.push(obj); }
+    });
+    out.sort(function(a,b){ return Number(a._archive_source_index||0)-Number(b._archive_source_index||0); });
+    return out;
+  }
+  async function prepareDailyGroupedSnapshotForRow(row){
+    row=row||{};
+    var config=archiveDailySourceConfig(row);
+    if(!config) return row;
+    var date=archiveDailyGroupKey(row.document_date || (row.source_snapshot && row.source_snapshot.data));
+    if(!date) return row;
+    var current=(row.source_snapshot && Array.isArray(row.source_snapshot.rows)) ? row.source_snapshot.rows : [];
+    var keys=(config.keys || []).map(norm).filter(Boolean);
+    var seenKeys=new Set(), merged=[];
+    for(var i=0;i<keys.length;i++){
+      var key=keys[i];
+      if(seenKeys.has(key)) continue;
+      seenKeys.add(key);
+      try{
+        var d=await readDoc(key);
+        var p=payload(d)||{};
+        var found=archiveRowsForDateFromPayload(p, config, date);
+        if(found.length) merged=merged.concat(found);
+      }catch(e){ console.warn('Nu pot reîncărca rândurile zilnice din sursă: '+key, e); }
+    }
+    if(merged.length > current.length){
+      var snap=Object.assign({}, row.source_snapshot || {});
+      snap.data=date;
+      snap.rows=merged;
+      snap.total_rows=merged.length;
+      snap.group_type='daily';
+      row.source_snapshot=snap;
+      row.part_no=archiveUniqueValues(merged,function(obj){
+        if(config.type==='Debitare') return pick(obj,['reper','part_no','REPER']);
+        if(config.type==='Intrări Oțel') return '';
+        if(config.type==='Raport Forja') return pick(obj,['reper','REPER','part_no']);
+        if(config.type==='Fișă control CTC Forja') return pick(obj,['reper']);
+        return pick(obj,['reper','part_no']);
+      }) || row.part_no || '';
+      row.cat_code=archiveUniqueValues(merged,function(obj){
+        if(config.type==='Intrări Oțel') return pick(obj,['numeral','cod_intern_otel','cod_intern','numeral_kod']);
+        if(config.type==='Raport Forja') return raportForjaCodCatFromSnapshot(obj);
+        if(config.type==='Fișă control CTC Forja') return pick(obj,['cod_matrita']);
+        return row.cat_code || '';
+      }) || row.cat_code || '';
+      row.lot_no=archiveUniqueValues(merged,function(obj){
+        if(config.type==='Debitare') return pick(obj,['sarja','material','cod_intern_otel','cod_material','Material']);
+        if(config.type==='Intrări Oțel') return pick(obj,['sarja','cod_sarja','Cod Sarja FURNIZOR','sarja_material']);
+        if(config.type==='Raport Forja') return raportForjaMaterialSarjaFromSnapshot(obj);
+        if(config.type==='Fișă control CTC Forja') return pick(obj,['cod_material']);
+        return '';
+      }) || row.lot_no || '';
+      row.title=(config.type || row.document_type || 'Fișă')+' - '+formatDate(date)+' - '+archivePlural(merged.length, config.type==='Intrări Oțel' ? 'poziție' : (config.type==='Fișă control CTC Forja' ? 'fișă' : (config.type==='Raport Forja' ? 'raport' : 'reper')), config.type==='Intrări Oțel' ? 'poziții' : (config.type==='Fișă control CTC Forja' ? 'fișe' : (config.type==='Raport Forja' ? 'rapoarte' : 'repere')));
+    }
+    return row;
+  }
+
   function archiveDailySyncTypePrefix(type){
     type=norm(type);
     if(type==='Intrări Oțel') return 'intrari-otel:';
@@ -3218,6 +3296,7 @@ async function collectRaportForjaAutoDocs(out){
     await syncUiYield();
     var r=await getFullArchiveRow(id);
     if(!r || !r.auto_archived){ setActionButtonBusy(sourceButton,false); alert('Această înregistrare nu este fișă automată.'); return; }
+    r=await prepareDailyGroupedSnapshotForRow(r);
     r=await prepareRaportForjaLookupForRow(r);
     r=await prepareMagnafluxSnapshotForRow(r);
     await syncUiYield();
@@ -3409,6 +3488,7 @@ async function collectRaportForjaAutoDocs(out){
     try{
       var r=await getFullArchiveRow(id);
       if(!r || !r.auto_archived){ alert('Această înregistrare nu este fișă automată.'); return; }
+      r=await prepareDailyGroupedSnapshotForRow(r);
       r=await prepareRaportForjaLookupForRow(r);
       r=await prepareMagnafluxSnapshotForRow(r);
       $('drawerTitle').textContent='Fișă '+(r.document_no || r.document_type || 'operator');
@@ -3431,6 +3511,7 @@ async function collectRaportForjaAutoDocs(out){
     await syncUiYield();
     try{
       var r=await getFullArchiveRow(id); if(!r) return;
+      r=await prepareDailyGroupedSnapshotForRow(r);
       r=await prepareRaportForjaLookupForRow(r);
       r=await prepareMagnafluxSnapshotForRow(r);
       $('drawerTitle').textContent='Detalii document '+(r.document_no||'');
