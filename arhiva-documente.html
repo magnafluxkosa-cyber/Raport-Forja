@@ -386,6 +386,8 @@
     if(fill) fill.style.background = type==='err' ? '#b91c1c' : '#0f8a3a';
   }
   function formatDate(v){ if(!v) return ''; if(v==='PERMANENT') return 'PERMANENT'; if(/^\d{4}-\d{2}-\d{2}$/.test(v)){ var p=v.split('-'); return p[2]+'.'+p[1]+'.'+p[0]; } return v; }
+  function archiveVerifierName(){ return 'Șef atelier Forja Kosa Adrian'; }
+  function archiveSheetDate(row, fallback){ return norm(fallback) || formatDate((row && row.document_date) || ''); }
   function formatDateTime(v){ if(!v) return ''; try{ return new Date(v).toLocaleString('ro-RO',{year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'}); }catch(e){ return v; } }
   function formatBytes(bytes){ var n=Number(bytes||0); if(!n) return ''; if(n<1024) return n+' B'; if(n<1024*1024) return (n/1024).toFixed(1).replace('.',',')+' KB'; return (n/1024/1024).toFixed(2).replace('.',',')+' MB'; }
   function payload(row){ return row && (row.content || row.data) || null; }
@@ -796,10 +798,10 @@ async function collectRaportForjaAutoDocs(out){
         var date=toIsoDate(sheet.data || sheet.document_date || sheet.created_at) || today();
         var rows=Array.isArray(sheet.rows) && sheet.rows.length ? sheet.rows : (Array.isArray(sheet.rows_used) ? sheet.rows_used : []);
         var groups=Array.isArray(sheet.groups) ? sheet.groups : [];
-        function uniq(list){ return Array.from(new Set((list||[]).map(norm).filter(Boolean))).slice(0,4).join(' / '); }
-        var repere=uniq(groups.map(function(g){return g && g.reper;}).concat(rows.map(function(r){return r && r.reper;})));
-        var coduri=uniq(groups.map(function(g){return g && g.cod_cat;}).concat(rows.map(function(r){return r && r.cod_cat;})));
-        var lazi=uniq(groups.map(function(g){return g && (g.nr_lada || g.sarja || g.sarja_material);}).concat(rows.map(function(r){return r && (r.nr_serie || r.nr_lada || r.sarja);}))); 
+        function uniq(list){ return Array.from(new Set((list||[]).map(norm).filter(Boolean))).join(' / '); }
+        var repere=uniq(groups.map(function(g){return g && g.reper;}).concat(rows.map(function(r){return r && (r.reper || r.part_no || r.reper_forjat);})));
+        var coduri=uniq(groups.map(function(g){return g && g.cod_cat;}).concat(rows.map(function(r){return r && (r.cod_cat || r.cat_code || r.codCAT);})));
+        var lazi=uniq(groups.map(function(g){return g && (g.nr_lada || g.sarja || g.sarja_material);}).concat(rows.map(function(r){return r && (r.nr_serie || r.nr_lada || r.sarja || r.sarja_material);}))); 
         var op=norm(sheet.operator || sheet.operator_principal || rowOperator(sheet));
         var id=norm(sheet.id || sheet.sheet_id || '') || (date+':'+op+':'+idx+':'+autoHash(JSON.stringify(sheet).slice(0,2000)));
         savedSheetsFound++;
@@ -813,9 +815,29 @@ async function collectRaportForjaAutoDocs(out){
         var key='magnaflux:'+years[i];
         try{
           var d=await readDoc(key), p=payload(d)||{}, rows=Array.isArray(p.rows)?p.rows:[];
+          var grouped={};
           rows.forEach(function(r,idx){
+            r=r||{};
             var date=pickDate(r);
-            addAuto(out,{ source_uid:'magnaflux:'+years[i]+':'+(r.id||r.document_id||idx)+':'+autoHash(JSON.stringify(r)), source_doc_key:key, source_page:'magnaflux.html', source_row_id:r.id||r.document_id||String(idx), document_type:'Magnaflux', category:'Fișe operatori', retention:'15 ani', document_date:date, part_no:pick(r,['reper','part_no','reper_forjat']), cat_code:pick(r,['cod_cat','cat_code']), lot_no:pick(r,['sarja','lot','cod_material','nr_lada','sarja_material']), source:'Magnaflux', title:'Magnaflux - '+compactText([pick(r,['reper','part_no','reper_forjat']), date, rowOperator(r)],' / '), created_by_name:rowOperator(r), source_snapshot:r });
+            var schimb=pick(r,['schimb','schimbul','shift','SCHIMBUL','Schimbul']);
+            var op=rowOperator(r);
+            var utilaj=pick(r,['utilaj','linie','echipament','machine','machineName','UTILAJ']);
+            var gkey=[date,schimb,op,utilaj].map(norm).join('|');
+            if(!grouped[gkey]){
+              grouped[gkey]={ data:date, document_date:date, schimb:schimb, operator:op, operator_principal:op, utilaj:utilaj, rows:[], groups:[], source_rows:[], brix:pick(r,['brix','unitati_brix','unitatiBrix']), etalon:pick(r,['etalon']) };
+            }
+            grouped[gkey].rows.push(r);
+            grouped[gkey].source_rows.push({ index:idx, id:r.id||r.document_id||'' });
+            if(!grouped[gkey].brix) grouped[gkey].brix=pick(r,['brix','unitati_brix','unitatiBrix']);
+            if(!grouped[gkey].etalon) grouped[gkey].etalon=pick(r,['etalon']);
+          });
+          Object.keys(grouped).forEach(function(gkey){
+            var sheet=grouped[gkey];
+            function uniq(list){ return Array.from(new Set((list||[]).map(norm).filter(Boolean))).join(' / '); }
+            var repere=uniq(sheet.rows.map(function(r){ return r && (r.reper || r.part_no || r.reper_forjat); }));
+            var coduri=uniq(sheet.rows.map(function(r){ return r && (r.cod_cat || r.cat_code || r.codCAT); }));
+            var lazi=uniq(sheet.rows.map(function(r){ return r && (r.nr_serie || r.nr_lada || r.sarja || r.sarja_material || r.lot); }));
+            addAuto(out,{ source_uid:'magnaflux-grup:'+years[i]+':'+autoHash(gkey), source_doc_key:key, source_page:'magnaflux.html', source_row_id:gkey, document_type:'Magnaflux', category:'Fișe operatori', retention:'15 ani', document_date:sheet.data, part_no:repere, cat_code:coduri, lot_no:lazi, source:'Magnaflux', title:'Magnaflux - fișă completă - '+compactText([sheet.operator, sheet.data, sheet.utilaj, 'Schimb '+(sheet.schimb||''), sheet.rows.length+' verificări'],' / '), created_by_name:sheet.operator, source_snapshot:sheet });
           });
         }catch(e){ console.warn('Sincronizare Magnaflux an '+years[i]+' eșuată', e); }
       }
@@ -1737,7 +1759,7 @@ async function collectRaportForjaAutoDocs(out){
       var o=obs[j] || {};
       obsLines+='<tr class="ttArchiveReportObsLine"><td colspan="9" class="ttArchiveReportObsText">'+esc(o.observatii || '')+'</td><td>'+esc(o.categorie || '')+'</td><td>'+esc(ttReportNum(o.minute))+'</td></tr>';
     }
-    return '<div class="ttArchiveReportCard"><div class="ttArchiveReportTitle"><div>REPER NR.1</div><div>'+esc(problem)+'</div></div><table class="ttArchiveReportTable"><colgroup><col style="width:18.5%"><col style="width:5.4%"><col style="width:13.6%"><col style="width:10.5%"><col style="width:11.2%"><col style="width:7.3%"><col style="width:7.2%"><col style="width:8.5%"><col style="width:6.7%"><col style="width:5.8%"><col style="width:5.3%"></colgroup><thead><tr><th rowspan="2">DATA</th><th rowspan="2">SCHIMBUL</th><th rowspan="2">OPERATOR</th><th rowspan="2">REPER</th><th rowspan="2">SARJĂ</th><th rowspan="2">CANTITATE</th><th rowspan="2">ORE<br>LUCRATE</th><th>OPRIRI<br>NEPLANIFICATE</th><th>MENTENANȚĂ</th><th>ÎNCĂLZIRE</th><th>GOLIRE</th></tr><tr><th class="ttArchiveReportMinHead">Minute</th><th class="ttArchiveReportMinHead">Minute</th><th class="ttArchiveReportMinHead">Minute</th><th class="ttArchiveReportMinHead">Minute</th></tr></thead><tbody>'+body+'<tr class="ttArchiveReportObsTitle"><td colspan="9">OBSERVAȚII</td><td>CATEGORIE</td><td>MINUTE PIERDUTE</td></tr>'+obsLines+'</tbody></table></div>';
+    return '<div class="ttArchiveReportCard"><div class="ttArchiveReportTitle"><div>REPER NR.1</div><div>'+esc(problem)+'</div></div><table class="ttArchiveReportTable"><colgroup><col style="width:18.5%"><col style="width:5.4%"><col style="width:13.6%"><col style="width:10.5%"><col style="width:11.2%"><col style="width:7.3%"><col style="width:7.2%"><col style="width:8.5%"><col style="width:6.7%"><col style="width:5.8%"><col style="width:5.3%"></colgroup><thead><tr><th rowspan="2">DATA</th><th rowspan="2">SCHIMBUL</th><th rowspan="2">OPERATOR</th><th rowspan="2">REPER</th><th rowspan="2">SARJĂ</th><th rowspan="2">CANTITATE</th><th rowspan="2">ORE<br>LUCRATE</th><th>OPRIRI<br>NEPLANIFICATE</th><th>MENTENANȚĂ</th><th>ÎNCĂLZIRE</th><th>GOLIRE</th></tr><tr><th class="ttArchiveReportMinHead">Minute</th><th class="ttArchiveReportMinHead">Minute</th><th class="ttArchiveReportMinHead">Minute</th><th class="ttArchiveReportMinHead">Minute</th></tr></thead><tbody>'+body+'<tr class="ttArchiveReportObsTitle"><td colspan="9">OBSERVAȚII</td><td>CATEGORIE</td><td>MINUTE PIERDUTE</td></tr>'+obsLines+'</tbody></table><div class="autoSheetFooter" style="width:1900px;grid-template-columns:1fr 1fr 1fr;margin-top:10px"><div class="autoSign">Operator<br><span>'+esc(operator)+'</span></div><div class="autoSign">Verificat<br><span>'+esc(archiveVerifierName())+'</span></div><div class="autoSign">Data arhivării<br><span>'+esc(date)+'</span></div></div></div>';
   }
 
 
@@ -1772,8 +1794,9 @@ async function collectRaportForjaAutoDocs(out){
     return intrariOtelGet(row,['operator','operator_receptie','operatorRecepție','receptie','recepție','created_by_name','updated_by_name','nume_operator']) || createdActorName(row) || primaryActorName(row) || updatedActorName(row);
   }
   function buildIntrariOtelSheetHtml(row){
+    var date=intrariOtelDate(row);
     var values=[
-      intrariOtelDate(row),
+      date,
       intrariOtelGet(row,['diametru','diametru_material','diametru_otel','DIAMETRU MATERIAL']),
       intrariOtelGet(row,['calitate','cod_otel_calitate','calitate_otel','Cod Otel CALITATE']),
       intrariOtelGet(row,['sarja','cod_sarja','cod_sarja_furnizor','Cod Sarja FURNIZOR']),
@@ -1793,7 +1816,7 @@ async function collectRaportForjaAutoDocs(out){
     var valueRow='<tr class="intrariOtelValue">'+values.map(function(v,i){ return '<td'+(i===11?' class="intrariOtelOperator"':'')+'>'+esc(v)+'</td>'; }).join('')+'</tr>';
     var blanks='';
     for(var i=0;i<12;i++) blanks+='<tr class="intrariOtelBlank">'+headers.map(function(){ return '<td>&nbsp;</td>'; }).join('')+'</tr>';
-    return '<div class="intrariOtelSheet autoSheet"><table class="intrariOtelTable">'+colgroup+'<thead><tr><th class="intrariOtelTitle" colspan="12">RECEPȚIE INTRĂRI LAMINATE-DD 66</th></tr>'+head+'</thead><tbody>'+valueRow+blanks+'</tbody></table><div class="intrariOtelFooter"><div class="intrariOtelSign">Verificat</div><div class="intrariOtelSign">Data arhivării</div><div class="intrariOtelSign">Arhivă Documente K.A.D</div></div></div>';
+    return '<div class="intrariOtelSheet autoSheet"><table class="intrariOtelTable">'+colgroup+'<thead><tr><th class="intrariOtelTitle" colspan="12">RECEPȚIE INTRĂRI LAMINATE-DD 66</th></tr>'+head+'</thead><tbody>'+valueRow+blanks+'</tbody></table><div class="intrariOtelFooter"><div class="intrariOtelSign">Verificat<br><span>'+esc(archiveVerifierName())+'</span></div><div class="intrariOtelSign">Data arhivării<br><span>'+esc(archiveSheetDate(row,date))+'</span></div><div class="intrariOtelSign">Arhivă Documente K.A.D</div></div></div>';
   }
 
 
@@ -1875,7 +1898,7 @@ async function collectRaportForjaAutoDocs(out){
     var valueRow='<tr class="debitareValue">'+values.map(function(v){ return '<td>'+esc(v)+'</td>'; }).join('')+'</tr>';
     var blanks='';
     for(var i=0;i<6;i++) blanks+='<tr class="debitareBlank">'+headers.map(function(){ return '<td>&nbsp;</td>'; }).join('')+'</tr>';
-    return '<div class="debitareSheet autoSheet"><h2 class="debitareTitle">Registru de planificare-urmărire debitări at. FORJĂ</h2><div class="debitareTop"><div class="debitareTopRow"><div class="debitareTopLabel">DATA:</div><div class="debitareTopValue">'+esc(date)+'</div></div><div class="debitareTopRow"><div class="debitareTopLabel">SCHIMBUL:</div><div class="debitareTopValue">'+esc(shift)+'</div></div><div class="debitareTopRow"><div class="debitareTopLabel">ȘEF DE ECHIPĂ:</div><div class="debitareTopValue">'+esc(sef)+'</div></div></div><table class="debitareTable">'+colgroup+'<thead>'+head+'</thead><tbody>'+valueRow+blanks+'</tbody></table><div class="debitareFooter"><div class="debitareSign">Operator</div><div class="debitareSign">Verificat</div><div class="debitareSign">Data arhivării</div></div></div>';
+    return '<div class="debitareSheet autoSheet"><h2 class="debitareTitle">Registru de planificare-urmărire debitări at. FORJĂ</h2><div class="debitareTop"><div class="debitareTopRow"><div class="debitareTopLabel">DATA:</div><div class="debitareTopValue">'+esc(date)+'</div></div><div class="debitareTopRow"><div class="debitareTopLabel">SCHIMBUL:</div><div class="debitareTopValue">'+esc(shift)+'</div></div><div class="debitareTopRow"><div class="debitareTopLabel">ȘEF DE ECHIPĂ:</div><div class="debitareTopValue">'+esc(sef)+'</div></div></div><table class="debitareTable">'+colgroup+'<thead>'+head+'</thead><tbody>'+valueRow+blanks+'</tbody></table><div class="debitareFooter"><div class="debitareSign">Operator<br><span>'+esc(debitareOperator(row))+'</span></div><div class="debitareSign">Verificat<br><span>'+esc(archiveVerifierName())+'</span></div><div class="debitareSign">Data arhivării<br><span>'+esc(archiveSheetDate(row,date))+'</span></div></div></div>';
   }
 
 
@@ -2085,8 +2108,8 @@ async function collectRaportForjaAutoDocs(out){
       return norm(r[k]);
     }
     var rows=magnafluxRows(row).filter(function(r){ return norm(r && (r.reper || r.part_no || r.reper_forjat)) || Number(r && (r.controlate||0))>0; });
-    while(rows.length<10) rows.push({});
-    rows=rows.slice(0,10);
+    var minMagRows=Math.max(10, rows.length);
+    while(rows.length<minMagRows) rows.push({});
     var entryRows=rows.map(function(r,idx){
       var reper=norm(r.reper || r.part_no || r.reper_forjat || '');
       var cod=norm(r.cod_cat || r.cat_code || r.codCAT || '');
@@ -2103,7 +2126,7 @@ async function collectRaportForjaAutoDocs(out){
     }).join('');
     var params=[['SEGMENT 6I-8077','8,40','7,80','4,5-5,5','1400-1500 A'],['INEL 7G-0521/22','8,10','7,40','3,5-4,5','1100-1200 A'],['ZALA-106-1625/1626','8,20','7,60','4,0-5,0','1200-1300 A'],['ZALA-248-2307/2308','8,30','7,70','4,2-5,3','1300-1400 A'],['ZALA-418-2091/2092','8,30','7,70','4,2-5,3','1300-1400 A'],['ZALA-417-3595/3596','8,20','7,60','4,0-5,0','1200-1300 A'],['ZALA-503-0761/0762','8,40','7,80','4,5-5,5','1400-1500 A'],['378-8241/8242','8,30','7,70','4,2-5,3','1300-1400 A'],['SKU-140','7.7','8.0','2,5-3','1300-1450 A']];
     var paramRows=params.map(function(p){ return '<tr><td colspan="4" class="left bold">'+esc(p[0])+'</td><td colspan="2">'+esc(p[1])+'</td><td colspan="2">'+esc(p[2])+'</td><td colspan="3" class="magBlue">'+esc(p[3])+'</td><td colspan="3" class="magBlue">'+esc(p[4])+'</td><td colspan="7" class="noBorder"></td></tr>'; }).join('');
-    return '<div class="magnafluxSheet autoSheet"><table class="magFullTable"><colgroup><col class="mA"><col class="mB"><col class="mC"><col class="mD"><col class="mE"><col class="mF"><col class="mG"><col class="mH"><col class="mI"><col class="mJ"><col class="mK"><col class="mL"><col class="mM"><col class="mN"><col class="mO"><col class="mP"><col class="mQ"><col class="mR"><col class="mS"><col class="mT"><col class="mU"></colgroup><tbody><tr><td></td><td colspan="2" class="magDocTitle">DD119 MAGNAFLUX<br>Rev. 2 / 09.02.2022</td><td colspan="4" class="magTopLabel">UTILAJ DENUMIRE: <span class="magTopValue">'+esc(utilaj)+'</span></td><td colspan="5" class="magTopLabel">Schimbul: <span class="magTopValue">'+esc(schimb)+'</span></td><td colspan="4" class="magBrix">Unități Brix<br>(1.8-2.0) = <span>'+esc(brix)+'</span></td><td colspan="5" class="magTopLabel">Etalon: <span class="magTopValue">'+esc(etalon)+'</span></td></tr><tr><td colspan="8"></td><td colspan="13" class="magNeconforme">NECONFORME</td></tr><tr><td></td><td colspan="20" class="magDateLine">DATA : <span>'+esc(date)+'</span>&nbsp;&nbsp;&nbsp;&nbsp; OPERATOR: <span>'+esc(operator1)+'</span>&nbsp;&nbsp;&nbsp;&nbsp; OPERATOR 2: <span>'+esc(operator2)+'</span></td></tr><tr><th rowspan="2"></th><th rowspan="2">NR.LADA</th><th rowspan="2">REPER</th><th rowspan="2">COD CAT</th><th rowspan="2" class="magBlue">Valoare<br>Magnetică</th><th rowspan="2" class="magBlue">Valoare<br>Electrică</th><th rowspan="2">CONTROLATE</th><th rowspan="2">ACCEPTATE</th><th colspan="4" class="magRemTitle">REMEDIABILE</th><th colspan="9" class="magRejectTitle">TIPURI REBUT</th></tr><tr><th class="magYellow">RZ</th><th class="magYellow">BAV</th><th class="magYellow">SNC</th><th class="magYellow">Lov</th><th>LM</th><th>IBT</th><th>SM</th><th>FTT</th><th>FL</th><th>LMC</th><th>DES</th><th>AS</th><th>FB</th></tr>'+entryRows+'<tr><td colspan="21" class="magAutoTitle">AUTOMENTENANȚĂ!</td></tr><tr><th colspan="6">Operația de mentenanță!</th><th colspan="2">VERIFICAT</th><th colspan="10">OBSERVAȚII!</th><th colspan="3">MINUTE PIERDUTE</th></tr>'+maintRows+'<tr><td colspan="2" class="bold center">Defecte remediabile</td><td colspan="19" class="magDefs">RZ=Rugozitate;&nbsp;&nbsp; LOV=Lovituri pe suprafețe generale;&nbsp;&nbsp; SNC=Sablare necorespunzătoare;&nbsp;&nbsp; BAV=bavură</td></tr><tr><td colspan="2" class="bold center">REBUT<br>DEFINITIV</td><td colspan="19" class="magDefs">SM=Suprapunere material; FL=Fisură laminare; FTT=Fisură cauzată de tratamentul termic; LMC=Lipsă marcaj; IBT=imprimare bavură/tunder; LM=Lipsă material; AS=Arsură; DES=Piesă descentrată; FB=Fisură Bucșă</td></tr><tr class="magParamHead"><th colspan="4">Reper</th><th colspan="2">Reglaj magnetic</th><th colspan="2">Reglaj electric</th><th colspan="3" class="magBlue">Valoare magnetic</th><th colspan="3" class="magBlue">Valoare electric</th><td colspan="7" class="noBorder"></td></tr>'+paramRows+'</tbody></table><div class="magnafluxFooter"><div class="magnafluxSign">Operator</div><div class="magnafluxSign">Verificat</div><div class="magnafluxSign">Data arhivării</div></div></div>';
+    return '<div class="magnafluxSheet autoSheet"><table class="magFullTable"><colgroup><col class="mA"><col class="mB"><col class="mC"><col class="mD"><col class="mE"><col class="mF"><col class="mG"><col class="mH"><col class="mI"><col class="mJ"><col class="mK"><col class="mL"><col class="mM"><col class="mN"><col class="mO"><col class="mP"><col class="mQ"><col class="mR"><col class="mS"><col class="mT"><col class="mU"></colgroup><tbody><tr><td></td><td colspan="2" class="magDocTitle">DD119 MAGNAFLUX<br>Rev. 2 / 09.02.2022</td><td colspan="4" class="magTopLabel">UTILAJ DENUMIRE: <span class="magTopValue">'+esc(utilaj)+'</span></td><td colspan="5" class="magTopLabel">Schimbul: <span class="magTopValue">'+esc(schimb)+'</span></td><td colspan="4" class="magBrix">Unități Brix<br>(1.8-2.0) = <span>'+esc(brix)+'</span></td><td colspan="5" class="magTopLabel">Etalon: <span class="magTopValue">'+esc(etalon)+'</span></td></tr><tr><td colspan="8"></td><td colspan="13" class="magNeconforme">NECONFORME</td></tr><tr><td></td><td colspan="20" class="magDateLine">DATA : <span>'+esc(date)+'</span>&nbsp;&nbsp;&nbsp;&nbsp; OPERATOR: <span>'+esc(operator1)+'</span>&nbsp;&nbsp;&nbsp;&nbsp; OPERATOR 2: <span>'+esc(operator2)+'</span></td></tr><tr><th rowspan="2"></th><th rowspan="2">NR.LADA</th><th rowspan="2">REPER</th><th rowspan="2">COD CAT</th><th rowspan="2" class="magBlue">Valoare<br>Magnetică</th><th rowspan="2" class="magBlue">Valoare<br>Electrică</th><th rowspan="2">CONTROLATE</th><th rowspan="2">ACCEPTATE</th><th colspan="4" class="magRemTitle">REMEDIABILE</th><th colspan="9" class="magRejectTitle">TIPURI REBUT</th></tr><tr><th class="magYellow">RZ</th><th class="magYellow">BAV</th><th class="magYellow">SNC</th><th class="magYellow">Lov</th><th>LM</th><th>IBT</th><th>SM</th><th>FTT</th><th>FL</th><th>LMC</th><th>DES</th><th>AS</th><th>FB</th></tr>'+entryRows+'<tr><td colspan="21" class="magAutoTitle">AUTOMENTENANȚĂ!</td></tr><tr><th colspan="6">Operația de mentenanță!</th><th colspan="2">VERIFICAT</th><th colspan="10">OBSERVAȚII!</th><th colspan="3">MINUTE PIERDUTE</th></tr>'+maintRows+'<tr><td colspan="2" class="bold center">Defecte remediabile</td><td colspan="19" class="magDefs">RZ=Rugozitate;&nbsp;&nbsp; LOV=Lovituri pe suprafețe generale;&nbsp;&nbsp; SNC=Sablare necorespunzătoare;&nbsp;&nbsp; BAV=bavură</td></tr><tr><td colspan="2" class="bold center">REBUT<br>DEFINITIV</td><td colspan="19" class="magDefs">SM=Suprapunere material; FL=Fisură laminare; FTT=Fisură cauzată de tratamentul termic; LMC=Lipsă marcaj; IBT=imprimare bavură/tunder; LM=Lipsă material; AS=Arsură; DES=Piesă descentrată; FB=Fisură Bucșă</td></tr><tr class="magParamHead"><th colspan="4">Reper</th><th colspan="2">Reglaj magnetic</th><th colspan="2">Reglaj electric</th><th colspan="3" class="magBlue">Valoare magnetic</th><th colspan="3" class="magBlue">Valoare electric</th><td colspan="7" class="noBorder"></td></tr>'+paramRows+'</tbody></table><div class="magnafluxFooter"><div class="magnafluxSign">Operator<br><span>'+esc(operator)+'</span></div><div class="magnafluxSign">Verificat<br><span>'+esc(archiveVerifierName())+'</span></div><div class="magnafluxSign">Data arhivării<br><span>'+esc(archiveSheetDate(row,date))+'</span></div></div></div>';
   }
 
 
@@ -2139,7 +2162,7 @@ async function collectRaportForjaAutoDocs(out){
     if(snap.cells) extra+=buildNestedTable('Valori / celule completate', snap.cells);
     if(snap.oraCtrl) extra+=buildNestedTable('Ore control', snap.oraCtrl);
     if(snap.report) extra+=buildNestedTable('Raport / observații', snap.report);
-    return '<div class="autoSheet"><h2 class="autoSheetTitle">'+esc(title)+'</h2><div class="autoSheetSub">Arhivă Documente K.A.D - înregistrare generată automat din pagina sursă</div><div class="autoSheetMeta">'+meta.map(function(x){ return '<div class="lbl">'+esc(x[0])+'</div><div>'+esc(x[1]||'')+'</div>'; }).join('')+'</div><table class="autoSheetTable"><thead><tr><th>Câmp fișă</th><th>Valoare completată</th></tr></thead><tbody>'+rowsHtml+'</tbody></table>'+extra+'<div class="autoSheetFooter"><div class="autoSign">Operator</div><div class="autoSign">Verificat</div><div class="autoSign">Data arhivării</div></div></div>';
+    return '<div class="autoSheet"><h2 class="autoSheetTitle">'+esc(title)+'</h2><div class="autoSheetSub">Arhivă Documente K.A.D - înregistrare generată automat din pagina sursă</div><div class="autoSheetMeta">'+meta.map(function(x){ return '<div class="lbl">'+esc(x[0])+'</div><div>'+esc(x[1]||'')+'</div>'; }).join('')+'</div><table class="autoSheetTable"><thead><tr><th>Câmp fișă</th><th>Valoare completată</th></tr></thead><tbody>'+rowsHtml+'</tbody></table>'+extra+'<div class="autoSheetFooter"><div class="autoSign">Operator<br><span>'+esc(createdActorName(r) || primaryActorName(r))+'</span></div><div class="autoSign">Verificat<br><span>'+esc(archiveVerifierName())+'</span></div><div class="autoSign">Data arhivării<br><span>'+esc(archiveSheetDate(r, formatDate(r.document_date)))+'</span></div></div></div>';
   }
   function loadScriptOnce(src){
     return new Promise(function(resolve,reject){
