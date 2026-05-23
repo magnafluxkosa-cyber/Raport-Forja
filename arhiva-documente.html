@@ -992,6 +992,46 @@ async function collectRaportForjaAutoDocs(out){
   }
   function archivePlural(count, one, many){ return String(count || 0)+' '+(Number(count||0)===1 ? one : many); }
 
+  function archiveDailySyncTypePrefix(type){
+    type=norm(type);
+    if(type==='Intrări Oțel') return 'intrari-otel:';
+    if(type==='Debitare') return 'debitate:';
+    if(type==='Raport Forja') return 'raport-forja:';
+    if(type==='Fișă control CTC Forja') return 'ctc-forja:';
+    return '';
+  }
+  function cleanupLegacyDailyAutoDocs(metas, onlyType){
+    metas=Array.isArray(metas) ? metas : [];
+    var groups={};
+    metas.forEach(function(m){
+      if(!m || !m.source_snapshot || m.source_snapshot.group_type!=='daily') return;
+      var type=norm(m.document_type);
+      if(!type) return;
+      if(onlyType && type!==onlyType) return;
+      var prefix=archiveDailySyncTypePrefix(type);
+      if(!prefix) return;
+      if(!groups[type]) groups[type]={ prefix:prefix, uids:new Set() };
+      if(norm(m.source_uid)) groups[type].uids.add(norm(m.source_uid));
+    });
+    var types=Object.keys(groups);
+    if(!types.length) return 0;
+    var removed=0;
+    state.rows=(state.rows||[]).filter(function(r){
+      if(!r || !r.auto_archived) return true;
+      if(norm(r.status)==='Șters') return true;
+      var type=norm(r.document_type);
+      var g=groups[type];
+      if(!g) return true;
+      var su=norm(r.source_uid);
+      if(!su || su.indexOf(g.prefix)!==0) return true;
+      if(g.uids.has(su)) return true;
+      removed++;
+      return false;
+    });
+    if(removed) clearArchiveFastCaches();
+    return removed;
+  }
+
   async function collectIntrariOtelAutoDocs(out){
     try{
       var years=await yearsFromIndex('intrari-otel:index');
@@ -1237,6 +1277,10 @@ async function collectRaportForjaAutoDocs(out){
         finishSyncProgress('Sincronizare fără rezultate', noDataText, 'err');
         return;
       }
+      var cleanedDaily=cleanupLegacyDailyAutoDocs(metas, selectedType);
+      if(cleanedDaily){
+        addSyncProgressLine('Curățare fișe vechi individuale','ok',cleanedDaily,'');
+      }
       var added=0, updated=0, same=0, deleted=0;
       setSyncProgress(0, metas.length, 'Salvez în arhivă', '0 / '+metas.length+' fișe procesate...');
       for(var i=0;i<metas.length;i++){
@@ -1254,9 +1298,9 @@ async function collectRaportForjaAutoDocs(out){
       addSyncProgressLine('Index metadata rapid','ok',state.rows.length,'');
       setSyncProgress(metas.length, metas.length, 'Actualizez auditul', 'Salvez auditul sincronizării...');
       await syncUiYield();
-      await audit('SYNC', { id:selectedType ? ('auto-sync-'+selectedType) : 'auto-sync-all', document_no:selectedType ? ('AUTO-SYNC-'+selectedType) : 'AUTO-SYNC-ALL', document_type:selectedType || 'Fișe operatori', status:'Activ' }, (selectedType ? ('Sincronizare rapidă '+selectedType) : 'Sincronizare rapidă toate fișele operatorilor') + ': surse [' + summary + '], total ' + metas.length + ', +' + added + ', actualizate ' + updated + ', neschimbate ' + same + ', șterse ignorate ' + deleted);
+      await audit('SYNC', { id:selectedType ? ('auto-sync-'+selectedType) : 'auto-sync-all', document_no:selectedType ? ('AUTO-SYNC-'+selectedType) : 'AUTO-SYNC-ALL', document_type:selectedType || 'Fișe operatori', status:'Activ' }, (selectedType ? ('Sincronizare rapidă '+selectedType) : 'Sincronizare rapidă toate fișele operatorilor') + ': surse [' + summary + '], total ' + metas.length + ', +' + added + ', actualizate ' + updated + ', neschimbate ' + same + ', șterse ignorate ' + deleted + ', fișe vechi individuale curățate ' + cleanedDaily);
       render();
-      var doneText=(selectedType ? ('Sincronizare rapidă '+selectedType+' finalizată: ') : 'Sincronizare rapidă finalizată: ') + metas.length + ' fișe citite, +' + added + ' noi, ' + updated + ' actualizate, ' + same + ' deja existente. Surse: ' + summary;
+      var doneText=(selectedType ? ('Sincronizare rapidă '+selectedType+' finalizată: ') : 'Sincronizare rapidă finalizată: ') + metas.length + ' fișe citite, +' + added + ' noi, ' + updated + ' actualizate, ' + same + ' deja existente, ' + cleanedDaily + ' fișe vechi individuale curățate. Surse: ' + summary;
       setStatus(doneText, 'ok');
       finishSyncProgress('Sincronizare finalizată', doneText, 'ok');
     }catch(e){
