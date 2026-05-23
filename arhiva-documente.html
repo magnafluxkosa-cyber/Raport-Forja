@@ -2250,14 +2250,75 @@ async function collectRaportForjaAutoDocs(out){
     var n=magnafluxIntValArchive(v);
     return n ? new Intl.NumberFormat('ro-RO').format(n) : '';
   }
+  function magnafluxArrayHasSavedData(arr){
+    return Array.isArray(arr) && arr.some(function(r){
+      r=r||{};
+      return norm(magnafluxPickRow(r,['nr_serie','nr_lada','nr_ladă','nrLada','lada','ladă','sarja','sarja_material','lot'])) ||
+        norm(magnafluxPickRow(r,['reper','part_no','reper_forjat','reperForjat'])) ||
+        norm(magnafluxPickRow(r,['cod_cat','cat_code','codCAT','cod cat','codCat'])) ||
+        Number.isFinite(magnafluxCountNumber(magnafluxPickRow(r,['controlate','CONTROLATE','cantitate_controlata','cantitateControlata','controlat','verificate','cantitate']))) ||
+        Number.isFinite(magnafluxCountNumber(magnafluxPickRow(r,['acceptate','ACCEPTATE','ok','OK','bune','acceptat'])));
+    });
+  }
+  function magnafluxSheetHasSavedData(sheet){
+    sheet=sheet||{};
+    return magnafluxArrayHasSavedData(sheet.rows_used) || magnafluxArrayHasSavedData(sheet.rows) || magnafluxArrayHasSavedData(sheet.groups) ||
+      magnafluxArrayHasSavedData(sheet.items) || magnafluxArrayHasSavedData(sheet.entries) || magnafluxArrayHasSavedData(sheet.records);
+  }
+  function magnafluxArchiveSourceSheetId(row){
+    row=row||{};
+    var id=norm(row.source_row_id || '');
+    if(id && id.indexOf('|')<0) return id;
+    var uidText=norm(row.source_uid || '');
+    var prefix='magnaflux-operatori-fisa:';
+    if(uidText.indexOf(prefix)===0) return uidText.slice(prefix.length);
+    return '';
+  }
+  function magnafluxSheetMatchesArchiveRow(sheet,row,wantedId){
+    sheet=sheet||{}; row=row||{};
+    var sid=norm(sheet.id || sheet.sheet_id || '');
+    if(wantedId && sid && sid===wantedId) return true;
+    var rowDate=toIsoDate(row.document_date || '') || toIsoDate(magnafluxDate(row));
+    var sheetDate=toIsoDate(sheet.data || sheet.document_date || sheet.created_at || '');
+    if(rowDate && sheetDate && rowDate!==sheetDate) return false;
+    var rowShift=low(magnafluxMetaValue(row,'schimb',['schimb','schimbul','shift']) || '');
+    var sheetShift=low(sheet.schimb || sheet.schimbul || sheet.shift || '');
+    if(rowShift && sheetShift && rowShift!==sheetShift) return false;
+    var rowUtilaj=low(magnafluxMetaValue(row,'utilaj',['utilaj','linie','echipament','machine','machineName']) || '');
+    var sheetUtilaj=low(sheet.utilaj || sheet.linie || sheet.echipament || sheet.machine || sheet.machineName || '');
+    if(rowUtilaj && sheetUtilaj && rowUtilaj!==sheetUtilaj) return false;
+    var rowOperator=low(magnafluxMetaValue(row,'operator',['operator','operator_name','created_by_name','updated_by_name']) || magnafluxOperator(row) || '');
+    var sheetOperator=low(sheet.operator || sheet.operator_principal || '');
+    if(rowOperator && sheetOperator && rowOperator!==sheetOperator && rowOperator.indexOf(sheetOperator)<0 && sheetOperator.indexOf(rowOperator)<0) return false;
+    return !!(rowDate || rowShift || rowUtilaj || rowOperator);
+  }
+  async function prepareMagnafluxSnapshotForRow(row){
+    if(!isMagnafluxAutoSheet(row)) return row;
+    var snap=magnafluxSnapshot(row)||{};
+    if(magnafluxSheetHasSavedData(snap)) return row;
+    try{
+      var doc=await readDoc('magnaflux:operatori-fise');
+      var p=payload(doc)||{};
+      var sheets=Array.isArray(p.sheets) ? p.sheets : [];
+      if(!sheets.length) return row;
+      var wantedId=magnafluxArchiveSourceSheetId(row);
+      var found=sheets.find(function(sheet){ return magnafluxSheetMatchesArchiveRow(sheet,row,wantedId); });
+      if(found){
+        row.source_snapshot=clone(found);
+        row.part_no=row.part_no || compactText((Array.isArray(found.groups)?found.groups:[]).map(function(g){ return g && g.reper; }));
+        row.cat_code=row.cat_code || compactText((Array.isArray(found.groups)?found.groups:[]).map(function(g){ return g && g.cod_cat; }));
+        row.lot_no=row.lot_no || compactText((Array.isArray(found.groups)?found.groups:[]).map(function(g){ return g && (g.nr_lada || g.nr_serie || g.sarja || g.sarja_material); }));
+      }
+    }catch(e){ console.warn('Nu pot reîncărca fișa Magnaflux completă din sursă.', e); }
+    return row;
+  }
   function magnafluxSavedRowsRaw(row){
     var s=magnafluxSnapshot(row)||{};
-    if(Array.isArray(s.rows) && s.rows.length) return s.rows.slice();
-    if(Array.isArray(s.rows_used) && s.rows_used.length) return s.rows_used.slice();
-    if(Array.isArray(s.items) && s.items.length) return s.items.slice();
-    if(Array.isArray(s.entries) && s.entries.length) return s.entries.slice();
-    if(Array.isArray(s.records) && s.records.length) return s.records.slice();
-    if(Array.isArray(s.groups) && s.groups.length){
+    var candidates=[s.rows_used,s.rows,s.items,s.entries,s.records,s.lazi,s.ladas,s.verificari,s['verificări'],s.verificari_lazi,s.details,s.detalii];
+    for(var i=0;i<candidates.length;i++){
+      if(magnafluxArrayHasSavedData(candidates[i])) return candidates[i].slice();
+    }
+    if(magnafluxArrayHasSavedData(s.groups)){
       return s.groups.map(function(g){
         return Object.assign({}, g || {}, { nr_serie:(g && (g.nr_lada || g.nr_serie || g.sarja || g.sarja_material)) || '', snc:(g && (g.snc || g.planeit)) || 0 });
       });
@@ -2502,6 +2563,7 @@ async function collectRaportForjaAutoDocs(out){
     var r=await getFullArchiveRow(id);
     if(!r || !r.auto_archived){ alert('Această înregistrare nu este fișă automată.'); return; }
     r=await prepareRaportForjaLookupForRow(r);
+    r=await prepareMagnafluxSnapshotForRow(r);
 
     var capture=makePdfCapturePage(r);
     document.body.appendChild(capture.holder);
@@ -2648,6 +2710,7 @@ async function collectRaportForjaAutoDocs(out){
     var r=await getFullArchiveRow(id);
     if(!r || !r.auto_archived){ alert('Această înregistrare nu este fișă automată.'); return; }
     r=await prepareRaportForjaLookupForRow(r);
+    r=await prepareMagnafluxSnapshotForRow(r);
     if(printMode){ downloadAutoSheetPdf(id); return; }
     $('drawerTitle').textContent='Fișă '+(r.document_no || r.document_type || 'operator');
     var html='<div class="viewerBox"><div class="viewerHead"><span>'+esc(r.document_type || 'Fișă operator')+'</span><span><button class="btn mini" id="drawerPdfFromSheet" type="button">PDF</button></span></div><div class="viewerBody">'+buildAutoSheetHtml(r,false)+'</div></div>';
@@ -2659,6 +2722,7 @@ async function collectRaportForjaAutoDocs(out){
     async function showDetails(id){
     var r=await getFullArchiveRow(id); if(!r) return;
     r=await prepareRaportForjaLookupForRow(r);
+    r=await prepareMagnafluxSnapshotForRow(r);
     $('drawerTitle').textContent='Detalii document '+(r.document_no||'');
     var rows=[['Număr document',r.document_no],['Tip document',r.document_type],['Categorie',r.category],['Retenție',r.retention],['Data documentului',formatDate(r.document_date)],['Data expirării',formatDate(r.expiry_date)],['Reper',r.part_no],['Cod CAT',r.cat_code],['Lot / Sarjă',r.lot_no],['Revizie',r.revision],['Sursă',r.source],['Status',r.status],['Creat de',createdActorName(r)],['Ultima modificare',compactText([formatDateTime(r.updated_at),updatedActorName(r)],' / ')],['Observații',r.notes],['Tip înregistrare',r.auto_archived?'Automată din fișă operator':'Manuală'],['Fișă sursă',compactText([r.source_page,r.source_doc_key,r.source_row_id],' / ')]];
     var html='<div class="detailsGrid">'+rows.map(function(x){ return '<div>'+esc(x[0])+'</div><div>'+esc(x[1]||'')+'</div>'; }).join('')+'</div>';
