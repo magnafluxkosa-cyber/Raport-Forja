@@ -594,13 +594,96 @@
       addAuto(out,{ source_uid:'tt-autocontrol:'+(s.id||[s.operator,date,s.shift,rep].join(':')), source_doc_key:key, source_page:'tratament-termic-fisa-autocontrol-zale.html', source_row_id:s.id||'', document_type:'Fișă autocontrol T.T.', category:'Fișe operatori', retention:'15 ani', document_date:date, part_no:rep, cat_code:cats, lot_no:'', source:'Tratament Termic Autocontrol', title:'Fișă autocontrol T.T. - '+compactText([s.operator,date,ttShiftLabel(s),rep],' / '), created_by_name:s.operator||'', source_snapshot:snap });
     });
   }
-  async function collectRaportForjaAutoDocs(out){
+  
+  var INTRARI_OTEL_LOOKUP_ARCHIVE = null;
+  function raportForjaNormalizeSarjaArchive(v){ return low(String(v || '').replace(/rev\.?/ig,'').replace(/[^0-9A-Za-z]+/g,' ')).replace(/\s+/g,'').trim(); }
+  function intrariOtelArchiveObjFromRow(r){
+    if(Array.isArray(r)) return {an:r[0],luna:r[1],data:r[2],diametru:r[3],calitate:r[4],cod_intern:r[5],sarja:r[6],cantitate:r[7],pretest:r[8],furnizor:r[9]};
+    r=r||{};
+    return {
+      an:pick(r,['an','An','ANUL','Anul']), luna:pick(r,['luna','Luna','LUNA']), data:pick(r,['data','Data','DATA','data_intrare','Data Intrare']),
+      diametru:pick(r,['diametru','diametru_otel','Dimensiune Otel','Dimensiune oțel','DIAMETRU']),
+      calitate:pick(r,['calitate','calitate_otel','Calitate otel','CALITATE']),
+      cod_intern:pick(r,['numeral','cod_intern','cod_intern_otel','Cod intern otel (3 litere)','Cod Oțel CALITATE','NUMERAL KOD PREMAGRO']),
+      sarja:pick(r,['sarja','cod_sarja','Sarja material (furnizor)','Cod Sarja FURNIZOR','sarja_material','lot_sarja']),
+      cantitate:pick(r,['cantitate','Cantitate (kg)','cantitate_kg']), pretest:pick(r,['pretest','PRETEST','certificat']), furnizor:pick(r,['furnizor','Furnizor'])
+    };
+  }
+  async function loadIntrariOtelLookupArchive(force){
+    if(INTRARI_OTEL_LOOKUP_ARCHIVE && !force) return INTRARI_OTEL_LOOKUP_ARCHIVE;
+    var bySarja={};
+    try{
+      var years=await yearsFromIndex('intrari-otel:index');
+      for(var i=0;i<years.length;i++){
+        var key='intrari-otel:'+years[i];
+        try{
+          var d=await readDoc(key), p=payload(d)||{}, rows=Array.isArray(p.rows)?p.rows:[];
+          rows.forEach(function(raw){
+            var obj=intrariOtelArchiveObjFromRow(raw);
+            var sk=raportForjaNormalizeSarjaArchive(obj.sarja);
+            if(!sk) return;
+            if(!bySarja[sk]) bySarja[sk]={sarja:obj.sarja||'', cod_intern:obj.cod_intern||'', diametru:obj.diametru||'', calitate:obj.calitate||'', furnizor:obj.furnizor||'', data:obj.data||'', pretest:obj.pretest||''};
+          });
+        }catch(e){ console.warn('Nu pot citi Intrări Oțel pentru lookup Raport Forja: '+key, e); }
+      }
+    }catch(e){ console.warn('Lookup Intrări Oțel indisponibil pentru Raport Forja.', e); }
+    INTRARI_OTEL_LOOKUP_ARCHIVE={bySarja:bySarja};
+    return INTRARI_OTEL_LOOKUP_ARCHIVE;
+  }
+  function lookupIntrariOtelForRaportArchive(row){
+    row=row||{};
+    var s=row.source_snapshot || row;
+    var sarja=pick(s,['sarja_material','sarja','cod_sarja','lot_sarja','lot','lot_no','nr_sarja','sarja_furnizor','Sarja material (furnizor)','Cod Sarja FURNIZOR']);
+    if(!sarja && s.fields) sarja=pick(s.fields,['sarja_material','sarja','cod_sarja','lot_sarja','Sarja material (furnizor)','Cod Sarja FURNIZOR']);
+    var lk=INTRARI_OTEL_LOOKUP_ARCHIVE && INTRARI_OTEL_LOOKUP_ARCHIVE.bySarja || {};
+    var found=sarja ? lk[raportForjaNormalizeSarjaArchive(sarja)] : null;
+    return found || null;
+  }
+  function raportForjaOperatorFromSnapshot(s){
+    s=s||{};
+    var arr=Array.isArray(s.operatori)?s.operatori:[];
+    var names=arr.filter(function(o){ return o && low(o.post||'').indexOf('sef')<0; }).map(function(o){ return o && (o.name || o.nume || o.operator); }).filter(function(v){ return !!norm(v); });
+    if(names.length) return compactText(names, ', ');
+    return pick(s,['operator','operator_name','created_by_name','updated_by_name','nume_operator','Operator']);
+  }
+  function raportForjaSefFromSnapshot(s){
+    s=s||{};
+    var arr=Array.isArray(s.operatori)?s.operatori:[];
+    var names=arr.filter(function(o){ return o && low(o.post||'').indexOf('sef')>=0; }).map(function(o){ return o && (o.name || o.nume || o.operator); }).filter(function(v){ return !!norm(v); });
+    if(names.length) return compactText(names, ', ');
+    if(Array.isArray(s.sefi)) return compactText(s.sefi.map(function(o){ return o && (o.name || o.nume || o.operator); }), ', ');
+    return pick(s,['sef_echipa','sef_de_echipa','sef','sefEchipa','team_leader','teamLeader','Șef echipă']);
+  }
+  function raportForjaCodCatFromSnapshot(s){
+    s=s||{};
+    var v=pick(s,['codcat','cod_cat','codCAT','cat_code','cod_cat_reper','cod_cat_dk','cod_kat','cod_kat_cat','cod_kat_cat','COD_CAT_DK','Cod KAT / CAT']);
+    if(!v && s.fields) v=pick(s.fields,['codcat','cod_cat','codCAT','cat_code','cod_cat_dk','cod_kat','Cod KAT / CAT']);
+    var intrari=s._intrari_otel_lookup || lookupIntrariOtelForRaportArchive(s);
+    return norm((intrari && intrari.cod_intern) || v || '');
+  }
+  function raportForjaMaterialSarjaFromSnapshot(s){
+    s=s||{};
+    var sarja=pick(s,['sarja_material','sarja','cod_sarja','lot_sarja','lot','lot_no','nr_sarja','sarja_furnizor','Sarja material (furnizor)','Cod Sarja FURNIZOR']);
+    if(!sarja && s.fields) sarja=pick(s.fields,['sarja_material','sarja','cod_sarja','lot_sarja','Sarja material (furnizor)','Cod Sarja FURNIZOR']);
+    var cod=pick(s,['cod_material','cod_intern_material','cod_intern_otel','cod_intern','numeral','material_code','material']);
+    if(!cod && s.fields) cod=pick(s.fields,['cod_material','cod_intern_material','cod_intern_otel','cod_intern','numeral','material_code','material']);
+    var intrari=s._intrari_otel_lookup || lookupIntrariOtelForRaportArchive(s);
+    if(intrari){ cod=cod || intrari.cod_intern || ''; sarja=sarja || intrari.sarja || ''; }
+    return compactText([cod,sarja], ' / ');
+  }
+async function collectRaportForjaAutoDocs(out){
     var key='raport-forja-operatori';
     try{
+      await loadIntrariOtelLookupArchive(false);
       var d=await readDoc(key), p=payload(d)||{}, rows=Array.isArray(p.rows)?p.rows:[];
       rows.forEach(function(r){
-        var date=pickDate(r); var op=rowOperator(r);
-        addAuto(out,{ source_uid:'raport-forja:'+(r.id||[date,r.schimb,r.ciocan,r.reper,r.updated_at].join(':')), source_doc_key:key, source_page:'raport-forja.html', source_row_id:r.id||'', document_type:'Raport Forja', category:'Fișe operatori', retention:'15 ani', document_date:date, part_no:pick(r,['reper','REPER']), cat_code:pick(r,['codcat','cod_cat','codCAT']), lot_no:pick(r,['cod_material','sarja','material']), source:'Raport Forja', title:'Raport Forja - '+compactText([pick(r,['reper','REPER']), pick(r,['ciocan','utilaj','linie']), 'Schimb '+pick(r,['schimb','schimbul']), date],' / '), created_by_name:op, source_snapshot:r });
+        var date=pickDate(r); var op=raportForjaOperatorFromSnapshot(r) || rowOperator(r);
+        var snap=Object.assign({}, r || {});
+        var intrariInfo=lookupIntrariOtelForRaportArchive(snap);
+        if(intrariInfo) snap._intrari_otel_lookup=intrariInfo;
+        var codCat=raportForjaCodCatFromSnapshot(snap);
+        var materialSarja=raportForjaMaterialSarjaFromSnapshot(snap);
+        addAuto(out,{ source_uid:'raport-forja:'+(r.id||[date,r.schimb,r.ciocan,r.reper,r.updated_at].join(':')), source_doc_key:key, source_page:'raport-forja.html', source_row_id:r.id||'', document_type:'Raport Forja', category:'Fișe operatori', retention:'15 ani', document_date:date, part_no:pick(r,['reper','REPER']), cat_code:codCat, lot_no:materialSarja, source:'Raport Forja', title:'Raport Forja - '+compactText([pick(r,['reper','REPER']), pick(r,['ciocan','utilaj','linie']), 'Schimb '+pick(r,['schimb','schimbul']), date],' / '), created_by_name:op, source_snapshot:snap });
       });
     }catch(e){ console.warn('Sincronizare Raport Forja eșuată', e); }
   }
@@ -1767,14 +1850,42 @@
     return '';
   }
   function raportForjaDate(row){ return formatDate(toIsoDate(raportForjaGet(row,['data','date','date_iso','document_date','DATA'])) || (row && row.document_date) || ''); }
-  function raportForjaOperator(row){ return raportForjaGet(row,['operator','operator_name','created_by_name','updated_by_name','nume_operator','Operator']) || createdActorName(row) || primaryActorName(row) || updatedActorName(row); }
+  function raportForjaOperator(row){
+    var s=raportForjaSnapshot(row);
+    return raportForjaOperatorFromSnapshot(s) || createdActorName(row) || primaryActorName(row) || updatedActorName(row);
+  }
+  function raportForjaSefEchipa(row){ return raportForjaSefFromSnapshot(raportForjaSnapshot(row)); }
+  function raportForjaCodCat(row){ return raportForjaCodCatFromSnapshot(raportForjaSnapshot(row)); }
+  function raportForjaMaterialSarja(row){ return raportForjaMaterialSarjaFromSnapshot(raportForjaSnapshot(row)); }
+  function raportForjaParseNumberValue(v){
+    if(v == null || v === '') return NaN;
+    if(typeof v === 'number') return Number.isFinite(v) ? v : NaN;
+    var s=String(v).trim().replace(/\s+/g,'');
+    if(!s) return NaN;
+    if(s.indexOf('%')>=0) s=s.replace('%','');
+    if(s.indexOf(',')>=0 && s.indexOf('.')>=0) s=s.replace(/\./g,'').replace(',','.');
+    else if(s.indexOf(',')>=0) s=s.replace(',','.');
+    else if(/^\d{1,3}(\.\d{3})+$/.test(s)) s=s.replace(/\./g,'');
+    var n=Number(s);
+    return Number.isFinite(n) ? n : NaN;
+  }
   function raportForjaNumber(row, keys){
     var v=raportForjaGet(row, keys);
-    if(!v) return '';
-    var n=Number(String(v).replace(/\./g,'').replace(',','.'));
+    if(!v && v!==0) return '';
+    var n=raportForjaParseNumberValue(v);
     if(!Number.isFinite(n)) return v;
     if(Math.abs(n - Math.round(n)) < 0.000001) return String(Math.round(n));
     return String(v).replace('.',',');
+  }
+  function raportForjaPercent(row, keys){
+    var v=raportForjaGet(row, keys);
+    if(!v && v!==0) return '';
+    if(String(v).indexOf('%')>=0) return String(v).trim();
+    var n=raportForjaParseNumberValue(v);
+    if(!Number.isFinite(n)) return String(v);
+    if(Math.abs(n)<=1.5) n=n*100;
+    var decimals=Math.abs(n-Math.round(n))<0.005 ? 0 : 2;
+    return n.toLocaleString('ro-RO',{minimumFractionDigits:decimals,maximumFractionDigits:decimals})+'%';
   }
   function raportForjaIssues(row){
     var s=raportForjaSnapshot(row), out=[];
@@ -1815,11 +1926,13 @@
     return out.slice(0,8);
   }
   function buildRaportForjaSheetHtml(row){
+    var dataForjare=raportForjaDate(row);
     var metaRows=[
-      ['Data', raportForjaDate(row), 'Schimbul', raportForjaGet(row,['schimb','schimbul','shift','SCHIMBUL'])],
+      ['Data', dataForjare, 'Schimbul', raportForjaGet(row,['schimb','schimbul','shift','SCHIMBUL'])],
       ['Utilaj / Linie', raportForjaGet(row,['ciocan','utilaj','linie','linie_forjare','echipament']), 'Operator', raportForjaOperator(row)],
-      ['Reper', raportForjaGet(row,['reper','REPER','part_no']), 'Cod CAT', raportForjaGet(row,['codcat','cod_cat','codCAT','cat_code','cod_cat_reper'])],
-      ['Cod material / Sarjă', raportForjaGet(row,['cod_material','material','sarja','cod_intern_material','cod_intern_otel']), 'Marcaj matriță', raportForjaGet(row,['marcaj_matrita','marcaj','matrita_marcaj','marcaj_mf'])]
+      ['Șef de echipă', raportForjaSefEchipa(row), 'Cod CAT', raportForjaCodCat(row)],
+      ['Reper', raportForjaGet(row,['reper','REPER','part_no']), 'Cod material / Sarjă', raportForjaMaterialSarja(row)],
+      ['Calitate oțel', raportForjaGet(row,['calitate','calitate_otel','steel_grade']), 'Marcaj matriță', raportForjaGet(row,['marcaj_matrita','marcaj','matrita_marcaj','marcaj_mf'])]
     ];
     var prod=[
       ['Matriță superioară', raportForjaGet(row,['matrita_superioara','matrita_sup','mf_sup','cod_matrita_superioara'])],
@@ -1834,11 +1947,11 @@
     var ind=[
       ['Planificat', raportForjaNumber(row,['planificat','planned'])],
       ['Tact', raportForjaGet(row,['tact','tact_sec','tact_secunde'])],
-      ['Timp disponibil', raportForjaGet(row,['timp_disponibil','available_time','timp_available'])],
-      ['Disponibilitate', raportForjaGet(row,['disponibilitate','availability'])],
-      ['Performanță', raportForjaGet(row,['performanta','performance'])],
-      ['Calitate', raportForjaGet(row,['calitate','procent_calitate','quality'])],
-      ['OEE', raportForjaGet(row,['oee','OEE'])],
+      ['Timp disponibil', raportForjaGet(row,['timp_disponibil','timp_dispon_min','available_time','timp_available'])],
+      ['Disponibilitate', raportForjaPercent(row,['disponibilitate','availability'])],
+      ['Performanță', raportForjaPercent(row,['performanta','performance'])],
+      ['Calitate', raportForjaPercent(row,['procent_calitate','calitate_procent','quality','quality_rate'])],
+      ['OEE', raportForjaPercent(row,['oee','OEE'])],
       ['Total ore lucrate', raportForjaGet(row,['total_ore_lucrate','ore_lucrate','ore'])]
     ];
     var metaHtml=metaRows.map(function(r){ return '<tr><th>'+esc(r[0])+'</th><td>'+esc(r[1])+'</td><th>'+esc(r[2])+'</th><td>'+esc(r[3])+'</td></tr>'; }).join('');
@@ -1851,7 +1964,9 @@
       indHtml+='<tr>'+ind.slice(j,j+4).map(function(x){ return '<td class="raportForjaLabel">'+esc(x[0])+'</td><td>'+esc(x[1])+'</td>'; }).join('')+'</tr>';
     }
     var issues=raportForjaIssues(row).map(function(x){ return '<tr><td>'+esc(x.op)+'</td><td>'+esc(x.minute)+'</td><td>'+esc(x.dept)+'</td><td class="obs">'+esc(x.obs)+'</td></tr>'; }).join('');
-    return '<div class="raportForjaSheet autoSheet"><div class="raportForjaTitle">RAPORT FORJA - FIȘĂ OPERATOR</div><div class="raportForjaSub">Arhivă Documente K.A.D - înregistrare generată automat din pagina sursă</div><table class="raportForjaMeta"><tbody>'+metaHtml+'</tbody></table><div class="raportForjaSection">Date producție / trasabilitate</div><table class="raportForjaTable"><tbody>'+prodHtml+'</tbody></table><div class="raportForjaSection">Indicatori / timp</div><table class="raportForjaTable"><tbody>'+indHtml+'</tbody></table><div class="raportForjaSection">Probleme raportate / timpi pierduți</div><table class="raportForjaIssueTable"><colgroup><col style="width:28%"><col style="width:10%"><col style="width:18%"><col style="width:44%"></colgroup><thead><tr><th>Denumire operațiune</th><th>Minute</th><th>Departament</th><th>Observații</th></tr></thead><tbody>'+issues+'</tbody></table><div class="raportForjaFooter"><div class="raportForjaSign">Operator</div><div class="raportForjaSign">Verificat</div><div class="raportForjaSign">Data arhivării</div></div></div>';
+    var operatorText=raportForjaOperator(row);
+    var verificatText='Șef atelier Forja Kosa Adrian';
+    return '<div class="raportForjaSheet autoSheet"><div class="raportForjaTitle">RAPORT FORJA - FIȘĂ OPERATOR</div><div class="raportForjaSub">Arhivă Documente K.A.D - înregistrare generată automat din pagina sursă</div><table class="raportForjaMeta"><tbody>'+metaHtml+'</tbody></table><div class="raportForjaSection">Date producție / trasabilitate</div><table class="raportForjaTable"><tbody>'+prodHtml+'</tbody></table><div class="raportForjaSection">Indicatori / timp</div><table class="raportForjaTable"><tbody>'+indHtml+'</tbody></table><div class="raportForjaSection">Probleme raportate / timpi pierduți</div><table class="raportForjaIssueTable"><colgroup><col style="width:28%"><col style="width:10%"><col style="width:18%"><col style="width:44%"></colgroup><thead><tr><th>Denumire operațiune</th><th>Minute</th><th>Departament</th><th>Observații</th></tr></thead><tbody>'+issues+'</tbody></table><div class="raportForjaFooter"><div class="raportForjaSign">Operator<br><span>'+esc(operatorText)+'</span></div><div class="raportForjaSign">Verificat<br><span>'+esc(verificatText)+'</span></div><div class="raportForjaSign">Data arhivării<br><span>'+esc(dataForjare)+'</span></div></div></div>';
   }
 
   function isMagnafluxAutoSheet(row){
