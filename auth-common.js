@@ -643,6 +643,33 @@
     return map;
   }
 
+
+  function publishPageAccess(access){
+    try{
+      if(access && typeof access === 'object'){
+        const perms = access.permissions || access || {};
+        access.can_view = perms.can_view === true || perms.canView === true || access.can_view === true || access.canView === true;
+        access.can_edit = perms.can_edit === true || perms.canEdit === true || access.can_edit === true || access.canEdit === true;
+        window.__PAGE_ACCESS__ = access;
+        window.__CAN_VIEW__ = access.can_view === true;
+        window.__CAN_EDIT__ = access.can_edit === true;
+        const applyReadonly = function(){
+          try{
+            if(!document.body) return;
+            const readonly = access.can_view === true && access.can_edit !== true;
+            document.body.classList.toggle('readonly', readonly);
+            document.documentElement.classList.toggle('readonly', readonly);
+            document.body.setAttribute('data-can-view', access.can_view === true ? '1' : '0');
+            document.body.setAttribute('data-can-edit', access.can_edit === true ? '1' : '0');
+          }catch(_e){}
+        };
+        if(document.readyState === 'loading') document.addEventListener('DOMContentLoaded', applyReadonly, { once:true });
+        else applyReadonly();
+      }
+    }catch(_e){}
+    return access;
+  }
+
   function renderAccessDeniedPage(pageKey, message){
     const safePage = String(pageKey || '').trim() || 'această pagină';
     const safeMessage = String(message || 'Nu ai acces în această pagină.');
@@ -1102,7 +1129,7 @@
       const allowedForDebitare = ['operator-debitare-pin','operator-debitare'];
       const allowed = allowedForDebitare.indexOf(settings.pageKey) !== -1;
       const debitareOperatorPermissions = { can_view:true, can_add:true, can_edit:true, can_delete:false, can_export:true, can_import:false };
-      return {
+      return publishPageAccess({
         allowed: allowed,
         user,
         role: 'operator',
@@ -1110,12 +1137,12 @@
         source: 'operator debitare locked account',
         strictUserAcl: true,
         message: allowed ? '' : 'Contul Debitare are acces doar la foaia operator debitare.'
-      };
+      });
     }
     if(user && isForjaCtcOperatorAccount(user.email)){
       const allowedForCtc = ['forja-ctc-pin','fisa-control-ctc-forja','rebut-pm-operatori'];
       const allowed = allowedForCtc.indexOf(settings.pageKey) !== -1;
-      return {
+      return publishPageAccess({
         allowed: allowed,
         user,
         role: 'operator',
@@ -1123,7 +1150,7 @@
         source: 'forja-ctc locked account',
         strictUserAcl: true,
         message: allowed ? '' : 'Contul Forja-CTC are acces doar la fișele operator dedicate.'
-      };
+      });
     }
     const sb = getSupabaseClient();
     await registerAutoPage(sb, settings.pageKey);
@@ -1132,7 +1159,7 @@
       const strictMap = await loadUserPermissionMap(sb, user);
       if(strictMap && strictMap.size){
         const matched = strictMap.get(settings.pageKey) || { can_view:false, can_add:false, can_edit:false, can_delete:false, can_export:false, can_import:false };
-        return {
+        return publishPageAccess({
           allowed: matched.can_view === true,
           user,
           role: cleanRole,
@@ -1140,7 +1167,7 @@
           source: 'user_page_permissions strict',
           strictUserAcl: true,
           message: matched.can_view === true ? '' : 'Nu ai acces în această foaie. Cere acces de la admin.'
-        };
+        });
       }
     }
 
@@ -1150,18 +1177,18 @@
         user,
         role
       });
-      return Object.assign({ user, role: access && access.role ? access.role : cleanRole }, access || {});
+      return publishPageAccess(Object.assign({ user, role: access && access.role ? access.role : cleanRole }, access || {}));
     }
 
     const openPage = ['login','index'].includes(settings.pageKey);
-    return {
+    return publishPageAccess({
       allowed: openPage ? fallbackPermissions.can_view === true : false,
       user,
       role: cleanRole,
       permissions: openPage ? fallbackPermissions : deniedPermissions,
       source: openPage ? 'open page fallback' : 'deny by default fallback',
       message: openPage ? '' : 'ACL indisponibil. Acces blocat preventiv.'
-    };
+    });
   }
 
   try{ patchSupabaseCreateClient(); }catch(_e){}
@@ -1230,7 +1257,17 @@
   function pageIsReadonly(){
     try{
       if(window.__CAN_EDIT__ === false) return true;
-      if(window.__PAGE_ACCESS__ && window.__PAGE_ACCESS__.can_edit === false) return true;
+      if(window.__PAGE_ACCESS__){
+        const access = window.__PAGE_ACCESS__ || {};
+        const perms = access.permissions || access || {};
+        if(access.can_view === true && access.can_edit === false) return true;
+        if(perms.can_view === true && perms.can_edit === false) return true;
+        if(perms.canView === true && perms.canEdit === false) return true;
+      }
+      if(window.ERPAuth && typeof window.ERPAuth.getCurrentPagePermissions === 'function'){
+        const p = window.ERPAuth.getCurrentPagePermissions();
+        if(p.can_view === true && p.can_edit !== true) return true;
+      }
       if(document.body && document.body.classList.contains('readonly')) return true;
       if(document.documentElement && document.documentElement.classList.contains('readonly')) return true;
     }catch(_e){}
@@ -1290,9 +1327,34 @@
     window.setInterval(function(){ run(document); }, 800);
   }
 
+
+  function installReadonlyEditBlocker(){
+    function blockEvent(event){
+      try{
+        if(!pageIsReadonly()) return;
+        const target = event.target;
+        const el = target && target.closest ? target.closest('button,a,input,textarea,select,[contenteditable="true"],[role="button"],.btn,.primary-btn,.ghost-btn') : target;
+        if(!el || isLikelyFilterControl(el)) return;
+        const tag = String(el.tagName || '').toUpperCase();
+        const type = String(el.type || '').toLowerCase();
+        const mutating = hasMutatingHints(el) || el.matches('[contenteditable="true"],input[type="file"],input[type="submit"],input[type="button"],button,[data-acl="edit"],[data-acl="save"],[data-acl="delete"],[data-acl="import"],[data-acl="add"]');
+        if(!mutating && !['TEXTAREA'].includes(tag) && !(tag === 'INPUT' && !['search','text'].includes(type))) return;
+        event.preventDefault();
+        event.stopPropagation();
+        if(event.stopImmediatePropagation) event.stopImmediatePropagation();
+        try{ alert('Pagina este în modul doar vizualizare. Nu ai drept de editare.'); }catch(_e){}
+        return false;
+      }catch(_e){}
+    }
+    ['click','submit','beforeinput','paste','drop','change'].forEach(function(name){
+      try{ document.addEventListener(name, blockEvent, true); }catch(_e){}
+    });
+  }
+
   window.ERPAuth = window.ERPAuth || {};
   window.ERPAuth.unlockReadonlyFilters = unlockReadonlyFilters;
   installReadonlyFilterUnlock();
+  installReadonlyEditBlocker();
 })();
 
 /* INDEX VISIBILITY SHARED SYNC */
