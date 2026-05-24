@@ -359,9 +359,10 @@
     const kg=tr.querySelector('[data-k="kg"]'); const lung=tr.querySelector('[data-k="lung"]'); const calInp=tr.querySelector('[data-k="codOtelCalitate"]');
     if(kg && !norm(kg.value)) kg.value=fmtNum(info.kg);
     if(lung && !norm(lung.value)) lung.value=fmtNum(info.lung);
-    if(calInp) calInp.value=info.cal||'';
-    tr.dataset.diam=info.diam||''; tr.dataset.cal=info.cal||''; tr.dataset.reper=info.reper||reper;
-    autofillMaterialFromCod(tr,false);
+    if(calInp && !norm(calInp.value)) calInp.value=info.cal||'';
+    tr.dataset.diam=info.diam||''; tr.dataset.cal=(calInp&&norm(calInp.value))||info.cal||''; tr.dataset.reper=info.reper||reper;
+    const codInp=tr.querySelector('[data-k="codInternOtel"]');
+    if(codInp && norm(codInp.value)) autofillMaterialFromCod(tr,false);
   }
 
   function collectIntrariRows(){
@@ -395,16 +396,68 @@
   }
   function isoWeek(iso){const m=String(iso).match(/^(\d{4})-(\d{2})-(\d{2})$/); if(!m)return''; const d=new Date(Date.UTC(+m[1],+m[2]-1,+m[3])); const day=d.getUTCDay()||7; d.setUTCDate(d.getUTCDate()+4-day); const ys=new Date(Date.UTC(d.getUTCFullYear(),0,1)); return Math.ceil((((d-ys)/86400000)+1)/7);}
 
+  function shiftValue(v){
+    const s=norm(v);
+    if(!s) return '1';
+    const m=s.match(/(\d+)/);
+    return m ? m[1] : s;
+  }
+  function debitareDisplayRowFromSaved(row){
+    row=row||{};
+    const utilaj=pick(row,['utilaj','echipament','echipament_debitare']);
+    const reper=pick(row,['reper','reperDebitare','reper_debitare']);
+    const kg=pick(row,['kg','kgBuc','kg_buc','kgBucDebitat','kg_buc_debitat']);
+    const lung=pick(row,['lung','lungime','lungimeDebitare','lungime_debitare','lungimeDebitat','lungime_debitat']);
+    const plan=pick(row,['plan','planificat','planificatSchimb','planificat_schimb']);
+    const codInternOtel=pick(row,['codInternOtel','codIntern','cod_intern_otel','numeral','numeralKod']);
+    const codOtelCalitate=pick(row,['codOtelCalitate','calitate','calitateOtel','codOtel']);
+    const material=pick(row,['material','sarja','codSarja','cod_sarja_furnizor','codSarjaFurnizor']);
+    const realizat=pick(row,['realizat','cantitate','bucati','cantitateDebitata']);
+    const operator=safeOperator(pick(row,['operator','operatorDebitare','operator_debitare']));
+    const diam=pick(row,['diam','diametru','diametruOtel']);
+    const cal=codOtelCalitate || pick(row,['cal','calitate','calitateOtel']);
+    return {utilaj,reper,kg:fmtNum(kg),lung:fmtNum(lung),plan:fmtNum(plan),codInternOtel,codOtelCalitate,material,realizat:fmtNum(realizat),operator,diam,cal};
+  }
+  function buildOldDebitareFiseFromRows(rows, existingKeys){
+    const map=new Map();
+    (Array.isArray(rows)?rows:[]).forEach(row=>{
+      if(!row || typeof row!=='object') return;
+      const date=norm(pick(row,['data','date']));
+      const shift=shiftValue(pick(row,['shift','schimb','schimbul']));
+      if(!date) return;
+      const key=row.fisaKey || debitareFisaKey(date,shift);
+      if(existingKeys && existingKeys.has(key)) return;
+      if(!map.has(key)){
+        map.set(key,{key,date,shift,sef:pick(row,['sefEchipa','echipa','sef']),label:debitareFisaLabel(date,shift),rows:[],savedBy:pick(row,['savedBy','createdBy']),savedAt:pick(row,['savedAt','updated_at','created_at']),legacy:true});
+      }
+      const f=map.get(key);
+      f.rows.push(debitareDisplayRowFromSaved(row));
+      if(!f.sef) f.sef=pick(row,['sefEchipa','echipa','sef']);
+      if(!f.savedAt) f.savedAt=pick(row,['savedAt','updated_at','created_at']);
+    });
+    return Array.from(map.values()).sort((a,b)=>String(b.date||'').localeCompare(String(a.date||'')) || String(b.shift||'').localeCompare(String(a.shift||'')));
+  }
   async function loadDebitareFise(year){
     const y=String(year||new Date().getFullYear()); debitareFise=[];
-    try{const doc=await readDoc(FISE_DEBITARE_PREFIX+y); const p=Object.assign({fise:[]},getPayload(doc)||{}); debitareFise=Array.isArray(p.fise)?p.fise:[];}catch(e){console.warn(e); debitareFise=[];}
+    try{
+      const doc=await readDoc(FISE_DEBITARE_PREFIX+y);
+      const p=Object.assign({fise:[]},getPayload(doc)||{});
+      debitareFise=Array.isArray(p.fise)?p.fise:[];
+    }catch(e){console.warn(e); debitareFise=[];}
+    try{
+      const existingKeys=new Set(debitareFise.map(f=>f&&f.key).filter(Boolean));
+      const doc=await readDoc(DEBITATE_PREFIX+y);
+      const p=Object.assign({rows:[]},getPayload(doc)||{});
+      const oldFise=buildOldDebitareFiseFromRows(Array.isArray(p.rows)?p.rows:[], existingKeys);
+      if(oldFise.length) debitareFise=debitareFise.concat(oldFise);
+    }catch(e){console.warn('Fișe vechi debitare indisponibile:',e);}
     populateDebitareFiseSelect();
   }
   function populateDebitareFiseSelect(selectedKey){
     const sel=$('fisaDebitareSelect'); if(!sel) return; sel.innerHTML='';
     const list=debitareFise.slice().sort((a,b)=>String(b.date||'').localeCompare(String(a.date||'')) || String(b.shift||'').localeCompare(String(a.shift||'')));
     if(!list.length){const o=document.createElement('option'); o.value=''; o.textContent='Nu există fișe salvate'; sel.appendChild(o); return;}
-    list.forEach(f=>{const o=document.createElement('option'); o.value=f.key; o.textContent=(f.label||debitareFisaLabel(f.date,f.shift))+(f.savedAt?' • salvat '+formatDateRo(String(f.savedAt).slice(0,10)):''); sel.appendChild(o);});
+    list.forEach(f=>{const o=document.createElement('option'); o.value=f.key; o.textContent=(f.label||debitareFisaLabel(f.date,f.shift))+(f.legacy?' • fișă veche':'')+(f.savedAt?' • salvat '+formatDateRo(String(f.savedAt).slice(0,10)):''); sel.appendChild(o);});
     if(selectedKey) sel.value=selectedKey;
   }
   function openDebitareFisaByKey(key){
