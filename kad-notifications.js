@@ -624,12 +624,12 @@
     if (!client && window.createRfSupabaseClient && typeof window.createRfSupabaseClient === 'function'){
       try{ client = window.createRfSupabaseClient(); }catch(_e){}
     }
-    if (!client && window.supabase && typeof window.supabase.createClient === 'function'){
+    if (!client && window.supabase && typeof window.createRfSupabaseClient === 'function'){
       var cfg = getConfig();
       var url = normText(cfg.SUPABASE_URL || cfg.supabaseUrl || window.RF_SUPABASE_URL || '');
       var key = normText(cfg.SUPABASE_ANON_KEY || cfg.supabaseAnonKey || window.RF_SUPABASE_ANON_KEY || '');
       if (url && key){
-        try{ client = window.supabase.createClient(url, key, { auth:{ persistSession:true, autoRefreshToken:true, detectSessionInUrl:true } }); }catch(_e){}
+        try{ client = window.createRfSupabaseClient(url, key, { auth:{ persistSession:true, autoRefreshToken:true, detectSessionInUrl:true } }); }catch(_e){}
       }
     }
     try{ if (client && window.__KAD_PATCH_SUPABASE_CLIENT__) window.__KAD_PATCH_SUPABASE_CLIENT__(client); }catch(_e){}

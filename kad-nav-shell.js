@@ -561,8 +561,8 @@
       if (typeof window.createRfSupabaseClient === 'function') return window.createRfSupabaseClient();
     } catch (_) {}
     try {
-      if (window.supabase && typeof window.supabase.createClient === 'function' && window.RF_CONFIG && window.RF_CONFIG.SUPABASE_URL && window.RF_CONFIG.SUPABASE_ANON_KEY) {
-        return window.supabase.createClient(window.RF_CONFIG.SUPABASE_URL, window.RF_CONFIG.SUPABASE_ANON_KEY, {
+      if (window.supabase && typeof window.createRfSupabaseClient === 'function' && window.RF_CONFIG && window.RF_CONFIG.SUPABASE_URL && window.RF_CONFIG.SUPABASE_ANON_KEY) {
+        return window.createRfSupabaseClient(window.RF_CONFIG.SUPABASE_URL, window.RF_CONFIG.SUPABASE_ANON_KEY, {
           auth: { persistSession:true, autoRefreshToken:true, detectSessionInUrl:true }
         });
       }

@@ -2,13 +2,13 @@
   'use strict';
 
   /*
-    Configurezi o singură dată aici proiectul Supabase pentru toate paginile.
-    IMPORTANT: cheia de mai jos este cheia publică ANON / publishable key,
-    nu service_role.
+    Config comun K.A.D pentru Supabase.
+    Sursa principală este RF_CONFIG din rf-config.js.
+    Aici nu se păstrează service_role și nu se dublează cheia în clar.
   */
 
-  window.ERP_FORJA_CONFIG = {
-    SUPABASE_URL: 'https://addlybnigrywqowpbhvd.supabase.co',
-    SUPABASE_ANON_KEY: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFkZGx5Ym5pZ3J5d3Fvd3BiaHZkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzI2NjY2NjQsImV4cCI6MjA4ODI0MjY2NH0.VjbSKs7G_5T7GhdrjT8dtj2HCF6Az9KYfkpkSE7JTo4'
-  };
+  var rf = window.RF_CONFIG || {};
+  window.ERP_FORJA_CONFIG = window.ERP_FORJA_CONFIG || {};
+  window.ERP_FORJA_CONFIG.SUPABASE_URL = rf.SUPABASE_URL || window.ERP_FORJA_CONFIG.SUPABASE_URL || 'https://addlybnigrywqowpbhvd.supabase.co';
+  window.ERP_FORJA_CONFIG.SUPABASE_ANON_KEY = rf.SUPABASE_ANON_KEY || window.ERP_FORJA_CONFIG.SUPABASE_ANON_KEY || '';
 })();

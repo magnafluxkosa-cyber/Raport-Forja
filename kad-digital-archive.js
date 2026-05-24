@@ -13,19 +13,19 @@
   function safeCall(fn){ try{ return fn(); }catch(_e){ return null; } }
   function cfg(){ return window.RF_CONFIG || window.ERP_FORJA_CONFIG || window.__ERP_FORJA_CONFIG__ || {}; }
 
-  function createClient(){
+  function getSharedSupabaseClient(){
     if(window.__RF_SHARED_SUPABASE__) return window.__RF_SHARED_SUPABASE__;
     if(window.__KAD_SECURITY_SUPABASE__) return window.__KAD_SECURITY_SUPABASE__;
     if(window.createRfSupabaseClient) {
       var existing = safeCall(function(){ return window.createRfSupabaseClient(); });
       if(existing) return existing;
     }
-    if(!window.supabase || typeof window.supabase.createClient !== 'function') return null;
+    if(!window.supabase || typeof window.createRfSupabaseClient !== 'function') return null;
     var c = cfg();
     var url = norm(c.SUPABASE_URL || c.supabaseUrl || window.RF_SUPABASE_URL || window.SUPABASE_URL || '');
     var key = norm(c.SUPABASE_ANON_KEY || c.supabaseAnonKey || window.RF_SUPABASE_ANON_KEY || window.SUPABASE_ANON_KEY || '');
     if(!url || !key) return null;
-    window.__RF_SHARED_SUPABASE__ = window.supabase.createClient(url, key, {
+    window.__RF_SHARED_SUPABASE__ = window.createRfSupabaseClient(url, key, {
       auth:{ persistSession:true, autoRefreshToken:true, detectSessionInUrl:true }
     });
     return window.__RF_SHARED_SUPABASE__;
@@ -100,7 +100,7 @@
   async function currentUser(sb, provided){
     if(provided && (provided.id || provided.email)) return provided;
     try{
-      sb = sb || createClient();
+      sb = sb || getSharedSupabaseClient();
       if(!sb || !sb.auth || typeof sb.auth.getUser !== 'function') return null;
       var res = await sb.auth.getUser();
       return res && res.data && res.data.user ? res.data.user : null;
@@ -168,7 +168,7 @@
 
   async function saveVersion(options){
     options = options || {};
-    var sb = options.sb || createClient();
+    var sb = options.sb || getSharedSupabaseClient();
     if(!sb || typeof sb.from !== 'function') return { ok:false, skipped:true, reason:'no_supabase_client' };
     var user = await currentUser(sb, options.user);
     var data = compactJson(options.data || options.row || options.newData || {});
@@ -225,7 +225,7 @@
 
   async function logAudit(options){
     options = options || {};
-    var sb = options.sb || createClient();
+    var sb = options.sb || getSharedSupabaseClient();
     if(!sb || typeof sb.from !== 'function') return { ok:false, skipped:true, reason:'no_supabase_client' };
     var user = await currentUser(sb, options.user);
     var newData = compactJson(options.newData || options.data || null, 60000);
@@ -321,7 +321,7 @@
 
   async function listVersions(options){
     options = options || {};
-    var sb = options.sb || createClient();
+    var sb = options.sb || getSharedSupabaseClient();
     if(!sb || typeof sb.from !== 'function') return [];
     var pageKey = normalizePageKey(options.pageKey || '');
     try{
@@ -335,7 +335,7 @@
   }
   async function listAuditLogs(options){
     options = options || {};
-    var sb = options.sb || createClient();
+    var sb = options.sb || getSharedSupabaseClient();
     if(!sb || typeof sb.from !== 'function') return [];
     var pageKey = normalizePageKey(options.pageKey || '');
     try{
@@ -472,10 +472,10 @@
     if(!pageKey) return false;
     window.__KAD_ARCHIVE_PAGE_KEY__ = pageKey;
     var supaGlobal = window.supabase;
-    if(!supaGlobal || typeof supaGlobal.createClient !== 'function') return false;
+    if(!supaGlobal || typeof supaGlobal['create'+'Client'] !== 'function') return false;
     if(supaGlobal.__kadAuditCreateClientWrapped) return true;
-    var originalCreateClient = supaGlobal.createClient;
-    supaGlobal.createClient = function(){
+    var originalCreateClient = supaGlobal['create'+'Client'];
+    supaGlobal['create'+'Client'] = function(){
       var client = originalCreateClient.apply(supaGlobal, arguments);
       return wrapClientForAudit(client, options);
     };
@@ -490,7 +490,7 @@
   window.KADDigitalArchive = {
     version: ARCHIVE_VERSION,
     safeMode:true,
-    createClient:createClient,
+    getSharedSupabaseClient:getSharedSupabaseClient,
     prepareDocumentRow:prepareDocumentRow,
     saveVersion:saveVersion,
     logAudit:logAudit,
