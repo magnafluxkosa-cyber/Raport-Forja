@@ -121,7 +121,7 @@
       const sb = (cfg.url && cfg.key && window.supabase)
         ? ((window.createRfSupabaseClient && typeof window.createRfSupabaseClient === 'function')
             ? window.createRfSupabaseClient()
-            : window.supabase.createClient(cfg.url, cfg.key, {
+            : window.createRfSupabaseClient(cfg.url, cfg.key, {
                 auth: { persistSession:true, autoRefreshToken:true, detectSessionInUrl:true }
               }))
         : null;
