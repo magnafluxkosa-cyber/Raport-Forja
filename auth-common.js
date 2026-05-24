@@ -304,146 +304,6 @@
     return ensureFreshSession(getSupabaseClient(), { force:true, redirect:true, next: next || getCurrentPageName() });
   }
 
-  /* KAD_AUDIT_LOG_V1 - trasabilitate centralizata pentru mutatii Supabase REST */
-  const KAD_AUDIT_LOG_TABLE = 'kad_audit_log';
-
-  function kadAuditTableFromUrl(rawUrl){
-    try{
-      const m = String(rawUrl || '').match(/\/rest\/v1\/([^?\/]+)/i);
-      return m && m[1] ? decodeURIComponent(m[1]) : '';
-    }catch(_e){ return ''; }
-  }
-
-  function kadAuditFilterFromUrl(rawUrl){
-    try{
-      const u = new URL(String(rawUrl || ''), window.location.href);
-      return String(u.search || '').replace(/^\?/, '').slice(0, 2000);
-    }catch(_e){ return ''; }
-  }
-
-  function kadAuditReadBody(input, init){
-    try{
-      const body = init && Object.prototype.hasOwnProperty.call(init, 'body') ? init.body : null;
-      if(body == null) return null;
-      if(typeof body === 'string'){
-        const trimmed = body.trim();
-        if(!trimmed) return null;
-        try{ return JSON.parse(trimmed); }catch(_e){ return { raw: trimmed.slice(0, 8000) }; }
-      }
-      if(typeof URLSearchParams !== 'undefined' && body instanceof URLSearchParams){
-        const obj = {};
-        body.forEach(function(v,k){ obj[k] = v; });
-        return obj;
-      }
-      if(typeof FormData !== 'undefined' && body instanceof FormData){
-        const obj = {};
-        body.forEach(function(v,k){ obj[k] = (v && v.name) ? ('[file] ' + v.name) : String(v); });
-        return obj;
-      }
-      if(typeof body === 'object') return { body_type: Object.prototype.toString.call(body) };
-    }catch(_e){}
-    return null;
-  }
-
-  function kadAuditActionFromRequest(input, init){
-    const method = getRequestMethod(input, init);
-    const headers = (init && init.headers) || (input && input.headers) || null;
-    const prefer = getHeaderValue(headers, 'prefer');
-    if(method === 'POST' && /resolution\s*=\s*merge-duplicates/i.test(prefer)) return 'upsert';
-    if(method === 'POST') return 'insert';
-    if(method === 'PATCH' || method === 'PUT') return 'update';
-    if(method === 'DELETE') return 'delete';
-    return method.toLowerCase();
-  }
-
-  function kadAuditShouldLog(input, init){
-    const method = getRequestMethod(input, init);
-    if(['GET','HEAD','OPTIONS'].includes(method)) return false;
-    const rawUrl = requestUrlString(input);
-    if(!/\/rest\/v1\//i.test(rawUrl)) return false;
-    const table = kadAuditTableFromUrl(rawUrl);
-    if(!table) return false;
-    if(String(table).toLowerCase() === KAD_AUDIT_LOG_TABLE) return false;
-    if(/^pg_/i.test(table) || /^rpc$/i.test(table)) return false;
-    return true;
-  }
-
-  async function kadAuditWrite(client, nativeFetch, input, init, response){
-    try{
-      if(!kadAuditShouldLog(input, init)) return;
-      if(!nativeFetch || typeof nativeFetch !== 'function') return;
-      const cfg = readConfig();
-      if(!cfg || !cfg.url || !cfg.anonKey) return;
-
-      let session = null;
-      try{
-        const activeClient = client || supabaseClient;
-        if(activeClient && activeClient.auth && typeof activeClient.auth.getSession === 'function'){
-          const s = await activeClient.auth.getSession();
-          session = s && s.data ? (s.data.session || null) : null;
-        }
-      }catch(_e){}
-
-      const user = session && session.user ? session.user : null;
-      const token = session && session.access_token ? String(session.access_token) : '';
-      if(!token) return;
-
-      const rawUrl = requestUrlString(input);
-      const targetTable = kadAuditTableFromUrl(rawUrl);
-      const action = kadAuditActionFromRequest(input, init);
-      const bodyValue = kadAuditReadBody(input, init);
-      const roleValue = safeGetItem(STORAGE.userRole) || null;
-      const userAgentValue = (typeof navigator !== 'undefined' ? String(navigator.userAgent || '').slice(0, 500) : '');
-      const filterValue = kadAuditFilterFromUrl(rawUrl);
-
-      const entry = {
-        user_id: user && user.id ? String(user.id) : (safeGetItem(STORAGE.userId) || null),
-        user_email: normalizeEmail((user && user.email) || safeGetItem(STORAGE.userEmail) || ''),
-        page_key: getCurrentPageKey(),
-        page_url: getCurrentPageName(),
-        action: action,
-        target_table: targetTable,
-        target_id: null,
-        record_id: null,
-        old_value: null,
-        new_value: bodyValue,
-        metadata: {
-          role: roleValue,
-          source: 'frontend-auto',
-          method: getRequestMethod(input, init),
-          request_url: String(rawUrl || '').slice(0, 1500),
-          target_filter: filterValue,
-          response_status: response ? Number(response.status || 0) : null,
-          response_ok: response ? response.ok === true : null,
-          audit_version: 'KAD_AUDIT_LOG_V1'
-        },
-        user_agent: userAgentValue
-      };
-
-      const auditUrl = String(cfg.url).replace(/\/+$/, '') + '/rest/v1/' + KAD_AUDIT_LOG_TABLE;
-      await nativeFetch(auditUrl, {
-        method: 'POST',
-        headers: {
-          apikey: cfg.anonKey,
-          authorization: 'Bearer ' + token,
-          'content-type': 'application/json',
-          prefer: 'return=minimal'
-        },
-        body: JSON.stringify(entry),
-        keepalive: true
-      });
-    }catch(err){
-      try{ console.warn('KAD audit_log write failed', err); }catch(_e){}
-    }
-  }
-
-  function scheduleKadAuditLog(client, nativeFetch, input, init, response){
-    if(!kadAuditShouldLog(input, init)) return;
-    try{
-      setTimeout(function(){ kadAuditWrite(client, nativeFetch, input, init, response); }, 0);
-    }catch(_e){}
-  }
-
   function makeSessionAwareFetch(client, originalFetch){
     const nativeFetch = originalFetch || (typeof fetch === 'function' ? fetch.bind(window) : null);
     if(!nativeFetch) return originalFetch;
@@ -459,7 +319,6 @@
           try{ response = await nativeFetch(input, init); }catch(_e){}
         }
       }
-      try { scheduleKadAuditLog(client, nativeFetch, input, init, response); } catch(_e){}
       return response;
     }
 
@@ -798,13 +657,10 @@
           try{
             if(!document.body) return;
             const readonly = access.can_view === true && access.can_edit !== true;
-            // Nu mai aplicăm clase vizuale .readonly pe body/html, pentru că unele pagini au CSS legat de această clasă
-            // și se modifică layout-ul doar pentru conturile de vizualizare. Protecția de editare rămâne în event blocker.
-            try{ document.body.classList.remove('readonly'); }catch(_e){}
-            try{ document.documentElement.classList.remove('readonly'); }catch(_e){}
+            document.body.classList.toggle('readonly', readonly);
+            document.documentElement.classList.toggle('readonly', readonly);
             document.body.setAttribute('data-can-view', access.can_view === true ? '1' : '0');
             document.body.setAttribute('data-can-edit', access.can_edit === true ? '1' : '0');
-            document.body.setAttribute('data-view-only', readonly ? '1' : '0');
           }catch(_e){}
         };
         if(document.readyState === 'loading') document.addEventListener('DOMContentLoaded', applyReadonly, { once:true });
@@ -1412,8 +1268,8 @@
         const p = window.ERPAuth.getCurrentPagePermissions();
         if(p.can_view === true && p.can_edit !== true) return true;
       }
-      // Nu folosim clasele CSS .readonly ca sursă de adevăr, ca să nu declanșăm layout-uri speciale pe pagini.
-      if(document.body && document.body.getAttribute('data-view-only') === '1') return true;
+      if(document.body && document.body.classList.contains('readonly')) return true;
+      if(document.documentElement && document.documentElement.classList.contains('readonly')) return true;
     }catch(_e){}
     return false;
   }
@@ -1473,47 +1329,20 @@
 
 
   function installReadonlyEditBlocker(){
-    let lastReadonlyAlertAt = 0;
-
-    function showReadonlyEditMessage(){
-      try{
-        const now = Date.now ? Date.now() : new Date().getTime();
-        if(now - lastReadonlyAlertAt < 900) return;
-        lastReadonlyAlertAt = now;
-        alert('Pagina este în modul doar vizualizare. Nu ai drept de editare.');
-      }catch(_e){}
-    }
-
     function blockEvent(event){
       try{
         if(!pageIsReadonly()) return;
-
-        // Nu blocăm evenimente generate de cod la încărcarea paginii.
-        // Viewer-ul trebuie să poată intra pe pagină; blocarea se aplică doar când utilizatorul încearcă efectiv editare/salvare/import/ștergere.
-        if(event && event.isTrusted === false) return;
-
         const target = event.target;
-        const el = target && target.closest ? target.closest('button,a,input,textarea,select,[contenteditable="true"],[role="button"],.btn,.primary-btn,.ghost-btn,.raw-editable-cell,[data-acl]') : target;
+        const el = target && target.closest ? target.closest('button,a,input,textarea,select,[contenteditable="true"],[role="button"],.btn,.primary-btn,.ghost-btn') : target;
         if(!el || isLikelyFilterControl(el)) return;
-
-        const eventName = String(event.type || '').toLowerCase();
         const tag = String(el.tagName || '').toUpperCase();
         const type = String(el.type || '').toLowerCase();
-        const isEditableField = el.matches('[contenteditable="true"],textarea,input:not([type="search"]):not([type="hidden"]):not([readonly]):not([disabled])');
-        const isExplicitMutation = hasMutatingHints(el) || el.matches('[contenteditable="true"],input[type="file"],input[type="submit"],input[type="button"],button[type="submit"],[data-acl="edit"],[data-acl="save"],[data-acl="delete"],[data-acl="import"],[data-acl="add"],.raw-editable-cell');
-
-        let shouldBlock = false;
-        if(eventName === 'submit') shouldBlock = true;
-        else if(eventName === 'click') shouldBlock = isExplicitMutation;
-        else if(eventName === 'change') shouldBlock = (type === 'file') || isExplicitMutation;
-        else if(eventName === 'beforeinput' || eventName === 'paste' || eventName === 'drop') shouldBlock = isEditableField || isExplicitMutation;
-
-        if(!shouldBlock) return;
-
+        const mutating = hasMutatingHints(el) || el.matches('[contenteditable="true"],input[type="file"],input[type="submit"],input[type="button"],button,[data-acl="edit"],[data-acl="save"],[data-acl="delete"],[data-acl="import"],[data-acl="add"]');
+        if(!mutating && !['TEXTAREA'].includes(tag) && !(tag === 'INPUT' && !['search','text'].includes(type))) return;
         event.preventDefault();
         event.stopPropagation();
         if(event.stopImmediatePropagation) event.stopImmediatePropagation();
-        showReadonlyEditMessage();
+        try{ alert('Pagina este în modul doar vizualizare. Nu ai drept de editare.'); }catch(_e){}
         return false;
       }catch(_e){}
     }
