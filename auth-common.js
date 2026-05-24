@@ -798,10 +798,13 @@
           try{
             if(!document.body) return;
             const readonly = access.can_view === true && access.can_edit !== true;
-            document.body.classList.toggle('readonly', readonly);
-            document.documentElement.classList.toggle('readonly', readonly);
+            // Nu mai aplicăm clase vizuale .readonly pe body/html, pentru că unele pagini au CSS legat de această clasă
+            // și se modifică layout-ul doar pentru conturile de vizualizare. Protecția de editare rămâne în event blocker.
+            try{ document.body.classList.remove('readonly'); }catch(_e){}
+            try{ document.documentElement.classList.remove('readonly'); }catch(_e){}
             document.body.setAttribute('data-can-view', access.can_view === true ? '1' : '0');
             document.body.setAttribute('data-can-edit', access.can_edit === true ? '1' : '0');
+            document.body.setAttribute('data-view-only', readonly ? '1' : '0');
           }catch(_e){}
         };
         if(document.readyState === 'loading') document.addEventListener('DOMContentLoaded', applyReadonly, { once:true });
@@ -1409,8 +1412,8 @@
         const p = window.ERPAuth.getCurrentPagePermissions();
         if(p.can_view === true && p.can_edit !== true) return true;
       }
-      if(document.body && document.body.classList.contains('readonly')) return true;
-      if(document.documentElement && document.documentElement.classList.contains('readonly')) return true;
+      // Nu folosim clasele CSS .readonly ca sursă de adevăr, ca să nu declanșăm layout-uri speciale pe pagini.
+      if(document.body && document.body.getAttribute('data-view-only') === '1') return true;
     }catch(_e){}
     return false;
   }
