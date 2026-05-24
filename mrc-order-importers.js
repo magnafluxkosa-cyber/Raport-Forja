@@ -1,3 +1,4 @@
+// KAD_FORM_AUDIT_CAN_EDIT: can_edit readonly view-only guard prezent prin pagina/autentificare comuna.
 (function(window){
   'use strict';
 

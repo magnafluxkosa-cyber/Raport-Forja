@@ -1,3 +1,4 @@
+// KAD_FORM_AUDIT_CONFIRM: confirmare pentru actiuni destructive; utilizatorul trebuie sa fie sigur inainte de stergere/remove/delete.
 
     (() => {
       const qs = (s) => document.querySelector(s);

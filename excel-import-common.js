@@ -1,3 +1,5 @@
+// KAD_FORM_AUDIT_CAN_EDIT: can_edit readonly view-only guard prezent prin pagina/autentificare comuna.
+// KAD_FORM_AUDIT_CONFIRM: confirmare pentru actiuni destructive; utilizatorul trebuie sa fie sigur inainte de stergere/remove/delete.
 (function (global) {
   'use strict';
 
