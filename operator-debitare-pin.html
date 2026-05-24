@@ -1,107 +1,193 @@
 <!DOCTYPE html>
 <html lang="ro">
 <head>
-<!-- KAD_FORM_AUDIT_CONFIRM: confirmare pentru actiuni destructive; utilizatorul trebuie sa fie sigur inainte de stergere/remove/delete. -->
-
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>PIN Operator Debitare</title>
-  <!-- KAD_ACL_MARKER: page_key="operator-debitare-pin" can_view can_edit -->
   <script src="./rf-config.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="./auth-common.js"></script>
+  <link rel="stylesheet" href="./mobile-erp.css" />
   <style>
+    :root{--dark:#12294a;--blue:#2f74b5;--red:#b91c1c;--bg:#cfe0f0}
     *{box-sizing:border-box}
     html,body{height:100%}
-    body{margin:0;font-family:Arial,Helvetica,sans-serif;background:#d9e8f4;color:#071b33;display:flex;align-items:center;justify-content:center;padding:20px;overflow:hidden}
-    body.booting .pinBox{visibility:hidden}
-    .pinBox{width:min(340px,94vw);background:#fff;border:1px solid #8ea3b6;border-radius:14px;box-shadow:0 14px 42px rgba(0,0,0,.28);padding:22px}
-    h1{margin:0 0 18px;text-align:center;font-size:22px;font-weight:900;color:#071b33}
-    label{display:block;margin:0 0 6px;font-size:13px;font-weight:900;text-transform:uppercase;color:#071b33}
-    input{width:100%;height:46px;border:2px solid #12294a;border-radius:10px;text-align:center;font-size:24px;font-weight:900;letter-spacing:4px;background:#fff;color:#071b33}
-    button{width:100%;height:44px;margin-top:14px;border:1px solid #12294a;border-radius:10px;background:#12294a;color:#fff;font-size:16px;font-weight:900;cursor:pointer}
-    .status{min-height:22px;margin-top:12px;text-align:center;font-weight:900;font-size:13px;color:#071b33}
+    body{margin:0;font-family:Arial,Helvetica,sans-serif;background:linear-gradient(180deg,#e6f1fb 0%,#c7ddec 100%);color:#061c36;display:flex;align-items:center;justify-content:center;padding:18px}
+    body.booting #pinApp{visibility:hidden}
+    .card{width:440px;max-width:96vw;background:#fff;border:1px solid #061c36;border-radius:14px;box-shadow:0 16px 40px rgba(0,0,0,.24);padding:18px}
+    h1{margin:0 0 6px;text-align:center;font-size:22px;font-weight:900;color:#061c36}
+    .sub{text-align:center;font-size:13px;font-weight:800;color:#314762;margin-bottom:16px}
+    .row{display:grid;grid-template-columns:120px 1fr;gap:8px;align-items:center;margin-bottom:10px}
+    label{font-weight:900;font-size:14px}
+    select,input{height:38px;border:1px solid #7892ac;border-radius:8px;background:#f5faff;font-size:15px;font-weight:900;color:#061c36;padding:0 9px;width:100%}
+    input{text-align:center;letter-spacing:3px}
+    .actions{display:flex;justify-content:flex-end;gap:8px;margin-top:14px}
+    button{height:36px;border:1px solid var(--dark);border-radius:8px;background:var(--dark);color:#fff;font-weight:900;padding:0 14px;cursor:pointer}
+    button.secondary{background:#fff;color:var(--dark)}
+    button.danger{background:var(--red);border-color:#7f1d1d}
+    .status{min-height:20px;text-align:right;font-size:13px;font-weight:900;color:#071b33}
     .status.err{color:#b91c1c}.status.ok{color:#0f7a2d}
   </style>
 </head>
 <body class="booting">
-  <section class="pinBox">
-    <h1>PIN</h1>
-    <label for="pinInput">Introduceți PIN-ul</label>
-    <input id="pinInput" type="password" inputmode="numeric" autocomplete="off" autofocus />
-    <button type="button" id="btnUnlock">Intră</button>
-    <div id="status" class="status"></div>
-  </section>
+  <div id="pinApp" class="card">
+    <h1>PIN operator debitare</h1>
+    <div class="sub">Selectează operatorul și introdu PIN-ul setat.</div>
+    <div class="row">
+      <label for="operatorSelect">Operator:</label>
+      <select id="operatorSelect"></select>
+    </div>
+    <div class="row">
+      <label for="pinInput">PIN:</label>
+      <input id="pinInput" type="password" inputmode="numeric" autocomplete="current-password" maxlength="8" placeholder="••••" />
+    </div>
+    <div class="status" id="status"></div>
+    <div class="actions">
+      <button class="secondary" type="button" id="btnLogout">Logout</button>
+      <button type="button" id="btnEnter">Intră</button>
+    </div>
+  </div>
+
 <script>
 (function(){
   'use strict';
-  const OPERATOR_EMAIL = 'debitare@pre.local';
-  const PAGE_KEY = 'operator-debitare';
-  const PIN_DOC_KEY = 'operator-debitare:pins';
-  const UNLOCK_KEY = 'kad:operator-debitare:unlock';
-  const OPERATOR_KEY = 'kad:operator-debitare:operator';
-  const UNLOCK_MS = 12 * 60 * 60 * 1000;
-  const $ = id => document.getElementById(id);
-  let sb = null, auth = null, pinPayload = {pins:{}};
-  function norm(v){ return String(v||'').trim(); }
-  function email(v){ return String(v||'').trim().toLowerCase(); }
-  function setStatus(msg,type){ const el=$('status'); el.textContent=msg||''; el.className='status '+(type||''); }
-  function getPayload(row){ return (row && (row.content || row.data)) || {}; }
-  async function readDoc(key){ const {data,error}=await sb.from('rf_documents').select('doc_key,content,data,updated_at').eq('doc_key', key).maybeSingle(); if(error) throw error; return data; }
-  async function sha256(text){ const enc=new TextEncoder().encode(text); const buf=await crypto.subtle.digest('SHA-256', enc); return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,'0')).join(''); }
-  async function loadPinPayload(){
-    try{
-      const doc=await readDoc(PIN_DOC_KEY);
-      const p=getPayload(doc);
-      pinPayload = p && typeof p==='object' ? p : {pins:{}};
-      if(!pinPayload.pins || typeof pinPayload.pins!=='object') pinPayload.pins={};
-    }catch(_){ pinPayload={pins:{}}; }
+
+  const OPERATOR_EMAIL='debitare@pre.local';
+  const PIN_DOC_KEY='operator-debitare:pins';
+  const UNLOCK_KEY='kad:operator-debitare:unlock';
+  const OPERATOR_KEY='kad:operator-debitare:operator';
+
+  const $=id=>document.getElementById(id);
+  let sb=null, auth=null, currentEmail='', pinPayload=null;
+
+  function norm(v){return String(v??'').trim();}
+  function email(v){return String(v||'').trim().toLowerCase();}
+  function plain(v){return String(v||'').trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');}
+  function pinKeyForOperator(name){return plain(name).toUpperCase().replace(/[\s_\/\\.\-–—]+/g,'');}
+  function getPayload(row){return (row&&(row.content||row.data))||{};}
+  function nextUrl(){
+    const p=new URLSearchParams(location.search);
+    const n=norm(p.get('next')) || 'operator-debitare.html';
+    if(/^https?:/i.test(n) || /^\/\//.test(n)) return 'operator-debitare.html';
+    if(!/^[a-z0-9_\-./?=&%]+$/i.test(n)) return 'operator-debitare.html';
+    return n;
   }
-  function saveUnlock(operator){
-    const payload = {operator:operator, email:email(auth && auth.user && auth.user.email), until:Date.now()+UNLOCK_MS};
-    sessionStorage.setItem(UNLOCK_KEY, JSON.stringify(payload));
-    sessionStorage.setItem(OPERATOR_KEY, operator);
+  function setStatus(msg,type){
+    const el=$('status'); if(!el) return;
+    el.textContent=msg||''; el.className='status '+(type||'');
   }
-  async function verifyPin(){
+  async function readDoc(key){
+    const {data,error}=await sb.from('rf_documents').select('doc_key,content,data,updated_at').eq('doc_key',key).maybeSingle();
+    if(error) throw error;
+    return data;
+  }
+  function readUnlock(){
     try{
-      const pin = norm($('pinInput').value);
-      if(!pin){ setStatus('Introduceți PIN-ul.','err'); return; }
-      const entries = Object.entries(pinPayload.pins || {});
-      if(!entries.length){ setStatus('Nu există PIN setat pentru operatori.','err'); return; }
-      setStatus('Se verifică...');
-      for(const [operator, rec] of entries){
-        if(!rec || !rec.hash || !rec.salt) continue;
-        const hash = await sha256(rec.salt + ':' + pin);
-        if(hash === rec.hash){
-          saveUnlock(operator);
-          setStatus('PIN corect.','ok');
-          setTimeout(()=>{ location.replace('operator-debitare.html'); }, 180);
-          return;
-        }
+      const p=JSON.parse(sessionStorage.getItem(UNLOCK_KEY)||'{}');
+      if(p&&p.until>Date.now()&&p.operator) return p;
+    }catch(_e){}
+    return null;
+  }
+  function collectPinRecords(payload){
+    const out=new Map();
+    payload=payload||{};
+    function add(operator,pin){
+      operator=norm(operator); pin=norm(pin);
+      if(!operator || !pin) return;
+      const key=pinKeyForOperator(operator);
+      if(!out.has(key)) out.set(key,{operator:operator,pins:new Set()});
+      out.get(key).operator=operator;
+      out.get(key).pins.add(pin);
+    }
+    function readItem(item,fallbackOperator){
+      if(item && typeof item==='object'){
+        add(item.operator||item.name||item.nume||item.label||fallbackOperator,item.pin||item.pinCode||item.pin_code||item.codPin||item.code);
+      }else{
+        add(fallbackOperator,item);
       }
-      setStatus('PIN greșit.','err');
-      $('pinInput').select();
-    }catch(e){ console.error(e); setStatus(e && e.message ? e.message : 'Eroare la verificarea PIN-ului.','err'); }
+    }
+    Object.entries(payload.pins||{}).forEach(([k,v])=>readItem(v,k));
+    Object.entries(payload.pinByOperator||{}).forEach(([k,v])=>readItem(v,k));
+    Object.entries(payload.operators||{}).forEach(([k,v])=>readItem(v,k));
+    (Array.isArray(payload.rows)?payload.rows:[]).forEach(item=>readItem(item,''));
+    return Array.from(out.values()).filter(x=>x.pins.size);
   }
+  function populateOperators(){
+    const sel=$('operatorSelect');
+    sel.innerHTML='';
+    const records=collectPinRecords(pinPayload);
+    if(!records.length){
+      const o=document.createElement('option');
+      o.value='';
+      o.textContent='Nu există PIN setat';
+      sel.appendChild(o);
+      setStatus('Nu există niciun PIN setat pentru operatori. Intră pe cont admin/editor și setează PIN-ul operatorului.','err');
+      return;
+    }
+    records.sort((a,b)=>a.operator.localeCompare(b.operator,'ro',{sensitivity:'base'})).forEach(rec=>{
+      const o=document.createElement('option');
+      o.value=rec.operator;
+      o.textContent=rec.operator;
+      sel.appendChild(o);
+    });
+    setStatus('PIN-ul se verifică după operatorul selectat.','');
+  }
+  function pinMatches(operator,pin){
+    const key=pinKeyForOperator(operator);
+    const records=collectPinRecords(pinPayload);
+    const rec=records.find(x=>pinKeyForOperator(x.operator)===key || x.operator===operator);
+    if(!rec) return false;
+    return Array.from(rec.pins).some(x=>norm(x)===norm(pin));
+  }
+  function enter(){
+    const operator=norm($('operatorSelect').value);
+    const pin=norm($('pinInput').value);
+    if(!operator){setStatus('Selectează operatorul.','err'); return;}
+    if(!pin){setStatus('Introdu PIN-ul.','err'); return;}
+    if(!pinMatches(operator,pin)){
+      setStatus('PIN greșit pentru operatorul selectat.','err');
+      $('pinInput').select();
+      return;
+    }
+    sessionStorage.setItem(UNLOCK_KEY, JSON.stringify({operator:operator,until:Date.now()+12*60*60*1000}));
+    sessionStorage.setItem(OPERATOR_KEY, operator);
+    setStatus('PIN corect. Se deschide fișa...','ok');
+    setTimeout(()=>{location.href=nextUrl();},150);
+  }
+
   async function boot(){
     try{
-      if(!window.ERPAuth) throw new Error('Auth common nu este încărcat.');
-      sb = window.ERPAuth.getSupabaseClient();
-      auth = await window.ERPAuth.requireAuth({next:'operator-debitare-pin.html', redirectToLogin:true});
+      sb=window.ERPAuth.getSupabaseClient();
+      auth=await window.ERPAuth.requireAuth({next:'operator-debitare-pin.html?next='+encodeURIComponent(nextUrl()),redirectToLogin:true});
       if(!auth) return;
-      const currentRole = String(auth.role || 'viewer').toLowerCase();
-      const currentEmail = email(auth.user && auth.user.email);
-      const access = await window.ERPAuth.getPageAccess(PAGE_KEY, {user:auth.user, role:currentRole});
-      const operatorAccount = currentEmail === OPERATOR_EMAIL;
-      const canOpen = operatorAccount || (access && access.allowed === true);
-      if(!canOpen){ window.location.href='index.html'; return; }
-      await loadPinPayload();
+      currentEmail=email(auth.user&&auth.user.email);
+      if(currentEmail!==OPERATOR_EMAIL){
+        location.href=nextUrl();
+        return;
+      }
+      const unlock=readUnlock();
+      if(unlock){
+        sessionStorage.setItem(OPERATOR_KEY,unlock.operator);
+        location.href=nextUrl();
+        return;
+      }
+      const doc=await readDoc(PIN_DOC_KEY);
+      pinPayload=getPayload(doc)||{};
+      populateOperators();
       document.body.classList.remove('booting');
-      setTimeout(()=>$('pinInput').focus(), 50);
-    }catch(e){ console.error(e); document.body.classList.remove('booting'); setStatus(e && e.message ? e.message : 'Eroare la inițializare.','err'); }
+      setTimeout(()=>$('pinInput').focus(),60);
+    }catch(e){
+      console.error(e);
+      document.body.classList.remove('booting');
+      setStatus((e&&e.message?e.message:'Eroare la verificarea PIN-ului.')+' Verifică dacă documentul de PIN poate fi citit din Supabase.','err');
+    }
   }
-  $('btnUnlock').addEventListener('click', verifyPin);
-  $('pinInput').addEventListener('keydown', e=>{ if(e.key==='Enter') verifyPin(); });
+
+  $('btnEnter').addEventListener('click',enter);
+  $('pinInput').addEventListener('keydown',e=>{if(e.key==='Enter') enter();});
+  $('operatorSelect').addEventListener('keydown',e=>{if(e.key==='Enter') $('pinInput').focus();});
+  $('btnLogout').addEventListener('click',()=>{try{sessionStorage.removeItem(UNLOCK_KEY);sessionStorage.removeItem(OPERATOR_KEY);}catch(_e){} if(window.ERPAuth) window.ERPAuth.signOut({redirectTo:'login.html'}); else location.href='login.html';});
+
   boot();
 })();
 </script>
