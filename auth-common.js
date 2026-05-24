@@ -1470,20 +1470,47 @@
 
 
   function installReadonlyEditBlocker(){
+    let lastReadonlyAlertAt = 0;
+
+    function showReadonlyEditMessage(){
+      try{
+        const now = Date.now ? Date.now() : new Date().getTime();
+        if(now - lastReadonlyAlertAt < 900) return;
+        lastReadonlyAlertAt = now;
+        alert('Pagina este în modul doar vizualizare. Nu ai drept de editare.');
+      }catch(_e){}
+    }
+
     function blockEvent(event){
       try{
         if(!pageIsReadonly()) return;
+
+        // Nu blocăm evenimente generate de cod la încărcarea paginii.
+        // Viewer-ul trebuie să poată intra pe pagină; blocarea se aplică doar când utilizatorul încearcă efectiv editare/salvare/import/ștergere.
+        if(event && event.isTrusted === false) return;
+
         const target = event.target;
-        const el = target && target.closest ? target.closest('button,a,input,textarea,select,[contenteditable="true"],[role="button"],.btn,.primary-btn,.ghost-btn') : target;
+        const el = target && target.closest ? target.closest('button,a,input,textarea,select,[contenteditable="true"],[role="button"],.btn,.primary-btn,.ghost-btn,.raw-editable-cell,[data-acl]') : target;
         if(!el || isLikelyFilterControl(el)) return;
+
+        const eventName = String(event.type || '').toLowerCase();
         const tag = String(el.tagName || '').toUpperCase();
         const type = String(el.type || '').toLowerCase();
-        const mutating = hasMutatingHints(el) || el.matches('[contenteditable="true"],input[type="file"],input[type="submit"],input[type="button"],button,[data-acl="edit"],[data-acl="save"],[data-acl="delete"],[data-acl="import"],[data-acl="add"]');
-        if(!mutating && !['TEXTAREA'].includes(tag) && !(tag === 'INPUT' && !['search','text'].includes(type))) return;
+        const isEditableField = el.matches('[contenteditable="true"],textarea,input:not([type="search"]):not([type="hidden"]):not([readonly]):not([disabled])');
+        const isExplicitMutation = hasMutatingHints(el) || el.matches('[contenteditable="true"],input[type="file"],input[type="submit"],input[type="button"],button[type="submit"],[data-acl="edit"],[data-acl="save"],[data-acl="delete"],[data-acl="import"],[data-acl="add"],.raw-editable-cell');
+
+        let shouldBlock = false;
+        if(eventName === 'submit') shouldBlock = true;
+        else if(eventName === 'click') shouldBlock = isExplicitMutation;
+        else if(eventName === 'change') shouldBlock = (type === 'file') || isExplicitMutation;
+        else if(eventName === 'beforeinput' || eventName === 'paste' || eventName === 'drop') shouldBlock = isEditableField || isExplicitMutation;
+
+        if(!shouldBlock) return;
+
         event.preventDefault();
         event.stopPropagation();
         if(event.stopImmediatePropagation) event.stopImmediatePropagation();
-        try{ alert('Pagina este în modul doar vizualizare. Nu ai drept de editare.'); }catch(_e){}
+        showReadonlyEditMessage();
         return false;
       }catch(_e){}
     }
