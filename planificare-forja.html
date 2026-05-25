@@ -1288,12 +1288,12 @@ body.rf-mobile :is(.wrap,.content,.workspace,.layout,.sheet,.mainTableBlock,.sum
     function normalizeMachineKey(value){
       const k = normKey(value);
       if(!k) return '';
-      if(k.includes('5TCHINA')) return '5 T CHINA';
-      if(k === 'MP') return 'MP';
+      if(k.includes('5TCHINA') || k.includes('5TCH')) return '5 T CHINA';
+      if(k === 'MP' || k.includes('MAXIPRESA') || k.includes('MAXIPRESA') || k.includes('MP2500')) return 'MP';
       if(k.includes('125T') || k.includes('1T25') || k.includes('1,25T'.replace(/[^A-Z0-9]+/g,''))) return '1,25 T';
       if(k.includes('25T') && !k.includes('125')) return '2,5 T';
       if(k.includes('3TBR')) return '3 T BR';
-      if(k.includes('3TZR')) return '3 T ZR';
+      if(k.includes('3TZR') || k.includes('3TCH') || k.includes('3TCHINA')) return '3 T ZR';
       const found = MACHINE_ORDER.find(machine => normKey(machine) === k);
       return found || trimText(value);
     }
@@ -1699,7 +1699,10 @@ body.rf-mobile :is(.wrap,.content,.workspace,.layout,.sheet,.mainTableBlock,.sum
       if(Array.isArray(payload.items)) return payload.items;
       if(Array.isArray(payload.records)) return payload.records;
       if(Array.isArray(payload.entries)) return payload.entries;
+      if(payload.content && Array.isArray(payload.content.rows)) return payload.content.rows;
+      if(payload.data && payload.data !== payload && Array.isArray(payload.data.rows)) return payload.data.rows;
       if(payload.payload && Array.isArray(payload.payload.rows)) return payload.payload.rows;
+      if(payload.payload && payload.payload.content && Array.isArray(payload.payload.content.rows)) return payload.payload.content.rows;
       return [];
     }
     function pick(obj, keys){
@@ -1918,34 +1921,45 @@ body.rf-mobile :is(.wrap,.content,.workspace,.layout,.sheet,.mainTableBlock,.sum
     }
 
     function normalizeForjateFlowRow(row, index){
+      const obj = row && typeof row === 'object' ? row : {};
       const data = normalizeDateAny(
         Array.isArray(row)
           ? arrayCell(row, 2, '')
-          : pick(row, ['data','DATA','date','Date'])
+          : pick(obj, ['data','DATA','date','Date','data_forjare','DATA_FORJARE','Data forjare','data raport','Data raport'])
       );
       const an = trimText(
         Array.isArray(row)
           ? arrayCell(row, 0, '')
-          : pick(row, ['an','AN','anul','ANUL','year','Year'])
+          : pick(obj, ['an','AN','anul','ANUL','year','Year'])
       ) || (data ? data.slice(0,4) : '');
       const lunaRaw = Array.isArray(row)
         ? arrayCell(row, 1, '')
-        : pick(row, ['luna','LUNA','month','Month']);
+        : pick(obj, ['luna','LUNA','month','Month']);
       const lunaNum = monthNumberFromAny(lunaRaw) || (data ? Number(data.slice(5,7)) : 0);
       const machineRaw = Array.isArray(row)
         ? arrayCell(row, 4, '')
-        : pick(row, ['ciocan','CIOCAN','linie de forjare','Linie de forjare','linie_de_forjare','linie','Linie','utilaj','Utilaj','machine','Machine','E','BO']);
+        : pick(obj, [
+            'ciocan','CIOCAN','Ciocan',
+            'linie de forjare','Linie de forjare','LINIE DE FORJARE','linie_de_forjare','linieForjare',
+            'linie','Linie','LINIE',
+            'utilaj','Utilaj','UTILAJ','echipament','Echipament','ECHIPAMENT',
+            'machine','Machine','MACHINE','E','BO'
+          ]);
       const reperRaw = Array.isArray(row)
         ? arrayCell(row, 5, '')
-        : pick(row, ['reper','REPER','Reper','reper_forjat','REPER_FORJAT','Reper forjat']);
+        : pick(obj, ['reper','REPER','Reper','reper_forjat','REPER_FORJAT','Reper forjat','denumire_reper','Denumire reper']);
       const realizatRaw = Array.isArray(row)
         ? arrayCell(row, 17, 0)
-        : pick(row, ['buc_realizate','BUC_REALIZATE','bucRealizate','BUC Realizate','BUC REALIZATE','buc realizate','Buc realizate','buc','BUC','CB']);
+        : pick(obj, [
+            'buc_realizate','BUC_REALIZATE','bucRealizate','Buc Realizate','BUC Realizate','BUC REALIZATE',
+            'buc realizate','Buc realizate','cantitate_realizata','Cantitate realizata','cantitate realizată','Cantitate realizată',
+            'realizat','REALIZAT','Realizat','realizat_sch','REALIZAT/SCH','realizat/sch','buc','BUC','CB'
+          ]);
       const rebutRaw = Array.isArray(row)
         ? arrayCell(row, 18, 0)
-        : pick(row, ['rebut','REBUT','Rebut','rebuturi','Rebuturi','rebut pm','Rebut PM','CC']);
+        : pick(obj, ['rebut','REBUT','Rebut','rebuturi','Rebuturi','rebut pm','Rebut PM','CC']);
       return {
-        id: trimText(Array.isArray(row) ? '' : pick(row, ['id','_id'])) || ('forjate-flow-' + index),
+        id: trimText(Array.isArray(row) ? '' : pick(obj, ['id','_id'])) || ('forjate-flow-' + index),
         an,
         data,
         luna: getMonthName(lunaNum || lunaRaw),
@@ -2490,6 +2504,8 @@ function getDefaultPermissions(role){
         if(!iso || !item.machine || !item.reper || item.realizatBuc <= 0) return;
         const key = buildRealizedKey(iso, item.machine, item.reper);
         summary[key] = Math.max(0, Math.round(toNumber(summary[key]) + item.realizatBuc));
+        const fallbackKey = buildRealizedKey(iso, '', item.reper);
+        summary[fallbackKey] = Math.max(0, Math.round(toNumber(summary[fallbackKey]) + item.realizatBuc));
       });
       return summary;
     }
@@ -2816,18 +2832,20 @@ function getDefaultPermissions(role){
       if(state.attemptedForjateYears.has(cleanYear)) return;
       state.attemptedForjateYears.add(cleanYear);
 
-      const doc = await readDocumentCompat(FORJATE_DOC_PREFIX + cleanYear);
-      if(doc && (doc.content || doc.data)){
-        const payload = doc.content || doc.data;
-        const rows = extractRowsPayload(payload);
-        mergePlanFiseFromForjateRows(rows, cleanYear);
-        const summary = buildSummaryFromForjateRows(rows, cleanYear);
-        if(Object.keys(summary).length){
-          mergeSummary(summary);
-          state.loadedForjateYears.add(cleanYear);
-          state.yearLiveSource[cleanYear] = 'Cloud live (forjate:' + cleanYear + ')';
-          state.lastLiveRefreshAt = nowIso();
-          return;
+      const forjateDocs = await queryDocsByKeys([FORJATE_DOC_PREFIX + cleanYear, 'FORJATE:' + cleanYear, 'forjate-' + cleanYear, 'FORJATE-' + cleanYear]);
+      for(const doc of forjateDocs){
+        if(doc && (doc.content || doc.data)){
+          const payload = doc.content || doc.data;
+          const rows = extractRowsPayload(payload);
+          mergePlanFiseFromForjateRows(rows, cleanYear);
+          const summary = buildSummaryFromForjateRows(rows, cleanYear);
+          if(Object.keys(summary).length){
+            mergeSummary(summary);
+            state.loadedForjateYears.add(cleanYear);
+            state.yearLiveSource[cleanYear] = 'Cloud live (' + (doc.doc_key || (FORJATE_DOC_PREFIX + cleanYear)) + ')';
+            state.lastLiveRefreshAt = nowIso();
+            return;
+          }
         }
       }
 
@@ -2846,8 +2864,12 @@ function getDefaultPermissions(role){
       if(!reper) return { value:0, source:'empty' };
       const year = trimText(row && row.an);
       const key = buildRealizedKey(row && row.data, machine, reper);
+      const fallbackKey = buildRealizedKey(row && row.data, '', reper);
       if(state.loadedForjateYears.has(year)){
-        return { value: Math.max(0, Math.round(toNumber(state.forjateSummary[key]))), source: 'live' };
+        const exactValue = Math.max(0, Math.round(toNumber(state.forjateSummary[key])));
+        if(exactValue > 0) return { value: exactValue, source: 'live' };
+        const fallbackValue = Math.max(0, Math.round(toNumber(state.forjateSummary[fallbackKey])));
+        return { value: fallbackValue, source: fallbackValue > 0 ? 'live' : 'live' };
       }
       return { value: Math.max(0, Math.round(toNumber(slot && slot.realizat_seed))), source: 'seed' };
     }
