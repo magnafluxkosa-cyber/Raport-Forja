@@ -32,6 +32,8 @@
     table{border-collapse:collapse}.debitareTable{width:100%;table-layout:fixed;border:1px solid var(--line);font-family:"Times New Roman",Times,serif;flex:1 1 auto}.debitareTable th,.debitareTable td{border:1px solid var(--line);padding:0;text-align:center;vertical-align:middle;background:#fff;color:#000;overflow:hidden}.debitareTable th{height:58px;font-size:16px;font-weight:900;line-height:1.05}.debitareTable td{height:calc((100vh - 320px)/7);min-height:58px;max-height:86px}.debitareTable th.blue,.debitareTable td.blue{color:#286fc2;font-weight:900}.debitareTable th .redPart{color:var(--red)}.debitareTable input,.debitareTable select{width:100%;height:100%;border:0;background:#f5faff;text-align:center;font-family:Arial,Helvetica,sans-serif;font-size:15px;font-weight:800;padding:3px 4px;color:#00172d;min-width:0}.debitareTable input[readonly]{font-family:"Times New Roman",Times,serif;font-size:16px;font-weight:900;background:#fff}.debitareTable select{appearance:auto}.debitareTable td.blue input{color:#286fc2;font-weight:900}.debitareTable tr:hover td input,.debitareTable tr:hover td select{background:#eef6ff}
     .actions{display:flex;align-items:center;justify-content:flex-end;gap:8px;margin:8px auto 0;width:min(100%,1560px);min-height:36px}.status{font-weight:900;color:#071b33;flex:1;text-align:right}.status.err{color:#b91c1c}.status.ok{color:#0f7a2d}
     .intrariPaper{width:min(100%,1560px);background:#fff;border:1px solid #000;min-height:calc(100vh - 190px);display:flex;flex-direction:column}.sheetTitle{text-align:center;font-weight:900;background:#c6e0f5;border-bottom:1px solid #000;padding:5px 8px;font-size:16px;letter-spacing:.2px}.tableScroll{width:100%;overflow:auto;flex:1}.sheetTable{border-collapse:collapse;width:100%;table-layout:fixed;min-width:1260px}.sheetTable th,.sheetTable td{border:1px solid #000;text-align:center;vertical-align:middle;padding:0;overflow:hidden}.sheetTable th{background:#1f7f4c;color:#001b35;height:76px;font-weight:900;font-size:16px;line-height:1.08;position:sticky;top:0;z-index:5}.sheetTable td{height:38px}.sheetTable input,.sheetTable select{width:100%;height:100%;border:0;background:#f5faff;text-align:center;font-weight:800;font-size:13px;padding:3px 4px;min-width:0;color:#00172d}.sheetTable select{appearance:auto}.sheetTable tr.savedRow input,.sheetTable tr.savedRow select{background:#fff;color:#111}.sheetTable tr.newRow td{background:#f7fbff}.sheetTable tr:hover td input,.sheetTable tr:hover td select{background:#eef6ff}.readonly input,.readonly select{cursor:not-allowed}
+    .sheetTable td.pretest-open-cell{background:#dcfce7!important;cursor:pointer}
+    .sheetTable td.pretest-open-cell select,.sheetTable td.pretest-open-cell input{background:#dcfce7!important;color:#166534!important;font-weight:900!important;pointer-events:none}
 
     .pinModal{position:fixed;inset:0;background:rgba(4,18,36,.48);z-index:9999;display:flex;align-items:center;justify-content:center;padding:18px}
     .pinModalBox{width:430px;max-width:96vw;background:#fff;border:1px solid #061c36;border-radius:12px;box-shadow:0 16px 40px rgba(0,0,0,.28);padding:16px 16px 14px;color:#061c36}
@@ -178,10 +180,12 @@
   const DEBITATE_INDEX='debitate:index';
   const FISE_DEBITARE_PREFIX='operator-debitare:fise:';
   const PIN_DOC_KEY='operator-debitare:pins';
+  const PRETEST_DOC_KEY='intrari-otel:pretest-files';
+  const PRETEST_STORAGE_BUCKET='tt-fise-tehnologice';
   const LUNI=['ianuarie','februarie','martie','aprilie','mai','iunie','iulie','august','septembrie','octombrie','noiembrie','decembrie'];
   const $=id=>document.getElementById(id);
   let sb=null, auth=null, currentEmail='', currentRole='viewer', canEdit=false, currentOperator='', repereMap=new Map(), operatoriDebitare=[];
-  let savingIntrari=false, savingDebitare=false, intrariRecords=[], intrariBlankRows=8, debitareFise=[], loadedIntrariYear='';
+  let savingIntrari=false, savingDebitare=false, intrariRecords=[], intrariBlankRows=8, debitareFise=[], loadedIntrariYear='', pretestDocs={combos:{}};
   let numeralKodBySarja=new Map(), numeralKodByCombo=new Map();
 
   function norm(v){return String(v??'').trim();}
@@ -235,6 +239,73 @@
   async function readDoc(key){const {data,error}=await sb.from('rf_documents').select('doc_key,content,data,updated_at').eq('doc_key',key).maybeSingle(); if(error) throw error; return data;}
   async function writeDoc(key,payload){const {error}=await sb.from('rf_documents').upsert({doc_key:key,content:payload,updated_at:new Date().toISOString()},{onConflict:'doc_key'}); if(error) throw error;}
   async function updateIndex(indexKey, year){let p={years:[],updatedAtByYear:{}}; try{const doc=await readDoc(indexKey); p=Object.assign(p,getPayload(doc)||{});}catch(_e){} const y=String(year); const set=new Set(Array.isArray(p.years)?p.years.map(String):[]); set.add(y); p.years=Array.from(set).sort((a,b)=>Number(a)-Number(b)); p.currentYear=(new Date()).getFullYear(); p.updatedAtByYear=Object.assign({},p.updatedAtByYear||{},{[y]:new Date().toISOString()}); p.savedAt=new Date().toISOString(); await writeDoc(indexKey,p);}
+
+
+  function normalizePretestPart(v){return String(v??'').trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/\s+/g,' ');}
+  function normalizePretestDim(v){return normalizePretestPart(v).replace(/ø/g,'').replace(/mm/g,'').replace(/[^a-z0-9\-\.,\/]/g,'');}
+  function makePretestComboKey(sarja, dim, cal){return [normalizePretestPart(sarja), normalizePretestDim(dim), normalizePretestPart(cal)].join('||');}
+  function getPretestEntry(sarja, dim, cal){const key=makePretestComboKey(sarja,dim,cal); return key&&pretestDocs&&pretestDocs.combos?pretestDocs.combos[key]||null:null;}
+  function hasPretestFiles(sarja, dim, cal){const entry=getPretestEntry(sarja,dim,cal); return !!(entry&&Array.isArray(entry.files)&&entry.files.length);}
+  function pretestDisplayForRecord(rec){if(hasPretestFiles(rec&&rec.sarja, rec&&rec.diametru, rec&&rec.calitate)) return 'Are pretest'; return norm(rec&&rec.pretest)||'Nu are pretest';}
+  async function loadPretestDocs(){
+    try{
+      const doc=await readDoc(PRETEST_DOC_KEY);
+      const payload=getPayload(doc)||{};
+      pretestDocs={combos:(payload&&payload.combos&&typeof payload.combos==='object')?payload.combos:{}, updated_at:payload.updated_at||doc&&doc.updated_at||null};
+    }catch(e){console.warn('Pretest intrări oțel indisponibil:',e); pretestDocs={combos:{}};}
+  }
+  async function openPretestFile(file){
+    if(!file) throw new Error('Nu există fișier pretest.');
+    if(file.storage_path && sb && sb.storage){
+      const bucket=file.storage_bucket||PRETEST_STORAGE_BUCKET;
+      const res=await sb.storage.from(bucket).download(file.storage_path);
+      if(res&&res.error) throw res.error;
+      const blob=res&&res.data instanceof Blob ? res.data : new Blob([res&&res.data],{type:file.type||file.mime_type||'application/octet-stream'});
+      const url=URL.createObjectURL(blob);
+      const win=window.open(url,'_blank','noopener');
+      setTimeout(()=>URL.revokeObjectURL(url),60000);
+      if(!win){const a=document.createElement('a'); a.href=url; a.download=file.name||'pretest'; document.body.appendChild(a); a.click(); a.remove();}
+      return;
+    }
+    const fileDocKey=norm(file.file_doc_key||file.doc_key||file.docKey);
+    if(fileDocKey){
+      const doc=await readDoc(fileDocKey);
+      const payload=getPayload(doc)||{};
+      const dataUrl=payload.data_url||payload.dataUrl||file.data_url||file.dataUrl||'';
+      if(!dataUrl) throw new Error('Fișierul de pretest nu a putut fi găsit în cloud.');
+      const a=document.createElement('a');
+      a.href=dataUrl;
+      a.target='_blank';
+      a.download=payload.file_name||payload.name||file.name||'pretest';
+      document.body.appendChild(a); a.click(); a.remove();
+      return;
+    }
+    throw new Error('Fișierul de pretest nu are legătură validă.');
+  }
+  async function openPretestForRecord(sarja, dim, cal){
+    const entry=getPretestEntry(sarja,dim,cal);
+    const first=entry&&Array.isArray(entry.files)?entry.files[0]:null;
+    if(!first){alert('Nu există fișier pretest pentru această sarjă / diametru / calitate.'); return;}
+    try{await openPretestFile(first);}catch(e){console.error(e); alert(e&&e.message?e.message:'Nu am putut deschide pretestul.');}
+  }
+  function intrareRowRecordFromTr(tr){
+    const g=k=>norm((tr&&tr.querySelector('[data-k="'+k+'"]')||{}).value);
+    return {data:g('data'),diametru:g('diametru'),calitate:g('calitate'),sarja:g('sarja'),pretest:g('pretest')};
+  }
+  function decorateIntrariPretestCell(tr, rec){
+    const sel=tr&&tr.querySelector('[data-k="pretest"]');
+    if(!tr||!sel) return;
+    const td=sel.closest('td'); if(!td) return;
+    const current=rec||intrareRowRecordFromTr(tr);
+    const sarja=norm(current&&current.sarja); const dim=norm(current&&current.diametru); const cal=norm(current&&current.calitate);
+    const hasDocs=hasPretestFiles(sarja,dim,cal);
+    if(hasDocs){sel.value='Are pretest'; td.classList.add('pretest-open-cell'); td.title='Click pentru deschiderea pretestului';}
+    else{td.classList.remove('pretest-open-cell'); td.title='';}
+    if(td.dataset.pretestClickBound!=='1'){
+      td.dataset.pretestClickBound='1';
+      td.addEventListener('click',()=>{const live=intrareRowRecordFromTr(tr); if(hasPretestFiles(live.sarja,live.diametru,live.calitate)) openPretestForRecord(live.sarja,live.diametru,live.calitate);});
+    }
+  }
 
   function canManageOperatorPin(){return !!canEdit && currentEmail!==OPERATOR_EMAIL;}
   function pinKeyForOperator(name){return cleanKey(name);}
@@ -432,8 +503,12 @@
     if(code){ numeral.value=code; if(notify) setStatus('intrariStatus','NUMERAL KOD PREMAGRO preluat automat din NumeralKod.','ok'); }
     else { numeral.value='Nu este setat numeral kod'; if(notify) setStatus('intrariStatus','Nu este setat Numeral KOD pentru această șarjă în foaia NumeralKod.','err'); }
   }
+  function refreshIntrareAutoFields(tr, notify){
+    autofillNumeralKodForIntrareRow(tr, !!notify);
+    decorateIntrariPretestCell(tr, intrareRowRecordFromTr(tr));
+  }
   function wireIntrareRowEvents(tr){
-    ['diametru','calitate','sarja'].forEach(k=>{const el=tr.querySelector('[data-k="'+k+'"]'); if(el){el.addEventListener('input',()=>autofillNumeralKodForIntrareRow(tr,false)); el.addEventListener('change',()=>autofillNumeralKodForIntrareRow(tr,true));}});
+    ['diametru','calitate','sarja'].forEach(k=>{const el=tr.querySelector('[data-k="'+k+'"]'); if(el){el.addEventListener('input',()=>refreshIntrareAutoFields(tr,false)); el.addEventListener('change',()=>refreshIntrareAutoFields(tr,true));}});
   }
   function scrollIntrariToBottom(){
     const sc=document.querySelector('#intrariSheet .tableScroll');
@@ -495,7 +570,9 @@
     scrollIntrariToBottom();
   }
   function createIntrareRow(rec,saved){
+    rec=rec||{};
     const tr=document.createElement('tr'); tr.className=saved?'savedRow':'newRow'; if(saved) tr.dataset.saved='1';
+    const pretestValue=pretestDisplayForRecord(rec);
     const cols=[
       createInput('text', formatIntrariDateRo(rec.data||''), {'data-k':'data', placeholder:'zz.ll.aaaa'}),
       createInput('text',rec.diametru||'', {'data-k':'diametru'}),
@@ -503,7 +580,7 @@
       createInput('text',rec.sarja||'', {'data-k':'sarja'}),
       createInput('text',rec.doc||'', {'data-k':'doc'}),
       createInput('text',rec.furnizor||'', {'data-k':'furnizor'}),
-      createInput('select',rec.pretest||'Are pretest', {'data-k':'pretest', options:['Are pretest','Nu are pretest']}),
+      createInput('select',pretestValue, {'data-k':'pretest', options:['Are pretest','Nu are pretest']}),
       createInput('select',rec.aspect||'C', {'data-k':'aspect', options:['C','NC']}),
       createInput('select',rec.dimensional||'C', {'data-k':'dimensional', options:['C','NC']}),
       createInput('text',rec.numeral||'', {'data-k':'numeral'}),
@@ -511,6 +588,7 @@
       createInput('text',safeOperator(rec.operator), {'data-k':'operator', readonly:true})
     ];
     cols.forEach(inp=>{const td=document.createElement('td'); td.appendChild(inp); tr.appendChild(td);});
+    decorateIntrariPretestCell(tr, rec);
     if(!saved){wireIntrareRowEvents(tr); autofillNumeralKodForIntrareRow(tr,false);}
     return tr;
   }
@@ -518,11 +596,11 @@
     meta=meta||{};
     if(Array.isArray(row)){
       const year=row[0]||''; const luna=row[1]||''; const data=toIsoDate(meta.data||row[2]||'',year,monthIndexRo(luna));
-      return {year:year,luna:luna,data:data,diametru:row[3]||'',calitate:row[4]||'',numeral:row[5]||'',sarja:row[6]||'',cantitate:row[7]||'',pretest:row[8]||meta.pretest||'Are pretest',furnizor:row[9]||'',doc:meta.doc_transport||meta.doc||'',aspect:meta.aspect||'C',dimensional:meta.dimensional||'C',operator:meta.operator_receptie||meta.operator||operatorName(),savedAt:meta.savedAt||''};
+      return {year:year,luna:luna,data:data,diametru:row[3]||'',calitate:row[4]||'',numeral:row[5]||'',sarja:row[6]||'',cantitate:row[7]||'',pretest:row[8]||meta.pretest||'Nu are pretest',furnizor:row[9]||'',doc:meta.doc_transport||meta.doc||'',aspect:meta.aspect||'C',dimensional:meta.dimensional||'C',operator:meta.operator_receptie||meta.operator||operatorName(),savedAt:meta.savedAt||''};
     }
     if(row&&typeof row==='object'){
       const year=pick(row,['an','year']); const luna=pick(row,['luna','month']); const data=toIsoDate(pick(row,['data','date'])||meta.data||'',year,monthIndexRo(luna));
-      return {year:year,luna:luna,data:data,diametru:pick(row,['diametru','diametruMaterial']),calitate:pick(row,['calitate','codOtel','calitateOtel']),numeral:pick(row,['numeral','numeralKod','codIntern','codInternOtel']),sarja:pick(row,['sarja','codSarja','material']),cantitate:pick(row,['cantitate','kg','cantitateKg']),pretest:pick(row,['pretest','certificat'])||'Are pretest',furnizor:pick(row,['furnizor']),doc:pick(row,['doc','doc_transport','nrDocumentTransport']),aspect:pick(row,['aspect'])||'C',dimensional:pick(row,['dimensional'])||'C',operator:pick(row,['operator','operatorReceptie'])||operatorName(),savedAt:pick(row,['savedAt','updated_at'])};
+      return {year:year,luna:luna,data:data,diametru:pick(row,['diametru','diametruMaterial']),calitate:pick(row,['calitate','codOtel','calitateOtel']),numeral:pick(row,['numeral','numeralKod','codIntern','codInternOtel']),sarja:pick(row,['sarja','codSarja','material']),cantitate:pick(row,['cantitate','kg','cantitateKg']),pretest:pick(row,['pretest','certificat'])||'Nu are pretest',furnizor:pick(row,['furnizor']),doc:pick(row,['doc','doc_transport','nrDocumentTransport']),aspect:pick(row,['aspect'])||'C',dimensional:pick(row,['dimensional'])||'C',operator:pick(row,['operator','operatorReceptie'])||operatorName(),savedAt:pick(row,['savedAt','updated_at'])};
     }
     return null;
   }
@@ -635,7 +713,8 @@
       const dataIso=toIsoDate(g('data'), $('intrariYear').value || new Date().getFullYear());
       if(!dataIso) throw new Error('La Intrări Oțel: data trebuie să fie în format zi.lună.an, exemplu 25.05.2026.');
       const p=dateToParts(dataIso); const operator=g('operator')||operatorName();
-      out.push({year:p.year,row:[p.year,p.month,dataIso,g('diametru'),g('calitate'),g('numeral').toUpperCase(),g('sarja'),g('cantitate'),g('pretest'),g('furnizor')],meta:{data:dataIso,doc_transport:g('doc'),aspect:g('aspect'),dimensional:g('dimensional'),operator_receptie:operator,savedBy:currentEmail,savedAt:new Date().toISOString()}});
+      const pretestValue=hasPretestFiles(g('sarja'),g('diametru'),g('calitate'))?'Are pretest':(g('pretest')||'Nu are pretest');
+      out.push({year:p.year,row:[p.year,p.month,dataIso,g('diametru'),g('calitate'),g('numeral').toUpperCase(),g('sarja'),g('cantitate'),pretestValue,g('furnizor')],meta:{data:dataIso,doc_transport:g('doc'),aspect:g('aspect'),dimensional:g('dimensional'),operator_receptie:operator,savedBy:currentEmail,savedAt:new Date().toISOString()}});
     });
     return out;
   }
@@ -792,7 +871,7 @@
       const operatorAccount=currentEmail===OPERATOR_EMAIL; let access={allowed:false,permissions:{}};
       if(operatorAccount){access={allowed:true,permissions:{can_view:true,can_add:true,can_edit:true,can_delete:false,can_export:true,can_import:false}};} else {access=await window.ERPAuth.getPageAccess(PAGE_KEY,{user:auth.user,role:currentRole});}
       if(!access || access.allowed!==true){location.href='index.html'; return;} window.__PAGE_ACCESS__=access; canEdit=operatorAccount || !!(access.permissions && (access.permissions.can_add===true || access.permissions.can_edit===true));
-      await Promise.all([loadRepere(),loadOperators(),loadNumeralKodData()]);
+      await Promise.all([loadRepere(),loadOperators(),loadNumeralKodData(),loadPretestDocs()]);
       const y=(new Date()).getFullYear(); $('debData').value=todayIso(); $('debSef').value=operatorName()||''; $('debFisaYear').value=y; $('intrariYear').value=y;
       renderDebitareRows(); await Promise.all([loadDebitareFise(y),loadIntrariExisting(y)]);
       $('userMeta').textContent='Șef de echipă: '+(operatorName() || 'nesetat'); document.body.classList.remove('booting'); switchTab('debitare'); applyAccessMode();
@@ -803,7 +882,7 @@
   document.addEventListener('beforeinput',guardReadonly,true); document.addEventListener('paste',guardReadonly,true); document.addEventListener('drop',guardReadonly,true);
   document.querySelectorAll('.tab').forEach(btn=>btn.addEventListener('click',()=>switchTab(btn.dataset.tab)));
   $('btnSaveIntrari').addEventListener('click',saveIntrari); $('btnSaveDebitare').addEventListener('click',saveDebitare);
-  $('btnReloadIntrari').addEventListener('click',async()=>{await loadNumeralKodData(); await loadIntrariExisting($('intrariYear').value || new Date().getFullYear());});
+  $('btnReloadIntrari').addEventListener('click',async()=>{await Promise.all([loadNumeralKodData(),loadPretestDocs()]); await loadIntrariExisting($('intrariYear').value || new Date().getFullYear());});
   $('debData').addEventListener('change',async()=>{const y=dateToParts($('debData').value||todayIso()).year; $('debFisaYear').value=y; await Promise.all([loadDebitareFise(y), ensureIntrariForDebitareDate()]);});
   $('btnAddIntrariRows').addEventListener('click',()=>{intrariBlankRows+=5; renderIntrariRows();});
   $('btnReloadDebitareFise').addEventListener('click',()=>loadDebitareFise($('debFisaYear').value || new Date().getFullYear()));
