@@ -381,7 +381,7 @@
   function isActive(row){const active=pick(row,['is_active','active','activ','enabled']); return active===''||active==null||active===true||active===1||active==='1'||String(active).toLowerCase()==='true'||String(active).toLowerCase()==='da';}
 
   async function readDoc(key){const {data,error}=await sb.from('rf_documents').select('doc_key,content,data,updated_at').eq('doc_key',key).maybeSingle(); if(error) throw error; return data;}
-  async function writeDoc(key,payload){const {error}=await sb.from('rf_documents').upsert({doc_key:key,content:payload,updated_at:new Date().toISOString()},{onConflict:'doc_key'}); if(error) throw error;}
+  async function writeDoc(key,payload){const stamp=new Date().toISOString(); const {error}=await sb.from('rf_documents').upsert({doc_key:key,content:payload,data:payload,updated_at:stamp},{onConflict:'doc_key'}); if(error) throw error;}
   async function updateIndex(indexKey, year){let p={years:[],updatedAtByYear:{}}; try{const doc=await readDoc(indexKey); p=Object.assign(p,getPayload(doc)||{});}catch(_e){} const y=String(year); const set=new Set(Array.isArray(p.years)?p.years.map(String):[]); set.add(y); p.years=Array.from(set).sort((a,b)=>Number(a)-Number(b)); p.currentYear=(new Date()).getFullYear(); p.updatedAtByYear=Object.assign({},p.updatedAtByYear||{},{[y]:new Date().toISOString()}); p.savedAt=new Date().toISOString(); await writeDoc(indexKey,p);}
 
 
@@ -716,7 +716,7 @@
   }
   function createIntrareRow(rec,saved){
     rec=rec||{};
-    const tr=document.createElement('tr'); tr.className=saved?'savedRow':'newRow'; if(saved) tr.dataset.saved='1';
+    const tr=document.createElement('tr'); tr.className=saved?'savedRow':'newRow'; if(saved){ tr.dataset.saved='1'; if(rec.__rowIndex!=null) tr.dataset.rowIndex=String(rec.__rowIndex); }
     const pretestValue=pretestDisplayForRecord(rec);
     const cols=[
       createInput('text', formatIntrariDateRo(rec.data||''), {'data-k':'data', placeholder:'zz.ll.aaaa'}),
@@ -831,7 +831,7 @@
     try{
       const doc=await readDoc(INTRARI_PREFIX+y); const p=Object.assign({rows:[],rowMeta:[]},getPayload(doc)||{});
       const rows=Array.isArray(p.rows)?p.rows:[]; const meta=Array.isArray(p.rowMeta)?p.rowMeta:[];
-      intrariRecords=rows.map((r,i)=>rowToIntrare(r,meta[i]||{})).filter(Boolean);
+      intrariRecords=rows.map((r,i)=>{const rec=rowToIntrare(r,meta[i]||{}); if(rec){rec.__rowIndex=i; rec.__rawRow=r; rec.__rawMeta=meta[i]||{};} return rec;}).filter(Boolean);
       setStatus('intrariStatus', intrariRecords.length ? ('Încărcate '+intrariRecords.length+' înregistrări salvate.') : 'Nu există încă înregistrări salvate pentru anul selectat.', '');
     }catch(e){console.warn(e); intrariRecords=[]; setStatus('intrariStatus','Nu s-au putut încărca înregistrările salvate.','err');}
     updateCodInternOtelList();
@@ -851,7 +851,7 @@
         createInput('text',r.lung||'',{ 'data-k':'lung'}),
         createInput('text',r.plan||'',{ 'data-k':'plan'}),
         createInput('text',r.codInternOtel||r.codIntern||'',{ 'data-k':'codInternOtel', list:'codInternOtelList'}),
-        createInput('text',r.codOtelCalitate||r.calitate||r.cal||'',{ 'data-k':'codOtelCalitate', readonly:true}),
+        createInput('text',r.codOtelCalitate||r.calitate||r.cal||'',{ 'data-k':'codOtelCalitate', list:'codOtelCalitateList'}),
         createInput('text',r.material||r.sarja||'',{ 'data-k':'material', readonly:true}),
         createInput('text',r.realizat||'',{ 'data-k':'realizat'}),
         createInput('select',((safeOperator(r.operator) && cleanKey(safeOperator(r.operator))!==cleanKey(operatorName())) ? safeOperator(r.operator) : opDefault),{ 'data-k':'operator', options:operatoriDebitare})
@@ -867,6 +867,10 @@
     tb.querySelectorAll('input[data-k="codInternOtel"]').forEach(inp=>{
       inp.addEventListener('input',()=>autofillMaterialFromCod(inp.closest('tr'),false));
       inp.addEventListener('change',()=>autofillMaterialFromCod(inp.closest('tr'),true));
+    });
+    tb.querySelectorAll('input[data-k="codOtelCalitate"]').forEach(inp=>{
+      inp.addEventListener('input',()=>{const tr=inp.closest('tr'); if(tr) tr.dataset.cal=norm(inp.value);});
+      inp.addEventListener('change',()=>{const tr=inp.closest('tr'); if(tr){tr.dataset.cal=norm(inp.value); const cod=tr.querySelector('[data-k="codInternOtel"]'); if(cod&&norm(cod.value)) autofillMaterialFromCod(tr,false);}});
     });
     applyAccessMode();
   }
@@ -996,19 +1000,55 @@
   }
   function newDebitareFisa(){ $('debData').value=todayIso(); $('debSchimb').value='1'; $('debSef').value=operatorName()||''; renderDebitareRows(); setStatus('debitareStatus','Fișă nouă pregătită.',''); }
 
+
+  async function updateSavedIntrariCalitateForYear(year){
+    const y=String(year||loadedIntrariYear||$('intrariYear').value||new Date().getFullYear());
+    const edits=[];
+    $('intrariBody').querySelectorAll('tr[data-saved="1"]').forEach(tr=>{
+      const idx=Number(tr.dataset.rowIndex);
+      if(!Number.isFinite(idx)) return;
+      const inp=tr.querySelector('[data-k="calitate"]');
+      if(!inp) return;
+      edits.push({index:idx,calitate:norm(inp.value)});
+    });
+    if(!edits.length) return false;
+    const key=INTRARI_PREFIX+y; const doc=await readDoc(key); const p=Object.assign({app:'INTRARI_OTEL',version:2,year:Number(y),rows:[],rowMeta:[]},getPayload(doc)||{});
+    if(!Array.isArray(p.rows)) p.rows=[]; if(!Array.isArray(p.rowMeta)) p.rowMeta=[];
+    let changed=false;
+    edits.forEach(edit=>{
+      const row=p.rows[edit.index];
+      if(row==null) return;
+      if(Array.isArray(row)){
+        while(row.length<10) row.push('');
+        if(norm(row[4])!==edit.calitate){row[4]=edit.calitate; changed=true;}
+      }else if(row && typeof row==='object'){
+        const keys=['calitate','codOtel','calitateOtel','cod_otel_calitate','codOtelCalitate'];
+        let wrote=false;
+        keys.forEach(k=>{if(Object.prototype.hasOwnProperty.call(row,k)){ if(norm(row[k])!==edit.calitate){row[k]=edit.calitate; changed=true;} wrote=true; }});
+        if(!wrote){row.calitate=edit.calitate; changed=true;}
+      }
+    });
+    if(changed){
+      p.updated_at=new Date().toISOString(); p.savedAt=p.updated_at;
+      await writeDoc(key,p); await updateIndex(INTRARI_INDEX,y);
+    }
+    return changed;
+  }
+
   async function saveIntrari(){
     if(savingIntrari) return; const btn=$('btnSaveIntrari');
     try{
       if(!canEdit) throw new Error('Nu ai drept de salvare.');
       savingIntrari=true; if(btn) btn.disabled=true; setStatus('intrariStatus','Se salvează rândurile noi...','');
-      const items=collectIntrariRows(); if(!items.length){setStatus('intrariStatus','Nu există rânduri noi completate.','err');return;}
+      const savedEditsChanged=await updateSavedIntrariCalitateForYear($('intrariYear').value || loadedIntrariYear || new Date().getFullYear());
+      const items=collectIntrariRows(); if(!items.length && !savedEditsChanged){setStatus('intrariStatus','Nu există rânduri noi sau modificări la Cod Oțel CALITATE.','err');return;}
       const grouped={}; items.forEach(x=>{(grouped[x.year]=grouped[x.year]||[]).push(x);});
       for(const [year,list] of Object.entries(grouped)){
-        const key=INTRARI_PREFIX+year; const doc=await readDoc(key); const p=Object.assign({app:'INTRARI_OTEL',version:1,year:Number(year),rows:[],rowMeta:[]},getPayload(doc)||{});
+        const key=INTRARI_PREFIX+year; const doc=await readDoc(key); const p=Object.assign({app:'INTRARI_OTEL',version:2,year:Number(year),rows:[],rowMeta:[]},getPayload(doc)||{});
         if(!Array.isArray(p.rows)) p.rows=[]; if(!Array.isArray(p.rowMeta)) p.rowMeta=[];
         list.forEach(x=>{p.rows.push(x.row); p.rowMeta.push(x.meta);}); p.updated_at=new Date().toISOString(); p.savedAt=p.updated_at; await writeDoc(key,p); await updateIndex(INTRARI_INDEX,year);
       }
-      const activeYear=$('intrariYear').value || (items[0]&&items[0].year) || new Date().getFullYear(); $('intrariYear').value=activeYear; await loadIntrariExisting(activeYear); setStatus('intrariStatus','Salvat. Înregistrările rămân afișate în registru.','ok');
+      const activeYear=$('intrariYear').value || (items[0]&&items[0].year) || new Date().getFullYear(); $('intrariYear').value=activeYear; await loadIntrariExisting(activeYear); setStatus('intrariStatus','Salvat. Înregistrările au fost transcrise în foaia INTRĂRI OȚEL și rămân afișate în registru.','ok');
     }catch(e){console.error(e); setStatus('intrariStatus',e&&e.message?e.message:'Eroare la salvare.','err');}
     finally{savingIntrari=false; applyAccessMode();}
   }
@@ -1021,9 +1061,9 @@
       const sheet=collectDebitareSheet(); if(!sheet.debitareRows.length){setStatus('debitareStatus','Nu există rânduri completate.','err');return;}
       const fiseKey=FISE_DEBITARE_PREFIX+sheet.year; const fiseDoc=await readDoc(fiseKey); const fp=Object.assign({app:'OPERATOR_DEBITARE_FISE',version:1,year:Number(sheet.year),fise:[]},getPayload(fiseDoc)||{});
       if(!Array.isArray(fp.fise)) fp.fise=[]; fp.fise=fp.fise.filter(f=>f.key!==sheet.key); fp.fise.push({key:sheet.key,date:sheet.date,shift:sheet.shift,sef:sheet.sef,label:sheet.label,rows:sheet.rows,savedBy:sheet.savedBy,savedAt:sheet.savedAt}); fp.updated_at=new Date().toISOString(); fp.savedAt=fp.updated_at; await writeDoc(fiseKey,fp);
-      const key=DEBITATE_PREFIX+sheet.year; const doc=await readDoc(key); const p=Object.assign({app:'DEBITATE',version:1,year:Number(sheet.year),rows:[]},getPayload(doc)||{});
+      const key=DEBITATE_PREFIX+sheet.year; const doc=await readDoc(key); const p=Object.assign({app:'DEBITATE',version:2,year:Number(sheet.year),rows:[]},getPayload(doc)||{});
       if(!Array.isArray(p.rows)) p.rows=[]; p.rows=p.rows.filter(r=>!(r&&r.fisaKey===sheet.key)); p.rows.push(...sheet.debitareRows); p.updated_at=new Date().toISOString(); p.savedAt=p.updated_at; await writeDoc(key,p); await updateIndex(DEBITATE_INDEX,sheet.year);
-      $('debFisaYear').value=sheet.year; await loadDebitareFise(sheet.year); populateDebitareFiseSelect(sheet.key); setStatus('debitareStatus','Fișa zilnică a fost salvată și poate fi redeschisă din lista de fișe.','ok');
+      $('debFisaYear').value=sheet.year; await loadDebitareFise(sheet.year); populateDebitareFiseSelect(sheet.key); setStatus('debitareStatus','Fișa zilnică a fost salvată și transcrisă în foaia DEBITATE.','ok');
     }catch(e){console.error(e); setStatus('debitareStatus',e&&e.message?e.message:'Eroare la salvare.','err');}
     finally{savingDebitare=false; applyAccessMode();}
   }
@@ -1381,10 +1421,13 @@
   function applyAccessMode(){
     document.body.classList.toggle('readonly', !canEdit);
     ['btnSaveIntrari','btnSaveDebitare','btnAddIntrariRows','btnNewDebitareFisa','btnReloadNumeralKod','btnAddNkZale','btnAddNkAlte','btnSaveNumeralKod'].forEach(id=>{const b=$(id); if(b) b.disabled=!canEdit;});
+    const dashBtn=$('btnDashboard'); if(dashBtn) dashBtn.classList.toggle('hidden', currentEmail===OPERATOR_EMAIL);
     const pinBtn=$('btnSetOperatorPin'); if(pinBtn){const allowPin=canManageOperatorPin(); pinBtn.classList.toggle('hidden',!allowPin); pinBtn.disabled=!allowPin;}
     document.querySelectorAll('[data-edit-field]').forEach(el=>{
       const saved=!!el.closest('tr[data-saved="1"]');
-      if(!canEdit || saved) el.setAttribute('disabled','disabled'); else el.removeAttribute('disabled');
+      const k=el.getAttribute('data-k')||'';
+      const allowSavedEdit=(k==='calitate' || k==='codOtelCalitate');
+      if(!canEdit || (saved && !allowSavedEdit)) el.setAttribute('disabled','disabled'); else el.removeAttribute('disabled');
     });
     document.querySelectorAll('[data-view-control]').forEach(el=>el.removeAttribute('disabled'));
   }
