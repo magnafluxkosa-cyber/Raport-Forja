@@ -1125,6 +1125,28 @@
     const fallbackPermissions = defaultPermissionsForRole(cleanRole);
     const ctcOperatorPermissions = { can_view:true, can_add:true, can_edit:true, can_delete:false, can_export:false, can_import:false };
     const deniedPermissions = { can_view:false, can_add:false, can_edit:false, can_delete:false, can_export:false, can_import:false };
+    const sb = getSupabaseClient();
+    await registerAutoPage(sb, settings.pageKey);
+
+    let strictMap = null;
+    if(user){
+      strictMap = await loadUserPermissionMap(sb, user);
+      if(strictMap && strictMap.size){
+        const matched = strictMap.get(settings.pageKey);
+        if(matched){
+          return publishPageAccess({
+            allowed: matched.can_view === true,
+            user,
+            role: cleanRole,
+            permissions: matched,
+            source: 'user_page_permissions strict',
+            strictUserAcl: true,
+            message: matched.can_view === true ? '' : 'Nu ai acces în această foaie. Cere acces de la admin.'
+          });
+        }
+      }
+    }
+
     if(user && isDebitareOperatorAccount(user.email)){
       const allowedForDebitare = ['operator-debitare-pin','operator-debitare'];
       const allowed = allowedForDebitare.indexOf(settings.pageKey) !== -1;
@@ -1134,9 +1156,9 @@
         user,
         role: 'operator',
         permissions: allowed ? debitareOperatorPermissions : deniedPermissions,
-        source: 'operator debitare locked account',
+        source: 'operator debitare locked account fallback',
         strictUserAcl: true,
-        message: allowed ? '' : 'Contul Debitare are acces doar la foaia operator debitare.'
+        message: allowed ? '' : 'Contul Debitare are acces doar la foaia operator debitare sau la paginile acordate explicit în ACL.'
       });
     }
     if(user && isForjaCtcOperatorAccount(user.email)){
@@ -1147,28 +1169,22 @@
         user,
         role: 'operator',
         permissions: allowed ? ctcOperatorPermissions : deniedPermissions,
-        source: 'forja-ctc locked account',
+        source: 'forja-ctc locked account fallback',
         strictUserAcl: true,
-        message: allowed ? '' : 'Contul Forja-CTC are acces doar la fișele operator dedicate.'
+        message: allowed ? '' : 'Contul Forja-CTC are acces doar la fișele operator dedicate sau la paginile acordate explicit în ACL.'
       });
     }
-    const sb = getSupabaseClient();
-    await registerAutoPage(sb, settings.pageKey);
 
-    if(user){
-      const strictMap = await loadUserPermissionMap(sb, user);
-      if(strictMap && strictMap.size){
-        const matched = strictMap.get(settings.pageKey) || { can_view:false, can_add:false, can_edit:false, can_delete:false, can_export:false, can_import:false };
-        return publishPageAccess({
-          allowed: matched.can_view === true,
-          user,
-          role: cleanRole,
-          permissions: matched,
-          source: 'user_page_permissions strict',
-          strictUserAcl: true,
-          message: matched.can_view === true ? '' : 'Nu ai acces în această foaie. Cere acces de la admin.'
-        });
-      }
+    if(user && strictMap && strictMap.size){
+      return publishPageAccess({
+        allowed: false,
+        user,
+        role: cleanRole,
+        permissions: deniedPermissions,
+        source: 'user_page_permissions strict missing',
+        strictUserAcl: true,
+        message: 'Nu ai acces în această foaie. Cere acces de la admin.'
+      });
     }
 
     if(window.RF_ACL && typeof window.RF_ACL.resolvePageAccess === 'function'){
@@ -1274,72 +1290,28 @@
     return false;
   }
 
-  function normalizeReadonlyText(value){
-    return String(value || '')
-      .toLowerCase()
-      .normalize ? String(value || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '') : String(value || '').toLowerCase();
-  }
-
-  function readonlyControlText(el){
-    try{
-      return [
-        el.id,
-        el.name,
-        el.className,
-        el.getAttribute && el.getAttribute('data-role'),
-        el.getAttribute && el.getAttribute('data-acl'),
-        el.getAttribute && el.getAttribute('data-rf-control'),
-        el.getAttribute && el.getAttribute('data-act'),
-        el.getAttribute && el.getAttribute('aria-label'),
-        el.getAttribute && el.getAttribute('title'),
-        el.textContent,
-        el.value,
-        el.placeholder,
-        el.href
-      ].map(function(v){ return normalizeReadonlyText(v); }).join(' ');
-    }catch(_e){ return ''; }
-  }
-
   function hasMutatingHints(el){
-    if(!el) return false;
-    const s = readonlyControlText(el);
-    const directAcl = String((el.getAttribute && (el.getAttribute('data-acl') || el.getAttribute('data-rf-control') || el.getAttribute('data-act'))) || '').toLowerCase();
-    if(/(^|[.\-_:])(save|salv|delete|sterg|sterge|remove|add|adaug|new|nou|edit|import|upload|sync|sincron|update|upsert)([.\-_:]|$)/.test(directAcl)) return true;
-    return /(save|salv|delete|sterg|sterge|remove|adaug|\badd\b|\bnew\b|\bnou\b|edit|import|upload|sync|sincron|submit|update|upsert|ruleaza test|genereaza document|backup.*test)/.test(s);
-  }
-
-  function isReadonlySafeNavigationControl(el){
-    if(!el || !el.matches) return false;
-    try{
-      if(el.closest('.kad-nav-shell,.kad-side-nav,.kad-sidebar,.sidebar,.side-menu,.menu,[data-nav],[data-menu],[data-route],[data-page]')) return true;
-      const tag = String(el.tagName || '').toUpperCase();
-      const href = String(el.getAttribute && (el.getAttribute('href') || '') || '').trim().toLowerCase();
-      if(tag === 'A' && href && href !== '#' && !href.startsWith('javascript:') && !hasMutatingHints(el)) return true;
-      const s = readonlyControlText(el);
-      const rf = normalizeReadonlyText(el.getAttribute && el.getAttribute('data-rf-control'));
-      const act = normalizeReadonlyText(el.getAttribute && el.getAttribute('data-act'));
-      if(/(refresh|reload|export|csv|view|open|download|pdf|sheet|detalii|details|close|back|dashboard)/.test(rf)) return true;
-      if(/^(view|open|download|pdf|sheet|details|detail|close)$/.test(act)) return true;
-      if(/(inapoi|back|dashboard|meniu|menu|nav|home|acasa|refresh|reimprosp|reload|detalii|details|vizual|view|deschide|open|download|descarc|export|csv|pdf|fisa|inchide|close)/.test(s) && !hasMutatingHints(el)) return true;
-    }catch(_e){}
-    return false;
+    const s = [el.id, el.name, el.className, el.getAttribute('data-role'), el.getAttribute('data-acl'), el.getAttribute('aria-label'), el.textContent, el.value, el.placeholder]
+      .map(v => String(v || '').toLowerCase()).join(' ');
+    return /(save|salv|delete|sterg|remove|adaug|add|new|nou|edit|import|upload|sync|submit|actualize|update|pick|pdf|fisier|file|drop)/.test(s);
   }
 
   function isLikelyFilterControl(el){
     if(!el || !el.matches) return false;
     if(el.matches('[data-acl-filter], .th-filter, .th-filter-select, #filterRow input, #filterRow select')) return true;
     if(el.closest('[data-acl-filter], .filters, .filtersBar, .filter-row, #filterRow, .toolbar-filters, .table-filters, .search-box, .searchbar')) return true;
-    const s = readonlyControlText(el);
+    const s = [el.id, el.name, el.className, el.getAttribute('data-role'), el.getAttribute('data-acl'), el.getAttribute('aria-label'), el.placeholder]
+      .map(v => String(v || '').toLowerCase()).join(' ');
     if(hasMutatingHints(el)) return false;
-    return /(filter|filtru|search|caut|find|sort|reper|utilaj|luna|an\b|year|month|operator|schimb|shift|data\b|date\b|transport|lada|matrita|cod|status|depart|prioritate|responsabil|stadiu|openonly|deschis)/.test(s);
+    return /(filter|filtru|search|căut|caut|find|sort|reper|utilaj|luna|lună|an|year|month|operator|schimb|shift|data|date|transport|lada|ladă|matrita|matriță|cod|status|depart|prioritate|responsabil|stadiu|openonly|deschis)/.test(s);
   }
 
   function unlockReadonlyFilters(root){
     if(!pageIsReadonly()) return;
     const scope = root && root.querySelectorAll ? root : document;
-    const nodes = scope.querySelectorAll('input, select, textarea, button, a');
+    const nodes = scope.querySelectorAll('input, select, textarea, button');
     nodes.forEach(function(el){
-      if(!isLikelyFilterControl(el) && !isReadonlySafeNavigationControl(el)) return;
+      if(!isLikelyFilterControl(el)) return;
       if(el.type === 'file' || el.type === 'hidden') return;
       try{ el.disabled = false; }catch(_e){}
       if(el.tagName === 'INPUT' || el.tagName === 'TEXTAREA'){
@@ -1378,11 +1350,10 @@
         if(!pageIsReadonly()) return;
         const target = event.target;
         const el = target && target.closest ? target.closest('button,a,input,textarea,select,[contenteditable="true"],[role="button"],.btn,.primary-btn,.ghost-btn') : target;
-        if(!el || isLikelyFilterControl(el) || isReadonlySafeNavigationControl(el)) return;
+        if(!el || isLikelyFilterControl(el)) return;
         const tag = String(el.tagName || '').toUpperCase();
         const type = String(el.type || '').toLowerCase();
-        const directMutating = el.matches('[contenteditable="true"],input[type="file"],input[type="submit"],[data-acl="edit"],[data-acl="save"],[data-acl="delete"],[data-acl="import"],[data-acl="add"],[data-acl="upload"]');
-        const mutating = hasMutatingHints(el) || directMutating;
+        const mutating = hasMutatingHints(el) || el.matches('[contenteditable="true"],input[type="file"],input[type="submit"],input[type="button"],button,[data-acl="edit"],[data-acl="save"],[data-acl="delete"],[data-acl="import"],[data-acl="add"]');
         if(!mutating && !['TEXTAREA'].includes(tag) && !(tag === 'INPUT' && !['search','text'].includes(type))) return;
         event.preventDefault();
         event.stopPropagation();
