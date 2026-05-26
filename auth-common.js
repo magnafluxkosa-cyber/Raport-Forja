@@ -1344,21 +1344,36 @@
   }
 
 
+  function isReadonlySafeAction(el){
+    try{
+      if(!el) return false;
+      const s = [el.id, el.name, el.className, el.getAttribute('data-role'), el.getAttribute('data-acl'), el.getAttribute('aria-label'), el.textContent, el.value, el.placeholder]
+        .map(v => String(v || '').toLowerCase()).join(' ');
+      if(/(save|salv|delete|șterg|sterg|remove|adaug|add\b|new\b|nou\b|edit|import|upload|submit)/.test(s)) return false;
+      return /(view|vizualiz|deschide|open|close|închide|inchide|dashboard|înapoi|inapoi|meniu|menu|refresh|reîncarc|reincarc|actualizeaz|actualizează|filter|filtru|search|căut|caut|export|pdf|listare|print|raport|fiș|fis)/.test(s);
+    }catch(_e){}
+    return false;
+  }
+
   function installReadonlyEditBlocker(){
     function blockEvent(event){
       try{
         if(!pageIsReadonly()) return;
         const target = event.target;
         const el = target && target.closest ? target.closest('button,a,input,textarea,select,[contenteditable="true"],[role="button"],.btn,.primary-btn,.ghost-btn') : target;
-        if(!el || isLikelyFilterControl(el)) return;
+        if(!el || isLikelyFilterControl(el) || isReadonlySafeAction(el)) return;
         const tag = String(el.tagName || '').toUpperCase();
         const type = String(el.type || '').toLowerCase();
-        const mutating = hasMutatingHints(el) || el.matches('[contenteditable="true"],input[type="file"],input[type="submit"],input[type="button"],button,[data-acl="edit"],[data-acl="save"],[data-acl="delete"],[data-acl="import"],[data-acl="add"]');
-        if(!mutating && !['TEXTAREA'].includes(tag) && !(tag === 'INPUT' && !['search','text'].includes(type))) return;
+        const acl = String(el.getAttribute && el.getAttribute('data-acl') || '').toLowerCase();
+        const explicitMutatingAcl = /^(edit|save|delete|import|add)$/.test(acl);
+        const explicitMutatingInput = el.matches && el.matches('[contenteditable="true"],input[type="file"],input[type="submit"],input[type="button"],[data-acl="edit"],[data-acl="save"],[data-acl="delete"],[data-acl="import"],[data-acl="add"]');
+        const buttonOrLink = tag === 'BUTTON' || tag === 'A' || (el.matches && el.matches('[role="button"],.btn,.primary-btn,.ghost-btn'));
+        const formEditControl = tag === 'TEXTAREA' || tag === 'SELECT' || (tag === 'INPUT' && !['search','button','submit','reset','checkbox','radio','hidden'].includes(type));
+        const mutating = explicitMutatingAcl || explicitMutatingInput || hasMutatingHints(el) || (!buttonOrLink && formEditControl);
+        if(!mutating) return;
         event.preventDefault();
         event.stopPropagation();
         if(event.stopImmediatePropagation) event.stopImmediatePropagation();
-        try{ alert('Pagina este în modul doar vizualizare. Nu ai drept de editare.'); }catch(_e){}
         return false;
       }catch(_e){}
     }
