@@ -34,6 +34,8 @@
     .intrariPaper{width:min(100%,1560px);background:#fff;border:1px solid #000;min-height:calc(100vh - 190px);display:flex;flex-direction:column}.sheetTitle{text-align:center;font-weight:900;background:#c6e0f5;border-bottom:1px solid #000;padding:5px 8px;font-size:16px;letter-spacing:.2px}.tableScroll{width:100%;overflow:auto;flex:1}.sheetTable{border-collapse:collapse;width:100%;table-layout:fixed;min-width:1260px}.sheetTable th,.sheetTable td{border:1px solid #000;text-align:center;vertical-align:middle;padding:0;overflow:hidden}.sheetTable th{background:#1f7f4c;color:#001b35;height:76px;font-weight:900;font-size:16px;line-height:1.08;position:sticky;top:0;z-index:5}.sheetTable td{height:38px}.sheetTable input,.sheetTable select{width:100%;height:100%;border:0;background:#f5faff;text-align:center;font-weight:800;font-size:13px;padding:3px 4px;min-width:0;color:#00172d}.sheetTable select{appearance:auto}.sheetTable tr.savedRow input,.sheetTable tr.savedRow select{background:#fff;color:#111}.sheetTable tr.newRow td{background:#f7fbff}.sheetTable tr:hover td input,.sheetTable tr:hover td select{background:#eef6ff}.readonly input,.readonly select{cursor:not-allowed}
     .sheetTable td.pretest-open-cell{background:#dcfce7!important;cursor:pointer}
     .sheetTable td.pretest-open-cell select,.sheetTable td.pretest-open-cell input{background:#dcfce7!important;color:#166534!important;font-weight:900!important;pointer-events:none}
+    .sheetTable tr.intrari-row-selected td{outline:2px solid #1d4ed8;outline-offset:-2px}
+    .sheetTable tr.intrari-row-selected input,.sheetTable tr.intrari-row-selected select{background:#dbeafe!important}
 
     .pinModal{position:fixed;inset:0;background:rgba(4,18,36,.48);z-index:9999;display:flex;align-items:center;justify-content:center;padding:18px}
     .pinModalBox{width:430px;max-width:96vw;background:#fff;border:1px solid #061c36;border-radius:12px;box-shadow:0 16px 40px rgba(0,0,0,.28);padding:16px 16px 14px;color:#061c36}
@@ -197,6 +199,7 @@
           <input id="intrariYear" type="number" min="2020" max="2100" data-view-control />
           <button class="btn secondary" type="button" id="btnReloadIntrari">Reîncarcă</button>
           <button class="btn secondary" type="button" id="btnAddIntrariRows">Adaugă rânduri goale</button>
+          <button class="btn danger" type="button" id="btnDeleteIntrariRow">Șterge rând selectat</button>
         </div>
         <div class="toolHint">Înregistrările salvate rămân afișate permanent; rândurile noi se adaugă dedesubt.</div>
       </div>
@@ -340,6 +343,7 @@
   const $=id=>document.getElementById(id);
   let sb=null, auth=null, currentEmail='', currentRole='viewer', canEdit=false, currentOperator='', repereMap=new Map(), operatoriDebitare=[];
   let savingIntrari=false, savingDebitare=false, intrariRecords=[], intrariBlankRows=8, debitareFise=[], loadedIntrariYear='', pretestDocs={combos:{}};
+  let selectedIntrariRow=null;
   let numeralKodBySarja=new Map(), numeralKodByCombo=new Map();
 
   function norm(v){return String(v??'').trim();}
@@ -742,13 +746,14 @@
     const sorted=intrariRecords.slice().sort((a,b)=>String(a.data||'').localeCompare(String(b.data||'')) || String(a.savedAt||'').localeCompare(String(b.savedAt||'')));
     sorted.forEach(rec=>tb.appendChild(createIntrareRow(rec,true)));
     const blanks=Math.max(4,intrariBlankRows);
-    for(let i=0;i<blanks;i++) tb.appendChild(createIntrareRow({data:i===0?todayIso():'',pretest:'Are pretest',aspect:'C',dimensional:'C',operator:operatorName()},false));
+    for(let i=0;i<blanks;i++) tb.appendChild(createIntrareRow({data:'',pretest:'Are pretest',aspect:'C',dimensional:'C',operator:operatorName()},false));
     applyAccessMode();
     scrollIntrariToBottom();
   }
   function createIntrareRow(rec,saved){
     rec=rec||{};
     const tr=document.createElement('tr'); tr.className=saved?'savedRow':'newRow'; if(saved){ tr.dataset.saved='1'; if(rec.__rowIndex!=null) tr.dataset.rowIndex=String(rec.__rowIndex); }
+    tr.addEventListener('click',()=>selectIntrariRow(tr));
     const pretestValue=pretestDisplayForRecord(rec);
     const cols=[
       createInput('text', formatIntrariDateRo(rec.data||''), {'data-k':'data', placeholder:'zz.ll.aaaa'}),
@@ -797,6 +802,55 @@
       dl.appendChild(o);
     });
   }
+  function selectIntrariRow(tr){
+    if(!tr) return;
+    document.querySelectorAll('#intrariBody tr.intrari-row-selected').forEach(row=>row.classList.remove('intrari-row-selected'));
+    tr.classList.add('intrari-row-selected');
+    selectedIntrariRow=tr;
+  }
+  function intrariRowSummary(tr){
+    const g=k=>norm((tr&&tr.querySelector('[data-k="'+k+'"]')||{}).value);
+    return [g('data'),g('diametru'),g('calitate'),g('sarja'),g('numeral'),g('cantitate')].filter(Boolean).join(' | ');
+  }
+  async function deleteSelectedIntrariRow(){
+    try{
+      if(!canEdit) throw new Error('Nu ai drept de ștergere.');
+      const tr=(selectedIntrariRow&&selectedIntrariRow.isConnected)?selectedIntrariRow:document.querySelector('#intrariBody tr.intrari-row-selected');
+      if(!tr){setStatus('intrariStatus','Selectează mai întâi rândul pe care vrei să îl ștergi.','err'); return;}
+      const summary=intrariRowSummary(tr)||'rând gol';
+      if(!confirm('Sigur vrei să ștergi acest rând din Intrări Oțel?\n\n'+summary)) return;
+      if(tr.dataset.saved==='1'){
+        const idx=Number(tr.dataset.rowIndex);
+        if(!Number.isInteger(idx)||idx<0) throw new Error('Rândul selectat nu are index valid pentru ștergere.');
+        const y=String(loadedIntrariYear||$('intrariYear').value||new Date().getFullYear());
+        const key=INTRARI_PREFIX+y;
+        const doc=await readDoc(key);
+        const p=Object.assign({app:'INTRARI_OTEL',version:2,year:Number(y),rows:[],rowMeta:[]},getPayload(doc)||{});
+        if(!Array.isArray(p.rows)) p.rows=[];
+        if(!Array.isArray(p.rowMeta)) p.rowMeta=[];
+        if(idx>=p.rows.length) throw new Error('Rândul selectat nu mai există în cloud. Reîncarcă registrul și încearcă din nou.');
+        p.rows.splice(idx,1);
+        if(idx<p.rowMeta.length) p.rowMeta.splice(idx,1);
+        p.updated_at=new Date().toISOString();
+        p.savedAt=p.updated_at;
+        await writeDoc(key,p);
+        await updateIndex(INTRARI_INDEX,y);
+        selectedIntrariRow=null;
+        await loadIntrariExisting(y);
+        setStatus('intrariStatus','Rândul selectat a fost șters definitiv din Intrări Oțel.','ok');
+      }else{
+        tr.remove();
+        selectedIntrariRow=null;
+        setStatus('intrariStatus','Rândul nou nesalvat a fost eliminat.','ok');
+      }
+    }catch(e){
+      console.error(e);
+      setStatus('intrariStatus',e&&e.message?e.message:'Eroare la ștergerea rândului.','err');
+    }finally{
+      applyAccessMode();
+    }
+  }
+
   function updateIntrariLists(){
     const calitati=[
       '1E-1287/15B34','1E1239G','1E0361 (C-45)','C35','C45','30MnVS6','S-355','C25',
@@ -1452,7 +1506,7 @@
   function switchTab(tab){document.querySelectorAll('.tab').forEach(b=>b.classList.toggle('active',b.dataset.tab===tab)); $('tab-debitare').classList.toggle('hidden',tab!=='debitare'); $('tab-intrari').classList.toggle('hidden',tab!=='intrari'); $('tab-numeralkod').classList.toggle('hidden',tab!=='numeralkod'); $('tab-pontaj').classList.toggle('hidden',tab!=='pontaj'); if(tab==='intrari') scrollIntrariToBottom(); if(tab==='numeralkod') renderNumeralKodEditor(); if(tab==='pontaj') loadPontajForjaEditor();}
   function applyAccessMode(){
     document.body.classList.toggle('readonly', !canEdit);
-    ['btnSaveIntrari','btnSaveDebitare','btnAddIntrariRows','btnNewDebitareFisa','btnReloadNumeralKod','btnAddNkZale','btnAddNkAlte','btnSaveNumeralKod'].forEach(id=>{const b=$(id); if(b) b.disabled=!canEdit;});
+    ['btnSaveIntrari','btnSaveDebitare','btnAddIntrariRows','btnDeleteIntrariRow','btnNewDebitareFisa','btnReloadNumeralKod','btnAddNkZale','btnAddNkAlte','btnSaveNumeralKod'].forEach(id=>{const b=$(id); if(b) b.disabled=!canEdit;});
     enforceDebitareOperatorNoDashboard();
     const dashBtn=$('btnDashboard'); if(dashBtn && currentEmail!==OPERATOR_EMAIL) dashBtn.classList.toggle('hidden', false);
     const pinBtn=$('btnSetOperatorPin'); if(pinBtn){const allowPin=canManageOperatorPin(); pinBtn.classList.toggle('hidden',!allowPin); pinBtn.disabled=!allowPin;}
@@ -1488,6 +1542,7 @@
   $('btnReloadIntrari').addEventListener('click',async()=>{await Promise.all([loadNumeralKodData(),loadPretestDocs()]); await loadIntrariExisting($('intrariYear').value || new Date().getFullYear());});
   $('debData').addEventListener('change',async()=>{const y=dateToParts($('debData').value||todayIso()).year; $('debFisaYear').value=y; await Promise.all([loadDebitareFise(y), ensureIntrariForDebitareDate()]);});
   $('btnAddIntrariRows').addEventListener('click',()=>{intrariBlankRows+=5; renderIntrariRows();});
+  $('btnDeleteIntrariRow').addEventListener('click',()=>{deleteSelectedIntrariRow();});
   $('btnReloadDebitareFise').addEventListener('click',()=>loadDebitareFise($('debFisaYear').value || new Date().getFullYear()));
   $('btnLoadDebitareFisa').addEventListener('click',()=>{openDebitareFisaByKey($('fisaDebitareSelect').value).catch(e=>{console.error(e);setStatus('debitareStatus',e&&e.message?e.message:'Eroare la deschiderea fișei.','err');});});
   $('btnNewDebitareFisa').addEventListener('click',newDebitareFisa);
