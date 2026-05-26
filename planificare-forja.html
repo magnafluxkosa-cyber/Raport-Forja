@@ -459,6 +459,7 @@
     .plan-intrari-table th{background:#cfe3f6!important;font-weight:900;position:sticky;top:0;z-index:2}
     .plan-intrari-table td.left{text-align:left}
     .plan-intrari-table td.num{text-align:right;font-weight:900}
+    .plan-intrari-table td.pretest-ok{background:#dcfce7!important;color:#166534!important;font-weight:900}
     .plan-intrari-empty{font-size:13px;font-weight:800;color:#475569;padding:12px;background:#fff;border:1px solid #cbd5e1;border-radius:10px}
     .plan-intrari-noaccess{font-size:13px;font-weight:900;color:#991b1b;padding:12px;background:#fff1f2;border:1px solid #fecdd3;border-radius:10px}
 
@@ -887,6 +888,7 @@ body.rf-mobile :is(.wrap,.content,.workspace,.layout,.sheet,.mainTableBlock,.sum
     const INVENTORY_ALERT_STEEL_DOC_KEYS = ['inventar-otel'];
     const DEBITAT_DOC_BASE_KEYS = ['inventar-debitat'];
     const INTRARI_OTEL_DOC_BASE_KEYS = ['intrari-otel'];
+    const INTRARI_OTEL_PRETEST_DOC_KEYS = ['intrari-otel:pretest-files','intrari_otel:pretest-files','INTRARI_OTEL:pretest-files'];
     const DEBITARI_FLOW_DOC_BASE_KEYS = ['debitate'];
     const DELIVERY_DOC_KEY = 'comenzi-livrare';
     const DELIVERY_DOC_ALIASES = ['comenzi-livrare'];
@@ -1009,7 +1011,7 @@ body.rf-mobile :is(.wrap,.content,.workspace,.layout,.sheet,.mainTableBlock,.sum
       lastLiveRefreshAt: null,
       helperMaps: { debitByReper:Object.create(null), forjaByReper:Object.create(null), source:'-', loadedAt:'' },
       stockSupport: { steelKgBySpec:Object.create(null), debitatByReper:Object.create(null), steelEntriesByDate:Object.create(null), debitatEntriesByDate:Object.create(null), helperOk:false, steelOk:false, debitatOk:false, intrariOk:false, debitariFlowOk:false, notes:[] },
-      intrariOtelViewer: { rows:[], source:'-', loadedAt:'', loading:false, accessChecked:false, canView:false, search:'', year:'' },
+      intrariOtelViewer: { rows:[], source:'-', loadedAt:'', loading:false, accessChecked:false, canView:false, search:'', year:'', pretestCombos:Object.create(null) },
       stockCalcByCell: Object.create(null),
       steel2WeekSupport: { summary:{ tone:'neutral', totalShortageKg:0, relevantRowsCount:0, weeks:[], missingRules:[], windowStartIso:'', windowEndIso:'' } },
       inventoryAlert: { tone:'neutral', missing:[], checkedAt:'', periodLabel:'', sourceNotes:[] },
@@ -7568,6 +7570,69 @@ function addRow(){
       }
       return '';
     }
+    function normalizeIntrariOtelPretestPart(value){
+      return String(value == null ? '' : value)
+        .trim()
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/\s+/g, ' ');
+    }
+    function normalizeIntrariOtelPretestDim(value){
+      return normalizeIntrariOtelPretestPart(value)
+        .replace(/ø/g, '')
+        .replace(/mm/g, '')
+        .replace(/[^a-z0-9\-\.,\/]/g, '');
+    }
+    function makeIntrariOtelPretestComboKey(sarja, dim, cal){
+      return [
+        normalizeIntrariOtelPretestPart(sarja),
+        normalizeIntrariOtelPretestDim(dim),
+        normalizeIntrariOtelPretestPart(cal)
+      ].join('||');
+    }
+    function normalizeIntrariOtelPretestFlag(value){
+      const s = normalizeIntrariOtelPretestPart(value);
+      if(!s) return '';
+      if(s === 'nu are pretest' || s === 'nu are' || s.startsWith('nu are ')) return 'Nu are pretest';
+      if(s === 'are pretest' || s === 'are' || s === 'da' || s === 'yes' || s === 'true' || s === '1') return 'Are pretest';
+      return trimText(value);
+    }
+    function extractIntrariOtelPretestCombosPayload(payload){
+      if(!payload || typeof payload !== 'object') return Object.create(null);
+      if(payload.combos && typeof payload.combos === 'object') return payload.combos;
+      if(payload.payload && payload.payload.combos && typeof payload.payload.combos === 'object') return payload.payload.combos;
+      if(payload.content && payload.content.combos && typeof payload.content.combos === 'object') return payload.content.combos;
+      if(payload.data && payload.data !== payload && payload.data.combos && typeof payload.data.combos === 'object') return payload.data.combos;
+      return Object.create(null);
+    }
+    async function loadIntrariOtelPretestCombos(){
+      try{
+        const docs = await queryDocsByKeys(INTRARI_OTEL_PRETEST_DOC_KEYS);
+        const picked = docs.find(function(doc){
+          return Object.keys(extractIntrariOtelPretestCombosPayload(doc && (doc.content || doc.data))).length;
+        }) || docs.find(function(doc){ return doc && (doc.content || doc.data); }) || null;
+        const combos = extractIntrariOtelPretestCombosPayload(picked && (picked.content || picked.data));
+        return combos && typeof combos === 'object' ? combos : Object.create(null);
+      }catch(error){
+        console.error('loadIntrariOtelPretestCombos', error);
+        return Object.create(null);
+      }
+    }
+    function intrariOtelViewerHasPretestFiles(row){
+      if(!row) return false;
+      const key = makeIntrariOtelPretestComboKey(row.sarja, row.dimensiune, row.calitate);
+      const entry = state.intrariOtelViewer && state.intrariOtelViewer.pretestCombos
+        ? state.intrariOtelViewer.pretestCombos[key]
+        : null;
+      return !!(entry && Array.isArray(entry.files) && entry.files.length);
+    }
+    function getIntrariOtelViewerPretestText(row){
+      if(intrariOtelViewerHasPretestFiles(row)) return 'Are pretest';
+      const normalized = normalizeIntrariOtelPretestFlag(row && row.pretest);
+      return normalized || ((row && (row.sarja || row.dimensiune || row.calitate)) ? 'Nu are pretest' : '');
+    }
+
     function normalizeIntrariOtelViewerRow(row, index, sourceDoc){
       const isArray = Array.isArray(row);
       const dataRaw = isArray
@@ -7599,7 +7664,7 @@ function addRow(){
         sarja: trimText(isArray ? arrayCell(row, 6, '') : intrariOtelPick(row, ['sarja_material','Sarja material (furnizor)','sarja material furnizor','sarja material','Sarja material','sarja','Sarja','sarja furnizor','SARJA FURNIZOR'])),
         cantitateKg: toStockQuantityNumber(kgRaw),
         cantitateRaw: trimText(kgRaw),
-        pretest: trimText(isArray ? arrayCell(row, 8, '') : intrariOtelPick(row, ['pretest','PRETEST','Pretest'])),
+        pretest: normalizeIntrariOtelPretestFlag(isArray ? arrayCell(row, 8, '') : intrariOtelPick(row, ['pretest','PRETEST','Pretest'])),
         furnizor: trimText(isArray ? arrayCell(row, 9, '') : intrariOtelPick(row, ['furnizor','Furnizor','FURNIZOR','supplier','Supplier'])),
         sourceDoc: sourceDoc || ''
       };
@@ -7709,7 +7774,8 @@ function addRow(){
       let rows = (state.intrariOtelViewer.rows || []).filter(function(row){
         if(year && String(row.an) !== String(year)) return false;
         if(!q) return true;
-        return normKey([row.an,row.luna,row.dataDisplay,row.dimensiune,row.calitate,row.codIntern,row.sarja,row.cantitateRaw,row.pretest,row.furnizor].join(' ')).includes(q);
+        const pretestText = getIntrariOtelViewerPretestText(row);
+        return normKey([row.an,row.luna,row.dataDisplay,row.dimensiune,row.calitate,row.codIntern,row.sarja,row.cantitateRaw,pretestText,row.furnizor].join(' ')).includes(q);
       });
       if(els.intrariOtelCount){
         els.intrariOtelCount.textContent = 'Intrări: ' + rows.length + ' / ' + (state.intrariOtelViewer.rows || []).length;
@@ -7727,6 +7793,8 @@ function addRow(){
         return;
       }
       els.intrariOtelBody.innerHTML = rows.map(function(row){
+        const pretestText = getIntrariOtelViewerPretestText(row);
+        const pretestClass = pretestText === 'Are pretest' ? ' class="pretest-ok"' : '';
         return '<tr>' +
           '<td>' + escapeHtml(row.an) + '</td>' +
           '<td>' + escapeHtml(row.luna) + '</td>' +
@@ -7736,7 +7804,7 @@ function addRow(){
           '<td>' + escapeHtml(row.codIntern) + '</td>' +
           '<td>' + escapeHtml(row.sarja) + '</td>' +
           '<td class="num">' + escapeHtml(formatIntrariOtelKg(row.cantitateKg, row.cantitateRaw)) + '</td>' +
-          '<td>' + escapeHtml(row.pretest) + '</td>' +
+          '<td' + pretestClass + '>' + escapeHtml(pretestText) + '</td>' +
           '<td class="left">' + escapeHtml(row.furnizor) + '</td>' +
         '</tr>';
       }).join('');
@@ -7754,12 +7822,15 @@ function addRow(){
       }
       try{
         const result = await loadIntrariOtelViewerRows();
+        const pretestCombos = await loadIntrariOtelPretestCombos();
         state.intrariOtelViewer.rows = result.rows || [];
         state.intrariOtelViewer.source = result.source || '-';
+        state.intrariOtelViewer.pretestCombos = pretestCombos || Object.create(null);
         state.intrariOtelViewer.loadedAt = nowIso();
       }catch(error){
         console.error('refreshIntrariOtelViewer', error);
         state.intrariOtelViewer.rows = [];
+        state.intrariOtelViewer.pretestCombos = Object.create(null);
         state.intrariOtelViewer.source = 'eroare încărcare';
       }
       state.intrariOtelViewer.loading = false;
