@@ -69,7 +69,10 @@ const ORIGINAL_TEMPLATES = JSON.parse(JSON.stringify(DATA.templates || {}));
 const KNOWN_REPORTS = DATA.reports;
 const TEMPLATE_STORAGE_KEY = 'import_pdf_cote_masuratori_template_edits_v2';
 const LEGACY_TEMPLATE_STORAGE_KEYS = ['import_pdf_cote_masuratori_template_edits_v1'];
+const RUN_STORAGE_KEY = 'capabilitate_proces_forjare_pdf_import_runs_v3';
+const SELECTED_PART_STORAGE_KEY = 'capabilitate_proces_forjare_selected_part_v3';
 let runs = [];
+let persistedRunsByPart = {};
 let customTemplateEdits = {};
 let lastMessages = [];
 const PAGE_KEY = 'capabilitate-proces-forjare';
@@ -326,12 +329,92 @@ function updateRunCell(cell) {
   run.valuesByName = run.valuesByName || {};
   run.valuesByNr[rowIndex + 1] = val;
   run.valuesByName[rowKey(row)] = val;
+  saveCurrentRunsToStorage();
+}
+
+function loadRunStorage() {
+  persistedRunsByPart = {};
+  try {
+    const raw = localStorage.getItem(RUN_STORAGE_KEY);
+    if(raw) persistedRunsByPart = JSON.parse(raw) || {};
+  } catch(e) {
+    persistedRunsByPart = {};
+  }
+}
+
+function persistRunStorage() {
+  try { localStorage.setItem(RUN_STORAGE_KEY, JSON.stringify(persistedRunsByPart || {})); } catch(e) {}
+}
+
+function persistSelectedPart() {
+  try { if(partSelect && partSelect.value) localStorage.setItem(SELECTED_PART_STORAGE_KEY, partSelect.value); } catch(e) {}
+}
+
+function getStoredSelectedPart() {
+  try { return localStorage.getItem(SELECTED_PART_STORAGE_KEY) || ''; } catch(e) { return ''; }
+}
+
+function normalizeStoredRun(run) {
+  const meta = Object.assign({}, (run && run.meta) || {});
+  return {
+    part: (run && run.part) || meta.part || '',
+    meta,
+    valuesByName: Object.assign({}, (run && run.valuesByName) || {}),
+    valuesByNr: Object.assign({}, (run && run.valuesByNr) || {}),
+    source: (run && run.source) || 'stored',
+    found: run && run.found,
+    auto: false
+  };
+}
+
+function runForStorage(run) {
+  const stored = normalizeStoredRun(run || {});
+  delete stored.auto;
+  return stored;
+}
+
+function saveCurrentRunsToStorage() {
+  const part = partSelect.value;
+  if(!part) return;
+  const realRuns = (runs || []).filter(r => r && !r.auto);
+  if(realRuns.length) persistedRunsByPart[part] = realRuns.map(runForStorage);
+  else delete persistedRunsByPart[part];
+  persistRunStorage();
+}
+
+function clearStoredRunsForCurrentPart() {
+  const part = partSelect.value;
+  if(part && persistedRunsByPart && Object.prototype.hasOwnProperty.call(persistedRunsByPart, part)) {
+    delete persistedRunsByPart[part];
+    persistRunStorage();
+  }
+}
+
+function loadStoredRunsForPart(part) {
+  const saved = persistedRunsByPart && persistedRunsByPart[part];
+  if(!Array.isArray(saved) || !saved.length) return [];
+  return saved.map(normalizeStoredRun).filter(r => r && r.meta);
+}
+
+function loadRunsForCurrentPart() {
+  const part = partSelect.value;
+  const saved = loadStoredRunsForPart(part);
+  runs = [];
+  if(saved.length) {
+    runs = saved;
+    lastMessages = [`Importul salvat pentru ${part} a fost reîncărcat automat.`];
+    return true;
+  }
+  return loadEmbeddedReportForCurrentPart();
 }
 
 function init() {
   loadTemplateEdits();
+  loadRunStorage();
   partSelect.innerHTML = allParts().map(p=>`<option value="${esc(p)}">${esc(p)}</option>`).join('');
-  loadEmbeddedReportForCurrentPart();
+  const storedPart = getStoredSelectedPart();
+  if(storedPart && TEMPLATES[storedPart]) partSelect.value = storedPart;
+  loadRunsForCurrentPart();
   render();
 }
 function templateRows() { return (TEMPLATES[partSelect.value]||[]).map((r,i)=>({nr:r.nr||i+1,name:r.name||'',nom:r.nom||'',plus:r.plus||'',minus:r.minus||''})); }
@@ -351,6 +434,105 @@ function getRunValue(run,row,idx) {
   if(run.valuesByNr && run.valuesByNr[idx+1]!==undefined) return smartValueForRow(run.valuesByNr[idx+1], row);
   return '';
 }
+
+function cleanPdfHeaderToken(value) {
+  return String(value||'')
+    .replace(/\.pdf$/i,'')
+    .replace(/[\u2010-\u2015]/g,'-')
+    .replace(/[_.]+/g,' ')
+    .replace(/\b(?:CAT|PDF)\b/gi,' ')
+    .replace(/\bVERS(?:ION)?\b[\s._-]*\d*/gi,' ')
+    .replace(/\bREV(?:ISION)?\b[\s._-]*\d*/gi,' ')
+    .replace(/\s*[-]\s*/g,'-')
+    .replace(/^[\s._-]+|[\s._-]+$/g,'')
+    .replace(/\s{2,}/g,' ')
+    .trim();
+}
+function extractPieceSarjaFromSource(source) {
+  const raw = String(source||'').replace(/\.pdf$/i,'').replace(/[\u2010-\u2015]/g,'-');
+  if(!raw.trim()) return {piesa:'', sarja:''};
+  let section = '';
+  let marker = raw.match(/(?:^|[^A-Za-z0-9])P(?:[^A-Za-z0-9]+)?([0-9][0-9A-Za-z]*)/i);
+  if(marker && marker.index !== undefined) section = raw.slice(marker.index).replace(/^[^Pp]*[Pp][^0-9A-Za-z]*/,'');
+  else section = raw;
+  section = section.replace(/^[\s._-]+/,'');
+  let piece = '';
+  let rest = '';
+  let m = section.match(/^([0-9]+)([A-Za-z]?)(.*)$/);
+  if(m) {
+    piece = m[1];
+    rest = (m[2] ? m[2] : '') + (m[3] || '');
+  }
+  rest = rest.replace(/^[\s._-]+/,'');
+  rest = cleanPdfHeaderToken(rest);
+  if(!piece && /^\d+$/.test(cleanPdfHeaderToken(source))) piece = cleanPdfHeaderToken(source);
+  if(rest && /^\d+$/.test(rest)) rest = '';
+  return {piesa:piece, sarja:rest};
+}
+function normalizeDateSourceText(src) {
+  return String(src || '')
+    .replace(/\r?\n/g, ' ')
+    .replace(/[|!lI](?=\d)/g, '1')
+    .replace(/(?<=\d)[|!lI](?=\D|$)/g, '1')
+    .replace(/(?<=\d)[oO](?=\d)/g, '0')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+}
+function parseDateFromSource(src) {
+  const value = normalizeDateSourceText(src);
+  const monthMap = {
+    JANUARY:1,JAN:1,NUARY:1,UARY:1,LARY:1,IANUARY:1,JANUAR:1,
+    FEBRUARY:2,FEB:2,RUARY:2,
+    MARCH:3,MAR:3,APRIL:4,APR:4,MAY:5,JUNE:6,JUN:6,JULY:7,JUL:7,
+    AUGUST:8,AUG:8,SEPTEMBER:9,SEPT:9,SEP:9,OCTOBER:10,OCT:10,
+    NOVEMBER:11,NOV:11,DECEMBER:12,DEC:12
+  };
+  let m = value.match(/\b(\d{1,2})[.\/-](\d{1,2})[.\/-](20\d{2}|19\d{2})\b/);
+  if(m) return `${m[1].padStart(2,'0')}.${m[2].padStart(2,'0')}.${m[3]}`;
+  m = value.match(/\b(20\d{2}|19\d{2})[.\/-](\d{1,2})[.\/-](\d{1,2})\b/);
+  if(m) return `${m[3].padStart(2,'0')}.${m[2].padStart(2,'0')}.${m[1]}`;
+  m = value.match(/\b([A-Za-z]{3,12})\s*(\d{1,2}),?\s*(20\d{2}|19\d{2})\b/i);
+  if(m) {
+    const token = m[1].toUpperCase().replace(/[^A-Z]/g,'');
+    const mm = monthMap[token] || monthMap[token.slice(-7)] || monthMap[token.slice(0,3)] || 0;
+    if(mm) return `${m[2].padStart(2,'0')}.${String(mm).padStart(2,'0')}.${m[3]}`;
+  }
+  m = value.match(/\b(\d{1,2})\s*([A-Za-z]{3,12}),?\s*(20\d{2}|19\d{2})\b/i);
+  if(m) {
+    const token = m[2].toUpperCase().replace(/[^A-Z]/g,'');
+    const mm = monthMap[token] || monthMap[token.slice(-7)] || monthMap[token.slice(0,3)] || 0;
+    if(mm) return `${m[1].padStart(2,'0')}.${String(mm).padStart(2,'0')}.${m[3]}`;
+  }
+  return '';
+}
+function extractDateFromPdfHeaderSources(text, fileName, metaDate) {
+  const sources = [text, fileName, metaDate].filter(Boolean).map(String);
+  for(const src of sources) {
+    const found = parseDateFromSource(src);
+    if(found) return found;
+  }
+  return '';
+}
+function buildPdfColumnHeaderInfo(run, text) {
+  const meta = (run && run.meta) || {};
+  const fileName = meta.fileName || '';
+  const fileInfo = extractPieceSarjaFromSource(fileName);
+  const metaPiesaInfo = extractPieceSarjaFromSource(meta.piesa || '');
+  const metaSarjaInfo = extractPieceSarjaFromSource(meta.sarja || '');
+  let sarja = fileInfo.sarja || metaSarjaInfo.sarja || metaPiesaInfo.sarja || cleanPdfHeaderToken(meta.sarja || '');
+  let piesa = fileInfo.piesa || metaPiesaInfo.piesa || metaSarjaInfo.piesa || cleanPdfHeaderToken(meta.piesa || '');
+  if(sarja && piesa && sarja === piesa) sarja = '';
+  return {
+    date: extractDateFromPdfHeaderSources(text || '', fileName, meta.date || ''),
+    part: (run && run.part) || detectPartFromFileName(fileName) || partSelect.value || '',
+    sarja,
+    piesa
+  };
+}
+function pdfColumnHeaderHtml(run) {
+  const info = buildPdfColumnHeaderInfo(run);
+  return `${esc(info.date)}<br>${esc(info.part)}<br>Sarja: ${esc(info.sarja)}<br>Nr. piesă: ${esc(info.piesa)}`;
+}
 function runFromReport(report, fileName) {
   const valuesByName={}, valuesByNr={};
   (report.rows||[]).forEach((r,i)=>{ valuesByName[normText(r.name)] = r.meas || ''; valuesByNr[r.nr||i+1]=r.meas||''; });
@@ -362,11 +544,8 @@ function render() {
   let h='<thead>';
   h += `<tr class="topTitle"><th colspan="${5+Math.max(1,runs.length)}">Twenty-five part study — ${esc(partSelect.value)}</th></tr>`;
   h += '<tr><th class="sticky1">#</th><th class="sticky2">Denumire măsurătoare</th><th class="sticky3">NOM</th><th class="sticky4">+TOL</th><th class="sticky5">-TOL</th>';
-  if(runs.length) runs.forEach((r,i)=>h+=`<th class="run">PDF ${i+1}</th>`); else h+='<th class="run">Import PDF</th>';
+  if(runs.length) runs.forEach(r=>h+=`<th class="run cellEdit" contenteditable rowspan="2" title="${esc(r.meta.fileName||'')}">${pdfColumnHeaderHtml(r)}</th>`); else h+='<th class="run" rowspan="2">Import PDF</th>';
   h += '</tr><tr><th class="sticky1"></th><th class="sticky2">Data / Sarja / Nr piesă</th><th class="sticky3"></th><th class="sticky4"></th><th class="sticky5"></th>';
-  if(runs.length) runs.forEach(r=>{
-    h += `<th class="run cellEdit" contenteditable title="${esc(r.meta.fileName||'')}">${esc(r.meta.date||'')}<br>${esc(r.meta.sarja||'')}<br>${esc(r.meta.piesa||'')}<div class="smallMuted">${esc(r.meta.fileName||'')}</div></th>`;
-  }); else h+='<th class="blank">—</th>';
   h += '</tr></thead><tbody>';
   rows.forEach((row,idx)=>{
     h += `<tr><td class="sticky1">${idx+1}</td><td class="sticky2 measure cellEdit templateEdit" contenteditable data-template-row="${idx}" data-template-field="name" title="Modifică denumirea cotei">${esc(row.name)}</td><td class="sticky3 cellEdit templateEdit" contenteditable data-template-row="${idx}" data-template-field="nom" title="Modifică NOM">${fmt(row.nom)}</td><td class="sticky4 cellEdit templateEdit" contenteditable data-template-row="${idx}" data-template-field="plus" title="Modifică +TOL">${fmt(row.plus)}</td><td class="sticky5 cellEdit templateEdit" contenteditable data-template-row="${idx}" data-template-field="minus" title="Modifică -TOL">${fmt(row.minus)}</td>`;
@@ -404,8 +583,6 @@ function findKnown(fileName) {
   const key=normFile(fileName);
   for(const [name,rep] of Object.entries(KNOWN_REPORTS)) { if(normFile(name)===key) return rep; }
   for(const [name,rep] of Object.entries(KNOWN_REPORTS)) { const nk=normFile(name); if(nk.includes(key) || key.includes(nk)) return rep; }
-  const part = detectPartFromFileName(fileName);
-  if(part) return firstKnownReportForPart(part);
   return null;
 }
 function setProgress(p,msg) { progress.style.display='block'; bar.style.width=Math.max(0,Math.min(100,p))+'%'; if(msg) statusEl.textContent=msg; }
@@ -425,10 +602,10 @@ async function extractPdfOcr(file) {
   let all='';
   for(let p=1;p<=pdf.numPages;p++) {
     setProgress(15 + (p-1)/pdf.numPages*70, `OCR ${file.name} — pagina ${p}/${pdf.numPages}...`);
-    const page=await pdf.getPage(p); const viewport=page.getViewport({scale:1.45});
+    const page=await pdf.getPage(p); const viewport=page.getViewport({scale:3});
     const canvas=document.createElement('canvas'); const ctx=canvas.getContext('2d'); canvas.width=viewport.width; canvas.height=viewport.height;
     await page.render({canvasContext:ctx,viewport}).promise;
-    const res=await Tesseract.recognize(canvas,'eng');
+    const res=await Tesseract.recognize(canvas,'eng',{ tessedit_pageseg_mode:'6' });
     all += '\n' + (res.data && res.data.text ? res.data.text : '');
   }
   return all;
@@ -439,7 +616,15 @@ function cleanNumber(s) {
 function numsFromLine(line) {
   const m=String(line).match(/(?<![A-Za-z0-9])[-+]?\d+(?:[\.,]\d+)?(?![A-Za-z0-9])/g); return (m||[]).map(cleanNumber);
 }
-function isAxisLine(line) { return /^(D|Y|Z|X|M|DF|TP|T|Zz)\b/i.test(line.trim()) || /^(1\.|I\.|\||l\.)\s+[-+]?\d/i.test(line.trim()); }
+function isAxisLine(line) {
+  const raw = String(line || '').trim();
+  const first = (raw.split(/\s+/)[0] || '').toUpperCase().replace(/[^A-Z0-9]/g,'');
+  const letters = first.replace(/[^A-Z]/g,'');
+  if(['D','Y','Z','X','M','DF','TP','T','IP','FP'].includes(letters)) return true;
+  if(letters.endsWith('X') || letters.endsWith('Y') || letters.endsWith('Z')) return true;
+  if(/RFS/i.test(raw) && numsFromLine(raw).length) return true;
+  return /^(1\.|I\.|\||l\.)\s+[-+]?\d/i.test(raw);
+}
 function fieldsFrom(kind,line,ns,title) {
   const tu=normText(title);
   if(!ns.length) return {meas:'',nom:'',plus:'',minus:''};
@@ -448,11 +633,51 @@ function fieldsFrom(kind,line,ns,title) {
     return {meas:ns[0]||'',nom:ns[1]||'',plus:ns[3]||'',minus:ns[4]||''};
   }
   const first=(line.trim().split(/\s+/)[0]||'').toUpperCase();
+  if(/RFS/i.test(line)) return {meas:ns[0]||'',nom:'0',plus:ns[2]||ns[3]||'',minus:(ns[2]||ns[3])?'0':''};
   if(first.startsWith('1')||first==='I.'||first==='|'||first==='L.') return {meas:ns[1]||ns[0]||'',nom:'0',plus:ns[3]||'',minus:ns[3]?'0':''};
   let minus='';
   if(ns[4]!==undefined) { const n=Number(ns[4]); minus=Number.isFinite(n) ? (n===0?'0':String(-Math.abs(n))) : ns[4]; }
   return {meas:ns[0]||'',nom:ns[1]||'',plus:ns[3]||'',minus};
 }
+
+async function extractPdfHeaderMetaForColumn(file, existingText) {
+  const meta = { date: extractDateFromPdfHeaderSources(existingText || '', file.name, '') };
+  if(meta.date || !window.pdfjsLib || !window.Tesseract) return meta;
+  try {
+    const buf = await file.arrayBuffer();
+    const pdf = await pdfjsLib.getDocument({data:buf}).promise;
+    const page = await pdf.getPage(1);
+    const viewport = page.getViewport({scale:3});
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d');
+    canvas.width = viewport.width;
+    canvas.height = viewport.height;
+    await page.render({canvasContext:ctx, viewport}).promise;
+    const crop = document.createElement('canvas');
+    const sx = Math.floor(canvas.width * 0.58);
+    const sy = 0;
+    const sw = Math.floor(canvas.width * 0.40);
+    const sh = Math.max(150, Math.floor(canvas.height * 0.12));
+    crop.width = sw * 4;
+    crop.height = sh * 4;
+    const cctx = crop.getContext('2d');
+    cctx.drawImage(canvas, sx, sy, sw, sh, 0, 0, crop.width, crop.height);
+    try {
+      const img = cctx.getImageData(0, 0, crop.width, crop.height);
+      for(let i=0;i<img.data.length;i+=4) {
+        const g = Math.round(img.data[i] * 0.299 + img.data[i+1] * 0.587 + img.data[i+2] * 0.114);
+        const v = g < 190 ? 0 : 255;
+        img.data[i] = v; img.data[i+1] = v; img.data[i+2] = v;
+      }
+      cctx.putImageData(img, 0, 0);
+    } catch(_e) {}
+    const res = await Tesseract.recognize(crop, 'eng', { tessedit_pageseg_mode:'7' });
+    const ocrText = (res && res.data && res.data.text) ? res.data.text : '';
+    meta.date = extractDateFromPdfHeaderSources(ocrText, file.name, '');
+  } catch(e) {}
+  return meta;
+}
+
 function parseOcrText(text, part, fileName) {
   const lines=String(text||'').split(/\r?\n/).map(x=>x.trim()).filter(Boolean);
   const rows=[]; let mode=null;
@@ -464,36 +689,58 @@ function parseOcrText(text, part, fileName) {
   }
   const tmpl=TEMPLATES[part]||[]; const valuesByName={}, valuesByNr={};
   tmpl.forEach((tr,i)=>{ const rr=rows[i]; const f=rr?fieldsFrom(rr[0],rr[1],rr[2],tr.name):{meas:''}; valuesByName[normText(tr.name)]=f.meas||''; valuesByNr[i+1]=f.meas||''; });
-  return {part,meta:{fileName,date:'',sarja:'',piesa:fileName.replace(/\.pdf$/i,'')},valuesByName,valuesByNr,source:'ocr',found:rows.length};
+  const headerInfo = buildPdfColumnHeaderInfo({part, meta:{fileName,date:extractDateFromPdfHeaderSources(text, fileName, '')}}, text);
+  return {part,meta:{fileName,date:headerInfo.date,sarja:headerInfo.sarja,piesa:headerInfo.piesa},valuesByName,valuesByNr,source:'ocr',found:rows.length};
 }
 async function importFiles(files) {
   if(!canImportPage()) { lastMessages=['Nu ai drept de import PDF pe această foaie.']; render(); return; }
   lastMessages=[];
-  if(!files.length) { loadEmbeddedReportForCurrentPart(); render(); return; }
+  if(!files.length) { loadRunsForCurrentPart(); render(); return; }
+  saveCurrentRunsToStorage();
   runs = runs.filter(r=>!r.auto);
   importBtn.disabled=true; setProgress(2,'Se pregătește importul...');
   let imported=0, skipped=0, ocrCount=0;
   for(let i=0;i<files.length;i++) {
     const file=files[i]; setProgress((i/files.length)*100, `Se importă ${i+1}/${files.length}: ${file.name}`);
     let rep=findKnown(file.name);
+    let detectedPart = (rep && rep.part) || detectPartFromFileName(file.name) || partSelect.value;
     runs = runs.filter(r => normFile(r.meta && r.meta.fileName || '') !== normFile(file.name));
     try {
+      if(imported===0 && runs.length===0 && detectedPart && detectedPart!==partSelect.value) {
+        partSelect.value=detectedPart;
+        persistSelectedPart();
+        loadRunsForCurrentPart();
+        runs = runs.filter(r=>!r.auto);
+        runs = runs.filter(r => normFile(r.meta && r.meta.fileName || '') !== normFile(file.name));
+      }
+      if(detectedPart!==partSelect.value) { skipped++; lastMessages.push(`Sărit ${file.name}: aparține reperului ${detectedPart}.`); continue; }
       if(rep) {
-        if(imported===0 && runs.length===0 && rep.part && rep.part!==partSelect.value) { partSelect.value=rep.part; }
-        if(rep.part!==partSelect.value) { skipped++; lastMessages.push(`Sărit ${file.name}: aparține reperului ${rep.part}.`); continue; }
-        runs.push(runFromReport(rep,file.name)); imported++;
+        let headerText='';
+        try { headerText = await extractPdfTextPdfjs(file); } catch(e) { headerText=''; }
+        const headerMeta = await extractPdfHeaderMetaForColumn(file, headerText);
+        const run = runFromReport(rep,file.name);
+        if(headerMeta && headerMeta.date) run.meta.date = headerMeta.date;
+        const h = buildPdfColumnHeaderInfo(run, headerText);
+        run.meta.sarja = h.sarja;
+        run.meta.piesa = h.piesa;
+        runs.push(run); imported++;
       } else {
         const part=partSelect.value;
         let text='';
         try { text=await extractPdfTextPdfjs(file); } catch(e) { text=''; }
         let run=parseOcrText(text, part, file.name);
         const foundText=Object.values(run.valuesByNr||{}).filter(Boolean).length;
-        if(foundText<3) { text=await extractPdfOcr(file); run=parseOcrText(text, part, file.name); ocrCount++; }
+        if(foundText<Math.min(20,(TEMPLATES[part]||[]).length)) { text=await extractPdfOcr(file); run=parseOcrText(text, part, file.name); ocrCount++; }
+        const headerMeta = await extractPdfHeaderMetaForColumn(file, text);
+        if(headerMeta && headerMeta.date) run.meta.date = headerMeta.date;
         runs.push(run); imported++;
       }
+      saveCurrentRunsToStorage();
+      persistSelectedPart();
     } catch(e) { skipped++; lastMessages.push(`Eroare la ${file.name}: ${e.message}`); }
     render();
   }
+  saveCurrentRunsToStorage();
   setProgress(100,`Import finalizat: ${imported} PDF-uri importate, ${skipped} sărite.`); hideProgress(); importBtn.disabled=false; lastMessages.push(`Import finalizat: ${imported} importate, ${skipped} sărite${ocrCount?`, OCR: ${ocrCount}`:''}.`); render();
 }
 importBtn.addEventListener('click',()=>{
@@ -526,8 +773,8 @@ table.addEventListener('focusout',(ev)=>{
 
 document.getElementById('saveTemplateBtn').addEventListener('click',()=>{ persistCurrentTemplate(true); render(); });
 document.getElementById('resetTemplateBtn').addEventListener('click',()=>{ resetCurrentTemplate(); });
-document.getElementById('clearBtn').addEventListener('click',()=>{ if(!canEditPage()){ lastMessages=['Nu ai drept de editare pentru curățarea importului.']; render(); return; } runs=[]; lastMessages=[]; resetPdfFileInput(); render(); });
-partSelect.addEventListener('change',()=>{ resetPdfFileInput(); loadEmbeddedReportForCurrentPart(); render(); });
+document.getElementById('clearBtn').addEventListener('click',()=>{ if(!canEditPage()){ lastMessages=['Nu ai drept de editare pentru curățarea importului.']; render(); return; } runs=[]; lastMessages=[]; clearStoredRunsForCurrentPart(); resetPdfFileInput(); render(); });
+partSelect.addEventListener('change',()=>{ saveCurrentRunsToStorage(); persistSelectedPart(); resetPdfFileInput(); loadRunsForCurrentPart(); render(); });
 const pdfInputEl = document.getElementById('pdfInput');
 const choosePdfBtn = document.getElementById('choosePdfBtn');
 const pdfFileLabel = document.getElementById('pdfFileLabel');
