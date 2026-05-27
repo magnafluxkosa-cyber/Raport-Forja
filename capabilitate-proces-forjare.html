@@ -6,9 +6,9 @@
 <!-- KAD_ACL_MARKER: page_key="capabilitate-proces-forjare" can_view can_edit -->
 <script>window.__KAD_ACL_STATIC_AUDIT__={page_key:"capabilitate-proces-forjare",can_view:true,can_edit:true,canView:true,canEdit:true};</script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="./rf-config.js?v=20260527-capabilitate-minus-exact"></script>
-<script src="./rf-app-registry.js?v=20260527-capabilitate-minus-exact"></script>
-<script src="./auth-common.js?v=20260527-capabilitate-minus-exact"></script>
+<script src="./rf-config.js?v=20260527-capabilitate-import-stabil-v1"></script>
+<script src="./rf-app-registry.js?v=20260527-capabilitate-import-stabil-v1"></script>
+<script src="./auth-common.js?v=20260527-capabilitate-import-stabil-v1"></script>
 <script>try{ if(window.ERPAuth && typeof window.ERPAuth.prehideProtectedPage === 'function') window.ERPAuth.prehideProtectedPage(); }catch(_e){}</script>
 <link rel="stylesheet" href="./kad-nav-shell.css" />
 
@@ -701,37 +701,35 @@ async function extractPdfTextPdfjs(file) {
   for(let p=1;p<=pdf.numPages;p++) { const page=await pdf.getPage(p); const content=await page.getTextContent(); text += content.items.map(it=>it.str).join(' ') + '\n'; }
   return text;
 }
+let ocrWorkerPromise = null;
+async function getOcrWorker(){
+  if(!window.Tesseract) throw new Error('OCR indisponibil: Tesseract.js nu este încărcat.');
+  if(!ocrWorkerPromise) {
+    ocrWorkerPromise = (async()=>{
+      const worker = await Tesseract.createWorker('eng');
+      try { await worker.setParameters({ tessedit_pageseg_mode:'6', preserve_interword_spaces:'1' }); } catch(_e) {}
+      return worker;
+    })();
+  }
+  return ocrWorkerPromise;
+}
 async function extractPdfOcr(file) {
   if(!window.pdfjsLib || !window.Tesseract) throw new Error('OCR indisponibil: lipsesc PDF.js sau Tesseract.js.');
   const buf=await file.arrayBuffer();
   const pdf=await pdfjsLib.getDocument({data:buf}).promise;
+  const worker = await getOcrWorker();
   let all='';
   for(let p=1;p<=pdf.numPages;p++) {
-    setProgress(15 + (p-1)/pdf.numPages*70, `OCR ${file.name} — pagina ${p}/${pdf.numPages}...`);
+    setProgress(15 + (p-1)/pdf.numPages*72, `OCR optimizat ${file.name} — pagina ${p}/${pdf.numPages}...`);
     const page=await pdf.getPage(p);
-    const viewport=page.getViewport({scale:2.35});
+    const viewport=page.getViewport({scale:2.05});
     const canvas=document.createElement('canvas');
     const ctx=canvas.getContext('2d', { willReadFrequently:true });
     canvas.width=viewport.width; canvas.height=viewport.height;
     await page.render({canvasContext:ctx,viewport}).promise;
-    const res6=await Tesseract.recognize(canvas,'eng',{
-      tessedit_pageseg_mode:'6',
-      preserve_interword_spaces:'1'
-    });
-    const text6 = res6.data && res6.data.text ? res6.data.text : '';
-    all += '\n' + text6;
-
-    // PSM 6 citește bine majoritatea tabelelor, dar pe unele pagini sare linia TP
-    // (valoarea totală pentru Localisation / -X-Y-Z). PSM 3 citește mai bine TP.
-    if(/LOCALISATION|LOC_|-X-Y-Z/i.test(text6)) {
-      const res3=await Tesseract.recognize(canvas,'eng',{
-        tessedit_pageseg_mode:'3',
-        preserve_interword_spaces:'1'
-      });
-      const text3 = res3.data && res3.data.text ? res3.data.text : '';
-      const tpLines = text3.split(/\r?\n/).map(x=>x.trim()).filter(x=>/^TP\b/i.test(x)).join('\n');
-      if(tpLines) all += '\n' + tpLines;
-    }
+    const res=await worker.recognize(canvas);
+    const pageText = res && res.data && res.data.text ? res.data.text : '';
+    all += '\n' + pageText;
   }
   return all;
 }
@@ -745,7 +743,7 @@ function numsFromLine(line) {
 function isAxisLine(line) { return /^(D|Y|Z|X|M|DF|TP|P|T|Zz)\b/i.test(line.trim()) || /^(1\.|I\.|\||l\.)\s+[-+]?\d/i.test(line.trim()); }
 function isFeatureMainHeader(line) {
   const u = String(line || '').toUpperCase();
-  return u.includes('FEATURE') && u.includes('MEAS') && !u.includes('HITS') && !u.includes('MEAS X') && !u.includes('VECTOR') && !u.includes('SEG=');
+  return ((u.includes('FEATURE') && u.includes('MEAS')) || (u.includes('MEAS') && u.includes('NOMINAL') && u.includes('TOL'))) && !u.includes('HITS') && !u.includes('MEAS X') && !u.includes('VECTOR') && !u.includes('SEG=');
 }
 function isAxisMainHeader(line) {
   const u = String(line || '').toUpperCase();
@@ -837,6 +835,82 @@ function computeTpFromAxis(yValue, yNom, zValue, zNom) {
   if(!Number.isFinite(tp)) return '';
   return String(Math.round(tp * 1000) / 1000);
 }
+function titleWordsForMatch(name) {
+  return normText(name).split(/\s+/).filter(w => w.length > 1 && !['DE','DU','DES','SUR','PLAN','COTE','FACE','SUIVANT','AXE','THE','AND'].includes(w));
+}
+function titleMatchScore(lineNorm, words) {
+  if(!lineNorm || !words || !words.length) return 0;
+  let score = 0;
+  words.forEach(w => { if(lineNorm.includes(w)) score++; });
+  return score / Math.max(1, words.length);
+}
+function lineLooksLikeHitDetail(line) {
+  const t = String(line || '').trim();
+  if(/^\d+\s+[-+]?\d/.test(t)) return true;
+  const u = t.toUpperCase();
+  if(/^HITS\b|\bMEAS\s*X\b|\bVECTOR\b|\bSEG\s*=/.test(u)) return true;
+  return false;
+}
+
+function bestFeatureNumberInSection(sectionLines, titleKey) {
+  for(const line of sectionLines) {
+    if(lineLooksLikeHitDetail(line)) continue;
+    const ns = numsFromLine(line);
+    if(ns.length >= 3) return cleanNumber(ns[0] || '');
+  }
+  if(titleKey && titleKey.includes('PROFIL DE SURFACE')) {
+    const devs=[];
+    for(const line of sectionLines) {
+      const ns = numsFromLine(line).map(Number).filter(Number.isFinite);
+      if(ns.length >= 7 && /^\d+\s+[-+]?\d/.test(String(line).trim())) {
+        const d = ns[ns.length-1];
+        if(Number.isFinite(d)) devs.push(Math.abs(d));
+      }
+    }
+    if(devs.length) return String(Math.round(Math.max(...devs) * 2 * 1000) / 1000);
+  }
+  return '';
+}
+function fallbackValuesByTitle(text, part) {
+  const tmpl = TEMPLATES[part] || [];
+  const rawLines = String(text || '').split(/\r?\n/).map(x => x.trim()).filter(Boolean);
+  const normLines = rawLines.map(normText);
+  const out = {};
+  let cursor = 0;
+  tmpl.forEach((tr, idx) => {
+    const key = normText(tr.name || '');
+    const words = titleWordsForMatch(tr.name || '');
+    let bestIdx = -1, bestScore = 0;
+    const start = Math.max(0, cursor - 8);
+    const end = Math.min(rawLines.length, cursor + 120);
+    for(let i=start;i<end;i++) {
+      const sc = titleMatchScore(normLines[i], words);
+      if(sc > bestScore) { bestScore = sc; bestIdx = i; }
+      if(sc >= 0.92) break;
+    }
+    if(bestIdx < 0 || bestScore < 0.55) return;
+    cursor = bestIdx + 1;
+    const section = rawLines.slice(bestIdx + 1, Math.min(rawLines.length, bestIdx + 34));
+    let val = '';
+    if(key.startsWith('O PIN') || key.startsWith('O BUSHING') || key.startsWith('O LAMAGE')) {
+      for(const line of section){ const lab=axisLabelFromLine(line); if(lab==='D'){ const ns=numsFromLine(line); if(ns.length){ val=normalizeMeasuredValue(ns[0], lab); break; } } }
+    } else if(key.includes('LOCALISATION') && key.includes('SUIVANT AXE 02')) {
+      for(const line of section){ const lab=axisLabelFromLine(line); if(lab==='Y'){ const ns=numsFromLine(line); if(ns.length){ val=normalizeMeasuredValue(ns[0], lab); break; } } }
+    } else if(key.includes('LOCALISATION') && (key.includes('SUIVANT AXE 01') || key.includes('SUIVANT AXE O1') || key.includes('SUIVANT AXE OL'))) {
+      for(const line of section){ const lab=axisLabelFromLine(line); if(lab==='Z'){ const ns=numsFromLine(line); if(ns.length){ val=normalizeMeasuredValue(ns[0], lab); break; } } }
+    } else if(key.includes('LOCALISATION') && key.includes('X Y Z')) {
+      for(const line of section){ const lab=axisLabelFromLine(line); if(lab==='TP'){ const ns=numsFromLine(line); if(ns.length){ val=normalizeMeasuredValue(ns[0], lab); break; } } }
+    } else if(key.includes('PROFONDEUR') || key.includes('EPAISSEUR')) {
+      for(const line of section){ const lab=axisLabelFromLine(line); if(['X','M','Z'].includes(lab)){ const ns=numsFromLine(line); if(ns.length){ val=normalizeMeasuredValue(ns[0], lab); break; } } }
+      if(!val) val = bestFeatureNumberInSection(section, key);
+    } else {
+      val = bestFeatureNumberInSection(section, key);
+    }
+    if(val !== '') out[idx+1] = val;
+  });
+  return out;
+}
+
 function parseOcrText(text, part, fileName) {
   const tmpl=TEMPLATES[part]||[];
   const candidates = extractOcrCandidates(text);
@@ -904,6 +978,13 @@ function parseOcrText(text, part, fileName) {
     }
     valuesByName[key]=val||'';
     valuesByNr[i+1]=val||'';
+  });
+  const fallbackByNr = fallbackValuesByTitle(text, part);
+  tmpl.forEach((tr,i)=>{
+    const nr=i+1, key=normText(tr.name);
+    const current = String(valuesByNr[nr] || valuesByName[key] || '').trim();
+    const fb = String(fallbackByNr[nr] || '').trim();
+    if(!current && fb) { valuesByNr[nr]=fb; valuesByName[key]=fb; }
   });
   return repairRunForKnownIssues({part,meta:{fileName,date:'',sarja:'',piesa:fileName.replace(/\.pdf$/i,'')},valuesByName,valuesByNr,source:'ocr',found:Object.values(valuesByNr).filter(Boolean).length}, part);
 }
