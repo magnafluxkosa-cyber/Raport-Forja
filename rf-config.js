@@ -3470,20 +3470,12 @@ async function applyDomPermissions(pageKey, root, options) {
     'mfa-verify': true
   };
 
-  var OPERATOR_PAGES_WITHOUT_DASHBOARD = {
+  var OPERATOR_SHEET_PAGES_NO_DASHBOARD = {
+    'tratament-termic-fisa-autocontrol-zale': true,
     'operator-debitare': true,
     'operator-debitare-pin': true,
-    'tratament-termic-fisa-autocontrol-zale': true,
     'magnaflux-operatori': true,
-    'fisa-control-ctc-forja': true,
     'forja-ctc-pin': true
-  };
-
-  var OPERATOR_EMAILS_WITHOUT_DASHBOARD = {
-    'op@tratament.local': true,
-    'op@magnaflux.local': true,
-    'debitare@pre.local': true,
-    'forja-ctc@forja.local': true
   };
 
   function normalize(value) {
@@ -3513,17 +3505,6 @@ async function applyDomPermissions(pageKey, root, options) {
     } catch (_) {
       return '';
     }
-  }
-
-  function normalizeEmail(value) {
-    return normalize(value).replace(/\s+/g, '');
-  }
-
-  function readEmailSync() {
-    var boot = window.__RF_ACL_PAGE_BOOT__ || null;
-    if (boot && boot.pageAccess && boot.pageAccess.email) return normalizeEmail(boot.pageAccess.email);
-    if (window.__PAGE_ACCESS__ && window.__PAGE_ACCESS__.email) return normalizeEmail(window.__PAGE_ACCESS__.email);
-    return normalizeEmail(readStorage('rf_user_email') || readStorage('kad_user_email') || readStorage('user_email'));
   }
 
   function readRoleSync() {
@@ -3578,21 +3559,33 @@ async function applyDomPermissions(pageKey, root, options) {
 
   function isOperatorRole(role) {
     role = normalizeRole(role);
-    return role === 'operator' || role.indexOf('operator-') === 0 || role.indexOf('-operator') !== -1;
+    return role === 'operator' ||
+      role.indexOf('operator-') === 0 ||
+      role.indexOf('-operator') !== -1 ||
+      role.indexOf('operator') !== -1;
   }
 
-  function isOperatorEmail(email) {
-    email = normalizeEmail(email);
-    return !!(email && OPERATOR_EMAILS_WITHOUT_DASHBOARD[email]);
+  function isOperatorSheetPage(pageKey) {
+    pageKey = normalize(String(pageKey || '')).replace(/\s+/g, '-');
+    return !!OPERATOR_SHEET_PAGES_NO_DASHBOARD[pageKey];
   }
 
-  function isOperatorPage(pageKey) {
-    pageKey = normalize(pageKey || currentPageKey());
-    return !!OPERATOR_PAGES_WITHOUT_DASHBOARD[pageKey];
+  function isOperatorUiContext() {
+    try {
+      var txt = normalize((document.getElementById('roleChip') || {}).textContent || '');
+      return txt.indexOf('operator') !== -1;
+    } catch (_) {
+      return false;
+    }
   }
 
-  function shouldDisableDashboardBack(role) {
-    return isOperatorPage(currentPageKey()) || isOperatorRole(role) || isOperatorEmail(readEmailSync());
+  function isOperatorEmailContext() {
+    try {
+      var email = normalize(readStorage('rf_user_email') || readStorage('user_email') || readStorage('email'));
+      return email === 'op@tratament.local' || email.indexOf('@tratament.local') !== -1;
+    } catch (_) {
+      return false;
+    }
   }
 
   function isDashboardHref(href) {
@@ -3769,19 +3762,16 @@ async function applyDomPermissions(pageKey, root, options) {
   async function refreshDashboardBackButton() {
     if (refreshing) return;
     var pageKey = currentPageKey();
-    if (EXCLUDED_PAGES[pageKey]) {
-      removeAutoButton();
-      return;
-    }
+    if (EXCLUDED_PAGES[pageKey]) return;
     if (!document.body) return;
 
     refreshing = true;
     try {
       var role = await resolveRole();
-      var dashboardDisabled = shouldDisableDashboardBack(role);
+      var operator = isOperatorRole(role) || isOperatorSheetPage(pageKey) || isOperatorUiContext() || isOperatorEmailContext();
       var items = dashboardCandidates();
 
-      if (dashboardDisabled) {
+      if (operator) {
         removeAutoButton();
         items.forEach(rememberAndHide);
         return;
