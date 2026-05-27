@@ -69,7 +69,10 @@ const ORIGINAL_TEMPLATES = JSON.parse(JSON.stringify(DATA.templates || {}));
 const KNOWN_REPORTS = DATA.reports;
 const TEMPLATE_STORAGE_KEY = 'import_pdf_cote_masuratori_template_edits_v2';
 const LEGACY_TEMPLATE_STORAGE_KEYS = ['import_pdf_cote_masuratori_template_edits_v1'];
+const RUN_STORAGE_KEY = 'capabilitate_proces_forjare_pdf_import_runs_v1';
+const SELECTED_PART_STORAGE_KEY = 'capabilitate_proces_forjare_selected_part_v1';
 let runs = [];
+let persistedRunsByPart = {};
 let customTemplateEdits = {};
 let lastMessages = [];
 const PAGE_KEY = 'capabilitate-proces-forjare';
@@ -326,12 +329,92 @@ function updateRunCell(cell) {
   run.valuesByName = run.valuesByName || {};
   run.valuesByNr[rowIndex + 1] = val;
   run.valuesByName[rowKey(row)] = val;
+  saveCurrentRunsToStorage();
+}
+
+function loadRunStorage() {
+  persistedRunsByPart = {};
+  try {
+    const raw = localStorage.getItem(RUN_STORAGE_KEY);
+    if(raw) persistedRunsByPart = JSON.parse(raw) || {};
+  } catch(e) {
+    persistedRunsByPart = {};
+  }
+}
+
+function persistRunStorage() {
+  try { localStorage.setItem(RUN_STORAGE_KEY, JSON.stringify(persistedRunsByPart || {})); } catch(e) {}
+}
+
+function persistSelectedPart() {
+  try { if(partSelect && partSelect.value) localStorage.setItem(SELECTED_PART_STORAGE_KEY, partSelect.value); } catch(e) {}
+}
+
+function getStoredSelectedPart() {
+  try { return localStorage.getItem(SELECTED_PART_STORAGE_KEY) || ''; } catch(e) { return ''; }
+}
+
+function normalizeStoredRun(run) {
+  const meta = Object.assign({}, (run && run.meta) || {});
+  return {
+    part: (run && run.part) || meta.part || '',
+    meta,
+    valuesByName: Object.assign({}, (run && run.valuesByName) || {}),
+    valuesByNr: Object.assign({}, (run && run.valuesByNr) || {}),
+    source: (run && run.source) || 'stored',
+    found: run && run.found,
+    auto: false
+  };
+}
+
+function runForStorage(run) {
+  const stored = normalizeStoredRun(run || {});
+  delete stored.auto;
+  return stored;
+}
+
+function saveCurrentRunsToStorage() {
+  const part = partSelect.value;
+  if(!part) return;
+  const realRuns = (runs || []).filter(r => r && !r.auto);
+  if(realRuns.length) persistedRunsByPart[part] = realRuns.map(runForStorage);
+  else delete persistedRunsByPart[part];
+  persistRunStorage();
+}
+
+function clearStoredRunsForCurrentPart() {
+  const part = partSelect.value;
+  if(part && persistedRunsByPart && Object.prototype.hasOwnProperty.call(persistedRunsByPart, part)) {
+    delete persistedRunsByPart[part];
+    persistRunStorage();
+  }
+}
+
+function loadStoredRunsForPart(part) {
+  const saved = persistedRunsByPart && persistedRunsByPart[part];
+  if(!Array.isArray(saved) || !saved.length) return [];
+  return saved.map(normalizeStoredRun).filter(r => r && r.meta);
+}
+
+function loadRunsForCurrentPart() {
+  const part = partSelect.value;
+  const saved = loadStoredRunsForPart(part);
+  runs = [];
+  if(saved.length) {
+    runs = saved;
+    lastMessages = [`Importul salvat pentru ${part} a fost reîncărcat automat.`];
+    return true;
+  }
+  return loadEmbeddedReportForCurrentPart();
 }
 
 function init() {
   loadTemplateEdits();
+  loadRunStorage();
   partSelect.innerHTML = allParts().map(p=>`<option value="${esc(p)}">${esc(p)}</option>`).join('');
-  loadEmbeddedReportForCurrentPart();
+  const storedPart = getStoredSelectedPart();
+  if(storedPart && TEMPLATES[storedPart]) partSelect.value = storedPart;
+  loadRunsForCurrentPart();
   render();
 }
 function templateRows() { return (TEMPLATES[partSelect.value]||[]).map((r,i)=>({nr:r.nr||i+1,name:r.name||'',nom:r.nom||'',plus:r.plus||'',minus:r.minus||''})); }
@@ -385,16 +468,37 @@ function extractPieceSarjaFromSource(source) {
   if(rest && /^\d+$/.test(rest)) rest = '';
   return {piesa:piece, sarja:rest};
 }
-function extractDateFromPdfHeaderSources(text, fileName, metaDate) {
-  const sources = [metaDate, text, fileName].filter(Boolean).map(String);
-  for(const src of sources) {
-    let m = src.match(/\b(\d{1,2})[.\/-](\d{1,2})[.\/-](20\d{2}|19\d{2})\b/);
-    if(m) return `${m[1].padStart(2,'0')}.${m[2].padStart(2,'0')}.${m[3]}`;
-    m = src.match(/\b(20\d{2}|19\d{2})[.\/-](\d{1,2})[.\/-](\d{1,2})\b/);
-    if(m) return `${m[3].padStart(2,'0')}.${m[2].padStart(2,'0')}.${m[1]}`;
+function parseDateFromSource(src) {
+  const value = String(src || '').replace(/\n/g, ' ');
+  const monthMap = {
+    JANUARY:1,JAN:1,FEBRUARY:2,FEB:2,MARCH:3,MAR:3,APRIL:4,APR:4,MAY:5,JUNE:6,JUN:6,JULY:7,JUL:7,AUGUST:8,AUG:8,SEPTEMBER:9,SEPT:9,SEP:9,OCTOBER:10,OCT:10,NOVEMBER:11,NOV:11,DECEMBER:12,DEC:12
+  };
+  let m = value.match(/\b(\d{1,2})[.\/-](\d{1,2})[.\/-](20\d{2}|19\d{2})\b/);
+  if(m) return `${m[1].padStart(2,'0')}.${m[2].padStart(2,'0')}.${m[3]}`;
+  m = value.match(/\b(20\d{2}|19\d{2})[.\/-](\d{1,2})[.\/-](\d{1,2})\b/);
+  if(m) return `${m[3].padStart(2,'0')}.${m[2].padStart(2,'0')}.${m[1]}`;
+  m = value.match(/\b(JANUARY|JAN|FEBRUARY|FEB|MARCH|MAR|APRIL|APR|MAY|JUNE|JUN|JULY|JUL|AUGUST|AUG|SEPTEMBER|SEPT|SEP|OCTOBER|OCT|NOVEMBER|NOV|DECEMBER|DEC)\s+(\d{1,2}),?\s*(20\d{2}|19\d{2})\b/i);
+  if(m) {
+    const mm = monthMap[m[1].toUpperCase()] || 0;
+    if(mm) return `${m[2].padStart(2,'0')}.${String(mm).padStart(2,'0')}.${m[3]}`;
+  }
+  m = value.match(/\b(\d{1,2})\s+(JANUARY|JAN|FEBRUARY|FEB|MARCH|MAR|APRIL|APR|MAY|JUNE|JUN|JULY|JUL|AUGUST|AUG|SEPTEMBER|SEPT|SEP|OCTOBER|OCT|NOVEMBER|NOV|DECEMBER|DEC),?\s*(20\d{2}|19\d{2})\b/i);
+  if(m) {
+    const mm = monthMap[m[2].toUpperCase()] || 0;
+    if(mm) return `${m[1].padStart(2,'0')}.${String(mm).padStart(2,'0')}.${m[3]}`;
   }
   return '';
 }
+
+function extractDateFromPdfHeaderSources(text, fileName, metaDate) {
+  const sources = [text, fileName, metaDate].filter(Boolean).map(String);
+  for(const src of sources) {
+    const found = parseDateFromSource(src);
+    if(found) return found;
+  }
+  return '';
+}
+
 function buildPdfColumnHeaderInfo(run, text) {
   const meta = (run && run.meta) || {};
   const fileName = meta.fileName || '';
@@ -514,6 +618,54 @@ function fieldsFrom(kind,line,ns,title) {
   if(ns[4]!==undefined) { const n=Number(ns[4]); minus=Number.isFinite(n) ? (n===0?'0':String(-Math.abs(n))) : ns[4]; }
   return {meas:ns[0]||'',nom:ns[1]||'',plus:ns[3]||'',minus};
 }
+async function extractPdfHeaderMetaForColumn(file) {
+  const meta = { date:'' };
+  let text = '';
+  try { text = await extractPdfTextPdfjs(file); } catch(e) { text = ''; }
+  meta.date = extractDateFromPdfHeaderSources(text, file.name, '');
+  if(meta.date || !window.pdfjsLib || !window.Tesseract) return meta;
+  try {
+    const buf = await file.arrayBuffer();
+    const pdf = await pdfjsLib.getDocument({data:buf}).promise;
+    const page = await pdf.getPage(1);
+    const viewport = page.getViewport({scale:2.4});
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d');
+    canvas.width = viewport.width;
+    canvas.height = viewport.height;
+    await page.render({canvasContext:ctx, viewport}).promise;
+    const makeCrop = (sx, sy, sw, sh) => {
+      const crop = document.createElement('canvas');
+      const zoom = 3;
+      crop.width = Math.max(1, Math.floor(sw * zoom));
+      crop.height = Math.max(1, Math.floor(sh * zoom));
+      const cctx = crop.getContext('2d');
+      cctx.drawImage(canvas, sx, sy, sw, sh, 0, 0, crop.width, crop.height);
+      try {
+        const img = cctx.getImageData(0, 0, crop.width, crop.height);
+        for(let i=0;i<img.data.length;i+=4) {
+          const g = Math.round(img.data[i] * 0.299 + img.data[i+1] * 0.587 + img.data[i+2] * 0.114);
+          const v = g < 180 ? 0 : 255;
+          img.data[i] = v; img.data[i+1] = v; img.data[i+2] = v;
+        }
+        cctx.putImageData(img, 0, 0);
+      } catch(_e) {}
+      return crop;
+    };
+    const dateCrop = makeCrop(Math.floor(canvas.width * 0.66), 0, Math.floor(canvas.width * 0.32), Math.max(80, Math.floor(canvas.height * 0.075)));
+    let res = await Tesseract.recognize(dateCrop, 'eng');
+    let ocrText = (res && res.data && res.data.text) ? res.data.text : '';
+    meta.date = extractDateFromPdfHeaderSources(ocrText, file.name, '');
+    if(!meta.date) {
+      const headerCrop = makeCrop(0, 0, canvas.width, Math.max(130, Math.floor(canvas.height * 0.12)));
+      res = await Tesseract.recognize(headerCrop, 'eng');
+      ocrText = (res && res.data && res.data.text) ? res.data.text : '';
+      meta.date = extractDateFromPdfHeaderSources(ocrText, file.name, '');
+    }
+  } catch(e) {}
+  return meta;
+}
+
 function parseOcrText(text, part, fileName) {
   const lines=String(text||'').split(/\r?\n/).map(x=>x.trim()).filter(Boolean);
   const rows=[]; let mode=null;
@@ -531,7 +683,8 @@ function parseOcrText(text, part, fileName) {
 async function importFiles(files) {
   if(!canImportPage()) { lastMessages=['Nu ai drept de import PDF pe această foaie.']; render(); return; }
   lastMessages=[];
-  if(!files.length) { loadEmbeddedReportForCurrentPart(); render(); return; }
+  if(!files.length) { loadRunsForCurrentPart(); render(); return; }
+  saveCurrentRunsToStorage();
   runs = runs.filter(r=>!r.auto);
   importBtn.disabled=true; setProgress(2,'Se pregătește importul...');
   let imported=0, skipped=0, ocrCount=0;
@@ -541,9 +694,19 @@ async function importFiles(files) {
     runs = runs.filter(r => normFile(r.meta && r.meta.fileName || '') !== normFile(file.name));
     try {
       if(rep) {
-        if(imported===0 && runs.length===0 && rep.part && rep.part!==partSelect.value) { partSelect.value=rep.part; }
+        if(imported===0 && runs.length===0 && rep.part && rep.part!==partSelect.value) {
+          partSelect.value=rep.part;
+          persistSelectedPart();
+          loadRunsForCurrentPart();
+          runs = runs.filter(r=>!r.auto);
+          runs = runs.filter(r => normFile(r.meta && r.meta.fileName || '') !== normFile(file.name));
+        }
         if(rep.part!==partSelect.value) { skipped++; lastMessages.push(`Sărit ${file.name}: aparține reperului ${rep.part}.`); continue; }
-        runs.push(runFromReport(rep,file.name)); imported++;
+        setProgress((i/files.length)*100 + 2, `Se citește antetul PDF pentru ${file.name}...`);
+        const headerMeta = await extractPdfHeaderMetaForColumn(file);
+        const run = runFromReport(rep,file.name);
+        if(headerMeta && headerMeta.date) run.meta.date = headerMeta.date;
+        runs.push(run); imported++;
       } else {
         const part=partSelect.value;
         let text='';
@@ -553,11 +716,15 @@ async function importFiles(files) {
         if(foundText<3) { text=await extractPdfOcr(file); run=parseOcrText(text, part, file.name); ocrCount++; }
         runs.push(run); imported++;
       }
+      saveCurrentRunsToStorage();
+      persistSelectedPart();
     } catch(e) { skipped++; lastMessages.push(`Eroare la ${file.name}: ${e.message}`); }
     render();
   }
+  saveCurrentRunsToStorage();
   setProgress(100,`Import finalizat: ${imported} PDF-uri importate, ${skipped} sărite.`); hideProgress(); importBtn.disabled=false; lastMessages.push(`Import finalizat: ${imported} importate, ${skipped} sărite${ocrCount?`, OCR: ${ocrCount}`:''}.`); render();
 }
+
 importBtn.addEventListener('click',()=>{
   const selected = [...document.getElementById('pdfInput').files];
   if(!selected.length){ lastMessages=['Alege mai întâi unul sau mai multe PDF-uri.']; render(); return; }
@@ -588,8 +755,8 @@ table.addEventListener('focusout',(ev)=>{
 
 document.getElementById('saveTemplateBtn').addEventListener('click',()=>{ persistCurrentTemplate(true); render(); });
 document.getElementById('resetTemplateBtn').addEventListener('click',()=>{ resetCurrentTemplate(); });
-document.getElementById('clearBtn').addEventListener('click',()=>{ if(!canEditPage()){ lastMessages=['Nu ai drept de editare pentru curățarea importului.']; render(); return; } runs=[]; lastMessages=[]; resetPdfFileInput(); render(); });
-partSelect.addEventListener('change',()=>{ resetPdfFileInput(); loadEmbeddedReportForCurrentPart(); render(); });
+document.getElementById('clearBtn').addEventListener('click',()=>{ if(!canEditPage()){ lastMessages=['Nu ai drept de editare pentru curățarea importului.']; render(); return; } runs=[]; clearStoredRunsForCurrentPart(); lastMessages=[]; resetPdfFileInput(); render(); });
+partSelect.addEventListener('change',()=>{ persistSelectedPart(); resetPdfFileInput(); loadRunsForCurrentPart(); render(); });
 const pdfInputEl = document.getElementById('pdfInput');
 const choosePdfBtn = document.getElementById('choosePdfBtn');
 const pdfFileLabel = document.getElementById('pdfFileLabel');
