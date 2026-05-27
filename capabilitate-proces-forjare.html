@@ -6,9 +6,9 @@
 <!-- KAD_ACL_MARKER: page_key="capabilitate-proces-forjare" can_view can_edit -->
 <script>window.__KAD_ACL_STATIC_AUDIT__={page_key:"capabilitate-proces-forjare",can_view:true,can_edit:true,canView:true,canEdit:true};</script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="./rf-config.js?v=20260527-capabilitate-fix2"></script>
-<script src="./rf-app-registry.js?v=20260527-capabilitate-fix2"></script>
-<script src="./auth-common.js?v=20260527-capabilitate-fix2"></script>
+<script src="./rf-config.js?v=20260527-capabilitate-import-fix3"></script>
+<script src="./rf-app-registry.js?v=20260527-capabilitate-import-fix3"></script>
+<script src="./auth-common.js?v=20260527-capabilitate-import-fix3"></script>
 <script>try{ if(window.ERPAuth && typeof window.ERPAuth.prehideProtectedPage === 'function') window.ERPAuth.prehideProtectedPage(); }catch(_e){}</script>
 <link rel="stylesheet" href="./kad-nav-shell.css" />
 
@@ -477,15 +477,19 @@ function runSignature(run) {
 }
 
 function removeExactDuplicateRuns(list) {
-  const out = [];
-  const seen = new Set();
-  (list || []).forEach(run => {
+  const outReversed = [];
+  const seenFiles = new Set();
+  const seenSignatures = new Set();
+  (list || []).slice().reverse().forEach(run => {
+    const fileKey = normFile(run && run.meta && run.meta.fileName || '');
     const sig = runSignature(run);
-    if(sig && seen.has(sig)) return;
-    if(sig) seen.add(sig);
-    out.push(run);
+    if(fileKey && seenFiles.has(fileKey)) return;
+    if(sig && seenSignatures.has(sig)) return;
+    if(fileKey) seenFiles.add(fileKey);
+    if(sig) seenSignatures.add(sig);
+    outReversed.push(run);
   });
-  return out;
+  return outReversed.reverse();
 }
 
 function readTemplateStorage() {
@@ -738,7 +742,7 @@ function cleanNumber(s) {
 function numsFromLine(line) {
   const m=String(line).match(/(?<![A-Za-z0-9])[-+]?\d+(?:[\.,]\d+)?(?![A-Za-z0-9])/g); return (m||[]).map(cleanNumber);
 }
-function isAxisLine(line) { return /^(D|Y|Z|X|M|DF|TP|T|Zz)\b/i.test(line.trim()) || /^(1\.|I\.|\||l\.)\s+[-+]?\d/i.test(line.trim()); }
+function isAxisLine(line) { return /^(D|Y|Z|X|M|DF|TP|P|T|Zz)\b/i.test(line.trim()) || /^(1\.|I\.|\||l\.)\s+[-+]?\d/i.test(line.trim()); }
 function isFeatureMainHeader(line) {
   const u = String(line || '').toUpperCase();
   return u.includes('FEATURE') && u.includes('MEAS') && !u.includes('HITS') && !u.includes('MEAS X') && !u.includes('VECTOR') && !u.includes('SEG=');
@@ -751,6 +755,9 @@ function axisLabelFromLine(line) {
   let first = (String(line || '').trim().split(/\s+/)[0] || '').toUpperCase();
   first = first.replace(/[^A-Z]/g,'');
   if(first === 'ZZ') first = 'Z';
+  // PC-DMIS OCR citește uneori linia TP ca simplu „P” sau „T”.
+  // Aceste linii sunt valoarea totală pentru Localisation / -X-Y-Z și nu trebuie să rămână goale.
+  if(first === 'P' || first === 'T') return 'TP';
   if(first === 'X' || first === 'Y' || first === 'Z' || first === 'D' || first === 'M' || first === 'TP' || first === 'DF') return first;
   return first;
 }
@@ -818,6 +825,16 @@ function extractOcrCandidates(text) {
   }
   return candidates;
 }
+function computeTpFromAxis(yValue, yNom, zValue, zNom) {
+  const y = toNum(yValue), yn = toNum(yNom);
+  const z = toNum(zValue), zn = toNum(zNom);
+  if(!Number.isFinite(y) || !Number.isFinite(z)) return '';
+  const dy = Number.isFinite(yn) ? y - yn : y;
+  const dz = Number.isFinite(zn) ? z - zn : z;
+  const tp = 2 * Math.sqrt(dy * dy + dz * dz);
+  if(!Number.isFinite(tp)) return '';
+  return String(Math.round(tp * 1000) / 1000);
+}
 function parseOcrText(text, part, fileName) {
   const tmpl=TEMPLATES[part]||[];
   const candidates = extractOcrCandidates(text);
@@ -825,6 +842,8 @@ function parseOcrText(text, part, fileName) {
   const axisRows = candidates.filter(c => c.kind === 'axis');
   const axisUsed = new Set();
   let featurePtr = 0;
+  let lastLocY = null;
+  let lastLocZ = null;
 
   function takeFeature() {
     while(featurePtr < featureRows.length) {
@@ -856,20 +875,30 @@ function parseOcrText(text, part, fileName) {
     let val='';
     if(key.startsWith('O PIN') || key.startsWith('O BUSHING') || key.startsWith('O LAMAGE')) {
       val = takeAxis('D');
+      lastLocY = null; lastLocZ = null;
     } else if(key.includes('LOCALISATION') && key.includes('SUIVANT AXE 02')) {
       val = takeAxis('Y');
+      lastLocY = { value: val, nom: tr.nom };
     } else if(key.includes('LOCALISATION') && (key.includes('SUIVANT AXE 01') || key.includes('SUIVANT AXE O1') || key.includes('SUIVANT AXE OL'))) {
       val = takeAxis('Z');
+      lastLocZ = { value: val, nom: tr.nom };
     } else if(key.includes('LOCALISATION') && key.includes('X Y Z')) {
       val = takeAxis('TP');
+      // Dacă OCR nu citește linia TP/P, calculăm valoarea totală din cele două axe citite anterior.
+      // Formula corespunde rapoartelor PC-DMIS: 2 * sqrt(devY² + devZ²).
+      if(!val && lastLocY && lastLocZ) val = computeTpFromAxis(lastLocY.value, lastLocY.nom, lastLocZ.value, lastLocZ.nom);
+      lastLocY = null; lastLocZ = null;
     } else if(key.includes('PROFONDEUR')) {
       val = takeAxis(['X','M']);
       if(!val) val = takeFeature();
+      lastLocY = null; lastLocZ = null;
     } else if(key.includes('EPAISSEUR')) {
       val = takeAxis(['M','Z'], {infoOnly:true});
       if(!val) val = takeFeature();
+      lastLocY = null; lastLocZ = null;
     } else {
       val = takeFeature();
+      lastLocY = null; lastLocZ = null;
     }
     valuesByName[key]=val||'';
     valuesByNr[i+1]=val||'';
@@ -930,6 +959,7 @@ async function importFiles(files) {
     } catch(e) { skipped++; lastMessages.push(`Eroare la ${file.name}: ${e.message}`); }
     render();
   }
+  runs = removeExactDuplicateRuns(runs);
   if(imported > 0) await saveCurrentPartCloud({silent:true});
   setProgress(100,`Import finalizat: ${imported} PDF-uri importate, ${skipped} sărite.`); hideProgress(); importBtn.disabled=false; lastMessages.push(`Import finalizat: ${imported} importate, ${skipped} sărite${ocrCount?`, OCR: ${ocrCount}`:''}. Măsurătorile importate au fost salvate în cloud.`); render();
 }
@@ -993,7 +1023,7 @@ if(choosePdfBtn){
     }
   });
 }
-pdfInputEl.addEventListener('change',()=>{ updatePdfFileLabel(); const files=[...pdfInputEl.files]; if(files.length) importFiles(files); });
+pdfInputEl.addEventListener('change',()=>{ updatePdfFileLabel(); });
 document.getElementById('csvBtn').addEventListener('click',()=>{
   if(!canExportPage()){ lastMessages=['Nu ai drept de export pentru această foaie.']; render(); return; }
   const rows=[...table.querySelectorAll('tr')].map(tr=>[...tr.children].map(td=>'"'+td.innerText.replace(/"/g,'""')+'"').join(';')).join('\n');
