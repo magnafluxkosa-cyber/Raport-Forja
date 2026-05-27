@@ -67,7 +67,8 @@ const DATA = {"templates":{"106-1625":[{"nr":1,"name":"PLANEITE -Y-","nom":"0","
 const TEMPLATES = DATA.templates;
 const ORIGINAL_TEMPLATES = JSON.parse(JSON.stringify(DATA.templates || {}));
 const KNOWN_REPORTS = DATA.reports;
-const TEMPLATE_STORAGE_KEY = 'import_pdf_cote_masuratori_template_edits_v1';
+const TEMPLATE_STORAGE_KEY = 'import_pdf_cote_masuratori_template_edits_v2';
+const LEGACY_TEMPLATE_STORAGE_KEYS = ['import_pdf_cote_masuratori_template_edits_v1'];
 let runs = [];
 let customTemplateEdits = {};
 let lastMessages = [];
@@ -191,18 +192,63 @@ function cleanCellText(value, field) {
   return s.replace(',', '.');
 }
 
+function isBlankTemplateValue(v) {
+  return v === null || v === undefined || String(v).replace(/\u00a0/g,' ').trim() === '';
+}
+
+function pickTemplateValue(savedValue, originalValue) {
+  if(isBlankTemplateValue(savedValue) && !isBlankTemplateValue(originalValue)) return String(originalValue);
+  if(savedValue === null || savedValue === undefined) return '';
+  return String(savedValue);
+}
+
+function normalizeSavedTemplateRows(part, savedRows) {
+  const originalRows = Array.isArray(ORIGINAL_TEMPLATES[part]) ? ORIGINAL_TEMPLATES[part] : [];
+  const maxLen = Math.max(savedRows.length, originalRows.length);
+  const fixed = [];
+  for(let i=0;i<maxLen;i++) {
+    const r = savedRows[i] || {};
+    const o = originalRows[i] || {};
+    fixed.push({
+      nr: Number(r.nr || o.nr || i + 1),
+      name: isBlankTemplateValue(r.name) ? String(o.name || '') : String(r.name || ''),
+      nom: pickTemplateValue(r.nom, o.nom),
+      plus: pickTemplateValue(r.plus, o.plus),
+      minus: pickTemplateValue(r.minus, o.minus)
+    });
+  }
+  return fixed;
+}
+
+function readTemplateStorage() {
+  const keys = [TEMPLATE_STORAGE_KEY].concat(LEGACY_TEMPLATE_STORAGE_KEYS || []);
+  for(const key of keys) {
+    try {
+      const raw = localStorage.getItem(key);
+      if(raw) return JSON.parse(raw) || {};
+    } catch(e) {}
+  }
+  return {};
+}
+
 function loadTemplateEdits() {
   customTemplateEdits = {};
   try {
-    const raw = localStorage.getItem(TEMPLATE_STORAGE_KEY);
-    if(raw) customTemplateEdits = JSON.parse(raw) || {};
+    customTemplateEdits = readTemplateStorage();
   } catch(e) {
     customTemplateEdits = {};
     lastMessages = ['Nu pot citi salvările locale pentru cote/toleranțe în acest browser.'];
   }
+
+  let repaired = false;
   Object.keys(customTemplateEdits).forEach(part => {
     if(Array.isArray(customTemplateEdits[part])) {
-      TEMPLATES[part] = customTemplateEdits[part].map((r,i)=>({
+      const normalized = normalizeSavedTemplateRows(part, customTemplateEdits[part]);
+      const before = JSON.stringify(customTemplateEdits[part]);
+      const after = JSON.stringify(normalized);
+      if(before !== after) repaired = true;
+      customTemplateEdits[part] = normalized;
+      TEMPLATES[part] = normalized.map((r,i)=>({
         nr: r.nr || i + 1,
         name: r.name || '',
         nom: r.nom || '',
@@ -211,6 +257,11 @@ function loadTemplateEdits() {
       }));
     }
   });
+
+  if(repaired) {
+    try { localStorage.setItem(TEMPLATE_STORAGE_KEY, JSON.stringify(customTemplateEdits || {})); } catch(e) {}
+    lastMessages = ['Cotele/toleranțele salvate greșit local au fost reparate automat din baza inițială.'];
+  }
 }
 
 function persistTemplateEdits() {
