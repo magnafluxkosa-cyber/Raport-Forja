@@ -705,19 +705,33 @@ async function extractPdfOcr(file) {
   for(let p=1;p<=pdf.numPages;p++) {
     setProgress(15 + (p-1)/pdf.numPages*70, `OCR ${file.name} — pagina ${p}/${pdf.numPages}...`);
     const page=await pdf.getPage(p);
-    const viewport=page.getViewport({scale:2.15});
+    const viewport=page.getViewport({scale:2.35});
     const canvas=document.createElement('canvas');
     const ctx=canvas.getContext('2d', { willReadFrequently:true });
     canvas.width=viewport.width; canvas.height=viewport.height;
     await page.render({canvasContext:ctx,viewport}).promise;
-    const res=await Tesseract.recognize(canvas,'eng',{
+    const res6=await Tesseract.recognize(canvas,'eng',{
       tessedit_pageseg_mode:'6',
       preserve_interword_spaces:'1'
     });
-    all += '\n' + (res.data && res.data.text ? res.data.text : '');
+    const text6 = res6.data && res6.data.text ? res6.data.text : '';
+    all += '\n' + text6;
+
+    // PSM 6 citește bine majoritatea tabelelor, dar pe unele pagini sare linia TP
+    // (valoarea totală pentru Localisation / -X-Y-Z). PSM 3 citește mai bine TP.
+    if(/LOCALISATION|LOC_|-X-Y-Z/i.test(text6)) {
+      const res3=await Tesseract.recognize(canvas,'eng',{
+        tessedit_pageseg_mode:'3',
+        preserve_interword_spaces:'1'
+      });
+      const text3 = res3.data && res3.data.text ? res3.data.text : '';
+      const tpLines = text3.split(/\r?\n/).map(x=>x.trim()).filter(x=>/^TP\b/i.test(x)).join('\n');
+      if(tpLines) all += '\n' + tpLines;
+    }
   }
   return all;
 }
+
 function cleanNumber(s) {
   if(!s) return ''; s=String(s).replace(',', '.').replace(/[^0-9+\-.]/g,''); if(/^0\d{3}$/.test(s)) s='0.'+s.slice(1); return s;
 }
@@ -725,31 +739,159 @@ function numsFromLine(line) {
   const m=String(line).match(/(?<![A-Za-z0-9])[-+]?\d+(?:[\.,]\d+)?(?![A-Za-z0-9])/g); return (m||[]).map(cleanNumber);
 }
 function isAxisLine(line) { return /^(D|Y|Z|X|M|DF|TP|T|Zz)\b/i.test(line.trim()) || /^(1\.|I\.|\||l\.)\s+[-+]?\d/i.test(line.trim()); }
+function isFeatureMainHeader(line) {
+  const u = String(line || '').toUpperCase();
+  return u.includes('FEATURE') && u.includes('MEAS') && !u.includes('HITS') && !u.includes('MEAS X') && !u.includes('VECTOR') && !u.includes('SEG=');
+}
+function isAxisMainHeader(line) {
+  const u = String(line || '').toUpperCase();
+  return u.includes('MEAS') && u.includes('NOMINAL') && (/^(AX|AK|A|X)\b/i.test(line) || /\bAX\b/i.test(line) || /\bAK\b/i.test(line));
+}
+function axisLabelFromLine(line) {
+  let first = (String(line || '').trim().split(/\s+/)[0] || '').toUpperCase();
+  first = first.replace(/[^A-Z]/g,'');
+  if(first === 'ZZ') first = 'Z';
+  if(first === 'X' || first === 'Y' || first === 'Z' || first === 'D' || first === 'M' || first === 'TP' || first === 'DF') return first;
+  return first;
+}
+function normalizeMeasuredValue(value, label) {
+  let s = cleanNumber(value);
+  const n = Number(s);
+  if(Number.isFinite(n) && (label === 'Y' || label === 'Z' || label === 'TP')) return String(Math.round(Math.abs(n) * 1000) / 1000);
+  return s;
+}
+function candidateMeas(candidate, title) {
+  if(!candidate || !candidate.ns || !candidate.ns.length) return '';
+  const ns = candidate.ns;
+  const label = candidate.label || '';
+  if(candidate.kind === 'feature') return cleanNumber(ns[0] || '');
+  if(label === 'TP') return normalizeMeasuredValue(ns[0] || '', label);
+  if(label === 'D' || label === 'X' || label === 'M' || label === 'Y' || label === 'Z') return normalizeMeasuredValue(ns[0] || '', label);
+  return cleanNumber(ns[0] || '');
+}
 function fieldsFrom(kind,line,ns,title) {
   const tu=normText(title);
   if(!ns.length) return {meas:'',nom:'',plus:'',minus:''};
   if(kind==='feature') {
-    if(tu.includes('PROFIL DE SURFACE')) return {meas:ns[0]||'',nom:ns[1]||'',plus:ns[2]||'',minus:ns[2]?'0':''};
-    return {meas:ns[0]||'',nom:ns[1]||'',plus:ns[3]||'',minus:ns[4]||''};
+    if(tu.includes('PROFIL DE SURFACE')) return {meas:cleanNumber(ns[0]||''),nom:cleanNumber(ns[1]||''),plus:cleanNumber(ns[2]||''),minus:ns[2]?'0':''};
+    return {meas:cleanNumber(ns[0]||''),nom:cleanNumber(ns[1]||''),plus:cleanNumber(ns[3]||''),minus:cleanNumber(ns[4]||'')};
   }
-  const first=(line.trim().split(/\s+/)[0]||'').toUpperCase();
-  if(first.startsWith('1')||first==='I.'||first==='|'||first==='L.') return {meas:ns[1]||ns[0]||'',nom:'0',plus:ns[3]||'',minus:ns[3]?'0':''};
-  let minus='';
-  if(ns[4]!==undefined) { const n=Number(ns[4]); minus=Number.isFinite(n) ? (n===0?'0':String(-Math.abs(n))) : ns[4]; }
-  return {meas:ns[0]||'',nom:ns[1]||'',plus:ns[3]||'',minus};
+  const first=axisLabelFromLine(line);
+  if(first==='TP') return {meas:normalizeMeasuredValue(ns[0]||'', first),nom:'0',plus:cleanNumber(ns[2]||''),minus:'0'};
+  if(first==='Y'||first==='Z') return {meas:normalizeMeasuredValue(ns[0]||'', first),nom:cleanNumber(ns[1]||''),plus:'',minus:''};
+  if(first==='D'||first==='X'||first==='M') return {meas:normalizeMeasuredValue(ns[0]||'', first),nom:cleanNumber(ns[1]||''),plus:cleanNumber(ns[3]||''),minus:cleanNumber(ns[4]||'')};
+  return {meas:cleanNumber(ns[0]||''),nom:cleanNumber(ns[1]||''),plus:cleanNumber(ns[3]||''),minus:cleanNumber(ns[4]||'')};
+}
+function addUniqueCandidate(list, candidate) {
+  if(!candidate || !candidate.ns || !candidate.ns.length) return;
+  const sig = [candidate.kind, candidate.label || '', cleanNumber(candidate.ns[0] || ''), cleanNumber(candidate.ns[1] || ''), String(candidate.line || '').slice(0,24)].join('|');
+  if(list.some(x => [x.kind, x.label || '', cleanNumber(x.ns[0] || ''), cleanNumber(x.ns[1] || ''), String(x.line || '').slice(0,24)].join('|') === sig)) return;
+  list.push(candidate);
+}
+function extractOcrCandidates(text) {
+  const lines=String(text||'').split(/\r?\n/).map(x=>x.trim()).filter(Boolean);
+  const candidates=[]; let mode=null; let inInfo=false;
+  for(const line of lines) {
+    const u=line.toUpperCase();
+    if(u.includes('POUR INFORMATION')) inInfo=true;
+    if(isFeatureMainHeader(line)) { mode='feature'; continue; }
+    if(isAxisMainHeader(line)) { mode='axis'; continue; }
+    if(mode==='feature') {
+      const ns=numsFromLine(line);
+      if(ns.length>=3) { addUniqueCandidate(candidates,{kind:'feature',label:'FEATURE',line,ns,info:inInfo}); mode=null; }
+      continue;
+    }
+    if(mode==='axis') {
+      const ns=numsFromLine(line);
+      if(/^\d\s*\/\s*\d$/.test(line)) { mode=null; continue; }
+      if(ns.length && isAxisLine(line)) {
+        const lab=axisLabelFromLine(line);
+        if(lab && lab!=='DF') addUniqueCandidate(candidates,{kind:'axis',label:lab,line,ns,info:inInfo});
+        continue;
+      }
+    }
+    // TP is sometimes recovered from an additional OCR pass and appended without the original AX header.
+    if(/^\s*TP\b/i.test(line)) {
+      const ns=numsFromLine(line);
+      if(ns.length) addUniqueCandidate(candidates,{kind:'axis',label:'TP',line,ns,info:inInfo});
+    }
+  }
+  return candidates;
 }
 function parseOcrText(text, part, fileName) {
-  const lines=String(text||'').split(/\r?\n/).map(x=>x.trim()).filter(Boolean);
-  const rows=[]; let mode=null;
-  for(const line of lines) { const u=line.toUpperCase();
-    if(u.includes('FEATURE') && u.includes('MEAS')) { mode='feature'; continue; }
-    if(u.includes('MEAS') && u.includes('NOMINAL') && (/^(AX|AK|A|X)\b/i.test(line) || /\bAX\b/i.test(line) || /\bAK\b/i.test(line))) { mode='axis'; continue; }
-    if(mode==='feature') { const ns=numsFromLine(line); if(ns.length>=3) { rows.push(['feature',line,ns]); mode=null; } continue; }
-    if(mode==='axis') { const ns=numsFromLine(line); if(/^\d\s*\/\s*\d$/.test(line)) { mode=null; continue; } if(ns.length && isAxisLine(line)) { const lab=(line.split(/\s+/)[0]||'').toUpperCase(); if(lab!=='DF') rows.push(['axis',line,ns]); continue; } }
+  const tmpl=TEMPLATES[part]||[];
+  const candidates = extractOcrCandidates(text);
+  const featureRows = candidates.filter(c => c.kind === 'feature');
+  const axisRows = candidates.filter(c => c.kind === 'axis');
+  const axisUsed = new Set();
+  let featurePtr = 0;
+
+  function takeFeature() {
+    while(featurePtr < featureRows.length) {
+      const c = featureRows[featurePtr++];
+      const v = candidateMeas(c);
+      if(v !== '') return v;
+    }
+    return '';
   }
-  const tmpl=TEMPLATES[part]||[]; const valuesByName={}, valuesByNr={};
-  tmpl.forEach((tr,i)=>{ const rr=rows[i]; const f=rr?fieldsFrom(rr[0],rr[1],rr[2],tr.name):{meas:''}; valuesByName[normText(tr.name)]=f.meas||''; valuesByNr[i+1]=f.meas||''; });
-  return repairRunForKnownIssues({part,meta:{fileName,date:'',sarja:'',piesa:fileName.replace(/\.pdf$/i,'')},valuesByName,valuesByNr,source:'ocr',found:rows.length}, part);
+  function takeAxis(label, opts={}) {
+    const wanted = Array.isArray(label) ? label : [label];
+    const start = opts.infoOnly ? axisRows.findIndex(c => c.info && !axisUsed.has(c)) : 0;
+    for(let i=Math.max(0,start); i<axisRows.length; i++) {
+      const c = axisRows[i];
+      if(axisUsed.has(c)) continue;
+      if(opts.infoOnly && !c.info) continue;
+      if(wanted.includes(c.label)) {
+        axisUsed.add(c);
+        return candidateMeas(c);
+      }
+    }
+    if(opts.infoOnly) return takeAxis(label, Object.assign({}, opts, {infoOnly:false}));
+    return '';
+  }
+
+  const valuesByName={}, valuesByNr={};
+  tmpl.forEach((tr,i)=>{
+    const key=normText(tr.name);
+    let val='';
+    if(key.startsWith('O PIN') || key.startsWith('O BUSHING') || key.startsWith('O LAMAGE')) {
+      val = takeAxis('D');
+    } else if(key.includes('LOCALISATION') && key.includes('SUIVANT AXE 02')) {
+      val = takeAxis('Y');
+    } else if(key.includes('LOCALISATION') && (key.includes('SUIVANT AXE 01') || key.includes('SUIVANT AXE O1') || key.includes('SUIVANT AXE OL'))) {
+      val = takeAxis('Z');
+    } else if(key.includes('LOCALISATION') && key.includes('X Y Z')) {
+      val = takeAxis('TP');
+    } else if(key.includes('PROFONDEUR')) {
+      val = takeAxis(['X','M']);
+      if(!val) val = takeFeature();
+    } else if(key.includes('EPAISSEUR')) {
+      val = takeAxis(['M','Z'], {infoOnly:true});
+      if(!val) val = takeFeature();
+    } else {
+      val = takeFeature();
+    }
+    valuesByName[key]=val||'';
+    valuesByNr[i+1]=val||'';
+  });
+  return repairRunForKnownIssues({part,meta:{fileName,date:'',sarja:'',piesa:fileName.replace(/\.pdf$/i,'')},valuesByName,valuesByNr,source:'ocr',found:Object.values(valuesByNr).filter(Boolean).length}, part);
+}
+function mergeRuns(primary, secondary, part) {
+  const tmpl=TEMPLATES[part]||[];
+  const out = secondary || primary;
+  if(!primary || !secondary) return out;
+  out.valuesByNr = Object.assign({}, secondary.valuesByNr || {});
+  out.valuesByName = Object.assign({}, secondary.valuesByName || {});
+  tmpl.forEach((tr,i)=>{
+    const nr=i+1, key=normText(tr.name);
+    const sv=String(out.valuesByNr[nr] ?? out.valuesByName[key] ?? '').trim();
+    if(!sv) {
+      const pv=String(primary.valuesByNr[nr] ?? primary.valuesByName[key] ?? '').trim();
+      if(pv) { out.valuesByNr[nr]=pv; out.valuesByName[key]=pv; }
+    }
+  });
+  out.found = Object.values(out.valuesByNr || {}).filter(Boolean).length;
+  return repairRunForKnownIssues(out, part);
 }
 async function importFiles(files) {
   if(!canImportPage()) { lastMessages=['Nu ai drept de import PDF pe această foaie.']; render(); return; }
@@ -769,11 +911,20 @@ async function importFiles(files) {
         runs.push(runFromReport(rep,file.name)); imported++;
       } else {
         const part=partSelect.value;
+        const expectedRows = (TEMPLATES[part] || []).length;
         let text='';
         try { text=await extractPdfTextPdfjs(file); } catch(e) { text=''; }
-        let run=parseOcrText(text, part, file.name);
-        const foundText=Object.values(run.valuesByNr||{}).filter(Boolean).length;
-        if(foundText<3) { text=await extractPdfOcr(file); run=parseOcrText(text, part, file.name); ocrCount++; }
+        let textRun=parseOcrText(text, part, file.name);
+        const foundText=Object.values(textRun.valuesByNr||{}).filter(Boolean).length;
+        let run=textRun;
+        // Textul ascuns din PDF conține des doar denumirile cotelor, fără valorile MEAS.
+        // De aceea facem OCR până când se citesc aproape toate rândurile, nu doar primele câteva.
+        if(foundText < Math.max(8, Math.ceil(expectedRows * 0.88))) {
+          const ocrText=await extractPdfOcr(file);
+          const ocrRun=parseOcrText(ocrText, part, file.name);
+          run=mergeRuns(textRun, ocrRun, part);
+          ocrCount++;
+        }
         runs.push(run); imported++;
       }
     } catch(e) { skipped++; lastMessages.push(`Eroare la ${file.name}: ${e.message}`); }
