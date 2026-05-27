@@ -351,6 +351,70 @@ function getRunValue(run,row,idx) {
   if(run.valuesByNr && run.valuesByNr[idx+1]!==undefined) return smartValueForRow(run.valuesByNr[idx+1], row);
   return '';
 }
+function cleanPdfHeaderToken(value) {
+  return String(value||'')
+    .replace(/\.pdf$/i,'')
+    .replace(/[\u2010-\u2015]/g,'-')
+    .replace(/[_.]+/g,' ')
+    .replace(/\b(?:CAT|PDF)\b/gi,' ')
+    .replace(/\bVERS(?:ION)?\b[\s._-]*\d*/gi,' ')
+    .replace(/\bREV(?:ISION)?\b[\s._-]*\d*/gi,' ')
+    .replace(/\s*[-]\s*/g,'-')
+    .replace(/^[\s._-]+|[\s._-]+$/g,'')
+    .replace(/\s{2,}/g,' ')
+    .trim();
+}
+function extractPieceSarjaFromSource(source) {
+  const raw = String(source||'').replace(/\.pdf$/i,'').replace(/[\u2010-\u2015]/g,'-');
+  if(!raw.trim()) return {piesa:'', sarja:''};
+  let section = '';
+  let marker = raw.match(/(?:^|[^A-Za-z0-9])P(?:[^A-Za-z0-9]+)?([0-9][0-9A-Za-z]*)/i);
+  if(marker && marker.index !== undefined) section = raw.slice(marker.index).replace(/^[^Pp]*[Pp][^0-9A-Za-z]*/,'');
+  else section = raw;
+  section = section.replace(/^[\s._-]+/,'');
+  let piece = '';
+  let rest = '';
+  let m = section.match(/^([0-9]+)([A-Za-z]?)(.*)$/);
+  if(m) {
+    piece = m[1];
+    rest = (m[2] ? m[2] : '') + (m[3] || '');
+  }
+  rest = rest.replace(/^[\s._-]+/,'');
+  rest = cleanPdfHeaderToken(rest);
+  if(!piece && /^\d+$/.test(cleanPdfHeaderToken(source))) piece = cleanPdfHeaderToken(source);
+  if(rest && /^\d+$/.test(rest)) rest = '';
+  return {piesa:piece, sarja:rest};
+}
+function extractDateFromPdfHeaderSources(text, fileName, metaDate) {
+  const sources = [metaDate, text, fileName].filter(Boolean).map(String);
+  for(const src of sources) {
+    let m = src.match(/\b(\d{1,2})[.\/-](\d{1,2})[.\/-](20\d{2}|19\d{2})\b/);
+    if(m) return `${m[1].padStart(2,'0')}.${m[2].padStart(2,'0')}.${m[3]}`;
+    m = src.match(/\b(20\d{2}|19\d{2})[.\/-](\d{1,2})[.\/-](\d{1,2})\b/);
+    if(m) return `${m[3].padStart(2,'0')}.${m[2].padStart(2,'0')}.${m[1]}`;
+  }
+  return '';
+}
+function buildPdfColumnHeaderInfo(run, text) {
+  const meta = (run && run.meta) || {};
+  const fileName = meta.fileName || '';
+  const fileInfo = extractPieceSarjaFromSource(fileName);
+  const metaPiesaInfo = extractPieceSarjaFromSource(meta.piesa || '');
+  const metaSarjaInfo = extractPieceSarjaFromSource(meta.sarja || '');
+  let sarja = fileInfo.sarja || metaSarjaInfo.sarja || metaPiesaInfo.sarja || cleanPdfHeaderToken(meta.sarja || '');
+  let piesa = fileInfo.piesa || metaPiesaInfo.piesa || metaSarjaInfo.piesa || cleanPdfHeaderToken(meta.piesa || '');
+  if(sarja && piesa && sarja === piesa) sarja = '';
+  return {
+    date: extractDateFromPdfHeaderSources(text || '', fileName, meta.date || ''),
+    part: (run && run.part) || detectPartFromFileName(fileName) || partSelect.value || '',
+    sarja,
+    piesa
+  };
+}
+function pdfColumnHeaderHtml(run) {
+  const info = buildPdfColumnHeaderInfo(run);
+  return `${esc(info.date)}<br>${esc(info.part)}<br>Sarja: ${esc(info.sarja)}<br>Nr. piesă: ${esc(info.piesa)}`;
+}
 function runFromReport(report, fileName) {
   const valuesByName={}, valuesByNr={};
   (report.rows||[]).forEach((r,i)=>{ valuesByName[normText(r.name)] = r.meas || ''; valuesByNr[r.nr||i+1]=r.meas||''; });
@@ -362,11 +426,8 @@ function render() {
   let h='<thead>';
   h += `<tr class="topTitle"><th colspan="${5+Math.max(1,runs.length)}">Twenty-five part study — ${esc(partSelect.value)}</th></tr>`;
   h += '<tr><th class="sticky1">#</th><th class="sticky2">Denumire măsurătoare</th><th class="sticky3">NOM</th><th class="sticky4">+TOL</th><th class="sticky5">-TOL</th>';
-  if(runs.length) runs.forEach((r,i)=>h+=`<th class="run">PDF ${i+1}</th>`); else h+='<th class="run">Import PDF</th>';
+  if(runs.length) runs.forEach(r=>h+=`<th class="run cellEdit" contenteditable rowspan="2" title="${esc(r.meta.fileName||'')}">${pdfColumnHeaderHtml(r)}</th>`); else h+='<th class="run" rowspan="2">Import PDF</th>';
   h += '</tr><tr><th class="sticky1"></th><th class="sticky2">Data / Sarja / Nr piesă</th><th class="sticky3"></th><th class="sticky4"></th><th class="sticky5"></th>';
-  if(runs.length) runs.forEach(r=>{
-    h += `<th class="run cellEdit" contenteditable title="${esc(r.meta.fileName||'')}">${esc(r.meta.date||'')}<br>${esc(r.meta.sarja||'')}<br>${esc(r.meta.piesa||'')}<div class="smallMuted">${esc(r.meta.fileName||'')}</div></th>`;
-  }); else h+='<th class="blank">—</th>';
   h += '</tr></thead><tbody>';
   rows.forEach((row,idx)=>{
     h += `<tr><td class="sticky1">${idx+1}</td><td class="sticky2 measure cellEdit templateEdit" contenteditable data-template-row="${idx}" data-template-field="name" title="Modifică denumirea cotei">${esc(row.name)}</td><td class="sticky3 cellEdit templateEdit" contenteditable data-template-row="${idx}" data-template-field="nom" title="Modifică NOM">${fmt(row.nom)}</td><td class="sticky4 cellEdit templateEdit" contenteditable data-template-row="${idx}" data-template-field="plus" title="Modifică +TOL">${fmt(row.plus)}</td><td class="sticky5 cellEdit templateEdit" contenteditable data-template-row="${idx}" data-template-field="minus" title="Modifică -TOL">${fmt(row.minus)}</td>`;
@@ -464,7 +525,8 @@ function parseOcrText(text, part, fileName) {
   }
   const tmpl=TEMPLATES[part]||[]; const valuesByName={}, valuesByNr={};
   tmpl.forEach((tr,i)=>{ const rr=rows[i]; const f=rr?fieldsFrom(rr[0],rr[1],rr[2],tr.name):{meas:''}; valuesByName[normText(tr.name)]=f.meas||''; valuesByNr[i+1]=f.meas||''; });
-  return {part,meta:{fileName,date:'',sarja:'',piesa:fileName.replace(/\.pdf$/i,'')},valuesByName,valuesByNr,source:'ocr',found:rows.length};
+  const headerInfo = buildPdfColumnHeaderInfo({part, meta:{fileName,date:extractDateFromPdfHeaderSources(text, fileName, '')}}, text);
+  return {part,meta:{fileName,date:headerInfo.date,sarja:headerInfo.sarja,piesa:headerInfo.piesa},valuesByName,valuesByNr,source:'ocr',found:rows.length};
 }
 async function importFiles(files) {
   if(!canImportPage()) { lastMessages=['Nu ai drept de import PDF pe această foaie.']; render(); return; }
