@@ -33,6 +33,7 @@
     { page_key: 'program-utilaje', page_name: 'Program Utilaje' },
     { page_key: 'registru-mentenanta', page_name: 'Registru de mentenanță' },
     { page_key: 'magnaflux', page_name: 'Magnaflux' },
+    { page_key: 'capabilitate-proces-forjare', page_name: 'Capabilitate Proces Forjare' },
     { page_key: 'magnaflux-operatori', page_name: 'Magnaflux Operatori' },
     { page_key: 'probleme-raportate', page_name: 'Probleme Raportate' },
     { page_key: 'urmarire-actiuni-progres', page_name: 'Urmărire acțiuni și progres' },
