@@ -268,17 +268,13 @@
       -webkit-user-select:none !important;
     }
     td.multi-selected{
-      background:#b7d8ff !important;
-      outline:1px solid rgba(29,78,216,.78) !important;
-      outline-offset:-1px !important;
-      box-shadow:none !important;
+      position:relative;
+      box-shadow:inset 0 0 0 2px #1d4ed8, inset 0 0 0 9999px rgba(96,165,250,.22) !important;
     }
     td.multi-selected .cell-input,
     td.multi-selected .readonly,
     td.multi-selected .cell-static{
       background:transparent !important;
-      color:#071f45 !important;
-      font-weight:800 !important;
     }
     .selection-stats{
       position:fixed;
@@ -5771,7 +5767,7 @@ function getDefaultPermissions(role){
       if(!startCell || !endCell) return;
       state.multiSelect.pendingStartCell = startCell;
       state.multiSelect.pendingEndCell = endCell;
-      state.multiSelect.pendingBaseSelectedKeys = baseSet instanceof Set ? baseSet : new Set();
+      state.multiSelect.pendingBaseSelectedKeys = baseSet instanceof Set ? new Set(Array.from(baseSet)) : new Set();
       if(state.multiSelect.rangeRaf) return;
       state.multiSelect.rangeRaf = requestAnimationFrame(function(){
         state.multiSelect.rangeRaf = 0;
@@ -5861,32 +5857,15 @@ function getDefaultPermissions(role){
       updateSelectionStatsBubble();
     }
 
-    function ensureMultiSelectCache(){
-      const ms = state.multiSelect || (state.multiSelect = {});
-      if(!(ms.selectedKeys instanceof Set)) ms.selectedKeys = new Set();
-      if(!ms.cellByKey || typeof ms.cellByKey !== 'object') ms.cellByKey = Object.create(null);
-      if(!Array.isArray(ms.cellMatrix)) ms.cellMatrix = [];
-      return ms;
-    }
-
     function decorateSelectablePlanCells(){
       if(!els.planBody) return;
-      const ms = ensureMultiSelectCache();
-      ms.cellByKey = Object.create(null);
-      ms.cellMatrix = [];
       const rows = Array.from(els.planBody.querySelectorAll('tr[data-row-id]'));
       rows.forEach((rowEl, rowIndex) => {
-        const rowCells = [];
         Array.from(rowEl.children).forEach((cellEl, colIndex) => {
           if(!cellEl || cellEl.tagName !== 'TD') return;
-          const key = String(rowIndex) + ':' + String(colIndex);
           cellEl.dataset.selRow = String(rowIndex);
           cellEl.dataset.selCol = String(colIndex);
-          cellEl.dataset.selKey = key;
-          rowCells[colIndex] = cellEl;
-          ms.cellByKey[key] = cellEl;
         });
-        ms.cellMatrix[rowIndex] = rowCells;
       });
     }
 
@@ -5938,29 +5917,26 @@ function getDefaultPermissions(role){
 
     function getSelectableCellKey(cell){
       if(!cell) return '';
-      return String(cell.dataset.selKey || (String(cell.dataset.selRow || '') + ':' + String(cell.dataset.selCol || '')));
+      return String(cell.dataset.selRow || '') + ':' + String(cell.dataset.selCol || '');
     }
 
     function getSelectedCellKeySet(){
-      const ms = ensureMultiSelectCache();
-      return new Set(Array.from(ms.selectedKeys || []));
+      const set = new Set();
+      if(!els.planBody) return set;
+      els.planBody.querySelectorAll('td.multi-selected[data-sel-row][data-sel-col]').forEach(cell => {
+        const key = getSelectableCellKey(cell);
+        if(key) set.add(key);
+      });
+      return set;
     }
 
     function setSelectedCellKeySet(keySet){
-      const ms = ensureMultiSelectCache();
-      const wanted = keySet instanceof Set ? new Set(Array.from(keySet)) : new Set(Array.isArray(keySet) ? keySet : []);
-      const current = ms.selectedKeys instanceof Set ? ms.selectedKeys : new Set();
-      current.forEach(key => {
-        if(wanted.has(key)) return;
-        const cell = ms.cellByKey && ms.cellByKey[key];
-        if(cell) cell.classList.remove('multi-selected');
+      const wanted = keySet instanceof Set ? keySet : new Set(Array.isArray(keySet) ? keySet : []);
+      if(!els.planBody) return;
+      els.planBody.querySelectorAll('td[data-sel-row][data-sel-col]').forEach(cell => {
+        const key = getSelectableCellKey(cell);
+        cell.classList.toggle('multi-selected', !!key && wanted.has(key));
       });
-      wanted.forEach(key => {
-        if(current.has(key)) return;
-        const cell = ms.cellByKey && ms.cellByKey[key];
-        if(cell) cell.classList.add('multi-selected');
-      });
-      ms.selectedKeys = wanted;
       recomputeMultiSelectionStats();
     }
 
@@ -5975,29 +5951,24 @@ function getDefaultPermissions(role){
       const maxRow = Math.max(startRow, endRow);
       const minCol = Math.min(startCol, endCol);
       const maxCol = Math.max(startCol, endCol);
-      const ms = ensureMultiSelectCache();
-      for(let row = minRow; row <= maxRow; row += 1){
-        const rowCells = ms.cellMatrix && ms.cellMatrix[row];
-        if(!rowCells) continue;
-        for(let col = minCol; col <= maxCol; col += 1){
-          const cell = rowCells[col];
-          if(!cell) continue;
+      if(!els.planBody) return result;
+      els.planBody.querySelectorAll('td[data-sel-row][data-sel-col]').forEach(cell => {
+        const row = Number(cell.dataset.selRow || 0);
+        const col = Number(cell.dataset.selCol || 0);
+        if(row >= minRow && row <= maxRow && col >= minCol && col <= maxCol){
           const key = getSelectableCellKey(cell);
           if(key) result.add(key);
         }
-      }
+      });
       return result;
     }
 
     function recomputeMultiSelectionStats(){
-      const ms = ensureMultiSelectCache();
-      const selectedKeys = ms.selectedKeys instanceof Set ? ms.selectedKeys : new Set();
+      const selectedCells = els.planBody ? Array.from(els.planBody.querySelectorAll('td.multi-selected')) : [];
       let count = 0;
       let numericCount = 0;
       let sum = 0;
-      selectedKeys.forEach(key => {
-        const cell = ms.cellByKey && ms.cellByKey[key];
-        if(!cell) return;
+      selectedCells.forEach(cell => {
         count += 1;
         const value = parseSelectedCellNumber(cell);
         if(Number.isFinite(value)){
@@ -6015,16 +5986,9 @@ function getDefaultPermissions(role){
     }
 
     function clearMultiCellSelection(skipStatsUpdate){
-      const ms = ensureMultiSelectCache();
-      if(ms.selectedKeys instanceof Set && ms.selectedKeys.size){
-        ms.selectedKeys.forEach(key => {
-          const cell = ms.cellByKey && ms.cellByKey[key];
-          if(cell) cell.classList.remove('multi-selected');
-        });
-      }else if(els.planBody){
+      if(els.planBody){
         els.planBody.querySelectorAll('td.multi-selected').forEach(cell => cell.classList.remove('multi-selected'));
       }
-      ms.selectedKeys = new Set();
       stopMultiSelectAutoScroll();
       if(state.multiSelect){
         if(state.multiSelect.rangeRaf){
