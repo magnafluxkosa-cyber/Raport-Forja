@@ -6,9 +6,9 @@
 <!-- KAD_ACL_MARKER: page_key="capabilitate-proces-forjare" can_view can_edit -->
 <script>window.__KAD_ACL_STATIC_AUDIT__={page_key:"capabilitate-proces-forjare",can_view:true,can_edit:true,canView:true,canEdit:true};</script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="./rf-config.js?v=20260528-capabilitate-header-date-fix"></script>
-<script src="./rf-app-registry.js?v=20260528-capabilitate-header-date-fix"></script>
-<script src="./auth-common.js?v=20260528-capabilitate-header-date-fix"></script>
+<script src="./rf-config.js?v=20260528-capabilitate-date-dedupe-fix"></script>
+<script src="./rf-app-registry.js?v=20260528-capabilitate-date-dedupe-fix"></script>
+<script src="./auth-common.js?v=20260528-capabilitate-date-dedupe-fix"></script>
 <script>try{ if(window.ERPAuth && typeof window.ERPAuth.prehideProtectedPage==='function') window.ERPAuth.prehideProtectedPage(); }catch(_e){}</script>
 <link rel="stylesheet" href="./kad-nav-shell.css">
 <title>Capabilitate Proces Forjare - K.A.D</title>
@@ -67,8 +67,8 @@ const MODEL_READ_SCALE = 3;
 })();
 const STORAGE_KEY = 'kad_capabilitate_proces_forjare_meas_imports_v6_anchor_lines_fix';
 const CLOUD_DOC_KEY = 'capabilitate_proces_forjare_measurements_cloud_v1';
-const PDF_CACHE_KEY = 'kad_capabilitate_proces_forjare_pdf_cache_header_date_fix_v1';
-const PDF_CACHE_VERSION = 'header-date-fix-20260528';
+const PDF_CACHE_KEY = 'kad_capabilitate_proces_forjare_pdf_cache_date_dedupe_fix_v1';
+const PDF_CACHE_VERSION = 'date-dedupe-fix-20260528';
 const PAGE_KEY = 'capabilitate-proces-forjare';
 let cloudStatus = 'Cloud: se încarcă';
 let cloudSaveTimer = null;
@@ -299,6 +299,32 @@ function runValuesSignature(run){
     .map(k=>k+':'+String(run.valuesByNr[k]))
     .join(';');
 }
+function hasValidRunDate(run){
+  return /^\d{2}\.\d{2}\.\d{4}$/.test(String((run&&run.header&&run.header.date)||''));
+}
+function runValueCount(run){
+  return Object.keys((run&&run.valuesByNr)||{}).filter(k=>String((run.valuesByNr||{})[k]??'').trim()!=='').length;
+}
+function mergeRunsPreferBest(oldRun,newRun){
+  const a=sanitizeRun(oldRun||{});
+  const b=sanitizeRun(newRun||{});
+  const out=sanitizeRun({header:Object.assign({},a.header||{},b.header||{}),valuesByNr:Object.assign({},a.valuesByNr||{},b.valuesByNr||{}),valuesByName:Object.assign({},a.valuesByName||{},b.valuesByName||{})});
+  // Dacă una dintre coloane are data citită corect din PDF, o păstrăm mereu.
+  if(!hasValidRunDate(out) && hasValidRunDate(a)) out.header.date=a.header.date;
+  if(hasValidRunDate(a) && !hasValidRunDate(b)) out.header.date=a.header.date;
+  if(hasValidRunDate(b)) out.header.date=b.header.date;
+  if(!out.header.fileName && a.header.fileName) out.header.fileName=a.header.fileName;
+  if(!out.header.part && a.header.part) out.header.part=a.header.part;
+  if(!out.header.sarja && a.header.sarja) out.header.sarja=a.header.sarja;
+  if(!out.header.piece && a.header.piece) out.header.piece=a.header.piece;
+  const ca=runValueCount(a), cb=runValueCount(b);
+  // Dacă noul import a citit mai puține valori, nu aruncăm valorile bune vechi.
+  if(ca>cb){
+    out.valuesByNr=Object.assign({},b.valuesByNr||{},a.valuesByNr||{});
+    out.valuesByName=Object.assign({},b.valuesByName||{},a.valuesByName||{});
+  }
+  return sanitizeRun(out);
+}
 function runDuplicateKey(run){
   run=sanitizeRun(run||{});
   const h=run.header||{};
@@ -307,19 +333,20 @@ function runDuplicateKey(run){
   const sarja=sanitizeHeaderField(h.sarja||'');
   const piece=sanitizeHeaderField(h.piece||'');
   const file=normFile(h.fileName||'');
-  const size=String(h.fileSize||h.size||'');
-  const modified=String(h.fileLastModified||h.lastModified||'');
 
-  // Dublura reală pentru un PDF importat este același fișier, nu data citită din el.
-  // Data poate fi corectată ulterior din header-ul PDF-ului; dacă data ar rămâne în cheie,
-  // același PDF ar putea apărea de două ori sau o coloană veche cu dată greșită ar rămâne în cloud.
+  // Același nume de PDF pentru același reper este aceeași piesă importată.
+  // Nu folosim data în cheie, pentru că data poate fi corectată din PDF după import.
+  // Nu folosim size/lastModified, pentru că datele venite din cloud nu le au întotdeauna.
   if(file){
-    return 'FILE|' + [part,file,size,modified].map(v=>normText(v)).join('|');
+    return 'FILE|' + [part,file].map(v=>normText(v)).join('|');
   }
 
   const vals=runValuesSignature(run);
   if(part && date && sarja && piece && vals){
     return 'DATA|' + [part,date,sarja,piece,vals].map(v=>normText(v)).join('|');
+  }
+  if(part && sarja && piece && vals){
+    return 'DATA_NODATE|' + [part,sarja,piece,vals].map(v=>normText(v)).join('|');
   }
   if(part && date && sarja && piece){
     return 'META|' + [part,date,sarja,piece].map(v=>normText(v)).join('|');
@@ -332,8 +359,12 @@ function dedupeRunsList(list){
   for(const item of (list||[])){
     const run=sanitizeRun(item);
     const key=runDuplicateKey(run);
-    if(byKey.has(key)) removed++;
-    byKey.set(key,run);
+    if(byKey.has(key)){
+      removed++;
+      byKey.set(key,mergeRunsPreferBest(byKey.get(key),run));
+    }else{
+      byKey.set(key,run);
+    }
   }
   const out=sortRunsList(Array.from(byKey.values()));
   return {list:out, removed};
@@ -384,7 +415,7 @@ function replaceDuplicateRun(part,run){
   const list=(runsByPart[part]||[]).slice();
   let replaced=false;
   const out=list.map(existing=>{
-    if(runDuplicateKey(existing)===key){replaced=true;return sanitizeRun(run);}
+    if(runDuplicateKey(existing)===key){replaced=true;return mergeRunsPreferBest(existing,run);}
     return sanitizeRun(existing);
   });
   if(replaced){
@@ -461,6 +492,7 @@ function loadRunsForPart(){
   if(res.removed){
     if(runs.length) runsByPart[partSelect.value]=runs; else delete runsByPart[partSelect.value];
     saveStorage();
+    try{ saveStorageToCloud(false); }catch(_e){}
     lastMessages=[`Au fost eliminate automat ${res.removed} dubluri existente pentru reperul curent.`];
   }
   updateDateFilters();
@@ -1431,6 +1463,13 @@ async function readPdf(file,index,total){
   const cached=getCachedPdfRun(file);
   if(cached){
     cached.header=cached.header||{};
+    if(!hasValidRunDate(cached)){
+      try{
+        const fixedDate=await readHeaderDateFast(file);
+        if(fixedDate) cached.header.date=fixedDate;
+      }catch(_e){}
+      setCachedPdfRun(file,cached);
+    }
     cached.header.source='cache-local';
     return cached;
   }
@@ -1449,6 +1488,12 @@ async function readPdf(file,index,total){
   if(!model) throw new Error(`Nu există model PDF pentru reperul ${part||'nedetectat'}.`);
   const rendered={};
   const header=await readPdfHeaderFromModel(pdf,model,file.name,rendered);
+  if(!header.date){
+    try{
+      const fixedDate=await readHeaderDateFast(file);
+      if(fixedDate) header.date=fixedDate;
+    }catch(_e){}
+  }
   if(header.part && PDF_MODEL_COORDS[header.part]){ part=header.part; model=PDF_MODEL_COORDS[part]; }
   const rows=TEMPLATES[part]||[];
   const valuesByNr={}, valuesByName={};
