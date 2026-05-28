@@ -4222,8 +4222,176 @@ async function applyDomPermissions(pageKey, root, options) {
     }
   }
 
+  var deferredInstallPrompt = null;
+  var INSTALL_DISMISS_KEY = 'kad_pwa_install_dismissed_until_v1';
+  var INSTALL_BANNER_ID = 'kadPwaInstallBanner';
+
+  function isStandaloneMode(){
+    try {
+      if (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) return true;
+      if (window.navigator && window.navigator.standalone === true) return true;
+    } catch (_) {}
+    return false;
+  }
+
+  function isIosDevice(){
+    try {
+      var ua = String(window.navigator && window.navigator.userAgent || '').toLowerCase();
+      var platform = String(window.navigator && window.navigator.platform || '').toLowerCase();
+      var maxTouch = Number(window.navigator && window.navigator.maxTouchPoints || 0);
+      return /iphone|ipad|ipod/.test(ua) || (platform === 'macintel' && maxTouch > 1);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function storageGet(key){
+    try { return window.localStorage ? window.localStorage.getItem(key) : null; } catch (_) { return null; }
+  }
+
+  function storageSet(key, value){
+    try { if (window.localStorage) window.localStorage.setItem(key, value); } catch (_) {}
+  }
+
+  function wasInstallDismissed(){
+    var raw = storageGet(INSTALL_DISMISS_KEY);
+    var until = raw ? Number(raw) : 0;
+    return until && Date.now() < until;
+  }
+
+  function dismissInstallBanner(days){
+    var d = Number(days || 7);
+    storageSet(INSTALL_DISMISS_KEY, String(Date.now() + d * 24 * 60 * 60 * 1000));
+    hideInstallBanner();
+  }
+
+  function hideInstallBanner(){
+    var existing = document.getElementById(INSTALL_BANNER_ID);
+    if (existing && existing.parentNode) existing.parentNode.removeChild(existing);
+  }
+
+  function ensureInstallBannerStyle(){
+    if (document.getElementById('kadPwaInstallBannerStyle')) return;
+    var style = document.createElement('style');
+    style.id = 'kadPwaInstallBannerStyle';
+    style.textContent = [
+      '#'+INSTALL_BANNER_ID+'{position:fixed;right:16px;bottom:16px;z-index:2147483000;box-sizing:border-box;width:min(360px,calc(100vw - 24px));font-family:Inter,Segoe UI,Arial,sans-serif;background:linear-gradient(135deg,#0f2740,#163a5b);color:#fff;border:1px solid rgba(255,255,255,.22);border-radius:16px;box-shadow:0 16px 42px rgba(0,0,0,.32);padding:14px 14px 12px 14px;display:flex;gap:12px;align-items:flex-start;}',
+      '#'+INSTALL_BANNER_ID+' .kad-pwa-icon{width:38px;height:38px;border-radius:10px;flex:0 0 auto;background:#0b1726;object-fit:cover;border:1px solid rgba(255,255,255,.22);}',
+      '#'+INSTALL_BANNER_ID+' .kad-pwa-body{min-width:0;flex:1 1 auto;}',
+      '#'+INSTALL_BANNER_ID+' .kad-pwa-title{font-size:14px;font-weight:800;line-height:1.2;margin:0 0 4px 0;}',
+      '#'+INSTALL_BANNER_ID+' .kad-pwa-text{font-size:12px;line-height:1.35;margin:0;color:rgba(255,255,255,.86);}',
+      '#'+INSTALL_BANNER_ID+' .kad-pwa-actions{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;}',
+      '#'+INSTALL_BANNER_ID+' button{font:inherit;border:0;border-radius:999px;padding:7px 11px;cursor:pointer;font-size:12px;font-weight:800;}',
+      '#'+INSTALL_BANNER_ID+' .kad-pwa-install{background:#f7b733;color:#071421;}',
+      '#'+INSTALL_BANNER_ID+' .kad-pwa-later{background:rgba(255,255,255,.14);color:#fff;border:1px solid rgba(255,255,255,.18);}',
+      '#'+INSTALL_BANNER_ID+' .kad-pwa-close{position:absolute;top:6px;right:8px;background:transparent;color:rgba(255,255,255,.72);border:0;font-size:18px;line-height:1;padding:3px 6px;}',
+      '@media(max-width:640px){#'+INSTALL_BANNER_ID+'{left:12px;right:12px;bottom:12px;width:auto;border-radius:14px;}}',
+      '@media print{#'+INSTALL_BANNER_ID+'{display:none!important;}}'
+    ].join('\n');
+    (head() || document.documentElement).appendChild(style);
+  }
+
+  function createInstallBanner(mode){
+    if (isStandaloneMode() || wasInstallDismissed()) return;
+    if (!document.body) return;
+    if (document.getElementById(INSTALL_BANNER_ID)) return;
+
+    ensureInstallBannerStyle();
+
+    var isIos = mode === 'ios';
+    var box = document.createElement('div');
+    box.id = INSTALL_BANNER_ID;
+    box.setAttribute('role', 'dialog');
+    box.setAttribute('aria-live', 'polite');
+    box.innerHTML = '' +
+      '<button type="button" class="kad-pwa-close" aria-label="Închide">×</button>' +
+      '<img class="kad-pwa-icon" src="/android-chrome-192x192.png" alt="K.A.D">' +
+      '<div class="kad-pwa-body">' +
+        '<p class="kad-pwa-title">Instalează K.A.D ca aplicație</p>' +
+        '<p class="kad-pwa-text">' + (isIos ? 'Pe iPhone: apasă Share, apoi Add to Home Screen.' : 'Deschide K.A.D direct de pe telefon sau desktop, fără să cauți site-ul în browser.') + '</p>' +
+        '<div class="kad-pwa-actions">' +
+          '<button type="button" class="kad-pwa-install">' + (isIos ? 'Am înțeles' : 'Instalează') + '</button>' +
+          '<button type="button" class="kad-pwa-later">Nu acum</button>' +
+        '</div>' +
+      '</div>';
+
+    var closeBtn = box.querySelector('.kad-pwa-close');
+    var laterBtn = box.querySelector('.kad-pwa-later');
+    var installBtn = box.querySelector('.kad-pwa-install');
+
+    function closeForNow(){ dismissInstallBanner(7); }
+    if (closeBtn) closeBtn.addEventListener('click', closeForNow);
+    if (laterBtn) laterBtn.addEventListener('click', closeForNow);
+
+    if (installBtn) {
+      installBtn.addEventListener('click', function(){
+        if (isIos) {
+          dismissInstallBanner(14);
+          return;
+        }
+        if (!deferredInstallPrompt || typeof deferredInstallPrompt.prompt !== 'function') {
+          dismissInstallBanner(2);
+          return;
+        }
+        installBtn.disabled = true;
+        installBtn.textContent = 'Se deschide...';
+        try {
+          deferredInstallPrompt.prompt();
+          Promise.resolve(deferredInstallPrompt.userChoice).then(function(choice){
+            var outcome = choice && choice.outcome;
+            deferredInstallPrompt = null;
+            if (outcome === 'accepted') hideInstallBanner();
+            else dismissInstallBanner(7);
+          }).catch(function(){
+            deferredInstallPrompt = null;
+            dismissInstallBanner(2);
+          });
+        } catch (_) {
+          deferredInstallPrompt = null;
+          dismissInstallBanner(2);
+        }
+      });
+    }
+
+    document.body.appendChild(box);
+  }
+
+  function scheduleInstallBanner(mode){
+    window.setTimeout(function(){
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', function(){ createInstallBanner(mode); }, { once:true });
+      } else {
+        createInstallBanner(mode);
+      }
+    }, 1200);
+  }
+
+  function bootInstallPrompt(){
+    try {
+      if (isStandaloneMode() || wasInstallDismissed()) return;
+
+      window.addEventListener('beforeinstallprompt', function(event){
+        event.preventDefault();
+        deferredInstallPrompt = event;
+        scheduleInstallBanner('prompt');
+      });
+
+      window.addEventListener('appinstalled', function(){
+        deferredInstallPrompt = null;
+        hideInstallBanner();
+      });
+
+      if (isIosDevice()) {
+        scheduleInstallBanner('ios');
+      }
+    } catch (err) {
+      if (window.console && console.warn) console.warn('K.A.D install prompt unavailable:', err);
+    }
+  }
+
   function bootPwa(){
     ensurePwaHead();
+    bootInstallPrompt();
     if (document.readyState === 'complete') registerServiceWorker();
     else window.addEventListener('load', registerServiceWorker, { once:true });
   }

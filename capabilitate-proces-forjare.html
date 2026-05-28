@@ -6,9 +6,9 @@
 <!-- KAD_ACL_MARKER: page_key="capabilitate-proces-forjare" can_view can_edit -->
 <script>window.__KAD_ACL_STATIC_AUDIT__={page_key:"capabilitate-proces-forjare",can_view:true,can_edit:true,canView:true,canEdit:true};</script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="./rf-config.js?v=20260528-capabilitate-fast-pdf-cache"></script>
-<script src="./rf-app-registry.js?v=20260528-capabilitate-fast-pdf-cache"></script>
-<script src="./auth-common.js?v=20260528-capabilitate-fast-pdf-cache"></script>
+<script src="./rf-config.js?v=20260528-capabilitate-pdf-decimal-retry"></script>
+<script src="./rf-app-registry.js?v=20260528-capabilitate-pdf-decimal-retry"></script>
+<script src="./auth-common.js?v=20260528-capabilitate-pdf-decimal-retry"></script>
 <script>try{ if(window.ERPAuth && typeof window.ERPAuth.prehideProtectedPage==='function') window.ERPAuth.prehideProtectedPage(); }catch(_e){}</script>
 <link rel="stylesheet" href="./kad-nav-shell.css">
 <title>Capabilitate Proces Forjare - K.A.D</title>
@@ -67,8 +67,8 @@ const MODEL_READ_SCALE = 3;
 })();
 const STORAGE_KEY = 'kad_capabilitate_proces_forjare_meas_imports_v6_anchor_lines_fix';
 const CLOUD_DOC_KEY = 'capabilitate_proces_forjare_measurements_cloud_v1';
-const PDF_CACHE_KEY = 'kad_capabilitate_proces_forjare_pdf_cache_fast_v1';
-const PDF_CACHE_VERSION = 'fast-pdf-cache-20260528';
+const PDF_CACHE_KEY = 'kad_capabilitate_proces_forjare_pdf_cache_decimal_retry_v1';
+const PDF_CACHE_VERSION = 'decimal-retry-20260528';
 const PAGE_KEY = 'capabilitate-proces-forjare';
 let cloudStatus = 'Cloud: se încarcă';
 let cloudSaveTimer = null;
@@ -1145,6 +1145,62 @@ function firstNumberToken(text){
   const m=s.match(/[-+]?\d+(?:\.\d+)?/);
   return m?m[0]:'';
 }
+function ocrNumberCandidates(text){
+  let s=String(text||'').replace(/[−–—]/g,'-').replace(/,/g,'.');
+  s=s.replace(/[Oo]/g,'0').replace(/[Il|]/g,'1');
+  const raw=[];
+  let m;
+  const re=/[-+]?\d+(?:\.\d+)?/g;
+  while((m=re.exec(s))!==null) raw.push({v:m[0],i:m.index});
+  const out=[];
+  function add(v,kind){
+    v=String(v||'').replace(/[^0-9+\-.]/g,'');
+    if(!v||v==='-'||v==='+')return;
+    if(!out.some(o=>o.v===v)) out.push({v,kind:kind||'raw'});
+  }
+  raw.forEach((t,idx)=>{
+    add(t.v, t.v.includes('.')?'decimal':'integer');
+    const next=raw[idx+1];
+    if(next && !t.v.includes('.') && !/^[-+]/.test(next.v) && /^\d{1,4}$/.test(next.v)){
+      const base=t.v;
+      const sign=base.startsWith('-')?'-':(base.startsWith('+')?'+':'');
+      const intPart=base.replace(/^[-+]/,'');
+      if(intPart.length<=3){
+        add(sign + intPart + '.' + next.v.padStart(Math.min(3,next.v.length),'0'), 'fused');
+      }
+    }
+    if((t.v==='-'||t.v==='-0'||t.v==='+0') && next && /^\d{1,4}$/.test(next.v)){
+      add('-0.'+next.v.padStart(Math.min(3,next.v.length),'0'), 'fused');
+    }
+  });
+  return out;
+}
+function bestNumberTokenFromOcrText(text,row){
+  const cand=ocrNumberCandidates(text);
+  if(!cand.length) return '';
+  const nom=toNum(row&&row.nom), plus=Math.abs(toNum(row&&row.plus)), minus=Math.abs(toNum(row&&row.minus));
+  const tol=Math.max(Number.isFinite(plus)?plus:0,Number.isFinite(minus)?minus:0);
+  const hasDecimalLike=cand.some(c=>c.kind==='decimal'||c.kind==='fused');
+  let best='',bestScore=Infinity;
+  cand.forEach(c=>{
+    const normalized=normalizeMeasuredValueForRow(c.v,row);
+    const n=toNum(normalized);
+    if(!Number.isFinite(n))return;
+    let sc=0;
+    if(Number.isFinite(nom)) sc+=Math.abs(n-nom);
+    if(Number.isFinite(nom)&&tol>0){
+      const low=nom-(Number.isFinite(minus)?minus:tol)-0.08, high=nom+(Number.isFinite(plus)?plus:tol)+0.08;
+      if(n<low) sc+=(low-n)*25;
+      if(n>high) sc+=(n-high)*25;
+    }
+    if(hasDecimalLike && c.kind==='integer') sc+=4;
+    if(c.kind==='fused') sc-=1.5;
+    if(c.kind==='decimal') sc-=1;
+    if(Math.abs(n)===0 && hasDecimalLike) sc+=2;
+    if(sc<bestScore){bestScore=sc;best=normalized;}
+  });
+  return best || normalizeMeasuredValueForRow(cand[0].v,row);
+}
 
 function hasLeadingMinusShape(src){
   try{
@@ -1194,15 +1250,23 @@ async function readNumericFromCrop(crop,row){
     {psm:7,wl:'0123456789.,-+'},
     {psm:8,wl:'0123456789.,-+'}
   ];
-  let best='';
+  let best='', bestScore=Infinity;
+  const rn=normText(row&&row.name||'');
   for(const v of variants){
     try{
       const txt=await ocrCropText(crop,v.psm,v.wl);
-      let tok=firstNumberToken(txt);
+      let tok=bestNumberTokenFromOcrText(txt,row);
       if(tok){
-        if(row && toNum(row.minus)<0 && Math.abs(toNum(row.nom))<10 && !/^[-+]/.test(tok) && hasLeadingMinusShape(crop)) tok='-'+tok;
+        if(row && toNum(row.minus)<0 && Math.abs(toNum(row.nom))<10 && !/^[-+]/.test(String(tok)) && hasLeadingMinusShape(crop)) tok='-'+tok;
         tok=normalizeMeasuredValueForRow(tok,row);
-        if(tok!=='' && tok!==undefined && tok!==null){best=tok;break;}
+        if(tok!=='' && tok!==undefined && tok!==null){
+          const n=toNum(tok), nom=toNum(row&&row.nom);
+          let sc=Number.isFinite(n)&&Number.isFinite(nom)?Math.abs(n-nom):0;
+          if(/^[+-]?\d+$/.test(String(tok)) && rn.includes('EPAISSEUR')) sc+=6;
+          if(String(tok).includes('.')) sc-=1;
+          if(sc<bestScore){bestScore=sc;best=tok;}
+          if(String(tok).includes('.') && !(rn.includes('EPAISSEUR') && /^[+-]?\d+\.0+$/.test(String(tok)))) break;
+        }
       }
     }catch(_e){}
   }
@@ -1277,6 +1341,46 @@ function relForModelRow(def,row){
   const b=bands[Math.max(0,Math.min(3,Number(def.axisRow)||0))];
   return {x1:.10,y1:b.y1,x2:.23,y2:b.y2};
 }
+
+function isSuspiciousMeasuredValue(part,nr,val,row){
+  if(val===null||val===undefined||val==='') return true;
+  const s=String(val).trim().replace(',', '.');
+  const n=Number(s);
+  if(!Number.isFinite(n)) return true;
+  const rn=normText(row&&row.name||'');
+  const nom=toNum(row&&row.nom);
+  if(rn.includes('EPAISSEUR')){
+    if(/^[+-]?\d+$/.test(s)) return true;
+    if(Number.isFinite(nom) && Math.abs(n-nom)<0.0001) return true;
+  }
+  if(Math.abs(n)===0 && rn && !rn.includes('RECTITUDE') && !rn.includes('PROFIL') && !rn.includes('PARALLELISME')) return true;
+  return false;
+}
+function expandedRel(rel,dx,dy){
+  return {x1:Math.max(0,rel.x1-(dx||0)),y1:Math.max(0,rel.y1-(dy||0)),x2:Math.min(1,rel.x2+(dx||0)),y2:Math.min(1,rel.y2+(dy||0))};
+}
+async function readNumericWithRetries(canvas,page,def,row,baseRel){
+  const rn=normText(row&&row.name||'');
+  const attempts=[];
+  attempts.push({rel:baseRel,zoom:3});
+  attempts.push({rel:expandedRel(baseRel,.045,.035),zoom:3});
+  attempts.push({rel:expandedRel(baseRel,.075,.055),zoom:4});
+  if(rn.includes('EPAISSEUR')){
+    attempts.push({rel:{x1:.085,y1:.40,x2:.38,y2:1},zoom:4});
+    attempts.push({rel:{x1:.07,y1:.34,x2:.44,y2:1},zoom:5});
+  }
+  let best='',bestSuspicious=true;
+  for(const a of attempts){
+    const crop=cropByPdfBBox(canvas,page,def.bbox,a.rel,a.zoom||3);
+    let val=await readNumericFromCrop(crop,row);
+    if(!val) continue;
+    const suspicious=isSuspiciousMeasuredValue('',def.nr,val,row);
+    if(!best || (bestSuspicious && !suspicious) || (String(val).includes('.') && !String(best).includes('.'))){best=val;bestSuspicious=suspicious;}
+    if(!suspicious) return val;
+  }
+  return best;
+}
+
 async function readPdf(file,index,total){
   if(!window.pdfjsLib || !window.Tesseract) throw new Error('PDF.js sau Tesseract.js nu este încărcat.');
   const cached=getCachedPdfRun(file);
@@ -1314,13 +1418,7 @@ async function readPdf(file,index,total){
     const p=rendered[pageNo].page;
     const canvas=rendered[pageNo].canvas;
     const rel=relForModelRow(def,rows[nr-1]);
-    let crop=cropByPdfBBox(canvas,p,def.bbox,rel,3);
-    let val=await readNumericFromCrop(crop,rows[nr-1]);
-    if(!val){
-      const wider=Object.assign({},rel,{x1:Math.max(0,rel.x1-.035),x2:Math.min(1,rel.x2+.04),y1:Math.max(0,rel.y1-.03),y2:Math.min(1,rel.y2+.03)});
-      crop=cropByPdfBBox(canvas,p,def.bbox,wider,3);
-      val=await readNumericFromCrop(crop,rows[nr-1]);
-    }
+    let val=await readNumericWithRetries(canvas,p,def,rows[nr-1],rel);
     if(val){
       val=adjustImportedMeasuredValue(part,nr,val);
       valuesByNr[nr]=String(val);
