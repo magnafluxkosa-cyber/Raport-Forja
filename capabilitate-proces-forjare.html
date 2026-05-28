@@ -109,7 +109,7 @@ function rowKey(row){return normText(row.name);}
 function getRunValue(run,row,idx){if(run.valuesByName&&rowKey(row) in run.valuesByName)return run.valuesByName[rowKey(row)];if(run.valuesByNr&&run.valuesByNr[idx+1]!==undefined)return run.valuesByNr[idx+1];return '';}
 function setProgress(p,msg){progress.style.display='block';bar.style.width=Math.max(0,Math.min(100,p))+'%';if(msg)statusEl.textContent=msg;}
 function hideProgress(){setTimeout(()=>{progress.style.display='none';bar.style.width='0%';},500);}
-function loadStorage(){try{runsByPart=JSON.parse(localStorage.getItem(STORAGE_KEY)||'{}')||{};}catch(e){runsByPart={};}}
+function loadStorage(){try{runsByPart=JSON.parse(localStorage.getItem(STORAGE_KEY)||'{}')||{};const removed=normalizeRunsStorage();if(removed)saveStorage();}catch(e){runsByPart={};}}
 function saveStorage(){try{localStorage.setItem(STORAGE_KEY,JSON.stringify(runsByPart||{}));}catch(e){}}
 function sanitizeHeaderField(s){
   return String(s||'')
@@ -132,6 +132,57 @@ function sanitizeRun(run){
   run.valuesByNr=run.valuesByNr||{};
   run.valuesByName=run.valuesByName||{};
   return run;
+}
+function runDuplicateKey(run){
+  run=sanitizeRun(run||{});
+  const h=run.header||{};
+  const part=sanitizeHeaderField(h.part||'');
+  const date=sanitizeHeaderField(h.date||'');
+  const sarja=sanitizeHeaderField(h.sarja||'');
+  const piece=sanitizeHeaderField(h.piece||'');
+  const file=normFile(h.fileName||'');
+  if(part && date && sarja && piece){
+    return 'PDF|' + [part,date,sarja,piece].map(v=>normText(v)).join('|');
+  }
+  if(file) return 'FILE|' + file;
+  const vals=Object.keys(run.valuesByNr||{}).sort((a,b)=>Number(a)-Number(b)).map(k=>k+':'+String(run.valuesByNr[k])).join(';');
+  return 'DATA|' + [part,date,sarja,piece,vals].map(v=>normText(v)).join('|');
+}
+function dedupeRunsList(list){
+  const seen=new Set();
+  const out=[];
+  let removed=0;
+  for(const item of sortRunsList((list||[]).slice())){
+    const run=sanitizeRun(item);
+    const key=runDuplicateKey(run);
+    if(seen.has(key)){ removed++; continue; }
+    seen.add(key);
+    out.push(run);
+  }
+  return {list:out, removed};
+}
+function normalizeRunsStorage(){
+  let removed=0;
+  Object.keys(runsByPart||{}).forEach(part=>{
+    const res=dedupeRunsList(runsByPart[part]||[]);
+    removed+=res.removed;
+    if(res.list.length) runsByPart[part]=res.list;
+    else delete runsByPart[part];
+  });
+  return removed;
+}
+function hasDuplicateRun(part,run){
+  const key=runDuplicateKey(run);
+  return (runsByPart[part]||[]).some(existing=>runDuplicateKey(existing)===key);
+}
+function duplicateLabel(run,fileName){
+  const h=(run&&run.header)||{};
+  const bits=[];
+  if(h.part) bits.push(h.part);
+  if(h.date) bits.push(h.date);
+  if(h.sarja) bits.push('Sarja '+h.sarja);
+  if(h.piece) bits.push('Nr. piesă '+h.piece);
+  return bits.length?bits.join(' · '):(fileName||'PDF existent');
 }
 function parseRunDateParts(dateText){
   const m=String(dateText||'').match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})$/);
@@ -185,8 +236,23 @@ function scrollToLastMeasurement(){
     }catch(_e){}
   },30);
 }
-function loadRunsForPart(){runs=sortRunsList((runsByPart[partSelect.value]||[]).map(r=>({header:r.header||{},valuesByNr:r.valuesByNr||{},valuesByName:r.valuesByName||{}})));updateDateFilters();}
-function saveRunsForPart(){runs=sortRunsList(runs);if(runs.length)runsByPart[partSelect.value]=runs;else delete runsByPart[partSelect.value];saveStorage();updateDateFilters();}
+function loadRunsForPart(){
+  const res=dedupeRunsList((runsByPart[partSelect.value]||[]).map(r=>({header:r.header||{},valuesByNr:r.valuesByNr||{},valuesByName:r.valuesByName||{}})));
+  runs=res.list;
+  if(res.removed){
+    if(runs.length) runsByPart[partSelect.value]=runs; else delete runsByPart[partSelect.value];
+    saveStorage();
+    lastMessages=[`Au fost eliminate automat ${res.removed} dubluri existente pentru reperul curent.`];
+  }
+  updateDateFilters();
+}
+function saveRunsForPart(){
+  const res=dedupeRunsList(runs);
+  runs=res.list;
+  if(runs.length)runsByPart[partSelect.value]=runs;else delete runsByPart[partSelect.value];
+  saveStorage();
+  updateDateFilters();
+}
 function headerHtml(run){const h=run.header||{};return `${esc(h.date||'')}<br>${esc(h.part||partSelect.value||'')}<br>Sarja: ${esc(sanitizeHeaderField(h.sarja||''))}<br>Nr. piesă: ${esc(sanitizeHeaderField(h.piece||''))}`;}
 function fmtStat(v,d=3){if(v===Infinity)return '∞';if(v===-Infinity)return '-∞';if(!Number.isFinite(v))return '';return String(Number(v.toFixed(d))).replace('.',',');}
 function specLimits(row){
@@ -1055,12 +1121,17 @@ async function importFiles(files){
       if(!TEMPLATES[part]){ skipped++; lastMessages.push(`Sărit ${file.name}: reper necunoscut (${part||'nedetectat'}).`); continue; }
       run.header.part=part;
       sanitizeRun(run);
+      if(hasDuplicateRun(part,run)){
+        skipped++;
+        lastMessages.push(`Dublură sărită: ${file.name} (${duplicateLabel(run,file.name)}).`);
+        continue;
+      }
       partsImported.add(part);
       if(!firstPart) firstPart=part;
-      const list=sortRunsList((runsByPart[part]||[]).slice().concat([run]));
-      runsByPart[part]=list;
+      const res=dedupeRunsList((runsByPart[part]||[]).slice().concat([run]));
+      runsByPart[part]=res.list;
       imported++;
-      if(part===partSelect.value){ runs=list; updateDateFilters(); render(); }
+      if(part===partSelect.value){ runs=res.list; updateDateFilters(); render(); }
     }
     if(firstPart && TEMPLATES[firstPart]) partSelect.value=firstPart;
     loadRunsForPart();
