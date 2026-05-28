@@ -6,9 +6,9 @@
 <!-- KAD_ACL_MARKER: page_key="capabilitate-proces-forjare" can_view can_edit -->
 <script>window.__KAD_ACL_STATIC_AUDIT__={page_key:"capabilitate-proces-forjare",can_view:true,can_edit:true,canView:true,canEdit:true};</script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="./rf-config.js?v=20260528-capabilitate-418-503-fix"></script>
-<script src="./rf-app-registry.js?v=20260528-capabilitate-418-503-fix"></script>
-<script src="./auth-common.js?v=20260528-capabilitate-418-503-fix"></script>
+<script src="./rf-config.js?v=20260528-capabilitate-cloud-save-epaisseur-fix"></script>
+<script src="./rf-app-registry.js?v=20260528-capabilitate-cloud-save-epaisseur-fix"></script>
+<script src="./auth-common.js?v=20260528-capabilitate-cloud-save-epaisseur-fix"></script>
 <script>try{ if(window.ERPAuth && typeof window.ERPAuth.prehideProtectedPage==='function') window.ERPAuth.prehideProtectedPage(); }catch(_e){}</script>
 <link rel="stylesheet" href="./kad-nav-shell.css">
 <title>Capabilitate Proces Forjare - K.A.D</title>
@@ -66,7 +66,10 @@ const MODEL_READ_SCALE = 4;
   });
 })();
 const STORAGE_KEY = 'kad_capabilitate_proces_forjare_meas_imports_v6_anchor_lines_fix';
+const CLOUD_DOC_KEY = 'capabilitate_proces_forjare_measurements_cloud_v1';
 const PAGE_KEY = 'capabilitate-proces-forjare';
+let cloudStatus = 'Cloud: se încarcă';
+let cloudSaveTimer = null;
 const OCR_SCALE = 3;
 let kadAccess = {can_view:true, can_edit:true, can_export:true, can_import:true};
 let runsByPart = {};
@@ -122,8 +125,92 @@ function rowKey(row){return normText(row.name);}
 function getRunValue(run,row,idx){if(run.valuesByName&&rowKey(row) in run.valuesByName)return run.valuesByName[rowKey(row)];if(run.valuesByNr&&run.valuesByNr[idx+1]!==undefined)return run.valuesByNr[idx+1];return '';}
 function setProgress(p,msg){progress.style.display='block';bar.style.width=Math.max(0,Math.min(100,p))+'%';if(msg)statusEl.textContent=msg;}
 function hideProgress(){setTimeout(()=>{progress.style.display='none';bar.style.width='0%';},500);}
-function loadStorage(){try{runsByPart=JSON.parse(localStorage.getItem(STORAGE_KEY)||'{}')||{};const removed=normalizeRunsStorage();if(removed)saveStorage();}catch(e){runsByPart={};}}
-function saveStorage(){try{localStorage.setItem(STORAGE_KEY,JSON.stringify(runsByPart||{}));}catch(e){}}
+function withTimeout(promise,ms,message){return Promise.race([promise,new Promise((_,reject)=>setTimeout(()=>reject(new Error(message||'Timp depășit la citire PDF.')),ms))]);}
+function getRfConfig(){return window.RF_CONFIG||window.rfConfig||window.KAD_CONFIG||window.SUPABASE_CONFIG||{};}
+function getCloudClient(){
+  const cfg=getRfConfig();
+  const url=cfg.SUPABASE_URL||cfg.supabaseUrl||cfg.url;
+  const key=cfg.SUPABASE_ANON_KEY||cfg.supabaseAnonKey||cfg.anonKey;
+  if(!(window.supabase&&url&&key)) return null;
+  try{
+    if(window.createRfSupabaseClient) return window.createRfSupabaseClient(url,key,{auth:{persistSession:true,autoRefreshToken:true,detectSessionInUrl:true}});
+    return window.supabase.createClient(url,key,{auth:{persistSession:true,autoRefreshToken:true,detectSessionInUrl:true}});
+  }catch(_e){return null;}
+}
+function normalizeCloudPayload(payload){
+  if(!payload) return {};
+  let obj=payload;
+  if(typeof obj==='string'){
+    try{obj=JSON.parse(obj);}catch(_e){obj={};}
+  }
+  if(obj&&obj.runsByPart) return obj.runsByPart||{};
+  if(obj&&obj.data&&obj.data.runsByPart) return obj.data.runsByPart||{};
+  return obj&&typeof obj==='object'?obj:{};
+}
+function mergeRunsByPart(localData,cloudData){
+  const merged={};
+  const parts=new Set([...Object.keys(localData||{}),...Object.keys(cloudData||{})]);
+  parts.forEach(part=>{
+    const list=[];
+    if(Array.isArray(cloudData&&cloudData[part])) list.push(...cloudData[part]);
+    if(Array.isArray(localData&&localData[part])) list.push(...localData[part]);
+    const res=dedupeRunsList(list.map(r=>({header:r.header||{},valuesByNr:r.valuesByNr||{},valuesByName:r.valuesByName||{}})));
+    if(res.list.length) merged[part]=res.list;
+  });
+  return merged;
+}
+async function loadStorage(){
+  let localData={};
+  try{localData=JSON.parse(localStorage.getItem(STORAGE_KEY)||'{}')||{};}catch(e){localData={};}
+  runsByPart=localData||{};
+  const sb=getCloudClient();
+  if(sb){
+    try{
+      const { data, error } = await sb.from('rf_documents').select('content,updated_at').eq('doc_key', CLOUD_DOC_KEY).maybeSingle();
+      if(error) throw error;
+      const cloudData=normalizeCloudPayload(data&&data.content);
+      if(cloudData&&Object.keys(cloudData).length){
+        runsByPart=mergeRunsByPart(localData,cloudData);
+        cloudStatus='Cloud: date încărcate';
+      }else{
+        cloudStatus='Cloud: fără date salvate';
+      }
+    }catch(e){
+      cloudStatus='Cloud: eroare încărcare';
+      runsByPart=localData||{};
+    }
+  }else{
+    cloudStatus='Cloud: indisponibil';
+  }
+  const removed=normalizeRunsStorage();
+  try{localStorage.setItem(STORAGE_KEY,JSON.stringify(runsByPart||{}));}catch(_e){}
+  if(removed) saveStorage();
+}
+function saveStorage(){
+  try{localStorage.setItem(STORAGE_KEY,JSON.stringify(runsByPart||{}));}catch(e){}
+  scheduleCloudSave();
+}
+function scheduleCloudSave(){
+  clearTimeout(cloudSaveTimer);
+  cloudSaveTimer=setTimeout(()=>{saveStorageToCloud(false);},700);
+}
+async function saveStorageToCloud(showMsg=true){
+  const sb=getCloudClient();
+  if(!sb){cloudStatus='Cloud: indisponibil'; if(showMsg) render(); return false;}
+  const payload={runsByPart:runsByPart||{},updated_at:new Date().toISOString(),page_key:PAGE_KEY};
+  try{
+    const { error } = await sb.from('rf_documents').upsert({doc_key:CLOUD_DOC_KEY,content:payload,updated_at:payload.updated_at},{onConflict:'doc_key'});
+    if(error) throw error;
+    cloudStatus='Cloud: sincronizat';
+    if(showMsg) render();
+    return true;
+  }catch(e){
+    console.error(e);
+    cloudStatus='Cloud: eroare salvare';
+    if(showMsg) render();
+    return false;
+  }
+}
 function sanitizeHeaderField(s){
   return String(s||'')
     .replace(/[{}\[\]]/g,'')
@@ -380,7 +467,7 @@ function render(){
   h+='</tbody>';table.innerHTML=h;
   const msg=lastMessages.length?' | '+lastMessages.join(' | '):'';
   const filterMsg=(selectedYear()||selectedMonth())?` Filtru: ${selectedMonth()?RO_MONTHS[Number(selectedMonth())]:'toate lunile'} ${selectedYear()||'toți anii'}.`:'';
-  statusEl.textContent=`${partSelect.value}: ${rows.length} măsurători. PDF-uri afișate: ${visibleCount}${runs.length!==visibleCount?' din '+runs.length:''}.${filterMsg}${msg}`;
+  statusEl.textContent=`${partSelect.value}: ${rows.length} măsurători. PDF-uri afișate: ${visibleCount}${runs.length!==visibleCount?' din '+runs.length:''}. ${cloudStatus||''}.${filterMsg}${msg}`;
   renderPpkAndCharts(rows,visibleRuns);
   if(visibleCount) scrollToLastMeasurement();
 }
@@ -1081,7 +1168,7 @@ async function readPdfHeaderFromModel(pdf,model,fileName,rendered){
 function relForModelRow(def,row){
   if(!def||def.type==='simple'){
     const rn=normText(row&&row.name||'');
-    if(rn.includes('EPAISSEUR')) return {x1:.25,y1:.50,x2:.50,y2:.98};
+    if(rn.includes('EPAISSEUR')) return {x1:.13,y1:.50,x2:.31,y2:.98};
     return {x1:.12,y1:.52,x2:.30,y2:.96};
   }
   const bands=[{y1:.255,y2:.405},{y1:.405,y2:.555},{y1:.555,y2:.710},{y1:.705,y2:.885}];
@@ -1143,7 +1230,7 @@ async function importFiles(files){
       setProgress((i/files.length)*100,`Se importă ${i+1}/${files.length}: ${file.name}`);
       let run=null;
       try{
-        run=await readPdf(file,i,files.length);
+        run=await withTimeout(readPdf(file,i,files.length),120000,`Timp depășit la citire pentru ${file.name}`);
         modelUsed++;
       }catch(readErr){
         skipped++;
@@ -1164,11 +1251,16 @@ async function importFiles(files){
       const res=dedupeRunsList((runsByPart[part]||[]).slice().concat([run]));
       runsByPart[part]=res.list;
       imported++;
+      saveStorage();
       if(part===partSelect.value){ runs=res.list; updateDateFilters(); render(); }
     }
     if(firstPart && TEMPLATES[firstPart]) partSelect.value=firstPart;
     loadRunsForPart();
     saveStorage();
+    await saveStorageToCloud(false);
+    selectedPdfFiles=[];
+    try{pdfInput.value='';}catch(_e){}
+    updatePdfLabel();
     lastMessages.push(`Import finalizat: ${imported} importate, ${skipped} sărite${modelUsed?`, model PDF: ${modelUsed}`:''}.`);
     if(partsImported.size>1) lastMessages.push('PDF-urile importate sunt pentru repere diferite. Alege reperul din listă ca să vezi coloanele lui.');
   }catch(e){ lastMessages.push('Eroare import: '+(e.message||e)); }
@@ -1220,7 +1312,7 @@ function openPdfDialog(){
     catch(_e){ lastMessages=['Nu s-a putut deschide selectorul PDF. Reîncarcă pagina și apasă din nou pe „Alege PDF-uri”.']; render(); }
   }
 }
-async function init(){const ok=await initKadAccess();if(!ok)return;loadStorage();partSelect.innerHTML=allParts().map(p=>`<option value="${esc(p)}">${esc(p)}</option>`).join('');loadRunsForPart();render();}
+async function init(){const ok=await initKadAccess();if(!ok)return;partSelect.innerHTML=allParts().map(p=>`<option value="${esc(p)}">${esc(p)}</option>`).join('');await loadStorage();loadRunsForPart();render();}
 window.addEventListener('error',(ev)=>{try{lastMessages=['Eroare pagină: '+(ev.message||'necunoscută')];render();}catch(_e){}});
 window.addEventListener('unhandledrejection',(ev)=>{try{lastMessages=['Eroare import: '+((ev.reason&&ev.reason.message)||ev.reason||'necunoscută')];render();}catch(_e){}});
 partSelect.addEventListener('change',()=>{loadRunsForPart();render();});
@@ -1233,7 +1325,7 @@ if(choosePdfBtn){choosePdfBtn.addEventListener('keydown',(ev)=>{if(ev.key==='Ent
 pdfInput.addEventListener('change',handlePdfSelection);
 pdfInput.addEventListener('input',handlePdfSelection);
 importBtn.addEventListener('click',(ev)=>{ev.preventDefault();const files=selectedPdfFiles.length?selectedPdfFiles:fileListToArray(pdfInput.files);if(files.length){importFiles(files);}else{pendingImportAfterPick=true;lastMessages=['Selectează unul sau mai multe PDF-uri. Importul va porni automat după alegere.'];render();openPdfDialog();}});
-clearBtn.addEventListener('click',()=>{runs=[];selectedPdfFiles=[];saveRunsForPart();try{pdfInput.value='';}catch(_e){}updatePdfLabel();lastMessages=['Importul pentru reperul curent a fost curățat.'];render();});
+clearBtn.addEventListener('click',async()=>{runs=[];selectedPdfFiles=[];saveRunsForPart();try{pdfInput.value='';}catch(_e){}updatePdfLabel();await saveStorageToCloud(false);lastMessages=['Importul pentru reperul curent a fost curățat.'];render();});
 csvBtn.addEventListener('click',()=>{const lines=[...table.querySelectorAll('tr')].map(tr=>[...tr.children].map(td=>'"'+td.innerText.replace(/"/g,'""')+'"').join(';')).join('\n');const blob=new Blob([lines],{type:'text/csv;charset=utf-8'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=`capabilitate_${partSelect.value}.csv`;a.click();URL.revokeObjectURL(a.href);});
 init();
 </script>
