@@ -4154,3 +4154,80 @@ async function applyDomPermissions(pageKey, root, options) {
   else loadNotificationScript();
 })(window, document);
 /* === END K.A.D GLOBAL NOTIFICATIONS BOOTSTRAP === */
+
+
+/* === K.A.D PWA GLOBAL BOOTSTRAP === */
+(function(window, document){
+  'use strict';
+  if (!window || !document) return;
+
+  var APP_TITLE = 'K.A.D';
+  var THEME_COLOR = '#163a5b';
+  var MANIFEST_HREF = '/site.webmanifest';
+  var SERVICE_WORKER_HREF = '/service-worker.js';
+
+  function head(){ return document.head || document.getElementsByTagName('head')[0]; }
+
+  function ensureMeta(name, content){
+    var h = head();
+    if (!h) return;
+    var selector = 'meta[name="' + name.replace(/"/g, '\\"') + '"]';
+    var node = h.querySelector(selector);
+    if (!node) {
+      node = document.createElement('meta');
+      node.setAttribute('name', name);
+      h.appendChild(node);
+    }
+    node.setAttribute('content', content);
+  }
+
+  function ensureLink(rel, href, attrs){
+    var h = head();
+    if (!h) return;
+    var relSafe = rel.replace(/"/g, '\\"');
+    var node = h.querySelector('link[rel="' + relSafe + '"]');
+    if (!node) {
+      node = document.createElement('link');
+      node.setAttribute('rel', rel);
+      h.appendChild(node);
+    }
+    node.setAttribute('href', href);
+    if (attrs && typeof attrs === 'object') {
+      Object.keys(attrs).forEach(function(key){
+        node.setAttribute(key, attrs[key]);
+      });
+    }
+  }
+
+  function ensurePwaHead(){
+    ensureLink('manifest', MANIFEST_HREF);
+    ensureLink('apple-touch-icon', '/apple-touch-icon.png');
+    ensureMeta('theme-color', THEME_COLOR);
+    ensureMeta('application-name', APP_TITLE);
+    ensureMeta('mobile-web-app-capable', 'yes');
+    ensureMeta('apple-mobile-web-app-capable', 'yes');
+    ensureMeta('apple-mobile-web-app-title', APP_TITLE);
+    ensureMeta('apple-mobile-web-app-status-bar-style', 'black-translucent');
+  }
+
+  function registerServiceWorker(){
+    try {
+      if (!('serviceWorker' in navigator)) return;
+      if (window.location && window.location.protocol !== 'https:' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') return;
+      navigator.serviceWorker.register(SERVICE_WORKER_HREF, { scope: '/' }).catch(function(err){
+        if (window.console && console.warn) console.warn('K.A.D service worker registration failed:', err);
+      });
+    } catch (err) {
+      if (window.console && console.warn) console.warn('K.A.D service worker registration unavailable:', err);
+    }
+  }
+
+  function bootPwa(){
+    ensurePwaHead();
+    if (document.readyState === 'complete') registerServiceWorker();
+    else window.addEventListener('load', registerServiceWorker, { once:true });
+  }
+
+  bootPwa();
+})(window, document);
+/* === END K.A.D PWA GLOBAL BOOTSTRAP === */
