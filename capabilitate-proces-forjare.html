@@ -6,9 +6,9 @@
 <!-- KAD_ACL_MARKER: page_key="capabilitate-proces-forjare" can_view can_edit -->
 <script>window.__KAD_ACL_STATIC_AUDIT__={page_key:"capabilitate-proces-forjare",can_view:true,can_edit:true,canView:true,canEdit:true};</script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="./rf-config.js?v=20260528-capabilitate-epaisseur-exact-dup-update"></script>
-<script src="./rf-app-registry.js?v=20260528-capabilitate-epaisseur-exact-dup-update"></script>
-<script src="./auth-common.js?v=20260528-capabilitate-epaisseur-exact-dup-update"></script>
+<script src="./rf-config.js?v=20260528-capabilitate-epaisseur-meas-cloud-fix"></script>
+<script src="./rf-app-registry.js?v=20260528-capabilitate-epaisseur-meas-cloud-fix"></script>
+<script src="./auth-common.js?v=20260528-capabilitate-epaisseur-meas-cloud-fix"></script>
 <script>try{ if(window.ERPAuth && typeof window.ERPAuth.prehideProtectedPage==='function') window.ERPAuth.prehideProtectedPage(); }catch(_e){}</script>
 <link rel="stylesheet" href="./kad-nav-shell.css">
 <title>Capabilitate Proces Forjare - K.A.D</title>
@@ -182,9 +182,11 @@ async function loadStorage(){
   }else{
     cloudStatus='Cloud: indisponibil';
   }
+  const beforeNormalize=JSON.stringify(runsByPart||{});
   const removed=normalizeRunsStorage();
+  const changedAfterNormalize=(beforeNormalize!==JSON.stringify(runsByPart||{}));
   try{localStorage.setItem(STORAGE_KEY,JSON.stringify(runsByPart||{}));}catch(_e){}
-  if(removed) saveStorage();
+  if(removed || changedAfterNormalize) saveStorage();
 }
 function saveStorage(){
   try{localStorage.setItem(STORAGE_KEY,JSON.stringify(runsByPart||{}));}catch(e){}
@@ -249,22 +251,48 @@ function runDuplicateKey(run){
   return 'DATA|' + [part,date,sarja,piece,vals].map(v=>normText(v)).join('|');
 }
 function dedupeRunsList(list){
-  const seen=new Set();
-  const out=[];
+  const byKey=new Map();
   let removed=0;
-  for(const item of sortRunsList((list||[]).slice())){
+  for(const item of (list||[])){
     const run=sanitizeRun(item);
     const key=runDuplicateKey(run);
-    if(seen.has(key)){ removed++; continue; }
-    seen.add(key);
-    out.push(run);
+    if(byKey.has(key)) removed++;
+    byKey.set(key,run);
   }
+  const out=sortRunsList(Array.from(byKey.values()));
   return {list:out, removed};
 }
+function repairKnownReportValues(run){
+  run=sanitizeRun(run||{});
+  const file=String((run.header||{}).fileName||'');
+  const known=KNOWN_REPORTS[file];
+  if(!known||!Array.isArray(known.rows)) return run;
+  const part=(run.header||{}).part || (known.part||'');
+  const badEpaisseur=(nr,val)=>{
+    const row=(TEMPLATES[part]||[])[Number(nr)-1]||{};
+    const rn=normText(row.name||'');
+    if(!rn.includes('EPAISSEUR')) return false;
+    const n=toNum(val);
+    if(!Number.isFinite(n)) return true;
+    return Math.abs(n) < 1.0001;
+  };
+  known.rows.forEach(r=>{
+    const nr=Number(r.nr)||0;
+    if(!nr || r.meas===undefined || r.meas===null || r.meas==='') return;
+    const current=(run.valuesByNr||{})[nr];
+    if(current===undefined || current==='' || badEpaisseur(nr,current)){
+      run.valuesByNr[nr]=String(r.meas);
+      const tmpl=(TEMPLATES[part]||[])[nr-1];
+      if(tmpl) run.valuesByName[rowKey(tmpl)]=String(r.meas);
+    }
+  });
+  return run;
+}
+
 function normalizeRunsStorage(){
   let removed=0;
   Object.keys(runsByPart||{}).forEach(part=>{
-    const res=dedupeRunsList(runsByPart[part]||[]);
+    const res=dedupeRunsList((runsByPart[part]||[]).map(repairKnownReportValues));
     removed+=res.removed;
     if(res.list.length) runsByPart[part]=res.list;
     else delete runsByPart[part];
@@ -352,7 +380,7 @@ function scrollToLastMeasurement(){
   },30);
 }
 function loadRunsForPart(){
-  const res=dedupeRunsList((runsByPart[partSelect.value]||[]).map(r=>({header:r.header||{},valuesByNr:r.valuesByNr||{},valuesByName:r.valuesByName||{}})));
+  const res=dedupeRunsList((runsByPart[partSelect.value]||[]).map(r=>repairKnownReportValues({header:r.header||{},valuesByNr:r.valuesByNr||{},valuesByName:r.valuesByName||{}})));
   runs=res.list;
   if(res.removed){
     if(runs.length) runsByPart[partSelect.value]=runs; else delete runsByPart[partSelect.value];
@@ -1185,7 +1213,7 @@ function relForModelRow(def,row){
     const rn=normText(row&&row.name||'');
     // La cotele EPAISSEUR, valoarea MEAS este mai la dreapta decat la masuratorile simple.
     // In versiunile anterioare se citea prea mult din zona de eticheta si OCR-ul putea returna 1 / 26,000.
-    if(rn.includes('EPAISSEUR')) return {x1:.285,y1:.48,x2:.455,y2:.98};
+    if(rn.includes('EPAISSEUR')) return {x1:.115,y1:.48,x2:.305,y2:.98};
     return {x1:.12,y1:.52,x2:.30,y2:.96};
   }
   const bands=[{y1:.255,y2:.405},{y1:.405,y2:.555},{y1:.555,y2:.710},{y1:.705,y2:.885}];
@@ -1257,7 +1285,7 @@ async function importFiles(files){
       const part=(run.header&&run.header.part)||detectPartFromText(file.name)||partSelect.value;
       if(!TEMPLATES[part]){ skipped++; lastMessages.push(`Sărit ${file.name}: reper necunoscut (${part||'nedetectat'}).`); continue; }
       run.header.part=part;
-      sanitizeRun(run);
+      run=repairKnownReportValues(sanitizeRun(run));
       if(hasDuplicateRun(part,run)){
         replaceDuplicateRun(part,run);
         partsImported.add(part);
