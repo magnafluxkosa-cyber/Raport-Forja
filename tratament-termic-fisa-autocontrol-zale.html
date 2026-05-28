@@ -1053,6 +1053,8 @@
       var PAGE_KEY = 'tratament-termic-fisa-autocontrol-zale';
       var PAGE_FILE = PAGE_KEY + '.html';
       var STORAGE_KEY = 'kad_tt_fisa_autocontrol_zale_draft_v1';
+      var OPERATOR_RESUME_KEY = STORAGE_KEY + ':resume';
+      var OPERATOR_RESUME_TTL_HOURS = 36;
       var OPERATOR_TRATAMENT_EMAIL = 'op@tratament.local';
       var OPERATOR_TRATAMENT_ROLE_LABEL = 'operator tratament termic';
       var PIN_DOC_KEY = 'tratament-termic:operatori-pins';
@@ -2640,6 +2642,120 @@
       function operatorDraftStorageKey(operator, dateIso, shift){
         return STORAGE_KEY + ':operator:' + safeStoragePart(operator) + ':' + (String(dateIso || '').slice(0,10) || 'fara-data') + ':sch-' + (String(shift || '').trim() || 'nesetat');
       }
+      function operatorResumeStorageKey(operator){
+        return OPERATOR_RESUME_KEY + ':' + safeStoragePart(operator || 'necunoscut');
+      }
+      function jsonStorageGet(key){
+        try{
+          var raw = localStorage.getItem(key);
+          return raw ? JSON.parse(raw) : null;
+        }catch(_){ return null; }
+      }
+      function jsonStorageSet(key, value){
+        try{ localStorage.setItem(key, JSON.stringify(value)); }catch(_){ }
+      }
+      function sheetRealContentScore(data){
+        if(!data) return 0;
+        var score = 0;
+        if(data.reper1 || data.reper2 || data.reper3 || data.reper4 || data.codCat1 || data.codCat2 || data.codCat3 || data.codCat4) score += 10;
+        if(data.cells && Object.keys(data.cells).length) score += 20;
+        if(data.oraCtrl && Object.keys(data.oraCtrl).length) score += 15;
+        if(data.report && ttReportHasData(data.report)) score += 15;
+        if(data.date_iso || (data.fields && (data.fields.dateIso || data.fields.date_iso))) score += 2;
+        if(data.shift || (data.fields && data.fields.shift)) score += 1;
+        return score;
+      }
+      function hasRecoverableSheetContent(data){
+        return sheetRealContentScore(data) >= 10;
+      }
+      function operatorSheetAgeMs(sheet){
+        var ms = Date.parse(String(sheet && (sheet.updated_at || sheet.synced_at || sheet.saved_at || sheet.created_at) || ''));
+        return Number.isFinite(ms) ? ms : 0;
+      }
+      function isFreshOperatorSheet(sheet){
+        var ms = operatorSheetAgeMs(sheet);
+        if(!ms) return false;
+        return (Date.now() - ms) <= OPERATOR_RESUME_TTL_HOURS * 60 * 60 * 1000;
+      }
+      function operatorMatchesSheet(sheet, operator){
+        var sOp = sheet && (sheet.operator || (sheet.fields && sheet.fields.operatorTT) || '');
+        return norm(sOp) === norm(operator || '');
+      }
+      function writeOperatorResumePointer(data){
+        if(!data || !data.operator || !hasRecoverableSheetContent(data)) return;
+        var payload = {
+          operator:data.operator,
+          date_iso:String(data.date_iso || '').slice(0,10),
+          shift:String(data.shift || '').trim(),
+          id:data.id || buildOperatorSheetId(data.operator, data.date_iso, data.shift),
+          updated_at:data.updated_at || new Date().toISOString(),
+          sheet:data
+        };
+        jsonStorageSet(operatorResumeStorageKey(data.operator), payload);
+        jsonStorageSet(OPERATOR_RESUME_KEY + ':last', payload);
+      }
+      function collectOperatorResumeCandidates(operator){
+        var candidates = [];
+        function add(sheet){
+          if(!sheet || !operatorMatchesSheet(sheet, operator)) return;
+          if(!hasRecoverableSheetContent(sheet)) return;
+          if(!isFreshOperatorSheet(sheet)) return;
+          candidates.push(sheet);
+        }
+        var specific = jsonStorageGet(operatorResumeStorageKey(operator));
+        if(specific && operatorMatchesSheet(specific.sheet || specific, operator)) add(specific.sheet || specific);
+        var last = jsonStorageGet(OPERATOR_RESUME_KEY + ':last');
+        if(last && operatorMatchesSheet(last.sheet || last, operator)) add(last.sheet || last);
+        var globalDraft = jsonStorageGet(STORAGE_KEY);
+        add(globalDraft);
+        var localDoc = readOperatorSheetsLocalDoc ? readOperatorSheetsLocalDoc() : null;
+        (Array.isArray(localDoc && localDoc.sheets) ? localDoc.sheets : []).forEach(add);
+        (Array.isArray(OPERATOR_SHEETS_CACHE) ? OPERATOR_SHEETS_CACHE : []).forEach(add);
+        var byId = new Map();
+        candidates.forEach(function(sheet){
+          var id = String(sheet.id || buildOperatorSheetId(sheet.operator, sheet.date_iso, sheet.shift));
+          var old = byId.get(id);
+          if(!old || operatorSheetAgeMs(sheet) >= operatorSheetAgeMs(old)) byId.set(id, sheet);
+        });
+        return Array.from(byId.values());
+      }
+      function findBestOperatorResumeSheet(operator, preferredDateIso, preferredShift){
+        preferredDateIso = String(preferredDateIso || '').slice(0,10);
+        preferredShift = String(preferredShift || '').trim();
+        var candidates = collectOperatorResumeCandidates(operator);
+        if(!candidates.length) return null;
+        candidates.sort(function(a,b){
+          function score(sheet){
+            var s = sheetRealContentScore(sheet) * 1000 + operatorSheetAgeMs(sheet);
+            if(preferredDateIso && String(sheet.date_iso || '').slice(0,10) === preferredDateIso) s += 9000000000000;
+            if(preferredShift && String(sheet.shift || '').trim() === preferredShift) s += 4000000000000;
+            return s;
+          }
+          return score(b) - score(a);
+        });
+        return candidates[0] || null;
+      }
+      async function resumeLatestOperatorSheetIfNeeded(operator, preferredDateIso, preferredShift){
+        try{ await loadOperatorSheets(true); }catch(error){ console.warn('Nu am putut reîncărca lista de fișe pentru reluare.', error); }
+        var sheet = findBestOperatorResumeSheet(operator, preferredDateIso, preferredShift);
+        if(!sheet) return false;
+        applySheetData(sheet);
+        state.lastLoadedDateIso = String(sheet.date_iso || '').slice(0,10);
+        state.lastLoadedShift = String(sheet.shift || '').trim();
+        setChip(els.modeChip, 'Fișă reluată automat: ' + operator + (sheet.shift ? ' · ' + shiftInfo(sheet.shift).label : ''), 'ok');
+        return true;
+      }
+      function emergencySaveOperatorSheetNow(){
+        if(isAdminManualSaveMode()) return;
+        try{ saveOperatorSheetLocalNow(); }catch(_){ }
+        try{ saveTrackingLocalNow(true); }catch(_){ }
+      }
+      function emergencyCloudFlushOperatorSheet(){
+        if(isAdminManualSaveMode()) return;
+        if(!currentWorkDateIso()) return;
+        try{ saveOperatorSheetCloudNow().catch(function(error){ console.warn(error); }); }catch(_){ }
+        try{ saveTrackingNow().catch(function(error){ console.warn(error); }); }catch(_){ }
+      }
       function parseDateInput(value){
         var raw = String(value || '').trim();
         if(!raw) return '';
@@ -2894,6 +3010,7 @@
           if(deletedSet.has(String(data.id || '').trim())) return null;
           var merged = mergeOperatorSheets(filterDeletedOperatorSheets(Array.isArray(doc.sheets) ? doc.sheets : [], deletedSet), [data]);
           persistOperatorSheetsLocal(merged, Array.from(deletedSet));
+          writeOperatorResumePointer(data);
           return data;
         }catch(error){
           console.warn('Nu am putut salva local fișa operatorului.', error);
@@ -2934,6 +3051,7 @@
           var deletedSet = new Set(Array.from(operatorSheetsDeletedSet(doc)).concat(Array.from(operatorSheetsDeletedSet(localDoc))));
           if(deletedSet.has(String(data.id || '').trim())) return;
           var cleanData = Object.assign({}, data, { local_dirty:false, synced_at:new Date().toISOString(), updated_at:new Date().toISOString() });
+          writeOperatorResumePointer(cleanData);
           var merged = mergeOperatorSheets(filterDeletedOperatorSheets(Array.isArray(doc.sheets) ? doc.sheets : [], deletedSet), [cleanData]);
           merged = filterDeletedOperatorSheets(merged, deletedSet);
           await upsertDoc(OPERATOR_SHEETS_DOC_KEY, { page_key:PAGE_KEY, schema_version:1, sheets:merged, deleted_ids:Array.from(deletedSet), updated_at:new Date().toISOString() });
@@ -4033,17 +4151,28 @@
         applyReadonlyMode();
         lockPrimaryOperatorUi();
         forceEnablePinInput();
+        var hadDateBeforeUnlock = !!currentWorkDateIso();
+        var hadShiftBeforeUnlock = !!currentShift();
         var unlockedShift = currentShift();
-        if(!unlockedShift){
-          unlockedShift = defaultShiftByClock();
-          if(els.ttShift) els.ttShift.value = unlockedShift;
-        }
         var unlockedDateIso = currentWorkDateIso();
-        if(unlockedDateIso){
-          await loadOperatorSheetFor(found.operator, unlockedDateIso, unlockedShift);
-        } else {
-          state.currentOperatorSheetId = null;
-          setChip(els.modeChip, 'Completează manual DATA fișei', 'warn');
+        var resumed = false;
+        if(!hadDateBeforeUnlock || !hadShiftBeforeUnlock){
+          resumed = await resumeLatestOperatorSheetIfNeeded(found.operator, unlockedDateIso, unlockedShift);
+          unlockedShift = currentShift();
+          unlockedDateIso = currentWorkDateIso();
+        }
+        if(!resumed){
+          if(!unlockedShift){
+            unlockedShift = defaultShiftByClock();
+            if(els.ttShift) els.ttShift.value = unlockedShift;
+          }
+          unlockedDateIso = currentWorkDateIso();
+          if(unlockedDateIso){
+            await loadOperatorSheetFor(found.operator, unlockedDateIso, unlockedShift);
+          } else {
+            state.currentOperatorSheetId = null;
+            setChip(els.modeChip, 'Completează manual DATA fișei', 'warn');
+          }
         }
         if(els.ttOperatorTT) els.ttOperatorTT.value = found.operator;
         saveDraft();
@@ -4419,9 +4548,11 @@
           return;
         }
         var data = collectCurrentSheetData();
+        if(!data.date_iso && sheetRealContentScore(data) < 10) return;
         try{
           if(data.operator) localStorage.setItem(operatorDraftStorageKey(data.operator, data.date_iso, data.shift), JSON.stringify(data));
           localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+          writeOperatorResumePointer(data);
         }catch(_){ }
         scheduleOperatorSheetSave();
       }
@@ -5619,8 +5750,16 @@
           showPinModal();
         });
         window.addEventListener('resize', fitSheet);
-        window.addEventListener('beforeunload', function(){ if(!isAdminManualSaveMode()){ try{ saveOperatorSheetLocalNow(); }catch(_){ } } });
-        document.addEventListener('visibilitychange', function(){ if(document.visibilityState === 'hidden' && !isAdminManualSaveMode()){ try{ saveOperatorSheetLocalNow(); }catch(_){ } } });
+        window.addEventListener('beforeunload', emergencySaveOperatorSheetNow);
+        window.addEventListener('pagehide', emergencySaveOperatorSheetNow);
+        window.addEventListener('blur', emergencySaveOperatorSheetNow);
+        document.addEventListener('visibilitychange', function(){
+          if(document.visibilityState === 'hidden'){
+            emergencySaveOperatorSheetNow();
+            emergencyCloudFlushOperatorSheet();
+          }
+        });
+        setInterval(emergencySaveOperatorSheetNow, 10000);
       }
       async function init(){
         els.roleChip = qs('roleChip');
