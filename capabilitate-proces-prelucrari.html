@@ -6,9 +6,9 @@
 <!-- KAD_ACL_MARKER: page_key="capabilitate-proces-prelucrari" can_view can_edit -->
 <script>window.__KAD_ACL_STATIC_AUDIT__={page_key:"capabilitate-proces-prelucrari",can_view:true,can_edit:true,canView:true,canEdit:true};</script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="./rf-config.js?v=20260528-capabilitate-prelucrari-cloud-folder"></script>
-<script src="./rf-app-registry.js?v=20260528-capabilitate-prelucrari-cloud-folder"></script>
-<script src="./auth-common.js?v=20260528-capabilitate-prelucrari-cloud-folder"></script>
+<script src="./rf-config.js?v=20260529-capabilitate-prelucrari-angle-refresh-fix"></script>
+<script src="./rf-app-registry.js?v=20260529-capabilitate-prelucrari-angle-refresh-fix"></script>
+<script src="./auth-common.js?v=20260529-capabilitate-prelucrari-angle-refresh-fix"></script>
 <script>try{ if(window.ERPAuth && typeof window.ERPAuth.prehideProtectedPage==='function') window.ERPAuth.prehideProtectedPage(); }catch(_e){}</script>
 <link rel="stylesheet" href="./kad-nav-shell.css">
 <title>Capabilitate Proces Prelucrări - K.A.D</title>
@@ -59,9 +59,20 @@ function hideProgress(){setTimeout(()=>{progress.style.display='none';bar.style.
 function sanitizeHeaderField(s){return String(s||'').replace(/[{}\[\]]/g,'').replace(/[“”"'`´]/g,'').replace(/\s+/g,' ').replace(/\s*_\s*/g,'_').replace(/_+$/g,'').replace(/^[\s_\-.]+|[\s_\-.]+$/g,'').trim();}
 function sanitizeRun(run){run=run||{};run.header=run.header||{};run.header.date=sanitizeHeaderField(run.header.date||'');run.header.part=sanitizeHeaderField(run.header.part||partSelect.value||'526-9278');run.header.serial=sanitizeHeaderField(run.header.serial||run.header.sarja||'');run.header.sarja=run.header.serial;run.header.piece=sanitizeHeaderField(run.header.piece||'');run.header.shift=sanitizeHeaderField(run.header.shift||'');run.header.fileName=String(run.header.fileName||'');run.valuesByNr=run.valuesByNr||{};run.valuesByName=run.valuesByName||{};return run;}
 function runDuplicateKey(run){run=sanitizeRun(run||{});const h=run.header||{};const part=sanitizeHeaderField(h.part||'');const date=sanitizeHeaderField(h.date||'');const serial=sanitizeHeaderField(h.serial||h.sarja||'');const piece=sanitizeHeaderField(h.piece||'');const file=normFile(h.fileName||'');if(part&&date&&piece)return 'PDF|'+[part,date,serial,piece].map(v=>normText(v)).join('|');if(file)return 'FILE|'+file;const vals=Object.keys(run.valuesByNr||{}).sort((a,b)=>Number(a)-Number(b)).map(k=>k+':'+String(run.valuesByNr[k])).join(';');return 'DATA|'+[part,date,serial,piece,vals].map(v=>normText(v)).join('|');}
+function exactRunKey(run){
+  run=sanitizeRun(run||{});
+  const h=run.header||{};
+  const vals=Object.keys(run.valuesByNr||{}).sort((a,b)=>Number(a)-Number(b)).map(k=>k+':'+String(run.valuesByNr[k])).join(';');
+  return [h.part||'',h.date||'',h.serial||h.sarja||'',h.piece||'',h.fileName||'',vals].map(v=>normText(String(v))).join('|');
+}
 function dedupeRunsList(list){
-  const out=sortRunsList((list||[]).map(sanitizeRun));
-  return {list:out,removed:0};
+  const seen=new Set();
+  const out=[];
+  (list||[]).map(sanitizeRun).forEach(run=>{
+    const key=exactRunKey(run);
+    if(!seen.has(key)){seen.add(key);out.push(run);}
+  });
+  return {list:sortRunsList(out),removed:Math.max(0,(list||[]).length-out.length)};
 }
 function normalizeRunsStorage(){let removed=0;Object.keys(runsByPart||{}).forEach(part=>{const res=dedupeRunsList(runsByPart[part]||[]);removed+=res.removed;if(res.list.length)runsByPart[part]=res.list;else delete runsByPart[part];});return removed;}
 function hasDuplicateRun(part,run){return false;}
@@ -122,8 +133,9 @@ async function loadStorage(){
   }else{
     cloudStatus='Cloud: indisponibil';
   }
-  normalizeRunsStorage();
+  const removedOnLoad=normalizeRunsStorage();
   try{localStorage.setItem(STORAGE_KEY,JSON.stringify(runsByPart||{}));}catch(_e){}
+  if(removedOnLoad>0){ try{ saveStorageToCloud(false); }catch(_e){} }
 }
 function saveStorage(){
   try{localStorage.setItem(STORAGE_KEY,JSON.stringify(runsByPart||{}));}catch(e){}
@@ -174,18 +186,43 @@ function parseDate(text){const s=String(text||'').replace(/\s+/g,' ');let m=s.ma
 function detectPartFromText(text){const k=normFile(text);if(k.includes('5269278'))return '526-9278';return partSelect.value||'526-9278';}
 function extractHeaderFromFilename(name){const s=String(name||'');const date=parseDate(s);let m=s.match(/PIESA[_\s-]*(\d+)/i);const piece=m?m[1]:'';m=s.match(/SCHIMBUL[_\s-]*(\d+)/i);const shift=m?m[1]:'';return {date,part:detectPartFromText(s),piece,shift,serial:''};}
 async function renderPageCanvas(page,scale=OCR_SCALE){const viewport=page.getViewport({scale});const canvas=document.createElement('canvas');canvas.width=viewport.width;canvas.height=viewport.height;await page.render({canvasContext:canvas.getContext('2d'),viewport}).promise;return canvas;}
+async function readPageText(page){try{const tc=await page.getTextContent();return (tc.items||[]).map(it=>it.str||'').join(' ').replace(/\s+/g,' ').trim();}catch(_e){return '';} }
 function cropCanvas(source,x,y,w,h,zoom=1){const c=document.createElement('canvas');c.width=Math.max(1,Math.floor(w*zoom));c.height=Math.max(1,Math.floor(h*zoom));c.getContext('2d').drawImage(source,x,y,w,h,0,0,c.width,c.height);return c;}
 function cropByModel(canvas,def){const sx=canvas.width/MODEL_W,sy=canvas.height/MODEL_H;const x=def.x1*sx,y=def.y1*sy,w=(def.x2-def.x1)*sx,h=(def.y2-def.y1)*sy;return cropCanvas(canvas,Math.max(0,Math.floor(x)),Math.max(0,Math.floor(y)),Math.max(1,Math.ceil(w)),Math.max(1,Math.ceil(h)),2.2);}
 function preprocessOcrCrop(src){try{const c=document.createElement('canvas');c.width=src.width;c.height=src.height;const ctx=c.getContext('2d',{willReadFrequently:true});ctx.drawImage(src,0,0);const img=ctx.getImageData(0,0,c.width,c.height);const d=img.data;for(let i=0;i<d.length;i+=4){const lum=.299*d[i]+.587*d[i+1]+.114*d[i+2];const dark=lum<175;d[i]=d[i+1]=d[i+2]=dark?0:255;d[i+3]=255;}ctx.putImageData(img,0,0);return c;}catch(_e){return src;}}
 async function ocrCropText(src,psm=6,whitelist=''){const canvas=preprocessOcrCrop(src);const cfg={tessedit_pageseg_mode:String(psm||6)};if(whitelist)cfg.tessedit_char_whitelist=whitelist;const res=await Tesseract.recognize(canvas,'eng',cfg);return ((res&&res.data&&res.data.text)||'').trim();}
-function valueTokens(line){let s=String(line||'').replace(/[−–—]/g,'-').replace(/,/g,'.').replace(/[|\[\]]/g,' ');const re=/[-+]?\d{1,3}°\d{1,2}'\d{1,2}"|[-+]?\d+(?:\.\d+)?/g;return s.match(re)||[];}
+function normalizeAngleText(s){
+  s=String(s||'').replace(/[º˚]/g,'°').replace(/[‘’`´]/g,"'").replace(/[“”]/g,'\"').replace(/\s+/g,'');
+  let m=s.match(/([-+]?\d{1,3})\s*°\s*(\d{1,2})\s*'?\s*(\d{1,2})\s*"?/);
+  if(!m)return '';
+  const sign=m[1].startsWith('-')?'-':'';
+  const deg=String(Math.abs(parseInt(m[1],10)));
+  const min=String(parseInt(m[2],10)).padStart(2,'0');
+  const sec=String(parseInt(m[3],10)).padStart(2,'0');
+  return `${sign}${deg}°${min}'${sec}"`;
+}
+function valueTokens(line){let s=String(line||'').replace(/[−–—]/g,'-').replace(/,/g,'.').replace(/[|\[\]]/g,' ');const re=/[-+]?\d{1,3}\s*[°º˚]\s*\d{1,2}\s*['‘’`´]?\s*\d{1,2}\s*["“”]?|[-+]?\d+(?:\.\d+)?/g;return (s.match(re)||[]).map(t=>normalizeAngleText(t)||t);}
 function pickDataLine(text,axis){const lines=String(text||'').split(/\n+/).map(x=>x.trim()).filter(Boolean);if(!axis)return lines[lines.length-1]||String(text||'');const ax=String(axis).toUpperCase();for(const line of lines){const u=line.toUpperCase().replace(/[|\[\]]/g,' ').trim();if(ax==='DF'&&/^DF\b/.test(u))return line;if(ax==='TP'&&/^\s*TP\b/.test(u))return line;if(ax.length===1&&new RegExp('^'+ax+'\\b').test(u))return line;}return lines[lines.length-1]||String(text||'');}
-function cleanMeasuredToken(tok){let s=String(tok||'').trim().replace(/[−–—]/g,'-').replace(/,/g,'.');s=s.replace(/O/g,'0').replace(/o/g,'0');if(/[°']/i.test(s))return s;let m=s.match(/[-+]?\d+(?:\.\d+)?/);return m?m[0]:'';}
+function cleanMeasuredToken(tok){let s=String(tok||'').trim().replace(/[−–—]/g,'-').replace(/,/g,'.');const ang=normalizeAngleText(s);if(ang)return ang;s=s.replace(/O/g,'0').replace(/o/g,'0');let m=s.match(/[-+]?\d+(?:\.\d+)?/);return m?m[0]:'';}
 function parseValueFromText(text,def){let line=pickDataLine(text,def.axis||'');let toks=valueTokens(line);if((def.kind==='values'||def.kind==='line')&&toks.length<=1){toks=valueTokens(text);}let idx=Number.isFinite(Number(def.valIndex))?Number(def.valIndex):3;if(def.axis==='TP'&&toks.length>idx+1&&Number(toks[0])===0){}let tok=toks[idx]||'';if(!tok&&toks.length)tok=toks[toks.length>=4?3:toks.length-1];return cleanMeasuredToken(tok);}
 function cropMeasureBox(canvas,box){const sx=canvas.width/MODEL_W,sy=canvas.height/MODEL_H;const x=box.x1*sx,y=box.y1*sy,w=(box.x2-box.x1)*sx,h=(box.y2-box.y1)*sy;return cropCanvas(canvas,Math.max(0,Math.floor(x)),Math.max(0,Math.floor(y)),Math.max(1,Math.ceil(w)),Math.max(1,Math.ceil(h)),3);}
-function parseFirstMeasuredValue(text){const toks=valueTokens(text);if(!toks.length)return '';return cleanMeasuredToken(toks[0]);}
+function parseFirstMeasuredValue(text){const toks=valueTokens(text);if(!toks.length)return '';const angles=toks.map(cleanMeasuredToken).filter(v=>/[°']/i.test(v));if(angles.length)return angles[0];return cleanMeasuredToken(toks[0]);}
+function extractAngleMeasFromPageText(text,def){
+  if(!def || !/[°']/i.test(def.nom||'') || !String(def.name||'').toUpperCase().includes('UNGHI_CON')) return '';
+  let t=String(text||'').replace(/\s+/g,' ');
+  const idx=t.toUpperCase().indexOf('UNGHI_CON');
+  if(idx>=0) t=t.slice(idx,idx+320);
+  let vals=valueTokens(t).map(cleanMeasuredToken).filter(v=>/[°']/i.test(v));
+  if(vals.length>=4) return vals[3];
+  const n=normalizeAngleText(def.nom);
+  const p=normalizeAngleText(def.plus);
+  const mi=normalizeAngleText(def.minus);
+  vals=vals.filter(v=>v!==n && v!==p && v!==mi);
+  return vals[0]||'';
+}
 async function readHeader(pdf,file,rendered){let out=extractHeaderFromFilename(file.name);try{const page=await pdf.getPage(1);if(!rendered[1])rendered[1]=await renderPageCanvas(page,OCR_SCALE);const canvas=rendered[1];const dateCrop=cropCanvas(canvas,Math.floor(canvas.width*.79),Math.floor(canvas.height*.02),Math.floor(canvas.width*.13),Math.floor(canvas.height*.045),3);const dateTxt=await ocrCropText(dateCrop,7);out.date=parseDate(dateTxt)||out.date;const serialCrop=cropCanvas(canvas,Math.floor(canvas.width*.50),Math.floor(canvas.height*.05),Math.floor(canvas.width*.25),Math.floor(canvas.height*.045),3);const serialTxt=(await ocrCropText(serialCrop,7)).replace(/SER\s*NUMBER\s*:?/ig,'').trim();if(serialTxt){out.serial=serialTxt.replace(/\s+/g,' ').replace(/^P\s*/i,'P ');const m=serialTxt.match(/P\s*(\d+)/i);if(m&&!out.piece)out.piece=m[1];}const partCrop=cropCanvas(canvas,Math.floor(canvas.width*.22),Math.floor(canvas.height*.02),Math.floor(canvas.width*.45),Math.floor(canvas.height*.045),3);const partTxt=await ocrCropText(partCrop,7);out.part=detectPartFromText(partTxt)||out.part;}catch(_e){}out.part=out.part||'526-9278';return out;}
-async function readPdf(file,index,total){if(!window.pdfjsLib||!window.Tesseract)throw new Error('PDF.js sau Tesseract.js nu este încărcat.');const buf=await file.arrayBuffer();const pdf=await pdfjsLib.getDocument({data:buf}).promise;const rendered={};let part=detectPartFromText(file.name)||'526-9278';const rows=TEMPLATES[part]||[];if(!rows.length)throw new Error('Nu există model pentru reperul '+part);const header=await readHeader(pdf,file,rendered);part=header.part||part;const valuesByNr={},valuesByName={};for(let i=0;i<rows.length;i++){const def=rows[i];if(def.page>pdf.numPages)continue;setProgress(((index/total)*100)+(i/Math.max(1,rows.length))*(100/total),`Se citește ${file.name} — măsurarea ${i+1}/${rows.length}`);if(!rendered[def.page]){const p=await pdf.getPage(def.page);rendered[def.page]=await renderPageCanvas(p,OCR_SCALE);}const crop=cropByModel(rendered[def.page],def);let text='';let val='';if(def.measureBox){try{val=parseFirstMeasuredValue(await ocrCropText(cropMeasureBox(rendered[def.page],def.measureBox),7));}catch(_e){}try{if(!val)val=parseFirstMeasuredValue(await ocrCropText(cropMeasureBox(rendered[def.page],def.measureBox),6));}catch(_e){}}if(!val){try{text=await ocrCropText(crop,6);}catch(_e){}val=parseValueFromText(text,def);if(!val){try{val=parseValueFromText(await ocrCropText(crop,7),def);}catch(_e){}}}
+async function readPdf(file,index,total){if(!window.pdfjsLib||!window.Tesseract)throw new Error('PDF.js sau Tesseract.js nu este încărcat.');const buf=await file.arrayBuffer();const pdf=await pdfjsLib.getDocument({data:buf}).promise;const rendered={}, textPages={};let part=detectPartFromText(file.name)||'526-9278';const rows=TEMPLATES[part]||[];if(!rows.length)throw new Error('Nu există model pentru reperul '+part);const header=await readHeader(pdf,file,rendered);part=header.part||part;const valuesByNr={},valuesByName={};for(let i=0;i<rows.length;i++){const def=rows[i];if(def.page>pdf.numPages)continue;setProgress(((index/total)*100)+(i/Math.max(1,rows.length))*(100/total),`Se citește ${file.name} — măsurarea ${i+1}/${rows.length}`);if(!rendered[def.page]){const p=await pdf.getPage(def.page);rendered[def.page]=await renderPageCanvas(p,OCR_SCALE);textPages[def.page]=await readPageText(p);}const crop=cropByModel(rendered[def.page],def);let text='';let val='';if(/[°']/i.test(def.nom||'')){val=extractAngleMeasFromPageText(textPages[def.page]||'',def);}
+if(def.measureBox&&!val){try{val=parseFirstMeasuredValue(await ocrCropText(cropMeasureBox(rendered[def.page],def.measureBox),7));}catch(_e){}try{if(!val)val=parseFirstMeasuredValue(await ocrCropText(cropMeasureBox(rendered[def.page],def.measureBox),6));}catch(_e){}}if(!val){try{text=await ocrCropText(crop,6);}catch(_e){}val=parseValueFromText(text,def);if(!val){try{val=parseValueFromText(await ocrCropText(crop,7),def);}catch(_e){}}}
     if(val){valuesByNr[def.nr]=String(val);valuesByName[rowKey(def)]=String(val);} }
 return sanitizeRun({header:{date:header.date||'',part:part,serial:header.serial||'',sarja:header.serial||'',piece:header.piece||'',shift:header.shift||'',fileName:file.name,count:Object.keys(valuesByNr).length,source:'model-coordonate-pdf'},valuesByNr,valuesByName});}
 function fileListToArray(list){return Array.prototype.slice.call(list||[]).filter(f=>f&&/\.pdf$/i.test(f.name||''));}
