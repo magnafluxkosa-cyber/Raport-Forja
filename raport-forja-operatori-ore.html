@@ -34,7 +34,7 @@
           <div class="field"><label>Operator</label><select id="operatorFilter"><option value="TOATE">TOȚI</option></select></div>
           <button class="btn" id="btnRefresh">Actualizează</button><button class="btn" id="btnExport">Export Excel</button>
         </div>
-        <div class="hint">Centralizarea citește operatorii salvați în Raport Forja și afișează data, reperul, cantitatea realizată și orele pe operații pentru luna și anul selectat. Caseta „Ore calcul utilaj” schimbă baza de calcul: dacă este 6,5, un operator primește 6,5 ore, doi operatori primesc 6,5/2 fiecare, trei operatori primesc 6,5/3 fiecare. Tabelul de jos se poate edita direct și se salvează automat în raport, dacă ai drept de editare.</div>
+        <div class="hint">Centralizarea citește operatorii salvați în Raport Forja și adună în primul tabel toate zilele lucrate pe fiecare utilaj. Caseta „Ore calcul utilaj” schimbă baza de calcul: dacă este 6,5, un operator primește 6,5 ore pe zi/utilaj, doi operatori pe același utilaj primesc 6,5/2 fiecare, trei primesc 6,5/3 fiecare. Tabelul de jos afișează detaliul pe zile.</div>
       </section>
       <section class="card">
         <h2>Total ore operatori pe utilaj</h2>
@@ -56,7 +56,10 @@ function fmt(n,d=2){return Number(n||0).toLocaleString('ro-RO',{minimumFractionD
 function toNum(v){if(v==null)return 0;let s=String(v).trim().replace(/\s/g,'');if(!s)return 0;if(s.includes(',')&&s.includes('.'))s=s.replace(/\./g,'').replace(',','.');else if(s.includes(','))s=s.replace(',','.');const n=Number(s);return isFinite(n)?n:0}
 function getBaseHours(){const el=$('baseHoursInput');const n=toNum(el?el.value:'8');return n>0?n:8}
 function initBaseHoursInput(){const el=$('baseHoursInput');if(!el)return;try{const saved=localStorage.getItem(BASE_HOURS_STORAGE_KEY);if(saved&&toNum(saved)>0)el.value=saved}catch(e){}const sync=()=>{if(toNum(el.value)<=0)el.value='8';try{localStorage.setItem(BASE_HOURS_STORAGE_KEY,el.value)}catch(e){}renderTable()};el.addEventListener('change',sync);el.addEventListener('input',()=>{try{localStorage.setItem(BASE_HOURS_STORAGE_KEY,el.value)}catch(e){}renderTable()})}
-function activeOperatorCount(list){const n=(Array.isArray(list)?list:[]).filter(o=>{if(!o)return false;const name=clean(o.name||o.nume||o.operator);const post=clean(o.post||o.operatie||o.operație||o.functie);return !!(name&&post)}).length;return n||1}
+function activeOperatorCount(list){const n=(Array.isArray(list)?list:[]).filter(o=>clean(o&&((o.name)||(o.nume)||(o.operator)))&&clean(o&&((o.post)||(o.operatie)||(o.operație)||(o.functie)))).length;return n||1}
+function operatorName(o){return clean(o&&((o.name)||(o.nume)||(o.operator)))}
+function operatorPost(o){return opKey(o&&((o.post)||(o.operatie)||(o.operație)||(o.functie)))}
+function operatorUtilaj(r,o){return clean(utilajOf(r,o))||'NECOMPLETAT'}
 function yearOf(r){return clean(r.an||r.AN||r.An)||yearFromDate(r.data||r.DATA||'')}
 function monthOf(r){const m=clean(r.luna||r.LUNA||r.Luna).toLowerCase();if(m)return normMonth(m);return monthFromDate(r.data||r.DATA||'')}
 function yearFromDate(v){const m=String(v||'').match(/(19|20)\d{2}/);return m?m[0]:''}
@@ -83,7 +86,8 @@ async function loadReports(){setCloud('Cloud: citesc date…','warn');const d=aw
 function buildFilters(){const yf=$('yearFilter'),mf=$('monthFilter');const years=[...new Set(REPORTS.map(yearOf).filter(Boolean))].sort();const cy=String(new Date().getFullYear());if(!years.includes(cy))years.push(cy);years.sort();yf.innerHTML=years.map(y=>`<option value="${y}">${y}</option>`).join('');yf.value=years.includes(cy)?cy:years[years.length-1]||cy;const cm=MONTHS[new Date().getMonth()];mf.innerHTML=MONTHS.map(m=>`<option value="${m}">${m.toUpperCase()}</option>`).join('');mf.value=cm}
 function collectSummary(){
   const y=$('yearFilter').value,m=$('monthFilter').value;
-  const opsSet=new Set(OPERATIONS);
+  const detailOpsSet=new Set(OPERATIONS);
+  const utilajSet=new Set();
   const rows=new Map();
   const totals=new Map();
   const baseHours=getBaseHours();
@@ -96,45 +100,56 @@ function collectSummary(){
     const sortKey=dateSortKey(data);
     const reportId=clean(r.id||r.ID||r.uuid||r.created_at||r.updated_at)||String(idx);
     const list=Array.isArray(r.operatori)?r.operatori:[];
-    const splitCount=activeOperatorCount(list);
-    list.forEach((o,opIdx)=>{
-      const name=clean(o.name||o.nume||o.operator);
-      if(!name)return;
-      const post=opKey(o.post||o.operatie||o.operație||o.functie||'');
-      if(!post)return;
-      opsSet.add(post);
-      const h=baseHours/splitCount;
+    const active=list.map((o,opIdx)=>({
+      o:o,
+      opIdx:opIdx,
+      name:operatorName(o),
+      post:operatorPost(o),
+      utilaj:operatorUtilaj(r,o)
+    })).filter(x=>x.name&&x.post);
+    const countByUtilaj={};
+    active.forEach(x=>{const k=norm(x.utilaj)||'NECOMPLETAT';countByUtilaj[k]=(countByUtilaj[k]||0)+1});
+    active.forEach(x=>{
+      const name=x.name;
+      const post=x.post;
+      const utilaj=x.utilaj||'NECOMPLETAT';
+      detailOpsSet.add(post);
+      utilajSet.add(utilaj);
+      const utilajNorm=norm(utilaj)||'NECOMPLETAT';
+      const h=baseHours/(countByUtilaj[utilajNorm]||1);
       const key=reportId+'|'+norm(name);
       if(!rows.has(key))rows.set(key,{name:name,data:data,reper:reper,qty:qty,sortKey:sortKey,reportIndex:idx,operatorIndexes:[],opIndexes:{},vals:{},total:0});
       const rec=rows.get(key);
-      if(!rec.operatorIndexes.includes(opIdx))rec.operatorIndexes.push(opIdx);
+      if(!rec.operatorIndexes.includes(x.opIdx))rec.operatorIndexes.push(x.opIdx);
       if(!rec.opIndexes[post])rec.opIndexes[post]=[];
-      rec.opIndexes[post].push(opIdx);
+      rec.opIndexes[post].push(x.opIdx);
       if(h){
         rec.vals[post]=(rec.vals[post]||0)+h;
         rec.total+=h;
         const totalKey=norm(name);
         if(!totals.has(totalKey))totals.set(totalKey,{name:name,vals:{},total:0});
         const totalRec=totals.get(totalKey);
-        totalRec.vals[post]=(totalRec.vals[post]||0)+h;
+        totalRec.vals[utilaj]=(totalRec.vals[utilaj]||0)+h;
         totalRec.total+=h;
       }
     });
   });
-  const ops=[...opsSet].sort((a,b)=>{
+  const sortOperationList=(arr)=>[...arr].sort((a,b)=>{
     const ia=OPERATIONS.indexOf(a),ib=OPERATIONS.indexOf(b);
     if(ia>=0&&ib>=0)return ia-ib;
     if(ia>=0)return -1;
     if(ib>=0)return 1;
     return String(a).localeCompare(String(b),'ro');
   });
+  const ops=sortOperationList(detailOpsSet);
+  const summaryOps=[...utilajSet].sort((a,b)=>String(a).localeCompare(String(b),'ro'));
   const sorted=[...rows.values()].sort((a,b)=>
     String(a.sortKey||'').localeCompare(String(b.sortKey||''),'ro')||
     a.name.localeCompare(b.name,'ro')||
     String(a.reper||'').localeCompare(String(b.reper||''),'ro')
   );
   const summary=[...totals.values()].sort((a,b)=>a.name.localeCompare(b.name,'ro'));
-  return{ops,rows:sorted,summary:summary};
+  return{ops,summaryOps,rows:sorted,summary:summary};
 }
 
 function fmtHour(n){
@@ -165,7 +180,8 @@ function filteredSummary(rows){
 function exportExcelIdentic(){
   if(!window.XLSX){alert('Librăria Excel nu este încărcată.');return;}
   const base=collectSummary();
-  const ops=base.ops;
+  const detailOps=base.ops;
+  const summaryOps=base.summaryOps||[];
   const summary=filteredSummary(base.summary||[]);
   const rows=filteredRows(base.rows);
   const selectedYear = document.getElementById('yearFilter').value;
@@ -175,18 +191,19 @@ function exportExcelIdentic(){
     ['Luna: ' + selectedMonth.toUpperCase() + '   An: ' + selectedYear],
     [],
     ['TOTAL ORE OPERATORI PE UTILAJ'],
-    ['Operator',...ops,'TOTAL ORE']
+    ['Operator',...summaryOps,'TOTAL ORE']
   ];
-  summary.forEach(r=>aoa.push([r.name,...ops.map(o=>{const v=Number((r.vals||{})[o]||0);return v?v:''}),Number(r.total||0)||'']));
+  summary.forEach(r=>aoa.push([r.name,...summaryOps.map(o=>{const v=Number((r.vals||{})[o]||0);return v?v:''}),Number(r.total||0)||'']));
   aoa.push([]);
   aoa.push(['DETALIU ORE OPERATORI FORJĂ']);
-  aoa.push(['Operator','Data','Reper','Cantitate realizată',...ops,'TOTAL ORE']);
+  aoa.push(['Operator','Data','Reper','Cantitate realizată',...detailOps,'TOTAL ORE']);
 
-  rows.forEach(r=>aoa.push([r.name,r.data||'',r.reper||'',Number(r.qty||0)||'',...ops.map(o=>{const v=Number(r.vals[o]||0);return v?v:''}),Number(r.total||0)||'']));
+  rows.forEach(r=>aoa.push([r.name,r.data||'',r.reper||'',Number(r.qty||0)||'',...detailOps.map(o=>{const v=Number(r.vals[o]||0);return v?v:''}),Number(r.total||0)||'']));
   const ws=XLSX.utils.aoa_to_sheet(aoa);
   const range=XLSX.utils.decode_range(ws['!ref']);
 
-  ws['!cols']=[{wch:32},{wch:16},{wch:22},{wch:20},...ops.map(o=>({wch:Math.max(14,Math.min(24,String(o).length+4))})),{wch:18}];
+  const maxCols=Math.max(summaryOps.length+2,detailOps.length+5,range.e.c+1);
+  ws['!cols']=Array.from({length:maxCols},(_,i)=>({wch:i===0?32:(i===1?16:(i===2?22:(i===3?20:18)))}));
   ws['!freeze']={xSplit:0,ySplit:0};
 
   const border={top:{style:'thin',color:{rgb:'9FB2C8'}},bottom:{style:'thin',color:{rgb:'9FB2C8'}},left:{style:'thin',color:{rgb:'9FB2C8'}},right:{style:'thin',color:{rgb:'9FB2C8'}}};
@@ -195,17 +212,21 @@ function exportExcelIdentic(){
   const totalFill={fgColor:{rgb:'EEF2FF'}};
   const whiteFill={fgColor:{rgb:'FFFFFF'}};
 
-  const titleRows=new Set([0,1,3,summary.length+7]);
+  const detailTitleRow=summary.length+7;
+  const titleRows=new Set([0,1,3,detailTitleRow]);
   const headerRows=new Set([4,summary.length+8]);
   const detailHeaderRow=summary.length+8;
   const detailStart=detailHeaderRow+1;
+  const summaryTotalCol=summaryOps.length+1;
   for(let R=0;R<=range.e.r;R++){
     for(let C=0;C<=range.e.c;C++){
       const addr=XLSX.utils.encode_cell({r:R,c:C});
       if(!ws[addr])ws[addr]={t:'s',v:''};
       const isTitle=titleRows.has(R);
       const isHeader=headerRows.has(R);
-      const isTotal=(R>=4&&R<summary.length+5&&C===ops.length+1)||(R>=detailHeaderRow&&C===range.e.c);
+      const isSummaryTotal=(R>=4&&R<summary.length+5&&C===summaryTotalCol);
+      const isDetailTotal=(R>=detailHeaderRow&&C===range.e.c);
+      const isTotal=isSummaryTotal||isDetailTotal;
       const isEven=R>=detailStart && (R-detailStart)%2===1;
       ws[addr].s={
         font:{name:'Calibri',sz:R===0?16:13,bold:isTitle||isHeader||C===0||isTotal,color:{rgb:'001A33'}},
@@ -213,7 +234,7 @@ function exportExcelIdentic(){
         alignment:{horizontal:isTitle||isHeader?'center':(C===0||C===2?'left':(C===1?'center':'right')),vertical:'center'},
         border:(String(ws[addr].v||'')===''&&!isHeader&&!isTitle?undefined:border)
       };
-      if(((R>4&&R<summary.length+5&&C>=1)||(R>=detailStart&&C>=3))&&ws[addr].v!==''){
+      if(((R>4&&R<summary.length+5&&C>=1&&C<=summaryTotalCol)||(R>=detailStart&&C>=3))&&ws[addr].v!==''){
         ws[addr].t='n';
         ws[addr].z='0.##';
       }
@@ -225,7 +246,7 @@ function exportExcelIdentic(){
     {s:{r:0,c:0}, e:{r:0,c:range.e.c}},
     {s:{r:1,c:0}, e:{r:1,c:range.e.c}},
     {s:{r:3,c:0}, e:{r:3,c:range.e.c}},
-    {s:{r:summary.length+7,c:0}, e:{r:summary.length+7,c:range.e.c}}
+    {s:{r:detailTitleRow,c:0}, e:{r:detailTitleRow,c:range.e.c}}
   ];
 
   const wb=XLSX.utils.book_new();
@@ -239,15 +260,16 @@ function editableAttrs(rowIdx,field,extra=''){
 }
 function renderTable(){
   const data=collectSummary();
-  const ops=data.ops;
+  const detailOps=data.ops;
+  const summaryOps=data.summaryOps||[];
   const rows=filteredRows(data.rows);
   CURRENT_DETAIL_ROWS=rows;
   const summary=filteredSummary(data.summary||[]);
-  if($('summaryHead'))$('summaryHead').innerHTML='<tr><th>Operator</th>'+ops.map(o=>'<th>'+escapeHtml(o)+'</th>').join('')+'<th class="totalCol">TOTAL ORE</th></tr>';
-  if($('summaryBody'))$('summaryBody').innerHTML=summary.map(r=>'<tr><td>'+escapeHtml(r.name)+'</td>'+ops.map(o=>'<td>'+fmtHour((r.vals||{})[o]||0)+'</td>').join('')+'<td class="totalCol">'+fmtHour(r.total)+'</td></tr>').join('');
+  if($('summaryHead'))$('summaryHead').innerHTML='<tr><th>Operator</th>'+summaryOps.map(o=>'<th>'+escapeHtml(o)+'</th>').join('')+'<th class="totalCol">TOTAL ORE</th></tr>';
+  if($('summaryBody'))$('summaryBody').innerHTML=summary.map(r=>'<tr><td>'+escapeHtml(r.name)+'</td>'+summaryOps.map(o=>'<td>'+fmtHour((r.vals||{})[o]||0)+'</td>').join('')+'<td class="totalCol">'+fmtHour(r.total)+'</td></tr>').join('');
   if($('summaryEmpty'))$('summaryEmpty').style.display=summary.length?'none':'block';
-  $('thead').innerHTML='<tr><th>Operator</th><th>Data</th><th>Reper</th><th>Cantitate realizată</th>'+ops.map(o=>'<th>'+escapeHtml(o)+'</th>').join('')+'<th class="totalCol">TOTAL ORE</th></tr>';
-  $('tbody').innerHTML=rows.map((r,i)=>'<tr data-row-index="'+i+'"><td'+editableAttrs(i,'name')+'>'+escapeHtml(r.name)+'</td><td'+editableAttrs(i,'data')+'>'+escapeHtml(r.data||'')+'</td><td'+editableAttrs(i,'reper')+'>'+escapeHtml(r.reper||'')+'</td><td'+editableAttrs(i,'qty')+'>'+fmtHour(r.qty||0)+'</td>'+ops.map(o=>'<td'+editableAttrs(i,'op','data-op="'+escapeHtml(o)+'"')+'>'+fmtHour(r.vals[o]||0)+'</td>').join('')+'<td class="totalCol">'+fmtHour(r.total)+'</td></tr>').join('');
+  $('thead').innerHTML='<tr><th>Operator</th><th>Data</th><th>Reper</th><th>Cantitate realizată</th>'+detailOps.map(o=>'<th>'+escapeHtml(o)+'</th>').join('')+'<th class="totalCol">TOTAL ORE</th></tr>';
+  $('tbody').innerHTML=rows.map((r,i)=>'<tr data-row-index="'+i+'"><td'+editableAttrs(i,'name')+'>'+escapeHtml(r.name)+'</td><td'+editableAttrs(i,'data')+'>'+escapeHtml(r.data||'')+'</td><td'+editableAttrs(i,'reper')+'>'+escapeHtml(r.reper||'')+'</td><td'+editableAttrs(i,'qty')+'>'+fmtHour(r.qty||0)+'</td>'+detailOps.map(o=>'<td'+editableAttrs(i,'op','data-op="'+escapeHtml(o)+'"')+'>'+fmtHour(r.vals[o]||0)+'</td>').join('')+'<td class="totalCol">'+fmtHour(r.total)+'</td></tr>').join('');
   $('empty').style.display=rows.length?'none':'block';
 }
 
