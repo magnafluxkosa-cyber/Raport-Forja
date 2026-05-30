@@ -479,6 +479,13 @@
     };
   }
 
+
+  async function rfReadDocumentMetaCompat(supa, docKey){
+    const { data, error } = await supa.from('rf_documents').select('doc_key,updated_at').eq('doc_key', docKey).maybeSingle();
+    if (error) throw error;
+    return { row:data || null, updated_at:data?.updated_at || null };
+  }
+
   async function rfWriteDocumentCompat(supa, docKey, payload, updatedAt){
     const stamp = updatedAt || new Date().toISOString();
     const base = { doc_key: docKey, updated_at: stamp };
@@ -2358,7 +2365,10 @@ function setAutofillReadonly(isReadonly){
     if (Array.isArray(_inventarRowsCache)) return _inventarRowsCache;
 
     const localRows = loadInventarRowsLocal();
-    if (localRows.length) _inventarRowsCache = localRows;
+    if (localRows.length) {
+      _inventarRowsCache = localRows;
+      if (options.preferCloud !== true) return _inventarRowsCache || [];
+    }
 
     if (options.preferCloud === false || !window.__SUPA__){
       return _inventarRowsCache || [];
@@ -3527,6 +3537,19 @@ function setAutofillReadonly(isReadonly){
         return getRowsForYear(y);
       }
 
+      const localIndex = readLocalIndex();
+      const localTs = localIndex.updatedAtByYear?.[y] || null;
+      if (!options.force && localTs && getRowsForYear(y).length){
+        try{
+          const meta = await rfReadDocumentMetaCompat(supa, getYearDocKey(y));
+          const remoteMetaTs = meta.updated_at || null;
+          if (remoteMetaTs && new Date(remoteMetaTs) <= new Date(localTs)){
+            setCloud(true, `Cloud: ${y} ON`);
+            return getRowsForYear(y);
+          }
+        }catch(_metaErr){}
+      }
+
       const doc = await rfReadDocumentCompat(supa, getYearDocKey(y));
       if (!doc || !doc.payload){
         mergeCloudIndex([y], {});
@@ -3534,8 +3557,6 @@ function setAutofillReadonly(isReadonly){
         return getRowsForYear(y);
       }
 
-      const localIndex = readLocalIndex();
-      const localTs = localIndex.updatedAtByYear?.[y] || null;
       const remoteTs = doc.updated_at || doc.payload?.savedAt || null;
 
       if (!options.force && localTs && remoteTs && new Date(remoteTs) <= new Date(localTs) && getRowsForYear(y).length){
