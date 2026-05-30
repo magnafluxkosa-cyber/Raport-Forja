@@ -19,8 +19,6 @@
     { page_key: 'helper', page_name: 'Helper' },
     { page_key: 'helper-data', page_name: 'Helper Data' },
     { page_key: 'helper-acl', page_name: 'Helper ACL' },
-    { page_key: 'mapare-nume-notificari', page_name: 'Mapare nume notificări' },
-    { page_key: 'istoric-notificari', page_name: 'Istoric notificări' },
     { page_key: 'arhiva-documente', page_name: 'Arhivă Documente' },
     { page_key: 'backup-date-kad', page_name: 'Backup date K.A.D' },
     { page_key: 'numeralkod', page_name: 'Numeral KOD' },
@@ -114,8 +112,6 @@ var PAGE_CONTROL_OVERRIDES = Object.freeze({
     Object.freeze({ control_key:'nav.group-administrator', control_label:'Buton ADMINISTRATOR', control_type:'action' }),
     Object.freeze({ control_key:'nav.helper-data', control_label:'Buton HELPER-DATA', control_type:'action' }),
     Object.freeze({ control_key:'nav.helper-acl', control_label:'Buton HELPER-ACL', control_type:'action' }),
-    Object.freeze({ control_key:'nav.mapare-nume-notificari', control_label:'Buton MAPARE NUME NOTIFICĂRI', control_type:'action' }),
-    Object.freeze({ control_key:'nav.istoric-notificari', control_label:'Buton ISTORIC NOTIFICĂRI', control_type:'action' }),
     Object.freeze({ control_key:'nav.arhiva-documente', control_label:'Buton ARHIVĂ DOCUMENTE', control_type:'action' }),
     Object.freeze({ control_key:'nav.backup-date-kad', control_label:'Buton BACKUP DATE K.A.D', control_type:'action' }),
         Object.freeze({ control_key:'nav.numeralkod', control_label:'Buton NUMERALKOD', control_type:'action' }),
@@ -4023,137 +4019,6 @@ async function applyDomPermissions(pageKey, root, options) {
   else start();
 })(window, document);
 
-
-
-/* === K.A.D GLOBAL NOTIFICATIONS BOOTSTRAP ===
-   Încarcă sistemul global de notificări și captează automat salvările/mutările Supabase.
-*/
-(function(window, document){
-  'use strict';
-  if (window.__KAD_NOTIFICATIONS_BOOTSTRAP__) return;
-  window.__KAD_NOTIFICATIONS_BOOTSTRAP__ = true;
-  window.__KAD_NOTIFICATION_QUEUE__ = window.__KAD_NOTIFICATION_QUEUE__ || [];
-
-  function norm(v){ return String(v == null ? '' : v).replace(/\s+/g,' ').trim(); }
-  function safeCall(fn){ try{ return fn(); }catch(_e){ return null; } }
-  function queueMutation(ctx){
-    try{
-      if (window.KAD_NOTIFICATIONS && typeof window.KAD_NOTIFICATIONS.captureMutation === 'function'){
-        window.KAD_NOTIFICATIONS.captureMutation(ctx);
-      } else {
-        window.__KAD_NOTIFICATION_QUEUE__.push(ctx);
-      }
-    }catch(_e){}
-  }
-  function pickDocKeyFromPayload(payload){
-    if (!payload) return '';
-    if (Array.isArray(payload)){
-      for (var i=0;i<payload.length;i++){
-        var k = pickDocKeyFromPayload(payload[i]);
-        if (k) return k;
-      }
-      return '';
-    }
-    if (typeof payload === 'object') return norm(payload.doc_key || payload.key || payload.id || '');
-    return '';
-  }
-  function pageKeyFromLocation(){
-    var raw = String((window.location && window.location.pathname) || '').split('/').pop() || 'index.html';
-    return raw.replace(/\.html?$/i,'').trim() || 'index';
-  }
-  function patchResultBuilder(builder, ctx){
-    if (!builder || builder.__KAD_NOTIF_RESULT_PATCHED__) return builder;
-    if (typeof builder.then !== 'function') return builder;
-    builder.__KAD_NOTIF_RESULT_PATCHED__ = true;
-    var originalThen = builder.then;
-    builder.then = function(onFulfilled, onRejected){
-      return originalThen.call(this, function(result){
-        try{
-          if (result && !result.error) {
-            ctx.result_count = Array.isArray(result.data) ? result.data.length : (result.data ? 1 : 0);
-            queueMutation(ctx);
-          }
-        }catch(_e){}
-        return typeof onFulfilled === 'function' ? onFulfilled(result) : result;
-      }, onRejected);
-    };
-    return builder;
-  }
-  function patchMutationMethod(builder, tableName, client, methodName){
-    if (!builder || typeof builder[methodName] !== 'function') return;
-    var flag = '__KAD_NOTIF_' + methodName.toUpperCase() + '_PATCHED__';
-    if (builder[flag]) return;
-    builder[flag] = true;
-    var original = builder[methodName];
-    builder[methodName] = function(){
-      var args = Array.prototype.slice.call(arguments);
-      var payload = args[0];
-      var ctx = {
-        table: norm(tableName),
-        method: methodName,
-        payload: payload,
-        doc_key: pickDocKeyFromPayload(payload),
-        page_key: pageKeyFromLocation(),
-        captured_from: 'supabase-wrapper',
-        captured_at: new Date().toISOString()
-      };
-      var result = original.apply(this, args);
-      return patchResultBuilder(result, ctx);
-    };
-  }
-  function patchBuilder(builder, tableName, client){
-    if (!builder || builder.__KAD_NOTIF_BUILDER_PATCHED__) return builder;
-    builder.__KAD_NOTIF_BUILDER_PATCHED__ = true;
-    ['insert','upsert','update','delete'].forEach(function(method){ patchMutationMethod(builder, tableName, client, method); });
-    return builder;
-  }
-  function patchClient(client){
-    if (!client || client.__KAD_NOTIF_CLIENT_PATCHED__) return client;
-    if (typeof client.from !== 'function') return client;
-    client.__KAD_NOTIF_CLIENT_PATCHED__ = true;
-    var originalFrom = client.from.bind(client);
-    client.from = function(tableName){
-      var builder = originalFrom(tableName);
-      return patchBuilder(builder, tableName, client);
-    };
-    return client;
-  }
-  window.__KAD_PATCH_SUPABASE_CLIENT__ = patchClient;
-
-  function patchSupabaseFactory(){
-    if (!window.supabase || typeof window.supabase.createClient !== 'function') return false;
-    if (window.supabase.__KAD_NOTIF_FACTORY_PATCHED__) return true;
-    window.supabase.__KAD_NOTIF_FACTORY_PATCHED__ = true;
-    var originalCreateClient = window.supabase.createClient.bind(window.supabase);
-    window.supabase.createClient = function(){
-      var client = originalCreateClient.apply(window.supabase, arguments);
-      return patchClient(client);
-    };
-    safeCall(function(){ if (window.__RF_SHARED_SUPABASE__) patchClient(window.__RF_SHARED_SUPABASE__); });
-    return true;
-  }
-
-  function loadNotificationScript(){
-    if (document.getElementById('kadNotificationsScript')) return;
-    var script = document.createElement('script');
-    script.id = 'kadNotificationsScript';
-    script.src = './kad-notifications.js?v=20260521-page-grouped';
-    script.defer = true;
-    document.head.appendChild(script);
-  }
-
-  if (!patchSupabaseFactory()) {
-    var tries = 0;
-    var timer = window.setInterval(function(){
-      tries += 1;
-      if (patchSupabaseFactory() || tries > 40) window.clearInterval(timer);
-    }, 50);
-  }
-
-  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', loadNotificationScript, { once:true });
-  else loadNotificationScript();
-})(window, document);
-/* === END K.A.D GLOBAL NOTIFICATIONS BOOTSTRAP === */
 
 
 /* === K.A.D PWA GLOBAL BOOTSTRAP === */
