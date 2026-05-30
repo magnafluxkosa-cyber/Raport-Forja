@@ -304,7 +304,7 @@
           </table>
         </div>
       </div>
-      <div class="actions"><span class="pontajStatus" id="pontajStatus"></span></div>
+      <div class="actions"><span class="pontajStatus" id="pontajStatus"></span><button class="btn" type="button" id="btnSavePontaj">Salvează pontaj</button></div>
     </section>
   </main>
 
@@ -1456,6 +1456,8 @@
   const PONTAJ_CODES=['CO','CM','CFS','AN','LP'];
   let pontajForjaData={operators:[],months:{}};
   let pontajLoaded=false;
+  let pontajSaving=false;
+  let pontajDirty=false;
 
   function pontajStatus(msg,type){const el=$('pontajStatus'); if(!el)return; el.textContent=msg||''; el.className='pontajStatus '+(type||'');}
   function pontajMonthKey(year,monthIndex){return String(year)+'-'+String(Number(monthIndex)+1).padStart(2,'0');}
@@ -1488,6 +1490,20 @@
     const month=months[key]&&typeof months[key]==='object'?months[key]:{cells:{}};
     if(!month.cells||typeof month.cells!=='object') month.cells={};
     return month;
+  }
+  function pontajEnsureMonthData(key){
+    if(!pontajForjaData.months||typeof pontajForjaData.months!=='object') pontajForjaData.months={};
+    if(!pontajForjaData.months[key]||typeof pontajForjaData.months[key]!=='object') pontajForjaData.months[key]={cells:{}};
+    if(!pontajForjaData.months[key].cells||typeof pontajForjaData.months[key].cells!=='object') pontajForjaData.months[key].cells={};
+    return pontajForjaData.months[key];
+  }
+  function pontajSetCellValue(operatorId,shift,dateIso,value){
+    const key=pontajMonthKey(($('pontajYear')||{}).value||new Date().getFullYear(),($('pontajMonth')||{}).value||new Date().getMonth());
+    const month=pontajEnsureMonthData(key);
+    const cellKey=pontajCellKey(operatorId,shift,dateIso);
+    const raw=norm(value).toUpperCase();
+    if(!raw) delete month.cells[cellKey];
+    else month.cells[cellKey]=raw;
   }
   function pontajCellValue(operatorId,shift,dateIso){
     const key=pontajMonthKey(($('pontajYear')||{}).value||new Date().getFullYear(),($('pontajMonth')||{}).value||new Date().getMonth());
@@ -1571,10 +1587,14 @@
       pontajStatus('Nu s-a putut încărca Pontaj Forja.','err');
     }
   }
-  function renderPontajDebitari(){
+  function renderPontajDebitari(options){
     initPontajControls();
     const head=$('pontajDebitariHead'), body=$('pontajDebitariBody'), tbl=$('pontajDebitariTable'), empty=$('pontajDebitariEmpty');
     if(!head||!body||!tbl||!empty) return;
+    const keepScroll=!!(options&&options.preserveScroll);
+    const wrapBefore=$('pontajDebitariWrap');
+    const prevScrollTop=wrapBefore?wrapBefore.scrollTop:0;
+    const prevScrollLeft=wrapBefore?wrapBefore.scrollLeft:0;
     const year=Number(($('pontajYear')||{}).value)||new Date().getFullYear();
     const monthIndex=Number(($('pontajMonth')||{}).value)||0;
     const days=pontajDaysInMonth(year,monthIndex);
@@ -1602,7 +1622,8 @@
           const cls=['pontajCellInput'];
           if(entry.kind==='code') cls.push('pontajCode'+entry.value);
           if(shift==='3' && entry.kind==='hours') cls.push('pontajShift3Hours');
-          rows.push('<td class="pontajDayCell '+(day.isWeekend?'pontajWeekend':'')+'"><input class="'+cls.join(' ')+'" value="'+escapeAttr(value)+'" disabled /></td>');
+          const disabledAttr=canEdit?'':' disabled';
+          rows.push('<td class="pontajDayCell '+(day.isWeekend?'pontajWeekend':'')+'"><input class="'+cls.join(' ')+'" value="'+escapeAttr(value)+'" data-pontaj-cell="1" data-operator-id="'+escapeAttr(op.id)+'" data-shift="'+escapeAttr(shift)+'" data-date="'+escapeAttr(day.iso)+'"'+disabledAttr+' /></td>');
         });
         if(shiftIndex===0){
           rows.push('<td rowspan="'+shifts.length+'">'+pontajFmt(stats.total)+'</td>');
@@ -1618,13 +1639,115 @@
     });
     body.innerHTML=rows.join('');
     const wrap=$('pontajDebitariWrap');
-    if(wrap){wrap.scrollTop=0; wrap.scrollLeft=0;}
+    if(wrap){
+      if(keepScroll){wrap.scrollTop=prevScrollTop; wrap.scrollLeft=prevScrollLeft;}
+      else {wrap.scrollTop=0; wrap.scrollLeft=0;}
+    }
+    bindPontajDebitariInputs();
+  }
+
+  function pontajNormalizeInputValue(value){
+    let raw=norm(value).toUpperCase();
+    if(raw && !PONTAJ_CODES.includes(raw)){
+      const numeric=raw.replace(',','.');
+      if(/^\d+(\.\d+)?$/.test(numeric)) raw=raw.replace('.',',');
+    }
+    return raw;
+  }
+  function pontajApplyInputStyle(input,value){
+    if(!input) return;
+    input.classList.remove('pontajCodeCO','pontajCodeCM','pontajCodeCFS','pontajCodeAN','pontajCodeLP','pontajShift3Hours');
+    const entry=pontajClassify(value);
+    if(entry.kind==='code') input.classList.add('pontajCode'+entry.value);
+    if(String(input.getAttribute('data-shift'))==='3' && entry.kind==='hours') input.classList.add('pontajShift3Hours');
+  }
+  function pontajSyncInput(input,markDirty){
+    if(!input) return;
+    const operatorId=input.getAttribute('data-operator-id')||'';
+    const shift=input.getAttribute('data-shift')||'';
+    const dateIso=input.getAttribute('data-date')||'';
+    if(!canEdit){
+      const lockedValue=pontajCellValue(operatorId,shift,dateIso);
+      input.value=lockedValue;
+      input.disabled=true;
+      pontajApplyInputStyle(input,lockedValue);
+      return;
+    }
+    const value=pontajNormalizeInputValue(input.value);
+    input.value=value;
+    pontajSetCellValue(operatorId,shift,dateIso,value);
+    pontajApplyInputStyle(input,value);
+    if(markDirty){
+      pontajDirty=true;
+      pontajStatus('Modificări nesalvate. Apasă „Salvează pontaj”.','');
+    }
+  }
+  function pontajCurrentInputMetas(){
+    return Array.from(document.querySelectorAll('#pontajDebitariBody input[data-pontaj-cell="1"]')).map(input=>({
+      operatorId:input.getAttribute('data-operator-id')||'',
+      shift:input.getAttribute('data-shift')||'',
+      dateIso:input.getAttribute('data-date')||'',
+      value:pontajNormalizeInputValue(input.value)
+    })).filter(item=>item.operatorId&&item.shift&&item.dateIso);
+  }
+  function bindPontajDebitariInputs(){
+    document.querySelectorAll('#pontajDebitariBody input[data-pontaj-cell="1"]').forEach(input=>{
+      input.disabled=!canEdit;
+      input.addEventListener('input',()=>pontajSyncInput(input,true));
+      input.addEventListener('change',()=>{pontajSyncInput(input,true); renderPontajDebitari({preserveScroll:true});});
+      input.addEventListener('blur',()=>{pontajSyncInput(input,false); renderPontajDebitari({preserveScroll:true});});
+      input.addEventListener('keydown',(event)=>{
+        if(event.key==='Enter'){event.preventDefault(); input.blur();}
+      });
+      input.addEventListener('focus',()=>input.select());
+    });
+  }
+  async function savePontajDebitari(){
+    if(!canEdit){pontajStatus('Nu ai drept de salvare pontaj.','err'); return;}
+    if(pontajSaving) return;
+    const btn=$('btnSavePontaj');
+    try{
+      pontajSaving=true;
+      if(btn) btn.disabled=true;
+      pontajStatus('Se salvează pontajul pentru Debitări...','');
+      const metas=pontajCurrentInputMetas();
+      const year=Number(($('pontajYear')||{}).value)||new Date().getFullYear();
+      const monthIndex=Number(($('pontajMonth')||{}).value)||new Date().getMonth();
+      const key=pontajMonthKey(year,monthIndex);
+      const doc=await readDoc(PONTAJ_DOC_KEY);
+      const payload=Object.assign({},getPayload(doc)||{});
+      if(!Array.isArray(payload.operators)) payload.operators=Array.isArray(pontajForjaData.operators)?pontajForjaData.operators:[];
+      if(!payload.months||typeof payload.months!=='object') payload.months={};
+      if(!payload.months[key]||typeof payload.months[key]!=='object') payload.months[key]={cells:{}};
+      if(!payload.months[key].cells||typeof payload.months[key].cells!=='object') payload.months[key].cells={};
+      metas.forEach(item=>{
+        const cellKey=pontajCellKey(item.operatorId,item.shift,item.dateIso);
+        if(item.value) payload.months[key].cells[cellKey]=item.value;
+        else delete payload.months[key].cells[cellKey];
+      });
+      payload.updated_at=new Date().toISOString();
+      await writeDoc(PONTAJ_DOC_KEY,payload);
+      pontajForjaData={
+        operators:Array.isArray(payload.operators)?payload.operators:[],
+        months:(payload.months&&typeof payload.months==='object')?payload.months:{},
+        updated_at:payload.updated_at
+      };
+      pontajDirty=false;
+      renderPontajDebitari({preserveScroll:true});
+      pontajStatus('Pontaj salvat în Pontaj Forja - Debitări.','ok');
+    }catch(e){
+      console.error(e);
+      pontajStatus(e&&e.message?e.message:'Nu s-a putut salva pontajul.','err');
+    }finally{
+      pontajSaving=false;
+      if(btn) btn.disabled=!canEdit;
+    }
   }
 
   function switchTab(tab){document.querySelectorAll('.tab').forEach(b=>b.classList.toggle('active',b.dataset.tab===tab)); $('tab-debitare').classList.toggle('hidden',tab!=='debitare'); $('tab-intrari').classList.toggle('hidden',tab!=='intrari'); $('tab-numeralkod').classList.toggle('hidden',tab!=='numeralkod'); $('tab-pontaj').classList.toggle('hidden',tab!=='pontaj'); if(tab==='intrari') scrollIntrariToBottom(); if(tab==='numeralkod') renderNumeralKodEditor(); if(tab==='pontaj') loadPontajForjaEditor();}
   function applyAccessMode(){
     document.body.classList.toggle('readonly', !canEdit);
-    ['btnSaveIntrari','btnSaveDebitare','btnAddIntrariRows','btnDeleteIntrariRow','btnNewDebitareFisa','btnReloadNumeralKod','btnAddNkZale','btnAddNkAlte','btnSaveNumeralKod'].forEach(id=>{const b=$(id); if(b) b.disabled=!canEdit;});
+    ['btnSaveIntrari','btnSaveDebitare','btnAddIntrariRows','btnDeleteIntrariRow','btnNewDebitareFisa','btnReloadNumeralKod','btnAddNkZale','btnAddNkAlte','btnSaveNumeralKod','btnSavePontaj'].forEach(id=>{const b=$(id); if(b) b.disabled=!canEdit;});
     enforceDebitareOperatorNoDashboard();
     const dashBtn=$('btnDashboard'); if(dashBtn && currentEmail!==OPERATOR_EMAIL) dashBtn.classList.toggle('hidden', false);
     const pinBtn=$('btnSetOperatorPin'); if(pinBtn){const allowPin=canManageOperatorPin(); pinBtn.classList.toggle('hidden',!allowPin); pinBtn.disabled=!allowPin;}
@@ -1671,6 +1794,7 @@
   $('btnAddNkAlte').addEventListener('click',()=>{addNumeralKodSeries('alte');});
   $('btnSaveNumeralKod').addEventListener('click',()=>{saveNumeralKodEditor(false);});
   $('btnReloadPontaj').addEventListener('click',()=>{loadPontajForjaEditor();});
+  $('btnSavePontaj').addEventListener('click',()=>{savePontajDebitari();});
   $('pontajYear').addEventListener('change',()=>{if(pontajLoaded) renderPontajDebitari();});
   $('pontajMonth').addEventListener('change',()=>{if(pontajLoaded) renderPontajDebitari();});
   $('btnSetOperatorPin').addEventListener('click',()=>{openPinModal().catch(e=>{console.error(e);alert(e&&e.message?e.message:'Eroare la deschiderea setării PIN.');});});
