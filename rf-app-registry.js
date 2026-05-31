@@ -38,7 +38,7 @@
         { type:'group', key:'group-resurse-umane', label:'RESURSE UMANE', panelId:'subResurseUmane', panelMode:'tabs', sections:[{ key:'group-resurse-umane-pontaje', buttonKey:'group-resurse-umane-pontaje', label:'PONTAJE', sectionId:'resurseUmanePontaje', layout:'subgrid', items:[ page('pontaj-forja','PONTAJ FORJA'), page('pontaj-sef-echipa','PONTAJ ȘEF ECHIPĂ'), page('pontaj-mecanici','PONTAJ MECANICI'), page('pontaj-ctc','PONTAJ CTC'), page('pontaj-prelucrari-mecanice','PONTAJ PRELUCRĂRI MECANICE'), page('raport-forja-operatori-ore','ORE OPERATORI FORJĂ'), page('bonus-lunar','BONUS LUNAR'), page('calendar-operatori','CALENDAR OPERATORI') ] }] },
         { type:'group', key:'group-sdv', label:'SDV', panelId:'subSdv', panelMode:'flat', sections:[{ key:'group-sdv-links', label:'Pagini', sectionId:'sdvLinks', layout:'subgrid', items:[ page('stoc-matrite','STOC MATRIȚE'), page('urmarire-matrite','URMĂRIRE MATRIȚE'), page('progres-matrite','PROGRES MATRIȚE'), page('utilaje-matrite','UTILAJE MATRIȚE'), page('repere-matrite','REPERE MATRIȚE') ] }] },
         { type:'group', key:'group-mentenanta', label:'MENTENANTA', panelId:'subMentenanta', panelMode:'flat', sections:[{ key:'group-mentenanta-links', label:'Pagini', sectionId:'mentenantaLinks', layout:'subgrid', items:[ page('registru-mentenanta','Registru de mentenanta') ] }] },
-        { type:'group', key:'group-administrator', label:'ADMINISTRATOR', panelId:'subAdministrator', panelMode:'flat', sections:[{ key:'group-administrator-links', label:'Pagini', sectionId:'administratorLinks', layout:'subgrid', items:[ page('helper-data','HELPER-DATA'), page('helper-acl','HELPER-ACL'), page('monitor-activitate-utilizatori','MONITOR ACTIVITATE UTILIZATORI'), page('arhiva-documente','ARHIVĂ DOCUMENTE'), page('backup-date-kad','BACKUP DATE K.A.D') ] }] }
+        { type:'group', key:'group-administrator', label:'ADMINISTRATOR', panelId:'subAdministrator', panelMode:'flat', sections:[{ key:'group-administrator-links', label:'Pagini', sectionId:'administratorLinks', layout:'subgrid', items:[ page('helper-data','HELPER-DATA'), page('helper-acl','HELPER-ACL'), page('arhiva-documente','ARHIVĂ DOCUMENTE'), page('backup-date-kad','BACKUP DATE K.A.D') ] }] }
       ]
     },
     helperAcl: {
@@ -52,7 +52,7 @@
         { key:'resurse-umane-pages', label:'Resurse umane / Pontaje', items:[ ['pontaj-forja','PONTAJ FORJA'],['pontaj-sef-echipa','PONTAJ ȘEF ECHIPĂ'],['pontaj-mecanici','PONTAJ MECANICI'],['pontaj-ctc','PONTAJ CTC'],['pontaj-prelucrari-mecanice','PONTAJ PRELUCRĂRI MECANICE'],['raport-forja-operatori-ore','ORE OPERATORI FORJĂ'],['bonus-lunar','BONUS LUNAR'],['calendar-operatori','CALENDAR OPERATORI'] ] },
         { key:'sdv-pages', label:'Foi SDV', items:[ ['stoc-matrite','STOC MATRIȚE'],['urmarire-matrite','URMĂRIRE MATRIȚE'],['progres-matrite','PROGRES MATRIȚE'],['utilaje-matrite','UTILAJE MATRIȚE'],['repere-matrite','REPERE MATRIȚE'] ] },
         { key:'mentenanta-pages', label:'Foi MENTENANȚĂ', items:[ ['registru-mentenanta','REGISTRU DE MENTENANȚĂ'] ] },
-        { key:'helper-pages', label:'Administrator', items:[ ['index','DASHBOARD'],['helper','HELPER'],['helper-data','HELPER-DATA'],['helper-acl','HELPER-ACL'],['monitor-activitate-utilizatori','MONITOR ACTIVITATE UTILIZATORI'],['arhiva-documente','ARHIVĂ DOCUMENTE'],['backup-date-kad','BACKUP DATE K.A.D'] ] }
+        { key:'helper-pages', label:'Administrator', items:[ ['index','DASHBOARD'],['helper','HELPER'],['helper-data','HELPER-DATA'],['helper-acl','HELPER-ACL'],['arhiva-documente','ARHIVĂ DOCUMENTE'],['backup-date-kad','BACKUP DATE K.A.D'] ] }
       ]
     }
   };
@@ -117,7 +117,7 @@
   registry.getManagedPageEntries = function(){
     var out = [];
     registry.helperAcl.pageGroups.forEach(function(group){ (group.items || []).forEach(function(entry){ out.push({ page_key: entry[0], page_name: entry[1] }); }); });
-    [{ page_key:'group-resurse-umane', page_name:'Grup / Resurse umane' }, { page_key:'group-resurse-umane-pontaje', page_name:'Grup / Resurse umane / Pontaje' }, { page_key:'group-administrator', page_name:'Grup / Administrator' }, { page_key:'monitor-activitate-utilizatori', page_name:'MONITOR ACTIVITATE UTILIZATORI' }].forEach(function(item){ out.push(item); });
+    [{ page_key:'group-resurse-umane', page_name:'Grup / Resurse umane' }, { page_key:'group-resurse-umane-pontaje', page_name:'Grup / Resurse umane / Pontaje' }, { page_key:'group-administrator', page_name:'Grup / Administrator' }].forEach(function(item){ out.push(item); });
     return out;
   };
   registry.patchAclCatalog = function(){
