@@ -78,7 +78,93 @@
   async function loadData(){ try{ $('setupWarn').classList.add('hidden'); var pres=await state.sb.from('kad_user_activity').select('session_key,user_id,email,role,display_name,event_type,status,page_key,page_href,page_title,first_seen_at,last_seen_at,heartbeat_at,logged_in_at,logged_out_at,country,city,timezone,language,user_agent,platform,screen,ip_hint,access_can_view,access_can_edit,denied_reason,updated_at').order('last_seen_at',{ascending:false}).limit(500); if(pres.error) throw pres.error; var ev=await state.sb.from('kad_security_events').select('id,session_key,user_id,email,role,event_type,risk_level,page_key,page_href,page_title,country,city,timezone,language,user_agent,platform,ip_hint,access_can_view,access_can_edit,denied_reason,meta,created_at').order('created_at',{ascending:false}).limit(500); if(ev.error) throw ev.error; state.rows=Array.isArray(pres.data)?pres.data:[]; state.events=Array.isArray(ev.data)?ev.data:[]; render(); }catch(err){ console.error(err); $('setupWarn').classList.remove('hidden'); $('statusText').textContent = err && err.message ? err.message : 'Nu pot citi tabelele de monitorizare.'; } }
   function setupRealtime(){ try{ if(!state.sb.channel) return; state.channel=state.sb.channel('kad-monitor-activitate-utilizatori').on('postgres_changes',{event:'*',schema:'public',table:'kad_user_activity'},function(){ loadData(); }).on('postgres_changes',{event:'*',schema:'public',table:'kad_security_events'},function(){ loadData(); }).subscribe(function(status){ $('liveBadge').textContent = status==='SUBSCRIBED' ? 'Realtime activ' : 'Realtime: '+status; }); }catch(_e){} }
   function exportCsv(){ var rows=filteredRows(); var headers=['email','role','status','page_key','page_title','country','city','timezone','last_seen_at','access_can_view','access_can_edit','denied_reason']; var lines=[headers.join(',')]; rows.forEach(function(r){ lines.push(headers.map(function(k){ return '"'+String(k==='status'?rowStatus(r):(r[k] == null ? '' : r[k])).replace(/"/g,'""')+'"'; }).join(',')); }); var blob=new Blob([lines.join('\n')],{type:'text/csv;charset=utf-8'}); var a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='monitor-activitate-utilizatori.csv'; a.click(); setTimeout(function(){URL.revokeObjectURL(a.href);},1000); }
-  async function init(){ try{ state.sb = window.ERPAuth.getSupabaseClient(); var auth=await window.ERPAuth.requireAuth({next:PAGE_KEY+'.html',redirectToLogin:true}); if(!auth) return; state.user=auth.user; state.role=auth.role; var access=await window.ERPAuth.getPageAccess(PAGE_KEY,{user:auth.user,role:auth.role}); state.access=access; var perms=access && (access.permissions||access)||{}; if(!access || access.allowed===false || perms.can_view!==true){ $('lockMsg').textContent = (access && access.message) || 'Nu ai acces în Monitor Activitate Utilizatori.'; $('lock').classList.remove('hidden'); return; } $('app').classList.remove('hidden'); await loadData(); setupRealtime(); state.timer=setInterval(loadData,REFRESH_MS); }catch(err){ console.error(err); $('lockMsg').textContent = err && err.message ? err.message : 'Eroare la inițializarea paginii.'; $('lock').classList.remove('hidden'); } }
+
+  function monitorSessionKey(user){
+    var uid = String(user && user.id || '').trim();
+    var email = norm(user && user.email || 'anon');
+    var key = 'kad_monitor_activity_session_v2:' + (uid || email || 'anon');
+    var raw = '';
+    try{ raw = localStorage.getItem(key) || ''; }catch(_e){}
+    if(!raw){
+      try{ raw = (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : ('mon-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2)); }catch(_e){ raw = 'mon-' + Date.now().toString(36); }
+      try{ localStorage.setItem(key, raw); }catch(_e){}
+    }
+    return raw;
+  }
+  function monitorDevice(){
+    var ua = String(navigator && navigator.userAgent || '');
+    return { ua:ua, platform:String(navigator && navigator.platform || ''), lang:String(navigator && navigator.language || ''), screen:String(window.screen && window.screen.width || '')+'x'+String(window.screen && window.screen.height || ''), tz:(function(){try{return Intl.DateTimeFormat().resolvedOptions().timeZone||'';}catch(_e){return '';}})() };
+  }
+  async function recordMonitorSelf(eventType){
+    try{
+      if(!state.sb || !state.user) return;
+      var dev = monitorDevice();
+      var nowIso = new Date().toISOString();
+      var row = {
+        session_key: monitorSessionKey(state.user),
+        user_id: state.user.id || null,
+        email: state.user.email || null,
+        role: state.role || 'admin',
+        display_name: (state.user.user_metadata && (state.user.user_metadata.full_name || state.user.user_metadata.name)) || state.user.email || '',
+        event_type: eventType || 'heartbeat',
+        status: 'active',
+        page_key: PAGE_KEY,
+        page_href: PAGE_KEY + '.html',
+        page_title: document.title || 'Monitor Activitate Utilizatori',
+        first_seen_at: nowIso,
+        last_seen_at: nowIso,
+        heartbeat_at: nowIso,
+        logged_in_at: eventType === 'login' ? nowIso : null,
+        country: '',
+        city: '',
+        timezone: dev.tz,
+        language: dev.lang,
+        user_agent: dev.ua,
+        platform: dev.platform,
+        screen: dev.screen,
+        access_can_view: true,
+        access_can_edit: false,
+        denied_reason: '',
+        meta: { source:'monitor-self-heartbeat', path:String(location && location.pathname || '') },
+        updated_at: nowIso
+      };
+      if(eventType !== 'login') delete row.logged_in_at;
+      var res = await state.sb.from('kad_user_activity').upsert(row, { onConflict:'session_key' });
+      if(res && res.error) throw res.error;
+      if(eventType === 'page_view'){
+        var lastKey = 'kad_monitor_page_view_event_at:' + row.session_key;
+        var last = 0;
+        try{ last = Number(sessionStorage.getItem(lastKey) || 0); }catch(_e){}
+        if(!last || Date.now() - last > 30000){
+          try{ sessionStorage.setItem(lastKey, String(Date.now())); }catch(_e){}
+          await state.sb.from('kad_security_events').insert({
+            session_key: row.session_key,
+            user_id: row.user_id,
+            email: row.email,
+            role: row.role,
+            event_type: 'page_view',
+            risk_level: 'blue',
+            page_key: row.page_key,
+            page_href: row.page_href,
+            page_title: row.page_title,
+            timezone: row.timezone,
+            language: row.language,
+            user_agent: row.user_agent,
+            platform: row.platform,
+            access_can_view: true,
+            access_can_edit: false,
+            meta: row.meta,
+            created_at: nowIso
+          });
+        }
+      }
+    }catch(err){
+      console.warn('Monitor activity self heartbeat failed', err);
+      $('statusText').textContent = 'Monitorul citește datele, dar nu poate scrie heartbeat-ul sesiunii curente.';
+    }
+  }
+
+  async function init(){ try{ state.sb = window.ERPAuth.getSupabaseClient(); var auth=await window.ERPAuth.requireAuth({next:PAGE_KEY+'.html',redirectToLogin:true}); if(!auth) return; state.user=auth.user; state.role=auth.role; var access=await window.ERPAuth.getPageAccess(PAGE_KEY,{user:auth.user,role:auth.role}); state.access=access; var perms=access && (access.permissions||access)||{}; if(!access || access.allowed===false || perms.can_view!==true){ $('lockMsg').textContent = (access && access.message) || 'Nu ai acces în Monitor Activitate Utilizatori.'; $('lock').classList.remove('hidden'); return; } $('app').classList.remove('hidden'); await recordMonitorSelf('page_view'); await loadData(); setupRealtime(); state.timer=setInterval(async function(){ await recordMonitorSelf('heartbeat'); await loadData(); },REFRESH_MS); }catch(err){ console.error(err); $('lockMsg').textContent = err && err.message ? err.message : 'Eroare la inițializarea paginii.'; $('lock').classList.remove('hidden'); } }
   ['txtSearch','selStatus','selRole','selRisk'].forEach(function(id){ document.addEventListener('input',function(e){ if(e.target && e.target.id===id) render(); },true); document.addEventListener('change',function(e){ if(e.target && e.target.id===id) render(); },true); });
   $('btnRefresh').addEventListener('click',loadData); $('btnExport').addEventListener('click',exportCsv); window.addEventListener('beforeunload',function(){ try{ if(state.channel) state.sb.removeChannel(state.channel); }catch(_e){} });
   if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',init,{once:true}); else init();
