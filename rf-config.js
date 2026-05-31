@@ -4269,293 +4269,324 @@ async function applyDomPermissions(pageKey, root, options) {
 (function(window, document){
   'use strict';
 
-  if (window.__KAD_RF_CONFIG_ACTIVITY_TRACKER_INSTALLED__) return;
-  window.__KAD_RF_CONFIG_ACTIVITY_TRACKER_INSTALLED__ = true;
+  if (window.__KAD_ACTIVITY_TRACKER_V2_INSTALLED__) return;
+  window.__KAD_ACTIVITY_TRACKER_V2_INSTALLED__ = true;
 
-  var STORAGE_PREFIX = 'kad_activity_session_v1:';
-  var TAB_KEY = 'kad_activity_tab_id_v1';
   var VISIBLE_MS = 30000;
   var HIDDEN_MS = 120000;
-  var START_DELAY_MS = 1800;
-  var PAGE_VIEW_EVENT_MIN_MS = 60000;
-  var timer = null;
+  var START_DELAY_MS = 900;
+  var PAGE_VIEW_EVENT_MIN_MS = 120000;
   var running = false;
   var lastWriteAt = 0;
-  var sbClient = null;
-  var lastUserKey = '';
+  var timer = null;
 
   function safeString(v){ return String(v == null ? '' : v).trim(); }
   function lower(v){ return safeString(v).toLowerCase(); }
   function nowIso(){ return new Date().toISOString(); }
-  function rand(){ return 'kad-' + Math.random().toString(36).slice(2, 10) + '-' + Date.now().toString(36); }
-  function lsGet(k){ try { return localStorage.getItem(k); } catch(_e){ return null; } }
-  function lsSet(k, v){ try { localStorage.setItem(k, v); } catch(_e){} }
   function ssGet(k){ try { return sessionStorage.getItem(k); } catch(_e){ return null; } }
-  function ssSet(k, v){ try { sessionStorage.setItem(k, v); } catch(_e){} }
-  function parseJson(raw){ try { return raw ? JSON.parse(raw) : null; } catch(_e){ return null; } }
+  function ssSet(k,v){ try { sessionStorage.setItem(k, v); } catch(_e){} }
+  function lsGet(k){ try { return localStorage.getItem(k); } catch(_e){ return null; } }
+  function lsSet(k,v){ try { localStorage.setItem(k, v); } catch(_e){} }
 
-  function getConfig(){
-    var cfg = window.RF_CONFIG || window.ERP_FORJA_CONFIG || window.__ERP_FORJA_CONFIG__ || {};
-    var stored = parseJson(lsGet('erp_forja_config')) || {};
-    var url = safeString(cfg.SUPABASE_URL || cfg.supabaseUrl || stored.SUPABASE_URL || stored.supabaseUrl || window.RF_SUPABASE_URL || lsGet('ERP_SUPABASE_URL'));
-    var key = safeString(cfg.SUPABASE_ANON_KEY || cfg.supabaseAnonKey || stored.SUPABASE_ANON_KEY || stored.supabaseAnonKey || window.RF_SUPABASE_ANON_KEY || lsGet('ERP_SUPABASE_ANON_KEY'));
-    return { url:url, key:key, ok:Boolean(url && key && !/^PASTE_|^REPLACE_|^YOUR_/i.test(key)) };
-  }
-
-  function getClient(){
-    if (sbClient && typeof sbClient.from === 'function') return sbClient;
-    try {
-      if (window.ERPAuth && typeof window.ERPAuth.getSupabaseClient === 'function') {
-        var erpClient = window.ERPAuth.getSupabaseClient();
-        if (erpClient && typeof erpClient.from === 'function') { sbClient = erpClient; return sbClient; }
-      }
-    } catch(_e){}
-    try {
-      var cfg = getConfig();
-      if (!cfg.ok || !window.supabase || typeof window.supabase.createClient !== 'function') return null;
-      if (typeof window.createRfSupabaseClient === 'function') {
-        sbClient = window.createRfSupabaseClient(cfg.url, cfg.key, { auth:{ persistSession:true, autoRefreshToken:true, detectSessionInUrl:true } });
-      } else {
-        sbClient = window.supabase.createClient(cfg.url, cfg.key, { auth:{ persistSession:true, autoRefreshToken:true, detectSessionInUrl:true } });
-      }
-      return sbClient;
-    } catch(_e){ return null; }
-  }
-
-  async function getSessionUser(sb){
-    try {
-      if (window.ERPAuth && typeof window.ERPAuth.getSession === 'function') {
-        var s0 = await window.ERPAuth.getSession();
-        if (s0 && s0.user) return s0.user;
-      }
-    } catch(_e){}
-    try {
-      if (sb && sb.auth && typeof sb.auth.getSession === 'function') {
-        var res = await sb.auth.getSession();
-        var ses = res && res.data ? res.data.session : null;
-        if (ses && ses.user) return ses.user;
-      }
-    } catch(_e){}
+  function readJsonStorage(keys){
+    for (var i=0;i<keys.length;i++){
+      var raw = ssGet(keys[i]) || lsGet(keys[i]);
+      if (!raw) continue;
+      try { return JSON.parse(raw); } catch(_e){}
+    }
     return null;
   }
 
-  async function getRole(user){
-    try {
-      if (window.ERPAuth && typeof window.ERPAuth.getCurrentUserWithRole === 'function') {
-        var st = await window.ERPAuth.getCurrentUserWithRole();
-        if (st && st.role) return lower(st.role);
-      }
-    } catch(_e){}
-    var stored = lower(lsGet('rf_user_role') || lsGet('ERP_USER_ROLE') || lsGet('kad_user_role'));
-    if (stored) return stored;
-    var email = lower(user && user.email);
-    try {
-      var adminEmail = lower((window.RF_CONFIG || window.ERP_FORJA_CONFIG || {}).ADMIN_EMAIL || '');
-      if (adminEmail && email === adminEmail) return 'admin';
-    } catch(_e){}
-    return email ? 'viewer' : '';
+  function getCfg(){
+    var cfg = window.RF_CONFIG || window.ERP_FORJA_CONFIG || window.__ERP_FORJA_CONFIG__ || {};
+    var stored = readJsonStorage(['erp_forja_config']) || {};
+    var url = safeString(cfg.SUPABASE_URL || cfg.supabaseUrl || stored.SUPABASE_URL || stored.supabaseUrl || window.RF_SUPABASE_URL || lsGet('ERP_SUPABASE_URL'));
+    var key = safeString(cfg.SUPABASE_ANON_KEY || cfg.supabaseAnonKey || stored.SUPABASE_ANON_KEY || stored.supabaseAnonKey || window.RF_SUPABASE_ANON_KEY || lsGet('ERP_SUPABASE_ANON_KEY'));
+    return { url:url, key:key };
+  }
+
+  function getEdgeUrl(){
+    var cfg = getCfg();
+    if (!cfg.url) return '';
+    return cfg.url.replace(/\/$/, '') + '/functions/v1/kad-activity-log';
+  }
+
+  function normalizePageKey(v){
+    var s = safeString(v || window.location.pathname || '');
+    try { s = decodeURIComponent(s); } catch(_e){}
+    s = s.split('?')[0].split('#')[0].replace(/^.*\//,'').replace(/\.html?$/i,'');
+    return s || 'index';
   }
 
   function pageHref(){
-    try { return (window.location.pathname.split('/').pop() || 'index.html').split('?')[0] || 'index.html'; } catch(_e){ return 'index.html'; }
+    var p = safeString(window.location.pathname || '');
+    var f = p.replace(/^.*\//,'') || 'index.html';
+    return f;
   }
-  function pageKey(){ return lower(pageHref().replace(/\.html$/i, '') || 'index'); }
+
   function pageTitle(){
-    var title = safeString(document.title);
+    var fromRegistry = '';
     try {
-      var h = document.querySelector('h1,.page-title,.nkTitle,.title,.header-title');
-      if (h && safeString(h.textContent)) title = safeString(h.textContent);
+      if (window.RF_APP_REGISTRY && typeof window.RF_APP_REGISTRY.getPageTitle === 'function') {
+        fromRegistry = window.RF_APP_REGISTRY.getPageTitle(normalizePageKey());
+      }
     } catch(_e){}
-    return title || pageKey();
+    return safeString(fromRegistry || document.title || normalizePageKey());
   }
 
   function getTabId(){
-    var id = ssGet(TAB_KEY);
-    if (!id) { id = rand(); ssSet(TAB_KEY, id); }
-    return id;
+    var k = 'kad_activity_tracker_tab_id_v2';
+    var v = ssGet(k);
+    if (!v) {
+      v = 'tab-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2,10);
+      ssSet(k, v);
+    }
+    return v;
   }
 
-  function userKey(user){
-    return safeString(user && user.id) || lower(user && user.email) || 'anon';
-  }
-
-  function getSessionKey(user){
-    var key = userKey(user);
-    lastUserKey = key;
-    var tab = getTabId();
-    var storageKey = STORAGE_PREFIX + key + ':' + tab;
-    var existing = parseJson(lsGet(storageKey));
-    if (existing && existing.session_key) return safeString(existing.session_key);
-    var created = { session_key: rand(), user_key:key, tab_id:tab, created_at:nowIso() };
-    lsSet(storageKey, JSON.stringify(created));
-    return created.session_key;
-  }
-
-  function countryFromLanguage(language){
-    var m = safeString(language).match(/[-_]([A-Z]{2})$/i);
-    return m ? m[1].toUpperCase() : '';
+  function getBrowserSessionId(){
+    var k = 'kad_activity_browser_session_id_v2';
+    var v = lsGet(k);
+    if (!v) {
+      v = 'browser-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2,10);
+      lsSet(k, v);
+    }
+    return v;
   }
 
   function getDevice(){
-    var nav = window.navigator || {};
-    var ua = safeString(nav.userAgent);
-    var platform = safeString(nav.userAgentData && nav.userAgentData.platform) || safeString(nav.platform);
-    var os = /Windows/i.test(ua) ? 'Windows' : (/Android/i.test(ua) ? 'Android' : (/iPhone|iPad|iOS/i.test(ua) ? 'iOS' : (/Mac/i.test(ua) ? 'Mac' : (/Linux/i.test(ua) ? 'Linux' : platform))));
-    var browser = /Edg\//i.test(ua) ? 'Edge' : (/OPR\//i.test(ua) ? 'Opera' : (/Firefox\//i.test(ua) ? 'Firefox' : (/Chrome\//i.test(ua) ? 'Chrome' : (/Safari\//i.test(ua) ? 'Safari' : 'Browser'))));
-    var language = safeString(nav.language || (nav.languages && nav.languages[0]) || '');
     var tz = '';
     try { tz = Intl.DateTimeFormat().resolvedOptions().timeZone || ''; } catch(_e){}
+    var lang = safeString(navigator.language || (navigator.languages && navigator.languages[0]) || '');
+    var screenText = '';
+    try { screenText = String(window.screen && window.screen.width || '') + 'x' + String(window.screen && window.screen.height || ''); } catch(_e){}
     return {
-      language: language,
-      country: countryFromLanguage(language),
-      city: '',
+      country: safeString(lsGet('kad_country') || lsGet('rf_country') || ''),
+      city: safeString(lsGet('kad_city') || lsGet('rf_city') || ''),
       timezone: tz,
-      user_agent: ua,
-      platform: (os || platform || 'Dispozitiv') + ' · ' + browser,
-      screen: String((window.screen && window.screen.width) || '') + 'x' + String((window.screen && window.screen.height) || '')
+      language: lang,
+      user_agent: safeString(navigator.userAgent || ''),
+      platform: safeString(navigator.platform || ''),
+      screen: screenText
     };
   }
 
-  function getPermissions(role){
+  function tryGetClient(){
     try {
-      if (window.ERPAuth && typeof window.ERPAuth.getCurrentPagePermissions === 'function') {
-        var p = window.ERPAuth.getCurrentPagePermissions() || {};
-        return { can_view:p.can_view === false ? false : true, can_edit:p.can_edit === true };
+      if (window.__RF_SUPABASE_SINGLETON__ && window.__RF_SUPABASE_SINGLETON__.client) return window.__RF_SUPABASE_SINGLETON__.client;
+      if (window.RF_SUPABASE && typeof window.RF_SUPABASE.from === 'function') return window.RF_SUPABASE;
+      if (window.supabaseClient && typeof window.supabaseClient.from === 'function') return window.supabaseClient;
+      if (window.supabase && typeof window.supabase.createClient === 'function') {
+        var cfg = getCfg();
+        if (!cfg.url || !cfg.key) return null;
+        var c = window.supabase.createClient(cfg.url, cfg.key, {
+          auth: { persistSession:true, autoRefreshToken:true, detectSessionInUrl:true }
+        });
+        window.__KAD_ACTIVITY_SUPABASE_CLIENT__ = c;
+        return c;
       }
     } catch(_e){}
-    return { can_view:true, can_edit:lower(role) === 'admin' };
+    return window.__KAD_ACTIVITY_SUPABASE_CLIENT__ || null;
   }
 
-  function readPinUser(){
-    var keys = [
-      'kad:operator-debitare:operator',
-      'kad:operator-magnaflux:operator',
-      'kad:operator-raport-forja:operator',
-      'kad:operator-tratament-termic:operator',
-      'kad:operator-ctc-forja:operator',
-      'rf_pin_operator_name',
-      'kad_pin_operator_name',
-      'pin_user_name'
-    ];
-    for (var i=0;i<keys.length;i++) {
-      var v = safeString(ssGet(keys[i]) || lsGet(keys[i]));
-      if (v && !/@/.test(v)) return v;
-    }
-    var unlockKeys = ['kad:operator-debitare:unlock','kad:operator-magnaflux:unlock','kad_operator_unlock','rf_operator_unlock'];
-    for (var j=0;j<unlockKeys.length;j++) {
-      var obj = parseJson(ssGet(unlockKeys[j]) || lsGet(unlockKeys[j]));
-      var name = safeString(obj && (obj.operator || obj.name || obj.nume || obj.full_name || obj.display_name));
-      if (name && !/@/.test(name)) return name;
-    }
+  async function getSupabaseUser(){
     try {
-      var el = document.getElementById('operatorName') || document.getElementById('operator') || document.querySelector('[data-current-operator], input[readonly][id*="operator" i], input[id*="operator" i]');
-      var domName = safeString((el && (el.value || el.textContent)) || '');
-      if (domName && !/@/.test(domName) && !/optional/i.test(domName)) return domName;
+      var client = tryGetClient();
+      if (!client || !client.auth || !client.auth.getSession) return null;
+      var res = await client.auth.getSession();
+      return res && res.data && res.data.session && res.data.session.user ? res.data.session.user : null;
+    } catch(_e){ return null; }
+  }
+
+  function readOperatorIdentity(){
+    var keys = [
+      'kad:forja-ctc:operator',
+      'operator_debitare_current_operator',
+      'operator-debitare-current-operator',
+      'rf_operator_name',
+      'kad_operator_name',
+      'activeOperator',
+      'operatorName'
+    ];
+    for (var i=0;i<keys.length;i++){
+      var val = ssGet(keys[i]) || lsGet(keys[i]);
+      if (safeString(val)) return safeString(val);
+    }
+    var unlock = readJsonStorage(['operator_debitare_unlock_v1','kad:operator-debitare:unlock','operatorDebitareUnlock']);
+    if (unlock && safeString(unlock.operator)) return safeString(unlock.operator);
+    try {
+      var el = document.getElementById('operatorName') || document.querySelector('[name="operatorName"], [data-operator-name]');
+      if (el && safeString(el.value || el.textContent)) return safeString(el.value || el.textContent);
     } catch(_e){}
     return '';
   }
 
-  function displayName(user){
-    var pin = readPinUser();
-    if (pin) return pin;
+  function readLocalAccount(){
+    var email = lower(ssGet('rf_user_email') || lsGet('rf_user_email') || ssGet('kad_user_email') || lsGet('kad_user_email') || '');
+    var role = lower(ssGet('rf_cached_role') || lsGet('rf_cached_role') || ssGet('rf_user_role') || lsGet('rf_user_role') || ssGet('kad_user_role') || lsGet('kad_user_role') || '');
+    var userId = safeString(ssGet('rf_user_id') || lsGet('rf_user_id') || ssGet('kad_user_id') || lsGet('kad_user_id') || '');
+    var label = safeString(ssGet('rf_account_label') || lsGet('rf_account_label') || ssGet('kad_account_label') || lsGet('kad_account_label') || '');
+
+    var page = normalizePageKey();
+    if (!email) {
+      if (page.indexOf('magnaflux-operatori') >= 0) { email = 'op@magnaflux.local'; role = role || 'magnaflux_operator'; label = label || 'Operator Magnaflux'; }
+      else if (page.indexOf('operator-debitare') >= 0) { email = 'debitare@pre.local'; role = role || 'operator'; label = label || 'Operator Debitare'; }
+      else if (page.indexOf('rebut-pm-operatori') >= 0) { email = 'operator-pm@forja.local'; role = role || 'operator'; label = label || 'Operator PM'; }
+      else if (page.indexOf('raport-forja') >= 0 && page.indexOf('operator') >= 0) { email = 'operator-forja@forja.local'; role = role || 'operator'; label = label || 'Operator Forja'; }
+      else if (page.indexOf('calendar-operatori') >= 0) { email = 'calendar-operatori@forja.local'; role = role || 'operator'; label = label || 'Calendar Operatori'; }
+    }
+    return { email:email, role:role, user_id:userId, label:label };
+  }
+
+  function pageAccessFromRole(role){
+    var r = lower(role);
+    var isAdmin = r === 'admin';
+    var canEdit = isAdmin || r === 'editor' || r === 'operator' || r.indexOf('operator') >= 0 || r === 'magnaflux_operator';
+    return { can_view:true, can_edit:canEdit };
+  }
+
+  async function buildPayload(eventType, opts){
+    var user = await getSupabaseUser();
+    var local = readLocalAccount();
+    var meta = user && user.user_metadata ? user.user_metadata : {};
+    var role = local.role || lower(ssGet('rf_cached_role') || lsGet('rf_cached_role') || '') || 'viewer';
+    var operatorName = readOperatorIdentity();
+    var displayName = safeString(meta.full_name || meta.display_name || meta.name || meta.nume || local.label || operatorName || (user && user.email) || local.email || 'Utilizator');
+    var email = lower((user && user.email) || local.email || 'anon@kad.local');
+    var userId = safeString((user && user.id) || local.user_id || '');
+    var dev = getDevice();
+    var perms = pageAccessFromRole(role);
+    var stamp = nowIso();
+    var sessionKey = 'kad:' + lower(email || userId || 'anon') + ':' + getBrowserSessionId() + ':' + getTabId();
+    return {
+      source: 'rf-config-global-edge-tracker',
+      event_type: safeString(eventType || 'heartbeat') || 'heartbeat',
+      session_key: sessionKey,
+      user_id: userId || null,
+      email: email,
+      role: role,
+      display_name: displayName,
+      status: eventType === 'logout' ? 'offline' : 'active',
+      page_key: normalizePageKey(),
+      page_href: pageHref(),
+      page_title: pageTitle(),
+      country: dev.country,
+      city: dev.city,
+      timezone: dev.timezone,
+      language: dev.language,
+      user_agent: dev.user_agent,
+      platform: dev.platform,
+      screen: dev.screen,
+      access_can_view: perms.can_view,
+      access_can_edit: perms.can_edit,
+      denied_reason: '',
+      write_event: !!(opts && opts.writeEvent),
+      ts: stamp,
+      meta: {
+        operator_name: operatorName || null,
+        pin_user_name: operatorName || null,
+        account_label: local.label || null,
+        has_supabase_user: !!user,
+        tab_id: getTabId(),
+        browser_session_id: getBrowserSessionId(),
+        path: String(window.location.pathname || ''),
+        hidden: document.hidden === true
+      }
+    };
+  }
+
+  async function writeViaEdge(payload){
+    var url = getEdgeUrl();
+    if (!url) return false;
+    var cfg = getCfg();
     try {
-      var m = user && user.user_metadata ? user.user_metadata : {};
-      return safeString(m.full_name || m.display_name || m.name || m.nume || '') || safeString(user && user.email);
-    } catch(_e){ return safeString(user && user.email); }
+      if (navigator.sendBeacon && payload.event_type === 'logout') {
+        var blob = new Blob([JSON.stringify(payload)], { type:'application/json' });
+        return navigator.sendBeacon(url, blob);
+      }
+    } catch(_e){}
+    try {
+      var headers = { 'Content-Type':'application/json' };
+      if (cfg.key) headers.apikey = cfg.key;
+      if (cfg.key) headers.Authorization = 'Bearer ' + cfg.key;
+      var res = await fetch(url, { method:'POST', headers:headers, body:JSON.stringify(payload), keepalive: payload.event_type === 'logout' });
+      return !!(res && res.ok);
+    } catch(_e){ return false; }
+  }
+
+  async function writeDirectAuthenticated(payload){
+    try {
+      var client = tryGetClient();
+      var user = await getSupabaseUser();
+      if (!client || !user || !client.from) return false;
+      var stamp = payload.ts || nowIso();
+      var row = {
+        session_key: payload.session_key,
+        user_id: payload.user_id || null,
+        email: payload.email || null,
+        role: payload.role || null,
+        display_name: payload.display_name || null,
+        event_type: payload.event_type || 'heartbeat',
+        status: payload.status || 'active',
+        page_key: payload.page_key || null,
+        page_href: payload.page_href || null,
+        page_title: payload.page_title || null,
+        last_seen_at: stamp,
+        heartbeat_at: stamp,
+        country: payload.country || null,
+        city: payload.city || null,
+        timezone: payload.timezone || null,
+        language: payload.language || null,
+        user_agent: payload.user_agent || null,
+        platform: payload.platform || null,
+        screen: payload.screen || null,
+        ip_hint: '',
+        access_can_view: payload.access_can_view === true,
+        access_can_edit: payload.access_can_edit === true,
+        denied_reason: payload.denied_reason || '',
+        meta: payload.meta || {},
+        updated_at: stamp
+      };
+      if (payload.event_type === 'page_view' || payload.event_type === 'login') row.logged_in_at = stamp;
+      if (payload.event_type === 'logout') row.logged_out_at = stamp;
+      var r = await client.from('kad_user_activity').upsert(row, { onConflict:'session_key' });
+      if (r && r.error) return false;
+      if (payload.write_event) {
+        await client.from('kad_security_events').insert({
+          session_key: row.session_key, user_id: row.user_id, email: row.email, role: row.role,
+          event_type: payload.event_type || 'page_view', risk_level: 'blue',
+          page_key: row.page_key, page_href: row.page_href, page_title: row.page_title,
+          country: row.country, city: row.city, timezone: row.timezone, language: row.language,
+          user_agent: row.user_agent, platform: row.platform, ip_hint: '',
+          access_can_view: row.access_can_view, access_can_edit: row.access_can_edit,
+          denied_reason: row.denied_reason, meta: row.meta, created_at: stamp
+        });
+      }
+      return true;
+    } catch(_e){ return false; }
   }
 
   async function writeActivity(eventType, opts){
     if (running) return;
-    if (window.__KAD_USER_ACTIVITY_DB_TRACKER_INSTALLED__) return;
-    var options = opts || {};
     var now = Date.now();
     var minMs = document.hidden ? HIDDEN_MS : VISIBLE_MS;
-    if (!options.force && lastWriteAt && now - lastWriteAt < Math.min(minMs, 15000)) return;
+    if (!(opts && opts.force) && lastWriteAt && now - lastWriteAt < Math.min(minMs, 15000)) return;
     running = true;
     try {
-      var sb = getClient();
-      if (!sb || typeof sb.from !== 'function') return;
-      var user = await getSessionUser(sb);
-      if (!user) return;
-      var role = await getRole(user);
-      var dev = getDevice();
-      var stamp = nowIso();
-      var event = safeString(eventType || 'heartbeat') || 'heartbeat';
-      var perms = getPermissions(role);
-      var pinUser = readPinUser();
-      var sessionKey = getSessionKey(user);
-      var row = {
-        session_key: sessionKey,
-        user_id: user.id || null,
-        email: user.email || null,
-        role: role || null,
-        display_name: displayName(user),
-        event_type: event,
-        status: event === 'logout' ? 'offline' : 'active',
-        page_key: pageKey(),
-        page_href: pageHref(),
-        page_title: pageTitle(),
-        last_seen_at: stamp,
-        heartbeat_at: stamp,
-        country: dev.country,
-        city: dev.city,
-        timezone: dev.timezone,
-        language: dev.language,
-        user_agent: dev.user_agent,
-        platform: dev.platform,
-        screen: dev.screen,
-        ip_hint: '',
-        access_can_view: perms.can_view,
-        access_can_edit: perms.can_edit,
-        denied_reason: perms.can_view === false ? 'ACL can_view=false' : '',
-        meta: {
-          source: 'rf-config-global-tracker',
-          path: String(window.location.pathname || ''),
-          hidden: document.hidden === true,
-          pin_user_name: pinUser || null,
-          tab_id: getTabId()
-        },
-        updated_at: stamp
-      };
-      if (event === 'page_view' || event === 'login') row.logged_in_at = stamp;
-      if (event === 'logout') row.logged_out_at = stamp;
-      var res = await sb.from('kad_user_activity').upsert(row, { onConflict:'session_key' });
-      if (res && res.error) return;
-      lastWriteAt = now;
-      if (event === 'page_view' || options.writeEvent) {
-        var evKey = 'kad_activity_page_view_event_at:' + sessionKey + ':' + row.page_key;
-        var lastEvent = Number(ssGet(evKey) || 0);
-        if (!lastEvent || Date.now() - lastEvent > PAGE_VIEW_EVENT_MIN_MS) {
-          ssSet(evKey, String(Date.now()));
-          try {
-            await sb.from('kad_security_events').insert({
-              session_key: row.session_key,
-              user_id: row.user_id,
-              email: row.email,
-              role: row.role,
-              event_type: 'page_view',
-              risk_level: 'blue',
-              page_key: row.page_key,
-              page_href: row.page_href,
-              page_title: row.page_title,
-              country: row.country,
-              city: row.city,
-              timezone: row.timezone,
-              language: row.language,
-              user_agent: row.user_agent,
-              platform: row.platform,
-              ip_hint: row.ip_hint,
-              access_can_view: row.access_can_view,
-              access_can_edit: row.access_can_edit,
-              denied_reason: row.denied_reason,
-              meta: row.meta,
-              created_at: stamp
-            });
-          } catch(_e){}
+      var payload = await buildPayload(eventType, opts || {});
+      if (payload.event_type === 'page_view') {
+        var k = 'kad_activity_event_sent:' + payload.session_key + ':' + payload.page_key;
+        var last = Number(ssGet(k) || 0);
+        if (!last || Date.now() - last > PAGE_VIEW_EVENT_MIN_MS) {
+          payload.write_event = true;
+          ssSet(k, String(Date.now()));
         }
       }
+      var ok = await writeViaEdge(payload);
+      if (!ok) await writeDirectAuthenticated(payload);
+      lastWriteAt = Date.now();
     } catch(_e) {
-      /* Monitorizarea nu trebuie să blocheze niciodată pagina. */
+      /* Monitorizarea nu blochează niciodată pagina. */
     } finally {
       running = false;
     }
@@ -4563,22 +4594,18 @@ async function applyDomPermissions(pageKey, root, options) {
 
   function schedule(){
     try { if (timer) clearTimeout(timer); } catch(_e){}
-    timer = window.setTimeout(function(){
-      writeActivity('heartbeat', { force:true }).finally(schedule);
-    }, document.hidden ? HIDDEN_MS : VISIBLE_MS);
+    timer = window.setTimeout(function(){ writeActivity('heartbeat', { force:true }).finally(schedule); }, document.hidden ? HIDDEN_MS : VISIBLE_MS);
   }
 
   function start(){
     window.setTimeout(function(){
-      if (window.__KAD_USER_ACTIVITY_DB_TRACKER_INSTALLED__) return;
       writeActivity('page_view', { force:true, writeEvent:true });
       schedule();
     }, START_DELAY_MS);
   }
 
   try {
-    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start, { once:true });
-    else start();
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start, { once:true }); else start();
     window.addEventListener('focus', function(){ writeActivity('heartbeat', { force:true }); });
     window.addEventListener('pageshow', function(){ writeActivity('heartbeat', { force:true }); });
     document.addEventListener('visibilitychange', function(){ writeActivity('heartbeat', { force:true }); schedule(); });
@@ -4587,3 +4614,4 @@ async function applyDomPermissions(pageKey, root, options) {
   } catch(_e){}
 })(window, document);
 /* === END K.A.D GLOBAL ACTIVITY MONITOR TRACKER === */
+
