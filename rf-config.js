@@ -4534,7 +4534,7 @@ async function applyDomPermissions(pageKey, root, options) {
     var meta = user && user.user_metadata ? user.user_metadata : {};
     var role = local.role || lower(ssGet('rf_cached_role') || lsGet('rf_cached_role') || '') || 'viewer';
     var operatorName = readOperatorIdentity();
-    var displayName = safeString(meta.full_name || meta.display_name || meta.name || meta.nume || local.label || operatorName || (user && user.email) || local.email || 'Utilizator');
+    var displayName = safeString(operatorName || meta.full_name || meta.display_name || meta.name || meta.nume || local.label || (user && user.email) || local.email || 'Utilizator');
     var email = lower((user && user.email) || local.email || 'anon@kad.local');
     var userId = safeString((user && user.id) || local.user_id || '');
     var dev = getDevice();
