@@ -4354,14 +4354,28 @@ async function applyDomPermissions(pageKey, root, options) {
     return v;
   }
 
+  function normalizeActivityCountry(raw, timezone, language){
+    var c = safeString(raw || '').toUpperCase();
+    if (c.length > 2) c = c.slice(0, 2);
+    if (!/^[A-Z]{2}$/.test(c)) c = '';
+    var tz = safeString(timezone || '');
+    var lang = safeString(language || '');
+    // Nu folosim niciodată limba browserului ca locație reală.
+    // Ex.: browser setat pe en-US în România produce fals "US".
+    if (c === 'US' && /Europe\/Bucharest/i.test(tz)) c = '';
+    if (!c && /Europe\/Bucharest/i.test(tz) && /\bro[-_]/i.test(lang)) c = 'RO';
+    return c;
+  }
+
   function getDevice(){
     var tz = '';
     try { tz = Intl.DateTimeFormat().resolvedOptions().timeZone || ''; } catch(_e){}
     var lang = safeString(navigator.language || (navigator.languages && navigator.languages[0]) || '');
     var screenText = '';
     try { screenText = String(window.screen && window.screen.width || '') + 'x' + String(window.screen && window.screen.height || ''); } catch(_e){}
+    var rawCountry = safeString(lsGet('kad_country') || lsGet('rf_country') || '');
     return {
-      country: safeString(lsGet('kad_country') || lsGet('rf_country') || ''),
+      country: normalizeActivityCountry(rawCountry, tz, lang),
       city: safeString(lsGet('kad_city') || lsGet('rf_city') || ''),
       timezone: tz,
       language: lang,
@@ -4470,7 +4484,7 @@ async function applyDomPermissions(pageKey, root, options) {
       page_key: normalizePageKey(),
       page_href: pageHref(),
       page_title: pageTitle(),
-      country: dev.country,
+      country: normalizeActivityCountry(dev.country, dev.timezone, dev.language),
       city: dev.city,
       timezone: dev.timezone,
       language: dev.language,
@@ -4533,7 +4547,7 @@ async function applyDomPermissions(pageKey, root, options) {
         page_title: payload.page_title || null,
         last_seen_at: stamp,
         heartbeat_at: stamp,
-        country: payload.country || null,
+        country: normalizeActivityCountry(payload.country, payload.timezone, payload.language) || null,
         city: payload.city || null,
         timezone: payload.timezone || null,
         language: payload.language || null,
