@@ -529,6 +529,158 @@
 
     function toast(msg){ el.toast.textContent=msg; el.toast.style.opacity='1'; el.toast.style.transform='translateX(-50%) translateY(0)'; clearTimeout(toast.t); toast.t=setTimeout(()=>{el.toast.style.opacity='0';el.toast.style.transform='translateX(-50%) translateY(14px)';},2600); }
     function setSync(text, kind){ el.syncPill.textContent=text; el.syncPill.className='status-pill '+(kind||'warn'); }
+
+
+    /* Monitor Activitate Utilizatori - tracker local pentru pagina operator Magnaflux.
+       Pagina nu include auth-common.js, deci scrie direct activitatea în tabelele de monitorizare. */
+    const MONITOR_HEARTBEAT_VISIBLE_MS = 30000;
+    const MONITOR_HEARTBEAT_HIDDEN_MS = 120000;
+    let monitorTimer = null;
+    let monitorRunning = false;
+    let monitorPageViewLogged = false;
+    let monitorSessionKey = null;
+
+    function monitorSafeStorageGet(storage, key){ try { return storage.getItem(key); } catch(_) { return null; } }
+    function monitorSafeStorageSet(storage, key, value){ try { storage.setItem(key, value); } catch(_) {} }
+    function monitorNowIso(){ return new Date().toISOString(); }
+    function monitorDeviceInfo(){
+      const nav = window.navigator || {};
+      const tz = (typeof Intl !== 'undefined' && Intl.DateTimeFormat) ? (Intl.DateTimeFormat().resolvedOptions().timeZone || '') : '';
+      const lang = nav.language || (Array.isArray(nav.languages) && nav.languages[0]) || '';
+      const ua = nav.userAgent || '';
+      const platform = nav.userAgentData && nav.userAgentData.platform ? nav.userAgentData.platform : (nav.platform || '');
+      const screenText = window.screen ? [screen.width, screen.height].filter(Boolean).join('x') : '';
+      const country = String(lang || '').split('-')[1] || '';
+      return {
+        country: String(country || '').toUpperCase(),
+        city: '',
+        timezone: tz,
+        language: lang,
+        user_agent: ua,
+        platform: platform,
+        screen: screenText
+      };
+    }
+    function monitorSessionId(){
+      if(monitorSessionKey) return monitorSessionKey;
+      const user = state && state.user ? state.user : null;
+      const email = String(user && user.email || currentEmail() || 'unknown').trim().toLowerCase();
+      const baseKey = 'kad:monitor-session:magnaflux-operatori:' + email;
+      let sid = monitorSafeStorageGet(sessionStorage, baseKey);
+      if(!sid){
+        sid = 'mag-op-' + email.replace(/[^a-z0-9]+/g,'-') + '-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2,8);
+        monitorSafeStorageSet(sessionStorage, baseKey, sid);
+      }
+      monitorSessionKey = sid;
+      return monitorSessionKey;
+    }
+    function monitorDisplayName(){
+      const op = String(state && state.activeOperator || '').trim();
+      if(op) return op;
+      return accountDefaultOperatorName();
+    }
+    function monitorRole(){
+      return String((state && state.role) || (isMagnafluxOperatorAccount() ? 'magnaflux_operator' : 'viewer')).trim().toLowerCase();
+    }
+    function monitorPageTitle(){
+      const op = String(state && state.activeOperator || '').trim();
+      return op ? ('Magnaflux Operatori - ' + op) : (document.title || 'Magnaflux Operatori');
+    }
+    async function writeMonitorActivity(eventType, opts){
+      const options = Object.assign({ force:false, writeEvent:false }, opts || {});
+      if(monitorRunning) return;
+      try {
+        if(!state || !state.client || !state.user || !state.session) return;
+        if(!options.force && document.hidden) return;
+        monitorRunning = true;
+        const dev = monitorDeviceInfo();
+        const stamp = monitorNowIso();
+        const email = String(state.user.email || currentEmail() || '').trim().toLowerCase();
+        const row = {
+          session_key: monitorSessionId(),
+          user_id: state.user.id || null,
+          email: email || null,
+          role: monitorRole(),
+          display_name: monitorDisplayName(),
+          event_type: String(eventType || 'heartbeat'),
+          status: 'active',
+          page_key: PAGE_KEY,
+          page_href: 'magnaflux-operatori.html',
+          page_title: monitorPageTitle(),
+          last_seen_at: stamp,
+          heartbeat_at: stamp,
+          country: dev.country,
+          city: dev.city,
+          timezone: dev.timezone,
+          language: dev.language,
+          user_agent: dev.user_agent,
+          platform: dev.platform,
+          screen: dev.screen,
+          ip_hint: '',
+          access_can_view: true,
+          access_can_edit: state.canEdit === true || isMagnafluxOperatorAccount(),
+          denied_reason: '',
+          meta: {
+            source: 'magnaflux-operatori-local-tracker',
+            operator_pin_name: String(state.activeOperator || '').trim(),
+            operator_2: operator2Value(),
+            hidden: document.hidden === true
+          },
+          updated_at: stamp
+        };
+        if(row.event_type === 'page_view' || row.event_type === 'login') row.logged_in_at = stamp;
+        await state.client.from('kad_user_activity').upsert(row, { onConflict:'session_key' });
+        if(options.writeEvent || (!monitorPageViewLogged && row.event_type === 'page_view')){
+          monitorPageViewLogged = true;
+          try {
+            await state.client.from('kad_security_events').insert({
+              session_key: row.session_key,
+              user_id: row.user_id,
+              email: row.email,
+              role: row.role,
+              event_type: 'page_view',
+              risk_level: 'blue',
+              page_key: row.page_key,
+              page_href: row.page_href,
+              page_title: row.page_title,
+              country: row.country,
+              city: row.city,
+              timezone: row.timezone,
+              language: row.language,
+              user_agent: row.user_agent,
+              platform: row.platform,
+              ip_hint: row.ip_hint,
+              access_can_view: row.access_can_view,
+              access_can_edit: row.access_can_edit,
+              denied_reason: row.denied_reason,
+              meta: row.meta,
+              created_at: stamp
+            });
+          } catch(_) {}
+        }
+      } catch(_) {
+        /* Monitorizarea nu trebuie să blocheze pagina operatorului. */
+      } finally {
+        monitorRunning = false;
+      }
+    }
+    function scheduleMonitorActivity(){
+      try { if(monitorTimer) clearTimeout(monitorTimer); } catch(_) {}
+      const delay = document.hidden ? MONITOR_HEARTBEAT_HIDDEN_MS : MONITOR_HEARTBEAT_VISIBLE_MS;
+      monitorTimer = setTimeout(async function(){
+        await writeMonitorActivity('heartbeat', { force:true });
+        scheduleMonitorActivity();
+      }, delay);
+    }
+    function startMonitorActivity(){
+      writeMonitorActivity('page_view', { force:true, writeEvent:true });
+      scheduleMonitorActivity();
+    }
+    async function stopMonitorActivity(){
+      try { if(monitorTimer) clearTimeout(monitorTimer); } catch(_) {}
+      monitorTimer = null;
+      await writeMonitorActivity('logout', { force:true });
+    }
     function num(v){ const raw=String(v==null?'':v).replace(/\s+/g,'').replace(',', '.').replace(/[^0-9.\-]/g,''); const n=Number(raw); return Number.isFinite(n) ? n : 0; }
     function intVal(v){ return Math.max(0, Math.round(num(v))); }
     function formatCodCat(value){
@@ -2537,6 +2689,7 @@ function allMaintenanceChecked(){
       recalcAll();
       renderSavedSheets();
       scheduleLivePublish();
+      writeMonitorActivity('heartbeat', { force:true });
     }
     function showPin(){
       if(!shouldRequireOperatorPin()){
@@ -2656,9 +2809,9 @@ function allMaintenanceChecked(){
       el.btnCancelConfirm.addEventListener('click', ()=>el.confirmModal.classList.remove('show'));
       el.btnConfirmSave.addEventListener('click', confirmSave);
       el.btnBack.addEventListener('click', ()=>{ if(isMagnafluxOperatorAccount()) return; window.location.href='index.html'; });
-      el.btnLogout.addEventListener('click', async()=>{ try{ await removeLivePresence(); await state.client.auth.signOut(); }catch(_){} window.location.href='login.html'; });
-      window.addEventListener('beforeunload', ()=>{ try{ removeLivePresence(); }catch(_){} });
-      document.addEventListener('visibilitychange', ()=>{ if(document.visibilityState === 'visible') { updateRealtimePresence(true); publishLivePresence(true); if(isAdminAccount()) loadLiveOperators(); } });
+      el.btnLogout.addEventListener('click', async()=>{ try{ await stopMonitorActivity(); await removeLivePresence(); await state.client.auth.signOut(); }catch(_){} window.location.href='login.html'; });
+      window.addEventListener('beforeunload', ()=>{ try{ writeMonitorActivity('logout', { force:true }); removeLivePresence(); }catch(_){} });
+      document.addEventListener('visibilitychange', ()=>{ if(document.visibilityState === 'visible') { writeMonitorActivity('heartbeat', { force:true }); updateRealtimePresence(true); publishLivePresence(true); if(isAdminAccount()) loadLiveOperators(); } scheduleMonitorActivity(); });
       function openPinAdmin(){
         if(isMagnafluxOperatorAccount()) return;
         if(state.role!=='admin') return;
@@ -2685,6 +2838,7 @@ function allMaintenanceChecked(){
           setTimeout(hardHideNavForMagnafluxOperator, 1000);
         }
         setSync('Pregătit', 'ok');
+        startMonitorActivity();
         startLivePresence();
         startLiveAdminPolling();
         if(shouldRequireOperatorPin()){
