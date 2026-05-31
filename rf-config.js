@@ -4264,3 +4264,326 @@ async function applyDomPermissions(pageKey, root, options) {
   bootPwa();
 })(window, document);
 /* === END K.A.D PWA GLOBAL BOOTSTRAP === */
+
+/* === K.A.D GLOBAL ACTIVITY MONITOR TRACKER === */
+(function(window, document){
+  'use strict';
+
+  if (window.__KAD_RF_CONFIG_ACTIVITY_TRACKER_INSTALLED__) return;
+  window.__KAD_RF_CONFIG_ACTIVITY_TRACKER_INSTALLED__ = true;
+
+  var STORAGE_PREFIX = 'kad_activity_session_v1:';
+  var TAB_KEY = 'kad_activity_tab_id_v1';
+  var VISIBLE_MS = 30000;
+  var HIDDEN_MS = 120000;
+  var START_DELAY_MS = 1800;
+  var PAGE_VIEW_EVENT_MIN_MS = 60000;
+  var timer = null;
+  var running = false;
+  var lastWriteAt = 0;
+  var sbClient = null;
+  var lastUserKey = '';
+
+  function safeString(v){ return String(v == null ? '' : v).trim(); }
+  function lower(v){ return safeString(v).toLowerCase(); }
+  function nowIso(){ return new Date().toISOString(); }
+  function rand(){ return 'kad-' + Math.random().toString(36).slice(2, 10) + '-' + Date.now().toString(36); }
+  function lsGet(k){ try { return localStorage.getItem(k); } catch(_e){ return null; } }
+  function lsSet(k, v){ try { localStorage.setItem(k, v); } catch(_e){} }
+  function ssGet(k){ try { return sessionStorage.getItem(k); } catch(_e){ return null; } }
+  function ssSet(k, v){ try { sessionStorage.setItem(k, v); } catch(_e){} }
+  function parseJson(raw){ try { return raw ? JSON.parse(raw) : null; } catch(_e){ return null; } }
+
+  function getConfig(){
+    var cfg = window.RF_CONFIG || window.ERP_FORJA_CONFIG || window.__ERP_FORJA_CONFIG__ || {};
+    var stored = parseJson(lsGet('erp_forja_config')) || {};
+    var url = safeString(cfg.SUPABASE_URL || cfg.supabaseUrl || stored.SUPABASE_URL || stored.supabaseUrl || window.RF_SUPABASE_URL || lsGet('ERP_SUPABASE_URL'));
+    var key = safeString(cfg.SUPABASE_ANON_KEY || cfg.supabaseAnonKey || stored.SUPABASE_ANON_KEY || stored.supabaseAnonKey || window.RF_SUPABASE_ANON_KEY || lsGet('ERP_SUPABASE_ANON_KEY'));
+    return { url:url, key:key, ok:Boolean(url && key && !/^PASTE_|^REPLACE_|^YOUR_/i.test(key)) };
+  }
+
+  function getClient(){
+    if (sbClient && typeof sbClient.from === 'function') return sbClient;
+    try {
+      if (window.ERPAuth && typeof window.ERPAuth.getSupabaseClient === 'function') {
+        var erpClient = window.ERPAuth.getSupabaseClient();
+        if (erpClient && typeof erpClient.from === 'function') { sbClient = erpClient; return sbClient; }
+      }
+    } catch(_e){}
+    try {
+      var cfg = getConfig();
+      if (!cfg.ok || !window.supabase || typeof window.supabase.createClient !== 'function') return null;
+      if (typeof window.createRfSupabaseClient === 'function') {
+        sbClient = window.createRfSupabaseClient(cfg.url, cfg.key, { auth:{ persistSession:true, autoRefreshToken:true, detectSessionInUrl:true } });
+      } else {
+        sbClient = window.supabase.createClient(cfg.url, cfg.key, { auth:{ persistSession:true, autoRefreshToken:true, detectSessionInUrl:true } });
+      }
+      return sbClient;
+    } catch(_e){ return null; }
+  }
+
+  async function getSessionUser(sb){
+    try {
+      if (window.ERPAuth && typeof window.ERPAuth.getSession === 'function') {
+        var s0 = await window.ERPAuth.getSession();
+        if (s0 && s0.user) return s0.user;
+      }
+    } catch(_e){}
+    try {
+      if (sb && sb.auth && typeof sb.auth.getSession === 'function') {
+        var res = await sb.auth.getSession();
+        var ses = res && res.data ? res.data.session : null;
+        if (ses && ses.user) return ses.user;
+      }
+    } catch(_e){}
+    return null;
+  }
+
+  async function getRole(user){
+    try {
+      if (window.ERPAuth && typeof window.ERPAuth.getCurrentUserWithRole === 'function') {
+        var st = await window.ERPAuth.getCurrentUserWithRole();
+        if (st && st.role) return lower(st.role);
+      }
+    } catch(_e){}
+    var stored = lower(lsGet('rf_user_role') || lsGet('ERP_USER_ROLE') || lsGet('kad_user_role'));
+    if (stored) return stored;
+    var email = lower(user && user.email);
+    try {
+      var adminEmail = lower((window.RF_CONFIG || window.ERP_FORJA_CONFIG || {}).ADMIN_EMAIL || '');
+      if (adminEmail && email === adminEmail) return 'admin';
+    } catch(_e){}
+    return email ? 'viewer' : '';
+  }
+
+  function pageHref(){
+    try { return (window.location.pathname.split('/').pop() || 'index.html').split('?')[0] || 'index.html'; } catch(_e){ return 'index.html'; }
+  }
+  function pageKey(){ return lower(pageHref().replace(/\.html$/i, '') || 'index'); }
+  function pageTitle(){
+    var title = safeString(document.title);
+    try {
+      var h = document.querySelector('h1,.page-title,.nkTitle,.title,.header-title');
+      if (h && safeString(h.textContent)) title = safeString(h.textContent);
+    } catch(_e){}
+    return title || pageKey();
+  }
+
+  function getTabId(){
+    var id = ssGet(TAB_KEY);
+    if (!id) { id = rand(); ssSet(TAB_KEY, id); }
+    return id;
+  }
+
+  function userKey(user){
+    return safeString(user && user.id) || lower(user && user.email) || 'anon';
+  }
+
+  function getSessionKey(user){
+    var key = userKey(user);
+    lastUserKey = key;
+    var tab = getTabId();
+    var storageKey = STORAGE_PREFIX + key + ':' + tab;
+    var existing = parseJson(lsGet(storageKey));
+    if (existing && existing.session_key) return safeString(existing.session_key);
+    var created = { session_key: rand(), user_key:key, tab_id:tab, created_at:nowIso() };
+    lsSet(storageKey, JSON.stringify(created));
+    return created.session_key;
+  }
+
+  function countryFromLanguage(language){
+    var m = safeString(language).match(/[-_]([A-Z]{2})$/i);
+    return m ? m[1].toUpperCase() : '';
+  }
+
+  function getDevice(){
+    var nav = window.navigator || {};
+    var ua = safeString(nav.userAgent);
+    var platform = safeString(nav.userAgentData && nav.userAgentData.platform) || safeString(nav.platform);
+    var os = /Windows/i.test(ua) ? 'Windows' : (/Android/i.test(ua) ? 'Android' : (/iPhone|iPad|iOS/i.test(ua) ? 'iOS' : (/Mac/i.test(ua) ? 'Mac' : (/Linux/i.test(ua) ? 'Linux' : platform))));
+    var browser = /Edg\//i.test(ua) ? 'Edge' : (/OPR\//i.test(ua) ? 'Opera' : (/Firefox\//i.test(ua) ? 'Firefox' : (/Chrome\//i.test(ua) ? 'Chrome' : (/Safari\//i.test(ua) ? 'Safari' : 'Browser'))));
+    var language = safeString(nav.language || (nav.languages && nav.languages[0]) || '');
+    var tz = '';
+    try { tz = Intl.DateTimeFormat().resolvedOptions().timeZone || ''; } catch(_e){}
+    return {
+      language: language,
+      country: countryFromLanguage(language),
+      city: '',
+      timezone: tz,
+      user_agent: ua,
+      platform: (os || platform || 'Dispozitiv') + ' · ' + browser,
+      screen: String((window.screen && window.screen.width) || '') + 'x' + String((window.screen && window.screen.height) || '')
+    };
+  }
+
+  function getPermissions(role){
+    try {
+      if (window.ERPAuth && typeof window.ERPAuth.getCurrentPagePermissions === 'function') {
+        var p = window.ERPAuth.getCurrentPagePermissions() || {};
+        return { can_view:p.can_view === false ? false : true, can_edit:p.can_edit === true };
+      }
+    } catch(_e){}
+    return { can_view:true, can_edit:lower(role) === 'admin' };
+  }
+
+  function readPinUser(){
+    var keys = [
+      'kad:operator-debitare:operator',
+      'kad:operator-magnaflux:operator',
+      'kad:operator-raport-forja:operator',
+      'kad:operator-tratament-termic:operator',
+      'kad:operator-ctc-forja:operator',
+      'rf_pin_operator_name',
+      'kad_pin_operator_name',
+      'pin_user_name'
+    ];
+    for (var i=0;i<keys.length;i++) {
+      var v = safeString(ssGet(keys[i]) || lsGet(keys[i]));
+      if (v && !/@/.test(v)) return v;
+    }
+    var unlockKeys = ['kad:operator-debitare:unlock','kad:operator-magnaflux:unlock','kad_operator_unlock','rf_operator_unlock'];
+    for (var j=0;j<unlockKeys.length;j++) {
+      var obj = parseJson(ssGet(unlockKeys[j]) || lsGet(unlockKeys[j]));
+      var name = safeString(obj && (obj.operator || obj.name || obj.nume || obj.full_name || obj.display_name));
+      if (name && !/@/.test(name)) return name;
+    }
+    try {
+      var el = document.getElementById('operatorName') || document.getElementById('operator') || document.querySelector('[data-current-operator], input[readonly][id*="operator" i], input[id*="operator" i]');
+      var domName = safeString((el && (el.value || el.textContent)) || '');
+      if (domName && !/@/.test(domName) && !/optional/i.test(domName)) return domName;
+    } catch(_e){}
+    return '';
+  }
+
+  function displayName(user){
+    var pin = readPinUser();
+    if (pin) return pin;
+    try {
+      var m = user && user.user_metadata ? user.user_metadata : {};
+      return safeString(m.full_name || m.display_name || m.name || m.nume || '') || safeString(user && user.email);
+    } catch(_e){ return safeString(user && user.email); }
+  }
+
+  async function writeActivity(eventType, opts){
+    if (running) return;
+    if (window.__KAD_USER_ACTIVITY_DB_TRACKER_INSTALLED__) return;
+    var options = opts || {};
+    var now = Date.now();
+    var minMs = document.hidden ? HIDDEN_MS : VISIBLE_MS;
+    if (!options.force && lastWriteAt && now - lastWriteAt < Math.min(minMs, 15000)) return;
+    running = true;
+    try {
+      var sb = getClient();
+      if (!sb || typeof sb.from !== 'function') return;
+      var user = await getSessionUser(sb);
+      if (!user) return;
+      var role = await getRole(user);
+      var dev = getDevice();
+      var stamp = nowIso();
+      var event = safeString(eventType || 'heartbeat') || 'heartbeat';
+      var perms = getPermissions(role);
+      var pinUser = readPinUser();
+      var sessionKey = getSessionKey(user);
+      var row = {
+        session_key: sessionKey,
+        user_id: user.id || null,
+        email: user.email || null,
+        role: role || null,
+        display_name: displayName(user),
+        event_type: event,
+        status: event === 'logout' ? 'offline' : 'active',
+        page_key: pageKey(),
+        page_href: pageHref(),
+        page_title: pageTitle(),
+        last_seen_at: stamp,
+        heartbeat_at: stamp,
+        country: dev.country,
+        city: dev.city,
+        timezone: dev.timezone,
+        language: dev.language,
+        user_agent: dev.user_agent,
+        platform: dev.platform,
+        screen: dev.screen,
+        ip_hint: '',
+        access_can_view: perms.can_view,
+        access_can_edit: perms.can_edit,
+        denied_reason: perms.can_view === false ? 'ACL can_view=false' : '',
+        meta: {
+          source: 'rf-config-global-tracker',
+          path: String(window.location.pathname || ''),
+          hidden: document.hidden === true,
+          pin_user_name: pinUser || null,
+          tab_id: getTabId()
+        },
+        updated_at: stamp
+      };
+      if (event === 'page_view' || event === 'login') row.logged_in_at = stamp;
+      if (event === 'logout') row.logged_out_at = stamp;
+      var res = await sb.from('kad_user_activity').upsert(row, { onConflict:'session_key' });
+      if (res && res.error) return;
+      lastWriteAt = now;
+      if (event === 'page_view' || options.writeEvent) {
+        var evKey = 'kad_activity_page_view_event_at:' + sessionKey + ':' + row.page_key;
+        var lastEvent = Number(ssGet(evKey) || 0);
+        if (!lastEvent || Date.now() - lastEvent > PAGE_VIEW_EVENT_MIN_MS) {
+          ssSet(evKey, String(Date.now()));
+          try {
+            await sb.from('kad_security_events').insert({
+              session_key: row.session_key,
+              user_id: row.user_id,
+              email: row.email,
+              role: row.role,
+              event_type: 'page_view',
+              risk_level: 'blue',
+              page_key: row.page_key,
+              page_href: row.page_href,
+              page_title: row.page_title,
+              country: row.country,
+              city: row.city,
+              timezone: row.timezone,
+              language: row.language,
+              user_agent: row.user_agent,
+              platform: row.platform,
+              ip_hint: row.ip_hint,
+              access_can_view: row.access_can_view,
+              access_can_edit: row.access_can_edit,
+              denied_reason: row.denied_reason,
+              meta: row.meta,
+              created_at: stamp
+            });
+          } catch(_e){}
+        }
+      }
+    } catch(_e) {
+      /* Monitorizarea nu trebuie să blocheze niciodată pagina. */
+    } finally {
+      running = false;
+    }
+  }
+
+  function schedule(){
+    try { if (timer) clearTimeout(timer); } catch(_e){}
+    timer = window.setTimeout(function(){
+      writeActivity('heartbeat', { force:true }).finally(schedule);
+    }, document.hidden ? HIDDEN_MS : VISIBLE_MS);
+  }
+
+  function start(){
+    window.setTimeout(function(){
+      if (window.__KAD_USER_ACTIVITY_DB_TRACKER_INSTALLED__) return;
+      writeActivity('page_view', { force:true, writeEvent:true });
+      schedule();
+    }, START_DELAY_MS);
+  }
+
+  try {
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start, { once:true });
+    else start();
+    window.addEventListener('focus', function(){ writeActivity('heartbeat', { force:true }); });
+    window.addEventListener('pageshow', function(){ writeActivity('heartbeat', { force:true }); });
+    document.addEventListener('visibilitychange', function(){ writeActivity('heartbeat', { force:true }); schedule(); });
+    window.addEventListener('pagehide', function(){ writeActivity('logout', { force:true }); });
+    window.KAD_RECORD_ACTIVITY = writeActivity;
+  } catch(_e){}
+})(window, document);
+/* === END K.A.D GLOBAL ACTIVITY MONITOR TRACKER === */
