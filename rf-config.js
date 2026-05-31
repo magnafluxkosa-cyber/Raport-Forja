@@ -4412,6 +4412,54 @@ async function applyDomPermissions(pageKey, root, options) {
     } catch(_e){ return null; }
   }
 
+  function normalizeOperatorNameCandidate(v){
+    var s = safeString(v).replace(/\s+/g, ' ').trim();
+    if (!s) return '';
+    s = s.replace(/^operator\s*:?\s*/i, '').replace(/^nume\s*op\.?\s*:?\s*/i, '').trim();
+    var n = lower(s);
+    if (!n || n === 'optional' || n === 'opțional' || n === 'operator' || n === 'operatori' || n === 'selectează' || n === 'selecteaza') return '';
+    if (n.indexOf('pin') >= 0 || n.indexOf('cod') >= 0 || n.indexOf('aștept') >= 0 || n.indexOf('astept') >= 0) return '';
+    if (s.length < 3 || s.length > 120) return '';
+    return s;
+  }
+
+  function readDomOperatorIdentity(){
+    var selectors = [
+      '#ttOperatorTT',
+      '#ttReportOperatorDisplay',
+      '#operatorName',
+      '#operatorText',
+      '#fOperator',
+      '#operatorChip',
+      '#infoOperator',
+      '#monthNormOperator',
+      '#fldOperator',
+      '#inpOperator',
+      '[data-operator-name]',
+      '[data-active-operator]',
+      '[data-pin-operator]',
+      '[data-k="operator"]',
+      '[name="operator"]',
+      '[name="operatorName"]',
+      'input[list="operatoriList"]'
+    ];
+    try {
+      for (var i=0;i<selectors.length;i++){
+        var nodes = document.querySelectorAll(selectors[i]);
+        for (var j=0;j<nodes.length;j++){
+          var el = nodes[j];
+          var raw = '';
+          if ('value' in el) raw = el.value;
+          if (!safeString(raw)) raw = el.getAttribute && (el.getAttribute('data-operator-name') || el.getAttribute('data-active-operator') || el.getAttribute('data-pin-operator') || el.getAttribute('title') || '');
+          if (!safeString(raw)) raw = el.textContent || '';
+          var name = normalizeOperatorNameCandidate(raw);
+          if (name) return name;
+        }
+      }
+    } catch(_e){}
+    return '';
+  }
+
   function readOperatorIdentity(){
     var keys = [
       'kad:forja-ctc:operator',
@@ -4420,19 +4468,40 @@ async function applyDomPermissions(pageKey, root, options) {
       'rf_operator_name',
       'kad_operator_name',
       'activeOperator',
-      'operatorName'
+      'operatorName',
+      'tt_active_operator',
+      'tt_operator_name',
+      'tratament_operator',
+      'tratament_termic_operator',
+      'kad:tt:operator',
+      'kad:tratament:operator',
+      'magnaflux_active_operator',
+      'magnaflux_operator_name',
+      'kad:magnaflux:operator',
+      'rebut_pm_operator',
+      'ctc_operator',
+      'kad:ctc:operator',
+      'debitare_operator',
+      'pin_user_name'
     ];
     for (var i=0;i<keys.length;i++){
       var val = ssGet(keys[i]) || lsGet(keys[i]);
-      if (safeString(val)) return safeString(val);
+      var direct = normalizeOperatorNameCandidate(val);
+      if (direct) return direct;
+      if (safeString(val) && /^[\[{]/.test(safeString(val))) {
+        try {
+          var obj = JSON.parse(val);
+          var fromObj = normalizeOperatorNameCandidate(obj.operator || obj.operator_name || obj.pin_user_name || obj.name || obj.nume || obj.display_name);
+          if (fromObj) return fromObj;
+        } catch(_e){}
+      }
     }
-    var unlock = readJsonStorage(['operator_debitare_unlock_v1','kad:operator-debitare:unlock','operatorDebitareUnlock']);
-    if (unlock && safeString(unlock.operator)) return safeString(unlock.operator);
-    try {
-      var el = document.getElementById('operatorName') || document.querySelector('[name="operatorName"], [data-operator-name]');
-      if (el && safeString(el.value || el.textContent)) return safeString(el.value || el.textContent);
-    } catch(_e){}
-    return '';
+    var unlock = readJsonStorage(['operator_debitare_unlock_v1','kad:operator-debitare:unlock','operatorDebitareUnlock','kad:operator:unlock','operatorUnlock']);
+    if (unlock) {
+      var unlockName = normalizeOperatorNameCandidate(unlock.operator || unlock.operator_name || unlock.pin_user_name || unlock.name || unlock.nume || unlock.display_name);
+      if (unlockName) return unlockName;
+    }
+    return readDomOperatorIdentity();
   }
 
   function readLocalAccount(){
