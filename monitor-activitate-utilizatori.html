@@ -55,7 +55,10 @@
   var PAGE_KEY = 'monitor-activitate-utilizatori';
   var ACTIVE_MS = 2 * 60 * 1000;
   var IDLE_MS = 5 * 60 * 1000;
-  var REFRESH_MS = 60 * 1000;
+  var AUTO_REFRESH_MS_VISIBLE = 8 * 1000;
+  var AUTO_REFRESH_MS_HIDDEN = 60 * 1000;
+  var HEARTBEAT_MS = 60 * 1000;
+  var REALTIME_RELOAD_DEBOUNCE_MS = 500;
   var state = { sb:null, user:null, role:'viewer', access:null, rows:[], events:[], timer:null, channel:null };
   var $ = function(id){ return document.getElementById(id); };
   function esc(v){ return String(v == null ? '' : v).replace(/[&<>'"]/g,function(s){return {'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[s];}); }
@@ -82,8 +85,54 @@
   function renderPresence(){ var rows=filteredRows(); $('presenceBody').innerHTML = rows.length ? rows.map(function(r){ var loc=locationText(r); var access = accessBadge(r); return '<tr><td><div class="userCell"><div class="avatar">'+esc(initials(r.email,r.display_name))+'</div><div><div class="name">'+esc(r.display_name||r.email||'Utilizator')+'</div><div class="email">'+esc(r.email||'—')+'</div></div></div></td><td>'+statusPill(rowStatus(r))+'</td><td><div class="name">'+esc(r.page_title||r.page_key||'—')+'</div><div class="email">'+esc(r.page_href||'')+'</div></td><td>'+esc(loc)+'</td><td>'+esc(device(r.user_agent,r.platform))+'</td><td class="muted">'+esc(ago(r.last_seen_at||r.heartbeat_at||r.updated_at))+'</td><td>'+access+'</td></tr>'; }).join('') : '<tr><td colspan="7"><div class="empty">Nu există sesiuni pentru filtrul ales.</div></td></tr>'; }
   function renderEvents(){ var top=state.events.slice(0,120); $('eventsBody').innerHTML = top.length ? top.map(function(e){ return '<tr><td class="mono">'+esc(fmtDate(e.created_at))+'</td><td>'+esc(e.event_type||'—')+'</td><td>'+esc(e.email||'—')+'</td><td>'+esc(e.page_title||e.page_key||'—')+'</td><td>'+riskPill(e.risk_level)+'</td></tr>'; }).join('') : '<tr><td colspan="5"><div class="empty">Nu există evenimente recente.</div></td></tr>'; var alerts=state.events.filter(function(e){ return ['red','yellow'].indexOf(norm(e.risk_level))>=0 || String(e.event_type||'').indexOf('denied')>=0; }).slice(0,12); $('alertsList').innerHTML = alerts.length ? alerts.map(function(e){ var risk=norm(e.risk_level)||'yellow'; var desc=e.denied_reason || (e.event_type==='acl_denied' ? 'Acces refuzat prin ACL.' : 'Eveniment care necesită verificare.'); return '<div class="alert '+esc(risk)+'"><div class="alertTop"><span>'+esc(e.event_type||'Alertă')+'</span>'+riskPill(risk)+'</div><div class="alertDesc">'+esc(desc)+'</div><div class="alertMeta"><span>'+esc(e.email||'—')+'</span><span>'+esc(e.page_title||e.page_key||'—')+'</span><span>'+esc(fmtDate(e.created_at))+'</span></div></div>'; }).join('') : '<div class="empty">Nu există alerte active în ultimele evenimente.</div>'; }
   function render(){ renderStats(); renderPresence(); renderEvents(); $('statusText').textContent = state.rows.length + ' sesiuni / ' + state.events.length + ' evenimente încărcate.'; }
-  async function loadData(){ try{ $('setupWarn').classList.add('hidden'); var pres=await state.sb.from('kad_user_activity').select('session_key,user_id,email,role,display_name,event_type,status,page_key,page_href,page_title,first_seen_at,last_seen_at,heartbeat_at,logged_in_at,logged_out_at,country,city,timezone,language,user_agent,platform,screen,ip_hint,access_can_view,access_can_edit,denied_reason,updated_at').order('last_seen_at',{ascending:false}).limit(500); if(pres.error) throw pres.error; var ev=await state.sb.from('kad_security_events').select('id,session_key,user_id,email,role,event_type,risk_level,page_key,page_href,page_title,country,city,timezone,language,user_agent,platform,ip_hint,access_can_view,access_can_edit,denied_reason,meta,created_at').order('created_at',{ascending:false}).limit(500); if(ev.error) throw ev.error; state.rows=Array.isArray(pres.data)?pres.data:[]; state.events=Array.isArray(ev.data)?ev.data:[]; render(); }catch(err){ console.error(err); $('setupWarn').classList.remove('hidden'); $('statusText').textContent = err && err.message ? err.message : 'Nu pot citi tabelele de monitorizare.'; } }
-  function setupRealtime(){ try{ if(!state.sb.channel) return; state.channel=state.sb.channel('kad-monitor-activitate-utilizatori').on('postgres_changes',{event:'*',schema:'public',table:'kad_user_activity'},function(){ loadData(); }).on('postgres_changes',{event:'*',schema:'public',table:'kad_security_events'},function(){ loadData(); }).subscribe(function(status){ $('liveBadge').textContent = status==='SUBSCRIBED' ? 'Realtime activ' : 'Realtime: '+status; }); }catch(_e){} }
+  function scheduleLoadData(delay){
+    try{ if(state.loadTimer) clearTimeout(state.loadTimer); }catch(_e){}
+    state.loadTimer = setTimeout(function(){ loadData(); }, Math.max(0, delay || 0));
+  }
+  async function loadData(){
+    if(state.loading){ state.loadAgain = true; return; }
+    state.loading = true;
+    try{
+      state.lastLoadAt = Date.now();
+      $('setupWarn').classList.add('hidden');
+      var pres=await state.sb.from('kad_user_activity').select('session_key,user_id,email,role,display_name,event_type,status,page_key,page_href,page_title,first_seen_at,last_seen_at,heartbeat_at,logged_in_at,logged_out_at,country,city,timezone,language,user_agent,platform,screen,ip_hint,access_can_view,access_can_edit,denied_reason,updated_at').order('last_seen_at',{ascending:false}).limit(500);
+      if(pres.error) throw pres.error;
+      var ev=await state.sb.from('kad_security_events').select('id,session_key,user_id,email,role,event_type,risk_level,page_key,page_href,page_title,country,city,timezone,language,user_agent,platform,ip_hint,access_can_view,access_can_edit,denied_reason,meta,created_at').order('created_at',{ascending:false}).limit(500);
+      if(ev.error) throw ev.error;
+      state.rows=Array.isArray(pres.data)?pres.data:[];
+      state.events=Array.isArray(ev.data)?ev.data:[];
+      render();
+    }catch(err){
+      console.error(err);
+      $('setupWarn').classList.remove('hidden');
+      $('statusText').textContent = err && err.message ? err.message : 'Nu pot citi tabelele de monitorizare.';
+    }finally{
+      state.loading = false;
+      if(state.loadAgain){ state.loadAgain = false; scheduleLoadData(250); }
+    }
+  }
+  function setupRealtime(){
+    try{
+      if(!state.sb.channel) return;
+      state.channel=state.sb.channel('kad-monitor-activitate-utilizatori')
+        .on('postgres_changes',{event:'*',schema:'public',table:'kad_user_activity'},function(){ scheduleLoadData(REALTIME_RELOAD_DEBOUNCE_MS); })
+        .on('postgres_changes',{event:'*',schema:'public',table:'kad_security_events'},function(){ scheduleLoadData(REALTIME_RELOAD_DEBOUNCE_MS); })
+        .subscribe(function(status){
+          $('liveBadge').textContent = status==='SUBSCRIBED' ? 'Realtime activ + auto 8s' : 'Auto 8s / Realtime: '+status;
+        });
+    }catch(_e){ $('liveBadge').textContent = 'Auto 8s activ'; }
+  }
+  async function monitorAutoTick(){
+    try{
+      var now = Date.now();
+      var loadMs = document.hidden ? AUTO_REFRESH_MS_HIDDEN : AUTO_REFRESH_MS_VISIBLE;
+      if(!state.lastLoadAt || now - state.lastLoadAt >= loadMs) scheduleLoadData(0);
+      if(!state.lastHeartbeatAt || now - state.lastHeartbeatAt >= HEARTBEAT_MS){
+        state.lastHeartbeatAt = now;
+        await recordMonitorSelf('heartbeat');
+      }
+    }catch(_e){}
+  }
   function exportCsv(){ var rows=filteredRows(); var headers=['email','role','status','page_key','page_title','country','city','timezone','last_seen_at','access_can_view','access_can_edit','denied_reason']; var lines=[headers.join(',')]; rows.forEach(function(r){ lines.push(headers.map(function(k){ return '"'+String(k==='status'?rowStatus(r):(r[k] == null ? '' : r[k])).replace(/"/g,'""')+'"'; }).join(',')); }); var blob=new Blob([lines.join('\n')],{type:'text/csv;charset=utf-8'}); var a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='monitor-activitate-utilizatori.csv'; a.click(); setTimeout(function(){URL.revokeObjectURL(a.href);},1000); }
 
   function monitorSessionKey(user){
@@ -177,9 +226,9 @@
     }
   }
 
-  async function init(){ try{ state.sb = window.ERPAuth.getSupabaseClient(); var auth=await window.ERPAuth.requireAuth({next:PAGE_KEY+'.html',redirectToLogin:true}); if(!auth) return; state.user=auth.user; state.role=auth.role; var access=await window.ERPAuth.getPageAccess(PAGE_KEY,{user:auth.user,role:auth.role}); state.access=access; var perms=access && (access.permissions||access)||{}; if(!access || access.allowed===false || perms.can_view!==true){ $('lockMsg').textContent = (access && access.message) || 'Nu ai acces în Monitor Activitate Utilizatori.'; $('lock').classList.remove('hidden'); return; } $('app').classList.remove('hidden'); await recordMonitorSelf('page_view'); await loadData(); setupRealtime(); state.timer=setInterval(async function(){ await recordMonitorSelf('heartbeat'); await loadData(); },REFRESH_MS); }catch(err){ console.error(err); $('lockMsg').textContent = err && err.message ? err.message : 'Eroare la inițializarea paginii.'; $('lock').classList.remove('hidden'); } }
+  async function init(){ try{ state.sb = window.ERPAuth.getSupabaseClient(); var auth=await window.ERPAuth.requireAuth({next:PAGE_KEY+'.html',redirectToLogin:true}); if(!auth) return; state.user=auth.user; state.role=auth.role; var access=await window.ERPAuth.getPageAccess(PAGE_KEY,{user:auth.user,role:auth.role}); state.access=access; var perms=access && (access.permissions||access)||{}; if(!access || access.allowed===false || perms.can_view!==true){ $('lockMsg').textContent = (access && access.message) || 'Nu ai acces în Monitor Activitate Utilizatori.'; $('lock').classList.remove('hidden'); return; } $('app').classList.remove('hidden'); state.lastHeartbeatAt=Date.now(); await recordMonitorSelf('page_view'); await loadData(); setupRealtime(); state.timer=setInterval(monitorAutoTick,2000); document.addEventListener('visibilitychange',function(){ if(!document.hidden) scheduleLoadData(0); }); window.addEventListener('focus',function(){ scheduleLoadData(0); }); }catch(err){ console.error(err); $('lockMsg').textContent = err && err.message ? err.message : 'Eroare la inițializarea paginii.'; $('lock').classList.remove('hidden'); } }
   ['txtSearch','selStatus','selRole','selRisk'].forEach(function(id){ document.addEventListener('input',function(e){ if(e.target && e.target.id===id) render(); },true); document.addEventListener('change',function(e){ if(e.target && e.target.id===id) render(); },true); });
-  $('btnRefresh').addEventListener('click',loadData); $('btnExport').addEventListener('click',exportCsv); window.addEventListener('beforeunload',function(){ try{ if(state.channel) state.sb.removeChannel(state.channel); }catch(_e){} });
+  $('btnRefresh').addEventListener('click',function(){ scheduleLoadData(0); }); $('btnExport').addEventListener('click',exportCsv); window.addEventListener('beforeunload',function(){ try{ if(state.channel) state.sb.removeChannel(state.channel); }catch(_e){} });
   if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',init,{once:true}); else init();
 })();
 </script>
