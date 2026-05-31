@@ -1654,8 +1654,20 @@
     } catch (_) {}
   }
 
+  function isLivePresenceEnabled(){
+    try {
+      if(window.KAD_ENABLE_LIVE_PRESENCE === true) return true;
+      if(window.localStorage && window.localStorage.getItem('KAD_ENABLE_LIVE_PRESENCE') === '1') return true;
+    } catch (_) {}
+    return false;
+  }
+
   async function start(){
     if(started) return;
+    // Monitorizarea live a utilizatorilor este oprită implicit.
+    // Se reactivează doar explicit cu window.KAD_ENABLE_LIVE_PRESENCE=true
+    // sau localStorage.KAD_ENABLE_LIVE_PRESENCE='1'.
+    if(!isLivePresenceEnabled()) return;
     started = true;
     try {
       if(!window.ERPAuth || typeof window.ERPAuth.getSupabaseClient !== 'function') return;
@@ -1696,6 +1708,7 @@
   if(window.ERPAuth){
     const originalSignOut = window.ERPAuth.signOut;
     window.ERPAuth.stopLivePresence = stop;
+    window.ERPAuth.startLivePresence = start;
     window.ERPAuth.signOut = async function(options){
       stop();
       return originalSignOut.call(this, options);
