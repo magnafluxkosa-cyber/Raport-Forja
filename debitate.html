@@ -3455,6 +3455,175 @@ function setAutofillReadonly(isReadonly){
   }
   function nowIso(){ return new Date().toISOString(); }
 
+  const OPERATOR_DEBITARE_FISE_PREFIX = 'operator-debitare:fise:';
+
+  function rfOpDebNorm(v){
+    return String(v == null ? '' : v).trim();
+  }
+
+  function rfOpDebStableId(fisaKey, index){
+    return 'opdeb_' + String(fisaKey || '')
+      .replace(/[^a-zA-Z0-9]+/g, '_')
+      .replace(/^_+|_+$/g, '') + '_' + String(index + 1);
+  }
+
+  async function rfReadOperatorDebitareFiseMeta(year){
+    const y = normalizeYearValue(year);
+    if (!y) return null;
+    try{
+      const meta = await rfReadDocumentMetaCompat(supa, OPERATOR_DEBITARE_FISE_PREFIX + y);
+      return meta && meta.updated_at ? meta.updated_at : null;
+    }catch(_e){
+      return null;
+    }
+  }
+
+  async function rfBuildRowsFromOperatorDebitareFise(year){
+    const y = normalizeYearValue(year);
+    if (!y) return [];
+
+    let payload = null;
+    try{
+      const doc = await rfReadDocumentCompat(supa, OPERATOR_DEBITARE_FISE_PREFIX + y);
+      payload = doc && doc.payload ? doc.payload : null;
+    }catch(_e){
+      return [];
+    }
+
+    const fise = Array.isArray(payload && payload.fise) ? payload.fise : [];
+    const out = [];
+
+    fise.forEach(fisa => {
+      if (!fisa || typeof fisa !== 'object') return;
+      const dateIso = parseDateAny(fisa.date || fisa.data || '');
+      if (!dateIso) return;
+
+      const rowYear = normalizeYearValue(dateIso.slice(0, 4));
+      if (rowYear !== y) return;
+
+      const monthIdx = Number(dateIso.slice(5, 7));
+      const monthName = LUNI[monthIdx - 1] || '';
+      const shift = rfOpDebNorm(fisa.shift || fisa.schimb || '1') || '1';
+      const fisaKey = rfOpDebNorm(fisa.key || (dateIso + '|schimb-' + shift));
+      const rowsFisa = Array.isArray(fisa.rows) ? fisa.rows : [];
+
+      rowsFisa.forEach((src, idx) => {
+        if (!src || typeof src !== 'object') return;
+
+        const reper = rfOpDebNorm(src.reper || src.reperDebitare || src.reper_debitare);
+        const utilaj = rfOpDebNorm(src.utilaj || src.echipament || src.echipament_debitare);
+        const kgBuc = parseKgBucValue(src.kgBuc ?? src.kg ?? src.kg_buc ?? src.kgBucDebitat ?? '');
+        const lungime = parseNumberRO(src.lungime ?? src.lung ?? src.lungimeDebitare ?? src.lungime_debitare ?? '');
+        const cantitate = parseNumberRO(src.cantitate ?? src.realizat ?? src.bucati ?? src.cantitateDebitata ?? '');
+        const planificat = parseNumberRO(src.planificat ?? src.plan ?? '');
+        const calitate = rfOpDebNorm(src.calitate || src.codOtelCalitate || src.cal || '');
+        const diametru = normalizeDiam(src.diametru || src.diam || src.diametruOtel || '');
+        const sarja = rfOpDebNorm(src.sarja || src.material || src.codSarja || src.cod_sarja_furnizor || '');
+        const operator = rfOpDebNorm(src.operator || src.operatorDebitare || src.operator_debitare || '');
+
+        if (!reper && !utilaj && !Number.isFinite(cantitate)) return;
+
+        const row = {
+          id: rfOpDebStableId(fisaKey, idx),
+          fisaKey: fisaKey,
+          fisaLabel: rfOpDebNorm(fisa.label || ''),
+          an: Number(y),
+          luna: monthName,
+          data: dateIso,
+          echipament: utilaj,
+          utilaj: utilaj,
+          reper: reper,
+          diametru: diametru,
+          calitate: calitate,
+          kgBuc: Number.isFinite(kgBuc) ? kgBuc : '',
+          lungime: Number.isFinite(lungime) ? Math.trunc(lungime) : '',
+          lungimeDebitare: Number.isFinite(lungime) ? Math.trunc(lungime) : '',
+          codInternOtel: rfOpDebNorm(src.codInternOtel || src.codIntern || src.numeral || ''),
+          codIntern: rfOpDebNorm(src.codInternOtel || src.codIntern || src.numeral || ''),
+          codOtelCalitate: calitate,
+          material: sarja,
+          sarja: sarja,
+          planificat: Number.isFinite(planificat) ? Math.trunc(planificat) : '',
+          cantitate: Number.isFinite(cantitate) ? Math.trunc(cantitate) : '',
+          realizat: Number.isFinite(cantitate) ? Math.trunc(cantitate) : '',
+          schimbul: Number(shift) || shift,
+          schimb: Number(shift) || shift,
+          totalKg: (Number.isFinite(kgBuc) && Number.isFinite(cantitate)) ? Math.round(kgBuc * cantitate) : '',
+          weekNr: isoWeekNumber(dateIso),
+          operator: operator,
+          sefEchipa: rfOpDebNorm(fisa.sef || fisa.sefEchipa || ''),
+          echipa: rfOpDebNorm(fisa.sef || fisa.sefEchipa || ''),
+          procentNorma: (Number.isFinite(planificat) && planificat > 0 && Number.isFinite(cantitate)) ? Math.round((cantitate / planificat) * 100) : '',
+          oreLucrate: Number.isFinite(parseNumberRO(src.oreLucrate ?? src.ore ?? '')) ? parseNumberRO(src.oreLucrate ?? src.ore ?? '') : 8,
+          savedBy: rfOpDebNorm(fisa.savedBy || src.savedBy || ''),
+          savedAt: rfOpDebNorm(fisa.savedAt || src.savedAt || ''),
+          source: 'operator-debitare'
+        };
+
+        recalcRow(row);
+        out.push(row);
+      });
+    });
+
+    return sortRowsByDateAsc(out);
+  }
+
+  function rfMergeOperatorDebitareRows(baseRows, operatorRows){
+    const base = Array.isArray(baseRows) ? baseRows : [];
+    const op = Array.isArray(operatorRows) ? operatorRows : [];
+    if (!op.length) return { rows: base, changed: false };
+
+    const fisaKeys = new Set(op.map(r => r && r.fisaKey).filter(Boolean));
+    const opIds = new Set(op.map(r => r && r.id).filter(Boolean));
+
+    const cleaned = base.filter(r => {
+      if (!r || typeof r !== 'object') return false;
+      if (r.id && opIds.has(r.id)) return false;
+      if (r.fisaKey && fisaKeys.has(r.fisaKey)) return false;
+      return true;
+    });
+
+    const merged = sortRowsByDateAsc(cleaned.concat(op));
+    const changed = merged.length !== base.length || op.some(r => !base.some(x => x && x.id === r.id));
+    return { rows: merged, changed };
+  }
+
+  async function rfMergeOperatorDebitareFiseIntoPayload(year, payload){
+    const y = normalizeYearValue(year);
+    const basePayload = payload && typeof payload === 'object'
+      ? { ...payload }
+      : { app:'DEBITATE', version:2, year:Number(y), rows:[] };
+
+    const operatorRows = await rfBuildRowsFromOperatorDebitareFise(y);
+    if (!operatorRows.length) return { payload: basePayload, changed:false };
+
+    const merged = rfMergeOperatorDebitareRows(Array.isArray(basePayload.rows) ? basePayload.rows : [], operatorRows);
+    if (merged.changed){
+      basePayload.rows = merged.rows;
+      basePayload.app = basePayload.app || 'DEBITATE';
+      basePayload.version = basePayload.version || 2;
+      basePayload.year = Number(y);
+      basePayload.operatorDebitareFiseSyncedAt = nowIso();
+    }
+    return { payload: basePayload, changed: merged.changed };
+  }
+
+  async function rfPersistOperatorDebitareMerge(year, payload){
+    if (!window.__CAN_EDIT__) return null;
+    const y = normalizeYearValue(year);
+    if (!y || !payload || !Array.isArray(payload.rows)) return null;
+
+    const cleanPayload = { ...payload };
+    cleanPayload.savedAt = nowIso();
+    const saved = await rfWriteDocumentCompat(supa, getYearDocKey(y), cleanPayload, cleanPayload.savedAt);
+    const ts = saved && saved.updated_at ? saved.updated_at : cleanPayload.savedAt;
+    mergeCloudIndex([y], { [y]: ts });
+    await pushCloudIndex([y]);
+    return ts;
+  }
+
+
+
   function mergeCloudIndex(extraYears, updatedAtByYear){
     const current = readLocalIndex();
     const years = new Set(current.years || []);
@@ -3543,7 +3712,8 @@ function setAutofillReadonly(isReadonly){
         try{
           const meta = await rfReadDocumentMetaCompat(supa, getYearDocKey(y));
           const remoteMetaTs = meta.updated_at || null;
-          if (remoteMetaTs && new Date(remoteMetaTs) <= new Date(localTs)){
+          const operatorFiseTs = await rfReadOperatorDebitareFiseMeta(y);
+          if (remoteMetaTs && new Date(remoteMetaTs) <= new Date(localTs) && (!operatorFiseTs || new Date(operatorFiseTs) <= new Date(localTs))){
             setCloud(true, `Cloud: ${y} ON`);
             return getRowsForYear(y);
           }
@@ -3551,21 +3721,35 @@ function setAutofillReadonly(isReadonly){
       }
 
       const doc = await rfReadDocumentCompat(supa, getYearDocKey(y));
-      if (!doc || !doc.payload){
+      const sourcePayload = (doc && doc.payload) ? doc.payload : { app:'DEBITATE', version:2, year:Number(y), rows:[] };
+      const mergeResult = await rfMergeOperatorDebitareFiseIntoPayload(y, sourcePayload);
+
+      if ((!doc || !doc.payload) && (!mergeResult.payload || !Array.isArray(mergeResult.payload.rows) || !mergeResult.payload.rows.length)){
         mergeCloudIndex([y], {});
         setCloud(true, `Cloud: ${y} gol`);
         return getRowsForYear(y);
       }
 
-      const remoteTs = doc.updated_at || doc.payload?.savedAt || null;
+      const remoteTs = doc?.updated_at || doc?.payload?.savedAt || null;
+      const operatorFiseTs = await rfReadOperatorDebitareFiseMeta(y);
 
-      if (!options.force && localTs && remoteTs && new Date(remoteTs) <= new Date(localTs) && getRowsForYear(y).length){
+      if (!mergeResult.changed && !options.force && localTs && remoteTs && new Date(remoteTs) <= new Date(localTs) && (!operatorFiseTs || new Date(operatorFiseTs) <= new Date(localTs)) && getRowsForYear(y).length){
         setCloud(true, `Cloud: ${y} ON`);
         return getRowsForYear(y);
       }
 
-      applyPayloadForYear(y, doc.payload, remoteTs);
-      setCloud(true, `Cloud: ${y} ON`);
+      let appliedTs = remoteTs;
+      if (mergeResult.changed){
+        try{
+          appliedTs = await rfPersistOperatorDebitareMerge(y, mergeResult.payload) || nowIso();
+        }catch(persistErr){
+          console.warn('Nu am putut persista automat fișele Operator Debitare în DEBITATE; se afișează temporar din fișe.', persistErr);
+          appliedTs = nowIso();
+        }
+      }
+
+      applyPayloadForYear(y, mergeResult.payload, appliedTs);
+      setCloud(true, mergeResult.changed ? `Cloud: ${y} sincronizat cu fișe operator` : `Cloud: ${y} ON`);
       return getRowsForYear(y);
     }catch(e){
       console.error(e);
@@ -3582,8 +3766,8 @@ function setAutofillReadonly(isReadonly){
     if (!currentRows){
       currentRows = loadYearLocal(y);
     }
-    if ((!currentRows || !currentRows.length) && options.preferCloud !== false){
-      await pullYear(y, { force:true });
+    if (options.preferCloud !== false){
+      await pullYear(y, { force:(!currentRows || !currentRows.length) });
       currentRows = Array.isArray(yearCache[y]) ? yearCache[y] : loadYearLocal(y);
     } else {
       mergeCloudIndex([y], {});
