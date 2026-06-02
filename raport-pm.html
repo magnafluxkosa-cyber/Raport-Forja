@@ -357,6 +357,25 @@
       0%{box-shadow:inset 0 0 0 3px #16a34a;background:#dcfce7}
       100%{box-shadow:none}
     }
+
+
+    /* Update: selectie multipla gri deschis + linii discrete */
+    tbody td.pm-copy-selected{
+      background:#f3f4f6!important;
+      outline:1px solid #cbd5e1!important;
+      outline-offset:-1px!important;
+    }
+    tbody td.pm-copy-anchor{
+      box-shadow:inset 0 0 0 2px #94a3b8!important;
+    }
+    tbody td.pm-paste-target{
+      animation:pmPastePulseSoft .55s ease-out 1;
+    }
+    @keyframes pmPastePulseSoft{
+      0%{box-shadow:inset 0 0 0 3px #94a3b8;background:#f8fafc}
+      100%{box-shadow:none}
+    }
+
 </style>
 </head>
 <body>
@@ -399,6 +418,10 @@
     'use strict';
     const PAGE_KEYS=['raport-pm','prelucrari-raport-pm','raport-pm-raport'];
     const STORAGE_KEY='kad_raport_pm_raport_start_zero_v2';
+    const DOC_KEY='raport-pm-raport-start-zero-v2';
+    const DOC_KEY_ALIASES=[DOC_KEY,'raport-pm:raport-start-zero-v2',STORAGE_KEY];
+    const CLOUD_SAVE_DEBOUNCE_MS=900;
+    let cloudSaveTimer=null;
     const VISIBLE_COLS=55;
     const RAW_FINAL_OFFSET=55;
     const COL={data:0,process:1,equipment:2,part:3,shift:4,operator:5,plan:6,good:7,prodDef:8,prodReman:9,totalTime:10,timePerf:11,mgmtStart:12,mgmtEnd:20,prodStart:21,prodEnd:31,matStart:32,matEnd:49,eff:50,pmDef:51,fjDef:52,prodOp:53,prodTotal:54};
@@ -407,7 +430,7 @@
     const PROD_OP_GATE_INDEXES=[21,18,17,15,16,12]; // Excel test: W&T&S&Q&R&N = 0
     const PROD_OP_LOSS_INDEXES=[21,18,17,15,16,12,13,14,24,25,26,28]; // Excel: W,T,S,Q,R,N,O,P,Z,AA,AB,AD
     const PROD_TOTAL_GATE_INDEXES=[16,15]; // Excel test: R&Q = 0
-    const state={canView:false,canEdit:false,rows:[],columns:[],filters:{search:'',year:'',month:'',process:'',equipment:'',operator:'',shift:''},page:1,pageSize:120,dirty:0,pendingFocus:null,selection:null,isMouseSelecting:false,lastCell:null,pasteFlash:null};
+    const state={canView:false,canEdit:false,rows:[],columns:[],filters:{search:'',year:'',month:'',process:'',equipment:'',operator:'',shift:''},page:1,pageSize:120,dirty:0,pendingFocus:null,selection:null,isMouseSelecting:false,lastCell:null,pasteFlash:null,supa:null,cloudUpdatedAt:'',cloudError:''};
     const $=s=>document.querySelector(s);
     const els={root:$('#pageRoot'),content:$('#appContent'),filters:$('#filters'),table:$('#reportTable'),kpis:$('#kpis'),accessChip:$('#accessChip'),dirtyChip:$('#dirtyChip'),tableMeta:$('#tableMeta'),pageInfo:$('#pageInfo'),btnPrev:$('#btnPrev'),btnNext:$('#btnNext'),btnSave:$('#btnSave'),btnReset:$('#btnReset'),btnExport:$('#btnExport'),btnPrint:$('#btnPrint')};
     function norm(s){return String(s||'').normalize('NFD').replace(/[̀-ͯ]/g,'').toLowerCase().trim()}
@@ -438,12 +461,89 @@
     function ensureRowAt(index){while(index>=state.rows.length){state.rows.push(createBlankRow(state.rows[state.rows.length-1]||null))}return state.rows[index]}
     function rowHasData(row){return !!(row&&Array.isArray(row.values)&&row.values.slice(0,COL.prodTotal+1).some(v=>String(v??'').trim()!==''))}
     function recalcAllRows(){state.rows.forEach(r=>recalc(r))}
-    function loadData(){const payload=JSON.parse($('#reportData').textContent);state.columns=payload.columns.slice(0,VISIBLE_COLS);const saved=loadSaved();const savedMap=new Map((saved&&Array.isArray(saved.rows)?saved.rows:[]).map(r=>[r.id,r]));state.rows=payload.rows.map(r=>{const local=savedMap.get(r.id);const row=local?{id:r.id,monthLabel:r.monthLabel,values:local.values}:{id:r.id,monthLabel:r.monthLabel,values:r.values.slice()};while(row.values.length<VISIBLE_COLS)row.values.push('');return recalc(row)})}
-    function loadSaved(){try{return JSON.parse(localStorage.getItem(STORAGE_KEY)||'null')}catch(e){return null}}
-    function saveLocal(){try{localStorage.setItem(STORAGE_KEY,JSON.stringify({savedAt:new Date().toISOString(),rows:state.rows.map(r=>({id:r.id,values:r.values}))}));state.dirty=0;updateDirty();return true}catch(e){alert('Nu s-a putut salva local: '+e.message);return false}}
-    function resetLocal(){if(!confirm('Ștergi modificările locale pentru Raport PM și revii la datele preluate din Excel?'))return;localStorage.removeItem(STORAGE_KEY);state.dirty=0;loadData();renderAll()}
-    function markDirty(){state.dirty++;updateDirty()}
-    function updateDirty(){els.dirtyChip.textContent='Nesalvat local: '+state.dirty;els.dirtyChip.className='chip '+(state.dirty?'warn':'ok')}
+    async function loadData(){
+      const payload=JSON.parse($('#reportData').textContent);
+      state.columns=payload.columns.slice(0,VISIBLE_COLS);
+      state.supa=getSupabaseClient();
+      let saved=null;
+      try{saved=await readCloudPayload()}catch(e){state.cloudError=String(e&&e.message||e||'');console.warn('Raport PM cloud load',e)}
+      if(!saved)saved=loadSavedLocal();
+      const savedRows=(saved&&Array.isArray(saved.rows))?saved.rows:[];
+      const savedMap=new Map(savedRows.map(r=>[Number(r.id),r]));
+      const seen=new Set();
+      state.rows=payload.rows.map(r=>{
+        seen.add(Number(r.id));
+        const local=savedMap.get(Number(r.id));
+        const row=local?{id:r.id,monthLabel:r.monthLabel,values:Array.isArray(local.values)?local.values.slice():r.values.slice()}:{id:r.id,monthLabel:r.monthLabel,values:r.values.slice()};
+        while(row.values.length<VISIBLE_COLS)row.values.push('');
+        row.values=row.values.slice(0,VISIBLE_COLS);
+        return recalc(row)
+      });
+      savedRows.forEach(r=>{
+        const id=Number(r.id);
+        if(!isFinite(id)||seen.has(id)||!Array.isArray(r.values))return;
+        const row={id,monthLabel:r.monthLabel||'',values:r.values.slice(0,VISIBLE_COLS)};
+        while(row.values.length<VISIBLE_COLS)row.values.push('');
+        state.rows.push(recalc(row));
+      });
+      recalcAllRows();
+    }
+    function getSupabaseClient(){
+      if(state.supa)return state.supa;
+      const cfg=window.RF_CONFIG||{};
+      const url=cfg.SUPABASE_URL||window.SUPABASE_URL||'';
+      const key=cfg.SUPABASE_ANON_KEY||window.SUPABASE_ANON_KEY||'';
+      if(!url||!key||!window.supabase)return null;
+      state.supa=window.supabase.createClient(url,key,{auth:{persistSession:true,autoRefreshToken:true,detectSessionInUrl:true}});
+      return state.supa;
+    }
+    function serializeCloudPayload(){return {schema:'raport-pm-raport-v2',savedAt:new Date().toISOString(),rows:state.rows.map(r=>({id:r.id,monthLabel:r.monthLabel||'',values:r.values.slice(0,VISIBLE_COLS)}))}}
+    async function readCloudPayload(){
+      const sb=getSupabaseClient();
+      if(!sb)return null;
+      for(const key of DOC_KEY_ALIASES){
+        try{
+          const {data,error}=await sb.from('rf_documents').select('doc_key,content,data,updated_at').eq('doc_key',key).maybeSingle();
+          if(error)throw error;
+          const content=data&&data.content&&typeof data.content==='object'?data.content:(data&&data.data&&typeof data.data==='object'?data.data:null);
+          if(content&&Array.isArray(content.rows)){state.cloudUpdatedAt=data.updated_at||content.savedAt||'';return content;}
+        }catch(e){state.cloudError=String(e&&e.message||e||'');console.warn('Raport PM read cloud',e)}
+      }
+      return null;
+    }
+    async function writeCloudPayload(){
+      const sb=getSupabaseClient();
+      if(!sb)return false;
+      const payload=serializeCloudPayload();
+      const ts=payload.savedAt;
+      let res=await sb.from('rf_documents').upsert({doc_key:DOC_KEY,content:payload,updated_at:ts},{onConflict:'doc_key'}).select('updated_at').maybeSingle();
+      if(res.error){
+        res=await sb.from('rf_documents').upsert({doc_key:DOC_KEY,data:payload,updated_at:ts},{onConflict:'doc_key'}).select('updated_at').maybeSingle();
+      }
+      if(res.error)throw res.error;
+      state.cloudUpdatedAt=(res.data&&res.data.updated_at)||ts;
+      return true;
+    }
+    async function saveCloud(opts={}){
+      const silent=opts.silent!==false;
+      if(!state.canEdit)return false;
+      clearTimeout(cloudSaveTimer);
+      try{
+        const ok=await writeCloudPayload();
+        if(ok){state.dirty=0;updateDirty();return true;}
+      }catch(e){state.cloudError=String(e&&e.message||e||'');console.warn('Raport PM cloud save',e);if(!silent)console.warn('Nu s-a putut salva în cloud:',state.cloudError)}
+      return false;
+    }
+    function scheduleCloudSave(){
+      if(!state.canEdit)return;
+      clearTimeout(cloudSaveTimer);
+      cloudSaveTimer=setTimeout(()=>saveCloud({silent:true}),CLOUD_SAVE_DEBOUNCE_MS);
+    }
+    function loadSavedLocal(){try{return JSON.parse(localStorage.getItem(STORAGE_KEY)||'null')}catch(e){return null}}
+    function saveLocal(){return saveCloud({silent:false})}
+    async function resetLocal(){if(!confirm('Ștergi modificările din Raport PM și revii la datele preluate din Excel?'))return;try{localStorage.removeItem(STORAGE_KEY)}catch(_e){}state.dirty=0;await loadData();renderAll();scheduleCloudSave()}
+    function markDirty(){state.dirty++;updateDirty();scheduleCloudSave()}
+    function updateDirty(){els.dirtyChip.textContent=(state.dirty?'Nesalvat cloud: ':'Salvat cloud: ')+state.dirty;els.dirtyChip.className='chip '+(state.dirty?'warn':'ok')}
     async function initAccess(){try{if(!window.ERPAuth||typeof window.ERPAuth.getCurrentUserWithRole!=='function')throw new Error('auth missing');const auth=await window.ERPAuth.getCurrentUserWithRole();const user=auth&&auth.user;const role=norm(auth&&auth.role||'viewer');const email=norm(user&&user.email);const isAdmin=role==='admin'||role==='administrator'||email==='adrian.kosa@premagro.ro'||email==='kosa.adrian@premagro.ro';if(isAdmin){state.canView=true;state.canEdit=true}else{let best=null;if(typeof window.ERPAuth.getPageAccess==='function'){for(const key of PAGE_KEYS){try{const access=await window.ERPAuth.getPageAccess(key,{user,role});const p=access&&access.permissions?access.permissions:access;if(p&&p.can_view){best=p;if(p.can_edit||p.can_add||p.can_import||p.can_delete)break}}catch(_e){}}}state.canView=!!(best&&best.can_view);state.canEdit=!!(best&&best.can_view&&(best.can_edit||best.can_add||best.can_import||best.can_delete));}}catch(e){state.canView=false;state.canEdit=false}if(!state.canView){renderDenied();return false}els.accessChip.textContent=state.canEdit?'Editare permisă':'Doar vizualizare';els.accessChip.className='chip '+(state.canEdit?'ok':'warn');return true}
     function renderDenied(){els.root.innerHTML='<div class="access-denied"><h1>Acces blocat</h1><p>Nu există permisiune can_view pentru pagina Raport PM. Accesul direct prin URL este blocat.</p></div>'}
     function buildFilters(){const rows=state.rows;const defs=[['year','An',uniq(rows.map(r=>yearFromDate(r.values[COL.data]))).sort()],['month','Luna',uniq(rows.map(r=>monthFromDate(r.values[COL.data]))).sort()],['process','Proces',uniq(rows.map(r=>r.values[COL.process])).sort()],['equipment','Echipament',uniq(rows.map(r=>r.values[COL.equipment])).sort()],['operator','Operator',uniq(rows.map(r=>r.values[COL.operator])).sort()],['shift','Schimb',uniq(rows.map(r=>r.values[COL.shift])).sort()]];els.filters.innerHTML=defs.map(([k,l,vals])=>`<div class="field"><label>${esc(l)}</label><select data-filter="${k}"><option value="">Toate</option>${vals.map(v=>`<option value="${esc(v)}">${esc(v)}</option>`).join('')}</select></div>`).join('')+`<div class="field"><label>Caută</label><input data-filter="search" type="text" placeholder="reper, utilaj, operator"></div><button class="btn" id="btnClear" type="button">Șterge filtre</button>`;els.filters.querySelectorAll('[data-filter]').forEach(x=>{x.value=state.filters[x.dataset.filter]||'';x.addEventListener('input',()=>{state.filters[x.dataset.filter]=x.value;state.page=1;renderAll(false)})});$('#btnClear').onclick=()=>{Object.keys(state.filters).forEach(k=>state.filters[k]='');state.page=1;renderAll()}}
@@ -482,11 +582,10 @@
         pageRows.forEach((row,ri)=>{
           recalc(row);
           const prevRow=rows[start+ri-1];
-          const currentDate=String(row.values[COL.data]??'').trim();
-          const prevDate=prevRow?String(prevRow.values[COL.data]??'').trim():currentDate;
+          const currentDate=String(row.values[COL.date]??'').trim();
+          const prevDate=prevRow?String(prevRow.values[COL.date]??'').trim():currentDate;
           const dateBreak=(start+ri)>0&&currentDate!==prevDate;
-          const globalRowIndex=state.rows.indexOf(row);
-          html+='<tr class="'+(dateBreak?'date-break':'')+'" data-id="'+row.id+'" data-page-row="'+ri+'" data-row-index="'+globalRowIndex+'">';
+          html+='<tr class="'+(dateBreak?'date-break':'')+'" data-id="'+row.id+'" data-page-row="'+ri+'">';
           for(let i=0;i<VISIBLE_COLS;i++){
             const val=row.values[i];
             const numClass=(i>=COL.plan || i===COL.shift)?' num':'';
@@ -541,6 +640,32 @@
         renderTable(rows);
       }
     }
+
+    function clearSelectedCells(){
+      if(!state.canEdit)return false;
+      const b=selectionBounds()||(()=>{const s=activeCellStart();return s?{r1:s.rowIndex,r2:s.rowIndex,c1:s.col,c2:s.col}:null})();
+      if(!b)return false;
+      let changed=false;
+      for(let r=b.r1;r<=b.r2;r++){
+        const row=state.rows[r];
+        if(!row||!row.values)continue;
+        for(let c=b.c1;c<=b.c2;c++){
+          if(c<0||c>=VISIBLE_COLS||isCalc(c))continue;
+          if(String(row.values[c]??'')!==''){
+            row.values[c]='';
+            changed=true;
+          }
+        }
+        recalc(row);
+      }
+      if(!changed)return false;
+      recalcAllRows();
+      markDirty();
+      const rows=filteredRows();
+      renderKpis(rows);
+      renderTable(rows);
+      return true;
+    }
     function onCellKeydown(e){
       const td=e.currentTarget;
       const tr=td.closest('tr');
@@ -549,6 +674,15 @@
       const pageRow=Number(tr.dataset.pageRow||0);
       if((e.ctrlKey||e.metaKey)&&String(e.key).toLowerCase()==='c')return;
       if((e.ctrlKey||e.metaKey)&&String(e.key).toLowerCase()==='v')return;
+      if(e.key==='Delete'||e.key==='Backspace'){
+        const active=document.activeElement;
+        const isEditing=active&&active.getAttribute&&active.getAttribute('contenteditable')==='true'&&window.getSelection&&String(window.getSelection()).length===0;
+        if(state.selection&&(!isEditing||e.key==='Delete')){
+          e.preventDefault();
+          clearSelectedCells();
+          return;
+        }
+      }
       let nextRow=pageRow;
       let nextCol=col;
       let move=false;
@@ -752,7 +886,7 @@
       const filteredIndex=currentRows.indexOf(rowObj);
       if(filteredIndex>=0)state.page=Math.floor(filteredIndex/state.pageSize)+1;
       renderAll(false);
-      saveLocal();
+      scheduleCloudSave();
       return true;
     }
     function onCopy(e){
@@ -774,7 +908,7 @@
     function exportCsv(){const rows=filteredRows();const lines=[state.columns.map(c=>`"${String(c.label).replace(/"/g,'""')}"`).join(';')];rows.forEach(r=>{recalc(r);lines.push(r.values.slice(0,VISIBLE_COLS).map(v=>`"${String(formatForCsv(v)).replace(/"/g,'""')}"`).join(';'))});const blob=new Blob([lines.join('\n')],{type:'text/csv;charset=utf-8'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='raport-pm-raport.csv';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000)}
     function formatForCsv(v){return typeof v==='number'?String(v).replace('.',','):String(v??'')}
     function bind(){els.btnSave.onclick=saveLocal;els.btnReset.onclick=resetLocal;els.btnExport.onclick=exportCsv;els.btnPrint.onclick=()=>window.print();els.btnPrev.onclick=()=>{if(state.page>1){state.page--;renderAll(false)}};els.btnNext.onclick=()=>{state.page++;renderAll(false)};document.addEventListener('mouseup',onDocumentMouseUp);document.addEventListener('copy',onCopy);document.addEventListener('paste',onPaste)}
-    async function start(){if(!await initAccess())return;loadData();bind();renderAll();}
+    async function start(){if(!await initAccess())return;await loadData();bind();renderAll();}
     start();
   })();
   </script>
@@ -789,3 +923,5 @@
 <!-- update: material defect red bold, forging defect light color, compact wrapped columns - 2026-06-02 -->
 
 <!-- update: selectie multipla copy/paste cu randuri noi si recalcul automat - 2026-06-02 -->
+
+<!-- update: selectie gri deschis, delete pe selectie si salvare cloud rf_documents - 2026-06-02 -->
