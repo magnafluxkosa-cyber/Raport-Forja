@@ -339,6 +339,24 @@
       outline-offset:-2px!important;
       background:#eff6ff!important;
     }
+
+
+    /* Update: selectie multipla, copiere/lipire tip Excel */
+    tbody td.pm-copy-selected{
+      background:#bfdbfe!important;
+      outline:2px solid #1d4ed8!important;
+      outline-offset:-2px!important;
+    }
+    tbody td.pm-copy-anchor{
+      box-shadow:inset 0 0 0 2px #0f172a!important;
+    }
+    tbody td.pm-paste-target{
+      animation:pmPastePulse .55s ease-out 1;
+    }
+    @keyframes pmPastePulse{
+      0%{box-shadow:inset 0 0 0 3px #16a34a;background:#dcfce7}
+      100%{box-shadow:none}
+    }
 </style>
 </head>
 <body>
@@ -389,7 +407,7 @@
     const PROD_OP_GATE_INDEXES=[21,18,17,15,16,12]; // Excel test: W&T&S&Q&R&N = 0
     const PROD_OP_LOSS_INDEXES=[21,18,17,15,16,12,13,14,24,25,26,28]; // Excel: W,T,S,Q,R,N,O,P,Z,AA,AB,AD
     const PROD_TOTAL_GATE_INDEXES=[16,15]; // Excel test: R&Q = 0
-    const state={canView:false,canEdit:false,rows:[],columns:[],filters:{search:'',year:'',month:'',process:'',equipment:'',operator:'',shift:''},page:1,pageSize:120,dirty:0,pendingFocus:null};
+    const state={canView:false,canEdit:false,rows:[],columns:[],filters:{search:'',year:'',month:'',process:'',equipment:'',operator:'',shift:''},page:1,pageSize:120,dirty:0,pendingFocus:null,selection:null,isMouseSelecting:false,lastCell:null,pasteFlash:null};
     const $=s=>document.querySelector(s);
     const els={root:$('#pageRoot'),content:$('#appContent'),filters:$('#filters'),table:$('#reportTable'),kpis:$('#kpis'),accessChip:$('#accessChip'),dirtyChip:$('#dirtyChip'),tableMeta:$('#tableMeta'),pageInfo:$('#pageInfo'),btnPrev:$('#btnPrev'),btnNext:$('#btnNext'),btnSave:$('#btnSave'),btnReset:$('#btnReset'),btnExport:$('#btnExport'),btnPrint:$('#btnPrint')};
     function norm(s){return String(s||'').normalize('NFD').replace(/[̀-ͯ]/g,'').toLowerCase().trim()}
@@ -415,6 +433,11 @@
       // PRODUCTIVITATEA TOTALA % = formula Excel: IF(H="";"";IF(R&Q=0;I/H;I/(H*(L/450))))
       if(excelConcatEqualsZero(row,PROD_TOTAL_GATE_INDEXES)){row.values[COL.prodTotal]=good/plan}else{const denomProdTotal=plan*(total/450);row.values[COL.prodTotal]=denomProdTotal?good/denomProdTotal:''}
       return row}
+    function getNextRowId(){let max=0;state.rows.forEach(r=>{const id=Number(r&&r.id);if(isFinite(id)&&id>max)max=id});return max+1}
+    function createBlankRow(afterRow){const row={id:getNextRowId(),monthLabel:(afterRow&&afterRow.monthLabel)||'',values:Array(VISIBLE_COLS).fill('')};return row}
+    function ensureRowAt(index){while(index>=state.rows.length){state.rows.push(createBlankRow(state.rows[state.rows.length-1]||null))}return state.rows[index]}
+    function rowHasData(row){return !!(row&&Array.isArray(row.values)&&row.values.slice(0,COL.prodTotal+1).some(v=>String(v??'').trim()!==''))}
+    function recalcAllRows(){state.rows.forEach(r=>recalc(r))}
     function loadData(){const payload=JSON.parse($('#reportData').textContent);state.columns=payload.columns.slice(0,VISIBLE_COLS);const saved=loadSaved();const savedMap=new Map((saved&&Array.isArray(saved.rows)?saved.rows:[]).map(r=>[r.id,r]));state.rows=payload.rows.map(r=>{const local=savedMap.get(r.id);const row=local?{id:r.id,monthLabel:r.monthLabel,values:local.values}:{id:r.id,monthLabel:r.monthLabel,values:r.values.slice()};while(row.values.length<VISIBLE_COLS)row.values.push('');return recalc(row)})}
     function loadSaved(){try{return JSON.parse(localStorage.getItem(STORAGE_KEY)||'null')}catch(e){return null}}
     function saveLocal(){try{localStorage.setItem(STORAGE_KEY,JSON.stringify({savedAt:new Date().toISOString(),rows:state.rows.map(r=>({id:r.id,values:r.values}))}));state.dirty=0;updateDirty();return true}catch(e){alert('Nu s-a putut salva local: '+e.message);return false}}
@@ -459,10 +482,11 @@
         pageRows.forEach((row,ri)=>{
           recalc(row);
           const prevRow=rows[start+ri-1];
-          const currentDate=String(row.values[COL.date]??'').trim();
-          const prevDate=prevRow?String(prevRow.values[COL.date]??'').trim():currentDate;
+          const currentDate=String(row.values[COL.data]??'').trim();
+          const prevDate=prevRow?String(prevRow.values[COL.data]??'').trim():currentDate;
           const dateBreak=(start+ri)>0&&currentDate!==prevDate;
-          html+='<tr class="'+(dateBreak?'date-break':'')+'" data-id="'+row.id+'" data-page-row="'+ri+'">';
+          const globalRowIndex=state.rows.indexOf(row);
+          html+='<tr class="'+(dateBreak?'date-break':'')+'" data-id="'+row.id+'" data-page-row="'+ri+'" data-row-index="'+globalRowIndex+'">';
           for(let i=0;i<VISIBLE_COLS;i++){
             const val=row.values[i];
             const numClass=(i>=COL.plan || i===COL.shift)?' num':'';
@@ -485,6 +509,8 @@
       html+='</tbody>';
       els.table.innerHTML=html;
       els.table.querySelectorAll('tbody td').forEach(td=>{
+        td.addEventListener('mousedown',onCellMouseDown);
+        td.addEventListener('mouseover',onCellMouseOver);
         td.addEventListener('keydown',onCellKeydown);
         if(td.getAttribute('contenteditable')==='true')td.addEventListener('blur',onCellBlur);
       });
@@ -493,6 +519,7 @@
       els.btnPrev.disabled=state.page<=1;
       els.btnNext.disabled=state.page>=totalPages;
       applyPendingFocus();
+      applySelectionVisual();
     }
     function formatCell(i,v){if(v===''||v===null||v===undefined)return '';if(i===COL.data||i===COL.process||i===COL.equipment||i===COL.part||i===COL.operator)return esc(v);if(isFinal(i)&&[COL.eff,COL.prodOp,COL.prodTotal].includes(i))return pct(v);if(i>=COL.plan)return esc(fmt(v));if(typeof v==='number')return esc(fmtDec(v));return esc(v)}
     function onCellBlur(e){
@@ -520,6 +547,8 @@
       if(!tr)return;
       const col=Number(td.dataset.col);
       const pageRow=Number(tr.dataset.pageRow||0);
+      if((e.ctrlKey||e.metaKey)&&String(e.key).toLowerCase()==='c')return;
+      if((e.ctrlKey||e.metaKey)&&String(e.key).toLowerCase()==='v')return;
       let nextRow=pageRow;
       let nextCol=col;
       let move=false;
@@ -544,6 +573,17 @@
       }
       if(!move)return;
       e.preventDefault();
+      if(e.shiftKey){
+        const meta=cellMeta(td);
+        const rows=Array.from(els.table.querySelectorAll('tbody tr[data-page-row]'));
+        const targetRowEl=rows[Math.max(0,Math.min(rows.length-1,nextRow))];
+        const targetCell=targetRowEl?targetRowEl.querySelector(`td[data-col="${Math.max(0,Math.min(VISIBLE_COLS-1,nextCol))}"]`):null;
+        const targetMeta=cellMeta(targetCell);
+        if(meta&&targetMeta){
+          const anchor=(state.selection&&state.selection.anchor)?state.selection.anchor:{rowIndex:meta.rowIndex,col:meta.col};
+          setSelection(anchor,{rowIndex:targetMeta.rowIndex,col:targetMeta.col});
+        }
+      }
       state.pendingFocus={pageRow:nextRow,col:nextCol};
       if(document.activeElement===td)td.blur();
       setTimeout(applyPendingFocus,0);
@@ -574,10 +614,166 @@
         sel.addRange(range);
       }catch(_e){}
     }
+    function cellMeta(td){
+      if(!td||!td.closest)return null;
+      const tr=td.closest('tr[data-row-index]');
+      if(!tr)return null;
+      const rowIndex=Number(tr.dataset.rowIndex);
+      const pageRow=Number(tr.dataset.pageRow||0);
+      const col=Number(td.dataset.col);
+      if(!isFinite(rowIndex)||!isFinite(col))return null;
+      return {rowIndex,pageRow,col};
+    }
+    function setSelection(anchor,focus){
+      if(!anchor||!focus)return;
+      state.selection={anchor:{rowIndex:anchor.rowIndex,col:anchor.col},focus:{rowIndex:focus.rowIndex,col:focus.col}};
+      state.lastCell={rowIndex:focus.rowIndex,col:focus.col};
+      applySelectionVisual();
+    }
+    function clearSelection(){state.selection=null;applySelectionVisual()}
+    function selectionBounds(){
+      const s=state.selection;
+      if(!s)return null;
+      return {r1:Math.min(s.anchor.rowIndex,s.focus.rowIndex),r2:Math.max(s.anchor.rowIndex,s.focus.rowIndex),c1:Math.min(s.anchor.col,s.focus.col),c2:Math.max(s.anchor.col,s.focus.col)};
+    }
+    function applySelectionVisual(){
+      if(!els.table)return;
+      els.table.querySelectorAll('tbody td.pm-copy-selected,tbody td.pm-copy-anchor,tbody td.pm-paste-target').forEach(td=>td.classList.remove('pm-copy-selected','pm-copy-anchor','pm-paste-target'));
+      const b=selectionBounds();
+      if(!b)return;
+      els.table.querySelectorAll('tbody tr[data-row-index]').forEach(tr=>{
+        const ri=Number(tr.dataset.rowIndex);
+        if(ri<b.r1||ri>b.r2)return;
+        tr.querySelectorAll('td[data-col]').forEach(td=>{
+          const ci=Number(td.dataset.col);
+          if(ci>=b.c1&&ci<=b.c2)td.classList.add('pm-copy-selected');
+        });
+      });
+      const a=state.selection&&state.selection.anchor;
+      if(a){
+        const anchorCell=els.table.querySelector(`tbody tr[data-row-index="${a.rowIndex}"] td[data-col="${a.col}"]`);
+        if(anchorCell)anchorCell.classList.add('pm-copy-anchor');
+      }
+      if(state.pasteFlash){
+        const flash=state.pasteFlash;
+        const cell=els.table.querySelector(`tbody tr[data-row-index="${flash.rowIndex}"] td[data-col="${flash.col}"]`);
+        if(cell)cell.classList.add('pm-paste-target');
+        state.pasteFlash=null;
+      }
+    }
+    function onCellMouseDown(e){
+      if(e.button!==0)return;
+      const td=e.currentTarget;
+      const meta=cellMeta(td);
+      if(!meta)return;
+      if(e.shiftKey&&state.selection){
+        setSelection(state.selection.anchor,{rowIndex:meta.rowIndex,col:meta.col});
+      }else{
+        setSelection({rowIndex:meta.rowIndex,col:meta.col},{rowIndex:meta.rowIndex,col:meta.col});
+      }
+      state.isMouseSelecting=true;
+      state.lastCell={rowIndex:meta.rowIndex,col:meta.col};
+      td.focus({preventScroll:true});
+      if(td.getAttribute('contenteditable')==='true')placeCaretAtEnd(td);
+      e.preventDefault();
+    }
+    function onCellMouseOver(e){
+      if(!state.isMouseSelecting)return;
+      const meta=cellMeta(e.currentTarget);
+      if(!meta||!state.selection)return;
+      setSelection(state.selection.anchor,{rowIndex:meta.rowIndex,col:meta.col});
+    }
+    function onDocumentMouseUp(){state.isMouseSelecting=false}
+    function activeCellStart(){
+      const active=document.activeElement;
+      const meta=cellMeta(active);
+      if(meta)return {rowIndex:meta.rowIndex,col:meta.col};
+      if(state.lastCell)return {rowIndex:state.lastCell.rowIndex,col:state.lastCell.col};
+      const b=selectionBounds();
+      if(b)return {rowIndex:b.r1,col:b.c1};
+      return null;
+    }
+    function selectionText(){
+      const b=selectionBounds()||(()=>{const s=activeCellStart();return s?{r1:s.rowIndex,r2:s.rowIndex,c1:s.col,c2:s.col}:null})();
+      if(!b)return '';
+      const lines=[];
+      for(let r=b.r1;r<=b.r2;r++){
+        const row=state.rows[r];
+        const parts=[];
+        for(let c=b.c1;c<=b.c2;c++)parts.push(copyValue(row,c));
+        lines.push(parts.join('\t'));
+      }
+      return lines.join('\n');
+    }
+    function copyValue(row,col){
+      if(!row||!row.values)return '';
+      const v=row.values[col];
+      if(v===null||v===undefined)return '';
+      if(typeof v==='number')return String(v).replace('.',',');
+      return String(v);
+    }
+    function parsePasteText(text){
+      return String(text||'').replace(/\r/g,'').split('\n').filter((line,idx,arr)=>!(idx===arr.length-1&&line==='')).map(line=>line.split('\t'));
+    }
+    function cleanPastedValue(col,value){
+      let text=String(value??'').trim();
+      if(col>=COL.plan)text=text.replace(/\s+/g,'').replace(/\./g,'').replace(',','.');
+      return text;
+    }
+    function pasteTextAt(text,start){
+      if(!state.canEdit||!start)return false;
+      const grid=parsePasteText(text);
+      if(!grid.length)return false;
+      let startRow=start.rowIndex;
+      const multiRow=grid.length>1;
+      if(startRow===state.rows.length-1&&multiRow&&rowHasData(state.rows[startRow]))startRow=state.rows.length;
+      let changed=false;
+      for(let r=0;r<grid.length;r++){
+        const row=ensureRowAt(startRow+r);
+        for(let c=0;c<grid[r].length;c++){
+          const col=start.col+c;
+          if(col>=VISIBLE_COLS)break;
+          if(isCalc(col))continue;
+          row.values[col]=cleanPastedValue(col,grid[r][c]);
+          changed=true;
+        }
+        recalc(row);
+      }
+      if(!changed)return false;
+      recalcAllRows();
+      state.dirty++;
+      const endRow=startRow+grid.length-1;
+      const endCol=Math.min(VISIBLE_COLS-1,start.col+Math.max(...grid.map(r=>r.length))-1);
+      state.selection={anchor:{rowIndex:startRow,col:start.col},focus:{rowIndex:endRow,col:endCol}};
+      state.lastCell={rowIndex:startRow,col:start.col};
+      state.pasteFlash={rowIndex:startRow,col:start.col};
+      const currentRows=filteredRows();
+      const rowObj=state.rows[startRow];
+      const filteredIndex=currentRows.indexOf(rowObj);
+      if(filteredIndex>=0)state.page=Math.floor(filteredIndex/state.pageSize)+1;
+      renderAll(false);
+      saveLocal();
+      return true;
+    }
+    function onCopy(e){
+      const text=selectionText();
+      if(!text)return;
+      e.preventDefault();
+      if(e.clipboardData)e.clipboardData.setData('text/plain',text);
+    }
+    function onPaste(e){
+      if(!state.canEdit)return;
+      const start=activeCellStart();
+      if(!start)return;
+      const text=e.clipboardData?e.clipboardData.getData('text/plain'):'';
+      if(!text)return;
+      e.preventDefault();
+      pasteTextAt(text,start);
+    }
     function renderAll(rebuildFilters=true){const rows=filteredRows();if(rebuildFilters)buildFilters();renderKpis(rows);renderTable(rows);updateDirty()}
     function exportCsv(){const rows=filteredRows();const lines=[state.columns.map(c=>`"${String(c.label).replace(/"/g,'""')}"`).join(';')];rows.forEach(r=>{recalc(r);lines.push(r.values.slice(0,VISIBLE_COLS).map(v=>`"${String(formatForCsv(v)).replace(/"/g,'""')}"`).join(';'))});const blob=new Blob([lines.join('\n')],{type:'text/csv;charset=utf-8'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='raport-pm-raport.csv';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000)}
     function formatForCsv(v){return typeof v==='number'?String(v).replace('.',','):String(v??'')}
-    function bind(){els.btnSave.onclick=saveLocal;els.btnReset.onclick=resetLocal;els.btnExport.onclick=exportCsv;els.btnPrint.onclick=()=>window.print();els.btnPrev.onclick=()=>{if(state.page>1){state.page--;renderAll(false)}};els.btnNext.onclick=()=>{state.page++;renderAll(false)}}
+    function bind(){els.btnSave.onclick=saveLocal;els.btnReset.onclick=resetLocal;els.btnExport.onclick=exportCsv;els.btnPrint.onclick=()=>window.print();els.btnPrev.onclick=()=>{if(state.page>1){state.page--;renderAll(false)}};els.btnNext.onclick=()=>{state.page++;renderAll(false)};document.addEventListener('mouseup',onDocumentMouseUp);document.addEventListener('copy',onCopy);document.addEventListener('paste',onPaste)}
     async function start(){if(!await initAccess())return;loadData();bind();renderAll();}
     start();
   })();
@@ -591,3 +787,5 @@
 <!-- update: indicatori finali DEFECTE PRELUCRARI / DEFECTE FORJA / PRODUCTIVITATE OPERATOR / PRODUCTIVITATE TOTALA dupa formule Excel - 2026-06-02 -->
 
 <!-- update: material defect red bold, forging defect light color, compact wrapped columns - 2026-06-02 -->
+
+<!-- update: selectie multipla copy/paste cu randuri noi si recalcul automat - 2026-06-02 -->
