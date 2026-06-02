@@ -242,6 +242,8 @@
     .tt-operator-sheets-table th{position:sticky;top:0;z-index:2;background:#d9ebfa;font-weight:900;color:#10253f;}
     .tt-operator-sheets-table td.left{text-align:left;}
     .tt-operator-sheets-empty{padding:22px;text-align:center;color:#4d647a;font-weight:900;}
+    .tt-live-dot{display:inline-block;width:10px;height:10px;border-radius:999px;background:#18a058;margin-right:6px;box-shadow:0 0 0 3px rgba(24,160,88,.18);vertical-align:middle;}
+    .tt-live-muted{color:#4d647a;font-weight:800;font-size:12px;}
 
     .tt-pdf-export-root{
       background:#fff;color:#000;font-family:Calibri,Arial,sans-serif;
@@ -633,6 +635,7 @@
 <button class="btn secondary hidden" id="btnTempSettings" type="button">Setare temperaturi</button>
 <button class="btn secondary hidden" id="btnTrackingTT" type="button">Urmărire temperaturi TT</button>
 <button class="btn secondary hidden" id="btnOperatorSheets" type="button">Fișe operatori</button>
+<button class="btn secondary hidden" id="btnOperatorLive" type="button">Operatori live</button>
 <button class="btn secondary hidden" id="btnBackToAdminSheet" type="button">Înapoi la fișa admin</button>
 <button class="btn secondary hidden" id="btnSaveAdminChanges" type="button">Salvează modificările</button>
 <button class="btn secondary hidden" id="btnBack" type="button" aria-hidden="true" tabindex="-1">Înapoi la Dashboard</button>
@@ -1047,6 +1050,29 @@
 </div>
 </div>
 </div>
+<div class="modal-backdrop" id="operatorLiveModal">
+<div class="modal tt-operator-sheets-modal">
+<div class="modal-head">
+<h2>Operatori T.T. live</h2>
+<div class="modal-subtitle">Adminul vede operatorii activi și fișa completată în acel moment.</div>
+</div>
+<div class="modal-body">
+<div class="tt-operator-sheets-tools">
+<button class="btn secondary" id="btnRefreshOperatorLive" type="button">Reîncarcă live</button>
+<span class="chip warn" id="operatorLiveMsg">Aștept operatori online...</span>
+</div>
+<div class="tt-operator-sheets-wrap">
+<table class="tt-operator-sheets-table">
+<thead><tr><th>Status</th><th>Operator</th><th>Data</th><th>Schimb</th><th>Reper 1</th><th>Reper 2</th><th>Reper 3</th><th>Reper 4</th><th>Actualizat</th><th>Acțiune</th></tr></thead>
+<tbody id="operatorLiveBody"><tr><td colspan="10" class="tt-operator-sheets-empty">Nu sunt operatori online.</td></tr></tbody>
+</table>
+</div>
+</div>
+<div class="modal-footer">
+<button class="btn secondary" id="btnCloseOperatorLive" type="button">Închide</button>
+</div>
+</div>
+</div>
 <script>
     (function(){
       'use strict';
@@ -1062,6 +1088,12 @@
       var TRACKING_SESSION_KEY = STORAGE_KEY + ':tracking-session';
       var OPERATOR_SHEETS_DOC_KEY = 'tratament-termic:fise-operatori-autocontrol-tt';
       var OPERATOR_SHEETS_LOCAL_KEY = 'kad_' + OPERATOR_SHEETS_DOC_KEY;
+      var OPERATOR_LIVE_DOC_KEY = 'tratament-termic:fise-operatori-live';
+      var OPERATOR_LIVE_DOC_PREFIX = 'tratament-termic:fise-operatori-live:';
+      var OPERATOR_LIVE_TTL_MS = 10 * 60 * 1000;
+      var OPERATOR_LIVE_PUBLISH_INTERVAL_MS = 15000;
+      var OPERATOR_LIVE_CLOUD_MIN_MS = 5000;
+      var OPERATOR_LIVE_CLOUD_ENABLED = true;
       var TT_REPORT_DOC_KEY = 'tratament-termic-rapoarte';
       var TT_REPORT_LOCAL_KEY = 'kad_tratament_termic_rapoarte_v2';
       var TT_PROBLEME_DOC_KEY = 'tratament-termic-probleme';
@@ -1082,7 +1114,7 @@
       var REPER2_PRESET_DELAYED_KEYS = ['timp_scufundare','revenire_z1','revenire_z2','bazin_racire'];
       var REPER2_DELAYED_PRESET_ID = 'reper2-delayed';
       var reper2PresetDelayTimer = null;
-      var state = { canEdit:false, access:null, client:null, session:null, user:null, role:'viewer', repere:[], reperMap:new Map(), magnafluxSheets:[], magnafluxOperators:[], pinConfig:[], activeOperator:null, pinUnlocked:false, reper2PresetAfter:null, reper2PresetStartedAt:null, reper2PresetReper:'', currentOperatorSheetId:null, adminSheetSnapshot:null, isViewingOperatorSheet:false, trackingDirty:false, loadingOperatorSheet:false, suppressTrackingSave:false, reportDirty:false, reportSavedForSheetId:'' };
+      var state = { canEdit:false, access:null, client:null, session:null, user:null, role:'viewer', repere:[], reperMap:new Map(), magnafluxSheets:[], magnafluxOperators:[], pinConfig:[], activeOperator:null, pinUnlocked:false, reper2PresetAfter:null, reper2PresetStartedAt:null, reper2PresetReper:'', currentOperatorSheetId:null, adminSheetSnapshot:null, isViewingOperatorSheet:false, trackingDirty:false, loadingOperatorSheet:false, suppressTrackingSave:false, reportDirty:false, reportSavedForSheetId:'', operatorLiveEntries:[], operatorLiveChannel:null, operatorLivePresenceReady:false, operatorLivePublishTimer:null, operatorLivePublishInterval:null, operatorLiveAdminPoll:null, operatorLiveCloudLastSaveMs:0, operatorLiveSessionId:'', operatorLiveViewingId:'', operatorLiveReadonly:false };
       var els = {};
 
       function qs(id){ return document.getElementById(id); }
@@ -1095,7 +1127,7 @@
           try{ setTimeout(enforceTratamentOperatorNoDashboard, 0); }catch(_){ }
         }
       }
-      function canEdit(){ return state.canEdit === true; }
+      function canEdit(){ return state.canEdit === true && state.operatorLiveReadonly !== true; }
       function isAdminManualSaveMode(){ return isAdminAccount(); }
       function markAdminManualDirty(message){
         if(!isAdminManualSaveMode() || state.loadingOperatorSheet || state.suppressTrackingSave || state.adminManualSaveInProgress) return false;
@@ -2802,7 +2834,9 @@
       }
       async function returnToAdminSheet(){
         if(!isAdminAccount()) return;
-        if(state.isViewingOperatorSheet && state.adminManualDirty && !confirmDiscardAdminUnsaved()) return;
+        if(state.isViewingOperatorSheet && state.adminManualDirty && !state.operatorLiveReadonly && !confirmDiscardAdminUnsaved()) return;
+        state.operatorLiveViewingId = '';
+        state.operatorLiveReadonly = false;
         restoreAdminSheetSnapshot();
         applyReadonlyMode();
       }
@@ -2955,6 +2989,7 @@
           return;
         }
         var data = saveOperatorSheetLocalNow();
+        scheduleOperatorLivePublish();
         if(!data || !data.operator || !sheetHasContent(data)) return;
         if(operatorSheetSaveTimer) clearTimeout(operatorSheetSaveTimer);
         operatorSheetSaveTimer = setTimeout(function(){
@@ -2975,6 +3010,58 @@
         });
         matches.sort(function(a,b){ return String(b.updated_at || '').localeCompare(String(a.updated_at || '')); });
         return matches[0] || null;
+      }
+      function findLatestOperatorSheetFor(operator, dateIso){
+        operator = norm(operator);
+        dateIso = String(dateIso || '').slice(0,10);
+        var sheets = (OPERATOR_SHEETS_CACHE || []).filter(function(sheet){
+          if(norm(sheet && sheet.operator) !== operator) return false;
+          if(dateIso && /^\d{4}-\d{2}-\d{2}$/.test(dateIso)) return String(sheet.date_iso || '').slice(0,10) === dateIso;
+          return true;
+        });
+        sheets.sort(function(a,b){ return String(b.updated_at || '').localeCompare(String(a.updated_at || '')); });
+        return sheets[0] || null;
+      }
+      async function loadBestOperatorSheetFor(operator, dateIso, shift){
+        dateIso = String(dateIso || '').slice(0,10);
+        shift = String(shift || '').trim();
+        await loadOperatorSheets(true);
+        var found = null;
+        if(/^\d{4}-\d{2}-\d{2}$/.test(dateIso)){
+          found = findOperatorSheetFor(operator, dateIso, shift) || findLatestOperatorSheetFor(operator, dateIso);
+        }
+        if(!found) found = findLatestOperatorSheetFor(operator, '');
+        if(found){
+          applySheetData(found);
+          state.lastLoadedDateIso = String(found.date_iso || '').slice(0,10);
+          state.lastLoadedShift = String(found.shift || '').trim();
+          setChip(els.modeChip, 'Fișă reluată automat: ' + operator + (found.shift ? ' · ' + shiftInfo(found.shift).label : ''), 'ok');
+          return true;
+        }
+        var localDraft = getDraft();
+        if(localDraft && sheetHasContent(localDraft)){
+          applySheetData(localDraft);
+          state.lastLoadedDateIso = String(localDraft.date_iso || (localDraft.fields && localDraft.fields.dateIso) || '').slice(0,10);
+          state.lastLoadedShift = String(localDraft.shift || (localDraft.fields && localDraft.fields.shift) || '').trim();
+          setChip(els.modeChip, 'Fișă reluată din autosalvarea locală: ' + operator, 'ok');
+          return true;
+        }
+        if(/^\d{4}-\d{2}-\d{2}$/.test(dateIso)){
+          state.currentOperatorSheetId = buildOperatorSheetId(operator, dateIso, shift);
+          clearSheetContentNoConfirm(true);
+          setWorkDateIso(dateIso);
+          if(els.ttShift) els.ttShift.value = shift;
+          if(els.ttOperatorTT) els.ttOperatorTT.value = operator;
+          state.lastLoadedDateIso = dateIso;
+          state.lastLoadedShift = shift;
+          updateReportAutoFields();
+          setChip(els.modeChip, 'Fișă nouă: ' + operator + (shift ? ' · ' + shiftInfo(shift).label : ''), 'ok');
+        } else {
+          state.currentOperatorSheetId = null;
+          if(els.ttOperatorTT) els.ttOperatorTT.value = operator;
+          setChip(els.modeChip, 'Completează manual DATA fișei', 'warn');
+        }
+        return false;
       }
       function clearSheetContentNoConfirm(preserveOperator){
         document.querySelectorAll('.editable-cell[data-draft-cell]').forEach(function(td){ td.textContent = ''; td.classList.remove('tt-out-tolerance'); });
@@ -3438,13 +3525,16 @@
       function renderOperatorSheetsList(){
         if(!els.operatorSheetsBody) return;
         var q = norm(els.operatorSheetsSearch ? els.operatorSheetsSearch.value : '');
+        var ownOnly = !isAdminAccount() && isTratamentOperatorUiAccount();
+        var ownOperator = norm(activeSheetOperator() || state.activeOperator || '');
         var sheets = (OPERATOR_SHEETS_CACHE || []).filter(function(sheet){
+          if(ownOnly && norm(sheet && sheet.operator) !== ownOperator) return false;
           if(!q) return true;
           var pack = [sheet.operator, sheet.date_text, sheet.date_iso, sheet.shift, sheet.reper1, sheet.reper2, sheet.reper3, sheet.reper4, sheet.codCat1, sheet.codCat2, sheet.codCat3, sheet.codCat4].join(' ');
           return norm(pack).indexOf(q) >= 0;
         });
         if(!sheets.length){
-          els.operatorSheetsBody.innerHTML = '<tr><td colspan="11" class="tt-operator-sheets-empty">Nu există fișe salvate pentru filtrul selectat.</td></tr>';
+          els.operatorSheetsBody.innerHTML = '<tr><td colspan="11" class="tt-operator-sheets-empty">' + (ownOnly ? 'Nu există fișe salvate pentru operatorul curent.' : 'Nu există fișe salvate pentru filtrul selectat.') + '</td></tr>';
           setChip(els.operatorSheetsMsg, '0 fișe', 'warn');
           return;
         }
@@ -3460,7 +3550,7 @@
             '<td>' + escHtml(String(sheet.updated_at || '').replace('T',' ').slice(0,16)) + '</td>' +
             '<td><button class="btn secondary" type="button" data-open-operator-sheet="' + escHtml(sheet.id || '') + '">Deschide</button></td>' +
             '<td><button class="btn secondary" type="button" data-export-operator-sheet-pdf="' + escHtml(sheet.id || '') + '">PDF</button></td>' +
-            '<td><button class="btn danger" type="button" data-delete-operator-sheet="' + escHtml(sheet.id || '') + '">Șterge</button></td>' +
+            '<td>' + (isAdminAccount() ? '<button class="btn danger" type="button" data-delete-operator-sheet="' + escHtml(sheet.id || '') + '">Șterge</button>' : '') + '</td>' +
           '</tr>';
         }).join('');
         els.operatorSheetsBody.querySelectorAll('[data-open-operator-sheet]').forEach(function(btn){
@@ -3468,14 +3558,16 @@
             var id = btn.getAttribute('data-open-operator-sheet');
             var sheet = (OPERATOR_SHEETS_CACHE || []).find(function(s){ return String(s.id || '') === String(id || ''); });
             if(sheet){
-              rememberAdminSheetBeforeOperatorOpen();
+              if(isAdminAccount()) rememberAdminSheetBeforeOperatorOpen();
+              state.operatorLiveViewingId = '';
+              state.operatorLiveReadonly = false;
               applySheetData(sheet);
               state.isViewingOperatorSheet = true;
               updateBackToAdminSheetButton();
               if(els.operatorSheetsModal) els.operatorSheetsModal.classList.remove('show');
               applyReadonlyMode();
               state.trackingDirty = false;
-              setChip(els.modeChip, 'Vizualizare fișă: ' + (sheet.operator || ''), 'ok');
+              setChip(els.modeChip, (isAdminAccount() ? 'Vizualizare fișă: ' : 'Fișa ta încărcată: ') + (sheet.operator || ''), 'ok');
             }
           });
         });
@@ -3501,11 +3593,230 @@
         setChip(els.operatorSheetsMsg, sheets.length + ' fișe', 'ok');
       }
       async function openOperatorSheets(){
-        if(!isAdminAccount()) return;
+        if(!isAdminAccount() && !(isTratamentOperatorUiAccount() && state.pinUnlocked && activeSheetOperator())) return;
         setChip(els.operatorSheetsMsg, 'Se încarcă fișele...', 'warn');
         await loadOperatorSheets(true);
         renderOperatorSheetsList();
         if(els.operatorSheetsModal) els.operatorSheetsModal.classList.add('show');
+      }
+
+      function ensureOperatorLiveSessionId(){
+        if(state.operatorLiveSessionId) return state.operatorLiveSessionId;
+        var key = STORAGE_KEY + ':operator-live-session';
+        try{
+          var old = sessionStorage.getItem(key);
+          if(old){ state.operatorLiveSessionId = old; return old; }
+          var fresh = uuid();
+          sessionStorage.setItem(key, fresh);
+          state.operatorLiveSessionId = fresh;
+          return fresh;
+        }catch(_){
+          state.operatorLiveSessionId = state.operatorLiveSessionId || uuid();
+          return state.operatorLiveSessionId;
+        }
+      }
+      function operatorLivePresenceKey(){
+        return String(currentEmail() || 'anon') + ':' + ensureOperatorLiveSessionId();
+      }
+      function operatorLiveDocKeyForSession(sessionId){
+        return OPERATOR_LIVE_DOC_PREFIX + String(sessionId || ensureOperatorLiveSessionId()).replace(/[^a-zA-Z0-9:_@.-]/g, '_');
+      }
+      function buildOperatorLiveEntry(now){
+        var sheet = collectCurrentSheetData();
+        return {
+          id:ensureOperatorLiveSessionId(),
+          email:currentEmail(),
+          operator:activeSheetOperator() || state.activeOperator || sheet.operator || '',
+          updated_at:now || new Date().toISOString(),
+          page_key:PAGE_KEY,
+          sheet:sheet
+        };
+      }
+      function isOperatorLiveOnline(entry){
+        if(!entry || entry.page_key !== PAGE_KEY) return false;
+        var ms = Date.parse(String(entry.updated_at || ''));
+        return Number.isFinite(ms) && Date.now() - ms <= OPERATOR_LIVE_TTL_MS;
+      }
+      function readOperatorLivePresenceEntries(){
+        if(!state.operatorLiveChannel || typeof state.operatorLiveChannel.presenceState !== 'function') return [];
+        var presence = state.operatorLiveChannel.presenceState() || {};
+        var out = [];
+        Object.keys(presence).forEach(function(key){
+          var list = Array.isArray(presence[key]) ? presence[key] : [];
+          list.forEach(function(item){
+            var entry = item && item.entry ? item.entry : item;
+            if(entry && entry.id && entry.page_key === PAGE_KEY) out.push(entry);
+          });
+        });
+        return out;
+      }
+      function mergeOperatorLiveEntries(){
+        var map = new Map();
+        (state.operatorLiveEntries || []).forEach(function(entry){ if(entry && entry.id) map.set(entry.id, entry); });
+        readOperatorLivePresenceEntries().forEach(function(entry){ if(entry && entry.id) map.set(entry.id, entry); });
+        state.operatorLiveEntries = Array.from(map.values()).filter(isOperatorLiveOnline).sort(function(a,b){ return String(a.operator || '').localeCompare(String(b.operator || ''), 'ro'); });
+        if(state.operatorLiveViewingId){
+          var live = state.operatorLiveEntries.find(function(entry){ return String(entry.id || '') === String(state.operatorLiveViewingId || ''); });
+          if(live && live.sheet){
+            applySheetData(live.sheet);
+            state.operatorLiveReadonly = true;
+            state.isViewingOperatorSheet = true;
+            applyReadonlyMode();
+            setChip(els.modeChip, 'Vizualizare live: ' + (live.operator || live.sheet.operator || ''), 'ok');
+          }
+        }
+        renderOperatorLiveList();
+      }
+      async function ensureOperatorLiveChannel(){
+        if(!state.client || state.operatorLiveChannel) return state.operatorLiveChannel;
+        try{
+          state.operatorLiveChannel = state.client.channel('kad-tratament-operatori-live', { config:{ presence:{ key:operatorLivePresenceKey() } } });
+          ['sync','join','leave'].forEach(function(evt){
+            state.operatorLiveChannel.on('presence', { event:evt }, function(){ mergeOperatorLiveEntries(); });
+          });
+          state.operatorLiveChannel.subscribe(async function(status){
+            if(status === 'SUBSCRIBED'){
+              state.operatorLivePresenceReady = true;
+              if(!isAdminAccount()) await updateOperatorLivePresence(true);
+              if(isAdminAccount()) mergeOperatorLiveEntries();
+            }
+          });
+        }catch(error){
+          console.warn('Realtime live TT indisponibil.', error);
+        }
+        return state.operatorLiveChannel;
+      }
+      async function updateOperatorLivePresence(force){
+        if(isAdminAccount() || !state.canEdit || !state.client || !state.user) return;
+        if(!force && !state.activeOperator && shouldRequireOperatorPin()) return;
+        var channel = await ensureOperatorLiveChannel();
+        if(!channel || !state.operatorLivePresenceReady || typeof channel.track !== 'function') return;
+        try{ await channel.track({ entry:buildOperatorLiveEntry(new Date().toISOString()) }); }catch(error){ console.warn('Nu am putut publica live TT prin realtime.', error); }
+      }
+      async function upsertOperatorLiveAggregate(entry){
+        if(!OPERATOR_LIVE_CLOUD_ENABLED) return;
+        await upsertDoc(operatorLiveDocKeyForSession(entry.id), { page_key:PAGE_KEY, session_id:entry.id, entry:entry, updated_at:entry.updated_at });
+        try{
+          var doc = await fetchDoc(OPERATOR_LIVE_DOC_KEY) || {};
+          var sessions = doc && doc.sessions && typeof doc.sessions === 'object' ? doc.sessions : {};
+          var cutoff = Date.now() - OPERATOR_LIVE_TTL_MS;
+          Object.keys(sessions).forEach(function(k){
+            var ms = Date.parse(String(sessions[k] && sessions[k].updated_at || ''));
+            if(!Number.isFinite(ms) || ms < cutoff) delete sessions[k];
+          });
+          sessions[entry.id] = entry;
+          await upsertDoc(OPERATOR_LIVE_DOC_KEY, { page_key:PAGE_KEY, sessions:sessions, updated_at:entry.updated_at });
+        }catch(error){ console.warn('Statusul live TT personal este salvat, dar registrul comun nu s-a actualizat.', error); }
+      }
+      async function publishOperatorLivePresence(force){
+        if(isAdminAccount() || !state.canEdit || !state.client || !state.user) return;
+        if(!force && !state.activeOperator && shouldRequireOperatorPin()) return;
+        await updateOperatorLivePresence(!!force);
+        if(!OPERATOR_LIVE_CLOUD_ENABLED) return;
+        var nowMs = Date.now();
+        if(!force && state.operatorLiveCloudLastSaveMs && nowMs - state.operatorLiveCloudLastSaveMs < OPERATOR_LIVE_CLOUD_MIN_MS) return;
+        var entry = buildOperatorLiveEntry(new Date().toISOString());
+        try{
+          await upsertOperatorLiveAggregate(entry);
+          state.operatorLiveCloudLastSaveMs = nowMs;
+        }catch(error){ console.warn('Nu am putut actualiza live TT în cloud.', error); }
+      }
+      function scheduleOperatorLivePublish(){
+        if(isAdminAccount() || !state.canEdit) return;
+        if(state.operatorLivePublishTimer) clearTimeout(state.operatorLivePublishTimer);
+        state.operatorLivePublishTimer = setTimeout(function(){ publishOperatorLivePresence(false); }, 700);
+      }
+      function startOperatorLivePresence(){
+        if(isAdminAccount() || !state.canEdit) return;
+        ensureOperatorLiveChannel();
+        if(state.operatorLivePublishInterval) clearInterval(state.operatorLivePublishInterval);
+        state.operatorLivePublishInterval = setInterval(function(){ publishOperatorLivePresence(false); }, OPERATOR_LIVE_PUBLISH_INTERVAL_MS);
+        setTimeout(function(){ publishOperatorLivePresence(true); }, 800);
+        scheduleOperatorLivePublish();
+      }
+      async function removeOperatorLivePresence(){
+        try{
+          if(state.operatorLiveChannel && typeof state.operatorLiveChannel.untrack === 'function') await state.operatorLiveChannel.untrack();
+        }catch(error){ console.warn('Nu am putut opri realtime TT.', error); }
+        if(!OPERATOR_LIVE_CLOUD_ENABLED || isAdminAccount() || !state.client || !state.operatorLiveSessionId) return;
+        try{ await upsertDoc(operatorLiveDocKeyForSession(state.operatorLiveSessionId), { page_key:PAGE_KEY, session_id:state.operatorLiveSessionId, entry:null, offline:true, updated_at:new Date().toISOString() }); }catch(error){ console.warn('Nu am putut marca offline live TT.', error); }
+        try{
+          var doc = await fetchDoc(OPERATOR_LIVE_DOC_KEY) || {};
+          var sessions = doc && doc.sessions && typeof doc.sessions === 'object' ? doc.sessions : {};
+          delete sessions[state.operatorLiveSessionId];
+          await upsertDoc(OPERATOR_LIVE_DOC_KEY, { page_key:PAGE_KEY, sessions:sessions, updated_at:new Date().toISOString() });
+        }catch(error){ console.warn('Nu am putut șterge statusul live TT.', error); }
+      }
+      async function loadOperatorLiveEntries(){
+        if(!isAdminAccount()) return;
+        try{
+          var map = new Map();
+          if(OPERATOR_LIVE_CLOUD_ENABLED){
+            var doc = await fetchDoc(OPERATOR_LIVE_DOC_KEY) || {};
+            var sessions = doc && doc.sessions && typeof doc.sessions === 'object' ? doc.sessions : {};
+            Object.keys(sessions).forEach(function(k){ var entry = sessions[k]; if(entry && entry.id) map.set(entry.id, entry); });
+          }
+          readOperatorLivePresenceEntries().forEach(function(entry){ if(entry && entry.id) map.set(entry.id, entry); });
+          state.operatorLiveEntries = Array.from(map.values()).filter(isOperatorLiveOnline).sort(function(a,b){ return String(a.operator || '').localeCompare(String(b.operator || ''), 'ro'); });
+          renderOperatorLiveList();
+        }catch(error){
+          console.warn('Nu am putut încărca operatorii TT live.', error);
+          if(els.operatorLiveBody) els.operatorLiveBody.innerHTML = '<tr><td colspan="10" class="tt-operator-sheets-empty">Nu am putut încărca operatorii live.</td></tr>';
+          setChip(els.operatorLiveMsg, 'Eroare live', 'bad');
+        }
+      }
+      function renderOperatorLiveList(){
+        if(!els.operatorLiveBody) return;
+        var rows = state.operatorLiveEntries || [];
+        if(!rows.length){
+          els.operatorLiveBody.innerHTML = '<tr><td colspan="10" class="tt-operator-sheets-empty">Nu sunt operatori online în acest moment.</td></tr>';
+          setChip(els.operatorLiveMsg, '0 operatori online', 'warn');
+          return;
+        }
+        els.operatorLiveBody.innerHTML = rows.map(function(entry){
+          var sheet = entry.sheet || {};
+          var updated = entry.updated_at ? new Date(entry.updated_at).toLocaleString('ro-RO') : '';
+          return '<tr data-live-id="' + escHtml(entry.id || '') + '">' +
+            '<td><span class="tt-live-dot"></span>Online</td>' +
+            '<td class="left">' + escHtml(entry.operator || sheet.operator || '') + '</td>' +
+            '<td>' + escHtml(sheet.date_text || dateRo(sheet.date_iso)) + '</td>' +
+            '<td>' + escHtml(sheet.shift ? shiftInfo(sheet.shift).label : '') + '</td>' +
+            '<td class="left">' + escHtml(sheet.reper1 || '') + '</td>' +
+            '<td class="left">' + escHtml(sheet.reper2 || '') + '</td>' +
+            '<td class="left">' + escHtml(sheet.reper3 || '') + '</td>' +
+            '<td class="left">' + escHtml(sheet.reper4 || '') + '</td>' +
+            '<td>' + escHtml(updated) + '</td>' +
+            '<td><button class="btn secondary" type="button" data-open-live-sheet="' + escHtml(entry.id || '') + '">Vezi fișa</button></td>' +
+          '</tr>';
+        }).join('');
+        els.operatorLiveBody.querySelectorAll('[data-open-live-sheet]').forEach(function(btn){
+          btn.addEventListener('click', function(){ openOperatorLiveSheet(btn.getAttribute('data-open-live-sheet')); });
+        });
+        setChip(els.operatorLiveMsg, rows.length + ' operatori online', 'ok');
+      }
+      function openOperatorLiveSheet(liveId){
+        if(!isAdminAccount()) return;
+        var entry = (state.operatorLiveEntries || []).find(function(item){ return String(item.id || '') === String(liveId || ''); });
+        if(!entry || !entry.sheet){ setChip(els.operatorLiveMsg, 'Fișa live nu mai este disponibilă.', 'bad'); return; }
+        rememberAdminSheetBeforeOperatorOpen();
+        state.operatorLiveViewingId = String(entry.id || '');
+        state.operatorLiveReadonly = true;
+        applySheetData(entry.sheet);
+        state.isViewingOperatorSheet = true;
+        updateBackToAdminSheetButton();
+        if(els.operatorLiveModal) els.operatorLiveModal.classList.remove('show');
+        applyReadonlyMode();
+        setChip(els.modeChip, 'Vizualizare live: ' + (entry.operator || entry.sheet.operator || ''), 'ok');
+      }
+      async function openOperatorLive(){
+        if(!isAdminAccount()) return;
+        setChip(els.operatorLiveMsg, 'Se încarcă operatorii live...', 'warn');
+        await ensureOperatorLiveChannel();
+        if(els.operatorLiveModal) els.operatorLiveModal.classList.add('show');
+        mergeOperatorLiveEntries();
+        await loadOperatorLiveEntries();
+        if(state.operatorLiveAdminPoll) clearInterval(state.operatorLiveAdminPoll);
+        state.operatorLiveAdminPoll = setInterval(function(){ if(els.operatorLiveModal && els.operatorLiveModal.classList.contains('show')) loadOperatorLiveEntries(); }, 60000);
       }
 
       function parseControlLimit(key, token){
@@ -4039,16 +4350,13 @@
           if(els.ttShift) els.ttShift.value = unlockedShift;
         }
         var unlockedDateIso = currentWorkDateIso();
-        if(unlockedDateIso){
-          await loadOperatorSheetFor(found.operator, unlockedDateIso, unlockedShift);
-        } else {
-          state.currentOperatorSheetId = null;
-          setChip(els.modeChip, 'Completează manual DATA fișei', 'warn');
-        }
+        await loadBestOperatorSheetFor(found.operator, unlockedDateIso, unlockedShift);
         if(els.ttOperatorTT) els.ttOperatorTT.value = found.operator;
         saveDraft();
+        startOperatorLivePresence();
         state.trackingDirty = false;
         setChip(els.roleChip, 'Cont: ' + OPERATOR_TRATAMENT_ROLE_LABEL + ' · ' + found.operator, 'ok');
+        applyTratamentOperatorUi();
         enforceTratamentOperatorNoDashboard();
       }
       function applyTratamentOperatorUi(){
@@ -4062,7 +4370,11 @@
           if(els.btnChangeOperator) els.btnChangeOperator.classList.remove('hidden');
           if(els.btnTempSettings) els.btnTempSettings.classList.add('hidden');
           if(els.btnTrackingTT) els.btnTrackingTT.classList.add('hidden');
-          if(els.btnOperatorSheets) els.btnOperatorSheets.classList.add('hidden');
+          if(els.btnOperatorSheets){
+            els.btnOperatorSheets.textContent = 'Fișa mea';
+            els.btnOperatorSheets.classList.toggle('hidden', !state.pinUnlocked);
+          }
+          if(els.btnOperatorLive) els.btnOperatorLive.classList.add('hidden');
           if(els.btnSaveAdminChanges) els.btnSaveAdminChanges.classList.add('hidden');
         } else if(isAdminAccount()){
           if(els.btnBack) els.btnBack.classList.add('hidden');
@@ -4071,7 +4383,8 @@
           if(els.btnChangeOperator) els.btnChangeOperator.classList.add('hidden');
           if(els.btnTempSettings) els.btnTempSettings.classList.remove('hidden');
           if(els.btnTrackingTT) els.btnTrackingTT.classList.remove('hidden');
-          if(els.btnOperatorSheets) els.btnOperatorSheets.classList.remove('hidden');
+          if(els.btnOperatorSheets){ els.btnOperatorSheets.textContent = 'Fișe operatori'; els.btnOperatorSheets.classList.remove('hidden'); }
+          if(els.btnOperatorLive) els.btnOperatorLive.classList.remove('hidden');
           if(els.btnSaveAdminChanges) els.btnSaveAdminChanges.classList.remove('hidden');
         } else {
           if(els.btnBack) els.btnBack.classList.add('hidden');
@@ -4081,6 +4394,7 @@
           if(els.btnTempSettings) els.btnTempSettings.classList.add('hidden');
           if(els.btnTrackingTT) els.btnTrackingTT.classList.add('hidden');
           if(els.btnOperatorSheets) els.btnOperatorSheets.classList.add('hidden');
+          if(els.btnOperatorLive) els.btnOperatorLive.classList.add('hidden');
           if(els.btnSaveAdminChanges) els.btnSaveAdminChanges.classList.add('hidden');
         }
         updateBackToAdminSheetButton();
@@ -4586,6 +4900,7 @@
       }
 
       async function logoutUser(){
+        try{ await removeOperatorLivePresence(); }catch(error){ console.warn(error); }
         try{
           var client = getSupabaseClient();
           if(client && client.auth && typeof client.auth.signOut === 'function'){
@@ -5569,6 +5884,7 @@
         if(els.btnTempSettings) els.btnTempSettings.addEventListener('click', function(){ openTempSettings().catch(function(err){ alert('Nu am putut deschide setarea temperaturilor: ' + (err && err.message || err)); }); });
         if(els.btnTrackingTT) els.btnTrackingTT.addEventListener('click', function(){ window.location.href = 'urmarire-temperaturi-tt.html'; });
         if(els.btnOperatorSheets) els.btnOperatorSheets.addEventListener('click', function(){ openOperatorSheets().catch(function(err){ alert('Nu am putut deschide fișele operatorilor: ' + (err && err.message || err)); }); });
+        if(els.btnOperatorLive) els.btnOperatorLive.addEventListener('click', function(){ openOperatorLive().catch(function(err){ alert('Nu am putut deschide operatorii live: ' + (err && err.message || err)); }); });
         if(els.btnBackToAdminSheet) els.btnBackToAdminSheet.addEventListener('click', function(){ returnToAdminSheet().catch(function(err){ alert('Nu am putut reveni la fișa admin: ' + (err && err.message || err)); }); });
         if(els.btnSaveAdminChanges) els.btnSaveAdminChanges.addEventListener('click', async function(){
           try{
@@ -5594,6 +5910,8 @@
         if(els.btnClosePinAdmin) els.btnClosePinAdmin.addEventListener('click', function(){ if(els.pinAdminModal) els.pinAdminModal.classList.remove('show'); });
         if(els.btnCloseTempSettings) els.btnCloseTempSettings.addEventListener('click', function(){ if(els.tempSettingsModal) els.tempSettingsModal.classList.remove('show'); });
         if(els.btnCloseOperatorSheets) els.btnCloseOperatorSheets.addEventListener('click', function(){ if(els.operatorSheetsModal) els.operatorSheetsModal.classList.remove('show'); });
+        if(els.btnCloseOperatorLive) els.btnCloseOperatorLive.addEventListener('click', function(){ if(els.operatorLiveModal) els.operatorLiveModal.classList.remove('show'); });
+        if(els.btnRefreshOperatorLive) els.btnRefreshOperatorLive.addEventListener('click', function(){ loadOperatorLiveEntries(); });
         if(els.btnRefreshOperatorSheets) els.btnRefreshOperatorSheets.addEventListener('click', function(){ loadOperatorSheets(true).then(renderOperatorSheetsList).catch(function(err){ setChip(els.operatorSheetsMsg, 'Eroare la reîncărcare', 'bad'); console.warn(err); }); });
         if(els.operatorSheetsSearch) els.operatorSheetsSearch.addEventListener('input', renderOperatorSheetsList);
         if(els.btnAddTempRow) els.btnAddTempRow.addEventListener('click', function(){ addTempSettingsRow(''); });
@@ -5606,6 +5924,8 @@
           if(!validateCantitateProdusaBeforeOperatorChange()) return;
           if(!validateReportSavedBeforeOperatorChange()) return;
           try{ await saveOperatorSheetCloudNow(); }catch(error){ console.warn(error); }
+          try{ await publishOperatorLivePresence(true); }catch(error){ console.warn(error); }
+          try{ await removeOperatorLivePresence(); }catch(error){ console.warn(error); }
           try{ await saveTrackingNow(); state.trackingDirty = false; }catch(error){ console.warn(error); }
           clearSheetContentNoConfirm(false);
           resetWorkDateToToday();
@@ -5619,8 +5939,8 @@
           showPinModal();
         });
         window.addEventListener('resize', fitSheet);
-        window.addEventListener('beforeunload', function(){ if(!isAdminManualSaveMode()){ try{ saveOperatorSheetLocalNow(); }catch(_){ } } });
-        document.addEventListener('visibilitychange', function(){ if(document.visibilityState === 'hidden' && !isAdminManualSaveMode()){ try{ saveOperatorSheetLocalNow(); }catch(_){ } } });
+        window.addEventListener('beforeunload', function(){ if(!isAdminManualSaveMode()){ try{ saveOperatorSheetLocalNow(); publishOperatorLivePresence(true); }catch(_){ } } });
+        document.addEventListener('visibilitychange', function(){ if(document.visibilityState === 'hidden' && !isAdminManualSaveMode()){ try{ saveOperatorSheetLocalNow(); publishOperatorLivePresence(true); }catch(_){ } } });
       }
       async function init(){
         els.roleChip = qs('roleChip');
@@ -5651,6 +5971,7 @@
         els.btnTempSettings = qs('btnTempSettings');
         els.btnTrackingTT = qs('btnTrackingTT');
         els.btnOperatorSheets = qs('btnOperatorSheets');
+        els.btnOperatorLive = qs('btnOperatorLive');
         els.btnBackToAdminSheet = qs('btnBackToAdminSheet');
         els.btnSaveAdminChanges = qs('btnSaveAdminChanges');
         els.btnChangeOperator = qs('btnChangeOperator');
@@ -5678,6 +5999,11 @@
         els.btnRefreshOperatorSheets = qs('btnRefreshOperatorSheets');
         els.btnExportOperatorSheetsPdf = qs('btnExportOperatorSheetsPdf');
         els.btnCloseOperatorSheets = qs('btnCloseOperatorSheets');
+        els.operatorLiveModal = qs('operatorLiveModal');
+        els.operatorLiveBody = qs('operatorLiveBody');
+        els.operatorLiveMsg = qs('operatorLiveMsg');
+        els.btnRefreshOperatorLive = qs('btnRefreshOperatorLive');
+        els.btnCloseOperatorLive = qs('btnCloseOperatorLive');
 
         els.ttReportStatus = qs('ttReportStatus');
         els.ttReportSlot = qs('ttReportSlot');
@@ -5769,7 +6095,7 @@
         stabilizeTratamentTopPosition();
         hideKadMenu();
         enforceTratamentOperatorNoDashboard();
-        if(canEdit() && !isAdminManualSaveMode()){ scheduleOperatorSheetSave(); }
+        if(canEdit() && !isAdminManualSaveMode()){ scheduleOperatorSheetSave(); startOperatorLivePresence(); }
         if(isAdminManualSaveMode()) setAdminManualSaveMessage();
         if(shouldRequireOperatorPin() && !state.pinUnlocked) showPinModal();
       }
