@@ -1,18 +1,16 @@
 /*
-  K.A.D PWA service worker – safe online mode
-  - nu salvează HTML, Supabase, PDF-uri sau date operaționale în cache;
-  - curăță cache-urile vechi la fiecare update;
-  - previne încărcarea unei versiuni K.A.D depășite dintr-un service worker vechi.
+  K.A.D PWA service worker
+  - păstrează aplicația instalabilă pe telefon și desktop;
+  - nu face cache agresiv pentru HTML / Supabase / date operaționale;
+  - curăță eventualele cache-uri K.A.D vechi, ca să nu rămână pagini sau date depășite.
 */
 (function(){
   'use strict';
 
-  var SW_VERSION = 'kad-sw-20260602-storage-guard-v1';
+  var KAD_CACHE_PREFIX = 'kad-';
 
   self.addEventListener('install', function(event){
-    event.waitUntil((async function(){
-      try { await self.skipWaiting(); } catch (_) {}
-    })());
+    self.skipWaiting();
   });
 
   self.addEventListener('activate', function(event){
@@ -20,7 +18,10 @@
       try {
         var keys = await caches.keys();
         await Promise.all(keys.map(function(key){
-          return caches.delete(key).catch(function(){ return false; });
+          if (String(key || '').toLowerCase().indexOf(KAD_CACHE_PREFIX) === 0) {
+            return caches.delete(key);
+          }
+          return Promise.resolve(false);
         }));
       } catch (_) {}
 
@@ -28,29 +29,10 @@
     })());
   });
 
-  self.addEventListener('message', function(event){
-    var data = event && event.data ? event.data : {};
-    if(!data || data.type !== 'KAD_CLEAR_SW_CACHES') return;
-    event.waitUntil((async function(){
-      try {
-        var keys = await caches.keys();
-        await Promise.all(keys.map(function(key){ return caches.delete(key); }));
-      } catch (_) {}
-    })());
-  });
-
   self.addEventListener('fetch', function(event){
     var request = event.request;
-    if(!request || request.method !== 'GET') return;
+    if (!request || request.method !== 'GET') return;
 
-    event.respondWith((async function(){
-      try {
-        return await fetch(request, { cache: 'no-store' });
-      } catch (error) {
-        return fetch(request);
-      }
-    })());
+    event.respondWith(fetch(request));
   });
-
-  self.__KAD_SW_VERSION__ = SW_VERSION;
 })();
