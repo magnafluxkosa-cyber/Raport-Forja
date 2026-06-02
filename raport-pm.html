@@ -5,6 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>RAPORT PM - RAPORT</title>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js"></script>
   <script src="./rf-config.js"></script>
   <script src="./auth-common.js"></script>
   <link rel="stylesheet" href="./mobile-erp.css" />
@@ -357,6 +359,31 @@
       0%{box-shadow:inset 0 0 0 3px #16a34a;background:#dcfce7}
       100%{box-shadow:none}
     }
+
+
+    /* Update: import/export Excel vizibil, fără să readucă textele din antet */
+    .hero{position:relative!important;padding-right:260px!important;}
+    .excel-actions{
+      position:absolute;
+      right:12px;
+      top:7px;
+      display:flex;
+      align-items:center;
+      gap:8px;
+      z-index:120;
+    }
+    .excel-actions .btn{
+      display:inline-flex!important;
+      height:30px!important;
+      min-width:96px;
+      padding:0 12px!important;
+      border-radius:11px!important;
+      font-size:11px!important;
+      box-shadow:0 4px 12px rgba(47,79,121,.14)!important;
+    }
+    .excel-actions .btn.primary{background:#1d4ed8!important;color:#fff!important;border-color:#1e40af!important;}
+    .excel-actions .btn:disabled{opacity:.55!important;cursor:not-allowed!important;transform:none!important;}
+
 </style>
 </head>
 <body>
@@ -367,6 +394,11 @@
         <div class="title">RAPORT PM</div>
         <div class="subtitle">Prima pagină: RAPORT. Structura este refăcută ca raport modern, cu grupuri clare pentru pierderi timp management, pierderi timp producție, material defect și indicatori calculați automat în cod.</div>
         <div class="chips"><span class="chip" id="accessChip">Verific acces...</span><span class="chip">Pagina: RAPORT</span><span class="chip" id="dirtyChip">Nesalvat local: 0</span></div>
+      </div>
+      <div class="excel-actions">
+        <input id="excelImportInput" type="file" accept=".xlsx,.xls" style="display:none" />
+        <button class="btn" id="btnImportExcel" type="button">Import Excel</button>
+        <button class="btn primary" id="btnExportExcel" type="button">Export Excel</button>
       </div>
       <div class="actions">
         <a class="back-btn" href="index.html">Înapoi la Dashboard</a>
@@ -411,7 +443,7 @@
     const PROD_TOTAL_GATE_INDEXES=[16,15]; // Excel test: R&Q = 0
     const state={canView:false,canEdit:false,rows:[],columns:[],filters:{search:'',year:'',month:'',process:'',equipment:'',operator:'',shift:''},page:1,pageSize:120,dirty:0,pendingFocus:null,selection:null,isMouseSelecting:false,lastCell:null,pasteFlash:null,supa:null,saving:false,saveTimer:null,lastCloudError:null};
     const $=s=>document.querySelector(s);
-    const els={root:$('#pageRoot'),content:$('#appContent'),filters:$('#filters'),table:$('#reportTable'),kpis:$('#kpis'),accessChip:$('#accessChip'),dirtyChip:$('#dirtyChip'),tableMeta:$('#tableMeta'),pageInfo:$('#pageInfo'),btnPrev:$('#btnPrev'),btnNext:$('#btnNext'),btnSave:$('#btnSave'),btnReset:$('#btnReset'),btnExport:$('#btnExport'),btnPrint:$('#btnPrint')};
+    const els={root:$('#pageRoot'),content:$('#appContent'),filters:$('#filters'),table:$('#reportTable'),kpis:$('#kpis'),accessChip:$('#accessChip'),dirtyChip:$('#dirtyChip'),tableMeta:$('#tableMeta'),pageInfo:$('#pageInfo'),btnPrev:$('#btnPrev'),btnNext:$('#btnNext'),btnSave:$('#btnSave'),btnReset:$('#btnReset'),btnExport:$('#btnExport'),btnPrint:$('#btnPrint'),btnImportExcel:$('#btnImportExcel'),btnExportExcel:$('#btnExportExcel'),excelImportInput:$('#excelImportInput')};
     function norm(s){return String(s||'').normalize('NFD').replace(/[̀-ͯ]/g,'').toLowerCase().trim()}
     function n(v){if(v===null||v===undefined||v==='')return 0;if(typeof v==='number')return isFinite(v)?v:0;let s=String(v).trim().replace('%','').replace(/\s+/g,'').replace(',','.');let x=Number(s);return isFinite(x)?x:0}
     function fmt(v){v=n(v);return Math.round(v).toLocaleString('ro-RO')}
@@ -804,10 +836,195 @@
       pasteTextAt(text,start);
     }
     function renderAll(rebuildFilters=true){const rows=filteredRows();if(rebuildFilters)buildFilters();renderKpis(rows);renderTable(rows);updateDirty()}
+
+    function pad2(x){return String(x).padStart(2,'0')}
+    function excelSerialToDateString(value){
+      if(value instanceof Date && !isNaN(value.getTime()))return pad2(value.getDate())+'.'+pad2(value.getMonth()+1)+'.'+value.getFullYear();
+      if(typeof value==='number'&&isFinite(value)&&value>20000&&value<90000){
+        if(window.XLSX&&XLSX.SSF&&typeof XLSX.SSF.parse_date_code==='function'){
+          const d=XLSX.SSF.parse_date_code(value);
+          if(d&&d.y&&d.m&&d.d)return pad2(d.d)+'.'+pad2(d.m)+'.'+d.y;
+        }
+        const dt=new Date(Math.round((value-25569)*86400*1000));
+        if(!isNaN(dt.getTime()))return pad2(dt.getUTCDate())+'.'+pad2(dt.getUTCMonth()+1)+'.'+dt.getUTCFullYear();
+      }
+      const text=String(value??'').trim();
+      const m=text.match(/^(\d{1,2})[\.\/-](\d{1,2})[\.\/-](\d{2,4})$/);
+      if(m){const y=m[3].length===2?'20'+m[3]:m[3];return pad2(m[1])+'.'+pad2(m[2])+'.'+y}
+      return text;
+    }
+    function monthLabelFromDateString(dateText){
+      const m=String(dateText||'').match(/\d{1,2}\.(\d{1,2})\.(\d{4})/);
+      if(!m)return '';
+      const names=['IANUARIE','FEBRUARIE','MARTIE','APRILIE','MAI','IUNIE','IULIE','AUGUST','SEPTEMBRIE','OCTOMBRIE','NOIEMBRIE','DECEMBRIE'];
+      const mm=Math.max(1,Math.min(12,Number(m[1])||1));
+      return mm+'.'+names[mm-1];
+    }
+    function looksLikeHeaderRow(row){
+      const joined=(row||[]).slice(0,Math.min(12,(row||[]).length)).map(x=>norm(x)).join('|');
+      return joined.includes('data')&&joined.includes('process')&&joined.includes('plan');
+    }
+    function normalizeExcelImportCell(value,col){
+      if(value===undefined||value===null)return '';
+      if(col===COL.data)return excelSerialToDateString(value);
+      if(value instanceof Date&&!isNaN(value.getTime()))return excelSerialToDateString(value);
+      if(typeof value==='number'&&isFinite(value))return value;
+      let text=String(value).trim();
+      if(text==='')return '';
+      if(col>=COL.plan){
+        const raw=text.replace(/\s+/g,'').replace(/\./g,'').replace(',','.').replace('%','');
+        if(/^[-+]?\d+(?:\.\d+)?$/.test(raw)){
+          const num=Number(raw);
+          if(isFinite(num))return num;
+        }
+      }
+      return text;
+    }
+    function rowsFromExcelArray(sheetRows){
+      if(!Array.isArray(sheetRows)||!sheetRows.length)return [];
+      let start=0;
+      if(looksLikeHeaderRow(sheetRows[1]||[]))start=2;
+      else if(looksLikeHeaderRow(sheetRows[0]||[]))start=1;
+      const imported=[];
+      for(let r=start;r<sheetRows.length;r++){
+        const raw=sheetRows[r]||[];
+        if(!raw.some(v=>String(v??'').trim()!==''))continue;
+        const values=Array(VISIBLE_COLS).fill('');
+        for(let c=0;c<Math.min(raw.length,VISIBLE_COLS);c++){
+          if(isCalc(c))continue;
+          values[c]=normalizeExcelImportCell(raw[c],c);
+        }
+        const row={id:imported.length+1,monthLabel:monthLabelFromDateString(values[COL.data]),values};
+        recalc(row);
+        if(rowHasData(row))imported.push(row);
+      }
+      return imported;
+    }
+    async function importExcelFile(file){
+      if(!state.canEdit)return;
+      if(!file)return;
+      if(!window.XLSX){alert('Librăria pentru import Excel nu este încărcată. Reîncarcă pagina și încearcă din nou.');return;}
+      try{
+        const buffer=await file.arrayBuffer();
+        const workbook=XLSX.read(buffer,{type:'array',cellDates:true});
+        const sheetName=workbook.SheetNames[0];
+        const sheet=workbook.Sheets[sheetName];
+        const data=XLSX.utils.sheet_to_json(sheet,{header:1,defval:'',blankrows:false,raw:true});
+        const imported=rowsFromExcelArray(data);
+        if(!imported.length){alert('Nu am găsit rânduri valide în Excel.');return;}
+        state.rows=imported;
+        state.page=1;
+        state.selection=null;
+        state.lastCell=null;
+        Object.keys(state.filters).forEach(k=>state.filters[k]='');
+        recalcAllRows();
+        state.dirty++;
+        renderAll();
+        await saveCloudNow(false);
+        alert('Import Excel finalizat: '+imported.length+' rânduri. Datele au fost salvate în cloud.');
+      }catch(err){
+        console.error('Import Excel Raport PM',err);
+        alert('Importul Excel a eșuat. Verifică fișierul și încearcă din nou.');
+      }finally{
+        if(els.excelImportInput)els.excelImportInput.value='';
+      }
+    }
+    function isPercentExportCol(col){return col===COL.eff||col===COL.prodOp||col===COL.prodTotal}
+    function exportCellValue(row,col){
+      const v=row&&row.values?row.values[col]:'';
+      if(v===undefined||v===null||v==='')return null;
+      if(isPercentExportCol(col))return n(v);
+      if(col>=COL.plan){const num=n(v);return isFinite(num)?num:v;}
+      return v;
+    }
+    function styleExcelCell(cell,col,kind,isHeader=false){
+      const border={style:'thin',color:{argb:'FFD7E1EE'}};
+      cell.border={top:border,left:border,bottom:border,right:border};
+      cell.alignment={vertical:'middle',horizontal:isHeader?'center':(col>=COL.plan?'right':'left'),wrapText:true};
+      cell.font={name:'Calibri',size:9,bold:isHeader?true:false,color:{argb:'FF10213D'}};
+      if(isHeader){
+        const map={base:'EAF2FF',mgmt:'E8FFF5',prod:'FFF5E8',material:'F8F0FF',final:'FFF0F0'};
+        cell.fill={type:'pattern',pattern:'solid',fgColor:{argb:'FF'+(map[kind]||'EAF2FF')}};
+      }else{
+        if(col===COL.plan)cell.fill={type:'pattern',pattern:'solid',fgColor:{argb:'FFDBEAFE'}};
+        if(col===COL.timePerf)cell.fill={type:'pattern',pattern:'solid',fgColor:{argb:'FFF1F5F9'}};
+        if([37,38,42,43,44].includes(col))cell.fill={type:'pattern',pattern:'solid',fgColor:{argb:'FFFFF3CD'}};
+        if(col===COL.prodDef||col>=COL.matStart&&col<=COL.matEnd){cell.font={name:'Calibri',size:9,bold:true,color:{argb:'FFB91C1C'}};}
+        if(col===COL.prodReman||col===COL.totalTime||col===COL.pmDef){cell.font={name:'Calibri',size:9,bold:true,color:{argb:'FF1D4ED8'}};}
+        if(col===COL.fjDef){cell.font={name:'Calibri',size:9,bold:true,color:{argb:'FFB91C1C'}};}
+        if(col===COL.eff||col===COL.prodOp||col===COL.prodTotal){cell.font={name:'Calibri',size:9,bold:true,color:{argb:'FF10213D'}};}
+      }
+    }
+    async function exportExcelFile(){
+      if(!window.ExcelJS){alert('Librăria pentru export Excel nu este încărcată. Reîncarcă pagina și încearcă din nou.');return;}
+      const rows=filteredRows();
+      rows.forEach(r=>recalc(r));
+      const workbook=new ExcelJS.Workbook();
+      workbook.creator='K.A.D';
+      workbook.created=new Date();
+      const ws=workbook.addWorksheet('RAPORT PM',{views:[{state:'frozen',xSplit:2,ySplit:2}]});
+      const widths=state.columns.map((_,i)=>{
+        if(i===COL.data)return 12;
+        if(i===COL.process)return 24;
+        if(i===COL.equipment)return 12;
+        if(i===COL.part)return 18;
+        if(i===COL.shift)return 8;
+        if(i===COL.operator)return 18;
+        if(i===COL.timePerf)return 15;
+        if(i>=COL.eff)return 16;
+        if(i>=COL.mgmtStart&&i<=COL.matEnd)return 9;
+        return 10;
+      });
+      ws.columns=widths.map(w=>({width:w}));
+      let pos=1;
+      groupRows().forEach(g=>{
+        const start=pos,end=pos+g.span-1;
+        ws.mergeCells(1,start,1,end);
+        const cell=ws.getCell(1,start);
+        cell.value=g.label;
+        cell.font={name:'Calibri',size:10,bold:true,color:{argb:'FF0B1F46'}};
+        cell.alignment={vertical:'middle',horizontal:'center'};
+        const fillMap={base:'DBEAFE',mgmt:'D1FAE5',prod:'FFEDD5',material:'F3E8FF',final:'FEE2E2'};
+        cell.fill={type:'pattern',pattern:'solid',fgColor:{argb:'FF'+(fillMap[g.kind]||'DBEAFE')}};
+        const border={style:'thin',color:{argb:'FFB7C7DB'}};
+        for(let c=start;c<=end;c++){ws.getCell(1,c).border={top:border,left:border,bottom:{style:'medium',color:{argb:'FF6B7F99'}},right:border};}
+        pos=end+1;
+      });
+      const header=ws.getRow(2);
+      state.columns.forEach((c,i)=>{
+        const cell=header.getCell(i+1);
+        cell.value=c.label;
+        styleExcelCell(cell,i,c.kind,true);
+      });
+      ws.getRow(1).height=22;ws.getRow(2).height=52;
+      rows.forEach((r,ri)=>{
+        const er=ws.getRow(ri+3);
+        const prev=ri>0?rows[ri-1].values[COL.data]:null;
+        const isBreak=ri>0&&String(prev)!==String(r.values[COL.data]);
+        for(let i=0;i<VISIBLE_COLS;i++){
+          const cell=er.getCell(i+1);
+          cell.value=exportCellValue(r,i);
+          styleExcelCell(cell,i,state.columns[i]&&state.columns[i].kind,false);
+          if(isPercentExportCol(i))cell.numFmt='0.0%';
+          else if(i>=COL.plan)cell.numFmt='0';
+          if(isBreak){cell.border={...cell.border,top:{style:'double',color:{argb:'FF0B1F46'}}};}
+        }
+        er.height=18;
+      });
+      ws.autoFilter={from:{row:2,column:1},to:{row:2,column:VISIBLE_COLS}};
+      const buffer=await workbook.xlsx.writeBuffer();
+      const blob=new Blob([buffer],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
+      const a=document.createElement('a');
+      a.href=URL.createObjectURL(blob);
+      a.download='raport-pm.xlsx';
+      document.body.appendChild(a);a.click();a.remove();
+      setTimeout(()=>URL.revokeObjectURL(a.href),1000);
+    }
+
     function exportCsv(){const rows=filteredRows();const lines=[state.columns.map(c=>`"${String(c.label).replace(/"/g,'""')}"`).join(';')];rows.forEach(r=>{recalc(r);lines.push(r.values.slice(0,VISIBLE_COLS).map(v=>`"${String(formatForCsv(v)).replace(/"/g,'""')}"`).join(';'))});const blob=new Blob([lines.join('\n')],{type:'text/csv;charset=utf-8'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='raport-pm-raport.csv';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000)}
     function formatForCsv(v){return typeof v==='number'?String(v).replace('.',','):String(v??'')}
     function onDocumentKeydown(e){if((e.key==='Delete'||e.key==='Backspace')&&state.selection&&!cellMeta(document.activeElement)){e.preventDefault();clearSelectedCells();return}}
-    function bind(){els.btnSave.onclick=saveLocal;els.btnReset.onclick=resetLocal;els.btnExport.onclick=exportCsv;els.btnPrint.onclick=()=>window.print();els.btnPrev.onclick=()=>{if(state.page>1){state.page--;renderAll(false)}};els.btnNext.onclick=()=>{state.page++;renderAll(false)};document.addEventListener('mouseup',onDocumentMouseUp);document.addEventListener('copy',onCopy);document.addEventListener('paste',onPaste);document.addEventListener('keydown',onDocumentKeydown)}
+    function bind(){els.btnSave.onclick=saveLocal;els.btnReset.onclick=resetLocal;els.btnExport.onclick=exportCsv;els.btnPrint.onclick=()=>window.print();if(els.btnImportExcel)els.btnImportExcel.onclick=()=>{if(!state.canEdit)return;els.excelImportInput&&els.excelImportInput.click()};if(els.excelImportInput)els.excelImportInput.onchange=e=>importExcelFile(e.target.files&&e.target.files[0]);if(els.btnExportExcel)els.btnExportExcel.onclick=exportExcelFile;if(els.btnImportExcel)els.btnImportExcel.disabled=!state.canEdit;els.btnPrev.onclick=()=>{if(state.page>1){state.page--;renderAll(false)}};els.btnNext.onclick=()=>{state.page++;renderAll(false)};document.addEventListener('mouseup',onDocumentMouseUp);document.addEventListener('copy',onCopy);document.addEventListener('paste',onPaste);document.addEventListener('keydown',onDocumentKeydown)}
     async function start(){if(!await initAccess())return;await loadData();bind();renderAll();}
     start();
   })();
