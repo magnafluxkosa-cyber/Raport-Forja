@@ -1222,6 +1222,13 @@
       function autoWorkDateIsoForShift(shift){
         return workDateIsoForShift(shift, todayIso(), new Date());
       }
+      function defaultOperatorWorkDateIso(shift, now){
+        now = now || new Date();
+        shift = String(shift || defaultShiftByClock(now) || '').trim();
+        var iso = todayIso();
+        if(shift === '3' && now.getHours() < 6) return addDaysIso(iso, -1);
+        return iso;
+      }
       function dateRo(iso){
         var p = String(iso || '').slice(0,10).split('-');
         return p.length === 3 ? p[2] + '.' + p[1] + '.' + p[0] : String(iso || '');
@@ -3049,45 +3056,66 @@
         sheets.sort(function(a,b){ return String(b.updated_at || '').localeCompare(String(a.updated_at || '')); });
         return sheets[0] || null;
       }
-      async function loadBestOperatorSheetFor(operator, dateIso, shift){
+      function operatorSheetMatchesScope(data, operator, dateIso, shift){
+        if(!data || typeof data !== 'object') return false;
+        operator = norm(operator);
         dateIso = String(dateIso || '').slice(0,10);
         shift = String(shift || '').trim();
-        await loadOperatorSheets(true);
-        var found = null;
-        if(/^\d{4}-\d{2}-\d{2}$/.test(dateIso)){
-          found = findOperatorSheetFor(operator, dateIso, shift) || findLatestOperatorSheetFor(operator, dateIso);
+        if(!operator || !/^\d{4}-\d{2}-\d{2}$/.test(dateIso) || !shift) return false;
+        var dataOperator = norm(data.operator || (data.fields && data.fields.operatorTT) || '');
+        var dataDate = String(data.date_iso || (data.fields && data.fields.dateIso) || '').slice(0,10);
+        var dataShift = String(data.shift || (data.fields && data.fields.shift) || '').trim();
+        return dataOperator === operator && dataDate === dateIso && dataShift === shift;
+      }
+      function getExactOperatorLocalDraft(operator, dateIso, shift){
+        if(!operatorSheetMatchesScope({ operator:operator, date_iso:dateIso, shift:shift }, operator, dateIso, shift)) return null;
+        try{
+          var raw = localStorage.getItem(operatorDraftStorageKey(operator, dateIso, shift));
+          var data = raw ? JSON.parse(raw) : null;
+          if(data && sheetHasContent(data) && operatorSheetMatchesScope(data, operator, dateIso, shift)) return data;
+        }catch(_){ }
+        return null;
+      }
+      function prepareBlankOperatorSheet(operator, dateIso, shift, messageKind){
+        state.currentOperatorSheetId = buildOperatorSheetId(operator, dateIso, shift);
+        clearSheetContentNoConfirm(true);
+        setWorkDateIso(dateIso);
+        if(els.ttShift) els.ttShift.value = shift;
+        if(els.ttOperatorTT) els.ttOperatorTT.value = operator;
+        state.lastLoadedDateIso = dateIso;
+        state.lastLoadedShift = shift;
+        updateReportAutoFields();
+        setChip(els.modeChip, 'Fișă nouă: ' + operator + (shift ? ' · ' + shiftInfo(shift).label : ''), messageKind || 'ok');
+      }
+      async function loadBestOperatorSheetFor(operator, dateIso, shift){
+        operator = String(operator || '').trim();
+        dateIso = String(dateIso || '').slice(0,10);
+        shift = String(shift || '').trim();
+        if(!/^\d{4}-\d{2}-\d{2}$/.test(dateIso) || !shift){
+          dateIso = defaultOperatorWorkDateIso(shift || defaultShiftByClock());
+          shift = shift || defaultShiftByClock();
+          setWorkDateIso(dateIso);
+          if(els.ttShift) els.ttShift.value = shift;
         }
-        if(!found) found = findLatestOperatorSheetFor(operator, '');
-        if(found){
+        await loadOperatorSheets(true);
+        var found = findOperatorSheetFor(operator, dateIso, shift);
+        if(found && operatorSheetMatchesScope(found, operator, dateIso, shift)){
           applySheetData(found);
           state.lastLoadedDateIso = String(found.date_iso || '').slice(0,10);
           state.lastLoadedShift = String(found.shift || '').trim();
-          setChip(els.modeChip, 'Fișă reluată automat: ' + operator + (found.shift ? ' · ' + shiftInfo(found.shift).label : ''), 'ok');
+          setChip(els.modeChip, 'Fișă reluată exact: ' + operator + (found.shift ? ' · ' + shiftInfo(found.shift).label : ''), 'ok');
           return true;
         }
-        var localDraft = getDraft();
-        if(localDraft && sheetHasContent(localDraft)){
+        var localDraft = getExactOperatorLocalDraft(operator, dateIso, shift);
+        if(localDraft){
           applySheetData(localDraft);
-          state.lastLoadedDateIso = String(localDraft.date_iso || (localDraft.fields && localDraft.fields.dateIso) || '').slice(0,10);
-          state.lastLoadedShift = String(localDraft.shift || (localDraft.fields && localDraft.fields.shift) || '').trim();
-          setChip(els.modeChip, 'Fișă reluată din autosalvarea locală: ' + operator, 'ok');
+          state.lastLoadedDateIso = String(localDraft.date_iso || '').slice(0,10);
+          state.lastLoadedShift = String(localDraft.shift || '').trim();
+          setChip(els.modeChip, 'Fișă reluată local exact: ' + operator + (shift ? ' · ' + shiftInfo(shift).label : ''), 'ok');
           return true;
         }
-        if(/^\d{4}-\d{2}-\d{2}$/.test(dateIso)){
-          state.currentOperatorSheetId = buildOperatorSheetId(operator, dateIso, shift);
-          clearSheetContentNoConfirm(true);
-          setWorkDateIso(dateIso);
-          if(els.ttShift) els.ttShift.value = shift;
-          if(els.ttOperatorTT) els.ttOperatorTT.value = operator;
-          state.lastLoadedDateIso = dateIso;
-          state.lastLoadedShift = shift;
-          updateReportAutoFields();
-          setChip(els.modeChip, 'Fișă nouă: ' + operator + (shift ? ' · ' + shiftInfo(shift).label : ''), 'ok');
-        } else {
-          state.currentOperatorSheetId = null;
-          if(els.ttOperatorTT) els.ttOperatorTT.value = operator;
-          setChip(els.modeChip, 'Completează manual DATA fișei', 'warn');
-        }
+        try{ localStorage.removeItem(STORAGE_KEY); }catch(_){ }
+        prepareBlankOperatorSheet(operator, dateIso, shift, 'ok');
         return false;
       }
       function clearSheetContentNoConfirm(preserveOperator){
@@ -3149,10 +3177,10 @@
       async function loadOperatorSheetFor(operator, dateIso, shift){
         dateIso = String(dateIso || '').slice(0,10);
         if(!/^\d{4}-\d{2}-\d{2}$/.test(dateIso)){ setChip(els.modeChip, 'Completează data fișei în format zz.ll.aaaa', 'bad'); return false; }
-        shift = String(shift || '').trim();
+        shift = String(shift || '').trim() || defaultShiftByClock();
         await loadOperatorSheets(true);
         var found = findOperatorSheetFor(operator, dateIso, shift);
-        if(found){
+        if(found && operatorSheetMatchesScope(found, operator, dateIso, shift)){
           applySheetData(found);
           state.lastLoadedDateIso = dateIso;
           state.lastLoadedShift = String(found.shift || shift || '').trim();
@@ -4507,6 +4535,10 @@
           if(els.ttShift) els.ttShift.value = unlockedShift;
         }
         var unlockedDateIso = currentWorkDateIso();
+        if(!/^\d{4}-\d{2}-\d{2}$/.test(unlockedDateIso)){
+          unlockedDateIso = defaultOperatorWorkDateIso(unlockedShift);
+          setWorkDateIso(unlockedDateIso);
+        }
         await loadBestOperatorSheetFor(found.operator, unlockedDateIso, unlockedShift);
         await refreshPreviousProblemsWarning();
         if(els.ttOperatorTT) els.ttOperatorTT.value = found.operator;
@@ -4875,16 +4907,18 @@
         if(shouldRequireOperatorPin() && !state.pinUnlocked) return { cells:{} };
         var operator = activeSheetOperator();
         var dateIso = currentWorkDateIso();
-        var keys = [];
-        if(operator) keys.push(operatorDraftStorageKey(operator, dateIso, currentShift()));
-        keys.push(STORAGE_KEY);
-        for(var i=0;i<keys.length;i++){
-          try{
-            var raw = localStorage.getItem(keys[i]);
-            var data = raw ? JSON.parse(raw) : null;
-            if(data && typeof data === 'object') return data;
-          }catch(_){ }
+        var shift = currentShift();
+        var exactDraft = getExactOperatorLocalDraft(operator, dateIso, shift);
+        if(exactDraft) return exactDraft;
+        if(shouldRequireOperatorPin()){
+          try{ localStorage.removeItem(STORAGE_KEY); }catch(_){ }
+          return { cells:{} };
         }
+        try{
+          var raw = localStorage.getItem(STORAGE_KEY);
+          var data = raw ? JSON.parse(raw) : null;
+          if(data && typeof data === 'object' && (!operator || operatorSheetMatchesScope(data, operator, dateIso, shift))) return data;
+        }catch(_){ }
         return { cells:{} };
       }
       function saveDraft(){
@@ -4895,8 +4929,11 @@
         }
         var data = collectCurrentSheetData();
         try{
-          if(data.operator) localStorage.setItem(operatorDraftStorageKey(data.operator, data.date_iso, data.shift), JSON.stringify(data));
-          localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+          if(data.operator && /^\d{4}-\d{2}-\d{2}$/.test(String(data.date_iso || '').slice(0,10)) && String(data.shift || '').trim()){
+            localStorage.setItem(operatorDraftStorageKey(data.operator, data.date_iso, data.shift), JSON.stringify(data));
+          }
+          if(shouldRequireOperatorPin()) localStorage.removeItem(STORAGE_KEY);
+          else localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
         }catch(_){ }
         scheduleOperatorSheetSave();
       }
