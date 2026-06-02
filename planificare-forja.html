@@ -5272,42 +5272,85 @@ function getDefaultPermissions(role){
       }
 
       const baseInventoryPeriod = getPreviousMonthPeriodForStock(calcYear, calcStartMonthNum || Number(String(minPlanIso || '').slice(5,7)) || 0);
-      const exactSnapEndSteel = findExactSnapshotEnd(steelRows, baseInventoryPeriod);
-      const exactSnapEndDeb = findExactSnapshotEnd(debitatRows, baseInventoryPeriod);
-      const fallbackSnapEnd = trimText(baseInventoryPeriod && baseInventoryPeriod.endIso);
-      const snapEndSteel = exactSnapEndSteel || fallbackSnapEnd;
-      const snapEndDeb = exactSnapEndDeb || fallbackSnapEnd;
+      const baseInventoryEndIso = trimText(baseInventoryPeriod && baseInventoryPeriod.endIso);
+
+      function buildSteelSnapshotIndex(rows){
+        const byEnd = Object.create(null);
+        (rows || []).forEach(row => {
+          const eom = endOfMonthIso(row && row.an, row && row.lunaNum);
+          if(!eom || !row.diametru || !row.calitate) return;
+          const specKey = buildSpecKey(row.diametru, row.calitate);
+          if(!specKey) return;
+          byEnd[eom] = byEnd[eom] || Object.create(null);
+          byEnd[eom][specKey] = toNumber(byEnd[eom][specKey]) + toNumber(row.cantitateKg);
+        });
+        return { byEnd, ends:Object.keys(byEnd).sort() };
+      }
+
+      function buildDebitatSnapshotIndex(rows){
+        const byEnd = Object.create(null);
+        (rows || []).forEach(row => {
+          const eom = endOfMonthIso(row && row.an, row && row.lunaNum);
+          if(!eom || !row.reper) return;
+          const repKey = normalizeReperLoose(row.reper);
+          if(!repKey) return;
+          byEnd[eom] = byEnd[eom] || Object.create(null);
+          byEnd[eom][repKey] = toNumber(byEnd[eom][repKey]) + toNumber(row.cantitateBuc);
+        });
+        return { byEnd, ends:Object.keys(byEnd).sort() };
+      }
+
+      function pickSnapshotEndAtOrBefore(index, limitEndIso){
+        const limit = trimText(limitEndIso);
+        let best = '';
+        (index && index.ends || []).forEach(eom => {
+          if(limit && eom > limit) return;
+          if(!best || eom > best) best = eom;
+        });
+        return best;
+      }
+
+      function replaceObjectContent(target, source){
+        Object.keys(target || {}).forEach(key => { delete target[key]; });
+        Object.keys(source || {}).forEach(key => { target[key] = toNumber(source[key]); });
+      }
+
+      function buildSnapshotApplyMap(index, currentEndIso, minIso, maxIso){
+        const map = Object.create(null);
+        const currentEnd = trimText(currentEndIso);
+        const minDate = trimText(minIso);
+        const maxDate = trimText(maxIso);
+        (index && index.ends || []).forEach(eom => {
+          if(currentEnd && eom <= currentEnd) return;
+          const applyIso = nextDayIso(eom);
+          if(!applyIso) return;
+          if(minDate && applyIso < minDate) return;
+          if(maxDate && applyIso > maxDate) return;
+          map[applyIso] = eom;
+        });
+        return map;
+      }
+
+      const steelSnapshotIndex = buildSteelSnapshotIndex(steelRows);
+      const debSnapshotIndex = buildDebitatSnapshotIndex(debitatRows);
+      const snapEndSteel = pickSnapshotEndAtOrBefore(steelSnapshotIndex, baseInventoryEndIso);
+      const snapEndDeb = pickSnapshotEndAtOrBefore(debSnapshotIndex, baseInventoryEndIso);
 
       /*
-        Fix punctual: lipsa inventarului lunar nu trebuie să oprească simularea.
-        Dacă nu există snapshot pentru luna anterioară, calculul continuă cu stoc inițial 0,
-        iar planificarea rămâne marcată cu roșu unde oțelul/debitatul nu acoperă necesarul.
+        Fix punctual: inventarul nu se mai resetează la 0 la început de lună.
+        Calculul pornește din ultimul stoc real disponibil anterior perioadei și continuă cu el
+        până când apare următorul inventar real introdus în inventar-otel / inventar-debitat.
       */
-      const missingBaseInventory = [];
-      if(!exactSnapEndSteel) missingBaseInventory.push('oțel');
-      if(!exactSnapEndDeb) missingBaseInventory.push('debitat');
-
       const steelStock = Object.create(null);
       const debStock = Object.create(null);
+      if(snapEndSteel) replaceObjectContent(steelStock, steelSnapshotIndex.byEnd[snapEndSteel]);
+      if(snapEndDeb) replaceObjectContent(debStock, debSnapshotIndex.byEnd[snapEndDeb]);
+      let debStockAliasMap = buildDebitatStockAliasMap(debStock);
 
-      steelRows.forEach(row => {
-        const eom = endOfMonthIso(row && row.an, row && row.lunaNum);
-        if(eom !== snapEndSteel) return;
-        if(!row.diametru || !row.calitate) return;
-        const specKey = buildSpecKey(row.diametru, row.calitate);
-        steelStock[specKey] = toNumber(steelStock[specKey]) + toNumber(row.cantitateKg);
-      });
-      debitatRows.forEach(row => {
-        const eom = endOfMonthIso(row && row.an, row && row.lunaNum);
-        if(eom !== snapEndDeb) return;
-        if(!row.reper) return;
-        const repKey = normalizeReperLoose(row.reper);
-        debStock[repKey] = toNumber(debStock[repKey]) + toNumber(row.cantitateBuc);
-      });
-      const debStockAliasMap = buildDebitatStockAliasMap(debStock);
-
-      const fromIsoSteel = nextDayIso(snapEndSteel) || snapEndSteel;
-      const fromIsoDeb = nextDayIso(snapEndDeb) || snapEndDeb;
+      const fromIsoSteel = nextDayIso(snapEndSteel) || minPlanIso;
+      const fromIsoDeb = nextDayIso(snapEndDeb) || minPlanIso;
+      const steelSnapshotApplyByDate = buildSnapshotApplyMap(steelSnapshotIndex, snapEndSteel, minPlanIso, maxPlanIso);
+      const debSnapshotApplyByDate = buildSnapshotApplyMap(debSnapshotIndex, snapEndDeb, minPlanIso, maxPlanIso);
       const steelDeltaByDate = Object.create(null);
       const debDeltaByDate = Object.create(null);
 
@@ -5320,10 +5363,8 @@ function getDefaultPermissions(role){
         container[cleanDate][cleanKey] = toNumber(container[cleanDate][cleanKey]) + value;
       }
 
-      const currentPlanMonthStartIso = calcStartMonthNum ? (String(calcYear) + '-' + String(calcStartMonthNum).padStart(2,'0') + '-01') : fromIsoSteel;
-      const currentPlanMonthEndIso = calcStartMonthNum ? endOfMonthIso(calcYear, calcStartMonthNum) : maxPlanIso;
-      const intrariFromIso = maxIsoDate(fromIsoSteel, currentPlanMonthStartIso) || fromIsoSteel;
-      const intrariToIso = minIsoDate(maxPlanIso, currentPlanMonthEndIso) || maxPlanIso;
+      const intrariFromIso = fromIsoSteel || minPlanIso;
+      const intrariToIso = maxPlanIso;
 
       intrariRows.forEach(row => {
         if(!row.data || row.data < intrariFromIso || row.data > intrariToIso) return;
@@ -5379,8 +5420,22 @@ function getDefaultPermissions(role){
       const allDates = Array.from(new Set([].concat(
         Object.keys(planByDate),
         Object.keys(steelDeltaByDate),
-        Object.keys(debDeltaByDate)
+        Object.keys(debDeltaByDate),
+        Object.keys(steelSnapshotApplyByDate),
+        Object.keys(debSnapshotApplyByDate)
       ))).filter(dateIso => dateIso >= stockTimelineStartIso && dateIso <= maxPlanIso).sort();
+
+      function applyInventorySnapshots(dateIso){
+        const steelSnapshotEnd = steelSnapshotApplyByDate[dateIso] || '';
+        if(steelSnapshotEnd){
+          replaceObjectContent(steelStock, steelSnapshotIndex.byEnd[steelSnapshotEnd]);
+        }
+        const debSnapshotEnd = debSnapshotApplyByDate[dateIso] || '';
+        if(debSnapshotEnd){
+          replaceObjectContent(debStock, debSnapshotIndex.byEnd[debSnapshotEnd]);
+          debStockAliasMap = buildDebitatStockAliasMap(debStock);
+        }
+      }
 
       function applyDailyDeltas(dateIso){
         const steel = steelDeltaByDate[dateIso] || null;
@@ -5398,6 +5453,7 @@ function getDefaultPermissions(role){
       }
 
       allDates.forEach(dateIso => {
+        applyInventorySnapshots(dateIso);
         applyDailyDeltas(dateIso);
         const items = planByDate[dateIso] || [];
         items.forEach(item => {
