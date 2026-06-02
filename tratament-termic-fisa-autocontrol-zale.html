@@ -245,6 +245,12 @@
     .tt-live-dot{display:inline-block;width:10px;height:10px;border-radius:999px;background:#18a058;margin-right:6px;box-shadow:0 0 0 3px rgba(24,160,88,.18);vertical-align:middle;}
     .tt-live-muted{color:#4d647a;font-weight:800;font-size:12px;}
 
+    .btn.tt-prev-problems-warning{background:#b16a00;border-color:#7d4d00;color:#fff;box-shadow:0 0 0 3px rgba(177,106,0,.18);}
+    .btn.tt-prev-problems-warning:hover{background:#8f5600;}
+    .tt-prev-problems-note{font-size:13px;font-weight:900;color:#7a3f00;background:#fff8e7;border:1px solid #d8c484;border-radius:10px;padding:10px;line-height:1.35;}
+    .tt-prev-problems-table{min-width:980px;}
+    .tt-prev-problems-table td.obs-text{text-align:left;white-space:pre-wrap;font-weight:800;line-height:1.3;}
+
     .tt-pdf-export-root{
       background:#fff;color:#000;font-family:Calibri,Arial,sans-serif;
       padding:0;width:1900px;box-sizing:border-box;
@@ -630,6 +636,7 @@
 <div class="toolbar">
 <span class="chip warn" id="roleChip">Se verifică accesul...</span>
 <span class="chip warn" id="modeChip">ACL</span>
+<button class="btn tt-prev-problems-warning hidden" id="btnPreviousProblems" type="button">⚠ Observații schimb anterior</button>
 <button class="btn secondary hidden" id="btnPinAdmin" type="button">Configurare PIN-uri</button>
 <button class="btn secondary hidden" id="btnChangeOperator" type="button">Schimbă operator</button>
 <button class="btn secondary hidden" id="btnTempSettings" type="button">Setare temperaturi</button>
@@ -1073,6 +1080,26 @@
 </div>
 </div>
 </div>
+<div class="modal-backdrop" id="previousProblemsModal">
+<div class="modal tt-operator-sheets-modal">
+<div class="modal-head">
+<h2>Observații din fișa anterioară</h2>
+<div class="modal-subtitle">Problemele notate de colegul din schimbul precedent.</div>
+</div>
+<div class="modal-body">
+<div class="tt-prev-problems-note" id="previousProblemsSummary">Nu există observații din fișa anterioară.</div>
+<div class="tt-operator-sheets-wrap">
+<table class="tt-operator-sheets-table tt-prev-problems-table">
+<thead><tr><th>Data</th><th>Operator anterior</th><th>Schimb</th><th>Nr.</th><th>Reper</th><th>Sarjă</th><th>Categorie</th><th>Minute</th><th>Observații</th></tr></thead>
+<tbody id="previousProblemsBody"><tr><td colspan="9" class="tt-operator-sheets-empty">Nu există observații.</td></tr></tbody>
+</table>
+</div>
+</div>
+<div class="modal-footer">
+<button class="btn secondary" id="btnClosePreviousProblems" type="button">Închide</button>
+</div>
+</div>
+</div>
 <script>
     (function(){
       'use strict';
@@ -1114,7 +1141,7 @@
       var REPER2_PRESET_DELAYED_KEYS = ['timp_scufundare','revenire_z1','revenire_z2','bazin_racire'];
       var REPER2_DELAYED_PRESET_ID = 'reper2-delayed';
       var reper2PresetDelayTimer = null;
-      var state = { canEdit:false, access:null, client:null, session:null, user:null, role:'viewer', repere:[], reperMap:new Map(), magnafluxSheets:[], magnafluxOperators:[], pinConfig:[], activeOperator:null, pinUnlocked:false, reper2PresetAfter:null, reper2PresetStartedAt:null, reper2PresetReper:'', currentOperatorSheetId:null, adminSheetSnapshot:null, isViewingOperatorSheet:false, trackingDirty:false, loadingOperatorSheet:false, suppressTrackingSave:false, reportDirty:false, reportSavedForSheetId:'', operatorLiveEntries:[], operatorLiveChannel:null, operatorLivePresenceReady:false, operatorLivePublishTimer:null, operatorLivePublishInterval:null, operatorLiveAdminPoll:null, operatorLiveCloudLastSaveMs:0, operatorLiveSessionId:'', operatorLiveViewingId:'', operatorLiveReadonly:false };
+      var state = { canEdit:false, access:null, client:null, session:null, user:null, role:'viewer', repere:[], reperMap:new Map(), magnafluxSheets:[], magnafluxOperators:[], pinConfig:[], activeOperator:null, pinUnlocked:false, reper2PresetAfter:null, reper2PresetStartedAt:null, reper2PresetReper:'', currentOperatorSheetId:null, adminSheetSnapshot:null, isViewingOperatorSheet:false, trackingDirty:false, loadingOperatorSheet:false, suppressTrackingSave:false, reportDirty:false, reportSavedForSheetId:'', operatorLiveEntries:[], operatorLiveChannel:null, operatorLivePresenceReady:false, operatorLivePublishTimer:null, operatorLivePublishInterval:null, operatorLiveAdminPoll:null, operatorLiveCloudLastSaveMs:0, operatorLiveSessionId:'', operatorLiveViewingId:'', operatorLiveReadonly:false, previousProblemsSheet:null, previousProblemsRows:[] };
       var els = {};
 
       function qs(id){ return document.getElementById(id); }
@@ -3173,6 +3200,7 @@
         state.currentOperatorSheetId = null;
         await loadOperatorSheetFor(operator, dateIso, shift);
         state.trackingDirty = false;
+        refreshPreviousProblemsWarning().catch(function(error){ console.warn(error); });
       }
 
       function removeTrackingRowsFromLocal(sheetId){
@@ -3598,6 +3626,135 @@
         await loadOperatorSheets(true);
         renderOperatorSheetsList();
         if(els.operatorSheetsModal) els.operatorSheetsModal.classList.add('show');
+      }
+
+      function sheetShiftStartMs(sheet){
+        if(!sheet) return 0;
+        var dateIso = String(sheet.date_iso || (sheet.fields && sheet.fields.dateIso) || '').slice(0,10);
+        var shift = String(sheet.shift || (sheet.fields && sheet.fields.shift) || '').trim();
+        if(!/^\d{4}-\d{2}-\d{2}$/.test(dateIso)){
+          var fallback = Date.parse(String(sheet.updated_at || sheet.synced_at || ''));
+          return Number.isFinite(fallback) ? fallback : 0;
+        }
+        var info = shiftInfo(shift);
+        var start = info.start || '00:00';
+        var ms = Date.parse(dateIso + 'T' + start + ':00');
+        if(Number.isFinite(ms)) return ms;
+        var fallback2 = Date.parse(String(sheet.updated_at || sheet.synced_at || ''));
+        return Number.isFinite(fallback2) ? fallback2 : 0;
+      }
+      function currentSheetShiftStartMs(dateIso, shift){
+        dateIso = String(dateIso || currentWorkDateIso() || '').slice(0,10);
+        shift = String(shift || currentShift() || '').trim();
+        if(!/^\d{4}-\d{2}-\d{2}$/.test(dateIso)) return 0;
+        var info = shiftInfo(shift);
+        var start = info.start || '00:00';
+        var ms = Date.parse(dateIso + 'T' + start + ':00');
+        return Number.isFinite(ms) ? ms : 0;
+      }
+      function ttReportSarjaFromSheet(sheet, slot){
+        try{
+          var report = legacyReportToRows((sheet && sheet.report) || {});
+          var row = report.rows && report.rows[String(slot)];
+          return String(row && row.sarja || '').trim();
+        }catch(_){ return ''; }
+      }
+      function sheetReperForObservation(sheet){
+        return [sheet && sheet.reper1, sheet && sheet.reper2, sheet && sheet.reper3, sheet && sheet.reper4].filter(function(v){ return String(v || '').trim(); }).join(' / ');
+      }
+      function collectObservationWarningsFromSheet(sheet){
+        if(!sheet) return [];
+        var report = legacyReportToRows((sheet && sheet.report) || {});
+        var rows = Array.isArray(report.observatii) ? report.observatii : [];
+        return rows.map(function(line, idx){
+          var obs = String(line && line.observatii || '').trim();
+          if(!obs) return null;
+          return {
+            nr: Number(line && line.nr) || (idx + 1),
+            observatii: obs,
+            categorie: String(line && line.categorie || '').trim(),
+            minute: ttNumber(line && line.minute),
+            reper: sheetReperForObservation(sheet),
+            sarja: [ttReportSarjaFromSheet(sheet, '1'), ttReportSarjaFromSheet(sheet, '2'), ttReportSarjaFromSheet(sheet, '3'), ttReportSarjaFromSheet(sheet, '4')].filter(Boolean).join(' / ')
+          };
+        }).filter(Boolean);
+      }
+      function findPreviousSheetWithObservations(dateIso, shift){
+        var currentMs = currentSheetShiftStartMs(dateIso, shift);
+        var currentId = String(state.currentOperatorSheetId || buildOperatorSheetId(activeSheetOperator(), dateIso, shift) || '').trim();
+        var candidates = (OPERATOR_SHEETS_CACHE || []).map(function(sheet){
+          var id = String(sheet && sheet.id || '').trim();
+          if(currentId && id === currentId) return null;
+          var ms = sheetShiftStartMs(sheet);
+          if(currentMs && ms && ms >= currentMs) return null;
+          return { sheet:sheet, observations:collectObservationWarningsFromSheet(sheet), ms:ms || sheetUpdatedMs(sheet) };
+        }).filter(Boolean);
+        candidates.sort(function(a,b){
+          if((b.ms || 0) !== (a.ms || 0)) return (b.ms || 0) - (a.ms || 0);
+          return String(b.sheet && b.sheet.updated_at || '').localeCompare(String(a.sheet && a.sheet.updated_at || ''));
+        });
+        var previous = candidates[0] || null;
+        if(!previous || !previous.observations.length) return null;
+        return previous;
+      }
+      function setPreviousProblemsWarning(found){
+        state.previousProblemsSheet = found && found.sheet ? found.sheet : null;
+        state.previousProblemsRows = found && found.observations ? found.observations : [];
+        if(!els.btnPreviousProblems) return;
+        if(state.previousProblemsRows.length){
+          var sheet = state.previousProblemsSheet || {};
+          els.btnPreviousProblems.textContent = '⚠ Observații schimb anterior (' + state.previousProblemsRows.length + ')';
+          els.btnPreviousProblems.title = 'Apasă pentru a vedea ce a scris ' + (sheet.operator || 'colegul anterior') + ' la observații.';
+          els.btnPreviousProblems.classList.remove('hidden');
+        } else {
+          els.btnPreviousProblems.classList.add('hidden');
+          els.btnPreviousProblems.title = '';
+        }
+      }
+      async function refreshPreviousProblemsWarning(){
+        if(isAdminAccount() || !isTratamentOperatorUiAccount() || !state.pinUnlocked || !activeSheetOperator()){
+          setPreviousProblemsWarning(null);
+          return;
+        }
+        var dateIso = currentWorkDateIso();
+        var shift = currentShift();
+        if(!/^\d{4}-\d{2}-\d{2}$/.test(String(dateIso || '')) || !String(shift || '').trim()){
+          setPreviousProblemsWarning(null);
+          return;
+        }
+        if(!OPERATOR_SHEETS_CACHE) await loadOperatorSheets(true);
+        setPreviousProblemsWarning(findPreviousSheetWithObservations(dateIso, shift));
+      }
+      function showPreviousProblemsModal(){
+        var sheet = state.previousProblemsSheet || {};
+        var rows = state.previousProblemsRows || [];
+        if(els.previousProblemsSummary){
+          if(rows.length){
+            els.previousProblemsSummary.textContent = 'Fișa anterioară: ' + (sheet.operator || 'operator necunoscut') + ' · ' + (sheet.date_text || dateRo(sheet.date_iso) || '-') + ' · ' + (sheet.shift ? shiftInfo(sheet.shift).label : 'schimb nesetat') + '. Citește observațiile înainte de continuarea lucrului.';
+          } else {
+            els.previousProblemsSummary.textContent = 'Nu există observații din fișa anterioară.';
+          }
+        }
+        if(els.previousProblemsBody){
+          if(!rows.length){
+            els.previousProblemsBody.innerHTML = '<tr><td colspan="9" class="tt-operator-sheets-empty">Nu există observații.</td></tr>';
+          } else {
+            els.previousProblemsBody.innerHTML = rows.map(function(row){
+              return '<tr>' +
+                '<td>' + escHtml(sheet.date_text || dateRo(sheet.date_iso) || '') + '</td>' +
+                '<td class="left">' + escHtml(sheet.operator || '') + '</td>' +
+                '<td>' + escHtml(sheet.shift ? shiftInfo(sheet.shift).label : '') + '</td>' +
+                '<td>' + escHtml(row.nr || '') + '</td>' +
+                '<td class="left">' + escHtml(row.reper || '') + '</td>' +
+                '<td class="left">' + escHtml(row.sarja || '') + '</td>' +
+                '<td class="left">' + escHtml(row.categorie || '') + '</td>' +
+                '<td>' + escHtml(row.minute ? String(row.minute) : '') + '</td>' +
+                '<td class="obs-text">' + escHtml(row.observatii || '') + '</td>' +
+              '</tr>';
+            }).join('');
+          }
+        }
+        if(els.previousProblemsModal) els.previousProblemsModal.classList.add('show');
       }
 
       function ensureOperatorLiveSessionId(){
@@ -4351,6 +4508,7 @@
         }
         var unlockedDateIso = currentWorkDateIso();
         await loadBestOperatorSheetFor(found.operator, unlockedDateIso, unlockedShift);
+        await refreshPreviousProblemsWarning();
         if(els.ttOperatorTT) els.ttOperatorTT.value = found.operator;
         saveDraft();
         startOperatorLivePresence();
@@ -4376,6 +4534,7 @@
           }
           if(els.btnOperatorLive) els.btnOperatorLive.classList.add('hidden');
           if(els.btnSaveAdminChanges) els.btnSaveAdminChanges.classList.add('hidden');
+          if(els.btnPreviousProblems) els.btnPreviousProblems.classList.toggle('hidden', !(state.previousProblemsRows && state.previousProblemsRows.length));
         } else if(isAdminAccount()){
           if(els.btnBack) els.btnBack.classList.add('hidden');
           if(els.btnPinAdmin) els.btnPinAdmin.classList.remove('hidden');
@@ -4386,6 +4545,7 @@
           if(els.btnOperatorSheets){ els.btnOperatorSheets.textContent = 'Fișe operatori'; els.btnOperatorSheets.classList.remove('hidden'); }
           if(els.btnOperatorLive) els.btnOperatorLive.classList.remove('hidden');
           if(els.btnSaveAdminChanges) els.btnSaveAdminChanges.classList.remove('hidden');
+          if(els.btnPreviousProblems) els.btnPreviousProblems.classList.add('hidden');
         } else {
           if(els.btnBack) els.btnBack.classList.add('hidden');
           if(els.btnPinAdmin) els.btnPinAdmin.classList.add('hidden');
@@ -4396,6 +4556,7 @@
           if(els.btnOperatorSheets) els.btnOperatorSheets.classList.add('hidden');
           if(els.btnOperatorLive) els.btnOperatorLive.classList.add('hidden');
           if(els.btnSaveAdminChanges) els.btnSaveAdminChanges.classList.add('hidden');
+          if(els.btnPreviousProblems) els.btnPreviousProblems.classList.add('hidden');
         }
         updateBackToAdminSheetButton();
         enforceTratamentOperatorNoDashboard();
@@ -5885,6 +6046,7 @@
         if(els.btnTrackingTT) els.btnTrackingTT.addEventListener('click', function(){ window.location.href = 'urmarire-temperaturi-tt.html'; });
         if(els.btnOperatorSheets) els.btnOperatorSheets.addEventListener('click', function(){ openOperatorSheets().catch(function(err){ alert('Nu am putut deschide fișele operatorilor: ' + (err && err.message || err)); }); });
         if(els.btnOperatorLive) els.btnOperatorLive.addEventListener('click', function(){ openOperatorLive().catch(function(err){ alert('Nu am putut deschide operatorii live: ' + (err && err.message || err)); }); });
+        if(els.btnPreviousProblems) els.btnPreviousProblems.addEventListener('click', showPreviousProblemsModal);
         if(els.btnBackToAdminSheet) els.btnBackToAdminSheet.addEventListener('click', function(){ returnToAdminSheet().catch(function(err){ alert('Nu am putut reveni la fișa admin: ' + (err && err.message || err)); }); });
         if(els.btnSaveAdminChanges) els.btnSaveAdminChanges.addEventListener('click', async function(){
           try{
@@ -5911,6 +6073,7 @@
         if(els.btnCloseTempSettings) els.btnCloseTempSettings.addEventListener('click', function(){ if(els.tempSettingsModal) els.tempSettingsModal.classList.remove('show'); });
         if(els.btnCloseOperatorSheets) els.btnCloseOperatorSheets.addEventListener('click', function(){ if(els.operatorSheetsModal) els.operatorSheetsModal.classList.remove('show'); });
         if(els.btnCloseOperatorLive) els.btnCloseOperatorLive.addEventListener('click', function(){ if(els.operatorLiveModal) els.operatorLiveModal.classList.remove('show'); });
+        if(els.btnClosePreviousProblems) els.btnClosePreviousProblems.addEventListener('click', function(){ if(els.previousProblemsModal) els.previousProblemsModal.classList.remove('show'); });
         if(els.btnRefreshOperatorLive) els.btnRefreshOperatorLive.addEventListener('click', function(){ loadOperatorLiveEntries(); });
         if(els.btnRefreshOperatorSheets) els.btnRefreshOperatorSheets.addEventListener('click', function(){ loadOperatorSheets(true).then(renderOperatorSheetsList).catch(function(err){ setChip(els.operatorSheetsMsg, 'Eroare la reîncărcare', 'bad'); console.warn(err); }); });
         if(els.operatorSheetsSearch) els.operatorSheetsSearch.addEventListener('input', renderOperatorSheetsList);
@@ -5933,6 +6096,7 @@
           state.canEdit = false;
           state.activeOperator = null;
           state.currentOperatorSheetId = null;
+          setPreviousProblemsWarning(null);
           if(els.ttOperatorTT) els.ttOperatorTT.value = '';
           if(els.pinInput) els.pinInput.value = '';
           applyReadonlyMode();
@@ -5972,6 +6136,7 @@
         els.btnTrackingTT = qs('btnTrackingTT');
         els.btnOperatorSheets = qs('btnOperatorSheets');
         els.btnOperatorLive = qs('btnOperatorLive');
+        els.btnPreviousProblems = qs('btnPreviousProblems');
         els.btnBackToAdminSheet = qs('btnBackToAdminSheet');
         els.btnSaveAdminChanges = qs('btnSaveAdminChanges');
         els.btnChangeOperator = qs('btnChangeOperator');
@@ -6004,6 +6169,10 @@
         els.operatorLiveMsg = qs('operatorLiveMsg');
         els.btnRefreshOperatorLive = qs('btnRefreshOperatorLive');
         els.btnCloseOperatorLive = qs('btnCloseOperatorLive');
+        els.previousProblemsModal = qs('previousProblemsModal');
+        els.previousProblemsSummary = qs('previousProblemsSummary');
+        els.previousProblemsBody = qs('previousProblemsBody');
+        els.btnClosePreviousProblems = qs('btnClosePreviousProblems');
 
         els.ttReportStatus = qs('ttReportStatus');
         els.ttReportSlot = qs('ttReportSlot');
