@@ -92,9 +92,10 @@
     @media print{body{overflow:visible;background:#fff}.hero,.side,.pagination,.kad-shell-sidebar,.kad-sidebar,.kad-nav,.nav-shell,.sidebar,#kadNav,#kadSidebar,[class*="kad-nav"],[class*="sidebar"]{display:none!important}.page,.content,.main,.table-wrap{display:block;height:auto;overflow:visible;box-shadow:none;border:0;padding:0;background:#fff}table{font-size:7pt}thead tr.group-row th,thead tr.label-row th{position:static;height:auto}td,th{padding:2pt!important;height:auto!important}}
 
     /* Fix cerut: fără panou filtre, fără carduri KPI, fără blocuri informative deasupra tabelului */
-    .content{display:flex!important;grid-template-columns:none!important;gap:0!important;}
-    .side,.kpis,.table-head{display:none!important;}
-    .main{flex:1!important;width:100%!important;}
+    .content{display:grid!important;grid-template-columns:295px minmax(0,1fr)!important;gap:10px!important;}
+    .side{display:block!important;}
+    .kpis,.table-head{display:none!important;}
+    .main{width:100%!important;}
     .table-wrap{border-top:1px solid var(--line);}
     /* Antetul de grup Date raport rămâne neînghețat, dar primele 2 coloane rămân fixe pe orizontală până la ultimul rând */
     thead tr.group-row th{position:static!important;top:auto!important;}
@@ -383,6 +384,16 @@
     }
     .excel-actions .btn.primary{background:#1d4ed8!important;color:#fff!important;border-color:#1e40af!important;}
     .excel-actions .btn:disabled{opacity:.55!important;cursor:not-allowed!important;transform:none!important;}
+
+
+    /* Update: filtrare vizibila + import Excel robust */
+    .side{max-height:calc(100vh - 76px)!important;background:rgba(255,255,255,.62)!important;}
+    .side .page-tabs{display:none!important;}
+    .side .hint{display:none!important;}
+    .filters{gap:7px!important;}
+    .field label{font-size:10px!important;}
+    .field input,.field select{height:31px!important;border-radius:11px!important;}
+    #btnClear{height:31px!important;width:100%!important;}
 
 </style>
 </head>
@@ -838,21 +849,35 @@
     function renderAll(rebuildFilters=true){const rows=filteredRows();if(rebuildFilters)buildFilters();renderKpis(rows);renderTable(rows);updateDirty()}
 
     function pad2(x){return String(x).padStart(2,'0')}
+    function serialToDateString(serial){
+      const num=Number(serial);
+      if(!isFinite(num)||num<=20000||num>=90000)return '';
+      if(window.XLSX&&XLSX.SSF&&typeof XLSX.SSF.parse_date_code==='function'){
+        const d=XLSX.SSF.parse_date_code(num);
+        if(d&&d.y&&d.m&&d.d)return pad2(d.d)+'.'+pad2(d.m)+'.'+d.y;
+      }
+      const dt=new Date(Math.round((num-25569)*86400*1000));
+      if(!isNaN(dt.getTime()))return pad2(dt.getUTCDate())+'.'+pad2(dt.getUTCMonth()+1)+'.'+dt.getUTCFullYear();
+      return '';
+    }
     function excelSerialToDateString(value){
       if(value instanceof Date && !isNaN(value.getTime()))return pad2(value.getDate())+'.'+pad2(value.getMonth()+1)+'.'+value.getFullYear();
-      if(typeof value==='number'&&isFinite(value)&&value>20000&&value<90000){
-        if(window.XLSX&&XLSX.SSF&&typeof XLSX.SSF.parse_date_code==='function'){
-          const d=XLSX.SSF.parse_date_code(value);
-          if(d&&d.y&&d.m&&d.d)return pad2(d.d)+'.'+pad2(d.m)+'.'+d.y;
-        }
-        const dt=new Date(Math.round((value-25569)*86400*1000));
-        if(!isNaN(dt.getTime()))return pad2(dt.getUTCDate())+'.'+pad2(dt.getUTCMonth()+1)+'.'+dt.getUTCFullYear();
+      if(typeof value==='number'){
+        const out=serialToDateString(value);
+        if(out)return out;
       }
       const text=String(value??'').trim();
+      if(text==='')return '';
+      const compact=text.replace(/\s+/g,'').replace(',','.');
+      if(/^[-+]?\d+(?:\.\d+)?$/.test(compact)){
+        const out=serialToDateString(Number(compact));
+        if(out)return out;
+      }
       const m=text.match(/^(\d{1,2})[\.\/-](\d{1,2})[\.\/-](\d{2,4})$/);
       if(m){const y=m[3].length===2?'20'+m[3]:m[3];return pad2(m[1])+'.'+pad2(m[2])+'.'+y}
       return text;
     }
+    function isValidDateText(value){return /^\d{2}\.\d{2}\.\d{4}$/.test(excelSerialToDateString(value))}
     function monthLabelFromDateString(dateText){
       const m=String(dateText||'').match(/\d{1,2}\.(\d{1,2})\.(\d{4})/);
       if(!m)return '';
@@ -861,8 +886,36 @@
       return mm+'.'+names[mm-1];
     }
     function looksLikeHeaderRow(row){
-      const joined=(row||[]).slice(0,Math.min(12,(row||[]).length)).map(x=>norm(x)).join('|');
-      return joined.includes('data')&&joined.includes('process')&&joined.includes('plan');
+      const joined=(row||[]).slice(0,Math.min(70,(row||[]).length)).map(x=>norm(x)).join('|');
+      return (joined.includes('data')||joined.includes('date day')||joined.includes('date'))&&joined.includes('process')&&joined.includes('plan');
+    }
+    function findExcelHeaderIndex(sheetRows){
+      const max=Math.min(80,(sheetRows||[]).length);
+      for(let i=0;i<max;i++)if(looksLikeHeaderRow(sheetRows[i]||[]))return i;
+      return -1;
+    }
+    function findHeaderDateOffset(headerRow){
+      const row=headerRow||[];
+      for(let i=0;i<Math.min(10,row.length);i++){
+        const k=norm(row[i]).replace(/[^a-z0-9]/g,'');
+        if(k==='data'||k==='date'||k==='dateday'||k.includes('dateday'))return i;
+      }
+      const p=row.findIndex(x=>norm(x).replace(/[^a-z0-9]/g,'').includes('process'));
+      return p>0?p-1:0;
+    }
+    function detectExcelDataOffset(raw,preferredOffset){
+      const pref=Number.isFinite(preferredOffset)?preferredOffset:0;
+      if(isValidDateText(raw[pref]))return pref;
+      if(isValidDateText(raw[0]))return 0;
+      if(isValidDateText(raw[1]))return 1;
+      for(let i=0;i<Math.min(4,raw.length);i++)if(isValidDateText(raw[i]))return i;
+      return pref;
+    }
+    function normalizeMonthLabelText(value){
+      const text=String(value??'').trim();
+      if(!text)return '';
+      if(/^\d{1,2}\s*[\.\-]/.test(text)||/IANUARIE|FEBRUARIE|MARTIE|APRILIE|MAI|IUNIE|IULIE|AUGUST|SEPTEMBRIE|OCTOMBRIE|NOIEMBRIE|DECEMBRIE/i.test(text))return text.toUpperCase();
+      return '';
     }
     function normalizeExcelImportCell(value,col){
       if(value===undefined||value===null)return '';
@@ -882,19 +935,23 @@
     }
     function rowsFromExcelArray(sheetRows){
       if(!Array.isArray(sheetRows)||!sheetRows.length)return [];
-      let start=0;
-      if(looksLikeHeaderRow(sheetRows[1]||[]))start=2;
-      else if(looksLikeHeaderRow(sheetRows[0]||[]))start=1;
+      const headerIndex=findExcelHeaderIndex(sheetRows);
+      const preferredOffset=headerIndex>=0?findHeaderDateOffset(sheetRows[headerIndex]||[]):null;
+      const start=headerIndex>=0?headerIndex+1:0;
       const imported=[];
       for(let r=start;r<sheetRows.length;r++){
         const raw=sheetRows[r]||[];
         if(!raw.some(v=>String(v??'').trim()!==''))continue;
+        const dataOffset=detectExcelDataOffset(raw,preferredOffset);
+        if(!isValidDateText(raw[dataOffset]))continue;
         const values=Array(VISIBLE_COLS).fill('');
-        for(let c=0;c<Math.min(raw.length,VISIBLE_COLS);c++){
+        for(let c=0;c<VISIBLE_COLS;c++){
           if(isCalc(c))continue;
-          values[c]=normalizeExcelImportCell(raw[c],c);
+          values[c]=normalizeExcelImportCell(raw[dataOffset+c],c);
         }
-        const row={id:imported.length+1,monthLabel:monthLabelFromDateString(values[COL.data]),values};
+        const dateText=values[COL.data];
+        const ml=normalizeMonthLabelText(dataOffset>0?raw[dataOffset-1]:'')||monthLabelFromDateString(dateText);
+        const row={id:imported.length+1,monthLabel:ml,values};
         recalc(row);
         if(rowHasData(row))imported.push(row);
       }
@@ -902,31 +959,19 @@
     }
     function loadExternalScriptOnce(src){
       return new Promise((resolve,reject)=>{
-        const existing=Array.from(document.scripts||[]).find(sc=>sc.src===src);
-        if(existing){
-          if(existing.dataset.loaded==='1')resolve();
-          else{existing.addEventListener('load',()=>resolve(),{once:true});existing.addEventListener('error',()=>reject(new Error('Nu se poate încărca '+src)),{once:true});}
-          return;
-        }
+        if(Array.from(document.scripts||[]).some(sc=>sc.src===src)&&window.XLSX&&XLSX.read&&XLSX.utils){resolve();return;}
         const sc=document.createElement('script');
-        sc.src=src;
-        sc.async=true;
-        sc.dataset.loaded='0';
-        sc.onload=()=>{sc.dataset.loaded='1';resolve();};
-        sc.onerror=()=>reject(new Error('Nu se poate încărca '+src));
+        sc.src=src;sc.async=true;
+        const timer=setTimeout(()=>{sc.onerror=null;sc.onload=null;reject(new Error('Timeout la încărcarea librăriei Excel'));},5000);
+        sc.onload=()=>{clearTimeout(timer);resolve();};
+        sc.onerror=()=>{clearTimeout(timer);reject(new Error('Nu se poate încărca '+src));};
         document.head.appendChild(sc);
       });
     }
     async function ensureXlsxLibrary(){
       if(window.XLSX&&XLSX.read&&XLSX.utils)return true;
-      const urls=[
-        'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js',
-        'https://unpkg.com/xlsx@0.18.5/dist/xlsx.full.min.js',
-        'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js'
-      ];
-      for(const url of urls){
-        try{await loadExternalScriptOnce(url);if(window.XLSX&&XLSX.read&&XLSX.utils)return true;}catch(_e){}
-      }
+      const urls=['https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js','https://unpkg.com/xlsx@0.18.5/dist/xlsx.full.min.js','https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js'];
+      for(const url of urls){try{await loadExternalScriptOnce(url);if(window.XLSX&&XLSX.read&&XLSX.utils)return true;}catch(_e){}}
       return false;
     }
     function getU16(view,offset){return view.getUint16(offset,true)}
@@ -969,7 +1014,7 @@
         let bytes;
         if(method===0)bytes=comp;
         else if(method===8)bytes=await inflateRaw(comp);
-        else throw new Error('Metodă compresie XLSX nesuportată: '+method);
+        else continue;
         entries[name]=decoder.decode(bytes);
         ptr+=46+nameLen+extraLen+commentLen;
       }
@@ -1010,9 +1055,8 @@
             const idx=m?colLettersToIndex(m[1]):row.length;
             const t=c.getAttribute('t')||'';
             let value='';
-            if(t==='inlineStr'){
-              value=xmlAll(c,'t').map(x=>xmlText(x)).join('');
-            }else{
+            if(t==='inlineStr')value=xmlAll(c,'t').map(x=>xmlText(x)).join('');
+            else{
               const v=xmlAll(c,'v')[0];
               value=xmlText(v);
               if(t==='s')value=shared[Number(value)]||'';
@@ -1028,15 +1072,21 @@
     }
     async function readExcelRows(file){
       const buffer=await file.arrayBuffer();
-      if(await ensureXlsxLibrary()){
+      if(/\.xls$/i.test(file.name||'')&&!/\.xlsx$/i.test(file.name||'')){
+        if(await ensureXlsxLibrary()){
+          const workbook=XLSX.read(buffer,{type:'array',cellDates:true});
+          const sheetName=workbook.SheetNames[0];
+          return XLSX.utils.sheet_to_json(workbook.Sheets[sheetName],{header:1,defval:'',blankrows:false,raw:true});
+        }
+        throw new Error('Fișierele .xls vechi necesită librăria SheetJS. Salvează fișierul ca .xlsx.');
+      }
+      if(window.XLSX&&XLSX.read&&XLSX.utils){
         try{
           const workbook=XLSX.read(buffer,{type:'array',cellDates:true});
           const sheetName=workbook.SheetNames[0];
           const sheet=workbook.Sheets[sheetName];
           return XLSX.utils.sheet_to_json(sheet,{header:1,defval:'',blankrows:false,raw:true});
-        }catch(err){
-          console.warn('SheetJS import failed; trying internal XLSX reader',err);
-        }
+        }catch(err){console.warn('SheetJS import failed; trying internal XLSX reader',err);}
       }
       return await minimalRowsFromXlsxBuffer(buffer);
     }
@@ -1045,13 +1095,9 @@
       if(!state.canEdit){alert('Importul Excel necesită drept de editare.');return;}
       try{
         if(!/\.xlsx?$/i.test(file.name||'')){alert('Alege un fișier Excel .xlsx sau .xls.');return;}
-        if(/\.xls$/i.test(file.name||'')&&!/\.xlsx$/i.test(file.name||'')){
-          alert('Pentru import sigur, salvează fișierul ca .xlsx și încearcă din nou.');
-          return;
-        }
         const data=await readExcelRows(file);
         const imported=rowsFromExcelArray(data);
-        if(!imported.length){alert('Nu am găsit rânduri valide în Excel. Verifică să fie primul sheet și să înceapă cu Data / Process / Echipament.');return;}
+        if(!imported.length){alert('Nu am găsit rânduri valide în Excel. Acceptă atât exportul din această pagină, cât și Excelul original cu MONTH / Date Day / PROCESS. Verifică să fie datele pe primul sheet.');return;}
         state.rows=imported.map((r,idx)=>({id:idx+1,monthLabel:r.monthLabel||monthLabelFromDateString(r.values[COL.data]),values:r.values.slice(0,VISIBLE_COLS)}));
         state.page=1;
         state.selection=null;
@@ -1182,3 +1228,5 @@
 
 <!-- update: selectie multipla copy/paste cu randuri noi si recalcul automat - 2026-06-02 -->
 <!-- update: selectie gri deschis, delete pe selectie si salvare cloud fara quota localStorage - 2026-06-02 -->
+
+<!-- update: filtrare vizibila si import Excel reparat pentru export HTML + Excel original REPORT - 2026-06-02 -->
