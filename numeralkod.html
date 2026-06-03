@@ -2125,6 +2125,7 @@ window.applyCloudPayload = function(payload){
   let ready = false;
   let applyingRemote = false;
   let lastPushedAt = 0;
+  let lastRemoteUpdatedAt = "";
 
   function setBadge(ok, msg){
     const el = document.getElementById("cloudBadge");
@@ -2146,18 +2147,38 @@ window.applyCloudPayload = function(payload){
     }
   }
 
-  async function pull(){
+  async function readRemoteMeta(){
+    const { data, error } = await supa.from(DOC_TABLE).select("updated_at").eq("doc_key", DOC_KEY).maybeSingle();
+    if(error) throw error;
+    return data && data.updated_at ? String(data.updated_at) : "";
+  }
+
+  function getCloudPayload(row){
+    if(!row) return null;
+    if(row.content && typeof row.content === "object") return row.content;
+    if(row.data && typeof row.data === "object") return row.data;
+    return null;
+  }
+
+  async function pull(forceFull){
+    if(!forceFull){
+      const remoteUpdatedAt = await readRemoteMeta();
+      if(remoteUpdatedAt && lastRemoteUpdatedAt && remoteUpdatedAt <= lastRemoteUpdatedAt) return;
+      if(!remoteUpdatedAt && lastRemoteUpdatedAt) return;
+    }
+
     const { data, error } = await supa.from(DOC_TABLE).select("doc_key,content,data,updated_at").eq("doc_key", DOC_KEY).maybeSingle();
     if(error) throw error;
-    if(data && data.data){
+    const payload = getCloudPayload(data);
+    if(payload){
       applyingRemote = true;
       try{
-        // data.data este exact payload-ul autosave (app/version/tables/reserved)
-        if (typeof window.applyCloudPayload === "function") window.applyCloudPayload(data.data);
+        if (typeof window.applyCloudPayload === "function") window.applyCloudPayload(payload);
       } finally {
         applyingRemote = false;
       }
     }
+    lastRemoteUpdatedAt = data && data.updated_at ? String(data.updated_at) : lastRemoteUpdatedAt;
   }
 
   let pushTimer = null;
@@ -2197,11 +2218,13 @@ window.applyCloudPayload = function(payload){
         .on("postgres_changes", { event: "*", schema: "public", table: DOC_TABLE, filter: "doc_key=eq."+DOC_KEY }, (payload)=>{
           try{
             const row = payload && payload.new;
-            if(!row || !row.data) return;
+            const cloudPayload = getCloudPayload(row);
+            if(!row || !cloudPayload) return;
+            lastRemoteUpdatedAt = row.updated_at ? String(row.updated_at) : lastRemoteUpdatedAt;
             // dacă schimbarea vine chiar de la noi, tot aplicăm (dar fără bucle)
             applyingRemote = true;
             try{
-              if (typeof window.applyCloudPayload === "function") window.applyCloudPayload(row.data);
+              if (typeof window.applyCloudPayload === "function") window.applyCloudPayload(cloudPayload);
             } finally {
               applyingRemote = false;
             }
@@ -2227,7 +2250,7 @@ window.applyCloudPayload = function(payload){
     setBadge(false, "Cloud: conectare...");
     await detectRole();
     try{
-      await pull();
+      await pull(true);
       subscribe();
       ready = true;
       setBadge(true, "Cloud: ON");
@@ -2316,15 +2339,26 @@ window.applyCloudPayload = function(payload){
     }
   }
 
+  function nextDelay(){
+    return document.hidden ? 300000 : 60000;
+  }
+
+  function scheduleNext(delay){
+    if(t) clearTimeout(t);
+    t = setTimeout(async ()=>{
+      await tick();
+      scheduleNext(nextDelay());
+    }, Math.max(5000, Number(delay) || nextDelay()));
+  }
+
   function start(){
     if(t) return;
-    // prima sincronizare după 1s, apoi la 1.5s
-    setTimeout(tick, 1000);
-    t = setInterval(tick, 1500);
+    // prima sincronizare după încărcare, apoi fallback rar; Realtime rămâne mecanismul principal.
+    scheduleNext(5000);
   }
 
   function stop(){
-    if(t){ clearInterval(t); t = null; }
+    if(t){ clearTimeout(t); t = null; }
   }
 
   // pornește după ce pagina e încărcată
