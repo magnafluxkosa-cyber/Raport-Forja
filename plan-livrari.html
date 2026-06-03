@@ -301,6 +301,7 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
   const DOC_KEY = 'plan-livrari-live-sync-v1';
   const STORAGE_SCROLL = 'kad-plan-livrari-scroll-v5';
   const STORAGE_CACHE = 'kad-plan-livrari-cache-v5';
+  const STORAGE_PENDING = 'kad-plan-livrari-pending-cloud-v1';
   const SAVE_DEBOUNCE_MS = 140;
   const REMOTE_POLL_MS = 120000;
   const FIXED_COLS = 2;
@@ -771,10 +772,38 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
     return `${payload.hiddenWeekIds ? payload.hiddenWeekIds.join('|') : ''}::${payload.tableHtml || ''}`;
   }
   function saveLocalCache(payload){
-    try{ localStorage.setItem(STORAGE_CACHE, JSON.stringify(payload)); }catch(_err){}
+    try{
+      localStorage.setItem(STORAGE_CACHE, JSON.stringify(payload));
+      localStorage.setItem(STORAGE_PENDING, JSON.stringify(payload));
+    }catch(_err){}
+  }
+  function markLocalSavedToCloud(){
+    try{ localStorage.removeItem(STORAGE_PENDING); }catch(_err){}
+  }
+  function loadJsonFromStorage(key){
+    try{ return JSON.parse(localStorage.getItem(key) || 'null'); }catch(_err){ return null; }
   }
   function loadLocalCache(){
-    try{ return JSON.parse(localStorage.getItem(STORAGE_CACHE) || 'null'); }catch(_err){ return null; }
+    return loadJsonFromStorage(STORAGE_CACHE);
+  }
+  function loadPendingCache(){
+    return loadJsonFromStorage(STORAGE_PENDING);
+  }
+  function payloadTime(payload, updatedAt){
+    if(payload && payload.editedAt){
+      const t = Date.parse(payload.editedAt);
+      if(Number.isFinite(t)) return t;
+    }
+    if(updatedAt){
+      const t = Date.parse(updatedAt);
+      if(Number.isFinite(t)) return t;
+    }
+    return 0;
+  }
+  function newestPayload(candidates){
+    return candidates
+      .filter(item => item && item.payload && item.payload.tableHtml)
+      .sort((a,b) => payloadTime(b.payload, b.updatedAt) - payloadTime(a.payload, a.updatedAt))[0] || null;
   }
   function applyPayload(payload, fromRemote){
     if(!payload || !payload.tableHtml) return;
@@ -806,10 +835,10 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
     saveLocalCache(payload);
     if(state.saveTimer) clearTimeout(state.saveTimer);
     if(force){
-      persistNow();
+      persistNow(true);
       return;
     }
-    state.saveTimer = window.setTimeout(persistNow, SAVE_DEBOUNCE_MS);
+    state.saveTimer = window.setTimeout(() => persistNow(false), SAVE_DEBOUNCE_MS);
   }
 
   function getSupabaseClient(){
@@ -831,9 +860,11 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
   }
   async function readCloudPayload(){
     if(!state.supa) return null;
-    const res = await state.supa.from('rf_documents').select('content,updated_at').eq('doc_key', DOC_KEY).maybeSingle();
+    const res = await state.supa.from('rf_documents').select('content,data,updated_at').eq('doc_key', DOC_KEY).maybeSingle();
     if(res.error) throw res.error;
-    const payload = res.data && res.data.content && typeof res.data.content === 'object' ? res.data.content : null;
+    const contentPayload = res.data && res.data.content && typeof res.data.content === 'object' ? res.data.content : null;
+    const dataPayload = res.data && res.data.data && typeof res.data.data === 'object' ? res.data.data : null;
+    const payload = contentPayload || dataPayload;
     if(!payload) return null;
     return { payload, updatedAt: res.data.updated_at || payload.editedAt || '' };
   }
@@ -845,18 +876,33 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
   }
   async function writeCloudPayload(payload){
     if(!state.supa) return null;
-    const row = { doc_key: DOC_KEY, content: payload, data: payload, updated_at: new Date().toISOString() };
+    const updatedAt = new Date().toISOString();
+    const row = { doc_key: DOC_KEY, content: payload, data: payload, updated_at: updatedAt };
 
-    /* Salvare robustă: nu folosim .select() după upsert, deoarece pe unele conturi/RLS
-       update-ul este permis, dar select-ul imediat după update poate fi refuzat și ar face
-       ca pagina să creadă că nu s-a salvat, iar la refresh/realtime se reîncarcă vechea versiune. */
-    let res = await state.supa.from('rf_documents').upsert(row, { onConflict: 'doc_key' });
-    if(res && res.error){
-      const fallbackRow = { doc_key: DOC_KEY, content: payload, updated_at: row.updated_at };
-      res = await state.supa.from('rf_documents').upsert(fallbackRow, { onConflict: 'doc_key' });
-      if(res && res.error) throw res.error;
-    }
-    return row.updated_at;
+    /* Salvare robustă:
+       1) încearcă UPDATE pe rândul existent;
+       2) apoi UPSERT ca fallback;
+       3) apoi INSERT/UPDATE simplificate dacă schema/RLS refuză una dintre variante.
+       Nu folosim .select() după scriere, ca să nu transformăm o salvare reușită într-o eroare falsă. */
+    let lastError = null;
+
+    let res = await state.supa.from('rf_documents').update(row).eq('doc_key', DOC_KEY);
+    if(!res || !res.error) return updatedAt;
+    lastError = res.error;
+
+    res = await state.supa.from('rf_documents').upsert(row, { onConflict: 'doc_key' });
+    if(!res || !res.error) return updatedAt;
+    lastError = res.error;
+
+    const fallbackRow = { doc_key: DOC_KEY, content: payload, updated_at: updatedAt };
+    res = await state.supa.from('rf_documents').upsert(fallbackRow, { onConflict: 'doc_key' });
+    if(!res || !res.error) return updatedAt;
+    lastError = res.error;
+
+    const insertRes = await state.supa.from('rf_documents').insert(row);
+    if(!insertRes || !insertRes.error) return updatedAt;
+
+    throw lastError || insertRes.error;
   }
   async function broadcastChange(signature){
     if(!state.channel) return;
@@ -864,7 +910,7 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
       await state.channel.send({ type: 'broadcast', event: 'changed', payload: { clientId: state.clientId, signature, docKey: DOC_KEY } });
     }catch(_err){}
   }
-  async function persistNow(){
+  async function persistNow(forceSave){
     if(!state.canEdit) return;
     if(state.saveTimer){
       clearTimeout(state.saveTimer);
@@ -874,7 +920,7 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
     const signature = payloadSignature(payload);
     state.currentSignature = signature;
     saveLocalCache(payload);
-    if(signature === state.lastSavedSignature && !state.pendingSave) return;
+    if(signature === state.lastSavedSignature && !state.pendingSave && !forceSave) return;
     if(!state.supa){
       state.lastSavedSignature = signature;
       return;
@@ -889,6 +935,7 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
       state.cloudUpdatedAt = updatedAt || state.cloudUpdatedAt;
       state.lastSavedSignature = signature;
       state.lastAppliedRemoteSignature = signature;
+      markLocalSavedToCloud();
       await broadcastChange(signature);
     }catch(error){
       console.warn('Plan Livrari save cloud', error);
@@ -911,6 +958,19 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
       }
       const remote = await readCloudPayload();
       if(!remote || !remote.payload) return;
+
+      const pending = loadPendingCache();
+      const cache = loadLocalCache();
+      const localNewest = newestPayload([
+        { payload: pending, updatedAt: pending && pending.editedAt },
+        { payload: cache, updatedAt: cache && cache.editedAt }
+      ]);
+      if(localNewest && payloadTime(localNewest.payload, localNewest.updatedAt) > payloadTime(remote.payload, remote.updatedAt)){
+        applyPayload(localNewest.payload, false);
+        scheduleSave(true);
+        return;
+      }
+
       const signature = payloadSignature(remote.payload);
       if(!force && signature === state.lastAppliedRemoteSignature){
         state.cloudUpdatedAt = remote.updatedAt || state.cloudUpdatedAt;
@@ -955,13 +1015,18 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
     }
     startRemotePolling();
     const localPayload = loadLocalCache();
+    const pendingPayload = loadPendingCache();
     const remote = await readCloudPayload().catch(() => null);
-    const localTime = localPayload && localPayload.editedAt ? Date.parse(localPayload.editedAt) : 0;
-    const remoteTime = remote && remote.payload && (remote.payload.editedAt || remote.updatedAt) ? Date.parse(remote.payload.editedAt || remote.updatedAt) : 0;
-    if(remote && remote.payload && remoteTime >= localTime){
+    const winner = newestPayload([
+      { payload: pendingPayload, updatedAt: pendingPayload && pendingPayload.editedAt },
+      { payload: localPayload, updatedAt: localPayload && localPayload.editedAt },
+      remote
+    ]);
+    if(winner && remote && winner.payload === remote.payload){
       applyPayload(remote.payload, true);
       state.cloudUpdatedAt = remote.updatedAt || state.cloudUpdatedAt;
-    }else if(localPayload){
+    }else if(winner && winner.payload){
+      applyPayload(winner.payload, false);
       scheduleSave(true);
     }
   }
@@ -1033,15 +1098,28 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
     applyPaletteToCells(targets, btn.dataset.color);
   }));
   scrollEl.addEventListener('scroll', saveScroll, { passive: true });
-  window.addEventListener('beforeunload', saveScroll);
+  function saveBeforeLeaving(){
+    saveScroll();
+    try{
+      const payload = buildPayload();
+      state.currentSignature = payloadSignature(payload);
+      saveLocalCache(payload);
+      if(state.canEdit) persistNow(true);
+    }catch(_err){}
+  }
+  window.addEventListener('beforeunload', saveBeforeLeaving);
+  window.addEventListener('pagehide', saveBeforeLeaving);
 
   (async function startPage(){
     await initAccess();
     syncUiAfterStructureChange();
     restoreScroll();
-  const cached = loadLocalCache();
-  if(cached && cached.tableHtml){
-    applyPayload(cached, false);
+  const cached = newestPayload([
+    { payload: loadPendingCache(), updatedAt: loadPendingCache() && loadPendingCache().editedAt },
+    { payload: loadLocalCache(), updatedAt: loadLocalCache() && loadLocalCache().editedAt }
+  ]);
+  if(cached && cached.payload && cached.payload.tableHtml){
+    applyPayload(cached.payload, false);
   }else{
     state.currentSignature = payloadSignature(buildPayload());
     state.lastSavedSignature = state.currentSignature;
