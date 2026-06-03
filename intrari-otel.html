@@ -208,6 +208,31 @@
     .pretest-badge-ok{display:inline-flex;align-items:center;justify-content:center;padding:2px 8px;border-radius:999px;background:#dcfce7;color:#166534;border:1px solid #86efac;font-weight:800;font-size:11px}
     @media (max-width: 980px){ .pretest-grid{grid-template-columns:1fr 1fr} }
 
+
+    /* K.A.D - filtrare multiplă locală, fără script global */
+    .kad-mf-wrap{position:relative;width:100%;}
+    .kad-mf-btn{
+      width:100%;height:20px;border:1px solid #9aa7b2;background:#fff;color:#111;
+      font-family:inherit;font-size:11px;font-weight:700;padding:0 18px 0 5px;
+      border-radius:4px;cursor:pointer;text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+      box-shadow:none;position:relative;
+    }
+    .kad-mf-btn:after{content:'▾';position:absolute;right:5px;top:50%;transform:translateY(-50%);font-size:10px;color:#334155;}
+    .kad-mf-btn.active{border-color:var(--focus);box-shadow:0 0 0 2px rgba(37,99,235,.12);}
+    .kad-mf-menu{
+      position:fixed;z-index:100000;background:#fff;border:2px solid #000;border-radius:8px;
+      box-shadow:0 12px 28px rgba(0,0,0,.22);padding:6px;width:240px;max-height:300px;overflow:auto;
+      font-family:Calibri,Arial,sans-serif;color:#111;
+    }
+    .kad-mf-menu-head{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:4px 6px 6px;border-bottom:1px solid #cbd5e1;margin-bottom:4px;font-size:12px;font-weight:800;color:#334155;}
+    .kad-mf-clear{color:#1e5a96;cursor:pointer;white-space:nowrap;}
+    .kad-mf-clear:hover{text-decoration:underline;}
+    .kad-mf-search{width:100%;height:24px;border:1px solid #94a3b8;border-radius:6px;padding:0 7px;margin:3px 0 6px;font-size:12px;outline:none;}
+    .kad-mf-option{display:flex;align-items:center;gap:7px;padding:5px 6px;border-radius:6px;font-size:12px;cursor:pointer;user-select:none;}
+    .kad-mf-option:hover{background:#eaf4ff;}
+    .kad-mf-option input{width:auto;height:auto;margin:0;accent-color:#2b6cb0;}
+    .kad-mf-empty{padding:8px 6px;color:#64748b;font-size:12px;}
+
 </style>
   <link rel="stylesheet" href="./mobile-erp.css" />
 
@@ -988,77 +1013,193 @@ function closeForm(){
     syncMonthYearFromDateInput();
   })();
 
-  // ----- FILTRARE -----
+  // ----- FILTRARE MULTIPLĂ LOCALĂ -----
   const filterRow = document.getElementById('filterRow');
   let filtersVisible = true;
+  const RF_MULTI_FILTERS = {};
+  const RF_FILTER_COLS = [0,1,2,3,4,5,6,7,8,9];
+  const RF_FILTER_LABELS = {
+    0:'An', 1:'Luna', 2:'Data', 3:'Dimensiune', 4:'Calitate',
+    5:'Cod intern', 6:'Sarja', 7:'kg', 8:'PRETEST', 9:'Furnizor'
+  };
+  let rfOpenMenu = null;
 
-  function getCellText(td){ return (td?.textContent || "").trim().toLowerCase(); }
+  function getCellText(td){ return (td?.textContent || '').trim().toLowerCase(); }
+  function rfCellRaw(tr, col){ return (tr?.querySelectorAll('td')?.[col]?.textContent || '').trim(); }
+  function rfNorm(v){ return (v ?? '').toString().trim().toLowerCase(); }
 
-  
-function __scrollBottomAfterFilters(){
-  requestAnimationFrame(()=>{
-    const w = document.getElementById('tableWrap');
-    if(w) w.scrollTop = w.scrollHeight;
-  });
-}
+  function rfSelectedSet(col){
+    const arr = RF_MULTI_FILTERS[col];
+    return Array.isArray(arr) ? new Set(arr.map(rfNorm).filter(Boolean)) : new Set();
+  }
 
-function applyFilters(){
+  function rfHasAnyFilter(){
+    return RF_FILTER_COLS.some(col => Array.isArray(RF_MULTI_FILTERS[col]) && RF_MULTI_FILTERS[col].length);
+  }
+
+  function rfUniqueValuesForCol(col){
+    const rows = Array.from(document.querySelectorAll('#tbody tr'));
+    const set = new Map();
+    rows.forEach(tr => {
+      const value = rfCellRaw(tr, col);
+      const key = rfNorm(value);
+      if (value && !set.has(key)) set.set(key, value);
+    });
+    return Array.from(set.values()).sort((a,b)=>a.localeCompare(b,'ro',{numeric:true,sensitivity:'base'}));
+  }
+
+  function __scrollBottomAfterFilters(){
+    requestAnimationFrame(()=>{
+      const w = document.getElementById('tableWrap');
+      if(w) w.scrollTop = w.scrollHeight;
+    });
+  }
+
+  function rfCloseMultiMenu(){
+    if (rfOpenMenu) { rfOpenMenu.remove(); rfOpenMenu = null; }
+    document.querySelectorAll('.kad-mf-btn.active').forEach(btn => btn.classList.remove('active'));
+  }
+
+  function rfUpdateFilterButton(col){
+    const btn = document.querySelector(`.kad-mf-btn[data-col="${col}"]`);
+    if (!btn) return;
+    const selected = Array.isArray(RF_MULTI_FILTERS[col]) ? RF_MULTI_FILTERS[col] : [];
+    if (!selected.length) {
+      btn.textContent = RF_FILTER_LABELS[col] || 'Toate';
+      btn.title = 'Toate';
+    } else if (selected.length === 1) {
+      btn.textContent = selected[0];
+      btn.title = selected[0];
+    } else {
+      btn.textContent = `${selected.length} selectate`;
+      btn.title = selected.join(', ');
+    }
+  }
+
+  function rfOpenMultiMenu(button, col){
+    rfCloseMultiMenu();
+    button.classList.add('active');
+    const values = rfUniqueValuesForCol(col);
+    const selected = rfSelectedSet(col);
+    const rect = button.getBoundingClientRect();
+    const menu = document.createElement('div');
+    menu.className = 'kad-mf-menu';
+    menu.dataset.col = String(col);
+    const left = Math.min(Math.max(6, rect.left), Math.max(6, window.innerWidth - 250));
+    const top = Math.min(rect.bottom + 4, Math.max(6, window.innerHeight - 310));
+    menu.style.left = left + 'px';
+    menu.style.top = top + 'px';
+    menu.innerHTML = `
+      <div class="kad-mf-menu-head"><span>${RF_FILTER_LABELS[col] || 'Filtru'}</span><span class="kad-mf-clear" tabindex="0">Toate</span></div>
+      <input class="kad-mf-search" type="text" placeholder="Caută...">
+      <div class="kad-mf-list"></div>
+    `;
+    document.body.appendChild(menu);
+    rfOpenMenu = menu;
+
+    const list = menu.querySelector('.kad-mf-list');
+    const search = menu.querySelector('.kad-mf-search');
+
+    function renderList(term=''){
+      const q = rfNorm(term);
+      const shown = values.filter(v => !q || rfNorm(v).includes(q));
+      if (!shown.length) { list.innerHTML = '<div class="kad-mf-empty">Nu există valori.</div>'; return; }
+      list.innerHTML = shown.map(v => {
+        const checked = selected.has(rfNorm(v)) ? ' checked' : '';
+        const safe = String(v).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+        return `<label class="kad-mf-option"><input type="checkbox" value="${safe}"${checked}><span>${safe}</span></label>`;
+      }).join('');
+      list.querySelectorAll('input[type="checkbox"]').forEach(inp => {
+        inp.addEventListener('change', () => {
+          const val = inp.value;
+          if (inp.checked) selected.add(rfNorm(val));
+          else selected.delete(rfNorm(val));
+          const selectedOriginals = values.filter(v => selected.has(rfNorm(v)));
+          RF_MULTI_FILTERS[col] = selectedOriginals;
+          rfUpdateFilterButton(col);
+          applyFilters();
+        });
+      });
+    }
+
+    renderList();
+    search.addEventListener('input', () => renderList(search.value));
+    menu.querySelector('.kad-mf-clear').addEventListener('click', () => {
+      RF_MULTI_FILTERS[col] = [];
+      rfUpdateFilterButton(col);
+      rfCloseMultiMenu();
+      applyFilters();
+    });
+    setTimeout(()=>search.focus(), 0);
+  }
+
+  function initMultiFilterRow(){
+    RF_FILTER_COLS.forEach(col => {
+      const cell = filterRow?.querySelector(`[data-col="${col}"]`)?.closest('th') || filterRow?.children?.[col];
+      if (!cell || cell.dataset.kadMfReady === '1') return;
+      cell.dataset.kadMfReady = '1';
+      cell.innerHTML = `<div class="kad-mf-wrap"><button type="button" class="kad-mf-btn" data-col="${col}">${RF_FILTER_LABELS[col] || 'Toate'}</button></div>`;
+      const btn = cell.querySelector('.kad-mf-btn');
+      btn.addEventListener('click', (event) => {
+        event.stopPropagation();
+        rfOpenMultiMenu(btn, col);
+      });
+      rfUpdateFilterButton(col);
+    });
+  }
+
+  function applyFilters(){
     const tbody = document.getElementById('tbody');
     const rows = Array.from(tbody.querySelectorAll('tr'));
-    const textFilters = Array.from(document.querySelectorAll('#filterRow input.filt'))
-      .map(inp => ({col: Number(inp.dataset.col), val: inp.value.trim().toLowerCase()}));
-    const pretestSel = document.querySelector('#filterRow select.filtSelect');
-    const pretestVal = (pretestSel?.value || "").trim().toLowerCase();
+    const anyFilter = rfHasAnyFilter();
 
     rows.forEach(tr => {
       const tds = tr.querySelectorAll('td');
-      const anyFilter = textFilters.some(f=>f.val.length) || pretestVal.length;
-      const rowAllEmpty = Array.from(tds).every(td => getCellText(td) === "");
-      if (anyFilter && rowAllEmpty){ tr.style.display = "none"; return; }
+      const rowAllEmpty = Array.from(tds).every(td => getCellText(td) === '');
+      if (anyFilter && rowAllEmpty){ tr.style.display = 'none'; return; }
 
       let ok = true;
-      for (const f of textFilters){
-        if (!f.val) continue;
-        const cell = getCellText(tds[f.col]);
-        if (!cell.includes(f.val)){ ok = false; break; }
+      for (const col of RF_FILTER_COLS){
+        const selected = rfSelectedSet(col);
+        if (!selected.size) continue;
+        const cell = getCellText(tds[col]);
+        if (!selected.has(cell)){ ok = false; break; }
       }
-      if (ok && pretestVal){
-        const cell = getCellText(tds[8]);
-        if (cell !== pretestVal) ok = false;
-      }
-      tr.style.display = ok ? "" : "none";
+      tr.style.display = ok ? '' : 'none';
     });
-  
-  __scrollBottomAfterFilters();
-}
+
+    __scrollBottomAfterFilters();
+  }
 
   function toggleFilters(){
     filtersVisible = !filtersVisible;
-    filterRow.style.display = filtersVisible ? "" : "none";
+    filterRow.style.display = filtersVisible ? '' : 'none';
   }
 
   function clearFilters(){
-    document.querySelectorAll('#filterRow input.filt').forEach(inp => inp.value = "");
-    const sel = document.querySelector('#filterRow select.filtSelect');
-    if (sel) sel.value = "";
+    RF_FILTER_COLS.forEach(col => { RF_MULTI_FILTERS[col] = []; rfUpdateFilterButton(col); });
+    rfCloseMultiMenu();
     applyFilters();
   }
 
-  document.querySelectorAll('#filterRow input.filt').forEach(inp => inp.addEventListener('input', applyFilters));
-  const selF = document.querySelector('#filterRow select.filtSelect');
-  if (selF) selF.addEventListener('change', applyFilters);
+  document.addEventListener('click', (event) => {
+    if (rfOpenMenu && !rfOpenMenu.contains(event.target) && !event.target.closest('.kad-mf-btn')) rfCloseMultiMenu();
+  });
+  document.addEventListener('keydown', (event) => { if (event.key === 'Escape') rfCloseMultiMenu(); });
+  window.addEventListener('resize', rfCloseMultiMenu);
 
   (function wireHeaderFilters(){
+    initMultiFilterRow();
     const headerThs = document.querySelectorAll('thead tr:first-child th');
     headerThs.forEach((th, idx) => {
       const f = th.querySelector('.filter');
       if (!f) return;
-      f.style.cursor = "pointer";
+      f.style.cursor = 'pointer';
       f.addEventListener('click', () => {
         filtersVisible = true;
-        filterRow.style.display = "";
-        const target = filterRow.querySelector(`[data-col="${idx}"]`);
-        if (target) target.focus();
+        filterRow.style.display = '';
+        const btn = filterRow.querySelector(`.kad-mf-btn[data-col="${idx}"]`);
+        if (btn) btn.click();
       });
     });
   })();

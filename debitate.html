@@ -451,6 +451,30 @@
     tr > td:first-child{
       border-left-color:#000 !important;
     }
+
+    /* K.A.D - filtrare multiplă locală, fără script global */
+    th .thFilter.kad-mf-btn{
+      width:100%;height:18px;border:1px solid rgba(0,0,0,.30);border-radius:6px;
+      padding:0 18px 0 6px;font-size:11px;font-weight:800;background:rgba(255,255,255,.78);
+      color:#0b1220;outline:none;cursor:pointer;text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+      box-shadow:none;position:relative;
+    }
+    th .thFilter.kad-mf-btn:after{content:'▾';position:absolute;right:5px;top:50%;transform:translateY(-50%);font-size:10px;color:#334155;}
+    th .thFilter.kad-mf-btn.active{border-color:var(--focus);box-shadow:0 0 0 2px rgba(37,99,235,.18);background:rgba(255,255,255,.95);}
+    .kad-mf-menu{
+      position:fixed;z-index:100000;background:#fff;border:2px solid #000;border-radius:8px;
+      box-shadow:0 12px 28px rgba(0,0,0,.22);padding:6px;width:250px;max-height:310px;overflow:auto;
+      font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;color:#0b1220;
+    }
+    .kad-mf-menu-head{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:4px 6px 6px;border-bottom:1px solid #cbd5e1;margin-bottom:4px;font-size:12px;font-weight:900;color:#334155;}
+    .kad-mf-clear{color:#1e5a96;cursor:pointer;white-space:nowrap;}
+    .kad-mf-clear:hover{text-decoration:underline;}
+    .kad-mf-search{width:100%;height:26px;border:1px solid #94a3b8;border-radius:7px;padding:0 8px;margin:3px 0 6px;font-size:12px;outline:none;}
+    .kad-mf-option{display:flex;align-items:center;gap:7px;padding:5px 6px;border-radius:6px;font-size:12px;cursor:pointer;user-select:none;}
+    .kad-mf-option:hover{background:#eaf4ff;}
+    .kad-mf-option input{width:auto;height:auto;margin:0;accent-color:#2b6cb0;}
+    .kad-mf-empty{padding:8px 6px;color:#64748b;font-size:12px;}
+
 </style>
 
   <script>
@@ -1998,7 +2022,7 @@ function setAutofillReadonly(isReadonly){
 
       const th = document.createElement("th");
 
-      // label + filter input in same header cell (nu schimbă lățimi)
+      // label + filtru multiplu în același header cell (fără script global)
       const wrap = document.createElement("div");
       wrap.className = "thWrap";
 
@@ -2006,27 +2030,20 @@ function setAutofillReadonly(isReadonly){
       lab.className = "thLabel";
       lab.textContent = col.label;
 
-      const inp = document.createElement("input");
-      inp.className = "thFilter";
-      inp.type = "text";
-      inp.placeholder = "";
-      inp.autocomplete = "off";
-      inp.spellcheck = false;
-      inp.dataset.key = col.key;
-      inp.value = (COL_FILTERS[col.key] || "");
-
-      inp.addEventListener("input", ()=>{
-        COL_FILTERS[col.key] = inp.value || "";
-        // regula: când filtrezi, mergi pe ultima pagină (jos)
-        autoScrollBottom = true;
-        renderBody();
-        refreshSummaryTable();
-      refreshSarjaWarningTable();
+      const btn = document.createElement("button");
+      btn.className = "thFilter kad-mf-btn";
+      btn.type = "button";
+      btn.dataset.key = col.key;
+      btn.dataset.label = col.label;
+      btn.addEventListener("click", (event)=>{
+        event.stopPropagation();
+        rfOpenColumnFilterMenu(btn, col.key);
       });
 
       wrap.appendChild(lab);
-      wrap.appendChild(inp);
+      wrap.appendChild(btn);
       th.appendChild(wrap);
+      rfUpdateColumnFilterButton(col.key);
 
 
       // Freeze primele coloane (sticky)
@@ -2081,7 +2098,7 @@ function setAutofillReadonly(isReadonly){
       for (let i=0;i<COLUMNS.length;i++){
         const k = COLUMNS[i].key;
         const q = COL_FILTERS[k];
-        if(q && !matchColFilter(r, k, q)) return false;
+        if(rfHasFilterValue(q) && !matchColFilter(r, k, q)) return false;
       }
       return true;
     });
@@ -2089,18 +2106,135 @@ function setAutofillReadonly(isReadonly){
 
 
   
-  // ===== COL FILTERS (pe fiecare coloană) =====
-  const COL_FILTERS = {}; // key -> string
+  // ===== COL FILTERS MULTIPLE (pe fiecare coloană) =====
+  const COL_FILTERS = {}; // key -> valori selectate
+  let rfOpenMenu = null;
 
   function normStr(v){
     return (v===null || v===undefined) ? "" : String(v).trim();
   }
+  function rfNorm(v){ return normStr(v).toLowerCase(); }
+  function rfHasFilterValue(q){ return Array.isArray(q) ? q.length > 0 : !!normStr(q); }
+
+  function rfColumnMeta(key){ return COLUMNS.find(c => c.key === key) || { key, label:key, type:'text' }; }
+
+  function rfDisplayValue(row, key){
+    const col = rfColumnMeta(key);
+    if (col.type === 'date') return fmtDateRO(row.data);
+    if (col.type === 'diam') return normalizeDiam(row.diametru);
+    if (key === 'totalKg') return fmtIntDots(Number(row.totalKg));
+    if (key === 'procentNorma') return row.procentNorma === '' ? '' : fmtPct(Number(row.procentNorma));
+    return normStr(row[key]);
+  }
+
+  function rfUniqueColumnValues(key){
+    const set = new Map();
+    (Array.isArray(rows) ? rows : []).forEach(row => {
+      const value = rfDisplayValue(row, key);
+      const k = rfNorm(value);
+      if (value && !set.has(k)) set.set(k, value);
+    });
+    return Array.from(set.values()).sort((a,b)=>a.localeCompare(b,'ro',{numeric:true,sensitivity:'base'}));
+  }
+
   function matchColFilter(row, key, q){
+    if (Array.isArray(q)) {
+      if (!q.length) return true;
+      const selected = new Set(q.map(rfNorm).filter(Boolean));
+      return selected.has(rfNorm(rfDisplayValue(row, key)));
+    }
     const needle = normStr(q).toLowerCase();
     if(!needle) return true;
-    const hay = normStr(row[key]).toLowerCase();
+    const hay = rfDisplayValue(row, key).toLowerCase();
     return hay.includes(needle);
   }
+
+  function rfCloseColumnFilterMenu(){
+    if (rfOpenMenu) { rfOpenMenu.remove(); rfOpenMenu = null; }
+    document.querySelectorAll('.kad-mf-btn.active').forEach(btn => btn.classList.remove('active'));
+  }
+
+  function rfUpdateColumnFilterButton(key){
+    const btn = document.querySelector(`.kad-mf-btn[data-key="${key}"]`);
+    if (!btn) return;
+    const selected = Array.isArray(COL_FILTERS[key]) ? COL_FILTERS[key] : [];
+    const col = rfColumnMeta(key);
+    if (!selected.length) {
+      btn.textContent = 'Toate';
+      btn.title = col.label || key;
+    } else if (selected.length === 1) {
+      btn.textContent = selected[0];
+      btn.title = selected[0];
+    } else {
+      btn.textContent = `${selected.length} selectate`;
+      btn.title = selected.join(', ');
+    }
+  }
+
+  function rfOpenColumnFilterMenu(button, key){
+    rfCloseColumnFilterMenu();
+    button.classList.add('active');
+    const values = rfUniqueColumnValues(key);
+    const selected = new Set((Array.isArray(COL_FILTERS[key]) ? COL_FILTERS[key] : []).map(rfNorm));
+    const col = rfColumnMeta(key);
+    const rect = button.getBoundingClientRect();
+    const menu = document.createElement('div');
+    menu.className = 'kad-mf-menu';
+    const left = Math.min(Math.max(6, rect.left), Math.max(6, window.innerWidth - 260));
+    const top = Math.min(rect.bottom + 4, Math.max(6, window.innerHeight - 320));
+    menu.style.left = left + 'px';
+    menu.style.top = top + 'px';
+    menu.innerHTML = `
+      <div class="kad-mf-menu-head"><span>${String(col.label || key).replace(/</g,'&lt;')}</span><span class="kad-mf-clear" tabindex="0">Toate</span></div>
+      <input class="kad-mf-search" type="text" placeholder="Caută...">
+      <div class="kad-mf-list"></div>
+    `;
+    document.body.appendChild(menu);
+    rfOpenMenu = menu;
+
+    const list = menu.querySelector('.kad-mf-list');
+    const search = menu.querySelector('.kad-mf-search');
+    function esc(v){ return String(v).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+    function renderList(term=''){
+      const q = rfNorm(term);
+      const shown = values.filter(v => !q || rfNorm(v).includes(q));
+      if (!shown.length) { list.innerHTML = '<div class="kad-mf-empty">Nu există valori.</div>'; return; }
+      list.innerHTML = shown.map(v => {
+        const checked = selected.has(rfNorm(v)) ? ' checked' : '';
+        return `<label class="kad-mf-option"><input type="checkbox" value="${esc(v)}"${checked}><span>${esc(v)}</span></label>`;
+      }).join('');
+      list.querySelectorAll('input[type="checkbox"]').forEach(inp => {
+        inp.addEventListener('change', () => {
+          if (inp.checked) selected.add(rfNorm(inp.value));
+          else selected.delete(rfNorm(inp.value));
+          COL_FILTERS[key] = values.filter(v => selected.has(rfNorm(v)));
+          rfUpdateColumnFilterButton(key);
+          autoScrollBottom = true;
+          renderBody();
+          refreshSummaryTable();
+          refreshSarjaWarningTable();
+        });
+      });
+    }
+    renderList();
+    search.addEventListener('input', ()=>renderList(search.value));
+    menu.querySelector('.kad-mf-clear').addEventListener('click', () => {
+      COL_FILTERS[key] = [];
+      rfUpdateColumnFilterButton(key);
+      rfCloseColumnFilterMenu();
+      autoScrollBottom = true;
+      renderBody();
+      refreshSummaryTable();
+      refreshSarjaWarningTable();
+    });
+    setTimeout(()=>search.focus(), 0);
+  }
+
+  document.addEventListener('click', (event) => {
+    if (rfOpenMenu && !rfOpenMenu.contains(event.target) && !event.target.closest('.kad-mf-btn')) rfCloseColumnFilterMenu();
+  });
+  document.addEventListener('keydown', (event) => { if (event.key === 'Escape') rfCloseColumnFilterMenu(); });
+  window.addEventListener('resize', rfCloseColumnFilterMenu);
 
 // ===== UI FILTERS (tabel) =====
   const MONTHS_RO = ["ianuarie","februarie","martie","aprilie","mai","iunie","iulie","august","septembrie","octombrie","noiembrie","decembrie"];
@@ -2184,6 +2318,9 @@ function setAutofillReadonly(isReadonly){
 
   function resetUIFilters(){
     if ($("fltYear")) $("fltYear").value = "";
+    if ($("fltMonth")) $("fltMonth").value = "";
+    Object.keys(COL_FILTERS).forEach(k => { COL_FILTERS[k] = []; rfUpdateColumnFilterButton(k); });
+    rfCloseColumnFilterMenu();
     refreshFilterUI(true);
     applyUIFilters();
   }
