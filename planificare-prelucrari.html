@@ -174,6 +174,7 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
   const SAVE_DEBOUNCE_MS = 140;
   const REMOTE_POLL_MS = 120000;
   const WEEK_SIZE = 7;
+  const EMPTY_CELL_MARKER = '__KAD_EMPTY_CELL__';
 
   const table = document.getElementById('planificareTable');
   const sheetScroll = document.getElementById('sheetScroll');
@@ -187,6 +188,7 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
     weeksAdded: 0,
     cells: {},
     colors: {},
+    undoStack: [],
     hiddenWeeks: [],
     currentSignature: '',
     lastSavedSignature: '',
@@ -295,7 +297,7 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
     const src = payload && payload.cells && typeof payload.cells === 'object' ? payload.cells : {};
     Object.keys(src).sort().forEach((key) => {
       const value = normalizeSpaces(src[key]);
-      if(value) cells[key] = value;
+      if(value || value === EMPTY_CELL_MARKER) cells[key] = value;
     });
     const colors = {};
     const colorSrc = payload && payload.colors && typeof payload.colors === 'object' ? payload.colors : {};
@@ -441,7 +443,9 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
     return (cell.dataset.gridRow || '0') + ':' + (cell.dataset.gridCol || '0');
   }
   function getSparseValue(key){
-    return Object.prototype.hasOwnProperty.call(state.cells, key) ? safeText(state.cells[key]) : null;
+    if(!Object.prototype.hasOwnProperty.call(state.cells, key)) return null;
+    const value = safeText(state.cells[key]);
+    return value === EMPTY_CELL_MARKER ? '' : value;
   }
   function getSparseColor(key){
     return Object.prototype.hasOwnProperty.call(state.colors, key) ? normalizeColorValue(state.colors[key]) : '';
@@ -480,8 +484,14 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
     const key = getCellKey(cell);
     const value = normalizeSpaces(raw);
     const defaultValue = normalizeSpaces(cell.dataset.defaultRaw || '');
-    if(!value || value === defaultValue) delete state.cells[key];
-    else state.cells[key] = value;
+    if(!value){
+      if(defaultValue) state.cells[key] = EMPTY_CELL_MARKER;
+      else delete state.cells[key];
+    } else if(value === defaultValue) {
+      delete state.cells[key];
+    } else {
+      state.cells[key] = value;
+    }
     state.currentSignature = buildSignature({ weeksAdded: state.weeksAdded, hiddenWeeks: state.hiddenWeeks, cells: state.cells, colors: state.colors });
   }
   function annotateGrid(){
@@ -663,7 +673,7 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
     const cleanCells = {};
     Object.keys(state.cells).sort().forEach((key) => {
       const value = normalizeSpaces(state.cells[key]);
-      if(value) cleanCells[key] = value;
+      if(value || value === EMPTY_CELL_MARKER) cleanCells[key] = value;
     });
     return {
       version: 1,
@@ -720,7 +730,7 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
     const clean = {};
     Object.keys(cells).forEach((key) => {
       const value = normalizeSpaces(cells[key]);
-      if(value) clean[key] = value;
+      if(value || value === EMPTY_CELL_MARKER) clean[key] = value;
     });
     const colors = payload.colors && typeof payload.colors === 'object' ? payload.colors : {};
     const cleanColors = {};
@@ -922,6 +932,72 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
       scheduleSave();
     });
   }
+
+  function snapshotCell(cell){
+    if(!cell) return null;
+    const key = getCellKey(cell);
+    return {
+      key,
+      raw: getSparseValue(key),
+      defaultRaw: normalizeSpaces(cell.dataset.defaultRaw || '')
+    };
+  }
+  function restoreCellSnapshot(item){
+    if(!item || !item.key) return;
+    const cell = cellRegistry[item.key];
+    if(!cell) return;
+    if(item.raw === null){
+      delete state.cells[item.key];
+      renderCellValue(cell, item.defaultRaw || '');
+    } else {
+      setSparseValue(cell, item.raw);
+      renderCellValue(cell, item.raw);
+    }
+  }
+  function clearSelectedCellsForDelete(cells){
+    if(!state.canEdit || !Array.isArray(cells) || !cells.length) return false;
+    if(state.editingCell){
+      try{ state.editingCell.blur(); }catch(_err){}
+    }
+    const unique = [];
+    const seen = new Set();
+    cells.forEach((cell) => {
+      if(!cell || !table.contains(cell)) return;
+      const key = getCellKey(cell);
+      if(!key || key === '0:0' || seen.has(key)) return;
+      seen.add(key);
+      unique.push(cell);
+    });
+    if(!unique.length) return false;
+    const snapshot = unique.map(snapshotCell).filter(Boolean);
+    state.undoStack.push(snapshot);
+    if(state.undoStack.length > 30) state.undoStack.shift();
+    unique.forEach((cell) => {
+      setSparseValue(cell, '');
+      renderCellValue(cell, '');
+    });
+    saveLocalCache(buildPayload());
+    scheduleSave();
+    return true;
+  }
+  function undoLastDelete(){
+    if(!state.canEdit || !state.undoStack.length) return false;
+    const snapshot = state.undoStack.pop();
+    if(!snapshot || !snapshot.length) return false;
+    if(state.editingCell){
+      try{ state.editingCell.blur(); }catch(_err){}
+    }
+    snapshot.forEach(restoreCellSnapshot);
+    state.currentSignature = buildSignature({ weeksAdded: state.weeksAdded, hiddenWeeks: state.hiddenWeeks, cells: state.cells, colors: state.colors });
+    saveLocalCache(buildPayload());
+    scheduleSave();
+    return true;
+  }
+  window.KADPlanificarePrelucrariGridAPI = {
+    deleteCells: clearSelectedCellsForDelete,
+    undoDelete: undoLastDelete,
+    canEdit: function(){ return !!state.canEdit; }
+  };
 
   addWeekBtn.addEventListener('click', () => {
     state.pendingScrollState = { left: Math.max(0, sheetScroll.scrollLeft || 0), top: Math.max(0, sheetScroll.scrollTop || 0) };
@@ -1227,6 +1303,23 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
     if(event.key === 'Escape'){
       clearSelection();
       hideTooltip();
+      return;
+    }
+    const api = window.KADPlanificarePrelucrariGridAPI;
+    if((event.ctrlKey || event.metaKey) && String(event.key || '').toLowerCase() === 'z'){
+      if(api && typeof api.undoDelete === 'function' && api.undoDelete()){
+        event.preventDefault();
+        event.stopPropagation();
+        updateTooltip(pointerX, pointerY);
+      }
+      return;
+    }
+    if((event.key === 'Delete' || event.key === 'Backspace') && selected.size){
+      if(api && typeof api.deleteCells === 'function' && api.deleteCells(Array.from(selected))){
+        event.preventDefault();
+        event.stopPropagation();
+        updateTooltip(pointerX, pointerY);
+      }
     }
   });
 
