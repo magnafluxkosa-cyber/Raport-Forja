@@ -2570,30 +2570,39 @@
         var problemRows = buildProblemRowsFromPanel();
         if(!reportRows.length && !problemRows.length){ setChip(els.ttReportStatus, 'Nu sunt date de salvat', 'warn'); return false; }
         setChip(els.ttReportStatus, 'Se salvează raportul...', 'warn');
+        var reportPayload = null;
+        var problemPayload = null;
         try{
           var reportLocal = readDocLocal(TT_REPORT_LOCAL_KEY) || { rows:[] };
-          var reportPayload = { rows:mergeRowsById(Array.isArray(reportLocal.rows) ? reportLocal.rows : [], reportRows, reportRowIdsForCurrentSheet().filter(function(id){ return !reportRows.some(function(row){ return row.id === id; }); })), updated_at:new Date().toISOString() };
+          reportPayload = { rows:mergeRowsById(Array.isArray(reportLocal.rows) ? reportLocal.rows : [], reportRows, reportRowIdsForCurrentSheet().filter(function(id){ return !reportRows.some(function(row){ return row.id === id; }); })), updated_at:new Date().toISOString() };
           writeDocLocal(TT_REPORT_LOCAL_KEY, reportPayload);
           var problemLocal = readDocLocal(TT_PROBLEME_LOCAL_KEY) || { rows:[] };
-          var problemPayload = { rows:mergeRowsById(Array.isArray(problemLocal.rows) ? problemLocal.rows : [], problemRows, problemRowIdsForCurrentSheet().filter(function(id){ return !problemRows.some(function(row){ return row.id === id; }); })), updated_at:new Date().toISOString() };
+          problemPayload = { rows:mergeRowsById(Array.isArray(problemLocal.rows) ? problemLocal.rows : [], problemRows, problemRowIdsForCurrentSheet().filter(function(id){ return !problemRows.some(function(row){ return row.id === id; }); })), updated_at:new Date().toISOString() };
           writeDocLocal(TT_PROBLEME_LOCAL_KEY, problemPayload);
-          if(getSupabaseClient() && state.user){
+        }catch(error){
+          console.error(error);
+          setChip(els.ttReportStatus, 'Eroare la salvare locală raport', 'bad');
+          alert('Nu am putut salva local raportul TT: ' + (error && error.message || error));
+          return false;
+        }
+        state.reportDirty = false;
+        state.reportSavedForSheetId = ttReportBaseId();
+        var cloudSaved = false;
+        if(getSupabaseClient() && state.user){
+          try{
             var reportDoc = await fetchDoc(TT_REPORT_DOC_KEY) || {};
             await upsertDoc(TT_REPORT_DOC_KEY, { rows:mergeRowsById(Array.isArray(reportDoc.rows) ? reportDoc.rows : [], reportRows, reportRowIdsForCurrentSheet().filter(function(id){ return !reportRows.some(function(row){ return row.id === id; }); })), updated_at:new Date().toISOString() });
             var problemDoc = await fetchDoc(TT_PROBLEME_DOC_KEY) || {};
             await upsertDoc(TT_PROBLEME_DOC_KEY, { rows:mergeRowsById(Array.isArray(problemDoc.rows) ? problemDoc.rows : [], problemRows, problemRowIdsForCurrentSheet().filter(function(id){ return !problemRows.some(function(row){ return row.id === id; }); })), updated_at:new Date().toISOString() });
+            cloudSaved = true;
+          }catch(error){
+            console.warn('Nu am putut salva raportul TT în cloud; raportul rămâne salvat local.', error);
           }
-          state.reportDirty = false;
-          state.reportSavedForSheetId = ttReportBaseId();
-          setChip(els.ttReportStatus, 'Raport salvat', 'ok');
-          return true;
-        }catch(error){
-          console.error(error);
-          setChip(els.ttReportStatus, 'Eroare la salvare raport', 'bad');
-          alert('Nu am putut salva raportul TT: ' + (error && error.message || error));
-          return false;
         }
+        setChip(els.ttReportStatus, cloudSaved ? 'Raport salvat' : 'Raport salvat local', cloudSaved ? 'ok' : 'warn');
+        return true;
       }
+      
       function bindReportPanelEvents(){
         ['ttReportCantitate','ttReportOpriri','ttReportMentenanta','ttReportIncalzire','ttReportGolire','ttReportCantitate2','ttReportOpriri2','ttReportMentenanta2','ttReportIncalzire2','ttReportGolire2','ttProblemObservatii1','ttProblemCategorie1','ttProblemMinute1','ttProblemObservatii2','ttProblemCategorie2','ttProblemMinute2','ttProblemObservatii3','ttProblemCategorie3','ttProblemMinute3','ttProblemObservatii4','ttProblemCategorie4','ttProblemMinute4'].forEach(function(id){
           var el = els[id];
@@ -2639,6 +2648,27 @@
       }
       function operatorDraftStorageKey(operator, dateIso, shift){
         return STORAGE_KEY + ':operator:' + safeStoragePart(operator) + ':' + (String(dateIso || '').slice(0,10) || 'fara-data') + ':sch-' + (String(shift || '').trim() || 'nesetat');
+      }
+      function isExactOperatorSheetData(data, operator, dateIso, shift){
+        if(!data || typeof data !== 'object') return false;
+        operator = norm(operator);
+        dateIso = String(dateIso || '').slice(0,10);
+        shift = String(shift || '').trim();
+        if(!operator || !/^\d{4}-\d{2}-\d{2}$/.test(dateIso) || !shift) return false;
+        var dataOperator = norm(data.operator || (data.fields && data.fields.operatorTT) || '');
+        var dataDate = String(data.date_iso || (data.fields && data.fields.dateIso) || '').slice(0,10);
+        var dataShift = String(data.shift || (data.fields && data.fields.shift) || '').trim();
+        return dataOperator === operator && dataDate === dateIso && dataShift === shift;
+      }
+      function getExactOperatorDraft(operator, dateIso, shift){
+        try{
+          var key = operatorDraftStorageKey(operator, dateIso, shift);
+          var raw = localStorage.getItem(key);
+          var data = raw ? JSON.parse(raw) : null;
+          return isExactOperatorSheetData(data, operator, dateIso, shift) ? data : null;
+        }catch(_){
+          return null;
+        }
       }
       function parseDateInput(value){
         var raw = String(value || '').trim();
@@ -3043,6 +3073,14 @@
           state.lastLoadedDateIso = dateIso;
           state.lastLoadedShift = String(found.shift || shift || '').trim();
           setChip(els.modeChip, 'Fișă încărcată: ' + operator + (found.shift ? ' · ' + shiftInfo(found.shift).label : ''), 'ok');
+          return true;
+        }
+        var exactDraft = getExactOperatorDraft(operator, dateIso, shift);
+        if(exactDraft && sheetHasContent(exactDraft)){
+          applySheetData(exactDraft);
+          state.lastLoadedDateIso = dateIso;
+          state.lastLoadedShift = shift;
+          setChip(els.modeChip, 'Fișă recuperată local: ' + operator + (shift ? ' · ' + shiftInfo(shift).label : ''), 'ok');
           return true;
         }
         state.currentOperatorSheetId = buildOperatorSheetId(operator, dateIso, shift);
@@ -4039,12 +4077,11 @@
           if(els.ttShift) els.ttShift.value = unlockedShift;
         }
         var unlockedDateIso = currentWorkDateIso();
-        if(unlockedDateIso){
-          await loadOperatorSheetFor(found.operator, unlockedDateIso, unlockedShift);
-        } else {
-          state.currentOperatorSheetId = null;
-          setChip(els.modeChip, 'Completează manual DATA fișei', 'warn');
+        if(!unlockedDateIso){
+          unlockedDateIso = autoWorkDateIsoForShift(unlockedShift);
+          setWorkDateIso(unlockedDateIso);
         }
+        await loadOperatorSheetFor(found.operator, unlockedDateIso, unlockedShift);
         if(els.ttOperatorTT) els.ttOperatorTT.value = found.operator;
         saveDraft();
         state.trackingDirty = false;
@@ -4400,8 +4437,15 @@
         if(shouldRequireOperatorPin() && !state.pinUnlocked) return { cells:{} };
         var operator = activeSheetOperator();
         var dateIso = currentWorkDateIso();
+        var shift = currentShift();
+        if(shouldRequireOperatorPin()){
+          var exactDraft = getExactOperatorDraft(operator, dateIso, shift);
+          return exactDraft || { cells:{} };
+        }
         var keys = [];
-        if(operator) keys.push(operatorDraftStorageKey(operator, dateIso, currentShift()));
+        if(operator && /^\d{4}-\d{2}-\d{2}$/.test(String(dateIso || '').slice(0,10)) && shift){
+          keys.push(operatorDraftStorageKey(operator, dateIso, shift));
+        }
         keys.push(STORAGE_KEY);
         for(var i=0;i<keys.length;i++){
           try{
@@ -4420,8 +4464,10 @@
         }
         var data = collectCurrentSheetData();
         try{
-          if(data.operator) localStorage.setItem(operatorDraftStorageKey(data.operator, data.date_iso, data.shift), JSON.stringify(data));
-          localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+          if(data.operator && /^\d{4}-\d{2}-\d{2}$/.test(String(data.date_iso || '').slice(0,10)) && String(data.shift || '').trim()){
+            localStorage.setItem(operatorDraftStorageKey(data.operator, data.date_iso, data.shift), JSON.stringify(data));
+          }
+          if(!shouldRequireOperatorPin()) localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
         }catch(_){ }
         scheduleOperatorSheetSave();
       }
