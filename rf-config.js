@@ -1213,7 +1213,30 @@ function getControlCatalogForPage(pageKey) {
       }catch(_e){}
       return removed;
     }
-    function ensureSpaceForAuth(){ cleanupSafeCache(18); }
+    function emergencyCleanupForAuth(maxCount){
+      var removed = [];
+      try{
+        var keys = [];
+        for(var i=0;i<localStorage.length;i++){
+          var key = localStorage.key(i);
+          if(!key || isAuthKey(key)) continue;
+          var value = nativeGet.call(localStorage, key);
+          var len = value ? String(value).length : 0;
+          var isKadData = isSafeCacheKey(key) || isCloudFirstKey(key) || /^RF_|^KAD_|^FORJATE_|^DEBITATE_|^INTRARI_|^PLANIFICARE_|^operator-|^kad-|^rf:/i.test(key) || len > 50000;
+          if(isKadData) keys.push({ key:key, len:len, safe:isSafeCacheKey(key) || isCloudFirstKey(key) });
+        }
+        keys.sort(function(a,b){ return (Number(b.safe)-Number(a.safe)) || (b.len-a.len); });
+        var limit = Number(maxCount || 80);
+        for(var j=0;j<keys.length && removed.length<limit;j++){
+          try{ nativeRemove.call(localStorage, keys[j].key); removed.push(keys[j].key); }catch(_e){}
+        }
+      }catch(_e){}
+      return removed;
+    }
+    function ensureSpaceForAuth(){
+      cleanupSafeCache(80);
+      emergencyCleanupForAuth(40);
+    }
     function guardedGetItem(key){
       key = String(key || '');
       if(Object.prototype.hasOwnProperty.call(memory, key)) return memory[key];
@@ -1263,8 +1286,14 @@ function getControlCatalogForPage(pageKey) {
       return {
         getItem:function(key){ try{ return guardedGetItem.call(localStorage, key); }catch(_e){ try{return sessionStorage.getItem(key);}catch(_e2){return null;} } },
         setItem:function(key,value){
-          try{ ensureSpaceForAuth(); guardedSetItem.call(localStorage, key, value); return; }
-          catch(_e){ try{ sessionStorage.setItem(key, String(value == null ? '' : value)); }catch(_e2){} }
+          var text = String(value == null ? '' : value);
+          try{ ensureSpaceForAuth(); guardedSetItem.call(localStorage, key, text); return; }
+          catch(_e){
+            try{ emergencyCleanupForAuth(120); guardedSetItem.call(localStorage, key, text); return; }
+            catch(_e2){
+              try{ sessionStorage.setItem(key, text); }catch(_e3){}
+            }
+          }
         },
         removeItem:function(key){ try{ guardedRemoveItem.call(localStorage, key); }catch(_e){} try{ sessionStorage.removeItem(key); }catch(_e2){} }
       };
@@ -1273,9 +1302,11 @@ function getControlCatalogForPage(pageKey) {
       installed:true,
       authStorage: authStorage(),
       cleanupSafeCache: cleanupSafeCache,
+      emergencyCleanupForAuth: emergencyCleanupForAuth,
       ensureSpaceForAuth: ensureSpaceForAuth,
       isCloudFirstKey: isCloudFirstKey
     };
+    try{ ensureSpaceForAuth(); }catch(_e){}
   })();
 
   function getAuthOptions(extra) {

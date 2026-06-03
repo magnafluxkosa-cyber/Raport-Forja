@@ -372,10 +372,10 @@
         try{ ensureFreshSession(client, { force: !!force, redirect:false }); }catch(_e){}
       });
     };
-    window.addEventListener('focus', function(){ refreshAll(false); });
-    window.addEventListener('pageshow', function(){ refreshAll(false); });
-    document.addEventListener('visibilitychange', function(){ if(!document.hidden) refreshAll(false); });
-    window.setInterval(function(){ if(!document.hidden) refreshAll(false); }, 10 * 60 * 1000);
+    window.addEventListener('focus', function(){ refreshAll(true); });
+    window.addEventListener('pageshow', function(){ refreshAll(true); });
+    document.addEventListener('visibilitychange', function(){ if(!document.hidden) refreshAll(true); });
+    window.setInterval(function(){ refreshAll(false); }, 2 * 60 * 1000);
   }
 
   function patchSupabaseCreateClient(){
