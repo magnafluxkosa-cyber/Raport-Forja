@@ -302,6 +302,7 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
   const STORAGE_SCROLL = 'kad-plan-livrari-scroll-v5';
   const STORAGE_CACHE = 'kad-plan-livrari-cache-v5';
   const STORAGE_PENDING = 'kad-plan-livrari-pending-cloud-v1';
+  const STORAGE_UI = 'kad-plan-livrari-ui-state-v1';
   const SAVE_DEBOUNCE_MS = 140;
   const REMOTE_POLL_MS = 120000;
   const FIXED_COLS = 2;
@@ -332,7 +333,8 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
     channel: null,
     pollTimer: 0,
     clientId: 'planliv-' + Math.random().toString(36).slice(2, 10),
-    canEdit: false
+    canEdit: false,
+    localPriority: false
   };
 
 
@@ -404,16 +406,32 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
     }
   }
 
+  function saveUiState(){
+    try{
+      localStorage.setItem(STORAGE_UI, JSON.stringify({
+        hiddenWeekIds: Array.from(state.hiddenWeekIds || []).map(String),
+        scrollLeft: Number(scrollEl.scrollLeft || 0),
+        scrollTop: Number(scrollEl.scrollTop || 0),
+        savedAt: new Date().toISOString()
+      }));
+    }catch(_err){}
+  }
+  function loadUiState(){
+    try{ return JSON.parse(localStorage.getItem(STORAGE_UI) || 'null'); }catch(_err){ return null; }
+  }
   function saveScroll(){
     try{
-      localStorage.setItem(STORAGE_SCROLL, JSON.stringify({ left: scrollEl.scrollLeft, top: scrollEl.scrollTop }));
+      const data = { left: scrollEl.scrollLeft, top: scrollEl.scrollTop, savedAt: new Date().toISOString() };
+      localStorage.setItem(STORAGE_SCROLL, JSON.stringify(data));
+      saveUiState();
     }catch(_err){}
   }
   function restoreScroll(){
     try{
+      const ui = loadUiState() || {};
       const data = JSON.parse(localStorage.getItem(STORAGE_SCROLL) || '{}');
-      const left = Number(data.left || 0);
-      const top = Number(data.top || 0);
+      const left = Number(ui.scrollLeft != null ? ui.scrollLeft : (data.left || 0));
+      const top = Number(ui.scrollTop != null ? ui.scrollTop : (data.top || 0));
       requestAnimationFrame(() => {
         scrollEl.scrollLeft = left;
         scrollEl.scrollTop = top;
@@ -687,6 +705,7 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
     if(hidden.has(match.id)) hidden.delete(match.id); else hidden.add(match.id);
     state.hiddenWeekIds = Array.from(hidden);
     applyHiddenWeeks();
+    saveUiState();
     scheduleSave(true);
   }
 
@@ -775,10 +794,12 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
     try{
       localStorage.setItem(STORAGE_CACHE, JSON.stringify(payload));
       localStorage.setItem(STORAGE_PENDING, JSON.stringify(payload));
+      saveUiState();
     }catch(_err){}
   }
   function markLocalSavedToCloud(){
     try{ localStorage.removeItem(STORAGE_PENDING); }catch(_err){}
+    state.localPriority = false;
   }
   function loadJsonFromStorage(key){
     try{ return JSON.parse(localStorage.getItem(key) || 'null'); }catch(_err){ return null; }
@@ -816,6 +837,10 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
     cleanTransientSelectionMarks(table);
     payload = Object.assign({}, payload, { tableHtml: table.innerHTML });
     state.hiddenWeekIds = Array.isArray(payload.hiddenWeekIds) ? payload.hiddenWeekIds.map(String) : [];
+    if(fromRemote && state.localPriority){
+      const ui = loadUiState();
+      if(ui && Array.isArray(ui.hiddenWeekIds)) state.hiddenWeekIds = ui.hiddenWeekIds.map(String);
+    }
     state.activeCell = null;
     syncUiAfterStructureChange();
     requestAnimationFrame(() => {
@@ -825,7 +850,7 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
     state.currentSignature = payloadSignature(payload);
     state.lastSavedSignature = state.currentSignature;
     state.lastAppliedRemoteSignature = state.currentSignature;
-    saveLocalCache(payload);
+    if(!(fromRemote && state.localPriority)) saveLocalCache(payload);
   }
 
   function scheduleSave(force){
@@ -943,7 +968,7 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
     saveLocalCache(payload);
     if(signature === state.lastSavedSignature && !state.pendingSave && !forceSave) return;
     if(!state.supa){
-      state.lastSavedSignature = signature;
+      state.localPriority = true;
       return;
     }
     if(state.saving){
@@ -971,6 +996,10 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
   async function fetchAndApplyRemote(force){
     if(!state.supa) return;
     if(state.editingCell && !force) return;
+    if(state.localPriority){
+      scheduleSave(true);
+      return;
+    }
     try{
       if(!force){
         const meta = await readCloudMeta();
@@ -1040,6 +1069,7 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
 
     const pendingPayload = loadPendingCache();
     if(pendingPayload && pendingPayload.tableHtml){
+      state.localPriority = true;
       applyPayload(pendingPayload, false);
       scheduleSave(true);
       return;
@@ -1051,6 +1081,7 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
       const localTime = payloadTime(localPayload, localPayload.editedAt);
       const remoteTime = remote && remote.payload ? payloadTime(remote.payload, remote.updatedAt) : 0;
       if(!remote || localTime >= remoteTime || payloadSignature(localPayload) !== payloadSignature(remote.payload)){
+        state.localPriority = true;
         applyPayload(localPayload, false);
         scheduleSave(true);
         return;
@@ -1150,12 +1181,20 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
     { payload: loadLocalCache(), updatedAt: loadLocalCache() && loadLocalCache().editedAt }
   ]);
   if(cached && cached.payload && cached.payload.tableHtml){
+    state.localPriority = true;
     applyPayload(cached.payload, false);
   }else{
+    const ui = loadUiState();
+    if(ui && Array.isArray(ui.hiddenWeekIds)){
+      state.hiddenWeekIds = ui.hiddenWeekIds.map(String);
+      applyHiddenWeeks();
+    }
     state.currentSignature = payloadSignature(buildPayload());
     state.lastSavedSignature = state.currentSignature;
     saveLocalCache(buildPayload());
+    state.localPriority = true;
   }
+  restoreScroll();
   initCloudSync();
   })();
 })();
