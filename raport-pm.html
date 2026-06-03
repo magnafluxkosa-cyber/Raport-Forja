@@ -1265,9 +1265,62 @@
       applySelectionVisual();
     }
     function clearSelection(){state.selection=null;applySelectionVisual()}
+    function cellSelectionKey(cell){return String(cell.rowIndex)+'|'+String(cell.col)}
+    function cellSelectionFromKey(key){const parts=String(key).split('|');return {rowIndex:Number(parts[0]),col:Number(parts[1])}}
+    function uniqueSelectionCells(){
+      const s=state.selection;
+      if(!s)return [];
+      if(Array.isArray(s.cells)){
+        const seen=new Set();
+        const out=[];
+        s.cells.forEach(cell=>{
+          if(!cell)return;
+          const rowIndex=Number(cell.rowIndex);
+          const col=Number(cell.col);
+          if(!Number.isFinite(rowIndex)||!Number.isFinite(col))return;
+          const key=rowIndex+'|'+col;
+          if(seen.has(key))return;
+          seen.add(key);
+          out.push({rowIndex,col});
+        });
+        out.sort((a,b)=>a.rowIndex-b.rowIndex||a.col-b.col);
+        return out;
+      }
+      const b=selectionBounds();
+      if(!b)return [];
+      const out=[];
+      for(let r=b.r1;r<=b.r2;r++){
+        for(let c=b.c1;c<=b.c2;c++)out.push({rowIndex:r,col:c});
+      }
+      return out;
+    }
+    function selectionCellSet(){return new Set(uniqueSelectionCells().map(cellSelectionKey))}
+    function toggleCellSelection(cell){
+      if(!cell)return;
+      const current=uniqueSelectionCells();
+      const set=new Set(current.map(cellSelectionKey));
+      const key=cellSelectionKey(cell);
+      if(set.has(key)&&set.size>1)set.delete(key);
+      else set.add(key);
+      const cells=Array.from(set).map(cellSelectionFromKey).sort((a,b)=>a.rowIndex-b.rowIndex||a.col-b.col);
+      const anchor=(state.selection&&state.selection.anchor)?state.selection.anchor:cells[0];
+      state.selection={anchor:{rowIndex:anchor.rowIndex,col:anchor.col},focus:{rowIndex:cell.rowIndex,col:cell.col},cells};
+      state.lastCell={rowIndex:cell.rowIndex,col:cell.col};
+      applySelectionVisual();
+    }
     function selectionBounds(){
       const s=state.selection;
       if(!s)return null;
+      if(Array.isArray(s.cells)){
+        const cells=uniqueSelectionCells();
+        if(!cells.length)return null;
+        return {
+          r1:Math.min(...cells.map(c=>c.rowIndex)),
+          r2:Math.max(...cells.map(c=>c.rowIndex)),
+          c1:Math.min(...cells.map(c=>c.col)),
+          c2:Math.max(...cells.map(c=>c.col))
+        };
+      }
       return {r1:Math.min(s.anchor.rowIndex,s.focus.rowIndex),r2:Math.max(s.anchor.rowIndex,s.focus.rowIndex),c1:Math.min(s.anchor.col,s.focus.col),c2:Math.max(s.anchor.col,s.focus.col)};
     }
     function selectedNumericValue(row,col){
@@ -1276,12 +1329,9 @@
       if(raw===null||raw===undefined||raw==='')return null;
       if(typeof raw==='number')return isFinite(raw)?raw:null;
       if(col===COL.shift||col>=COL.plan){
-        const text=String(raw).trim().replace('%','').replace(/\s+/g,'');
+        const text=String(raw).trim();
         if(!text)return null;
-        let normalized=text;
-        if(normalized.includes(',')&&normalized.includes('.'))normalized=normalized.replace(/\./g,'').replace(',','.');
-        else if(normalized.includes(','))normalized=normalized.replace(',','.');
-        const parsed=Number(normalized);
+        const parsed=Number(text.replace('%','').replace(/\s+/g,'').replace(/\./g,'').replace(',','.'));
         return isFinite(parsed)?parsed:null;
       }
       return null;
@@ -1295,13 +1345,8 @@
     }
     function updateSelectionSummary(){
       if(!els.selectionSummary)return;
-      const b=selectionBounds();
-      if(!b){
-        els.selectionSummary.classList.remove('visible');
-        els.selectionSummary.innerHTML='';
-        return;
-      }
-      const selectedCells=(b.r2-b.r1+1)*(b.c2-b.c1+1);
+      const cells=uniqueSelectionCells();
+      const selectedCells=cells.length;
       if(selectedCells<=1){
         els.selectionSummary.classList.remove('visible');
         els.selectionSummary.innerHTML='';
@@ -1309,15 +1354,13 @@
       }
       let sum=0;
       let numericCount=0;
-      for(let r=b.r1;r<=b.r2;r++){
-        const row=state.rows[r];
-        for(let c=b.c1;c<=b.c2;c++){
-          const val=selectedNumericValue(row,c);
-          if(val===null)continue;
-          sum+=val;
-          numericCount++;
-        }
-      }
+      cells.forEach(cell=>{
+        const row=state.rows[cell.rowIndex];
+        const val=selectedNumericValue(row,cell.col);
+        if(val===null)return;
+        sum+=val;
+        numericCount++;
+      });
       const avg=numericCount?sum/numericCount:0;
       els.selectionSummary.innerHTML=`<span class="pm-selection-pill">Sumă: ${esc(fmtSelectionNumber(sum))}</span><span class="pm-selection-pill">Selectate: ${esc(fmtSelectionNumber(selectedCells))}</span><span class="pm-selection-pill">Medie: ${esc(fmtSelectionNumber(avg))}</span>`;
       els.selectionSummary.classList.add('visible');
@@ -1325,14 +1368,13 @@
     function applySelectionVisual(){
       if(!els.table)return;
       els.table.querySelectorAll('tbody td.pm-copy-selected,tbody td.pm-copy-anchor,tbody td.pm-paste-target').forEach(td=>td.classList.remove('pm-copy-selected','pm-copy-anchor','pm-paste-target'));
-      const b=selectionBounds();
-      if(!b){updateSelectionSummary();return;}
+      const selected=selectionCellSet();
+      if(!selected.size){updateSelectionSummary();return;}
       els.table.querySelectorAll('tbody tr[data-row-index]').forEach(tr=>{
         const ri=Number(tr.dataset.rowIndex);
-        if(ri<b.r1||ri>b.r2)return;
         tr.querySelectorAll('td[data-col]').forEach(td=>{
           const ci=Number(td.dataset.col);
-          if(ci>=b.c1&&ci<=b.c2)td.classList.add('pm-copy-selected');
+          if(selected.has(ri+'|'+ci))td.classList.add('pm-copy-selected');
         });
       });
       const a=state.selection&&state.selection.anchor;
@@ -1353,15 +1395,19 @@
       const td=e.currentTarget;
       const meta=cellMeta(td);
       if(!meta)return;
-      if(e.shiftKey&&state.selection){
+      if(e.ctrlKey||e.metaKey){
+        toggleCellSelection({rowIndex:meta.rowIndex,col:meta.col});
+        state.isMouseSelecting=false;
+      }else if(e.shiftKey&&state.selection){
         setSelection(state.selection.anchor,{rowIndex:meta.rowIndex,col:meta.col});
+        state.isMouseSelecting=true;
       }else{
         setSelection({rowIndex:meta.rowIndex,col:meta.col},{rowIndex:meta.rowIndex,col:meta.col});
+        state.isMouseSelecting=true;
       }
-      state.isMouseSelecting=true;
       state.lastCell={rowIndex:meta.rowIndex,col:meta.col};
       td.focus({preventScroll:true});
-      if(td.getAttribute('contenteditable')==='true')placeCaretAtEnd(td);
+      if(td.getAttribute('contenteditable')==='true'&&!(e.ctrlKey||e.metaKey))placeCaretAtEnd(td);
       e.preventDefault();
     }
     function onCellMouseOver(e){
@@ -1381,13 +1427,18 @@
       return null;
     }
     function selectionText(){
+      const selected=selectionCellSet();
       const b=selectionBounds()||(()=>{const s=activeCellStart();return s?{r1:s.rowIndex,r2:s.rowIndex,c1:s.col,c2:s.col}:null})();
       if(!b)return '';
+      const hasSparse=selected.size>0&&Array.isArray(state.selection&&state.selection.cells);
       const lines=[];
       for(let r=b.r1;r<=b.r2;r++){
         const row=state.rows[r];
         const parts=[];
-        for(let c=b.c1;c<=b.c2;c++)parts.push(copyValue(row,c));
+        for(let c=b.c1;c<=b.c2;c++){
+          if(hasSparse&&!selected.has(r+'|'+c))parts.push('');
+          else parts.push(copyValue(row,c));
+        }
         lines.push(parts.join('\t'));
       }
       return lines.join('\n');
@@ -1444,18 +1495,22 @@
     }
     function clearSelectedCells(){
       if(!state.canEdit)return false;
-      const b=selectionBounds();
-      if(!b)return false;
+      const cells=uniqueSelectionCells();
+      if(!cells.length)return false;
       let changed=false;
-      for(let r=b.r1;r<=b.r2;r++){
-        const row=state.rows[r];
-        if(!row||!row.values)continue;
-        for(let c=b.c1;c<=b.c2;c++){
-          if(c<0||c>=VISIBLE_COLS||isCalc(c))continue;
-          if(String(row.values[c]??'')!==''){row.values[c]='';changed=true}
+      const touchedRows=new Set();
+      cells.forEach(cell=>{
+        const row=state.rows[cell.rowIndex];
+        if(!row||!row.values)return;
+        const c=cell.col;
+        if(c<0||c>=VISIBLE_COLS||isCalc(c))return;
+        if(String(row.values[c]??'')!==''){
+          row.values[c]='';
+          changed=true;
+          touchedRows.add(cell.rowIndex);
         }
-        recalc(row);
-      }
+      });
+      touchedRows.forEach(rowIndex=>recalc(state.rows[rowIndex]));
       if(!changed)return false;
       recalcAllRows();
       state.dirty++;
@@ -2003,7 +2058,7 @@
 
     function exportCsv(){const rows=filteredRows();const lines=[state.columns.map(c=>`"${String(c.label).replace(/"/g,'""')}"`).join(';')];rows.forEach(r=>{recalc(r);lines.push(r.values.slice(0,VISIBLE_COLS).map(v=>`"${String(formatForCsv(v)).replace(/"/g,'""')}"`).join(';'))});const blob=new Blob([lines.join('\n')],{type:'text/csv;charset=utf-8'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='raport-pm-raport.csv';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000)}
     function formatForCsv(v){return typeof v==='number'?String(v).replace('.',','):String(v??'')}
-    function onDocumentKeydown(e){if((e.key==='Delete'||e.key==='Backspace')&&state.selection&&!cellMeta(document.activeElement)){e.preventDefault();clearSelectedCells();return}}
+    function onDocumentKeydown(e){if(e.key==='Escape'&&state.selection){e.preventDefault();clearSelection();return}if((e.key==='Delete'||e.key==='Backspace')&&state.selection&&!cellMeta(document.activeElement)){e.preventDefault();clearSelectedCells();return}}
     function bind(){els.btnSave.onclick=saveLocal;els.btnReset.onclick=resetLocal;els.btnExport.onclick=exportCsv;els.btnPrint.onclick=()=>window.print();if(els.btnImportExcel&&els.excelImportInput){els.btnImportExcel.onclick=(ev)=>{if(ev&&ev.preventDefault)ev.preventDefault();els.excelImportInput.value='';els.excelImportInput.click();};els.btnImportExcel.onkeydown=(ev)=>{if(ev.key==='Enter'||ev.key===' '){ev.preventDefault();els.excelImportInput.value='';els.excelImportInput.click();}};}if(els.excelImportInput)els.excelImportInput.onchange=e=>importExcelFile(e.target.files&&e.target.files[0]);if(els.btnExportExcel)els.btnExportExcel.onclick=exportExcelFile;if(els.btnImportExcel)els.btnImportExcel.disabled=false;els.btnPrev.onclick=()=>{if(state.page>1){state.page--;renderAll(false)}};els.btnNext.onclick=()=>{state.page++;renderAll(false)};document.addEventListener('mouseup',onDocumentMouseUp);document.addEventListener('copy',onCopy);document.addEventListener('paste',onPaste);document.addEventListener('keydown',onDocumentKeydown);document.addEventListener('click',e=>{const p=document.getElementById('columnFilterPopup');if(p&&p.style.display!=='none'&&!p.contains(e.target)&&!(e.target&&e.target.classList&&e.target.classList.contains('col-filter-btn')))closeColumnFilter();})}
     function bindImportExcelEarlyFallback(){
       const btn=document.getElementById('btnImportExcel');
