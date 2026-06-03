@@ -152,7 +152,7 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
 <div class="title">PLANIFICARE PRELUCRĂRI</div>
 <div class="info-chip">Model Excel</div>
 <button class="action-btn" id="btnAddWeek" type="button">Adaugă săptămână</button>
-<button class="action-btn" id="btnToggleWeek" type="button">Ascunde/Arată săptămână</button><div class="paletteWrap" id="paletteWrap"><span class="paletteLabel">Culori</span><button class="paletteSwatch" type="button" data-fill-color="#ffffff" title="Alb" style="background:#ffffff"></button><button class="paletteSwatch" type="button" data-fill-color="#ffe699" title="Crem" style="background:#ffe699"></button><button class="paletteSwatch" type="button" data-fill-color="#ffff00" title="Galben" style="background:#ffff00"></button><button class="paletteSwatch" type="button" data-fill-color="#ffc000" title="Portocaliu" style="background:#ffc000"></button><button class="paletteSwatch" type="button" data-fill-color="#66ff33" title="Verde" style="background:#66ff33"></button><button class="paletteSwatch" type="button" data-fill-color="#05ffea" title="Turcoaz" style="background:#05ffea"></button><button class="paletteSwatch" type="button" data-fill-color="#bfbfbf" title="Gri" style="background:#bfbfbf"></button></div></div>
+<button class="action-btn" id="btnToggleWeek" type="button">Ascunde/Arată săptămână</button><div class="paletteWrap" id="paletteWrap"><span class="paletteLabel">Culori</span><button class="paletteSwatch" type="button" data-fill-color="#ffffff" title="Alb" style="background:#ffffff"></button><button class="paletteSwatch" type="button" data-fill-color="#ffe699" title="Crem" style="background:#ffe699"></button><button class="paletteSwatch" type="button" data-fill-color="#ffff00" title="Galben" style="background:#ffff00"></button><button class="paletteSwatch" type="button" data-fill-color="#ffc000" title="Portocaliu" style="background:#ffc000"></button><button class="paletteSwatch" type="button" data-fill-color="#ff0000" title="Roșu" style="background:#ff0000"></button><button class="paletteSwatch" type="button" data-fill-color="#66ff33" title="Verde" style="background:#66ff33"></button><button class="paletteSwatch" type="button" data-fill-color="#05ffea" title="Turcoaz" style="background:#05ffea"></button><button class="paletteSwatch" type="button" data-fill-color="#bfbfbf" title="Gri" style="background:#bfbfbf"></button></div></div>
 <div class="subtitle">Structură preluată direct din foaia Excel „Planificare Prelucrari”. Aspectul tabelului este păstrat cât mai aproape de modelul original.</div>
 </div>
 </header>
@@ -993,9 +993,60 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
     scheduleSave();
     return true;
   }
+  function getRawTextForCell(cell){
+    if(!cell) return '';
+    const key = getCellKey(cell);
+    const sparse = getSparseValue(key);
+    if(sparse !== null) return sparse;
+    if(cell.dataset && cell.dataset.rawValue != null) return normalizeSpaces(cell.dataset.rawValue);
+    return normalizeSpaces(cell.textContent);
+  }
+  function setMatrixFromPaste(anchorCell, matrix){
+    if(!state.canEdit || !anchorCell || !Array.isArray(matrix) || !matrix.length) return false;
+    if(state.editingCell){
+      try{ state.editingCell.blur(); }catch(_err){}
+    }
+    const startRow = Number(anchorCell.dataset.gridRow || 0);
+    const startCol = Number(anchorCell.dataset.gridCol || 0);
+    if(!startRow || !startCol) return false;
+
+    const targets = [];
+    const seen = new Set();
+    matrix.forEach((rowValues, rOffset) => {
+      (Array.isArray(rowValues) ? rowValues : []).forEach((_value, cOffset) => {
+        const key = (startRow + rOffset) + ':' + (startCol + cOffset);
+        const cell = cellRegistry[key];
+        if(!cell || !table.contains(cell) || seen.has(key)) return;
+        seen.add(key);
+        targets.push(cell);
+      });
+    });
+    if(!targets.length) return false;
+
+    const snapshot = targets.map(snapshotCell).filter(Boolean);
+    state.undoStack.push(snapshot);
+    if(state.undoStack.length > 30) state.undoStack.shift();
+
+    matrix.forEach((rowValues, rOffset) => {
+      (Array.isArray(rowValues) ? rowValues : []).forEach((value, cOffset) => {
+        const key = (startRow + rOffset) + ':' + (startCol + cOffset);
+        const cell = cellRegistry[key];
+        if(!cell || !table.contains(cell)) return;
+        const raw = normalizeSpaces(value);
+        setSparseValue(cell, raw);
+        renderCellValue(cell, raw);
+      });
+    });
+
+    saveLocalCache(buildPayload());
+    scheduleSave();
+    return true;
+  }
   window.KADPlanificarePrelucrariGridAPI = {
     deleteCells: clearSelectedCellsForDelete,
     undoDelete: undoLastDelete,
+    pasteMatrix: setMatrixFromPaste,
+    getCellRawText: getRawTextForCell,
     canEdit: function(){ return !!state.canEdit; }
   };
 
@@ -1132,6 +1183,59 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
     if(!cell) return '';
     return (cell.innerText || cell.textContent || '').trim();
   }
+
+  function selectedTopLeftCell(){
+    if(!selected.size) return null;
+    return Array.from(selected).sort((a,b) => {
+      const ga = gridMetricsOf(a), gb = gridMetricsOf(b);
+      return (ga.row - gb.row) || (ga.col - gb.col);
+    })[0] || null;
+  }
+
+  function focusedEditableCell(){
+    const active = document.activeElement;
+    return active && active.closest ? active.closest(CELL_SELECTOR) : null;
+  }
+
+  function rawTextForCell(cell){
+    const api = window.KADPlanificarePrelucrariGridAPI;
+    if(api && typeof api.getCellRawText === 'function') return String(api.getCellRawText(cell) || '');
+    return cellText(cell);
+  }
+
+  function buildClipboardTextFromSelection(){
+    if(!selected.size) return '';
+    const cells = Array.from(selected);
+    let minRow = Infinity, maxRow = -Infinity, minCol = Infinity, maxCol = -Infinity;
+    const byKey = new Map();
+    cells.forEach(cell => {
+      const g = gridMetricsOf(cell);
+      if(g.row < 0 || g.col < 0) return;
+      minRow = Math.min(minRow, g.row);
+      maxRow = Math.max(maxRow, g.row);
+      minCol = Math.min(minCol, g.col);
+      maxCol = Math.max(maxCol, g.col);
+      byKey.set(g.row + ':' + g.col, rawTextForCell(cell));
+    });
+    if(!Number.isFinite(minRow) || !Number.isFinite(minCol)) return '';
+    const lines = [];
+    for(let r = minRow; r <= maxRow; r++){
+      const row = [];
+      for(let c = minCol; c <= maxCol; c++){
+        row.push(byKey.has(r + ':' + c) ? byKey.get(r + ':' + c) : '');
+      }
+      lines.push(row.join('\t'));
+    }
+    return lines.join('\n');
+  }
+
+  function parseClipboardText(text){
+    const raw = String(text == null ? '' : text).replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    if(!raw) return [];
+    return raw.replace(/\n$/, '').split('\n').map(line => line.split('\t'));
+  }
+
+  let internalClipboardText = '';
 
   function formatNumber(value){
     return new Intl.NumberFormat('ro-RO', { maximumFractionDigits: 2 }).format(value || 0);
@@ -1298,6 +1402,37 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
 
   document.addEventListener('pointerup', finishPointer, true);
   document.addEventListener('pointercancel', finishPointer, true);
+
+  document.addEventListener('copy', function(event){
+    if(!selected.size) return;
+    const text = buildClipboardTextFromSelection();
+    if(!text) return;
+    internalClipboardText = text;
+    if(event.clipboardData){
+      event.clipboardData.setData('text/plain', text);
+      event.preventDefault();
+      event.stopPropagation();
+    } else if(navigator.clipboard && navigator.clipboard.writeText){
+      navigator.clipboard.writeText(text).catch(function(){});
+    }
+  });
+
+  document.addEventListener('paste', function(event){
+    const api = window.KADPlanificarePrelucrariGridAPI;
+    if(!api || typeof api.pasteMatrix !== 'function' || (typeof api.canEdit === 'function' && !api.canEdit())) return;
+    const targetCell = selectedTopLeftCell() || focusedEditableCell();
+    if(!targetCell) return;
+    let text = '';
+    if(event.clipboardData) text = event.clipboardData.getData('text/plain') || '';
+    if(!text) text = internalClipboardText || '';
+    const matrix = parseClipboardText(text);
+    if(!matrix.length) return;
+    if(api.pasteMatrix(targetCell, matrix)){
+      event.preventDefault();
+      event.stopPropagation();
+      updateTooltip(pointerX, pointerY);
+    }
+  });
 
   document.addEventListener('keydown', function(event){
     if(event.key === 'Escape'){
