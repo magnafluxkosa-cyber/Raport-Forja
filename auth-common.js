@@ -386,6 +386,9 @@
     window.supabase.createClient = function(url, key, options){
       const opts = Object.assign({}, options || {});
       opts.auth = Object.assign({ persistSession:true, autoRefreshToken:true, detectSessionInUrl:true }, opts.auth || {});
+      if(!opts.auth.storage && window.KADStorageGuard && window.KADStorageGuard.authStorage){
+        opts.auth.storage = window.KADStorageGuard.authStorage;
+      }
       let clientRef = null;
       const originalGlobal = opts.global || {};
       const originalFetch = originalGlobal.fetch || (typeof fetch === 'function' ? fetch.bind(window) : null);
@@ -424,7 +427,8 @@
       auth: {
         persistSession: true,
         autoRefreshToken: true,
-        detectSessionInUrl: true
+        detectSessionInUrl: true,
+        storage: (window.KADStorageGuard && window.KADStorageGuard.authStorage) ? window.KADStorageGuard.authStorage : undefined
       }
     });
 

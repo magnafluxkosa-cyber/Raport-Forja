@@ -1171,8 +1171,119 @@ function getControlCatalogForPage(pageKey) {
 
 
 
+  /* K.A.D storage guard: cloud-first pentru date mari + protecție token Supabase.
+     Scop: localStorage rămâne doar pentru auth/preferințe mici; registrele mari nu mai umplu browserul. */
+  (function installKadStorageGuard(){
+    if(window.KADStorageGuard && window.KADStorageGuard.installed) return;
+    var nativeGet = Storage.prototype.getItem;
+    var nativeSet = Storage.prototype.setItem;
+    var nativeRemove = Storage.prototype.removeItem;
+    var memory = Object.create(null);
+    var MARKER_PREFIX = '__KAD_CLOUD_FIRST_MARKER__:';
+    var MAX_LOCAL_DATA_CHARS = 180000;
+    var AUTH_RE = /(auth-token|supabase\.auth|sb-[a-z0-9]+-auth-token|rf_user_|rf_login_at|rf_cached_role|rf_display_id|ERP_SUPABASE|erp_forja_config|rf_force_stay_on_login|rf_acl_denied_message)/i;
+    var CLOUD_FIRST_RE = /^(FORJATE_autosave_year_v2_|FORJATE_backup_year_v2_|INTRARI_OTEL_autosave_year_v2_|DEBITATE_autosave_year_v2_|rf:magnaflux:cache:year:v2:|rf:intrari-otel:cache:year:v2:)|^(kad-planificare-prelucrari-cache-v1|planificare-forja:table-ui:v1)$/i;
+    var SAFE_CACHE_RE = /(PDF_CACHE|pdf_cache|base64|_CACHE_|:cache:|cache:v1|cache:index|rf_inventar_otel_master_cache|LOCAL_CACHE|runsByPart|planificare-forja:table-ui|kad-planificare-prelucrari-scroll|rf:magnaflux:ui-state|FORJATE_filters|rf_forjate_zoom|HELPERS_v1|helpers_cache|mrc.*filter|selectedYear|scroll)/i;
+    function isQuotaError(err){
+      var name = String(err && (err.name || err.code || err.message) || '').toLowerCase();
+      return name.indexOf('quota') >= 0 || name.indexOf('exceeded') >= 0 || name.indexOf('ns_error_dom_quota') >= 0;
+    }
+    function isAuthKey(key){ return AUTH_RE.test(String(key || '')); }
+    function isCloudFirstKey(key){ return CLOUD_FIRST_RE.test(String(key || '')); }
+    function isSafeCacheKey(key){ return SAFE_CACHE_RE.test(String(key || '')) && !isAuthKey(key); }
+    function markerFor(key){ return MARKER_PREFIX + String(Date.now()) + ':' + String(key || ''); }
+    function isMarker(value){ return typeof value === 'string' && value.indexOf(MARKER_PREFIX) === 0; }
+    function cleanupSafeCache(maxCount){
+      var removed = [];
+      try{
+        var keys = [];
+        for(var i=0;i<localStorage.length;i++){
+          var k = nativeGet.call(localStorage, localStorage.key(i));
+          var key = localStorage.key(i);
+          if(!key || isAuthKey(key)) continue;
+          var len = k ? String(k).length : 0;
+          if(isSafeCacheKey(key) || len > 700000){ keys.push({ key:key, len:len, safe:isSafeCacheKey(key) }); }
+        }
+        keys.sort(function(a,b){ return (b.safe-a.safe) || (b.len-a.len); });
+        var limit = Number(maxCount || 12);
+        for(var j=0;j<keys.length && removed.length<limit;j++){
+          if(!keys[j].safe && !isCloudFirstKey(keys[j].key)) continue;
+          try{ nativeRemove.call(localStorage, keys[j].key); removed.push(keys[j].key); }catch(_e){}
+        }
+      }catch(_e){}
+      return removed;
+    }
+    function ensureSpaceForAuth(){ cleanupSafeCache(18); }
+    function guardedGetItem(key){
+      key = String(key || '');
+      if(Object.prototype.hasOwnProperty.call(memory, key)) return memory[key];
+      var value = nativeGet.call(this, key);
+      if(isMarker(value)) return null;
+      return value;
+    }
+    function guardedSetItem(key, value){
+      key = String(key || '');
+      value = String(value == null ? '' : value);
+      var bigCloudData = isCloudFirstKey(key) && value.length > MAX_LOCAL_DATA_CHARS;
+      if(bigCloudData){
+        memory[key] = value;
+        try{ nativeSet.call(this, key, markerFor(key)); }catch(err){ if(isQuotaError(err)){ cleanupSafeCache(18); try{ nativeSet.call(this, key, markerFor(key)); }catch(_e){} } }
+        return;
+      }
+      if(isAuthKey(key)) ensureSpaceForAuth();
+      try{ nativeSet.call(this, key, value); return; }
+      catch(err){
+        if(!isQuotaError(err)) throw err;
+        cleanupSafeCache(18);
+        try{ nativeSet.call(this, key, value); return; }
+        catch(err2){
+          if(isCloudFirstKey(key)){
+            memory[key] = value;
+            try{ nativeSet.call(this, key, markerFor(key)); }catch(_e){}
+            return;
+          }
+          throw err2;
+        }
+      }
+    }
+    function guardedRemoveItem(key){
+      key = String(key || '');
+      try{ delete memory[key]; }catch(_e){}
+      return nativeRemove.call(this, key);
+    }
+    try{
+      if(!Storage.prototype.__kadStorageGuardPatched){
+        Storage.prototype.getItem = guardedGetItem;
+        Storage.prototype.setItem = guardedSetItem;
+        Storage.prototype.removeItem = guardedRemoveItem;
+        Object.defineProperty(Storage.prototype, '__kadStorageGuardPatched', { value:true, configurable:false });
+      }
+    }catch(_e){}
+    function authStorage(){
+      return {
+        getItem:function(key){ try{ return guardedGetItem.call(localStorage, key); }catch(_e){ try{return sessionStorage.getItem(key);}catch(_e2){return null;} } },
+        setItem:function(key,value){
+          try{ ensureSpaceForAuth(); guardedSetItem.call(localStorage, key, value); return; }
+          catch(_e){ try{ sessionStorage.setItem(key, String(value == null ? '' : value)); }catch(_e2){} }
+        },
+        removeItem:function(key){ try{ guardedRemoveItem.call(localStorage, key); }catch(_e){} try{ sessionStorage.removeItem(key); }catch(_e2){} }
+      };
+    }
+    window.KADStorageGuard = {
+      installed:true,
+      authStorage: authStorage(),
+      cleanupSafeCache: cleanupSafeCache,
+      ensureSpaceForAuth: ensureSpaceForAuth,
+      isCloudFirstKey: isCloudFirstKey
+    };
+  })();
+
   function getAuthOptions(extra) {
-    return Object.assign({ persistSession: true, autoRefreshToken: true, detectSessionInUrl: true }, extra || {});
+    var opts = Object.assign({ persistSession: true, autoRefreshToken: true, detectSessionInUrl: true }, extra || {});
+    if(!opts.storage && window.KADStorageGuard && window.KADStorageGuard.authStorage){
+      opts.storage = window.KADStorageGuard.authStorage;
+    }
+    return opts;
   }
 
   function createRfSupabaseClient(options) {
