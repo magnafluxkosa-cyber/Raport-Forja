@@ -1,55 +1,46 @@
-/* K.A.D - filtrare multiplă comună, model unic, safe/lazy. */
+/* K.A.D - model unic filtrare multiplă, variantă stabilă fără blocare la încărcare. */
 (function(){
   'use strict';
 
-  if (window.KAD_MULTI_FILTER && String(window.KAD_MULTI_FILTER.__version || '').indexOf('2026-06-03-safe-v7') === 0) return;
+  if (window.KAD_MULTI_FILTER && String(window.KAD_MULTI_FILTER.__version || '').indexOf('2026-06-03-stable-v8') === 0) return;
 
-  var VERSION = '2026-06-03-safe-v7';
+  var VERSION = '2026-06-03-stable-v8';
   var enhanced = [];
   var activeMenu = null;
   var postTimer = 0;
-  var scanTimer = 0;
-  var patchTimer = 0;
-  var observerStopTimer = 0;
-  var observer = null;
-  var MAX_VISIBLE_OPTIONS = 650;
-  var FIRST_SCAN_LIMIT_MS = 22000;
+  var scanDone = false;
+  var MAX_VISIBLE_OPTIONS = 500;
+
+  var FILTER_CONTAINER_SELECTOR = [
+    '.filters', '.filtersBar', '.filterBar', '.filterbar', '.filter-panel', '.filterPanel', '.filters-panel',
+    '.filter-row', '.filterRow', '.pageFilters', '.kad-filters', '.top-filters', '.analytics-filters',
+    '.plan-filters', '.filter-controls', '.search-controls', '.toolbar-filters', '.table-toolbar',
+    '.summary-toolbar', '.summary-toolbar-controls', '.alertControls', '.sideControls', '#filterRow',
+    'thead', 'thead tr', 'thead tr.filters', 'thead tr.colFilters', 'thead tr.filter-row'
+  ].join(',');
 
   var EXCLUDE_ANCESTOR_SELECTOR = [
     '.modal', '.modalback', '.modal-backdrop', '.modalBack', '.backdrop', '[role="dialog"]',
-    '.pinModal', '.pin-modal', '.intrariEditModal', '.entryModal', '.hidden', '.kad-ms-menu', '.kad-ms',
-    '.form-grid', '.formGrid', '.modalBody', '.modal-body', '.modalContent', '.modal-content',
-    '.operatorHeader', '.dailyOperatorGrid', '.excel-form-table', '.excel-control-table',
-    'form:not(.filters):not(.filtersBar):not(.filter-row):not(.filter-bar):not(.toolbar):not(.filterPanel):not(.filter-panel)'
+    '.pinModal', '.pin-modal', '.entryModal', '.modalBody', '.modal-body', '.modalContent', '.modal-content',
+    '.kad-ms', '.kad-ms-menu', 'form:not(.filters):not(.filterPanel):not(.filter-panel):not(.filter-row):not(.filterbar):not(.filterBar)'
   ].join(',');
 
-  var FILTER_CONTAINER_SELECTOR = [
-    '.filters', '.filtersBar', '.summaryFiltersBar', '.filter-panel', '.filterPanel', '.filters-panel',
-    '.filter-row', '.filterRow', '.toolbar-filters', '.filterbar', '.filterBar', '.pageFilters', '.kad-filters',
-    '.top-filters', '.analytics-filters', '.plan-filters', '.filter-controls', '.search-controls',
-    '.table-toolbar', '.summary-toolbar', '.summary-toolbar-controls', '.alertControls', '.sideControls',
-    '.sidePanel .card', '.card', 'thead', 'thead tr', 'thead tr.colFilters', 'thead tr.filter-row', 'thead tr.filters', '#filterRow'
-  ].join(',');
-
-  var FILTER_ID_RE = /(filter|filt|flt|selan|selluna|selyear|selmonth|fyear|fmonth|freper|futilaj|fdiam|fcal|fstatus|fshift|col|thfilter|filteryear|filtermonth|yearfilter|monthfilter|reperfilter|sarjafilter|operatorfilter|statusfilter|categoryfilter|typefilter|utilajfilter|departamentfilter|prioritatefilter)/i;
-  var EXCLUDE_ID_RE = /^(txt|inp|fld|edit|add|m[A-Z]|r_|deb|tt|pin|docType|category|retention|source|statusField|pt|fAn|fData|fDim|fCal|fPrem|fCat|fKg|fPre|fFurn)/;
-  var SEARCH_ID_RE = /(search|cauta|căutare|quick|global)/i;
+  var FILTER_ID_RE = /(filter|filt|flt|selan|selluna|selyear|selmonth|fyear|fmonth|freper|futilaj|fdiam|fcal|fstatus|fshift|thfilter|colfilter|yearfilter|monthfilter|reperfilter|operatorfilter|statusfilter|utilajfilter|sarjafilter|departamentfilter)/i;
+  var EXCLUDE_ID_RE = /^(txt|inp|fld|edit|add|m[A-Z]|pt|pin|docType|category|retention|source|statusField|fAn|fData|fDim|fCal|fPrem|fCat|fKg|fPre|fFurn|mData|mAn|mLuna|mEchip|mReper|mDiam|mCal|mKgBuc|mLungime|mSarja|mPlan|mCant|mSchimb|mOper|mOre)/;
 
   var KEY_ALIASES = {
     an:['an','anul','year'], anul:['an','anul','year'], year:['an','anul','year'],
     luna:['luna','lună','month'], lună:['luna','lună','month'], month:['luna','lună','month'],
-    data:['data','dată','zi','date'], zi:['zi','data','dată','date'],
+    data:['data','dată','date','zi'], zi:['zi','data','dată','date'],
     reper:['reper','piesa','piesă','produs','cod reper','part'],
     dimensiune:['dimensiune','diametru','diametru otel','diametru oțel','dimensiune otel','dimensiune oțel'],
     diametru:['dimensiune','diametru','diametru otel','diametru oțel','dimensiune otel','dimensiune oțel'],
     calitate:['calitate','calitate otel','calitate oțel'],
     utilaj:['utilaj','linie','echipament','ciocan','linie forjare','linie de forjare','masina','mașina'],
-    echipament:['utilaj','echipament','linie'],
-    operator:['operator','nume operator'],
+    echipament:['utilaj','echipament','linie'], operator:['operator','nume operator'],
     schimb:['schimb','schimbul','shift'], schimbul:['schimb','schimbul','shift'],
     status:['status','stare','stadiu'], stadiu:['stadiu','status','stare'],
-    prioritate:['prioritate','nivel prioritate'], departament:['departament'],
-    material:['material','calitate','calitate otel','calitate oțel'],
+    departament:['departament'], prioritate:['prioritate'], material:['material','calitate','calitate otel','calitate oțel'],
     matrita:['matrita','matriță','marcaj matrita','marcaj matriță','cod matrita','cod matriță'],
     codcat:['cod cat','codcat','cod cat dk','cod cat marc'], 'cod cat':['cod cat','codcat','cod cat dk','cod cat marc'],
     categorie:['categorie','categoria'], sursa:['sursa','sursă','source'], retentie:['retentie','retenție','retention'],
@@ -71,11 +62,21 @@
     lada:['lada','ladă'], buc:['buc','buc_realizate','bucRealizate','cantitate','qty','quantity']
   };
 
-  function ready(fn){ if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', fn, { once:true }); else fn(); }
+  function ready(fn){
+    if (document.readyState === 'complete') return setTimeout(fn, 0);
+    window.addEventListener('load', function(){ setTimeout(fn, 0); }, { once:true });
+  }
+
+  function idle(fn){
+    if ('requestIdleCallback' in window) window.requestIdleCallback(fn, { timeout:1500 });
+    else setTimeout(fn, 350);
+  }
+
   function norm(v){ return String(v == null ? '' : v).trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/\s+/g,' '); }
   function canon(v){ return norm(v).replace(/[()\[\]{}]/g,' ').replace(/[._\/\-:]/g,' ').replace(/[^a-z0-9\s]/g,' ').replace(/\s+/g,' ').trim(); }
   function esc(v){ return String(v == null ? '' : v).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
   function cssEsc(v){ return (window.CSS && CSS.escape) ? CSS.escape(String(v)) : String(v).replace(/[^a-zA-Z0-9_-]/g,'\\$&'); }
+
   function unique(values){
     var out = [], seen = new Set();
     (values || []).forEach(function(v){
@@ -83,13 +84,14 @@
       if (!s) return;
       var k = norm(s);
       if (seen.has(k)) return;
-      seen.add(k); out.push(s);
+      seen.add(k);
+      out.push(s);
     });
     return out.sort(function(a,b){
       var na = Number(String(a).replace(/\s/g,'').replace(',', '.'));
       var nb = Number(String(b).replace(/\s/g,'').replace(',', '.'));
       if (Number.isFinite(na) && Number.isFinite(nb) && na !== nb) return na - nb;
-      return String(a).localeCompare(String(b),'ro',{numeric:true,sensitivity:'base'});
+      return String(a).localeCompare(String(b),'ro',{ numeric:true, sensitivity:'base' });
     });
   }
 
@@ -119,8 +121,10 @@
   }
 
   function insideExcluded(el){ return !!(el && el.closest(EXCLUDE_ANCESTOR_SELECTOR)); }
+
   function isTableHeaderControl(el){
     if (!el) return false;
+    if (el.closest('#filterRow, .colFilters, .filter-row, tr.filters')) return true;
     if (el.closest('thead')) {
       var cls = String(el.className || '');
       var ph = String(el.getAttribute('placeholder') || '');
@@ -131,17 +135,17 @@
       if (el.dataset && (el.dataset.col != null || el.dataset.key || el.dataset.field)) return true;
       if (/filtru|filter/i.test(ph)) return true;
     }
-    if (el.closest('#filterRow, .colFilters, .filter-row, tr.filters')) return true;
     return false;
   }
 
   function isFilterContainer(el){
+    if (!el) return false;
+    if (isTableHeaderControl(el)) return true;
     var c = el.closest(FILTER_CONTAINER_SELECTOR);
     if (!c) return false;
     var txt = norm((c.id || '') + ' ' + (c.className || '') + ' ' + (c.querySelector('.cardTitle,.sideTitle,.title') ? c.querySelector('.cardTitle,.sideTitle,.title').textContent : ''));
     if (/filtr|filter/.test(txt)) return true;
-    if (el.closest('thead')) return true;
-    if (c.matches && (c.matches('.filters,.filtersBar,.filterPanel,.filter-panel,.filter-row,#filterRow,.colFilters,.alertControls,.sideControls'))) return true;
+    if (c.matches && c.matches('.filters,.filtersBar,.filterBar,.filterbar,.filterPanel,.filter-panel,.filter-row,#filterRow,.colFilters,.alertControls,.sideControls')) return true;
     return false;
   }
 
@@ -153,7 +157,7 @@
       if (lab) label = lab.textContent || '';
     }
     if (!label) {
-      var parent = el.closest('.field,.fltGroup,.control,.filter-inline,th,td,.filter-group,.form-field,.card,.sideField');
+      var parent = el.closest('.field,.sideField,.fltGroup,.control,.filter-inline,th,td,.filter-group,.form-field');
       var parentLabel = parent ? parent.querySelector('label') : null;
       if (parentLabel) label = parentLabel.textContent || '';
     }
@@ -163,6 +167,8 @@
   }
 
   function getColumnIndex(el){
+    if (!el) return -1;
+    if (el.dataset && el.dataset.col != null && /^\d+$/.test(String(el.dataset.col))) return Number(el.dataset.col);
     var cell = el.closest('th,td');
     if (!cell || !cell.parentNode) return -1;
     var children = Array.prototype.slice.call(cell.parentNode.children || []);
@@ -189,6 +195,7 @@
   }
 
   function inferKey(el){
+    if (!el) return '';
     if (el.dataset && (el.dataset.kadRowKey || el.dataset.kadFieldKey)) return el.dataset.kadRowKey || el.dataset.kadFieldKey;
     if (el.dataset && el.dataset.key) return String(el.dataset.key);
     try {
@@ -239,7 +246,7 @@
     var id = sel.id || sel.name || '';
     if (EXCLUDE_ID_RE.test(id) && !FILTER_ID_RE.test(id)) return false;
     if (isTableHeaderControl(sel)) return true;
-    var probe = id + ' ' + (sel.className || '') + ' ' + getLabelText(sel) + ' ' + (sel.closest(FILTER_CONTAINER_SELECTOR) ? (sel.closest(FILTER_CONTAINER_SELECTOR).className || '') : '');
+    var probe = id + ' ' + (sel.className || '') + ' ' + getLabelText(sel);
     if (FILTER_ID_RE.test(probe) && isFilterContainer(sel)) return true;
     if (/^(flt|filter|sel|f[A-Z]|sum|sarjaWarn)/.test(id) && isFilterContainer(sel)) return true;
     return false;
@@ -248,14 +255,14 @@
   function isInputCandidate(inp){
     if (!inp || inp.dataset.kadNoMulti === '1' || inp.dataset.kadMultiEnhanced === '1') return false;
     var type = String(inp.type || 'text').toLowerCase();
-    if (['hidden','button','submit','file','checkbox','radio','date','datetime-local','time','password'].indexOf(type) !== -1) return false;
+    if (['hidden','button','submit','file','checkbox','radio','date','datetime-local','time','password','number'].indexOf(type) !== -1) return false;
     if (insideExcluded(inp)) return false;
     var id = inp.id || inp.name || '';
+    if (EXCLUDE_ID_RE.test(id) && !isTableHeaderControl(inp)) return false;
     var cls = String(inp.className || '');
     var ph = String(inp.placeholder || '');
     var label = getLabelText(inp);
     var probe = id + ' ' + cls + ' ' + ph + ' ' + label;
-    if (SEARCH_ID_RE.test(probe) && !/filtru|filter|^col/i.test(id) && !isTableHeaderControl(inp)) return false;
     if (isTableHeaderControl(inp)) return true;
     if (/filtru|filter/i.test(ph)) return true;
     if (/thFilter|th-filter|colFInput|filt|filter-input|filterInput/i.test(cls)) return true;
@@ -264,22 +271,26 @@
   }
 
   function getValues(control){
-    try { var p = JSON.parse(control.dataset.kadMultiValues || '[]'); if (Array.isArray(p)) return p.map(String).filter(Boolean); } catch(_e) {}
+    try {
+      var p = JSON.parse(control.dataset.kadMultiValues || '[]');
+      if (Array.isArray(p)) return p.map(String).filter(Boolean);
+    } catch(_e) {}
     return [];
   }
 
   function setNativeValue(control, values){
     var vals = values || [];
     if (control.tagName === 'SELECT') {
-      try { control.value = vals.length === 1 ? vals[0] : ''; } catch(_e) {}
-      Array.prototype.forEach.call(control.options || [], function(opt){ opt.selected = vals.length === 1 && opt.value === vals[0]; });
+      var single = vals.length === 1 ? vals[0] : '';
+      try { control.value = single; } catch(_e) {}
+      Array.prototype.forEach.call(control.options || [], function(opt){ opt.selected = !!single && opt.value === single; });
     } else {
       control.value = vals.length === 1 ? vals[0] : '';
     }
   }
 
   function updateButton(control){
-    var btn = control._kadMsButton;
+    var btn = control && control._kadMsButton;
     if (!btn) return;
     var vals = getValues(control);
     var txt = !vals.length ? 'Toate' : (vals.length === 1 ? vals[0] : vals.length + ' selectate');
@@ -299,7 +310,6 @@
     updateButton(control);
     if (fire !== false) {
       fireNativeEvents(control);
-      schedulePatchFunctions();
       schedulePostFilter();
     }
   }
@@ -315,7 +325,7 @@
     btn.className = 'kad-ms-trigger';
     btn.textContent = 'Toate';
     wrapper.appendChild(btn);
-    control.insertAdjacentElement('afterend', wrapper);
+    try { control.insertAdjacentElement('afterend', wrapper); } catch(_e) { return; }
     control.classList.add('kad-ms-native');
     control.dataset.kadMultiEnhanced = '1';
     control._kadMsWrapper = wrapper;
@@ -325,25 +335,10 @@
     enhanced.push(control);
   }
 
-  function optionValues(control){
-    if (control.tagName === 'SELECT') {
-      var arr = [];
-      Array.prototype.forEach.call(control.options || [], function(opt){
-        var val = String(opt.value == null ? '' : opt.value).trim();
-        var txt = String(opt.textContent == null ? '' : opt.textContent).trim();
-        if (!val && /^(toate|all|\(toate|\(toti|\(toți|alege)/i.test(norm(txt))) return;
-        if (!val) return;
-        arr.push({ value:val, text:txt || val });
-      });
-      return arr;
-    }
-    return collectInputOptions(control).map(function(v){ return { value:v, text:v }; });
-  }
-
   function getGlobalRows(){
     var candidates = [];
     try { if (Array.isArray(window.rows)) candidates.push(window.rows); } catch(_e) {}
-    try { if (Array.isArray(rows)) candidates.push(rows); } catch(_e) {}
+    try { if (typeof rows !== 'undefined' && Array.isArray(rows)) candidates.push(rows); } catch(_e) {}
     try { if (typeof STATE !== 'undefined' && STATE && Array.isArray(STATE.rows)) candidates.push(STATE.rows); } catch(_e) {}
     try { if (typeof state !== 'undefined' && state && Array.isArray(state.rows)) candidates.push(state.rows); } catch(_e) {}
     try { if (window.STATE && Array.isArray(window.STATE.rows)) candidates.push(window.STATE.rows); } catch(_e) {}
@@ -382,6 +377,21 @@
     return v == null ? '' : String(v);
   }
 
+  function optionValues(control){
+    if (control.tagName === 'SELECT') {
+      var arr = [];
+      Array.prototype.forEach.call(control.options || [], function(opt){
+        var val = String(opt.value == null ? '' : opt.value).trim();
+        var txt = String(opt.textContent == null ? '' : opt.textContent).trim();
+        if (!val && /^(toate|all|\(toate|\(toti|\(toți|alege)/i.test(norm(txt))) return;
+        if (!val) return;
+        arr.push({ value:val, text:txt || val });
+      });
+      return arr;
+    }
+    return collectInputOptions(control).map(function(v){ return { value:v, text:v }; });
+  }
+
   function collectInputOptions(input){
     var rows = getGlobalRows();
     if (rows.length) {
@@ -407,11 +417,14 @@
     if (idx < 0) return [];
     var vals = [];
     relatedBodyTables(control).forEach(function(table){
-      Array.prototype.forEach.call(table.querySelectorAll('tbody tr'), function(tr){
-        if (tr.classList.contains('kad-ms-post-hidden')) return;
+      var trs = table.querySelectorAll('tbody tr');
+      var max = Math.min(trs.length, 3000);
+      for (var i=0; i<max; i++) {
+        var tr = trs[i];
+        if (tr.classList.contains('kad-ms-post-hidden')) continue;
         var cell = tr.children[idx];
         if (cell) vals.push(String(cell.textContent || cell.value || '').trim());
-      });
+      }
     });
     return vals;
   }
@@ -450,6 +463,7 @@
     var search = menu.querySelector('.kad-ms-search');
     var list = menu.querySelector('.kad-ms-list');
     var clearBtn = menu.querySelector('.kad-ms-clear');
+
     function renderList(){
       var q = norm(search.value || '');
       var filtered = q ? opts.filter(function(o){ return norm(o.text + ' ' + o.value).indexOf(q) !== -1; }) : opts.slice();
@@ -467,6 +481,7 @@
         });
       });
     }
+
     search.addEventListener('input', renderList);
     clearBtn.addEventListener('click', function(){ selected.clear(); clearValues(control, true); renderList(); });
     menu.addEventListener('click', function(ev){ ev.stopPropagation(); });
@@ -485,16 +500,20 @@
   }
 
   function activeControls(){ return enhanced.filter(function(c){ return getValues(c).length > 0; }); }
-  function clearPostHidden(){ Array.prototype.forEach.call(document.querySelectorAll('.kad-ms-post-hidden'), function(el){ el.classList.remove('kad-ms-post-hidden'); }); }
+
+  function clearPostHidden(){
+    var hidden = document.querySelectorAll('.kad-ms-post-hidden');
+    for (var i=0; i<hidden.length; i++) hidden[i].classList.remove('kad-ms-post-hidden');
+  }
 
   function tableHeaderIndex(table, key){
     var candidates = (KEY_ALIASES[key] || [key]).map(canon).filter(Boolean);
     var headers = Array.prototype.slice.call(table.querySelectorAll('thead tr:first-child th, thead tr:first-child td'));
     if (!headers.length) headers = Array.prototype.slice.call(table.querySelectorAll('thead th'));
     var normalized = headers.map(function(th){ return canon(th.textContent || ''); });
-    for (var i=0;i<normalized.length;i++) {
+    for (var i=0; i<normalized.length; i++) {
       var h = normalized[i]; if (!h) continue;
-      for (var j=0;j<candidates.length;j++) {
+      for (var j=0; j<candidates.length; j++) {
         var c = candidates[j];
         if (h === c || h.indexOf(c) !== -1 || c.indexOf(h) !== -1) return i;
       }
@@ -519,75 +538,32 @@
     tables.forEach(function(table){
       var relevant = controls.map(function(ctrl){ return { ctrl:ctrl, values:getValues(ctrl), index:controlColumnIndex(ctrl, table) }; }).filter(function(item){ return item.index >= 0 && item.values.length; });
       if (!relevant.length) return;
-      Array.prototype.forEach.call(table.querySelectorAll('tbody tr'), function(row){
+      var rows = table.querySelectorAll('tbody tr');
+      for (var r=0; r<rows.length; r++) {
+        var row = rows[r];
         var ok = relevant.every(function(item){
           var cell = row.children[item.index];
           return cell ? valueMatches(cell.textContent || '', item.values) : true;
         });
         row.classList.toggle('kad-ms-post-hidden', !ok);
-      });
+      }
     });
   }
 
   function schedulePostFilter(){
     if (postTimer) clearTimeout(postTimer);
-    postTimer = setTimeout(function(){ postTimer = 0; applyPostFilter(); }, 80);
-  }
-
-  function filterRowsByMulti(rows){
-    if (!Array.isArray(rows)) return rows;
-    var controls = activeControls();
-    if (!controls.length) return rows;
-    return rows.filter(function(row){
-      return controls.every(function(control){ return valueMatches(rowValueForControl(row, control), getValues(control)); });
-    });
-  }
-
-  function patchGlobalFilterFunction(name, arrayFilter){
-    try {
-      var fn = window[name];
-      if (typeof fn !== 'function' || fn.__kadMsPatched === VERSION) return false;
-      var wrapped = function(){
-        var result = fn.apply(this, arguments);
-        if (arrayFilter && Array.isArray(result)) result = filterRowsByMulti(result);
-        setTimeout(schedulePostFilter, 0);
-        return result;
-      };
-      wrapped.__kadMsPatched = VERSION;
-      wrapped.__kadMsOriginal = fn;
-      window[name] = wrapped;
-      return true;
-    } catch(_e) { return false; }
-  }
-
-  function patchFilterFunctions(){
-    patchGlobalFilterFunction('getFilteredRows', true);
-    patchGlobalFilterFunction('filteredRows', true);
-    patchGlobalFilterFunction('getRowsFiltered', true);
-    patchGlobalFilterFunction('getSummaryFilteredRows', true);
-    patchGlobalFilterFunction('renderBody', false);
-    patchGlobalFilterFunction('renderTable', false);
-    patchGlobalFilterFunction('render', false);
-    patchGlobalFilterFunction('applyFilters', false);
-    patchGlobalFilterFunction('applyUIFilters', false);
-  }
-
-  function schedulePatchFunctions(){
-    if (patchTimer) clearTimeout(patchTimer);
-    patchTimer = setTimeout(function(){ patchTimer = 0; patchFilterFunctions(); }, 50);
+    postTimer = setTimeout(function(){ postTimer = 0; try { applyPostFilter(); } catch(_e) {} }, 80);
   }
 
   function enhanceExisting(){
+    if (!document.body) return;
     addStyles();
-    Array.prototype.slice.call(document.querySelectorAll('select')).forEach(function(sel){ if (isSelectCandidate(sel)) makeWrapper(sel); });
-    Array.prototype.slice.call(document.querySelectorAll('input')).forEach(function(inp){ if (isInputCandidate(inp)) makeWrapper(inp); });
-    patchFilterFunctions();
+    var selects = Array.prototype.slice.call(document.querySelectorAll('select'));
+    var inputs = Array.prototype.slice.call(document.querySelectorAll('input'));
+    selects.forEach(function(sel){ try { if (isSelectCandidate(sel)) makeWrapper(sel); } catch(_e) {} });
+    inputs.forEach(function(inp){ try { if (isInputCandidate(inp)) makeWrapper(inp); } catch(_e) {} });
     schedulePostFilter();
-  }
-
-  function scheduleScan(delay){
-    if (scanTimer) clearTimeout(scanTimer);
-    scanTimer = setTimeout(function(){ scanTimer = 0; enhanceExisting(); }, delay == null ? 180 : delay);
+    scanDone = true;
   }
 
   function clearAllEnhanced(){
@@ -604,44 +580,29 @@
     }, true);
   }
 
-  function startShortObserver(){
-    if (!window.MutationObserver || observer) return;
-    observer = new MutationObserver(function(mutations){
-      var need = false;
-      for (var i=0;i<mutations.length && !need;i++) {
-        var nodes = mutations[i].addedNodes || [];
-        for (var j=0;j<nodes.length;j++) {
-          var n = nodes[j];
-          if (!n || n.nodeType !== 1) continue;
-          if (n.closest && n.closest('.kad-ms,.kad-ms-menu')) continue;
-          if ((n.matches && n.matches('thead,tr,th,td,select,input,.filters,.filter-row,#filterRow,.colFilters')) ||
-              (n.querySelector && n.querySelector('thead,input,select,.filters,.filter-row,#filterRow,.colFilters'))) { need = true; break; }
-        }
-      }
-      if (need) scheduleScan(300);
-    });
-    try { observer.observe(document.body, { childList:true, subtree:true }); } catch(_e) {}
-    observerStopTimer = setTimeout(function(){ try { observer.disconnect(); } catch(_e) {} observer = null; }, FIRST_SCAN_LIMIT_MS);
+  function refresh(){
+    try { enhanceExisting(); } catch(_e) {}
   }
 
   function init(){
-    enhanceExisting();
     bindResetButtons();
     document.addEventListener('click', closeMenu);
     document.addEventListener('keydown', function(ev){ if (ev.key === 'Escape') closeMenu(); });
-    [300, 900, 1800, 3500, 7000, 12000].forEach(function(ms){ setTimeout(enhanceExisting, ms); });
-    startShortObserver();
+    idle(refresh);
+    setTimeout(refresh, 1500);
+    setTimeout(refresh, 4000);
   }
 
   window.KAD_MULTI_FILTER = {
     __installed:true,
     __version:VERSION,
-    refresh:enhanceExisting,
+    refresh:refresh,
     clearAll:clearAllEnhanced,
     values:function(controlOrId){ var c = typeof controlOrId === 'string' ? document.getElementById(controlOrId) : controlOrId; return c ? getValues(c) : []; },
     hasMulti:function(controlOrId){ var c = typeof controlOrId === 'string' ? document.getElementById(controlOrId) : controlOrId; return !!c && getValues(c).length > 1; },
     matches:function(controlOrId, value){ var c = typeof controlOrId === 'string' ? document.getElementById(controlOrId) : controlOrId; if (!c) return true; var vals = getValues(c); return vals.length ? valueMatches(value, vals) : true; },
-    rowMatches:function(row){ return filterRowsByMulti([row]).length === 1; }
+    rescan:refresh,
+    scanDone:function(){ return scanDone; }
   };
 
   ready(init);
