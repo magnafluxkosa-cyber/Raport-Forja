@@ -963,6 +963,22 @@
     tr > td:first-child{
       border-left-color:#000 !important;
     }
+
+
+    /* K.A.D - filtrare multiplă locală pentru MAGNAFLUX, fără script global */
+    .kad-mf-btn{width:100%;height:24px;border:1px solid #94a3b8;border-radius:7px;padding:0 20px 0 7px;background:#fff;color:#10283c;font-size:11px;font-weight:800;text-align:left;cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;position:relative;box-shadow:none;line-height:22px;}
+    .kad-mf-btn:after{content:'▾';position:absolute;right:7px;top:50%;transform:translateY(-50%);font-size:10px;color:#334155;}
+    .kad-mf-btn.active{border-color:#2b6cb0;box-shadow:0 0 0 2px rgba(43,108,176,.18);background:#fff;}
+    .kad-mf-menu{position:fixed;z-index:100000;background:#fff;border:2px solid #000;border-radius:9px;box-shadow:0 12px 28px rgba(0,0,0,.22);padding:6px;width:270px;max-height:320px;overflow:auto;font-family:Calibri,Arial,sans-serif;color:#10283c;}
+    .kad-mf-menu-head{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:4px 6px 6px;border-bottom:1px solid #cbd5e1;margin-bottom:4px;font-size:12px;font-weight:900;color:#334155;}
+    .kad-mf-clear{color:#1e5a96;cursor:pointer;white-space:nowrap;}
+    .kad-mf-clear:hover{text-decoration:underline;}
+    .kad-mf-search{width:100%;height:26px;border:1px solid #94a3b8;border-radius:7px;padding:0 7px;margin:3px 0 6px;font-size:12px;outline:none;}
+    .kad-mf-option{display:flex;align-items:center;gap:7px;padding:5px 6px;border-radius:6px;font-size:12px;cursor:pointer;user-select:none;}
+    .kad-mf-option:hover{background:#eaf4ff;}
+    .kad-mf-option input{width:auto;height:auto;margin:0;accent-color:#2b6cb0;}
+    .kad-mf-empty{padding:8px 6px;color:#64748b;font-size:12px;}
+
 </style>
   <link rel="stylesheet" href="./mobile-erp.css" />
 
@@ -1545,7 +1561,8 @@
         if(!raw || typeof raw !== 'object') return out;
         Object.entries(raw).forEach(([key, value]) => {
           if(!allowed.has(key)) return;
-          out[key] = String(value == null ? '' : value);
+          if(Array.isArray(value)) out[key] = value.map(v => String(v == null ? '' : v).trim()).filter(Boolean);
+          else out[key] = String(value == null ? '' : value);
         });
         return out;
       }
@@ -2758,14 +2775,18 @@
 
           const thFilter = document.createElement('th');
           thFilter.className = `${col.colClass || ''}`.trim();
-          const input = document.createElement('input');
-          input.className = 'filter-input';
-          input.placeholder = 'Filtru';
-          input.dataset.key = col.key;
-          input.value = state.filters[col.key] || '';
-          input.addEventListener('input', onFilterInput);
-          thFilter.appendChild(input);
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'kad-mf-btn';
+          btn.dataset.key = col.key;
+          btn.dataset.label = col.label || col.key;
+          btn.addEventListener('click', event => {
+            event.stopPropagation();
+            rfOpenColumnFilterMenu(btn, col.key);
+          });
+          thFilter.appendChild(btn);
           head2.appendChild(thFilter);
+          rfUpdateColumnFilterButton(col.key);
         });
 
         el.tableHead.innerHTML = '';
@@ -2825,13 +2846,119 @@
         return rows;
       }
 
+
+
+      function rfMfNorm(value){
+        return String(value == null ? '' : value).trim().toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+      }
+      function rfColumnFilterActive(value){
+        if(Array.isArray(value)) return value.length > 0;
+        return String(value == null ? '' : value).trim() !== '';
+      }
+      function rfFilterToArray(value){
+        return Array.isArray(value) ? value.map(v => String(v == null ? '' : v).trim()).filter(Boolean) : [];
+      }
+      function rfMatchColumnFilter(row, col, filterValue){
+        const cell = String(formatCell(row, col) == null ? '' : formatCell(row, col)).trim();
+        const cellNorm = rfMfNorm(cell);
+        if(Array.isArray(filterValue)){
+          const selected = new Set(filterValue.map(rfMfNorm).filter(Boolean));
+          if(!selected.size) return true;
+          return selected.has(cellNorm);
+        }
+        const f = rfMfNorm(filterValue);
+        if(!f) return true;
+        return cellNorm.includes(f);
+      }
+      function rfUniqueColumnValues(key){
+        const col = columns.find(c => c.key === key) || { key };
+        const values = new Map();
+        (Array.isArray(state.rows) ? state.rows : []).forEach(row => {
+          const value = String(formatCell(row, col) == null ? '' : formatCell(row, col)).trim();
+          const norm = rfMfNorm(value);
+          if(value && !values.has(norm)) values.set(norm, value);
+        });
+        return Array.from(values.values()).sort((a,b)=>a.localeCompare(b, 'ro', { numeric:true, sensitivity:'base' }));
+      }
+      let rfOpenMfMenu = null;
+      function rfCloseColumnFilterMenu(){
+        if(rfOpenMfMenu){ rfOpenMfMenu.remove(); rfOpenMfMenu = null; }
+        document.querySelectorAll('.kad-mf-btn.active').forEach(btn => btn.classList.remove('active'));
+      }
+      function rfUpdateColumnFilterButton(key){
+        const safeKey = String(key).replace(/"/g, '\"');
+        const btn = document.querySelector('.kad-mf-btn[data-key="' + safeKey + '"]');
+        if(!btn) return;
+        const selected = rfFilterToArray(state.filters[key]);
+        if(!selected.length){ btn.textContent = 'Toate'; btn.title = btn.dataset.label || key; }
+        else if(selected.length === 1){ btn.textContent = selected[0]; btn.title = selected[0]; }
+        else { btn.textContent = selected.length + ' selectate'; btn.title = selected.join(', '); }
+      }
+      function rfOpenColumnFilterMenu(button, key){
+        rfCloseColumnFilterMenu();
+        if(!button) return;
+        button.classList.add('active');
+        const values = rfUniqueColumnValues(key);
+        const selected = new Set(rfFilterToArray(state.filters[key]).map(rfMfNorm));
+        const label = button.dataset.label || key;
+        const rect = button.getBoundingClientRect();
+        const menu = document.createElement('div');
+        menu.className = 'kad-mf-menu';
+        const left = Math.min(Math.max(6, rect.left), Math.max(6, window.innerWidth - 282));
+        const top = Math.min(rect.bottom + 4, Math.max(6, window.innerHeight - 330));
+        menu.style.left = left + 'px';
+        menu.style.top = top + 'px';
+        menu.innerHTML = '<div class="kad-mf-menu-head"><span>' + escapeHtml(label) + '</span><span class="kad-mf-clear" tabindex="0">Toate</span></div><input class="kad-mf-search" type="text" placeholder="Caută..."><div class="kad-mf-list"></div>';
+        document.body.appendChild(menu);
+        rfOpenMfMenu = menu;
+        const list = menu.querySelector('.kad-mf-list');
+        const search = menu.querySelector('.kad-mf-search');
+        function renderList(term){
+          const q = rfMfNorm(term || '');
+          const shown = values.filter(v => !q || rfMfNorm(v).includes(q));
+          if(!shown.length){ list.innerHTML = '<div class="kad-mf-empty">Nu există valori.</div>'; return; }
+          list.innerHTML = shown.map(v => {
+            const checked = selected.has(rfMfNorm(v)) ? ' checked' : '';
+            return '<label class="kad-mf-option"><input type="checkbox" value="' + escapeHtml(v) + '"' + checked + '><span>' + escapeHtml(v) + '</span></label>';
+          }).join('');
+          list.querySelectorAll('input[type="checkbox"]').forEach(input => {
+            input.addEventListener('change', () => {
+              if(input.checked) selected.add(rfMfNorm(input.value)); else selected.delete(rfMfNorm(input.value));
+              state.filters[key] = values.filter(v => selected.has(rfMfNorm(v)));
+              rfUpdateColumnFilterButton(key);
+              persistUiState();
+              state.forceScrollToBottom = true;
+              renderBody();
+              renderKodFlSummary(filteredRows());
+              renderDefectFilterSummary(filteredRows());
+            });
+          });
+        }
+        renderList('');
+        search.addEventListener('input', () => renderList(search.value));
+        menu.querySelector('.kad-mf-clear').addEventListener('click', () => {
+          state.filters[key] = [];
+          rfUpdateColumnFilterButton(key);
+          rfCloseColumnFilterMenu();
+          persistUiState();
+          state.forceScrollToBottom = true;
+          renderBody();
+          renderKodFlSummary(filteredRows());
+          renderDefectFilterSummary(filteredRows());
+        });
+        setTimeout(()=>{ try{ search.focus(); }catch(_e){} }, 0);
+      }
+      document.addEventListener('click', event => {
+        if(rfOpenMfMenu && !rfOpenMfMenu.contains(event.target) && !event.target.closest('.kad-mf-btn')) rfCloseColumnFilterMenu();
+      });
+      document.addEventListener('keydown', event => { if(event.key === 'Escape') rfCloseColumnFilterMenu(); });
+
       function filteredRows(){
         return sortRowsByDateInPlace(state.rows.filter(row => {
           return columns.every(col => {
-            const f = normalizeText(state.filters[col.key] || '');
-            if(!f) return true;
-            const cell = normalizeText(formatCell(row, col));
-            return cell.includes(f);
+            const f = state.filters[col.key];
+            if(!rfColumnFilterActive(f)) return true;
+            return rfMatchColumnFilter(row, col, f);
           });
         }));
       }
