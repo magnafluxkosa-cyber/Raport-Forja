@@ -877,32 +877,53 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
   async function writeCloudPayload(payload){
     if(!state.supa) return null;
     const updatedAt = new Date().toISOString();
-    const row = { doc_key: DOC_KEY, content: payload, data: payload, updated_at: updatedAt };
-
-    /* Salvare robustă:
-       1) încearcă UPDATE pe rândul existent;
-       2) apoi UPSERT ca fallback;
-       3) apoi INSERT/UPDATE simplificate dacă schema/RLS refuză una dintre variante.
-       Nu folosim .select() după scriere, ca să nu transformăm o salvare reușită într-o eroare falsă. */
+    const fullRow = { doc_key: DOC_KEY, content: payload, data: payload, updated_at: updatedAt };
+    const contentRow = { doc_key: DOC_KEY, content: payload, updated_at: updatedAt };
+    const expectedSignature = payloadSignature(payload);
     let lastError = null;
 
-    let res = await state.supa.from('rf_documents').update(row).eq('doc_key', DOC_KEY);
-    if(!res || !res.error) return updatedAt;
-    lastError = res.error;
+    async function verifyWritten(){
+      try{
+        const remote = await readCloudPayload();
+        if(remote && remote.payload && payloadSignature(remote.payload) === expectedSignature){
+          return remote.updatedAt || updatedAt;
+        }
+      }catch(err){
+        lastError = err;
+      }
+      return null;
+    }
 
-    res = await state.supa.from('rf_documents').upsert(row, { onConflict: 'doc_key' });
-    if(!res || !res.error) return updatedAt;
-    lastError = res.error;
+    async function tryWrite(label, fn){
+      try{
+        const res = await fn();
+        if(res && res.error){
+          lastError = res.error;
+          return null;
+        }
+        const verifiedAt = await verifyWritten();
+        if(verifiedAt) return verifiedAt;
+      }catch(err){
+        lastError = err;
+      }
+      return null;
+    }
 
-    const fallbackRow = { doc_key: DOC_KEY, content: payload, updated_at: updatedAt };
-    res = await state.supa.from('rf_documents').upsert(fallbackRow, { onConflict: 'doc_key' });
-    if(!res || !res.error) return updatedAt;
-    lastError = res.error;
+    /* Important: UPDATE fără .select() poate raporta succes chiar dacă nu a modificat niciun rând.
+       De aceea salvarea este acceptată doar după citire înapoi și verificare de semnătură. */
+    let ok = await tryWrite('upsert-full', () => state.supa.from('rf_documents').upsert(fullRow, { onConflict: 'doc_key' }));
+    if(ok) return ok;
 
-    const insertRes = await state.supa.from('rf_documents').insert(row);
-    if(!insertRes || !insertRes.error) return updatedAt;
+    ok = await tryWrite('update-full', () => state.supa.from('rf_documents').update(fullRow).eq('doc_key', DOC_KEY));
+    if(ok) return ok;
 
-    throw lastError || insertRes.error;
+    ok = await tryWrite('upsert-content', () => state.supa.from('rf_documents').upsert(contentRow, { onConflict: 'doc_key' }));
+    if(ok) return ok;
+
+    ok = await tryWrite('insert-full', () => state.supa.from('rf_documents').insert(fullRow));
+    if(ok) return ok;
+
+    throw lastError || new Error('Plan Livrări: salvarea în cloud nu a fost confirmată la citirea înapoi.');
   }
   async function broadcastChange(signature){
     if(!state.channel) return;
@@ -996,6 +1017,7 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
       state.channel = state.supa.channel('plan-livrari-sync')
         .on('broadcast', { event: 'changed' }, ({ payload }) => {
           if(!payload || payload.clientId === state.clientId) return;
+          if(loadPendingCache()) return;
           fetchAndApplyRemote(true);
         })
         .on('postgres_changes', {
@@ -1004,6 +1026,7 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
           table: 'rf_documents',
           filter: 'doc_key=eq.' + DOC_KEY
         }, payload => {
+          if(loadPendingCache()) return;
           const updatedAt = payload && payload.new ? payload.new.updated_at : '';
           if(updatedAt && updatedAt === state.cloudUpdatedAt) return;
           fetchAndApplyRemote(true);
@@ -1014,20 +1037,28 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
       state.channel = null;
     }
     startRemotePolling();
-    const localPayload = loadLocalCache();
+
     const pendingPayload = loadPendingCache();
+    if(pendingPayload && pendingPayload.tableHtml){
+      applyPayload(pendingPayload, false);
+      scheduleSave(true);
+      return;
+    }
+
+    const localPayload = loadLocalCache();
     const remote = await readCloudPayload().catch(() => null);
-    const winner = newestPayload([
-      { payload: pendingPayload, updatedAt: pendingPayload && pendingPayload.editedAt },
-      { payload: localPayload, updatedAt: localPayload && localPayload.editedAt },
-      remote
-    ]);
-    if(winner && remote && winner.payload === remote.payload){
+    if(localPayload && localPayload.tableHtml){
+      const localTime = payloadTime(localPayload, localPayload.editedAt);
+      const remoteTime = remote && remote.payload ? payloadTime(remote.payload, remote.updatedAt) : 0;
+      if(!remote || localTime >= remoteTime || payloadSignature(localPayload) !== payloadSignature(remote.payload)){
+        applyPayload(localPayload, false);
+        scheduleSave(true);
+        return;
+      }
+    }
+    if(remote && remote.payload){
       applyPayload(remote.payload, true);
       state.cloudUpdatedAt = remote.updatedAt || state.cloudUpdatedAt;
-    }else if(winner && winner.payload){
-      applyPayload(winner.payload, false);
-      scheduleSave(true);
     }
   }
 
