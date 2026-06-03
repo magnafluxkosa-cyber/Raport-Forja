@@ -898,7 +898,7 @@
     const PROD_OP_GATE_INDEXES=[21,18,17,15,16,12]; // Excel test: W&T&S&Q&R&N = 0
     const PROD_OP_LOSS_INDEXES=[21,18,17,15,16,12,13,14,24,25,26,28]; // Excel: W,T,S,Q,R,N,O,P,Z,AA,AB,AD
     const PROD_TOTAL_GATE_INDEXES=[16,15]; // Excel test: R&Q = 0
-    const state={canView:false,canEdit:false,rows:[],columns:[],filters:{},columnFilters:{},activeFilterCol:null,page:1,pageSize:150,autoBottom:true,dirty:0,pendingFocus:null,selection:null,isMouseSelecting:false,lastCell:null,pasteFlash:null,supa:null,saving:false,saveTimer:null,lastCloudError:null};
+    const state={canView:false,canEdit:false,rows:[],columns:[],filters:{},columnFilters:{},activeFilterCol:null,page:1,pageSize:150,autoBottom:true,dirty:0,pendingFocus:null,selection:null,isMouseSelecting:false,isAdditiveMouseSelecting:false,additiveAnchor:null,additiveBaseCells:null,additiveMoved:false,lastCell:null,pasteFlash:null,supa:null,saving:false,saveTimer:null,lastCloudError:null};
     const $=s=>document.querySelector(s);
     const els={root:$('#pageRoot'),content:$('#appContent'),filters:$('#filters'),table:$('#reportTable'),kpis:$('#kpis'),accessChip:$('#accessChip'),dirtyChip:$('#dirtyChip'),tableMeta:$('#tableMeta'),pageInfo:$('#pageInfo'),selectionSummary:$('#pmSelectionSummary'),btnPrev:$('#btnPrev'),btnNext:$('#btnNext'),btnSave:$('#btnSave'),btnReset:$('#btnReset'),btnExport:$('#btnExport'),btnPrint:$('#btnPrint'),btnImportExcel:$('#btnImportExcel'),btnExportExcel:$('#btnExportExcel'),excelImportInput:$('#excelImportInput')};
     function norm(s){return String(s||'').normalize('NFD').replace(/[̀-ͯ]/g,'').toLowerCase().trim()}
@@ -1308,6 +1308,54 @@
       state.lastCell={rowIndex:cell.rowIndex,col:cell.col};
       applySelectionVisual();
     }
+    function rangeSelectionCells(anchor,focus){
+      if(!anchor||!focus)return [];
+      const r1=Math.min(Number(anchor.rowIndex),Number(focus.rowIndex));
+      const r2=Math.max(Number(anchor.rowIndex),Number(focus.rowIndex));
+      const c1=Math.min(Number(anchor.col),Number(focus.col));
+      const c2=Math.max(Number(anchor.col),Number(focus.col));
+      if(!Number.isFinite(r1)||!Number.isFinite(r2)||!Number.isFinite(c1)||!Number.isFinite(c2))return [];
+      const out=[];
+      for(let r=r1;r<=r2;r++){
+        for(let c=c1;c<=c2;c++)out.push({rowIndex:r,col:c});
+      }
+      return out;
+    }
+    function setSparseSelection(cells,anchor,focus){
+      const seen=new Set();
+      const out=[];
+      (cells||[]).forEach(cell=>{
+        if(!cell)return;
+        const rowIndex=Number(cell.rowIndex);
+        const col=Number(cell.col);
+        if(!Number.isFinite(rowIndex)||!Number.isFinite(col))return;
+        const key=rowIndex+'|'+col;
+        if(seen.has(key))return;
+        seen.add(key);
+        out.push({rowIndex,col});
+      });
+      out.sort((a,b)=>a.rowIndex-b.rowIndex||a.col-b.col);
+      if(!out.length){clearSelection();return;}
+      const a=anchor||out[0];
+      const f=focus||out[out.length-1];
+      state.selection={anchor:{rowIndex:a.rowIndex,col:a.col},focus:{rowIndex:f.rowIndex,col:f.col},cells:out};
+      state.lastCell={rowIndex:f.rowIndex,col:f.col};
+      applySelectionVisual();
+    }
+    function beginAdditiveRangeSelection(cell){
+      if(!cell)return;
+      state.isMouseSelecting=true;
+      state.isAdditiveMouseSelecting=true;
+      state.additiveAnchor={rowIndex:cell.rowIndex,col:cell.col};
+      state.additiveBaseCells=uniqueSelectionCells();
+      state.additiveMoved=false;
+      setSparseSelection([...(state.additiveBaseCells||[]),...rangeSelectionCells(state.additiveAnchor,cell)],state.additiveAnchor,cell);
+    }
+    function updateAdditiveRangeSelection(cell){
+      if(!cell||!state.additiveAnchor)return;
+      state.additiveMoved=true;
+      setSparseSelection([...(state.additiveBaseCells||[]),...rangeSelectionCells(state.additiveAnchor,cell)],state.additiveAnchor,cell);
+    }
     function selectionBounds(){
       const s=state.selection;
       if(!s)return null;
@@ -1396,14 +1444,15 @@
       const meta=cellMeta(td);
       if(!meta)return;
       if(e.ctrlKey||e.metaKey){
-        toggleCellSelection({rowIndex:meta.rowIndex,col:meta.col});
-        state.isMouseSelecting=false;
+        beginAdditiveRangeSelection({rowIndex:meta.rowIndex,col:meta.col});
       }else if(e.shiftKey&&state.selection){
         setSelection(state.selection.anchor,{rowIndex:meta.rowIndex,col:meta.col});
         state.isMouseSelecting=true;
+        state.isAdditiveMouseSelecting=false;
       }else{
         setSelection({rowIndex:meta.rowIndex,col:meta.col},{rowIndex:meta.rowIndex,col:meta.col});
         state.isMouseSelecting=true;
+        state.isAdditiveMouseSelecting=false;
       }
       state.lastCell={rowIndex:meta.rowIndex,col:meta.col};
       td.focus({preventScroll:true});
@@ -1413,10 +1462,21 @@
     function onCellMouseOver(e){
       if(!state.isMouseSelecting)return;
       const meta=cellMeta(e.currentTarget);
-      if(!meta||!state.selection)return;
+      if(!meta)return;
+      if(state.isAdditiveMouseSelecting){
+        updateAdditiveRangeSelection({rowIndex:meta.rowIndex,col:meta.col});
+        return;
+      }
+      if(!state.selection)return;
       setSelection(state.selection.anchor,{rowIndex:meta.rowIndex,col:meta.col});
     }
-    function onDocumentMouseUp(){state.isMouseSelecting=false}
+    function onDocumentMouseUp(){
+      state.isMouseSelecting=false;
+      state.isAdditiveMouseSelecting=false;
+      state.additiveAnchor=null;
+      state.additiveBaseCells=null;
+      state.additiveMoved=false;
+    }
     function activeCellStart(){
       const active=document.activeElement;
       const meta=cellMeta(active);
@@ -2084,6 +2144,7 @@
   })();
   </script>
 <!-- fix: performanta tabel + deschidere automata la ultimul rand + scrollbar jos vizibil - 2026-06-03 -->
+<!-- update: selectie Ctrl + drag aditiv pe mai multe randuri - 2026-06-03 -->
 </body>
 </html>
 <!-- fix: linie dubla orizontala completa intre date diferite - 2026-06-02 -->
