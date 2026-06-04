@@ -3910,5 +3910,209 @@ function closeForm(){
 
 <script src="./excel-import-common.js"></script>
 <script src="./excel-import-bootstrap.js"></script>
+
+
+
+<script id="kad-intrari-otel-export-excel-identic">
+(function(){
+  'use strict';
+
+  const KAD_EXCEL_HEADERS = [
+    'Anul',
+    'LUNA',
+    'Data Intrare',
+    'Dimensiune Otel',
+    'Calitate otel',
+    'Cod intern otel (3 litere)',
+    'Sarja material (furnizor)',
+    'Cantitate (kg)',
+    'PRETEST',
+    'Furnizor'
+  ];
+
+  const KAD_EXCEL_COL_WIDTHS = [50, 70, 90, 115, 115, 125, 105, 95, 95, 120];
+
+  function escXml(value){
+    return String(value == null ? '' : value).replace(/[&<>'"]/g, function(ch){
+      return ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&apos;','"':'&quot;'})[ch];
+    });
+  }
+
+  function cleanSheetName(name){
+    return String(name || 'Sheet').replace(/[\\/?*\[\]:]/g, ' ').trim().slice(0, 31) || 'Sheet';
+  }
+
+  function normText(value){
+    return String(value == null ? '' : value).trim();
+  }
+
+  function parseKgExport(value){
+    if (typeof value === 'number') return Number.isFinite(value) ? value : 0;
+    let s = String(value == null ? '' : value).trim();
+    if (!s) return 0;
+    s = s.replace(/\s+/g, '');
+    if (s.indexOf(',') >= 0) {
+      s = s.replace(/\./g, '').replace(',', '.');
+    } else if (/^\d{1,3}(\.\d{3})+$/.test(s)) {
+      s = s.replace(/\./g, '');
+    }
+    const n = Number(s);
+    return Number.isFinite(n) ? n : 0;
+  }
+
+  function formatKgExport(value){
+    const n = Number(value || 0);
+    if (!Number.isFinite(n)) return '0';
+    return n.toLocaleString('ro-RO', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+  }
+
+  function getVisibleIntrariRows(){
+    const tbody = document.getElementById('tbody');
+    if (!tbody) return [];
+    return Array.from(tbody.querySelectorAll('tr')).filter(function(tr){
+      const style = window.getComputedStyle ? window.getComputedStyle(tr) : null;
+      return tr.style.display !== 'none' && (!style || style.display !== 'none');
+    }).map(function(tr){
+      const vals = Array.from(tr.querySelectorAll('td')).slice(0, 10).map(function(td){
+        return normText(td.textContent || '');
+      });
+      while (vals.length < 10) vals.push('');
+      return vals;
+    }).filter(function(vals){
+      return vals.some(function(v){ return normText(v) !== ''; });
+    });
+  }
+
+  function getExportYear(rows){
+    const fromSelect = normText(document.getElementById('sumYear') && document.getElementById('sumYear').value);
+    if (/^\d{4}$/.test(fromSelect)) return fromSelect;
+    const fromFilterBtn = normText(document.querySelector('.kad-mf-btn[data-col="0"]') && document.querySelector('.kad-mf-btn[data-col="0"]').textContent);
+    if (/^\d{4}$/.test(fromFilterBtn)) return fromFilterBtn;
+    for (const row of rows) {
+      if (/^\d{4}$/.test(normText(row[0]))) return normText(row[0]);
+    }
+    return String(new Date().getFullYear());
+  }
+
+  function buildSummaryRows(rows){
+    const dimCal = new Map();
+    const supplier = new Map();
+    const code = new Map();
+
+    rows.forEach(function(row){
+      const diam = normText(row[3]) || '(fără diametru)';
+      const cal = normText(row[4]) || '(fără calitate)';
+      const cod = normText(row[5]).toUpperCase() || '(gol)';
+      const sarja = normText(row[6]) || '(gol)';
+      const furn = normText(row[9]) || '(gol)';
+      const kg = parseKgExport(row[7]);
+
+      const k1 = diam + '||' + cal;
+      dimCal.set(k1, (dimCal.get(k1) || 0) + kg);
+
+      const k2 = furn + '||' + diam + '||' + cal;
+      supplier.set(k2, (supplier.get(k2) || 0) + kg);
+
+      const k3 = cod + '||' + diam + '||' + sarja + '||' + furn;
+      code.set(k3, (code.get(k3) || 0) + kg);
+    });
+
+    const dimCalRows = Array.from(dimCal.entries()).map(function(entry){
+      const parts = entry[0].split('||');
+      return [parts[0], parts[1], formatKgExport(entry[1])];
+    }).sort(function(a,b){ return parseKgExport(b[2]) - parseKgExport(a[2]); });
+
+    const supplierRows = Array.from(supplier.entries()).map(function(entry){
+      const parts = entry[0].split('||');
+      return [parts[0], parts[1], parts[2], formatKgExport(entry[1])];
+    }).sort(function(a,b){ return parseKgExport(b[3]) - parseKgExport(a[3]); });
+
+    const codeRows = Array.from(code.entries()).map(function(entry){
+      const parts = entry[0].split('||');
+      return [parts[0], parts[1], parts[2], parts[3], formatKgExport(entry[1])];
+    }).sort(function(a,b){ return parseKgExport(b[4]) - parseKgExport(a[4]); });
+
+    return { dimCalRows, supplierRows, codeRows };
+  }
+
+  function xmlCell(value, styleId){
+    const v = String(value == null ? '' : value);
+    const style = styleId ? ' ss:StyleID="' + styleId + '"' : '';
+    return '<Cell' + style + '><Data ss:Type="String">' + escXml(v) + '</Data></Cell>';
+  }
+
+  function xmlRow(values, styleId, height){
+    const h = height ? ' ss:Height="' + height + '"' : '';
+    return '<Row' + h + '>' + values.map(function(v){ return xmlCell(v, styleId); }).join('') + '</Row>';
+  }
+
+  function xmlWorksheet(name, headers, rows, widths){
+    const safeName = cleanSheetName(name);
+    const allRows = [headers].concat(rows || []);
+    const colCount = headers.length;
+    const rowCount = Math.max(1, allRows.length);
+    let xml = '<Worksheet ss:Name="' + escXml(safeName) + '">';
+    xml += '<Table ss:ExpandedColumnCount="' + colCount + '" ss:ExpandedRowCount="' + rowCount + '" x:FullColumns="1" x:FullRows="1">';
+    (widths || headers.map(function(){ return 100; })).forEach(function(width){
+      xml += '<Column ss:AutoFitWidth="0" ss:Width="' + Number(width || 90) + '"/>';
+    });
+    xml += xmlRow(headers, 'Header', 24);
+    (rows || []).forEach(function(row){ xml += xmlRow(row, 'Data', 22); });
+    xml += '</Table>';
+    xml += '<WorksheetOptions xmlns="urn:schemas-microsoft-com:office:excel">';
+    xml += '<FreezePanes/><FrozenNoSplit/><SplitHorizontal>1</SplitHorizontal><TopRowBottomPane>1</TopRowBottomPane><ActivePane>2</ActivePane>';
+    xml += '</WorksheetOptions>';
+    xml += '</Worksheet>';
+    return xml;
+  }
+
+  function buildWorkbookXml(rows){
+    const summaries = buildSummaryRows(rows);
+    let xml = '<?xml version="1.0" encoding="UTF-8"?>';
+    xml += '<?mso-application progid="Excel.Sheet"?>';
+    xml += '<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet" xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet" xmlns:html="http://www.w3.org/TR/REC-html40">';
+    xml += '<DocumentProperties xmlns="urn:schemas-microsoft-com:office:office"><Author>K.A.D</Author><Company>ERP Forja</Company></DocumentProperties>';
+    xml += '<Styles>';
+    xml += '<Style ss:ID="Default" ss:Name="Normal"><Alignment ss:Vertical="Center"/><Font ss:FontName="Calibri" ss:Size="11"/></Style>';
+    xml += '<Style ss:ID="Header"><Alignment ss:Horizontal="Center" ss:Vertical="Center" ss:WrapText="1"/><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1"/></Borders><Font ss:FontName="Calibri" ss:Size="11" ss:Bold="1"/><Interior ss:Color="#CFE3F6" ss:Pattern="Solid"/></Style>';
+    xml += '<Style ss:ID="Data"><Alignment ss:Horizontal="Center" ss:Vertical="Center"/><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1"/></Borders><Font ss:FontName="Calibri" ss:Size="11"/></Style>';
+    xml += '</Styles>';
+    xml += xmlWorksheet('INTRARI_OTEL', KAD_EXCEL_HEADERS, rows, KAD_EXCEL_COL_WIDTHS);
+    xml += xmlWorksheet('Total Diametru Calitate', ['Diametru','Calitate','Total kg'], summaries.dimCalRows, [120, 150, 100]);
+    xml += xmlWorksheet('Total Furnizor', ['Furnizor','Diametru','Calitate','Total kg'], summaries.supplierRows, [150, 120, 150, 100]);
+    xml += xmlWorksheet('Detaliu Cod Sarja', ['Cod intern','Diametru','Sarjă','Furnizor','Cantitate kg'], summaries.codeRows, [95, 110, 140, 145, 110]);
+    xml += '</Workbook>';
+    return xml;
+  }
+
+  function downloadStyledExcel(){
+    const rows = getVisibleIntrariRows();
+    if (!rows.length) {
+      alert('Nu există date de exportat în tabelul afișat.');
+      return;
+    }
+    const year = getExportYear(rows);
+    const xml = buildWorkbookXml(rows);
+    const blob = new Blob(['\ufeff' + xml], { type:'application/vnd.ms-excel;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'INTRARI_OTEL_' + year + '_' + new Date().toISOString().slice(0,10) + '.xls';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+
+    try{
+      if (typeof window.archiveExport === 'function') {
+        window.archiveExport('EXPORT', { method:'export-excel-styled', newData:{ format:'xls-styled', year:year, rows:rows.length } });
+      }
+    }catch(_e){}
+  }
+
+  window.exportXLSX = downloadStyledExcel;
+})();
+</script>
+
 </body>
 </html>
