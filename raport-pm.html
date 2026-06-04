@@ -1346,6 +1346,59 @@
       display:inline-flex!important;
     }
 
+
+    /* Update: autocomplete direct în celulele Raport PM + completare automată PLAN din Norme. */
+    .pm-ac-popup{
+      position:fixed;
+      z-index:10000000;
+      display:none;
+      width:min(360px,calc(100vw - 24px));
+      max-height:245px;
+      overflow:auto;
+      background:#ffffff;
+      border:2px solid #1d4ed8;
+      border-radius:12px;
+      box-shadow:0 18px 45px rgba(15,23,42,.28);
+      padding:5px;
+      color:#0b1f46;
+      font-size:12px;
+      font-weight:850;
+    }
+    .pm-ac-popup.open{display:block;}
+    .pm-ac-option{
+      display:block;
+      width:100%;
+      border:0;
+      background:#fff;
+      color:#0b1f46;
+      text-align:left;
+      padding:7px 9px;
+      border-radius:8px;
+      font-size:12px;
+      font-weight:850;
+      cursor:pointer;
+      overflow:hidden;
+      text-overflow:ellipsis;
+      white-space:nowrap;
+    }
+    .pm-ac-option:hover,
+    .pm-ac-option.active{
+      background:#dbeafe;
+      color:#0b1f46;
+    }
+    .pm-ac-empty{
+      padding:8px 9px;
+      color:#64748b;
+      font-size:11px;
+      font-weight:850;
+    }
+    td.pm-autocomplete-cell::after{
+      content:'';
+      display:inline-block;
+      width:0;
+      height:0;
+    }
+
 </style>
 </head>
 <body>
@@ -1524,6 +1577,170 @@
     function refreshQuickNormeDependentLists(){const q=quickEls();if(!q)return;const part=q.part&&q.part.value;const process=q.process&&q.process.value;const eqIdx=normeColIndex('Echipament'),opIdx=normeColIndex('Operatia');const opts=normeQuickOptions(part,process);const allProc=state.rows.map(r=>r.values&&r.values[COL.process]).concat(opIdx>=0?state.normRows.map(r=>r.values&&r.values[opIdx]):[]);const allEq=state.rows.map(r=>r.values&&r.values[COL.equipment]).concat(eqIdx>=0?state.normRows.map(r=>r.values&&r.values[eqIdx]):[]);setDatalistValues('pmProcessList',opts.operations.length?opts.operations:allProc);setDatalistValues('pmEquipmentList',opts.equipments.length?opts.equipments:allEq)}
     function normeLookup(part,process,equipment){const modelIdx=normeColIndex('Model'),eqIdx=normeColIndex('Echipament'),opIdx=normeColIndex('Operatia'),bucIdx=normeColIndex('Bucati');if(modelIdx<0||opIdx<0||bucIdx<0)return '';const p=cleanKeyText(part),op=cleanKeyText(process);if(!p||!op)return '';const matches=[];const exact=[];const loose=[];for(const r of state.normRows){const v=r.values||[];if(cleanKeyText(v[modelIdx])!==p)continue;if(cleanKeyText(v[opIdx])!==op)continue;matches.push(v[bucIdx]);if(eqIdx>=0&&equipmentMatches(v[eqIdx],equipment)){exact.push(v[bucIdx]);}else if(eqIdx<0||!String(v[eqIdx]||'').trim()){loose.push(v[bucIdx]);}}const cleaned=matches.map(v=>String(v??'').trim()).filter(Boolean);const uniqueBuc=Array.from(new Set(cleaned));const found=exact.length?exact[0]:(loose.length?loose[0]:(uniqueBuc.length===1?uniqueBuc[0]:''));return found===undefined||found===null?'':found}
     function applyNormToQuickPlan(){const q=quickEls();if(!q||!q.plan)return;refreshQuickNormeDependentLists();const val=normeLookup(q.part&&q.part.value,q.process&&q.process.value,q.equipment&&q.equipment.value);if(val!==''&&val!==null&&val!==undefined)q.plan.value=String(val)}
+
+    function isAutocompleteCol(col){return [COL.process,COL.equipment,COL.part,COL.operator].includes(Number(col))}
+    function isNormTriggerCol(col){return [COL.process,COL.equipment,COL.part].includes(Number(col))}
+    function rowValueForAutocomplete(row,col){return row&&row.values?String(row.values[col]??''):''}
+    function getAutocompleteOptions(col,row){
+      const modelIdx=normeColIndex('Model');
+      const eqIdx=normeColIndex('Echipament');
+      const opIdx=normeColIndex('Operatia');
+      if(col===COL.operator)return uniq(state.rows.map(r=>r.values&&r.values[COL.operator]).filter(v=>String(v??'').trim()!==''));
+      if(col===COL.part)return uniq(state.rows.map(r=>r.values&&r.values[COL.part]).concat(modelIdx>=0?state.normRows.map(r=>r.values&&r.values[modelIdx]):[]).filter(v=>String(v??'').trim()!==''));
+      if(col===COL.process){
+        const part=rowValueForAutocomplete(row,COL.part);
+        const byNorm=part&&opIdx>=0?normeRowsByPart(part).map(r=>r.values&&r.values[opIdx]):[];
+        const base=state.rows.map(r=>r.values&&r.values[COL.process]).concat(opIdx>=0?state.normRows.map(r=>r.values&&r.values[opIdx]):[]);
+        return uniq((byNorm.length?byNorm:base).filter(v=>String(v??'').trim()!==''));
+      }
+      if(col===COL.equipment){
+        const part=rowValueForAutocomplete(row,COL.part);
+        const process=rowValueForAutocomplete(row,COL.process);
+        const byNorm=(part||process)&&eqIdx>=0?normeRowsByPartAndProcess(part,process).map(r=>r.values&&r.values[eqIdx]):[];
+        const base=state.rows.map(r=>r.values&&r.values[COL.equipment]).concat(eqIdx>=0?state.normRows.map(r=>r.values&&r.values[eqIdx]):[]);
+        return uniq((byNorm.length?byNorm:base).filter(v=>String(v??'').trim()!==''));
+      }
+      return [];
+    }
+    function ensureAutocompletePopup(){
+      let popup=document.getElementById('pmAutocompletePopup');
+      if(popup)return popup;
+      popup=document.createElement('div');
+      popup.id='pmAutocompletePopup';
+      popup.className='pm-ac-popup';
+      popup.dataset.activeIndex='0';
+      document.body.appendChild(popup);
+      popup.addEventListener('mousedown',ev=>ev.preventDefault());
+      return popup;
+    }
+    function closeAutocompletePopup(){
+      const popup=document.getElementById('pmAutocompletePopup');
+      if(popup){
+        popup.classList.remove('open');
+        popup.innerHTML='';
+        delete popup.dataset.cellId;
+      }
+    }
+    function autocompleteCellId(td){
+      if(!td)return '';
+      const tr=td.closest&&td.closest('tr');
+      return tr?(String(tr.dataset.id||'')+':'+String(td.dataset.col||'')):'';
+    }
+    function getCurrentAutocompleteCell(){
+      const popup=document.getElementById('pmAutocompletePopup');
+      if(!popup||!popup.dataset.cellId)return null;
+      const parts=popup.dataset.cellId.split(':');
+      if(parts.length!==2)return null;
+      return els.table&&els.table.querySelector(`tbody tr[data-id="${CSS.escape(parts[0])}"] td[data-col="${CSS.escape(parts[1])}"]`);
+    }
+    function setAutocompleteActive(index){
+      const popup=document.getElementById('pmAutocompletePopup');
+      if(!popup||!popup.classList.contains('open'))return;
+      const options=Array.from(popup.querySelectorAll('.pm-ac-option'));
+      if(!options.length)return;
+      const next=Math.max(0,Math.min(options.length-1,index));
+      popup.dataset.activeIndex=String(next);
+      options.forEach((btn,i)=>btn.classList.toggle('active',i===next));
+      const active=options[next];
+      if(active)active.scrollIntoView({block:'nearest'});
+    }
+    function updateCellAutocomplete(td){
+      if(!td||state.activeView!=='raport'||!state.canEdit)return closeAutocompletePopup();
+      const meta=cellMeta(td);
+      if(!meta||!isAutocompleteCol(meta.col))return closeAutocompletePopup();
+      const row=state.rows[meta.rowIndex];
+      const current=cellTextToValue(meta.col,cellDomText(td));
+      const options=getAutocompleteOptions(meta.col,row);
+      const key=norm(current);
+      let filtered=options.filter(v=>{
+        const nv=norm(v);
+        return !key||nv.includes(key);
+      });
+      filtered.sort((a,b)=>{
+        const aa=norm(a),bb=norm(b);
+        const ap=key&&aa.startsWith(key)?0:1;
+        const bp=key&&bb.startsWith(key)?0:1;
+        if(ap!==bp)return ap-bp;
+        return String(a).localeCompare(String(b),'ro');
+      });
+      filtered=filtered.slice(0,80);
+      const popup=ensureAutocompletePopup();
+      popup.dataset.cellId=autocompleteCellId(td);
+      popup.dataset.activeIndex='0';
+      if(!filtered.length){
+        popup.innerHTML='<div class="pm-ac-empty">Nu există valori în listă</div>';
+      }else{
+        popup.innerHTML=filtered.map((v,i)=>`<button type="button" class="pm-ac-option${i===0?' active':''}" data-value="${esc(v)}" title="${esc(v)}">${esc(v)}</button>`).join('');
+        popup.querySelectorAll('.pm-ac-option').forEach((btn,i)=>{
+          btn.addEventListener('mouseenter',()=>setAutocompleteActive(i));
+          btn.addEventListener('mousedown',ev=>{
+            ev.preventDefault();
+            ev.stopPropagation();
+            applyAutocompleteChoice(td,btn.dataset.value||'');
+          });
+        });
+      }
+      const rect=td.getBoundingClientRect();
+      popup.style.left=Math.max(8,Math.min(window.innerWidth-370,rect.left))+'px';
+      popup.style.top=Math.min(window.innerHeight-260,rect.bottom+4)+'px';
+      popup.style.width=Math.max(220,Math.min(360,rect.width+120))+'px';
+      popup.classList.add('open');
+    }
+    function applyAutocompleteChoice(td,value){
+      if(!td)return false;
+      td.textContent=String(value??'');
+      placeCaretAtEnd(td);
+      const synced=syncCellModel(td);
+      if(!synced)return false;
+      td.dataset.pmDirty='1';
+      state.lastCell={rowIndex:cellMeta(td).rowIndex,col:synced.col};
+      if(isNormTriggerCol(synced.col))autoFillPlanForRow(synced.row,true);
+      closeAutocompletePopup();
+      return true;
+    }
+    function handleAutocompleteKeydown(e,td){
+      const popup=document.getElementById('pmAutocompletePopup');
+      if(!popup||!popup.classList.contains('open'))return false;
+      if(!td||autocompleteCellId(td)!==popup.dataset.cellId)return false;
+      const options=Array.from(popup.querySelectorAll('.pm-ac-option'));
+      if(e.key==='Escape'){e.preventDefault();closeAutocompletePopup();return true;}
+      if(!options.length)return false;
+      let idx=Number(popup.dataset.activeIndex||0);
+      if(e.key==='ArrowDown'){e.preventDefault();setAutocompleteActive(idx+1);return true;}
+      if(e.key==='ArrowUp'){e.preventDefault();setAutocompleteActive(idx-1);return true;}
+      if(e.key==='Enter'||e.key==='Tab'){
+        const btn=options[Math.max(0,Math.min(options.length-1,idx))];
+        if(btn){
+          e.preventDefault();
+          applyAutocompleteChoice(td,btn.dataset.value||'');
+          return true;
+        }
+      }
+      return false;
+    }
+    function updatePlanCellDom(row){
+      if(!row||!els.table)return;
+      const tr=els.table.querySelector(`tbody tr[data-id="${CSS.escape(String(row.id))}"]`);
+      if(!tr)return;
+      [COL.plan,COL.timePerf,COL.eff,COL.pmDef,COL.fjDef,COL.prodOp,COL.prodTotal].forEach(col=>{
+        const cell=tr.querySelector(`td[data-col="${col}"]`);
+        if(cell)cell.innerHTML=formatCell(col,row.values[col]);
+      });
+    }
+    function autoFillPlanForRow(row,updateDom){
+      if(!row||!row.values)return false;
+      const val=normeLookup(row.values[COL.part],row.values[COL.process],row.values[COL.equipment]);
+      if(val===''||val===null||val===undefined)return false;
+      if(String(row.values[COL.plan]??'')===String(val))return false;
+      ensureReportRowWidth(row);
+      row.values[COL.plan]=val;
+      if(!Array.isArray(row.rawValues))row.rawValues=(row.values||[]).slice(0,reportColCount());
+      row.rawValues[COL.plan]=val;
+      recalc(row);
+      if(updateDom)updatePlanCellDom(row);
+      return true;
+    }
+
 function quickEls(){return {modal:document.getElementById('pmQuickModal'),title:document.getElementById('pmQuickTitle'),sub:document.querySelector('.pm-quick-sub'),date:document.getElementById('qrDate'),shift:document.getElementById('qrShift'),operator:document.getElementById('qrOperator'),equipment:document.getElementById('qrEquipment'),process:document.getElementById('qrProcess'),part:document.getElementById('qrPart'),plan:document.getElementById('qrPlan'),good:document.getElementById('qrGood'),prodDef:document.getElementById('qrProdDef'),prodReman:document.getElementById('qrProdReman'),totalTime:document.getElementById('qrTotalTime'),save:document.getElementById('qrSave'),saveMore:document.getElementById('qrSaveMore'),cancel:document.getElementById('qrCancel'),close:document.getElementById('pmQuickClose'),duplicate:document.getElementById('qrDuplicateSelected'),deleteRow:document.getElementById('qrDeleteRow'),problems:Array.from(document.querySelectorAll('.qrProblemSelect')),problemValues:Array.from(document.querySelectorAll('.qrProblemValue'))}}
     function setInputValue(el,value){if(el)el.value=value===null||value===undefined?'':String(value)}
     function quickNumValue(v){const text=String(v??'').trim();if(!text)return '';const raw=text.replace(/\s+/g,'').replace(/\./g,'').replace(',','.');const num=Number(raw);return isFinite(num)?num:text}
@@ -1803,6 +2020,7 @@ function quickEls(){return {modal:document.getElementById('pmQuickModal'),title:
             if(i===COL.timePerf)cls+=' col-time-perf';
             if(isFinal(i))cls+=' final';
             if(isCalc(i))cls+=' calc';
+            if(isAutocompleteCol(i))cls+=' pm-autocomplete-cell';
             if([12,21,32,50].includes(i))cls+=' divider-left';
             if(val===''||val===null||val===undefined)cls+=' empty';
             const editable=state.canEdit;
@@ -1884,6 +2102,7 @@ function quickEls(){return {modal:document.getElementById('pmQuickModal'),title:
       const synced=syncCellModel(td);
       td.dataset.pmEditStart=synced?String(synced.text??''):cellTextToValue(Number(td.dataset.col),cellDomText(td));
       td.dataset.pmDirty='0';
+      if(meta&&isAutocompleteCol(meta.col))setTimeout(()=>updateCellAutocomplete(td),0);
     }
     function onCellInput(e){
       const td=e.currentTarget;
@@ -1892,14 +2111,23 @@ function quickEls(){return {modal:document.getElementById('pmQuickModal'),title:
       const start=td.dataset.pmEditStart!==undefined?td.dataset.pmEditStart:'';
       td.dataset.pmDirty=String(synced.text??'')!==String(start??'')?'1':'0';
       state.lastCell={rowIndex:cellMeta(td).rowIndex,col:synced.col};
+      if(isAutocompleteCol(synced.col))updateCellAutocomplete(td);
+      if(isNormTriggerCol(synced.col)){
+        if(autoFillPlanForRow(synced.row,true))td.dataset.pmDirty='1';
+      }
     }
     function onCellBlur(e){
       const td=e.currentTarget;
       const synced=syncCellModel(td);
       if(!synced)return;
-      const wasDirty=td.dataset.pmDirty==='1'||String(synced.text??'')!==String(td.dataset.pmEditStart??'');
+      const planChanged=isNormTriggerCol(synced.col)?autoFillPlanForRow(synced.row,false):false;
+      const wasDirty=td.dataset.pmDirty==='1'||planChanged||String(synced.text??'')!==String(td.dataset.pmEditStart??'');
       delete td.dataset.pmEditStart;
       delete td.dataset.pmDirty;
+      setTimeout(()=>{
+        const current=getCurrentAutocompleteCell();
+        if(!current||current!==document.activeElement)closeAutocompletePopup();
+      },120);
       if(wasDirty){
         recalc(synced.row);
         markDirty();
@@ -1912,6 +2140,7 @@ function quickEls(){return {modal:document.getElementById('pmQuickModal'),title:
       const td=e.currentTarget;
       const tr=td.closest('tr');
       if(!tr)return;
+      if(handleAutocompleteKeydown(e,td))return;
       if(e.key==='Delete'||e.key==='Backspace'){
         const b=selectionBounds();
         const rangeSelected=!!(b&&(b.r1!==b.r2||b.c1!==b.c2));
@@ -2166,6 +2395,7 @@ function quickEls(){return {modal:document.getElementById('pmQuickModal'),title:
           row.rawValues[col]=pastedValue;
           changed=true;
         }
+        autoFillPlanForRow(row,false);
         recalc(row);
       }
       if(!changed)return false;
@@ -2961,7 +3191,7 @@ function quickEls(){return {modal:document.getElementById('pmQuickModal'),title:
         }
       });
     }
-    function bind(){bindQuickReportModal();els.btnSave.onclick=saveLocal;els.btnReset.onclick=resetLocal;els.btnExport.onclick=exportCsv;els.btnPrint.onclick=()=>window.print();if(els.btnImportExcel&&els.excelImportInput){els.btnImportExcel.onclick=(ev)=>{if(ev&&ev.preventDefault)ev.preventDefault();els.excelImportInput.value='';els.excelImportInput.click();};els.btnImportExcel.onkeydown=(ev)=>{if(ev.key==='Enter'||ev.key===' '){ev.preventDefault();els.excelImportInput.value='';els.excelImportInput.click();}};}if(els.excelImportInput)els.excelImportInput.onchange=e=>importExcelFile(e.target.files&&e.target.files[0]);if(els.btnExportExcel)els.btnExportExcel.onclick=exportExcelFile;if(els.btnRaportView)els.btnRaportView.onclick=()=>{state.activeView='raport';state.autoBottom=true;clearSelection();renderAll(false)};if(els.btnOperatoriView)els.btnOperatoriView.onclick=()=>{state.activeView='operatori';state.autoBottom=false;clearSelection();renderAll(false)};if(els.btnNormeView)els.btnNormeView.onclick=()=>{state.activeView='norme';state.autoBottom=false;clearSelection();renderAll(false)};if(els.btnAddReport)els.btnAddReport.onclick=addNewReport;if(els.btnAddBlankRow)els.btnAddBlankRow.onclick=addBlankReportRow;if(els.btnImportExcel)els.btnImportExcel.disabled=false;els.btnPrev.onclick=()=>{if(state.page>1){state.page--;renderAll(false)}};els.btnNext.onclick=()=>{state.page++;renderAll(false)};document.addEventListener('mouseup',onDocumentMouseUp);document.addEventListener('copy',onCopy);document.addEventListener('paste',onPaste);document.addEventListener('keydown',onDocumentKeydown);document.addEventListener('click',e=>{const p=document.getElementById('columnFilterPopup');if(p&&p.style.display!=='none'&&!p.contains(e.target)&&!(e.target&&e.target.classList&&e.target.classList.contains('col-filter-btn')))closeColumnFilter();})}
+    function bind(){bindQuickReportModal();els.btnSave.onclick=saveLocal;els.btnReset.onclick=resetLocal;els.btnExport.onclick=exportCsv;els.btnPrint.onclick=()=>window.print();if(els.btnImportExcel&&els.excelImportInput){els.btnImportExcel.onclick=(ev)=>{if(ev&&ev.preventDefault)ev.preventDefault();els.excelImportInput.value='';els.excelImportInput.click();};els.btnImportExcel.onkeydown=(ev)=>{if(ev.key==='Enter'||ev.key===' '){ev.preventDefault();els.excelImportInput.value='';els.excelImportInput.click();}};}if(els.excelImportInput)els.excelImportInput.onchange=e=>importExcelFile(e.target.files&&e.target.files[0]);if(els.btnExportExcel)els.btnExportExcel.onclick=exportExcelFile;if(els.btnRaportView)els.btnRaportView.onclick=()=>{state.activeView='raport';state.autoBottom=true;clearSelection();renderAll(false)};if(els.btnOperatoriView)els.btnOperatoriView.onclick=()=>{state.activeView='operatori';state.autoBottom=false;clearSelection();renderAll(false)};if(els.btnNormeView)els.btnNormeView.onclick=()=>{state.activeView='norme';state.autoBottom=false;clearSelection();renderAll(false)};if(els.btnAddReport)els.btnAddReport.onclick=addNewReport;if(els.btnAddBlankRow)els.btnAddBlankRow.onclick=addBlankReportRow;if(els.btnImportExcel)els.btnImportExcel.disabled=false;els.btnPrev.onclick=()=>{if(state.page>1){state.page--;renderAll(false)}};els.btnNext.onclick=()=>{state.page++;renderAll(false)};document.addEventListener('mouseup',onDocumentMouseUp);document.addEventListener('copy',onCopy);document.addEventListener('paste',onPaste);document.addEventListener('keydown',onDocumentKeydown);document.addEventListener('click',e=>{const p=document.getElementById('columnFilterPopup');if(p&&p.style.display!=='none'&&!p.contains(e.target)&&!(e.target&&e.target.classList&&e.target.classList.contains('col-filter-btn')))closeColumnFilter();const ac=document.getElementById('pmAutocompletePopup');if(ac&&ac.classList.contains('open')&&!ac.contains(e.target)&&!(e.target&&e.target.closest&&e.target.closest('td.pm-autocomplete-cell')))closeAutocompletePopup();})}
     function bindImportExcelEarlyFallback(){
       const btn=document.getElementById('btnImportExcel');
       const inp=document.getElementById('excelImportInput');
@@ -3009,3 +3239,5 @@ function quickEls(){return {modal:document.getElementById('pmQuickModal'),title:
 
 <!-- update: Raport PM Luna filtrabilă + dublu-click editare/ștergere + categorii rapide PM - 2026-06-04 -->
 <!-- fix: eliminare coloane accidentale și copiere/lipire primele 11 coloane în rânduri goale - 2026-06-04 -->
+
+<!-- update: autocomplete în celule și PLAN automat din Norme - 2026-06-04 -->
