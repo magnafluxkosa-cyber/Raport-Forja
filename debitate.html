@@ -3238,22 +3238,23 @@ function setAutofillReadonly(isReadonly){
   async function ensureXLSX(){
     if (window.XLSX) return true;
 
-    // try load local first, relative to parent file
-    const localUrl = new URL("xlsx.full.min.js", (parent.location.href.split("#")[0].split("?")[0])).href;
+    const baseUrl = parent.location.href.split("#")[0].split("?")[0];
+    const candidates = [
+      new URL("xlsx.bundle.js", baseUrl).href,
+      new URL("xlsx.full.min.js", baseUrl).href,
+      "https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js",
+      "https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"
+    ];
 
-    try{
-      await loadScript(localUrl);
-      if (window.XLSX) return true;
-    } catch(e){}
-
-    // fallback CDN
-    try{
-      await loadScript("https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js");
-      return !!window.XLSX;
-    } catch(e){
-      alert("Nu pot încărca librăria XLSX. Pune fișierul xlsx.full.min.js lângă HTML (offline) sau pornește internet.");
-      return false;
+    for (const src of candidates){
+      try{
+        await loadScript(src);
+        if (window.XLSX) return true;
+      }catch(e){}
     }
+
+    alert("Nu pot încărca librăria XLSX. Pune fișierul xlsx.full.min.js lângă HTML (offline) sau pornește internet.");
+    return false;
   }
 
   function loadScript(src){
@@ -3270,33 +3271,80 @@ function setAutofillReadonly(isReadonly){
     ensureXLSX().then(ok=>{
       if (!ok) return;
 
-      // export all rows (not filtered)
-      const data = rows.map(r => ({
-        "Anul": r.an,
-        "Luna": r.luna,
-        "Data": fmtDateRO(r.data),
-        "Echipament": r.echipament,
-        "Reper": r.reper,
-        "Diametru oțel": normalizeDiam(r.diametru) ? ("Ø " + normalizeDiam(r.diametru)) : "",
-        "CALITATE": r.calitate,
-        "Kg/buc.": Number.isFinite(Number(r.kgBuc)) ? Number(r.kgBuc) : "",
-        "Lungime debitat mm": Number.isFinite(Number(r.lungime)) ? Number(r.lungime) : "",
-        "Sarja": r.sarja,
-        "Planificat": Number.isFinite(Number(r.planificat)) ? Number(r.planificat) : "",
-        "Cantitate": Number.isFinite(Number(r.cantitate)) ? Number(r.cantitate) : "",
-        "Schimbul": Number.isFinite(Number(r.schimbul)) ? Number(r.schimbul) : "",
-        "total kg debitat": Number.isFinite(Number(r.totalKg)) ? Number(r.totalKg) : "",
-        "week nr.": Number.isFinite(Number(r.weekNr)) ? Number(r.weekNr) : "",
-        "Operator": r.operator,
-        "Procent norma %": Number.isFinite(Number(r.procentNorma)) ? Number(r.procentNorma) : "",
-        "Ore lucrate": Number.isFinite(Number(r.oreLucrate)) ? Number(r.oreLucrate) : ""
-      }));
+      const y = normalizeYearValue(activeYear) || String(CURRENT_YEAR);
+      const exportRows = (Array.isArray(rows) ? rows : []).map(r => {
+        try{ recalcRow(r); }catch(_e){}
+        return COLUMNS.map(col => displayValue(r, col));
+      });
+      const headers = COLUMNS.map(col => String(col.label || col.key || '').replace(/\\n/g, String.fromCharCode(10)));
+      const ws = XLSX.utils.aoa_to_sheet([headers, ...exportRows]);
+      const lastRow = Math.max(0, exportRows.length);
+      const lastCol = Math.max(0, headers.length - 1);
+      const range = XLSX.utils.encode_range({ s:{ r:0, c:0 }, e:{ r:lastRow, c:lastCol } });
 
-      const ws = XLSX.utils.json_to_sheet(data, { skipHeader:false });
+      ws["!cols"] = COLUMNS.map(col => ({
+        wch: Math.max(8, Math.ceil((COL_WIDTHS[col.key] || 90) / 6.2))
+      }));
+      ws["!rows"] = [{ hpt: 32 }].concat(exportRows.map(() => ({ hpt: 22 })));
+      ws["!autofilter"] = { ref: range };
+      ws["!freeze"] = { xSplit: 0, ySplit: 1, topLeftCell: "A2", activePane: "bottomLeft", state: "frozen" };
+
+      const borderThin = {
+        top:{ style:"thin", color:{ rgb:"000000" } },
+        bottom:{ style:"thin", color:{ rgb:"000000" } },
+        left:{ style:"thin", color:{ rgb:"000000" } },
+        right:{ style:"thin", color:{ rgb:"000000" } }
+      };
+      const headerStyle = {
+        font:{ bold:true, color:{ rgb:"000000" }, sz:10 },
+        fill:{ patternType:"solid", fgColor:{ rgb:"CFE3F6" } },
+        alignment:{ horizontal:"center", vertical:"center", wrapText:true },
+        border:borderThin
+      };
+      const bodyBaseStyle = {
+        font:{ color:{ rgb:"000000" }, sz:10 },
+        fill:{ patternType:"solid", fgColor:{ rgb:"FFFFFF" } },
+        alignment:{ horizontal:"left", vertical:"center", wrapText:true },
+        border:borderThin
+      };
+      const numBodyStyle = {
+        font:{ color:{ rgb:"000000" }, sz:10 },
+        fill:{ patternType:"solid", fgColor:{ rgb:"FFFFFF" } },
+        alignment:{ horizontal:"right", vertical:"center", wrapText:false },
+        border:borderThin
+      };
+      const centerBodyStyle = {
+        font:{ color:{ rgb:"000000" }, sz:10 },
+        fill:{ patternType:"solid", fgColor:{ rgb:"FFFFFF" } },
+        alignment:{ horizontal:"center", vertical:"center", wrapText:false },
+        border:borderThin
+      };
+
+      for (let c=0; c<headers.length; c++){
+        const ref = XLSX.utils.encode_cell({ r:0, c });
+        if (ws[ref]) ws[ref].s = headerStyle;
+      }
+      for (let r=1; r<=lastRow; r++){
+        for (let c=0; c<headers.length; c++){
+          const ref = XLSX.utils.encode_cell({ r, c });
+          if (!ws[ref]) continue;
+          const col = COLUMNS[c] || {};
+          if (col.align === "num") ws[ref].s = numBodyStyle;
+          else if (col.align === "center") ws[ref].s = centerBodyStyle;
+          else ws[ref].s = bodyBaseStyle;
+        }
+      }
+
       const wb = XLSX.utils.book_new();
+      wb.Props = {
+        Title: "DEBITATE",
+        Subject: "Export DEBITATE K.A.D",
+        Author: "K.A.D",
+        CreatedDate: new Date()
+      };
       XLSX.utils.book_append_sheet(wb, ws, "DEBITATE");
-      const name = `DEBITATE_${normalizeYearValue(activeYear) || String(CURRENT_YEAR)}_${new Date().toISOString().slice(0,10)}.xlsx`;
-      XLSX.writeFile(wb, name);
+      const name = `DEBITATE_${y}_${new Date().toISOString().slice(0,10)}.xlsx`;
+      XLSX.writeFile(wb, name, { bookType:"xlsx", cellStyles:true });
     });
   }
 
