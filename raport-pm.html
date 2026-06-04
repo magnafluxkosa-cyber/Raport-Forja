@@ -342,6 +342,11 @@
       outline-offset:-2px!important;
       background:#eff6ff!important;
     }
+    td[contenteditable="true"]{
+      -webkit-user-select:text!important;
+      user-select:text!important;
+      caret-color:#0b1f46!important;
+    }
 
 
     /* Update: selectie multipla, copiere/lipire tip Excel */
@@ -1823,7 +1828,11 @@ function quickEls(){return {modal:document.getElementById('pmQuickModal'),title:
         td.addEventListener('mouseover',onCellMouseOver);
         td.addEventListener('keydown',onCellKeydown);
         td.addEventListener('dblclick',onRowDblClick);
-        if(td.getAttribute('contenteditable')==='true')td.addEventListener('blur',onCellBlur);
+        if(td.getAttribute('contenteditable')==='true'){
+          td.addEventListener('focus',onCellFocus);
+          td.addEventListener('input',onCellInput);
+          td.addEventListener('blur',onCellBlur);
+        }
       });
       const end=Math.min(rows.length,start+pageRows.length);
       els.pageInfo.textContent=`Rânduri ${fmt(rows.length)} · afișate ${rows.length?fmt(start+1):'0'}-${fmt(end)} · pagina ${fmt(state.page)}/${fmt(totalPages)}`;
@@ -1852,21 +1861,47 @@ function quickEls(){return {modal:document.getElementById('pmQuickModal'),title:
       e.stopPropagation();
       openEditReportModal(row);
     }
-    function onCellBlur(e){
-      const td=e.currentTarget;
-      const tr=td.closest('tr');
+    function cellDomText(td){return String((td&&td.innerText!==undefined)?td.innerText:(td&&td.textContent!==undefined?td.textContent:''))}
+    function cellTextToValue(col,text){let out=String(text??'').trim();if(!isExtraCol(col)&&col>=COL.plan)out=out.replace(/\s+/g,'').replace(/\./g,'').replace(',','.');return out}
+    function syncCellModel(td){
+      const tr=td&&td.closest?td.closest('tr'):null;
+      if(!tr)return null;
       const id=Number(tr.dataset.id);
       const col=Number(td.dataset.col);
       const row=state.rows.find(r=>r.id===id);
-      if(!row)return;
-      let text=td.textContent.trim();
-      if(!isExtraCol(col)&&col>=COL.plan)text=text.replace(/\./g,'').replace(',','.');
-      const old=String(row.values[col]??'');
-      if(String(text)!==old){
-        row.values[col]=text;
-        if(!Array.isArray(row.rawValues))row.rawValues=(row.values||[]).slice(0,reportColCount());
-        row.rawValues[col]=text;
-        recalc(row);
+      if(!row||!isFinite(col))return null;
+      const text=cellTextToValue(col,cellDomText(td));
+      ensureReportRowWidth(row);
+      row.values[col]=text;
+      if(!Array.isArray(row.rawValues))row.rawValues=(row.values||[]).slice(0,reportColCount());
+      row.rawValues[col]=text;
+      return {row,col,text};
+    }
+    function onCellFocus(e){
+      const td=e.currentTarget;
+      const meta=cellMeta(td);
+      if(meta){state.lastCell={rowIndex:meta.rowIndex,col:meta.col};}
+      const synced=syncCellModel(td);
+      td.dataset.pmEditStart=synced?String(synced.text??''):cellTextToValue(Number(td.dataset.col),cellDomText(td));
+      td.dataset.pmDirty='0';
+    }
+    function onCellInput(e){
+      const td=e.currentTarget;
+      const synced=syncCellModel(td);
+      if(!synced)return;
+      const start=td.dataset.pmEditStart!==undefined?td.dataset.pmEditStart:'';
+      td.dataset.pmDirty=String(synced.text??'')!==String(start??'')?'1':'0';
+      state.lastCell={rowIndex:cellMeta(td).rowIndex,col:synced.col};
+    }
+    function onCellBlur(e){
+      const td=e.currentTarget;
+      const synced=syncCellModel(td);
+      if(!synced)return;
+      const wasDirty=td.dataset.pmDirty==='1'||String(synced.text??'')!==String(td.dataset.pmEditStart??'');
+      delete td.dataset.pmEditStart;
+      delete td.dataset.pmDirty;
+      if(wasDirty){
+        recalc(synced.row);
         markDirty();
         const rows=filteredRows();
         renderKpis(rows);
@@ -1878,7 +1913,11 @@ function quickEls(){return {modal:document.getElementById('pmQuickModal'),title:
       const tr=td.closest('tr');
       if(!tr)return;
       if(e.key==='Delete'||e.key==='Backspace'){
-        if(state.selection){e.preventDefault();clearSelectedCells();return;}
+        const b=selectionBounds();
+        const rangeSelected=!!(b&&(b.r1!==b.r2||b.c1!==b.c2));
+        const activeMeta=cellMeta(document.activeElement);
+        const editingThisCell=activeMeta&&activeMeta.rowIndex===Number(tr.dataset.rowIndex)&&activeMeta.col===Number(td.dataset.col)&&td.getAttribute('contenteditable')==='true';
+        if(rangeSelected||(!editingThisCell&&state.selection)){e.preventDefault();clearSelectedCells();return;}
       }
       const col=Number(td.dataset.col);
       const pageRow=Number(tr.dataset.pageRow||0);
@@ -2058,9 +2097,12 @@ function quickEls(){return {modal:document.getElementById('pmQuickModal'),title:
       }
       state.isMouseSelecting=true;
       state.lastCell={rowIndex:meta.rowIndex,col:meta.col};
-      td.focus({preventScroll:true});
-      if(td.getAttribute('contenteditable')==='true')placeCaretAtEnd(td);
-      e.preventDefault();
+      const allowNativeEdit=td.getAttribute('contenteditable')==='true'&&!e.shiftKey&&!e.ctrlKey&&!e.metaKey;
+      if(!allowNativeEdit){
+        td.focus({preventScroll:true});
+        if(td.getAttribute('contenteditable')==='true')placeCaretAtEnd(td);
+        e.preventDefault();
+      }
     }
     function onCellMouseOver(e){
       if(!state.isMouseSelecting)return;
