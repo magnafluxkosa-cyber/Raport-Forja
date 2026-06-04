@@ -860,12 +860,12 @@
     return out;
   }
   function buildDebInventoryLookup(rows, helperIndex){
-    const selected=getSelectedPeriod();
-    const priorExact=new Map(), fallbackExact=new Map();
-    const priorSimple=new Map(), fallbackSimple=new Map();
-    rows.forEach(row=>{
+    const targetCode=resolveTargetInventoryCode(rows||[]);
+    const exact=new Map(), simple=new Map();
+    if(targetCode==null) return {exact,simple};
+    (rows||[]).forEach(row=>{
       const period=getRowPeriod(row);
-      if(!period) return;
+      if(!period || period.code!==targetCode) return;
       const rawReper=pickValue(row,['reper','reper debitat','denumire reper debitare','reper_debitare','reper debitare','reper_debitare_origine','reper debitare origine','semifabricat']);
       const debKey=resolveDebKeyRaw(rawReper, helperIndex);
       if(!debKey) return;
@@ -874,34 +874,25 @@
       const exactKey=[debKey,diam,cal].join('|');
       const qty=getInventoryQty(row,'debitate');
       const date=parseDateFromRow(row)||new Date(period.year,period.month-1,1);
-      const candidate={qty,code:period.code,date,row};
-      const upsert=(map,key)=>{
+      const addCandidate=(map,key)=>{
         const current=map.get(key);
-        if(isBetterInventoryCandidate(current,candidate)) map.set(key,candidate);
+        if(!current){
+          map.set(key,{qty,code:period.code,date,row});
+          return;
+        }
+        map.set(key,{
+          qty: toNumber(current.qty) + qty,
+          code: current.code,
+          date: date>current.date ? date : current.date,
+          row: current.row
+        });
       };
-      if(selected.year && selected.month){
-        if(period.code < selected.code){
-          upsert(priorExact, exactKey);
-          upsert(priorSimple, debKey);
-        }
-        if(period.code <= selected.code){
-          upsert(fallbackExact, exactKey);
-          upsert(fallbackSimple, debKey);
-        }
-      } else {
-        if(period.code <= selected.code){
-          upsert(fallbackExact, exactKey);
-          upsert(fallbackSimple, debKey);
-        }
-      }
+      addCandidate(exact, exactKey);
+      addCandidate(simple, debKey);
     });
-    const exact=new Map(), simple=new Map();
-    const exactKeys=new Set([...fallbackExact.keys(),...priorExact.keys()]);
-    exactKeys.forEach(key=> exact.set(key, priorExact.get(key)||fallbackExact.get(key)));
-    const simpleKeys=new Set([...fallbackSimple.keys(),...priorSimple.keys()]);
-    simpleKeys.forEach(key=> simple.set(key, priorSimple.get(key)||fallbackSimple.get(key)));
     return {exact,simple};
   }
+
   function getDebInventoryQty(lookup, debKey, diam, cal){
     if(!lookup || !debKey) return 0;
     const exactKey=[normalizeReper(debKey), normalizeDiam(diam), normalizeQuality(cal)].join('|');
@@ -993,12 +984,20 @@
     });
     return bestCode===-Infinity ? null : bestCode;
   }
+  function inventoryPeriodAllowedForSelected(period){
+    const selected=getSelectedPeriod();
+    if(!period) return false;
+    if(selected.year && selected.month) return period.code < selected.code;
+    if(selected.year) return period.code <= (selected.year*12+12);
+    return true;
+  }
   function latestInventoryMapForPeriod(rows,type){
-    const targetCode=resolveTargetInventoryCode(rows);
+    const targetCode=resolveTargetInventoryCode(rows||[]);
     const result=new Map();
-    rows.forEach(row=>{
+    if(targetCode==null) return result;
+    (rows||[]).forEach(row=>{
       const period=getRowPeriod(row);
-      if(!period || (targetCode!=null && period.code!==targetCode)) return;
+      if(!period || period.code!==targetCode) return;
       const key=getInventoryKey(row,type);
       if(!key) return;
       const qty=getInventoryQty(row,type);
@@ -1016,6 +1015,43 @@
       });
     });
     return result;
+  }
+  function buildSteelMaterialResolver(steelInv, steelRealInv, steelEntries, steelDebitated){
+    const byQuality=new Map();
+    function registerKey(key,qty){
+      const parts=String(key||'').split('|');
+      const diam=normalizeDiam(parts[0]||'');
+      const cal=normalizeQuality(parts.slice(1).join('|')||'');
+      if(!cal || !diam) return;
+      if(toNumber(qty)===0) return;
+      const list=byQuality.get(cal)||new Map();
+      list.set(diam,(list.get(diam)||0)+Math.abs(toNumber(qty)));
+      byQuality.set(cal,list);
+    }
+    (steelInv||new Map()).forEach((entry,key)=>registerKey(key,entry&&typeof entry==='object'?entry.qty:entry));
+    if(steelRealInv && steelRealInv.exact) steelRealInv.exact.forEach((qty,key)=>registerKey(key,qty));
+    if(steelEntries && steelEntries.exact) steelEntries.exact.forEach((qty,key)=>registerKey(key,qty));
+    if(steelDebitated && steelDebitated.byMaterial) steelDebitated.byMaterial.forEach((qty,key)=>registerKey(key,qty));
+    function hasExactActivity(key){
+      const start=steelInv && steelInv.get(key);
+      const startQty=start && typeof start==='object' ? start.qty : start;
+      return toNumber(startQty)!==0
+        || toNumber(steelRealInv && steelRealInv.exact && steelRealInv.exact.get(key))!==0
+        || toNumber(steelEntries && steelEntries.exact && steelEntries.exact.get(key))!==0
+        || toNumber(steelDebitated && steelDebitated.byMaterial && steelDebitated.byMaterial.get(key))!==0;
+    }
+    return function resolveSteelMaterial(diam,cal){
+      const originalDiam=normalizeDiam(diam);
+      const originalCal=normalizeQuality(cal);
+      const originalKey=[originalDiam,originalCal].join('|');
+      if(!originalCal || !originalDiam || hasExactActivity(originalKey)) return {diam:originalDiam,cal:originalCal,key:originalKey,remapped:false};
+      const candidates=byQuality.get(originalCal);
+      if(!candidates || candidates.size!==1) return {diam:originalDiam,cal:originalCal,key:originalKey,remapped:false};
+      const candidateDiam=Array.from(candidates.keys())[0];
+      const candidateKey=[candidateDiam,originalCal].join('|');
+      if(!candidateDiam || candidateDiam===originalDiam) return {diam:originalDiam,cal:originalCal,key:originalKey,remapped:false};
+      return {diam:candidateDiam,cal:originalCal,key:candidateKey,originalKey,remapped:true};
+    };
   }
   function currentSteelInventoryMapForSelectedPeriod(rows){
     const selected=getSelectedPeriod();
@@ -1611,15 +1647,17 @@
     const stocPm=aggregateStocPmThisPeriod();
 
     const materialMap=new Map();
+    const resolveSteelMaterial=buildSteelMaterialResolver(steelInv, steelRealInv, steelEntries, steelDebitated);
     function ensureMaterial(diam, cal){
-      const steelKey=[diam,cal].join('|');
+      const resolved=resolveSteelMaterial(diam, cal);
+      const finalDiam=resolved.diam, finalCal=resolved.cal, steelKey=resolved.key;
       let material=materialMap.get(steelKey);
       if(!material){
         const startSteel=(steelInv.get(steelKey)?.qty)||0;
-        const intrariSteel=(steelEntries.exact&&steelEntries.exact.get(steelKey)) || (steelEntries.loose&&steelEntries.loose.get(looseMaterialKey(diam,cal))) || 0;
+        const intrariSteel=(steelEntries.exact&&steelEntries.exact.get(steelKey)) || (steelEntries.loose&&steelEntries.loose.get(looseMaterialKey(finalDiam,finalCal))) || 0;
         const debitatKg=steelDebitated.byMaterial.get(steelKey)||0;
-        const stocRealOtel=(steelRealInv.exact&&steelRealInv.exact.get(steelKey)) || (steelRealInv.loose&&steelRealInv.loose.get(looseMaterialKey(diam,cal))) || 0;
-        material={steelKey, diametru:diam, calitate:cal, stocStartOtel:startSteel, intrariOtel:intrariSteel, debitatDinOtelKg:debitatKg, otelRamasKg:startSteel+intrariSteel-debitatKg, stocRealOtel, debGroups:new Map()};
+        const stocRealOtel=(steelRealInv.exact&&steelRealInv.exact.get(steelKey)) || (steelRealInv.loose&&steelRealInv.loose.get(looseMaterialKey(finalDiam,finalCal))) || 0;
+        material={steelKey, diametru:finalDiam, calitate:finalCal, stocStartOtel:startSteel, intrariOtel:intrariSteel, debitatDinOtelKg:debitatKg, otelRamasKg:startSteel+intrariSteel-debitatKg, stocRealOtel, debGroups:new Map()};
         materialMap.set(steelKey, material);
       }
       return material;
@@ -1914,87 +1952,200 @@
       }
 
       const COLORS={
-        text:'#10213d', head:'#b8d2ec', init:'#d9ecff', real:'#dff1e3', white:'#ffffff', red:'#b91c1c', blueLine:'#8ea9c1', darkLine:'#173a6a', purple:'#7c3aed', greenText:'#14532d'
+        text:'#10213d',
+        head:'#b8d2ec',
+        init:'#d9ecff',
+        real:'#dff1e3',
+        white:'#ffffff',
+        red:'#b91c1c',
+        line:'#000000',
+        debLine:'#7c96b8',
+        materialLine:'#173a6a',
+        purple:'#7c3aed',
+        greenText:'#14532d'
       };
-      const baseBorder='border:1px solid '+COLORS.blueLine+';';
-      const baseFont='font-family:Arial,Helvetica,sans-serif;color:'+COLORS.text+';font-weight:700;text-align:center;vertical-align:middle;white-space:normal;mso-number-format:\\@;';
-      const thBase=baseFont+baseBorder+'background:'+COLORS.head+';font-size:8pt;font-weight:800;padding:3px 2px;line-height:1.05;';
-      const tdBase=baseFont+baseBorder+'background:'+COLORS.white+';font-size:8pt;padding:3px 2px;line-height:1.05;';
-      const blueBg='background:'+COLORS.init+'!important;color:#0b1f46!important;font-weight:800;';
-      const greenBg='background:'+COLORS.real+'!important;color:'+COLORS.greenText+'!important;font-weight:800;';
-      const whiteBold='background:'+COLORS.white+'!important;color:'+COLORS.text+'!important;font-weight:800;';
-      const redText='color:'+COLORS.red+'!important;font-weight:800;';
-      const purpleRight='border-right:4px double '+COLORS.purple+'!important;';
 
-      function n(value, decimals=0){ return formatNumber(value, decimals); }
-      function rowspan(count){ return count && count>1 ? ' rowspan="'+count+'"' : ''; }
-      function styleAttr(style){ return ' style="'+style.replace(/"/g,'&quot;')+'"'; }
-      function th(value, style='', attrs=''){ return '<th'+attrs+styleAttr(thBase+style)+'>'+esc(value)+'</th>'; }
-      function td(value, style='', attrs=''){ return '<td'+attrs+styleAttr(tdBase+style)+'>'+esc(value)+'</td>'; }
-      function tdNum(value, style='', attrs=''){ return td(value, 'text-align:right;padding-right:4px;font-variant-numeric:tabular-nums;'+style, attrs); }
-      function tdLeft(value, style='', attrs=''){ return td(value, 'text-align:left;padding-left:4px;'+style, attrs); }
+      function xmlEsc(value){
+        return String(value==null?'':value)
+          .replace(/&/g,'&amp;')
+          .replace(/</g,'&lt;')
+          .replace(/>/g,'&gt;')
+          .replace(/"/g,'&quot;')
+          .replace(/'/g,'&apos;');
+      }
+      function excelNumber(value){
+        const num=Number(value);
+        const clean=Number.isFinite(num)?num:0;
+        return String(Math.round(clean));
+      }
+      function mergeAttrs(opts){
+        let attrs='';
+        const mergeAcross=opts && opts.mergeAcross ? Number(opts.mergeAcross) : 0;
+        const mergeDown=opts && opts.mergeDown ? Number(opts.mergeDown) : 0;
+        if(mergeAcross>0) attrs+=' ss:MergeAcross="'+mergeAcross+'"';
+        if(mergeDown>0) attrs+=' ss:MergeDown="'+mergeDown+'"';
+        return attrs;
+      }
 
-      const header1 = '<tr>'+
-        th('OTEL LAMINAT','font-size:9pt;letter-spacing:.5px;text-transform:uppercase;font-weight:900;', ' colspan="9"')+
-        th('OTEL DEBITAT','font-size:9pt;letter-spacing:.5px;text-transform:uppercase;font-weight:900;', ' colspan="7"')+
-        th('', '', ' colspan="12"')+
-      '</tr>';
-      const headerLabels=[
-        ['NR.',''],['DIAMETRU',''],['CALITATE',''],['STOC INITIAL OȚEL (KG)',blueBg],['INTRĂRI OȚEL (KG)',''],['DEBITAT DIN OȚEL (KG)',''],['OȚEL RĂMAS TEORETIC (KG)',whiteBold],['STOC REAL OȚEL (KG)',greenBg],['Diferenta',whiteBold+purpleRight],
-        ['REPER DEBITAT',''],['STOC INITIAL DEBITAT (BUC)',blueBg],['DEBITAT (BUC)',''],['DEBITAT (KG)',''],['DEBITAT RĂMAS TEORETIC (BUC)',whiteBold],['STOC REAL DEBITAT (BUC)',greenBg],['Diferenta',whiteBold+purpleRight],
-        ['REPER FORJAT',''],['STOC INITIAL FORJAT (BUC)',blueBg],['FORJAT (BUC)',''],['Rebut depistat in forja',redText],['Rebut dupa forjare',redText],['LIVRĂRI (BUC)',''],['Vanzari',''],['Stoc PM Initial',''],['STOC PM',''],['FORJAT RĂMAS TEORETIC (BUC)',blueBg],['STOC REAL FORJAT (BUC)',greenBg],['DIFERENTA',whiteBold]
-      ];
-      const header2='<tr>'+headerLabels.map(([label,style])=>th(label,style)).join('')+'</tr>';
+      const BODY_STYLES={
+        Text:{bg:COLORS.white,color:COLORS.text,bold:true,align:'Center',type:'String'},
+        TextLeft:{bg:COLORS.white,color:COLORS.text,bold:true,align:'Left',type:'String'},
+        Number:{bg:COLORS.white,color:COLORS.text,bold:true,align:'Right',type:'Number'},
+        Init:{bg:COLORS.init,color:'#0b1f46',bold:true,align:'Right',type:'Number'},
+        Real:{bg:COLORS.real,color:COLORS.greenText,bold:true,align:'Right',type:'Number'},
+        WhiteBold:{bg:COLORS.white,color:COLORS.text,bold:true,align:'Right',type:'Number'},
+        Diff:{bg:COLORS.white,color:COLORS.text,bold:true,align:'Right',type:'Number'},
+        DiffNeg:{bg:COLORS.white,color:COLORS.red,bold:true,align:'Right',type:'Number'},
+        DiffRight:{bg:COLORS.white,color:COLORS.text,bold:true,align:'Right',type:'Number',rightDouble:true},
+        DiffRightNeg:{bg:COLORS.white,color:COLORS.red,bold:true,align:'Right',type:'Number',rightDouble:true},
+        Rebut:{bg:COLORS.white,color:COLORS.red,bold:true,align:'Right',type:'Number'},
+        ForjatTheoretical:{bg:COLORS.init,color:'#0b1f46',bold:true,align:'Right',type:'Number'}
+      };
+      const HEADER_STYLES={
+        Header:{bg:COLORS.head,color:COLORS.text,bold:true,align:'Center',type:'String',size:8},
+        HeaderSection:{bg:COLORS.head,color:'#0b1f46',bold:true,align:'Center',type:'String',size:9},
+        HeaderInit:{bg:COLORS.init,color:'#0b1f46',bold:true,align:'Center',type:'String',size:8},
+        HeaderReal:{bg:COLORS.real,color:COLORS.greenText,bold:true,align:'Center',type:'String',size:8},
+        HeaderDiff:{bg:COLORS.white,color:COLORS.text,bold:true,align:'Center',type:'String',size:8},
+        HeaderDiffRight:{bg:COLORS.white,color:COLORS.text,bold:true,align:'Center',type:'String',size:8,rightDouble:true},
+        HeaderRebut:{bg:COLORS.head,color:COLORS.red,bold:true,align:'Center',type:'String',size:8}
+      };
+      const BOTTOMS={
+        '':null,
+        DebEnd:{color:COLORS.debLine,weight:2},
+        MaterialEnd:{color:COLORS.materialLine,weight:3}
+      };
+      function styleId(base,bottom){ return base + (bottom ? '_' + bottom : ''); }
+      function styleXml(id,cfg,bottom){
+        const bottomCfg=BOTTOMS[bottom||''];
+        const right=cfg.rightDouble
+          ? '<Border ss:Position="Right" ss:LineStyle="Double" ss:Weight="3" ss:Color="'+COLORS.purple+'"/>'
+          : '<Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="'+COLORS.line+'"/>';
+        const bottomBorder=bottomCfg
+          ? '<Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="'+bottomCfg.weight+'" ss:Color="'+bottomCfg.color+'"/>'
+          : '<Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="'+COLORS.line+'"/>';
+        return '<Style ss:ID="'+id+'">'
+          + '<Alignment ss:Horizontal="'+(cfg.align||'Center')+'" ss:Vertical="Center" ss:WrapText="1"/>'
+          + '<Borders>'
+          + '<Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="'+COLORS.line+'"/>'
+          + right
+          + '<Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="'+COLORS.line+'"/>'
+          + bottomBorder
+          + '</Borders>'
+          + '<Font ss:FontName="Arial" x:Family="Swiss" ss:Size="'+(cfg.size||8)+'" ss:Color="'+(cfg.color||COLORS.text)+'"'+(cfg.bold?' ss:Bold="1"':'')+'/>'
+          + '<Interior ss:Color="'+(cfg.bg||COLORS.white)+'" ss:Pattern="Solid"/>'
+          + (cfg.type==='Number' ? '<NumberFormat ss:Format="#,##0"/>' : '<NumberFormat ss:Format="@"/>')
+          + '</Style>';
+      }
+      let styles='<Style ss:ID="Default" ss:Name="Normal"><Alignment ss:Vertical="Center"/><Font ss:FontName="Arial" x:Family="Swiss" ss:Size="8" ss:Color="'+COLORS.text+'"/></Style>';
+      Object.keys(HEADER_STYLES).forEach(id=>{ styles+=styleXml(id,HEADER_STYLES[id],''); });
+      Object.keys(BODY_STYLES).forEach(base=>{
+        Object.keys(BOTTOMS).forEach(bottom=>{ styles+=styleXml(styleId(base,bottom),BODY_STYLES[base],bottom); });
+      });
 
-      const bodyRows=state.displayRows.map((row, idx)=>{
-        const cells=[];
-        cells.push(td(idx+1));
-        if(row.showMaterial){
-          const rs=rowspan(row.materialRowspan);
-          const steelDiff=(toNumber(row.material.stocRealOtel)||0)-(toNumber(row.material.otelRamasKg)||0);
-          cells.push(td(row.material.diametru,'',rs));
-          cells.push(td(row.material.calitate,'',rs));
-          cells.push(tdNum(n(row.material.stocStartOtel,2),blueBg,rs));
-          cells.push(tdNum(n(row.material.intrariOtel,2),'',rs));
-          cells.push(tdNum(n(row.material.debitatDinOtelKg,2),'',rs));
-          cells.push(tdNum(n(row.material.otelRamasKg,2),whiteBold,rs));
-          cells.push(tdNum(n(row.material.stocRealOtel,2),greenBg,rs));
-          cells.push(tdNum(n(steelDiff,2),whiteBold+purpleRight+(steelDiff<0?redText:''),rs));
-        }
-        if(row.showDeb){
-          const rs=rowspan(row.debRowspan);
-          const debDiff=(toNumber(row.deb.stocRealDebitat)||0)-(toNumber(row.deb.debitatRamas)||0);
-          cells.push(tdLeft(row.deb.reperDebitat,'',rs));
-          cells.push(tdNum(n(row.deb.stocDebitat,0),blueBg,rs));
-          cells.push(tdNum(n(row.deb.debitatBuc,0),'',rs));
-          cells.push(tdNum(n(row.deb.debitatKg,2),'',rs));
-          cells.push(tdNum(n(row.deb.debitatRamas,0),whiteBold,rs));
-          cells.push(tdNum(n(row.deb.stocRealDebitat||0,0),greenBg,rs));
-          cells.push(tdNum(n(debDiff,0),whiteBold+purpleRight+(debDiff<0?redText:''),rs));
-        }
-        const forjatDiff=toNumber(row.forjat.diferentaForjat||0);
-        cells.push(tdLeft(row.forjat.reperForjat||''));
-        cells.push(tdNum(n(row.forjat.stocStartForjat,0),blueBg));
-        cells.push(tdNum(n(row.forjat.forjatBuc,0)));
-        cells.push(tdNum(n(row.forjat.rebutForja||0,0),redText));
-        cells.push(tdNum(n(row.forjat.rebutDupaForjare||0,0),redText));
-        cells.push(tdNum(n(row.forjat.livrat,0)));
-        cells.push(tdNum(n(row.forjat.vanzari||0,0)));
-        cells.push(tdNum(n(row.forjat.stocPmInitial||0,0)));
-        cells.push(tdNum(n(row.forjat.stocPm||0,0)));
-        cells.push(tdNum(n(row.forjat.forjatRamas,0),blueBg));
-        cells.push(tdNum(n(row.forjat.stocRealForjat||0,0),greenBg));
-        cells.push(tdNum(n(forjatDiff,0),whiteBold+(forjatDiff<0?redText:'')));
-        const rowStyle=(row.materialEnd?'border-bottom:3px solid '+COLORS.darkLine+';':(row.debEnd?'border-bottom:2px solid #7c96b8;':''));
-        return '<tr'+(rowStyle?styleAttr(rowStyle):'')+'>'+cells.join('')+'</tr>';
-      }).join('');
+      function makeCellWriter(){
+        let currentCol=1;
+        return function cell(col,value,type,style,opts){
+          const targetCol=Number(col)||currentCol;
+          const mergeAcross=opts && opts.mergeAcross ? Number(opts.mergeAcross) : 0;
+          let attrs=' ss:StyleID="'+style+'"';
+          if(targetCol!==currentCol) attrs+=' ss:Index="'+targetCol+'"';
+          attrs+=mergeAttrs(opts);
+          currentCol=targetCol+1+mergeAcross;
+          if(type==='Number') return '<Cell'+attrs+'><Data ss:Type="Number">'+excelNumber(value)+'</Data></Cell>';
+          return '<Cell'+attrs+'><Data ss:Type="String">'+xmlEsc(value)+'</Data></Cell>';
+        };
+      }
+      function rowXml(cells,height){
+        return '<Row ss:AutoFitHeight="0"'+(height?' ss:Height="'+height+'"':'')+'>'+cells+'</Row>';
+      }
+      function bottomForRow(row){
+        return row.materialEnd ? 'MaterialEnd' : (row.debEnd ? 'DebEnd' : '');
+      }
+      function bottomForMerge(startIndex,span){
+        const endRow=state.displayRows[startIndex+Math.max(1,span)-1]||{};
+        return endRow.materialEnd ? 'MaterialEnd' : (endRow.debEnd ? 'DebEnd' : '');
+      }
 
       const colWidths=[30,42,62,70,64,70,74,68,58,82,70,58,58,76,72,58,82,72,58,78,78,56,56,62,56,78,76,62];
-      const colgroup='<colgroup>'+colWidths.map(w=>'<col style="width:'+w+'px">').join('')+'</colgroup>';
-      const tableHtml='<table>'+colgroup+'<thead>'+header1+header2+'</thead><tbody>'+bodyRows+'</tbody></table>';
-      const exportHtml='<!doctype html><html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns="http://www.w3.org/TR/REC-html40"><head><meta charset="utf-8"><!--[if gte mso 9]><xml><x:ExcelWorkbook><x:ExcelWorksheets><x:ExcelWorksheet><x:Name>Stoc ramas teoretic</x:Name><x:WorksheetOptions><x:DisplayGridlines/><x:FreezePanes/><x:FrozenNoSplit/><x:SplitHorizontal>2</x:SplitHorizontal><x:TopRowBottomPane>2</x:TopRowBottomPane><x:ActivePane>2</x:ActivePane></x:WorksheetOptions></x:ExcelWorksheet></x:ExcelWorksheets></x:ExcelWorkbook></xml><![endif]--><style>html,body{margin:0;padding:0;background:#ffffff;}table{border-collapse:collapse;table-layout:fixed;width:auto;mso-table-lspace:0pt;mso-table-rspace:0pt;}th,td{mso-number-format:"\\@";}</style></head><body>'+tableHtml+'</body></html>';
+      let tableXml='';
+      colWidths.forEach(w=>{ tableXml+='<Column ss:AutoFitWidth="0" ss:Width="'+w+'"/>'; });
 
-      const blob=new Blob(['\ufeff', exportHtml],{type:'application/vnd.ms-excel;charset=utf-8;'});
+      let c=makeCellWriter();
+      tableXml+=rowXml(
+        c(1,'OTEL LAMINAT','String','HeaderSection',{mergeAcross:8})+
+        c(10,'OTEL DEBITAT','String','HeaderSection',{mergeAcross:6})+
+        c(17,'','String','HeaderSection',{mergeAcross:11}),
+        17
+      );
+
+      const headerLabels=[
+        ['NR.','Header'],['DIAMETRU','Header'],['CALITATE','Header'],['STOC INITIAL OȚEL (KG)','HeaderInit'],['INTRĂRI OȚEL (KG)','Header'],['DEBITAT DIN OȚEL (KG)','Header'],['OȚEL RĂMAS TEORETIC (KG)','HeaderDiff'],['STOC REAL OȚEL (KG)','HeaderReal'],['Diferenta','HeaderDiffRight'],
+        ['REPER DEBITAT','Header'],['STOC INITIAL DEBITAT (BUC)','HeaderInit'],['DEBITAT (BUC)','Header'],['DEBITAT (KG)','Header'],['DEBITAT RĂMAS TEORETIC (BUC)','HeaderDiff'],['STOC REAL DEBITAT (BUC)','HeaderReal'],['Diferenta','HeaderDiffRight'],
+        ['REPER FORJAT','Header'],['STOC INITIAL FORJAT (BUC)','HeaderInit'],['FORJAT (BUC)','Header'],['Rebut depistat in forja','HeaderRebut'],['Rebut dupa forjare','HeaderRebut'],['LIVRĂRI (BUC)','Header'],['Vanzari','Header'],['Stoc PM Initial','Header'],['STOC PM','Header'],['FORJAT RĂMAS TEORETIC (BUC)','HeaderInit'],['STOC REAL FORJAT (BUC)','HeaderReal'],['DIFERENTA','HeaderDiff']
+      ];
+      c=makeCellWriter();
+      tableXml+=rowXml(headerLabels.map((item,idx)=>c(idx+1,item[0],'String',item[1])).join(''),38);
+
+      state.displayRows.forEach((row,idx)=>{
+        const rowBottom=bottomForRow(row);
+        const writer=makeCellWriter();
+        const cells=[];
+        cells.push(writer(1,idx+1,'Number',styleId('Number',rowBottom)));
+        if(row.showMaterial){
+          const md=Math.max(0,(row.materialRowspan||1)-1);
+          const mergeBottom=bottomForMerge(idx,row.materialRowspan||1)||'MaterialEnd';
+          const opts={mergeDown:md};
+          const steelDiff=(toNumber(row.material.stocRealOtel)||0)-(toNumber(row.material.otelRamasKg)||0);
+          cells.push(writer(2,row.material.diametru,'String',styleId('Text',mergeBottom),opts));
+          cells.push(writer(3,row.material.calitate,'String',styleId('Text',mergeBottom),opts));
+          cells.push(writer(4,row.material.stocStartOtel,'Number',styleId('Init',mergeBottom),opts));
+          cells.push(writer(5,row.material.intrariOtel,'Number',styleId('Number',mergeBottom),opts));
+          cells.push(writer(6,row.material.debitatDinOtelKg,'Number',styleId('Number',mergeBottom),opts));
+          cells.push(writer(7,row.material.otelRamasKg,'Number',styleId('WhiteBold',mergeBottom),opts));
+          cells.push(writer(8,row.material.stocRealOtel,'Number',styleId('Real',mergeBottom),opts));
+          cells.push(writer(9,steelDiff,'Number',styleId(steelDiff<0?'DiffRightNeg':'DiffRight',mergeBottom),opts));
+        }
+        if(row.showDeb){
+          const md=Math.max(0,(row.debRowspan||1)-1);
+          const mergeBottom=bottomForMerge(idx,row.debRowspan||1)||'DebEnd';
+          const opts={mergeDown:md};
+          const debDiff=(toNumber(row.deb.stocRealDebitat)||0)-(toNumber(row.deb.debitatRamas)||0);
+          cells.push(writer(10,row.deb.reperDebitat,'String',styleId('TextLeft',mergeBottom),opts));
+          cells.push(writer(11,row.deb.stocDebitat,'Number',styleId('Init',mergeBottom),opts));
+          cells.push(writer(12,row.deb.debitatBuc,'Number',styleId('Number',mergeBottom),opts));
+          cells.push(writer(13,row.deb.debitatKg,'Number',styleId('Number',mergeBottom),opts));
+          cells.push(writer(14,row.deb.debitatRamas,'Number',styleId('WhiteBold',mergeBottom),opts));
+          cells.push(writer(15,row.deb.stocRealDebitat||0,'Number',styleId('Real',mergeBottom),opts));
+          cells.push(writer(16,debDiff,'Number',styleId(debDiff<0?'DiffRightNeg':'DiffRight',mergeBottom),opts));
+        }
+        const forjatDiff=toNumber(row.forjat.diferentaForjat||0);
+        cells.push(writer(17,row.forjat.reperForjat||'','String',styleId('TextLeft',rowBottom)));
+        cells.push(writer(18,row.forjat.stocStartForjat,'Number',styleId('Init',rowBottom)));
+        cells.push(writer(19,row.forjat.forjatBuc,'Number',styleId('Number',rowBottom)));
+        cells.push(writer(20,row.forjat.rebutForja||0,'Number',styleId('Rebut',rowBottom)));
+        cells.push(writer(21,row.forjat.rebutDupaForjare||0,'Number',styleId('Rebut',rowBottom)));
+        cells.push(writer(22,row.forjat.livrat,'Number',styleId('Number',rowBottom)));
+        cells.push(writer(23,row.forjat.vanzari||0,'Number',styleId('Number',rowBottom)));
+        cells.push(writer(24,row.forjat.stocPmInitial||0,'Number',styleId('Number',rowBottom)));
+        cells.push(writer(25,row.forjat.stocPm||0,'Number',styleId('Number',rowBottom)));
+        cells.push(writer(26,row.forjat.forjatRamas,'Number',styleId('ForjatTheoretical',rowBottom)));
+        cells.push(writer(27,row.forjat.stocRealForjat||0,'Number',styleId('Real',rowBottom)));
+        cells.push(writer(28,forjatDiff,'Number',styleId(forjatDiff<0?'DiffNeg':'Diff',rowBottom)));
+        tableXml+=rowXml(cells.join(''),15);
+      });
+
+      const workbookXml='<?xml version="1.0" encoding="UTF-8"?>'
+        + '<?mso-application progid="Excel.Sheet"?>'
+        + '<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet" xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet" xmlns:html="http://www.w3.org/TR/REC-html40">'
+        + '<DocumentProperties xmlns="urn:schemas-microsoft-com:office:office"><Author>K.A.D</Author></DocumentProperties>'
+        + '<ExcelWorkbook xmlns="urn:schemas-microsoft-com:office:excel"><ProtectStructure>False</ProtectStructure><ProtectWindows>False</ProtectWindows></ExcelWorkbook>'
+        + '<Styles>'+styles+'</Styles>'
+        + '<Worksheet ss:Name="Stoc ramas teoretic"><Table ss:ExpandedColumnCount="28" ss:ExpandedRowCount="'+(state.displayRows.length+2)+'" x:FullColumns="1" x:FullRows="1">'+tableXml+'</Table>'
+        + '<WorksheetOptions xmlns="urn:schemas-microsoft-com:office:excel"><FreezePanes/><FrozenNoSplit/><SplitHorizontal>2</SplitHorizontal><TopRowBottomPane>2</TopRowBottomPane><ActivePane>2</ActivePane><Panes><Pane><Number>3</Number></Pane><Pane><Number>2</Number><ActiveRow>2</ActiveRow></Pane></Panes><ProtectObjects>False</ProtectObjects><ProtectScenarios>False</ProtectScenarios></WorksheetOptions>'
+        + '</Worksheet></Workbook>';
+
+      const blob=new Blob(['\ufeff', workbookXml],{type:'application/vnd.ms-excel;charset=utf-8;'});
       const url=URL.createObjectURL(blob);
       const a=document.createElement('a');
       a.href=url;
