@@ -993,14 +993,29 @@
     });
     return bestCode===-Infinity ? null : bestCode;
   }
+  function inventoryPeriodAllowedForSelected(period){
+    const selected=getSelectedPeriod();
+    if(!period) return false;
+    if(selected.year && selected.month) return period.code < selected.code;
+    if(selected.year) return period.code <= (selected.year*12+12);
+    return true;
+  }
   function latestInventoryMapForPeriod(rows,type){
-    const targetCode=resolveTargetInventoryCode(rows);
     const result=new Map();
-    rows.forEach(row=>{
+    const latestCodeByKey=new Map();
+    (rows||[]).forEach(row=>{
       const period=getRowPeriod(row);
-      if(!period || (targetCode!=null && period.code!==targetCode)) return;
+      if(!inventoryPeriodAllowedForSelected(period)) return;
       const key=getInventoryKey(row,type);
       if(!key) return;
+      const currentCode=latestCodeByKey.get(key);
+      if(currentCode==null || period.code>currentCode) latestCodeByKey.set(key,period.code);
+    });
+    (rows||[]).forEach(row=>{
+      const period=getRowPeriod(row);
+      if(!period) return;
+      const key=getInventoryKey(row,type);
+      if(!key || latestCodeByKey.get(key)!==period.code) return;
       const qty=getInventoryQty(row,type);
       const date=parseDateFromRow(row)||new Date(period.year,period.month-1,1);
       const current=result.get(key);
@@ -1016,6 +1031,43 @@
       });
     });
     return result;
+  }
+  function buildSteelMaterialResolver(steelInv, steelRealInv, steelEntries, steelDebitated){
+    const byQuality=new Map();
+    function registerKey(key,qty){
+      const parts=String(key||'').split('|');
+      const diam=normalizeDiam(parts[0]||'');
+      const cal=normalizeQuality(parts.slice(1).join('|')||'');
+      if(!cal || !diam) return;
+      if(toNumber(qty)===0) return;
+      const list=byQuality.get(cal)||new Map();
+      list.set(diam,(list.get(diam)||0)+Math.abs(toNumber(qty)));
+      byQuality.set(cal,list);
+    }
+    (steelInv||new Map()).forEach((entry,key)=>registerKey(key,entry&&typeof entry==='object'?entry.qty:entry));
+    if(steelRealInv && steelRealInv.exact) steelRealInv.exact.forEach((qty,key)=>registerKey(key,qty));
+    if(steelEntries && steelEntries.exact) steelEntries.exact.forEach((qty,key)=>registerKey(key,qty));
+    if(steelDebitated && steelDebitated.byMaterial) steelDebitated.byMaterial.forEach((qty,key)=>registerKey(key,qty));
+    function hasExactActivity(key){
+      const start=steelInv && steelInv.get(key);
+      const startQty=start && typeof start==='object' ? start.qty : start;
+      return toNumber(startQty)!==0
+        || toNumber(steelRealInv && steelRealInv.exact && steelRealInv.exact.get(key))!==0
+        || toNumber(steelEntries && steelEntries.exact && steelEntries.exact.get(key))!==0
+        || toNumber(steelDebitated && steelDebitated.byMaterial && steelDebitated.byMaterial.get(key))!==0;
+    }
+    return function resolveSteelMaterial(diam,cal){
+      const originalDiam=normalizeDiam(diam);
+      const originalCal=normalizeQuality(cal);
+      const originalKey=[originalDiam,originalCal].join('|');
+      if(!originalCal || !originalDiam || hasExactActivity(originalKey)) return {diam:originalDiam,cal:originalCal,key:originalKey,remapped:false};
+      const candidates=byQuality.get(originalCal);
+      if(!candidates || candidates.size!==1) return {diam:originalDiam,cal:originalCal,key:originalKey,remapped:false};
+      const candidateDiam=Array.from(candidates.keys())[0];
+      const candidateKey=[candidateDiam,originalCal].join('|');
+      if(!candidateDiam || candidateDiam===originalDiam) return {diam:originalDiam,cal:originalCal,key:originalKey,remapped:false};
+      return {diam:candidateDiam,cal:originalCal,key:candidateKey,originalKey,remapped:true};
+    };
   }
   function currentSteelInventoryMapForSelectedPeriod(rows){
     const selected=getSelectedPeriod();
@@ -1611,15 +1663,17 @@
     const stocPm=aggregateStocPmThisPeriod();
 
     const materialMap=new Map();
+    const resolveSteelMaterial=buildSteelMaterialResolver(steelInv, steelRealInv, steelEntries, steelDebitated);
     function ensureMaterial(diam, cal){
-      const steelKey=[diam,cal].join('|');
+      const resolved=resolveSteelMaterial(diam, cal);
+      const finalDiam=resolved.diam, finalCal=resolved.cal, steelKey=resolved.key;
       let material=materialMap.get(steelKey);
       if(!material){
         const startSteel=(steelInv.get(steelKey)?.qty)||0;
-        const intrariSteel=(steelEntries.exact&&steelEntries.exact.get(steelKey)) || (steelEntries.loose&&steelEntries.loose.get(looseMaterialKey(diam,cal))) || 0;
+        const intrariSteel=(steelEntries.exact&&steelEntries.exact.get(steelKey)) || (steelEntries.loose&&steelEntries.loose.get(looseMaterialKey(finalDiam,finalCal))) || 0;
         const debitatKg=steelDebitated.byMaterial.get(steelKey)||0;
-        const stocRealOtel=(steelRealInv.exact&&steelRealInv.exact.get(steelKey)) || (steelRealInv.loose&&steelRealInv.loose.get(looseMaterialKey(diam,cal))) || 0;
-        material={steelKey, diametru:diam, calitate:cal, stocStartOtel:startSteel, intrariOtel:intrariSteel, debitatDinOtelKg:debitatKg, otelRamasKg:startSteel+intrariSteel-debitatKg, stocRealOtel, debGroups:new Map()};
+        const stocRealOtel=(steelRealInv.exact&&steelRealInv.exact.get(steelKey)) || (steelRealInv.loose&&steelRealInv.loose.get(looseMaterialKey(finalDiam,finalCal))) || 0;
+        material={steelKey, diametru:finalDiam, calitate:finalCal, stocStartOtel:startSteel, intrariOtel:intrariSteel, debitatDinOtelKg:debitatKg, otelRamasKg:startSteel+intrariSteel-debitatKg, stocRealOtel, debGroups:new Map()};
         materialMap.set(steelKey, material);
       }
       return material;
