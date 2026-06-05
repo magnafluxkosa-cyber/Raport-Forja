@@ -3267,17 +3267,84 @@ function setAutofillReadonly(isReadonly){
     });
   }
 
+
+  function kadExportNumberFromText(value){
+    if (value === null || value === undefined || value === '') return null;
+    if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+    let s = String(value).trim();
+    if (!s) return null;
+    const isPercent = s.includes('%');
+    s = s.replace(/\u00a0/g, ' ').replace(/\s+/g, '').replace(/%/g, '').replace(/[^0-9,\.\-]/g, '');
+    if (!s || s === '-' || s === ',' || s === '.') return null;
+    const hasComma = s.includes(',');
+    const hasDot = s.includes('.');
+    if (hasComma && hasDot){
+      if (s.lastIndexOf(',') > s.lastIndexOf('.')) s = s.replace(/\./g, '').replace(',', '.');
+      else s = s.replace(/,/g, '');
+    } else if (hasComma){
+      if (/^-?\d{1,3}(,\d{3})+$/.test(s)) s = s.replace(/,/g, '');
+      else s = s.replace(',', '.');
+    } else if (hasDot){
+      if (/^-?\d{1,3}(\.\d{3})+$/.test(s)) s = s.replace(/\./g, '');
+    }
+    const n = Number(s);
+    if (!Number.isFinite(n)) return null;
+    return isPercent ? n / 100 : n;
+  }
+
+  function kadDebitateExportNumberValue(row, col, displayText){
+    if (!col) return null;
+    if (col.type === 'pct'){
+      const raw = Number(row && row[col.key]);
+      if (Number.isFinite(raw)) return raw / 100;
+      return kadExportNumberFromText(displayText);
+    }
+    if (col.type === 'year' || col.type === 'int' || col.type === 'kgdec' || col.type === 'dec1' || col.type === 'dec2' || col.type === 'diam'){
+      const raw = col.type === 'diam' ? (row && row[col.key]) : (row && row[col.key]);
+      const parsed = kadExportNumberFromText(raw);
+      if (parsed !== null) return parsed;
+      return kadExportNumberFromText(displayText);
+    }
+    return null;
+  }
+
+  function kadDebitateExcelNumberFormat(col){
+    if (!col) return '#,##0';
+    if (col.type === 'pct') return '0%';
+    if (col.type === 'kgdec') return '#,##0.00';
+    if (col.type === 'dec1') return '#,##0.0';
+    if (col.type === 'dec2' || col.type === 'diam') return '#,##0.00';
+    return '#,##0';
+  }
+
+  function kadApplyDebitateNumberTypes(ws, sourceRows, exportRows){
+    if (!ws || !Array.isArray(sourceRows)) return;
+    sourceRows.forEach((row, rowIndex) => {
+      COLUMNS.forEach((col, cIdx) => {
+        const num = kadDebitateExportNumberValue(row, col, exportRows && exportRows[rowIndex] ? exportRows[rowIndex][cIdx] : '');
+        if (num === null) return;
+        const ref = XLSX.utils.encode_cell({ r: rowIndex + 1, c: cIdx });
+        if (!ws[ref]) ws[ref] = { t:'n', v:num };
+        ws[ref].t = 'n';
+        ws[ref].v = num;
+        ws[ref].z = kadDebitateExcelNumberFormat(col);
+      });
+    });
+  }
+
   function exportXLSX(){
     ensureXLSX().then(ok=>{
       if (!ok) return;
 
       const y = normalizeYearValue(activeYear) || String(CURRENT_YEAR);
-      const exportRows = (Array.isArray(rows) ? rows : []).map(r => {
+      const sourceRows = (Array.isArray(rows) ? rows : []);
+      const exportRows = sourceRows.map(r => {
         try{ recalcRow(r); }catch(_e){}
         return COLUMNS.map(col => displayValue(r, col));
       });
-      const headers = COLUMNS.map(col => String(col.label || col.key || '').replace(/\\n/g, String.fromCharCode(10)));
+      const headers = COLUMNS.map(col => String(col.label || col.key || '').replace(/\n/g, "\n"));
       const ws = XLSX.utils.aoa_to_sheet([headers, ...exportRows]);
+      kadApplyDebitateNumberTypes(ws, sourceRows, exportRows);
       const lastRow = Math.max(0, exportRows.length);
       const lastCol = Math.max(0, headers.length - 1);
       const range = XLSX.utils.encode_range({ s:{ r:0, c:0 }, e:{ r:lastRow, c:lastCol } });
