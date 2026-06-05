@@ -282,6 +282,17 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
 }
 </style>
 
+
+<style id="kad-today-date-highlight-style">
+.excel-sheet th.kad-today-date-cell,
+.excel-sheet td.kad-today-date-cell{
+  background:#ff0000 !important;
+  color:#ffffff !important;
+  font-weight:800 !important;
+  box-shadow:inset 0 0 0 2px #7f0000 !important;
+}
+</style>
+
 </head>
 <body>
 <div class="page">
@@ -785,7 +796,7 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
 
   function cleanTransientSelectionMarks(root){
     if(!root) return;
-    root.querySelectorAll('.palette-target, .ms-selected-cell').forEach(cell => {
+    root.querySelectorAll('.palette-target, .ms-selected-cell, .kad-today-date-cell').forEach(cell => {
       cell.classList.remove('palette-target', 'ms-selected-cell');
     });
   }
@@ -1540,6 +1551,306 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
       timer=setTimeout(normalizePlanCellFonts, 50);
     }).observe(table, {subtree:true, childList:true, characterData:true, attributes:true, attributeFilter:['style','class']});
   }
+})();
+</script>
+
+
+<script id="kad-today-date-highlight-script">
+(function(){
+  if(window.KAD_todayDateCellHighlighterLoaded) return;
+  window.KAD_todayDateCellHighlighterLoaded = true;
+
+  var TABLE_ID = 'planLivrariTable';
+  var TODAY_CLASS = 'kad-today-date-cell';
+  var FIXED_COLS = 2;
+  var HEADER_ROWS = 3;
+  var DAY_NAMES = ['duminică','luni','marți','miercuri','joi','vineri','sâmbătă'];
+  var observerTimer = 0;
+  var isApplying = false;
+
+  function pad2(value){
+    return String(value).padStart(2, '0');
+  }
+
+  function atLocalMidnight(date){
+    return new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  }
+
+  function getTodayDate(){
+    return atLocalMidnight(new Date());
+  }
+
+  function formatDate(dt){
+    return pad2(dt.getDate()) + '.' + pad2(dt.getMonth() + 1) + '.' + dt.getFullYear();
+  }
+
+  function parseDate(text){
+    var m = String(text || '').replace(/\u00a0/g, ' ').trim().match(/^(\d{2})\.(\d{2})\.(\d{4})$/);
+    if(!m) return null;
+    return new Date(Number(m[3]), Number(m[2]) - 1, Number(m[1]));
+  }
+
+  function isoWeek(date){
+    var dt = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+    var day = dt.getUTCDay() || 7;
+    dt.setUTCDate(dt.getUTCDate() + 4 - day);
+    var yearStart = new Date(Date.UTC(dt.getUTCFullYear(), 0, 1));
+    return Math.ceil((((dt - yearStart) / 86400000) + 1) / 7);
+  }
+
+  function easterOrthodox(year){
+    var a = year % 4;
+    var b = year % 7;
+    var c = year % 19;
+    var d = (19 * c + 15) % 30;
+    var e = (2 * a + 4 * b - d + 34) % 7;
+    var month = Math.floor((d + e + 114) / 31);
+    var day = ((d + e + 114) % 31) + 1;
+    var julian = new Date(year, month - 1, day);
+    julian.setDate(julian.getDate() + 13);
+    return julian;
+  }
+
+  function holidaySetForYear(year){
+    var set = new Set();
+    function add(y,m,d){ set.add(y + '-' + pad2(m) + '-' + pad2(d)); }
+    add(year,1,1); add(year,1,2); add(year,1,24);
+    add(year,5,1); add(year,6,1); add(year,8,15);
+    add(year,11,30); add(year,12,1); add(year,12,25); add(year,12,26);
+    var easter = easterOrthodox(year);
+    var goodFriday = new Date(easter); goodFriday.setDate(easter.getDate() - 2);
+    var easterMonday = new Date(easter); easterMonday.setDate(easter.getDate() + 1);
+    var pentecostSunday = new Date(easter); pentecostSunday.setDate(easter.getDate() + 49);
+    var pentecostMonday = new Date(easter); pentecostMonday.setDate(easter.getDate() + 50);
+    [goodFriday, easter, easterMonday, pentecostSunday, pentecostMonday].forEach(function(dt){
+      add(dt.getFullYear(), dt.getMonth() + 1, dt.getDate());
+    });
+    return set;
+  }
+
+  function clearGeneratedClasses(cell){
+    if(!cell || !cell.classList) return;
+    cell.classList.remove('auto-weekend', 'auto-holiday', TODAY_CLASS);
+    cell.classList.remove('palette-delivered', 'palette-pending', 'palette-ready', 'palette-blocked', 'palette-weekend', 'palette-holiday', 'palette-clear', 'palette-target', 'ms-selected-cell');
+    cell.removeAttribute('data-palette-color');
+  }
+
+  function getRows(table){
+    return table ? Array.prototype.slice.call(table.rows || []) : [];
+  }
+
+  function getColgroup(table){
+    return table ? table.querySelector('colgroup') : null;
+  }
+
+  function findLastDateCell(row3){
+    if(!row3) return null;
+    for(var c = row3.cells.length - 1; c >= FIXED_COLS; c--){
+      var cell = row3.cells[c];
+      var dt = cell ? parseDate(cell.textContent) : null;
+      if(dt) return { cell: cell, date: atLocalMidnight(dt), index: c };
+    }
+    return null;
+  }
+
+  function appendOneWeek(table, lastDate){
+    var rows = getRows(table);
+    if(rows.length < HEADER_ROWS + 1) return false;
+    var row1 = rows[0], row2 = rows[1], row3 = rows[2];
+    var colgroup = getColgroup(table);
+    if(!row1 || !row2 || !row3 || !colgroup) return false;
+
+    var cols = Array.prototype.slice.call(colgroup.children || []);
+    var last7Cols = cols.slice(-7);
+    if(last7Cols.length < 7) return false;
+    last7Cols.forEach(function(col){
+      var clone = col.cloneNode(true);
+      clone.style.display = '';
+      colgroup.appendChild(clone);
+    });
+
+    var newWeekCell = row1.cells[row1.cells.length - 1] ? row1.cells[row1.cells.length - 1].cloneNode(true) : document.createElement('th');
+    newWeekCell.colSpan = 7;
+    newWeekCell.style.display = '';
+    newWeekCell.textContent = '';
+    newWeekCell.dataset.weekId = 'week-auto-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7);
+    clearGeneratedClasses(newWeekCell);
+    row1.appendChild(newWeekCell);
+
+    for(var i = 1; i <= 7; i++){
+      var nextDate = new Date(lastDate);
+      nextDate.setDate(lastDate.getDate() + i);
+
+      var dayClone = row2.cells[row2.cells.length - 7] ? row2.cells[row2.cells.length - 7].cloneNode(true) : document.createElement('th');
+      dayClone.style.display = '';
+      dayClone.textContent = DAY_NAMES[nextDate.getDay()];
+      dayClone.style.removeProperty('background');
+      clearGeneratedClasses(dayClone);
+      row2.appendChild(dayClone);
+
+      var dateClone = row3.cells[row3.cells.length - 7] ? row3.cells[row3.cells.length - 7].cloneNode(true) : document.createElement('th');
+      dateClone.style.display = '';
+      dateClone.textContent = formatDate(nextDate);
+      dateClone.style.removeProperty('background');
+      clearGeneratedClasses(dateClone);
+      row3.appendChild(dateClone);
+    }
+
+    for(var r = HEADER_ROWS; r < rows.length; r++){
+      var row = rows[r];
+      for(var j = 0; j < 7; j++){
+        var template = row.cells[row.cells.length - 7] ? row.cells[row.cells.length - 7].cloneNode(true) : document.createElement('td');
+        template.style.display = '';
+        template.textContent = '\u00A0';
+        template.style.removeProperty('background');
+        clearGeneratedClasses(template);
+        template.classList.add('editable-grid-cell');
+        row.appendChild(template);
+      }
+    }
+    return true;
+  }
+
+  function updateWeekHeaders(table){
+    var rows = getRows(table);
+    if(rows.length < HEADER_ROWS) return;
+    var row1 = rows[0], row2 = rows[1], row3 = rows[2];
+    var startCol = FIXED_COLS;
+    Array.prototype.slice.call(row1.cells || []).slice(FIXED_COLS).forEach(function(weekCell){
+      var span = Math.max(1, Number(weekCell.colSpan || 1));
+      var firstDateCell = row3.cells[startCol];
+      var firstDt = firstDateCell ? parseDate(firstDateCell.textContent) : null;
+      if(firstDt) weekCell.textContent = String(isoWeek(firstDt));
+      for(var i = 0; i < span; i++){
+        var dateCell = row3.cells[startCol + i];
+        var dayCell = row2.cells[startCol + i];
+        var dt = dateCell ? parseDate(dateCell.textContent) : null;
+        if(dayCell && dt) dayCell.textContent = DAY_NAMES[dt.getDay()];
+      }
+      startCol += span;
+    });
+  }
+
+  function applyWeekendHolidayColors(table){
+    var rows = getRows(table);
+    if(rows.length < HEADER_ROWS) return;
+    var row3 = rows[2];
+    var yearsCache = new Map();
+    for(var c = FIXED_COLS; c < row3.cells.length; c++){
+      var dateCell = row3.cells[c];
+      if(!dateCell || dateCell.style.display === 'none') continue;
+      var dt = parseDate(dateCell.textContent);
+      if(!dt) continue;
+      var year = dt.getFullYear();
+      if(!yearsCache.has(year)) yearsCache.set(year, holidaySetForYear(year));
+      var key = year + '-' + pad2(dt.getMonth() + 1) + '-' + pad2(dt.getDate());
+      var isHoliday = yearsCache.get(year).has(key);
+      var isWeekend = dt.getDay() === 0 || dt.getDay() === 6;
+      if(!isHoliday && !isWeekend) continue;
+      var cls = isHoliday ? 'auto-holiday' : 'auto-weekend';
+      var color = isHoliday ? '#21ebe4' : '#daf2d0';
+      rows.forEach(function(row){
+        var cell = row.cells[c];
+        if(!cell || cell.classList.contains(TODAY_CLASS)) return;
+        if(cell.hasAttribute('data-palette-color')) return;
+        cell.classList.remove('auto-weekend', 'auto-holiday');
+        cell.classList.add(cls);
+        cell.style.setProperty('background', color, 'important');
+      });
+    }
+  }
+
+  function ensurePlanLivrariContainsToday(table){
+    var rows = getRows(table);
+    if(rows.length < HEADER_ROWS) return false;
+    var target = getTodayDate();
+    var targetText = formatDate(target);
+    var row3 = rows[2];
+    for(var c = FIXED_COLS; c < row3.cells.length; c++){
+      if(String(row3.cells[c].textContent || '').replace(/\u00a0/g, ' ').trim() === targetText) return false;
+    }
+    var lastInfo = findLastDateCell(row3);
+    if(!lastInfo || lastInfo.date >= target) return false;
+    var currentLast = lastInfo.date;
+    var changed = false;
+    var guard = 0;
+    while(currentLast < target && guard < 80){
+      if(!appendOneWeek(table, currentLast)) break;
+      currentLast = new Date(currentLast);
+      currentLast.setDate(currentLast.getDate() + 7);
+      changed = true;
+      guard++;
+    }
+    if(changed){
+      updateWeekHeaders(table);
+      applyWeekendHolidayColors(table);
+      if(window.KAD_normalizePlanLivrariFonts) window.KAD_normalizePlanLivrariFonts();
+    }
+    return changed;
+  }
+
+  function clearTodayHighlight(table){
+    Array.prototype.forEach.call(table.querySelectorAll('.' + TODAY_CLASS), function(cell){
+      cell.classList.remove(TODAY_CLASS);
+    });
+  }
+
+  function applyTodayDateHighlight(){
+    if(isApplying) return;
+    isApplying = true;
+    try{
+      var table = document.getElementById(TABLE_ID);
+      if(!table) return;
+      ensurePlanLivrariContainsToday(table);
+      clearTodayHighlight(table);
+      var expected = formatDate(getTodayDate());
+      var rows = getRows(table);
+      var row3 = rows[2];
+      if(!row3) return;
+      for(var c = FIXED_COLS; c < row3.cells.length; c++){
+        var cell = row3.cells[c];
+        if(!cell) continue;
+        var txt = String(cell.textContent || '').replace(/\u00a0/g, ' ').trim();
+        if(txt === expected){
+          cell.classList.add(TODAY_CLASS);
+          break;
+        }
+      }
+    }finally{
+      isApplying = false;
+    }
+  }
+
+  function scheduleApply(){
+    clearTimeout(observerTimer);
+    observerTimer = setTimeout(applyTodayDateHighlight, 80);
+  }
+
+  function attachObserver(){
+    var table = document.getElementById(TABLE_ID);
+    if(!table || !window.MutationObserver) return;
+    new MutationObserver(function(){
+      if(!isApplying) scheduleApply();
+    }).observe(table, { subtree:true, childList:true, characterData:true });
+  }
+
+  function init(){
+    applyTodayDateHighlight();
+    attachObserver();
+    setTimeout(applyTodayDateHighlight, 300);
+    setTimeout(applyTodayDateHighlight, 1200);
+    setTimeout(applyTodayDateHighlight, 3000);
+  }
+
+  if(document.readyState === 'loading'){
+    document.addEventListener('DOMContentLoaded', init);
+  }else{
+    init();
+  }
+  window.addEventListener('load', applyTodayDateHighlight);
+  document.addEventListener('visibilitychange', function(){ if(!document.hidden) applyTodayDateHighlight(); });
+  window.KAD_highlightTodayDateCell = applyTodayDateHighlight;
+  setInterval(applyTodayDateHighlight, 60000);
 })();
 </script>
 
