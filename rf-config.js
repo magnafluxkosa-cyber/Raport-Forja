@@ -1454,27 +1454,25 @@ function getControlCatalogForPage(pageKey) {
     if (!client || !user || !user.id) {
       return { role: 'viewer', source: 'fallback viewer' };
     }
-    var cacheKey = aclCacheKey(['role', String(user.id || '').trim(), email]);
-    return aclCachedRead('roles', cacheKey, ACL_CACHE_TTL_MS, async function () {
+
+    try {
+      var a = await client.from('profiles').select('role').eq('user_id', user.id).maybeSingle();
+      if (!a.error && a.data && a.data.role) return { role: normalizeRole(a.data.role), source: 'profiles.user_id' };
+    } catch (_) {}
+
+    try {
+      var b = await client.from('profiles').select('role').eq('id', user.id).maybeSingle();
+      if (!b.error && b.data && b.data.role) return { role: normalizeRole(b.data.role), source: 'profiles.id' };
+    } catch (_) {}
+
+    if (email) {
       try {
-        var a = await client.from('profiles').select('role').eq('user_id', user.id).maybeSingle();
-        if (!a.error && a.data && a.data.role) return { role: normalizeRole(a.data.role), source: 'profiles.user_id' };
+        var c = await client.from('rf_acl').select('role').eq('email', email).maybeSingle();
+        if (!c.error && c.data && c.data.role) return { role: normalizeRole(c.data.role), source: 'rf_acl' };
       } catch (_) {}
+    }
 
-      try {
-        var b = await client.from('profiles').select('role').eq('id', user.id).maybeSingle();
-        if (!b.error && b.data && b.data.role) return { role: normalizeRole(b.data.role), source: 'profiles.id' };
-      } catch (_) {}
-
-      if (email) {
-        try {
-          var c = await client.from('rf_acl').select('role').eq('email', email).maybeSingle();
-          if (!c.error && c.data && c.data.role) return { role: normalizeRole(c.data.role), source: 'rf_acl' };
-        } catch (_) {}
-      }
-
-      return { role: 'viewer', source: 'fallback viewer' };
-    });
+    return { role: 'viewer', source: 'fallback viewer' };
   }
 
   function normalizeAclEmail(value) {
@@ -1513,72 +1511,6 @@ function buildControlPermissionEntry(row) {
     can_use: row && (row.can_use === true || row.is_enabled === true),
     can_edit: row && (row.can_edit === true || row.is_editable === true)
   };
-}
-
-var ACL_CACHE_TTL_MS = 5 * 60 * 1000;
-var ACL_ACCOUNT_CACHE_TTL_MS = 60 * 1000;
-var RF_ACL_CACHE = window.__RF_ACL_RUNTIME_CACHE__ || (window.__RF_ACL_RUNTIME_CACHE__ = {
-  roles: Object.create(null),
-  userPermissions: Object.create(null),
-  pagePermissions: Object.create(null),
-  userControls: Object.create(null),
-  roleFields: Object.create(null),
-  dashboardMirror: Object.create(null),
-  accountStatus: Object.create(null),
-  inflight: Object.create(null)
-});
-
-function aclCacheKey(parts) {
-  return (parts || []).map(function (part) { return encodeURIComponent(String(part == null ? '' : part)); }).join('|');
-}
-
-function aclCacheLookup(bucket, key) {
-  try {
-    var store = RF_ACL_CACHE[bucket];
-    if (!store || !Object.prototype.hasOwnProperty.call(store, key)) return { hit:false, value:null };
-    var item = store[key];
-    if (!item) return { hit:false, value:null };
-    if (item.expiresAt && item.expiresAt < Date.now()) {
-      delete store[key];
-      return { hit:false, value:null };
-    }
-    return { hit:true, value:item.value };
-  } catch (_) {
-    return { hit:false, value:null };
-  }
-}
-
-function aclCacheSet(bucket, key, value, ttl) {
-  try {
-    var store = RF_ACL_CACHE[bucket] || (RF_ACL_CACHE[bucket] = Object.create(null));
-    store[key] = { value: value, expiresAt: Date.now() + Number(ttl || ACL_CACHE_TTL_MS) };
-  } catch (_) {}
-  return value;
-}
-
-function aclCachedRead(bucket, key, ttl, loader) {
-  var cached = aclCacheLookup(bucket, key);
-  if (cached.hit) return Promise.resolve(cached.value);
-  var inflightKey = bucket + '::' + key;
-  if (RF_ACL_CACHE.inflight && RF_ACL_CACHE.inflight[inflightKey]) return RF_ACL_CACHE.inflight[inflightKey];
-  var pending = Promise.resolve().then(loader).then(function (value) {
-    aclCacheSet(bucket, key, value, ttl || ACL_CACHE_TTL_MS);
-    return value;
-  }).finally(function () {
-    try { delete RF_ACL_CACHE.inflight[inflightKey]; } catch (_) {}
-  });
-  try { RF_ACL_CACHE.inflight[inflightKey] = pending; } catch (_) {}
-  return pending;
-}
-
-function clearAclRuntimeCaches() {
-  try {
-    Object.keys(RF_ACL_CACHE).forEach(function (bucket) {
-      if (bucket === 'inflight') return;
-      RF_ACL_CACHE[bucket] = Object.create(null);
-    });
-    RF_ACL_CACHE.inflight = Object.create(null);
-  } catch (_) {}
 }
 
 function mergeControlAccess(base, incoming) {
@@ -1623,15 +1555,51 @@ function defaultControlAccessFromPagePermissions(pagePermissions, controlKey) {
   return base;
 }
 
+
+var __rfAclControlCaches = window.__RF_ACL_CONTROL_CACHES__ || (window.__RF_ACL_CONTROL_CACHES__ = {
+  userControlMaps: new Map(),
+  roleFieldMaps: new Map(),
+  ttlMs: 90 * 1000
+});
+
+function __rfAclCacheKey(parts) {
+  return (Array.isArray(parts) ? parts : []).map(function (part) {
+    return String(part == null ? '' : part).trim().toLowerCase();
+  }).join('::');
+}
+
+function __rfAclCacheGet(bucket, key) {
+  try {
+    var item = bucket && bucket.get ? bucket.get(key) : null;
+    if (!item) return { hit:false, value:null };
+    if (item.expiresAt && item.expiresAt < Date.now()) {
+      bucket.delete(key);
+      return { hit:false, value:null };
+    }
+    return { hit:true, value:item.value };
+  } catch (_) {
+    return { hit:false, value:null };
+  }
+}
+
+function __rfAclCacheSet(bucket, key, value, ttlMs) {
+  try {
+    if (bucket && bucket.set) bucket.set(key, { value:value, expiresAt:Date.now() + Number(ttlMs || __rfAclControlCaches.ttlMs || 90000) });
+  } catch (_) {}
+  return value;
+}
+
 async function loadUserControlPermissionMap(client, user, pageKey) {
   if (!client || !user) return null;
   var email = normalizeAclEmail(user.email);
   var userId = user && user.id ? String(user.id).trim() : '';
   if (!email && !userId) return null;
-  var normalizedPageKey = pageKey ? normalizeAclPageKey(pageKey) : '*';
-  var cacheKey = aclCacheKey(['user-control', userId, email, normalizedPageKey]);
 
-  return aclCachedRead('userControls', cacheKey, ACL_CACHE_TTL_MS, async function () {
+  var cacheKey = __rfAclCacheKey(['user_control_permissions', userId, email, pageKey || '*']);
+  var cached = __rfAclCacheGet(__rfAclControlCaches.userControlMaps, cacheKey);
+  if (cached.hit) return await cached.value;
+
+  var pending = (async function () {
     var map = new Map();
 
     function appendRows(rows) {
@@ -1647,7 +1615,7 @@ async function loadUserControlPermissionMap(client, user, pageKey) {
     if (userId) {
       try {
         var byUserId = client.from('user_control_permissions').select(queryColumns).eq('user_id', userId);
-        if (pageKey) byUserId = byUserId.eq('page_key', normalizedPageKey);
+        if (pageKey) byUserId = byUserId.eq('page_key', pageKey);
         byUserId = await byUserId;
         if (!byUserId.error) appendRows(byUserId.data);
       } catch (_) {}
@@ -1655,26 +1623,30 @@ async function loadUserControlPermissionMap(client, user, pageKey) {
     if (email) {
       try {
         var byEmail = client.from('user_control_permissions').select(queryColumns).ilike('email', email);
-        if (pageKey) byEmail = byEmail.eq('page_key', normalizedPageKey);
+        if (pageKey) byEmail = byEmail.eq('page_key', pageKey);
         byEmail = await byEmail;
         if (!byEmail.error) appendRows(byEmail.data);
       } catch (_) {}
     }
 
     return map.size ? map : null;
-  });
+  })();
+
+  __rfAclCacheSet(__rfAclControlCaches.userControlMaps, cacheKey, pending, __rfAclControlCaches.ttlMs);
+  return await pending;
 }
 
 async function loadRoleFieldPermissionMap(client, role, pageKey) {
   if (!client) return null;
-  var normalizedRole = normalizeRole(role);
-  var normalizedPageKey = pageKey ? normalizeAclPageKey(pageKey) : '*';
-  var cacheKey = aclCacheKey(['role-field', normalizedRole, normalizedPageKey]);
+  var cleanRole = normalizeRole(role);
+  var cacheKey = __rfAclCacheKey(['field_permissions', cleanRole, pageKey || '*']);
+  var cached = __rfAclCacheGet(__rfAclControlCaches.roleFieldMaps, cacheKey);
+  if (cached.hit) return await cached.value;
 
-  return aclCachedRead('roleFields', cacheKey, ACL_CACHE_TTL_MS, async function () {
+  var pending = (async function () {
     try {
-      var query = client.from('field_permissions').select('page_key,field_key,can_edit').eq('role', normalizedRole);
-      if (pageKey) query = query.eq('page_key', normalizedPageKey);
+      var query = client.from('field_permissions').select('page_key,field_key,can_edit').eq('role', cleanRole);
+      if (pageKey) query = query.eq('page_key', pageKey);
       var res = await query;
       if (res.error || !Array.isArray(res.data)) return null;
       var map = new Map();
@@ -1688,7 +1660,10 @@ async function loadRoleFieldPermissionMap(client, role, pageKey) {
     } catch (_) {
       return null;
     }
-  });
+  })();
+
+  __rfAclCacheSet(__rfAclControlCaches.roleFieldMaps, cacheKey, pending, __rfAclControlCaches.ttlMs);
+  return await pending;
 }
 
 async function resolveControlAccess(pageKey, controlKey, options) {
@@ -1769,86 +1744,77 @@ async function applyDomPermissions(pageKey, root, options) {
     var email = normalizeAclEmail(user.email);
     var userId = user && user.id ? String(user.id).trim() : '';
     if (!email && !userId) return null;
-    var cacheKey = aclCacheKey(['user-page', userId, email]);
 
-    return aclCachedRead('userPermissions', cacheKey, ACL_CACHE_TTL_MS, async function () {
-      function appendRows(map, rows) {
-        (Array.isArray(rows) ? rows : []).forEach(function (row) {
-          var key = normalizeAclPageKey(row && row.page_key);
-          if (!key) return;
-          map.set(key, buildPermissionEntry(row));
-        });
-      }
+    function appendRows(map, rows) {
+      (Array.isArray(rows) ? rows : []).forEach(function (row) {
+        var key = normalizeAclPageKey(row && row.page_key);
+        if (!key) return;
+        map.set(key, buildPermissionEntry(row));
+      });
+    }
 
-      var map = new Map();
+    var map = new Map();
 
-      if (userId) {
-        try {
-          var byUserId = await client.from('user_page_permissions')
-            .select('page_key,can_view,can_add,can_edit,can_delete,can_export,can_import')
-            .eq('user_id', userId);
-          if (!byUserId.error) appendRows(map, byUserId.data);
-        } catch (_) {}
-      }
+    if (userId) {
+      try {
+        var byUserId = await client.from('user_page_permissions')
+          .select('page_key,can_view,can_add,can_edit,can_delete,can_export,can_import')
+          .eq('user_id', userId);
+        if (!byUserId.error) appendRows(map, byUserId.data);
+      } catch (_) {}
+    }
 
-      if (email) {
-        try {
-          var byEmail = await client.from('user_page_permissions')
-            .select('page_key,can_view,can_add,can_edit,can_delete,can_export,can_import')
-            .ilike('email', email);
-          if (!byEmail.error) appendRows(map, byEmail.data);
-        } catch (_) {}
-      }
+    if (email) {
+      try {
+        var byEmail = await client.from('user_page_permissions')
+          .select('page_key,can_view,can_add,can_edit,can_delete,can_export,can_import')
+          .ilike('email', email);
+        if (!byEmail.error) appendRows(map, byEmail.data);
+      } catch (_) {}
+    }
 
-      return map.size ? map : null;
-    });
+    return map.size ? map : null;
   }
 
   async function loadPagePermissionMap(client, role) {
     if (!client) return null;
-    var normalizedRole = normalizeRole(role);
-    var cacheKey = aclCacheKey(['role-page', normalizedRole]);
-    return aclCachedRead('pagePermissions', cacheKey, ACL_CACHE_TTL_MS, async function () {
-      try {
-        var res = await client.from('page_permissions')
-          .select('page_key,can_view,can_add,can_edit,can_delete,can_export,can_import')
-          .eq('role', normalizedRole);
-        if (res.error || !Array.isArray(res.data)) return null;
-        var map = new Map();
-        res.data.forEach(function (row) {
-          var key = normalizeAclPageKey(row.page_key);
-          if (!key) return;
-          map.set(key, buildPermissionEntry(row));
-        });
-        return map;
-      } catch (_) {
-        return null;
-      }
-    });
+    try {
+      var res = await client.from('page_permissions')
+        .select('page_key,can_view,can_add,can_edit,can_delete,can_export,can_import')
+        .eq('role', normalizeRole(role));
+      if (res.error || !Array.isArray(res.data)) return null;
+      var map = new Map();
+      res.data.forEach(function (row) {
+        var key = normalizeAclPageKey(row.page_key);
+        if (!key) return;
+        map.set(key, buildPermissionEntry(row));
+      });
+      return map;
+    } catch (_) {
+      return null;
+    }
   }
 
   async function readDashboardAclMirror(client) {
     if (!client) return null;
-    return aclCachedRead('dashboardMirror', 'dashboard_acl_v1', ACL_CACHE_TTL_MS, async function () {
-      function pickBest(rows, field) {
-        var list = Array.isArray(rows) ? rows.slice() : [];
-        list.sort(function (a, b) {
-          return String(b && b.updated_at || '').localeCompare(String(a && a.updated_at || ''));
-        });
-        for (var i = 0; i < list.length; i += 1) {
-          var value = list[i] && list[i][field];
-          if (value && typeof value === 'object') return value;
-        }
-        return null;
+    function pickBest(rows, field) {
+      var list = Array.isArray(rows) ? rows.slice() : [];
+      list.sort(function (a, b) {
+        return String(b && b.updated_at || '').localeCompare(String(a && a.updated_at || ''));
+      });
+      for (var i = 0; i < list.length; i += 1) {
+        var value = list[i] && list[i][field];
+        if (value && typeof value === 'object') return value;
       }
-      try {
-        var rows = await client.from('rf_documents').select('content,data,updated_at').eq('doc_key', 'dashboard_acl_v1').order('updated_at', { ascending:false }).limit(1);
-        if (!rows.error && Array.isArray(rows.data) && rows.data.length) {
-          return pickBest(rows.data, 'content') || pickBest(rows.data, 'data');
-        }
-      } catch (_) {}
       return null;
-    });
+    }
+    try {
+      var rows = await client.from('rf_documents').select('content,data,updated_at').eq('doc_key', 'dashboard_acl_v1').order('updated_at', { ascending:false }).limit(50);
+      if (!rows.error && Array.isArray(rows.data) && rows.data.length) {
+        return pickBest(rows.data, 'content') || pickBest(rows.data, 'data');
+      }
+    } catch (_) {}
+    return null;
   }
 
   function mirrorHasAnyUserAcl(mirror) {
@@ -1985,32 +1951,29 @@ async function applyDomPermissions(pageKey, root, options) {
     if (!client || !user) return null;
     var email = normalizeAclEmail(user.email);
     var userId = user && user.id ? String(user.id).trim() : '';
-    var cacheKey = aclCacheKey(['account-status', userId, email]);
-    return aclCachedRead('accountStatus', cacheKey, ACL_ACCOUNT_CACHE_TTL_MS, async function () {
-      function normalizeRow(row) {
-        if (!row || typeof row !== 'object') return null;
-        return {
-          is_active: row.is_active !== false,
-          is_banned: row.is_banned === true,
-          note: String(row.note || row.ban_reason || '').trim(),
-          email: normalizeAclEmail(row.email || email),
-          user_id: String(row.user_id || userId || '').trim()
-        };
+    function normalizeRow(row) {
+      if (!row || typeof row !== 'object') return null;
+      return {
+        is_active: row.is_active !== false,
+        is_banned: row.is_banned === true,
+        note: String(row.note || '').trim(),
+        email: normalizeAclEmail(row.email || email),
+        user_id: String(row.user_id || userId || '').trim()
+      };
+    }
+    try {
+      if (userId) {
+        var byUserId = await client.from('user_account_access').select('user_id,email,is_active,is_banned,note').eq('user_id', userId).maybeSingle();
+        if (!byUserId.error && byUserId.data) return normalizeRow(byUserId.data);
       }
-      try {
-        if (userId) {
-          var byUserId = await client.from('user_account_access').select('user_id,email,is_active,is_banned,note').eq('user_id', userId).maybeSingle();
-          if (!byUserId.error && byUserId.data) return normalizeRow(byUserId.data);
-        }
-      } catch (_) {}
-      try {
-        if (email) {
-          var byEmail = await client.from('user_account_access').select('user_id,email,is_active,is_banned,note').ilike('email', email).maybeSingle();
-          if (!byEmail.error && byEmail.data) return normalizeRow(byEmail.data);
-        }
-      } catch (_) {}
-      return null;
-    });
+    } catch (_) {}
+    try {
+      if (email) {
+        var byEmail = await client.from('user_account_access').select('user_id,email,is_active,is_banned,note').ilike('email', email).maybeSingle();
+        if (!byEmail.error && byEmail.data) return normalizeRow(byEmail.data);
+      }
+    } catch (_) {}
+    return null;
   }
 
   async function resolvePageAccess(pageKey, options) {
@@ -2179,7 +2142,6 @@ async function applyDomPermissions(pageKey, root, options) {
   window.RF_ACL.resolvePageAccess = resolvePageAccess;
   window.RF_ACL.canViewPage = canViewPage;
   window.RF_ACL.renderAccessDeniedPage = renderAccessDeniedPage;
-  window.RF_ACL.clearCaches = clearAclRuntimeCaches;
 
   if (!window.__RF_AUTO_ACL_GUARD__) {
     window.__RF_AUTO_ACL_GUARD__ = true;
@@ -3647,16 +3609,36 @@ async function applyDomPermissions(pageKey, root, options) {
 
   function observeAclMutations(pageKey, client, pageAccess) {
     if (window.__RF_ACL_MUTATION_OBSERVER__) return;
-    var pending = false;
-    var observer = new MutationObserver(function () {
-      if (pending) return;
-      pending = true;
-      window.requestAnimationFrame(async function () {
-        pending = false;
+    var timer = null;
+
+    function isRelevantNode(node) {
+      if (!node || node.nodeType !== 1) return false;
+      try {
+        if (node.matches && node.matches('button, a, [role="button"], input, select, textarea, [contenteditable], form, [data-rf-permission], [data-rf-control], [data-rf-field]')) return true;
+        if (node.querySelector && node.querySelector('button, a, [role="button"], input, select, textarea, [contenteditable], form, [data-rf-permission], [data-rf-control], [data-rf-field]')) return true;
+      } catch (_) {}
+      return false;
+    }
+
+    function hasRelevantMutation(mutations) {
+      for (var i = 0; i < mutations.length; i += 1) {
+        var added = mutations[i] && mutations[i].addedNodes ? mutations[i].addedNodes : [];
+        for (var j = 0; j < added.length; j += 1) {
+          if (isRelevantNode(added[j])) return true;
+        }
+      }
+      return false;
+    }
+
+    var observer = new MutationObserver(function (mutations) {
+      if (!hasRelevantMutation(mutations || [])) return;
+      if (timer) window.clearTimeout(timer);
+      timer = window.setTimeout(async function () {
+        timer = null;
         try {
           await RF.applyDomPermissions(pageKey, document, { client: client, pageAccess: pageAccess });
         } catch (_) {}
-      });
+      }, 900);
     });
     observer.observe(document.documentElement, { childList: true, subtree: true });
     window.__RF_ACL_MUTATION_OBSERVER__ = observer;
