@@ -3982,7 +3982,7 @@ function closeForm(){
     'Furnizor'
   ];
 
-  const KAD_EXCEL_COL_WIDTHS = [50, 70, 90, 115, 115, 125, 105, 95, 95, 120];
+  const KAD_EXCEL_COL_WIDTHS = [8, 12, 14, 16, 18, 24, 24, 16, 14, 18];
 
   function escXml(value){
     return String(value == null ? '' : value).replace(/[&<>'"]/g, function(ch){
@@ -3998,24 +3998,36 @@ function closeForm(){
     return String(value == null ? '' : value).trim();
   }
 
-  function parseKgExport(value){
-    if (typeof value === 'number') return Number.isFinite(value) ? value : 0;
-    let s = String(value == null ? '' : value).trim();
-    if (!s) return 0;
-    s = s.replace(/\s+/g, '');
-    if (s.indexOf(',') >= 0) {
-      s = s.replace(/\./g, '').replace(',', '.');
-    } else if (/^\d{1,3}(\.\d{3})+$/.test(s)) {
-      s = s.replace(/\./g, '');
-    }
-    const n = Number(s);
-    return Number.isFinite(n) ? n : 0;
+  function loadScriptOnceKad(src){
+    return new Promise(function(resolve, reject){
+      const existing = Array.from(document.querySelectorAll('script')).some(function(s){ return s.src && s.src.indexOf(src) >= 0; });
+      if (existing) return resolve();
+      const s = document.createElement('script');
+      s.src = src;
+      s.async = true;
+      s.onload = function(){ resolve(); };
+      s.onerror = function(){ reject(new Error('Nu pot încărca script: ' + src)); };
+      document.head.appendChild(s);
+    });
   }
 
-  function formatKgExport(value){
-    const n = Number(value || 0);
-    if (!Number.isFinite(n)) return '0';
-    return n.toLocaleString('ro-RO', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+  async function ensureJSZipKad(){
+    if (window.JSZip) return true;
+    try{
+      await loadScriptOnceKad(new URL('jszip.min.js', parent.location.href.split('#')[0].split('?')[0]).href);
+      if (window.JSZip) return true;
+    }catch(_e){}
+    try{
+      await loadScriptOnceKad('https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js');
+      if (window.JSZip) return true;
+    }catch(_e){}
+    alert("Lipsă suport ZIP pentru export .xlsx. Pune fișierul 'jszip.min.js' în același folder cu pagina sau verifică conexiunea la internet.");
+    return false;
+  }
+
+  function parseKgExport(value){
+    const n = parseExportNumber(value, 'INTRARI_OTEL', 7);
+    return n == null ? 0 : n;
   }
 
   function getVisibleIntrariRows(){
@@ -4038,7 +4050,8 @@ function closeForm(){
   function getExportYear(rows){
     const fromSelect = normText(document.getElementById('sumYear') && document.getElementById('sumYear').value);
     if (/^\d{4}$/.test(fromSelect)) return fromSelect;
-    const fromFilterBtn = normText(document.querySelector('.kad-mf-btn[data-col="0"]') && document.querySelector('.kad-mf-btn[data-col="0"]').textContent);
+    const btn = document.querySelector('.kad-mf-btn[data-col="0"]');
+    const fromFilterBtn = normText(btn && btn.textContent);
     if (/^\d{4}$/.test(fromFilterBtn)) return fromFilterBtn;
     for (const row of rows) {
       if (/^\d{4}$/.test(normText(row[0]))) return normText(row[0]);
@@ -4071,20 +4084,26 @@ function closeForm(){
 
     const dimCalRows = Array.from(dimCal.entries()).map(function(entry){
       const parts = entry[0].split('||');
-      return [parts[0], parts[1], formatKgExport(entry[1])];
-    }).sort(function(a,b){ return parseKgExport(b[2]) - parseKgExport(a[2]); });
+      return [parts[0], parts[1], roundExportNumber(entry[1])];
+    }).sort(function(a,b){ return Number(b[2] || 0) - Number(a[2] || 0); });
 
     const supplierRows = Array.from(supplier.entries()).map(function(entry){
       const parts = entry[0].split('||');
-      return [parts[0], parts[1], parts[2], formatKgExport(entry[1])];
-    }).sort(function(a,b){ return parseKgExport(b[3]) - parseKgExport(a[3]); });
+      return [parts[0], parts[1], parts[2], roundExportNumber(entry[1])];
+    }).sort(function(a,b){ return Number(b[3] || 0) - Number(a[3] || 0); });
 
     const codeRows = Array.from(code.entries()).map(function(entry){
       const parts = entry[0].split('||');
-      return [parts[0], parts[1], parts[2], parts[3], formatKgExport(entry[1])];
-    }).sort(function(a,b){ return parseKgExport(b[4]) - parseKgExport(a[4]); });
+      return [parts[0], parts[1], parts[2], parts[3], roundExportNumber(entry[1])];
+    }).sort(function(a,b){ return Number(b[4] || 0) - Number(a[4] || 0); });
 
-    return { dimCalRows, supplierRows, codeRows };
+    return { dimCalRows: dimCalRows, supplierRows: supplierRows, codeRows: codeRows };
+  }
+
+  function roundExportNumber(value){
+    const n = Number(value || 0);
+    if (!Number.isFinite(n)) return 0;
+    return Math.round(n * 100) / 100;
   }
 
   function isNumericExportColumn(sheetName, colIndex){
@@ -4096,15 +4115,16 @@ function closeForm(){
     return false;
   }
 
-  function numberStyleForColumn(sheetName, colIndex){
+  function styleForCell(sheetName, colIndex, isHeader){
+    if (isHeader) return 1;
     const safeName = cleanSheetName(sheetName);
-    if (safeName === 'INTRARI_OTEL' && colIndex === 0) return 'DataInt';
-    if (safeName === 'INTRARI_OTEL' && colIndex === 3) return 'DataNum';
+    if (safeName === 'INTRARI_OTEL' && colIndex === 0) return 3;
+    if (safeName === 'INTRARI_OTEL' && colIndex === 3) return 4;
     if ((safeName === 'INTRARI_OTEL' && colIndex === 7) ||
         (safeName === 'Total Diametru Calitate' && colIndex === 2) ||
         (safeName === 'Total Furnizor' && colIndex === 3) ||
-        (safeName === 'Detaliu Cod Sarja' && colIndex === 4)) return 'DataKg';
-    return 'DataNum';
+        (safeName === 'Detaliu Cod Sarja' && colIndex === 4)) return 5;
+    return 2;
   }
 
   function parseExportNumber(value, sheetName, colIndex){
@@ -4126,7 +4146,7 @@ function closeForm(){
       s = mDim[0];
     }
 
-    s = s.replace(/ /g, ' ').replace(/\s+/g, '').replace(/[^0-9,\.\-]/g, '');
+    s = s.replace(/\u00a0/g, ' ').replace(/\s+/g, '').replace(/[^0-9,.\-]/g, '');
     if (!s || s === '-' || s === ',' || s === '.') return null;
 
     const hasComma = s.indexOf(',') >= 0;
@@ -4145,79 +4165,197 @@ function closeForm(){
     return Number.isFinite(n) ? n : null;
   }
 
-  function xmlCell(value, styleId, sheetName, colIndex, isHeader){
-    const n = isHeader ? null : parseExportNumber(value, sheetName, colIndex);
-    if (n !== null) {
-      const numericStyle = numberStyleForColumn(sheetName, colIndex) || styleId;
-      const style = numericStyle ? ' ss:StyleID="' + numericStyle + '"' : '';
-      return '<Cell' + style + '><Data ss:Type="Number">' + String(n).replace(',', '.') + '</Data></Cell>';
+  function colName(indexOneBased){
+    let n = indexOneBased;
+    let s = '';
+    while (n > 0) {
+      const m = (n - 1) % 26;
+      s = String.fromCharCode(65 + m) + s;
+      n = Math.floor((n - 1) / 26);
     }
-
-    const v = String(value == null ? '' : value);
-    const style = styleId ? ' ss:StyleID="' + styleId + '"' : '';
-    return '<Cell' + style + '><Data ss:Type="String">' + escXml(v) + '</Data></Cell>';
+    return s;
   }
 
-  function xmlRow(values, styleId, height, sheetName, isHeader){
-    const h = height ? ' ss:Height="' + height + '"' : '';
-    return '<Row' + h + '>' + values.map(function(v, colIndex){ return xmlCell(v, styleId, sheetName, colIndex, !!isHeader); }).join('') + '</Row>';
+  function inlineStringCell(ref, value, styleId){
+    const preserve = /^\s|\s$/.test(String(value == null ? '' : value)) ? ' xml:space="preserve"' : '';
+    return '<c r="' + ref + '" t="inlineStr" s="' + styleId + '"><is><t' + preserve + '>' + escXml(value) + '</t></is></c>';
   }
 
-  function xmlWorksheet(name, headers, rows, widths){
+  function numberCell(ref, value, styleId){
+    return '<c r="' + ref + '" s="' + styleId + '"><v>' + String(value).replace(',', '.') + '</v></c>';
+  }
+
+  function buildCellXml(value, sheetName, rowIndexOneBased, colIndex, isHeader){
+    const ref = colName(colIndex + 1) + rowIndexOneBased;
+    const styleId = styleForCell(sheetName, colIndex, isHeader);
+    const n = isHeader ? null : parseExportNumber(value, sheetName, colIndex);
+    if (n !== null) return numberCell(ref, roundExportNumber(n), styleId);
+    return inlineStringCell(ref, value == null ? '' : value, styleId);
+  }
+
+  function buildRowXml(values, sheetName, rowIndexOneBased, isHeader){
+    const height = isHeader ? 24 : 22;
+    return '<row r="' + rowIndexOneBased + '" ht="' + height + '" customHeight="1">' +
+      values.map(function(v, colIndex){ return buildCellXml(v, sheetName, rowIndexOneBased, colIndex, !!isHeader); }).join('') +
+      '</row>';
+  }
+
+  function buildWorksheetXml(name, headers, rows, widths){
     const safeName = cleanSheetName(name);
     const allRows = [headers].concat(rows || []);
-    const colCount = headers.length;
     const rowCount = Math.max(1, allRows.length);
-    let xml = '<Worksheet ss:Name="' + escXml(safeName) + '">';
-    xml += '<Table ss:ExpandedColumnCount="' + colCount + '" ss:ExpandedRowCount="' + rowCount + '" x:FullColumns="1" x:FullRows="1">';
-    (widths || headers.map(function(){ return 100; })).forEach(function(width){
-      xml += '<Column ss:AutoFitWidth="0" ss:Width="' + Number(width || 90) + '"/>';
+    const colCount = headers.length;
+    const lastRef = colName(colCount) + rowCount;
+    let xml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>';
+    xml += '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">';
+    xml += '<dimension ref="A1:' + lastRef + '"/>';
+    xml += '<sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/><selection pane="bottomLeft" activeCell="A2" sqref="A2"/></sheetView></sheetViews>';
+    xml += '<sheetFormatPr defaultRowHeight="15"/>';
+    xml += '<cols>';
+    (widths || headers.map(function(){ return 12; })).forEach(function(width, idx){
+      xml += '<col min="' + (idx + 1) + '" max="' + (idx + 1) + '" width="' + Number(width || 12) + '" customWidth="1"/>';
     });
-    xml += xmlRow(headers, 'Header', 24, safeName, true);
-    (rows || []).forEach(function(row){ xml += xmlRow(row, 'Data', 22, safeName, false); });
-    xml += '</Table>';
-    xml += '<WorksheetOptions xmlns="urn:schemas-microsoft-com:office:excel">';
-    xml += '<FreezePanes/><FrozenNoSplit/><SplitHorizontal>1</SplitHorizontal><TopRowBottomPane>1</TopRowBottomPane><ActivePane>2</ActivePane>';
-    xml += '</WorksheetOptions>';
-    xml += '</Worksheet>';
+    xml += '</cols>';
+    xml += '<sheetData>';
+    xml += buildRowXml(headers, safeName, 1, true);
+    (rows || []).forEach(function(row, idx){ xml += buildRowXml(row, safeName, idx + 2, false); });
+    xml += '</sheetData>';
+    xml += '<pageMargins left="0.7" right="0.7" top="0.75" bottom="0.75" header="0.3" footer="0.3"/>';
+    xml += '</worksheet>';
     return xml;
   }
 
-  function buildWorkbookXml(rows){
+  function buildStylesXml(){
+    return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+      '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">' +
+      '<numFmts count="2"><numFmt numFmtId="164" formatCode="#,##0.00"/><numFmt numFmtId="165" formatCode="0.##"/></numFmts>' +
+      '<fonts count="2">' +
+        '<font><sz val="11"/><name val="Calibri"/></font>' +
+        '<font><b/><sz val="11"/><name val="Calibri"/></font>' +
+      '</fonts>' +
+      '<fills count="3"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FFCFE3F6"/><bgColor indexed="64"/></patternFill></fill></fills>' +
+      '<borders count="2"><border><left/><right/><top/><bottom/><diagonal/></border><border><left style="thin"><color rgb="FF000000"/></left><right style="thin"><color rgb="FF000000"/></right><top style="thin"><color rgb="FF000000"/></top><bottom style="thin"><color rgb="FF000000"/></bottom><diagonal/></border></borders>' +
+      '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>' +
+      '<cellXfs count="6">' +
+        '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>' +
+        '<xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf>' +
+        '<xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyBorder="1"><alignment horizontal="center" vertical="center"/></xf>' +
+        '<xf numFmtId="1" fontId="0" fillId="0" borderId="1" xfId="0" applyNumberFormat="1" applyBorder="1"><alignment horizontal="center" vertical="center"/></xf>' +
+        '<xf numFmtId="165" fontId="0" fillId="0" borderId="1" xfId="0" applyNumberFormat="1" applyBorder="1"><alignment horizontal="center" vertical="center"/></xf>' +
+        '<xf numFmtId="164" fontId="0" fillId="0" borderId="1" xfId="0" applyNumberFormat="1" applyBorder="1"><alignment horizontal="center" vertical="center"/></xf>' +
+      '</cellXfs>' +
+      '<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>' +
+      '<dxfs count="0"/><tableStyles count="0" defaultTableStyle="TableStyleMedium2" defaultPivotStyle="PivotStyleLight16"/>' +
+      '</styleSheet>';
+  }
+
+  function buildWorkbookXml(sheetNames){
+    let xml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>';
+    xml += '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">';
+    xml += '<workbookPr date1904="false"/>';
+    xml += '<sheets>';
+    sheetNames.forEach(function(name, idx){
+      xml += '<sheet name="' + escXml(cleanSheetName(name)) + '" sheetId="' + (idx + 1) + '" r:id="rId' + (idx + 1) + '"/>';
+    });
+    xml += '</sheets><calcPr calcId="0"/></workbook>';
+    return xml;
+  }
+
+  function buildWorkbookRelsXml(sheetCount){
+    let xml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>';
+    xml += '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">';
+    for (let i = 1; i <= sheetCount; i++) {
+      xml += '<Relationship Id="rId' + i + '" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet' + i + '.xml"/>';
+    }
+    xml += '<Relationship Id="rId' + (sheetCount + 1) + '" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>';
+    xml += '</Relationships>';
+    return xml;
+  }
+
+  function buildRootRelsXml(){
+    return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+      '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+      '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>' +
+      '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/>' +
+      '<Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties" Target="docProps/app.xml"/>' +
+      '</Relationships>';
+  }
+
+  function buildContentTypesXml(sheetCount){
+    let xml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>';
+    xml += '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">';
+    xml += '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>';
+    xml += '<Default Extension="xml" ContentType="application/xml"/>';
+    xml += '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>';
+    xml += '<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>';
+    for (let i = 1; i <= sheetCount; i++) {
+      xml += '<Override PartName="/xl/worksheets/sheet' + i + '.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>';
+    }
+    xml += '<Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/>';
+    xml += '<Override PartName="/docProps/app.xml" ContentType="application/vnd.openxmlformats-officedocument.extended-properties+xml"/>';
+    xml += '</Types>';
+    return xml;
+  }
+
+  function buildCoreXml(){
+    const now = new Date().toISOString();
+    return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+      '<cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" xmlns:dcmitype="http://purl.org/dc/dcmitype/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">' +
+      '<dc:creator>K.A.D</dc:creator><cp:lastModifiedBy>K.A.D</cp:lastModifiedBy>' +
+      '<dcterms:created xsi:type="dcterms:W3CDTF">' + now + '</dcterms:created>' +
+      '<dcterms:modified xsi:type="dcterms:W3CDTF">' + now + '</dcterms:modified>' +
+      '</cp:coreProperties>';
+  }
+
+  function buildAppXml(sheetNames){
+    return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+      '<Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties" xmlns:vt="http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes">' +
+      '<Application>K.A.D</Application><Company>ERP Forja</Company><DocSecurity>0</DocSecurity><ScaleCrop>false</ScaleCrop>' +
+      '<HeadingPairs><vt:vector size="2" baseType="variant"><vt:variant><vt:lpstr>Worksheets</vt:lpstr></vt:variant><vt:variant><vt:i4>' + sheetNames.length + '</vt:i4></vt:variant></vt:vector></HeadingPairs>' +
+      '<TitlesOfParts><vt:vector size="' + sheetNames.length + '" baseType="lpstr">' + sheetNames.map(function(n){ return '<vt:lpstr>' + escXml(cleanSheetName(n)) + '</vt:lpstr>'; }).join('') + '</vt:vector></TitlesOfParts>' +
+      '</Properties>';
+  }
+
+  async function buildXlsxBlob(rows){
+    const ok = await ensureJSZipKad();
+    if (!ok) return null;
     const summaries = buildSummaryRows(rows);
-    let xml = '<?xml version="1.0" encoding="UTF-8"?>';
-    xml += '<?mso-application progid="Excel.Sheet"?>';
-    xml += '<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet" xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet" xmlns:html="http://www.w3.org/TR/REC-html40">';
-    xml += '<DocumentProperties xmlns="urn:schemas-microsoft-com:office:office"><Author>K.A.D</Author><Company>ERP Forja</Company></DocumentProperties>';
-    xml += '<Styles>';
-    xml += '<Style ss:ID="Default" ss:Name="Normal"><Alignment ss:Vertical="Center"/><Font ss:FontName="Calibri" ss:Size="11"/></Style>';
-    xml += '<Style ss:ID="Header"><Alignment ss:Horizontal="Center" ss:Vertical="Center" ss:WrapText="1"/><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1"/></Borders><Font ss:FontName="Calibri" ss:Size="11" ss:Bold="1"/><Interior ss:Color="#CFE3F6" ss:Pattern="Solid"/></Style>';
-    xml += '<Style ss:ID="Data"><Alignment ss:Horizontal="Center" ss:Vertical="Center"/><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1"/></Borders><Font ss:FontName="Calibri" ss:Size="11"/></Style>';
-    xml += '<Style ss:ID="DataInt"><Alignment ss:Horizontal="Center" ss:Vertical="Center"/><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1"/></Borders><Font ss:FontName="Calibri" ss:Size="11"/><NumberFormat ss:Format="0"/></Style>';
-    xml += '<Style ss:ID="DataNum"><Alignment ss:Horizontal="Center" ss:Vertical="Center"/><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1"/></Borders><Font ss:FontName="Calibri" ss:Size="11"/><NumberFormat ss:Format="0.##"/></Style>';
-    xml += '<Style ss:ID="DataKg"><Alignment ss:Horizontal="Center" ss:Vertical="Center"/><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1"/></Borders><Font ss:FontName="Calibri" ss:Size="11"/><NumberFormat ss:Format="#,##0.00"/></Style>';
-    xml += '</Styles>';
-    xml += xmlWorksheet('INTRARI_OTEL', KAD_EXCEL_HEADERS, rows, KAD_EXCEL_COL_WIDTHS);
-    xml += xmlWorksheet('Total Diametru Calitate', ['Diametru','Calitate','Total kg'], summaries.dimCalRows, [120, 150, 100]);
-    xml += xmlWorksheet('Total Furnizor', ['Furnizor','Diametru','Calitate','Total kg'], summaries.supplierRows, [150, 120, 150, 100]);
-    xml += xmlWorksheet('Detaliu Cod Sarja', ['Cod intern','Diametru','Sarjă','Furnizor','Cantitate kg'], summaries.codeRows, [95, 110, 140, 145, 110]);
-    xml += '</Workbook>';
-    return xml;
+    const sheets = [
+      { name:'INTRARI_OTEL', headers:KAD_EXCEL_HEADERS, rows:rows, widths:KAD_EXCEL_COL_WIDTHS },
+      { name:'Total Diametru Calitate', headers:['Diametru','Calitate','Total kg'], rows:summaries.dimCalRows, widths:[18, 24, 16] },
+      { name:'Total Furnizor', headers:['Furnizor','Diametru','Calitate','Total kg'], rows:summaries.supplierRows, widths:[22, 18, 24, 16] },
+      { name:'Detaliu Cod Sarja', headers:['Cod intern','Diametru','Sarjă','Furnizor','Cantitate kg'], rows:summaries.codeRows, widths:[14, 16, 22, 22, 16] }
+    ];
+
+    const zip = new window.JSZip();
+    zip.file('[Content_Types].xml', buildContentTypesXml(sheets.length));
+    zip.folder('_rels').file('.rels', buildRootRelsXml());
+    zip.folder('docProps').file('core.xml', buildCoreXml());
+    zip.folder('docProps').file('app.xml', buildAppXml(sheets.map(function(s){ return s.name; })));
+    const xl = zip.folder('xl');
+    xl.file('workbook.xml', buildWorkbookXml(sheets.map(function(s){ return s.name; })));
+    xl.file('styles.xml', buildStylesXml());
+    xl.folder('_rels').file('workbook.xml.rels', buildWorkbookRelsXml(sheets.length));
+    const wsFolder = xl.folder('worksheets');
+    sheets.forEach(function(sheet, idx){
+      wsFolder.file('sheet' + (idx + 1) + '.xml', buildWorksheetXml(sheet.name, sheet.headers, sheet.rows, sheet.widths));
+    });
+    return zip.generateAsync({ type:'blob', mimeType:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
   }
 
-  function downloadStyledExcel(){
+  async function downloadStyledExcel(){
     const rows = getVisibleIntrariRows();
     if (!rows.length) {
       alert('Nu există date de exportat în tabelul afișat.');
       return;
     }
     const year = getExportYear(rows);
-    const xml = buildWorkbookXml(rows);
-    const blob = new Blob(['\ufeff' + xml], { type:'application/vnd.ms-excel;charset=utf-8;' });
+    const blob = await buildXlsxBlob(rows);
+    if (!blob) return;
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = 'INTRARI_OTEL_' + year + '_' + new Date().toISOString().slice(0,10) + '.xls';
+    a.download = 'INTRARI_OTEL_' + year + '_' + new Date().toISOString().slice(0,10) + '.xlsx';
     document.body.appendChild(a);
     a.click();
     a.remove();
@@ -4225,7 +4363,7 @@ function closeForm(){
 
     try{
       if (typeof window.archiveExport === 'function') {
-        window.archiveExport('EXPORT', { method:'export-excel-styled', newData:{ format:'xls-styled', year:year, rows:rows.length } });
+        window.archiveExport('EXPORT', { method:'export-excel-styled-xlsx', newData:{ format:'xlsx-styled', year:year, rows:rows.length } });
       }
     }catch(_e){}
   }
