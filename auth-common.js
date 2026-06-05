@@ -127,6 +127,7 @@
 
   function clearRuntimeSecurityCaches(){
     try{ roleCache.clear(); permissionMapCache.clear(); accountStatusCache.clear(); }catch(_e){}
+    try{ if(window.RF_ACL && typeof window.RF_ACL.clearCaches === 'function') window.RF_ACL.clearCaches(); }catch(_e){}
   }
 
   function getRequestMethod(input, init){
@@ -156,7 +157,7 @@
   }
 
   function isShortLivedSecurityCacheUrl(rawUrl){
-    return /\/(profiles|user_page_permissions|field_permissions|user_account_access|user_control_permissions|user_index_visibility)(\?|$)/i.test(rawUrl);
+    return /\/(profiles|rf_acl|page_permissions|user_page_permissions|field_permissions|user_account_access|user_control_permissions|user_index_visibility)(\?|$)/i.test(rawUrl);
   }
 
   function shouldUseRestEgressCache(input, init){
@@ -169,9 +170,9 @@
   }
 
   function restEgressCacheTtl(rawUrl){
-    if(/\/user_account_access/i.test(rawUrl)) return 15 * 1000;
-    if(/\/(user_page_permissions|field_permissions|user_control_permissions|user_index_visibility)/i.test(rawUrl)) return 30 * 1000;
-    if(/\/profiles/i.test(rawUrl)) return 60 * 1000;
+    if(/\/user_account_access/i.test(rawUrl)) return 60 * 1000;
+    if(/\/(rf_acl|page_permissions|user_page_permissions|field_permissions|user_control_permissions|user_index_visibility)/i.test(rawUrl)) return 5 * 60 * 1000;
+    if(/\/profiles/i.test(rawUrl)) return 5 * 60 * 1000;
     if(/\/rf_helper_|\/helper_/i.test(rawUrl)) return 5 * 60 * 1000;
     if(/\/rf_documents/i.test(rawUrl)) return 60 * 1000;
     return 30 * 1000;
@@ -195,8 +196,15 @@
     }
   }
 
-  function clearRestEgressCache(){
-    try{ restEgressCache.clear(); restEgressInflight.clear(); clearRuntimeSecurityCaches(); }catch(_e){}
+  function isSecurityPermissionMutationUrl(rawUrl){
+    return /\/(profiles|rf_acl|page_permissions|user_page_permissions|field_permissions|user_account_access|user_control_permissions|user_index_visibility)(\?|$)/i.test(String(rawUrl || ''));
+  }
+
+  function clearRestEgressCache(rawUrl){
+    try{ restEgressCache.clear(); restEgressInflight.clear(); }catch(_e){}
+    if(!rawUrl || isSecurityPermissionMutationUrl(rawUrl)){
+      clearRuntimeSecurityCaches();
+    }
   }
 
   function responseFromRestInfo(info){
@@ -323,7 +331,7 @@
     }
 
     return async function(input, init){
-      if(isMutatingRequest(input, init)) clearRestEgressCache();
+      if(isMutatingRequest(input, init)) clearRestEgressCache(requestUrlString(input));
       if(!shouldUseRestEgressCache(input, init)) return doFetch(input, init);
 
       const key = restEgressKey(input, init);
