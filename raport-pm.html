@@ -1593,7 +1593,7 @@
     const PROD_OP_GATE_INDEXES=[21,18,17,15,16,12]; // Excel test: W&T&S&Q&R&N = 0
     const PROD_OP_LOSS_INDEXES=[21,18,17,15,16,12,13,14,24,25,26,28]; // Excel: W,T,S,Q,R,N,O,P,Z,AA,AB,AD
     const PROD_TOTAL_GATE_INDEXES=[16,15]; // Excel test: R&Q = 0
-    const state={canView:false,canEdit:false,rows:[],columns:[],normColumns:[],normRows:[],selectedNormRow:null,selectedNormCol:null,filters:{},columnFilters:{},activeFilterCol:null,activeView:'raport',page:1,pageSize:1000000,autoBottom:false,dirty:0,pendingFocus:null,selection:null,isMouseSelecting:false,lastCell:null,pasteFlash:null,supa:null,saving:false,saveTimer:null,lastCloudError:null,editingRowId:null,removedExtraColumns:false};
+    const state={canView:false,canEdit:false,rows:[],columns:[],normColumns:[],normRows:[],selectedNormRow:null,selectedNormCol:null,filters:{},columnFilters:{},operatorColumnFilters:{},activeFilterCol:null,activeView:'raport',page:1,pageSize:1000000,autoBottom:false,dirty:0,pendingFocus:null,selection:null,isMouseSelecting:false,lastCell:null,pasteFlash:null,supa:null,saving:false,saveTimer:null,lastCloudError:null,editingRowId:null,removedExtraColumns:false};
     function reportColCount(){return VISIBLE_COLS}
     function displayColCount(){return reportColCount()+1}
     function isExtraCol(i){return Number(i)>=VISIBLE_COLS}
@@ -1753,7 +1753,7 @@ function quickEls(){return {modal:document.getElementById('pmQuickModal'),title:
     function saveLocal(){return saveCloudNow(false)}
     async function saveCloudNow(_manual){if(!state.canEdit)return false;state.saving=true;updateDirty();try{await writeCloudPayload();try{localStorage.removeItem(STORAGE_KEY)}catch(_e){}state.dirty=0;state.lastCloudError=null;updateDirty();return true}catch(e){console.warn('Raport PM cloud save',e);state.lastCloudError=e;updateDirty();return false}finally{state.saving=false;updateDirty()}}
     function queueCloudSave(){clearTimeout(state.saveTimer);state.saveTimer=setTimeout(()=>saveCloudNow(false),900)}
-    async function resetLocal(){if(!confirm('Ștergi modificările pentru Raport PM și Norme și revii la datele preluate din Excel?'))return;try{localStorage.removeItem(STORAGE_KEY)}catch(_e){}state.dirty=0;const payload=JSON.parse($('#reportData').textContent);state.columns=payload.columns.slice(0,VISIBLE_COLS);state.rows=buildRowsFromSaved(payload,null);setNormeData(null);state.autoBottom=false;state.columnFilters={};applyLatestMonthFilter();renderAll();saveCloudNow(false)}
+    async function resetLocal(){if(!confirm('Ștergi modificările pentru Raport PM și Norme și revii la datele preluate din Excel?'))return;try{localStorage.removeItem(STORAGE_KEY)}catch(_e){}state.dirty=0;const payload=JSON.parse($('#reportData').textContent);state.columns=payload.columns.slice(0,VISIBLE_COLS);state.rows=buildRowsFromSaved(payload,null);setNormeData(null);state.autoBottom=false;state.columnFilters={};state.operatorColumnFilters={};applyLatestMonthFilter();renderAll();saveCloudNow(false)}
     function markDirty(){state.dirty++;updateDirty();queueCloudSave()}
     function updateDirty(){els.dirtyChip.textContent=state.saving?'Se salvează în cloud...':(state.dirty?'Nesalvat cloud: '+state.dirty:'Salvat cloud');els.dirtyChip.className='chip '+(state.lastCloudError?'danger':(state.dirty?'warn':'ok'))}
     async function initAccess(){try{if(!window.ERPAuth||typeof window.ERPAuth.getCurrentUserWithRole!=='function')throw new Error('auth missing');const auth=await window.ERPAuth.getCurrentUserWithRole();const user=auth&&auth.user;const role=norm(auth&&auth.role||'viewer');const email=norm(user&&user.email);const isAdmin=role==='admin'||role==='administrator'||email==='adrian.kosa@premagro.ro'||email==='kosa.adrian@premagro.ro';if(isAdmin){state.canView=true;state.canEdit=true}else{let best=null;if(typeof window.ERPAuth.getPageAccess==='function'){for(const key of PAGE_KEYS){try{const access=await window.ERPAuth.getPageAccess(key,{user,role});const p=access&&access.permissions?access.permissions:access;if(p&&p.can_view){best=p;if(p.can_edit||p.can_add||p.can_import||p.can_delete)break}}catch(_e){}}}state.canView=!!(best&&best.can_view);state.canEdit=!!(best&&best.can_view&&(best.can_edit||best.can_add||best.can_import||best.can_delete));}}catch(e){state.canView=false;state.canEdit=false}if(!state.canView){renderDenied();return false}els.accessChip.textContent=state.canEdit?'Editare permisă':'Doar vizualizare';els.accessChip.className='chip '+(state.canEdit?'ok':'warn');return true}
@@ -2531,10 +2531,103 @@ function quickEls(){return {modal:document.getElementById('pmQuickModal'),title:
       if([1,2,3,4,5].includes(i))return 'num';
       return 'text';
     }
+    function operatoriBaseRows(){return buildOperatorRows(state.rows.slice())}
+    function operatoriRawValue(row,col){const vals=operatoriExportValues(row);return vals[col]}
+    function operatoriFilterKey(col,value){
+      if(value===null||value===undefined)return '';
+      if(typeof value==='string')return value.trim();
+      if(typeof value==='number'&&isFinite(value))return String(value);
+      return String(value).trim();
+    }
+    function operatoriFilterLabel(col,key){
+      if(key==='')return '(gol)';
+      const value=String(key);
+      const type=operatorCellType(col);
+      if(value.startsWith('#'))return value;
+      if(type==='pct0')return operatorPct(Number(value),0);
+      if(type==='pct2')return operatorPct(Number(value),2);
+      if(type==='pct')return operatorPct(Number(value),1);
+      if(type==='num')return fmt(Number(value));
+      return value;
+    }
+    function operatoriFilteredRows(opRows){
+      const filters=state.operatorColumnFilters||{};
+      const keys=Object.keys(filters).filter(k=>Array.isArray(filters[k])&&filters[k].length);
+      if(!keys.length)return opRows.slice();
+      return opRows.filter(r=>{
+        for(const k of keys){
+          const col=Number(k);
+          const allowed=new Set(filters[k].map(v=>String(v)));
+          const key=operatoriFilterKey(col,operatoriRawValue(r,col));
+          if(!allowed.has(key))return false;
+        }
+        return true;
+      });
+    }
+    function operatoriColumnOptions(col){
+      const map=new Map();
+      operatoriBaseRows().forEach(r=>{
+        const key=operatoriFilterKey(col,operatoriRawValue(r,col));
+        if(!map.has(key))map.set(key,operatoriFilterLabel(col,key));
+      });
+      return Array.from(map.entries()).map(([key,label])=>({key,label})).sort((a,b)=>{
+        if(a.key===''&&b.key!=='')return 1;
+        if(b.key===''&&a.key!=='')return -1;
+        const an=Number(String(a.key).replace(',','.')),bn=Number(String(b.key).replace(',','.'));
+        if(isFinite(an)&&isFinite(bn))return an-bn;
+        return String(a.label).localeCompare(String(b.label),'ro',{numeric:true,sensitivity:'base'});
+      });
+    }
+    function openOperatoriColumnFilter(col,btn){
+      const p=ensureColumnFilterPopup();
+      state.activeFilterCol='operatori:'+col;
+      const opts=operatoriColumnOptions(col);
+      const active=Array.isArray(state.operatorColumnFilters&&state.operatorColumnFilters[col]);
+      const selected=new Set(active?state.operatorColumnFilters[col]:opts.map(o=>o.key));
+      p.innerHTML='';
+      const headers=operatoriExportHeaders();
+      const title=document.createElement('div');title.className='cf-title';title.textContent=headers[col]||'Coloană';p.appendChild(title);
+      const search=document.createElement('input');search.className='cf-search';search.placeholder='Caută în coloană';p.appendChild(search);
+      const actions=document.createElement('div');actions.className='cf-actions';
+      const allBtn=document.createElement('button');allBtn.type='button';allBtn.textContent='Toate';
+      const noneBtn=document.createElement('button');noneBtn.type='button';noneBtn.textContent='Nimic';
+      const clearBtn=document.createElement('button');clearBtn.type='button';clearBtn.textContent='Șterge filtru';
+      actions.append(allBtn,noneBtn,clearBtn);p.appendChild(actions);
+      const list=document.createElement('div');list.className='cf-list';p.appendChild(list);
+      const footer=document.createElement('div');footer.className='cf-footer';
+      const cancel=document.createElement('button');cancel.type='button';cancel.textContent='Închide';
+      const apply=document.createElement('button');apply.type='button';apply.textContent='Aplică';apply.className='cf-apply';
+      footer.append(cancel,apply);p.appendChild(footer);
+      function renderList(){
+        const term=norm(search.value);
+        list.innerHTML='';
+        const visible=opts.filter(o=>!term||norm(o.label).includes(term)||norm(o.key).includes(term));
+        if(!visible.length){const e=document.createElement('div');e.className='cf-empty';e.textContent='Nicio valoare găsită';list.appendChild(e);return;}
+        visible.forEach(o=>{
+          const lab=document.createElement('label');lab.className='cf-option';
+          const cb=document.createElement('input');cb.type='checkbox';cb.checked=selected.has(o.key);cb.dataset.key=o.key;
+          cb.addEventListener('change',()=>{if(cb.checked)selected.add(o.key);else selected.delete(o.key);});
+          const sp=document.createElement('span');sp.textContent=o.label;
+          lab.append(cb,sp);list.appendChild(lab);
+        });
+      }
+      allBtn.onclick=()=>{opts.forEach(o=>selected.add(o.key));renderList();};
+      noneBtn.onclick=()=>{selected.clear();renderList();};
+      clearBtn.onclick=()=>{delete state.operatorColumnFilters[col];closeColumnFilter();renderAll(false);};
+      cancel.onclick=closeColumnFilter;
+      apply.onclick=()=>{const arr=opts.filter(o=>selected.has(o.key)).map(o=>o.key);if(arr.length===opts.length||arr.length===0)delete state.operatorColumnFilters[col];else state.operatorColumnFilters[col]=arr;closeColumnFilter();renderAll(false);};
+      search.addEventListener('input',renderList);
+      renderList();
+      p.style.display='block';
+      positionColumnFilterPopup(p,btn);
+      setTimeout(()=>search.focus(),0);
+    }
+
     function renderOperatoriView(){
       clearSelection();
-      const source=filteredRows();
-      const opRows=buildOperatorRows(source);
+      const source=state.rows.slice();
+      const allOpRows=operatoriBaseRows();
+      const opRows=operatoriFilteredRows(allOpRows);
       if(els.btnRaportView)els.btnRaportView.classList.remove('active');
       if(els.btnOperatoriView)els.btnOperatoriView.classList.add('active');
       if(els.btnNormeView)els.btnNormeView.classList.remove('active');
@@ -2544,7 +2637,14 @@ function quickEls(){return {modal:document.getElementById('pmQuickModal'),title:
       if(els.selectionSummary)els.selectionSummary.classList.remove('visible');
       const headers=['Row Labels','Sum of TOTAL TIME','Sum of Timp Performanta (min)','Sum of PROD. BUNE','SUMA DEFECTE PRELUCRARI','SUMA DEFECTE FORJA','Average of EFICIENTA OPERATOR %','Average of PRODUCTIVITATE OPERATOR %','Average of PRODUCTIVITATEA TOTALA %','Data/OPERATOR','DISPONIBILITATE %','EFICIENTA %','RATA CALITATE PRELUCRARI %','PRODUCTIVITATE %','OEE %','PRODUCTIVITATE TOTALA %'];
       let out='<thead><tr class="group-row"><th class="group-base" colspan="9">Operatori - calcul agregat din RAPORT PM</th><th class="group-final" colspan="7">Funcții / formule ca în Excel OPERATORI TOTI</th></tr><tr class="label-row">';
-      headers.forEach((h,i)=>{let cls=i===0?'kind-base col-process':'kind-final';if(i===9)cls+=' pm-operator-divider';out+=`<th class="${cls}"><div class="th-label">${esc(h)}</div></th>`});
+      headers.forEach((h,i)=>{
+        let cls=i===0?'kind-base col-process filterable-col':'kind-final filterable-col';
+        if(i===9)cls+=' pm-operator-divider';
+        const active=Array.isArray(state.operatorColumnFilters&&state.operatorColumnFilters[i]);
+        const selectedCount=active?state.operatorColumnFilters[i].length:0;
+        const stateLabel=active?(selectedCount===1?operatoriFilterLabel(i,state.operatorColumnFilters[i][0]):(selectedCount+' selectate')):'Toate';
+        out+=`<th class="${cls}" data-op-col="${i}"><div class="th-filter-box"><div class="th-title-line"><div class="th-label">${esc(h)}</div></div><button class="col-filter-btn pm-header-filter-trigger${active?' active':''}" data-op-col="${i}" type="button" title="${esc(stateLabel)}">${esc(stateLabel)}</button></div></th>`;
+      });
       out+='</tr></thead><tbody>';
       if(!opRows.length){out+='<tr><td colspan="16"><div class="empty-state">Nu există date pentru Operatori.</div></td></tr>'}else{
         opRows.forEach(r=>{
@@ -2561,8 +2661,16 @@ function quickEls(){return {modal:document.getElementById('pmQuickModal'),title:
       }
       out+='</tbody>';
       els.table.innerHTML=out;
-      if(els.pageInfo)els.pageInfo.textContent=`Operatori · ${fmt(opRows.length)} rânduri calculate · fără pivot`; 
-      if(els.tableMeta)els.tableMeta.textContent=`Operatori calculați din ${fmt(source.length)} rânduri RAPORT PM`;
+      els.table.querySelectorAll('.col-filter-btn[data-op-col]').forEach(btn=>{
+        btn.addEventListener('mousedown',ev=>ev.stopPropagation());
+        btn.addEventListener('click',ev=>{
+          ev.preventDefault();
+          ev.stopPropagation();
+          openOperatoriColumnFilter(Number(ev.currentTarget.dataset.opCol),ev.currentTarget);
+        });
+      });
+      if(els.pageInfo)els.pageInfo.textContent=`Operatori · ${fmt(opRows.length)} rânduri afișate din ${fmt(allOpRows.length)} calculate · filtre separate de Raport`; 
+      if(els.tableMeta)els.tableMeta.textContent=`Operatori calculați din ${fmt(source.length)} rânduri RAPORT PM nefiltrate`;
     }
 
     function renderNormeView(){
@@ -3155,7 +3263,7 @@ function quickEls(){return {modal:document.getElementById('pmQuickModal'),title:
     }
 
 
-    function operatoriExportRows(){return buildOperatorRows(filteredRows())}
+    function operatoriExportRows(){return operatoriFilteredRows(operatoriBaseRows())}
     function operatoriExportHeaders(){return ['Row Labels','Sum of TOTAL TIME','Sum of Timp Performanta (min)','Sum of PROD. BUNE','SUMA DEFECTE PRELUCRARI','SUMA DEFECTE FORJA','Average of EFICIENTA OPERATOR %','Average of PRODUCTIVITATE OPERATOR %','Average of PRODUCTIVITATEA TOTALA %','Data/OPERATOR','DISPONIBILITATE %','EFICIENTA %','RATA CALITATE PRELUCRARI %','PRODUCTIVITATE %','OEE %','PRODUCTIVITATE TOTALA %']}
     function operatoriExportValues(r){return [r.label,r.totalTime,r.timePerf,r.good,r.pm,r.fj,r.avgEff,r.avgProd,r.avgTotal,r.label,r.disp,r.eff,r.quality,r.prod,r.oee,r.prodTotal]}
     function exportOperatoriCsv(){const headers=operatoriExportHeaders();const lines=[headers.map(h=>`"${String(h).replace(/"/g,'""')}"`).join(';')];operatoriExportRows().forEach(r=>{lines.push(operatoriExportValues(r).map(v=>`"${String(formatForCsv(v)).replace(/"/g,'""')}"`).join(';'))});const blob=new Blob([lines.join('\n')],{type:'text/csv;charset=utf-8'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='raport-pm-operatori.csv';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000)}
