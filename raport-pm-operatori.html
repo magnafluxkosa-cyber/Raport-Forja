@@ -297,9 +297,11 @@
   'use strict';
   const DOC_KEY='raport-pm-raport-start-zero-v2';
   const PIN_DOC_KEY='raport-pm-operatori-pinuri-v1';
+  const SAVED_LOG_DOC_KEY='raport-pm-operatori-rapoarte-salvate-v1';
   const CLOUD_SCHEMA='raport-pm-raport-v2';
   const CLOUD_FIX='operatori-excel-sync-v4-repere-excel-formulas';
   const PIN_SCHEMA='raport-pm-operatori-pinuri-v1';
+  const SAVED_LOG_SCHEMA='raport-pm-operatori-rapoarte-salvate-v1';
   const PAGE_KEYS=['raport-pm-operatori','raport-pm-operatori-zilnic','raport-pm'];
   const OPERATOR_EMAIL='op@prelucrari.local';
   const VISIBLE_COLS=55;
@@ -342,6 +344,40 @@
   async function loadReport(){let p=null;try{p=await readDocument(DOC_KEY)}catch(e){console.warn(e)}state.reportPayload=normalizePayload(p);state.baseReport=loadEmbedded('reportData');state.baseNorme=loadEmbedded('normeData')}
   async function loadPins(){let p=null;try{p=await readDocument(PIN_DOC_KEY)}catch(e){console.warn(e)}if(!p||p.schema!==PIN_SCHEMA||!Array.isArray(p.operators))p={schema:PIN_SCHEMA,operators:[],updatedAt:new Date().toISOString()};state.pins=p.operators.map((o,i)=>({id:o.id||('op_'+i+'_'+Date.now()),name:cleanText(o.name),pinHash:o.pinHash||'',active:o.active!==false})).filter(o=>o.name&&o.pinHash);renderPinList();fillOperatorSuggestions()}
   async function savePins(){const content={schema:PIN_SCHEMA,operators:state.pins,updatedAt:new Date().toISOString()};await writeDocument(PIN_DOC_KEY,content)}
+  function normalizeSavedLog(p){
+    if(!p||p.schema!==SAVED_LOG_SCHEMA||!Array.isArray(p.entries)){
+      p={schema:SAVED_LOG_SCHEMA,docKey:SAVED_LOG_DOC_KEY,entries:[],updatedAt:new Date().toISOString()};
+    }
+    p.entries=p.entries.map((e,i)=>{
+      const vals=Array.isArray(e.values)?e.values.slice(0,VISIBLE_COLS):[];
+      while(vals.length<VISIBLE_COLS)vals.push('');
+      const rawTime=e.savedAt||e.savedAtIso||'';
+      const d=rawTime?new Date(rawTime):null;
+      const savedAtText=e.savedAtText||(d&&!isNaN(d.getTime())?dateTimeText(d):String(rawTime||''));
+      return {
+        id:e.id||('saved_'+i+'_'+Date.now()),
+        reportRowId:e.reportRowId||'',
+        savedAt:rawTime,
+        savedAtText:savedAtText,
+        savedBy:e.savedBy||vals[COL.operator]||'',
+        values:vals
+      };
+    }).filter(e=>e.savedAtText||e.savedAt);
+    p.updatedAt=p.updatedAt||new Date().toISOString();
+    return p;
+  }
+  async function readSavedLog(){
+    return normalizeSavedLog(await readDocument(SAVED_LOG_DOC_KEY));
+  }
+  async function appendSavedLog(entry){
+    const log=await readSavedLog();
+    const key=String(entry.savedAt||entry.savedAtText||'')+'|'+String(entry.reportRowId||'');
+    const exists=log.entries.some(e=>(String(e.savedAt||e.savedAtText||'')+'|'+String(e.reportRowId||''))===key);
+    if(!exists)log.entries.push(entry);
+    log.updatedAt=new Date().toISOString();
+    await writeDocument(SAVED_LOG_DOC_KEY,log);
+    return log;
+  }
   async function sha256(text){if(window.crypto&&crypto.subtle){const data=new TextEncoder().encode(String(text));const hash=await crypto.subtle.digest('SHA-256',data);return Array.from(new Uint8Array(hash)).map(b=>b.toString(16).padStart(2,'0')).join('')}return 'plain:'+String(text)}
   function fillDatalist(id,values){const el=document.getElementById(id);if(!el)return;const arr=Array.from(new Set(values.map(v=>cleanText(v)).filter(Boolean))).sort((a,b)=>a.localeCompare(b,'ro')).slice(0,800);el.innerHTML=arr.map(v=>'<option value="'+esc(v)+'"></option>').join('')}
   function normCols(){const cols=(state.reportPayload&&state.reportPayload.norme&&state.reportPayload.norme.columns)||[];const find=(name)=>{const target=norm(name);let i=cols.findIndex(c=>norm(c)===target);if(i>=0)return i;return cols.findIndex(c=>norm(c).includes(target)||target.includes(norm(c)))};return {model:find('Model'),equipment:find('Echipament'),operation:find('Operatia'),qty:find('Bucati')}}
@@ -376,14 +412,38 @@
     }
     return '';
   }
+  function savedEntryFromRow(row){
+    if(!row)return null;
+    const stamp=getSavedStamp(row);
+    if(!stamp)return null;
+    const vals=Array.isArray(row.values)?row.values.slice(0,VISIBLE_COLS):[];
+    while(vals.length<VISIBLE_COLS)vals.push('');
+    return {id:'saved_row_'+(row.id||Date.now()),reportRowId:row.id||'',savedAt:row.savedAt||'',savedAtText:stamp,savedBy:row.savedBy||vals[COL.operator]||'',values:vals};
+  }
+  function mergeSavedEntries(logEntries,reportRows){
+    const out=[];
+    const seen=new Set();
+    const add=e=>{
+      if(!e)return;
+      const key=String(e.savedAt||e.savedAtText||'')+'|'+String(e.reportRowId||'')+'|'+String(e.savedBy||'');
+      if(seen.has(key))return;
+      seen.add(key);
+      out.push(e);
+    };
+    (Array.isArray(logEntries)?logEntries:[]).forEach(add);
+    (Array.isArray(reportRows)?reportRows:[]).forEach(r=>add(savedEntryFromRow(r)));
+    return out.sort((a,b)=>String(b.savedAt||b.savedAtText||'').localeCompare(String(a.savedAt||a.savedAtText||'')));
+  }
   async function openSavedReports(){
     if(!state.canView){return}
     if(els.savedReportsBody)els.savedReportsBody.innerHTML='<div class="saved-empty">Se încarcă rapoartele salvate...</div>';
     if(els.savedReportsModal)els.savedReportsModal.classList.remove('hidden');
     try{
-      const latest=normalizePayload(await readDocument(DOC_KEY));
-      state.reportPayload=latest;
-      renderSavedReports();
+      let log=normalizeSavedLog(null);
+      try{log=await readSavedLog()}catch(e){console.warn('saved log read failed',e)}
+      let latest=null;
+      try{latest=normalizePayload(await readDocument(DOC_KEY));state.reportPayload=latest}catch(e){console.warn('report read failed',e)}
+      renderSavedReports(mergeSavedEntries(log.entries,latest&&latest.rows));
     }catch(e){
       if(els.savedReportsBody)els.savedReportsBody.innerHTML='<div class="saved-empty">Nu s-au putut încărca rapoartele salvate: '+esc(e&&e.message?e.message:e)+'</div>';
     }
@@ -391,8 +451,8 @@
   function closeSavedReports(){
     if(els.savedReportsModal)els.savedReportsModal.classList.add('hidden');
   }
-  function renderSavedReports(){
-    const rows=((state.reportPayload&&state.reportPayload.rows)||[]).filter(r=>getSavedStamp(r)).sort((a,b)=>String(getSavedStamp(b)).localeCompare(String(getSavedStamp(a))));
+  function renderSavedReports(entries){
+    const rows=Array.isArray(entries)?entries:mergeSavedEntries((state.savedLog&&state.savedLog.entries)||[],(state.reportPayload&&state.reportPayload.rows)||[]);
     if(!els.savedReportsBody)return;
     if(!rows.length){
       els.savedReportsBody.innerHTML='<div class="saved-empty">Nu există rapoarte salvate cu data și ora înregistrată.</div>';
@@ -425,7 +485,47 @@
     clearForm(false);
   }
 
-  async function saveReport(){const row=buildRow();const err=validateRow(row);if(err){setStatus(els.saveStatus,err,'danger');return}els.btnSaveReport.disabled=true;setStatus(els.saveStatus,'Se salvează raportul în cloud...','warn');const savedMoment=new Date();const savedTime=timeText(savedMoment);try{const latest=normalizePayload(await readDocument(DOC_KEY));row.id=nextId(latest.rows,latest.deletedIds);row.savedAt=savedMoment.toISOString();row.savedAtText=dateTimeText(savedMoment);row.savedBy=row.values[COL.operator]||'';latest.rows.push(row);latest.updatedAt=new Date().toISOString();await writeDocument(DOC_KEY,latest);state.reportPayload=latest;setStatus(els.saveStatus,'Raport salvat în raport-pm / Raport la ora '+savedTime+'.','ok');clearForm(true);showSaveConfirm(savedTime)}catch(e){setStatus(els.saveStatus,'Eroare la salvare: '+(e&&e.message?e.message:e),'danger')}finally{els.btnSaveReport.disabled=false}}
+  async function saveReport(){
+    const row=buildRow();
+    const err=validateRow(row);
+    if(err){setStatus(els.saveStatus,err,'danger');return}
+    els.btnSaveReport.disabled=true;
+    setStatus(els.saveStatus,'Se salvează raportul în cloud...','warn');
+    const savedMoment=new Date();
+    const savedTime=timeText(savedMoment);
+    const savedText=dateTimeText(savedMoment);
+    try{
+      const latest=normalizePayload(await readDocument(DOC_KEY));
+      row.id=nextId(latest.rows,latest.deletedIds);
+      row.savedAt=savedMoment.toISOString();
+      row.savedAtText=savedText;
+      row.savedBy=row.values[COL.operator]||'';
+      latest.rows.push(row);
+      latest.updatedAt=new Date().toISOString();
+      await writeDocument(DOC_KEY,latest);
+      const logEntry={
+        id:'saved_'+Date.now()+'_'+Math.random().toString(36).slice(2,7),
+        reportRowId:row.id,
+        savedAt:row.savedAt,
+        savedAtText:row.savedAtText,
+        savedBy:row.savedBy,
+        values:row.values.slice(0,VISIBLE_COLS)
+      };
+      try{
+        state.savedLog=await appendSavedLog(logEntry);
+      }catch(logErr){
+        console.warn('Nu s-a putut salva jurnalul rapoartelor salvate',logErr);
+      }
+      state.reportPayload=latest;
+      setStatus(els.saveStatus,'Raport salvat în raport-pm / Raport la ora '+savedTime+'.','ok');
+      clearForm(true);
+      setTimeout(()=>showSaveConfirm(savedTime),20);
+    }catch(e){
+      setStatus(els.saveStatus,'Eroare la salvare: '+(e&&e.message?e.message:e),'danger')
+    }finally{
+      els.btnSaveReport.disabled=false
+    }
+  }
   async function savePinFromAdmin(){if(!state.canAdminPins)return;const name=cleanText(els.adminOpName.value).toUpperCase();const pin=cleanText(els.adminPin.value);if(!name||!pin){setStatus(els.access,'Completează numele operatorului și PIN-ul.','warn');return}const hash=await sha256(pin);let existing=state.pins.find(o=>norm(o.name)===norm(name));if(existing){existing.name=name;existing.pinHash=hash;existing.active=true}else{state.pins.push({id:'op_'+Date.now(),name,pinHash:hash,active:true})}try{await savePins();els.adminOpName.value='';els.adminPin.value='';renderPinList();fillOperatorSuggestions();setStatus(els.access,'PIN salvat pentru '+name+'.','ok')}catch(e){setStatus(els.access,'Nu s-a putut salva PIN-ul: '+(e.message||e),'danger')}}
   function bind(){els.btnPin.onclick=verifyPin;els.pin.addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();verifyPin()}});els.btnPinExit.onclick=clearOperator;els.btnSaveReport.onclick=saveReport;if(els.btnOpenSavedReports)els.btnOpenSavedReports.onclick=openSavedReports;if(els.btnCloseSavedReports)els.btnCloseSavedReports.onclick=closeSavedReports;if(els.btnConfirmChangeOperator)els.btnConfirmChangeOperator.onclick=closeConfirmAndChangeOperator;els.btnClear.onclick=()=>clearForm(true);els.btnSavePin.onclick=savePinFromAdmin;[els.part,els.equipment,els.process].forEach(el=>el.addEventListener('change',autoFillPlan));}
   async function init(){bind();state.baseReport=loadEmbedded('reportData');state.baseNorme=loadEmbedded('normeData');els.date.value=todayText();els.shift.value=defaultShift();if(!await initAccess())return;els.app.style.display='grid';updateOperatorScreen();try{await loadReport();await loadPins();renderProblemSections();fillLists();setFormEnabled(false);if(!state.pins.length){setStatus(els.operatorInfo,state.canAdminPins?'Setează primul PIN de operator din panoul de administrare.':'Nu există PIN-uri setate. Anunță șeful de echipă.','warn')}else if(isOperatorAccount()){setStatus(els.operatorInfo,'Introdu PIN-ul operatorului.','');setTimeout(()=>{try{els.pin.focus()}catch(_e){}},50)}setStatus(els.access,state.canEdit?'Pagina este pregătită pentru introducerea rapoartelor.':'Acces doar vizualizare.','ok');updateOperatorScreen()}catch(e){setStatus(els.access,'Eroare la încărcare: '+(e.message||e),'danger')}}
