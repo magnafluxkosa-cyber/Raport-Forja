@@ -4,6 +4,7 @@
   const ADMIN_EMAIL = normalizeEmail(((window.ERP_FORJA_CONFIG || window.__ERP_FORJA_CONFIG__ || {}).ADMIN_EMAIL) || '');
   const FORJA_CTC_OPERATOR_EMAIL = 'forja-ctc@forja.local';
   const DEBITARE_OPERATOR_EMAIL = 'debitare@pre.local';
+  const PRELUCRARI_OPERATOR_EMAIL = 'op@prelucrari.local';
   const STORAGE = {
     userId: 'rf_user_id',
     userEmail: 'rf_user_email',
@@ -23,6 +24,10 @@
 
   function isDebitareOperatorAccount(value){
     return normalizeEmail(value) === DEBITARE_OPERATOR_EMAIL;
+  }
+
+  function isPrelucrariOperatorAccount(value){
+    return normalizeEmail(value) === PRELUCRARI_OPERATOR_EMAIL;
   }
 
   function escapeHtml(value){
@@ -1040,6 +1045,13 @@
             }
           }
         }
+        if(isPrelucrariOperatorAccount(authState.user && authState.user.email)){
+          const allowedForPrelucrari = ['index','raport-pm-operatori'];
+          if(allowedForPrelucrari.indexOf(currentPageKey) === -1){
+            window.location.href = 'raport-pm-operatori.html';
+            return null;
+          }
+        }
         const status = authState.accountStatus || {};
         const isBlocked = status.is_active === false || status.is_banned === true;
         if(isBlocked){
@@ -1171,6 +1183,20 @@
         source: 'operator debitare locked account fallback',
         strictUserAcl: true,
         message: allowed ? '' : 'Contul Debitare are acces doar la foaia operator debitare sau la paginile acordate explicit în ACL.'
+      });
+    }
+    if(user && isPrelucrariOperatorAccount(user.email)){
+      const allowedForPrelucrari = ['index','raport-pm-operatori'];
+      const allowed = allowedForPrelucrari.indexOf(settings.pageKey) !== -1;
+      const prelucrariOperatorPermissions = { can_view:true, can_add:true, can_edit:true, can_delete:false, can_export:false, can_import:false };
+      return publishPageAccess({
+        allowed: allowed,
+        user,
+        role: 'operator',
+        permissions: allowed ? prelucrariOperatorPermissions : deniedPermissions,
+        source: 'operator prelucrari locked account fallback',
+        strictUserAcl: true,
+        message: allowed ? '' : 'Contul Prelucrări are acces doar la raportul zilnic operatori PM sau la paginile acordate explicit în ACL.'
       });
     }
     if(user && isForjaCtcOperatorAccount(user.email)){
