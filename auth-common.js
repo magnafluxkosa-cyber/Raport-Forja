@@ -1046,7 +1046,7 @@
           }
         }
         if(isPrelucrariOperatorAccount(authState.user && authState.user.email)){
-          const allowedForPrelucrari = ['index','raport-pm-operatori'];
+          const allowedForPrelucrari = ['raport-pm-operatori'];
           if(allowedForPrelucrari.indexOf(currentPageKey) === -1){
             window.location.href = 'raport-pm-operatori.html';
             return null;
@@ -1186,7 +1186,7 @@
       });
     }
     if(user && isPrelucrariOperatorAccount(user.email)){
-      const allowedForPrelucrari = ['index','raport-pm-operatori'];
+      const allowedForPrelucrari = ['raport-pm-operatori'];
       const allowed = allowedForPrelucrari.indexOf(settings.pageKey) !== -1;
       const prelucrariOperatorPermissions = { can_view:true, can_add:true, can_edit:true, can_delete:false, can_export:false, can_import:false };
       return publishPageAccess({
@@ -1196,7 +1196,7 @@
         permissions: allowed ? prelucrariOperatorPermissions : deniedPermissions,
         source: 'operator prelucrari locked account fallback',
         strictUserAcl: true,
-        message: allowed ? '' : 'Contul Prelucrări are acces doar la raportul zilnic operatori PM sau la paginile acordate explicit în ACL.'
+        message: allowed ? '' : 'Contul Prelucrări are acces doar la Raport zilnic operatori PM.'
       });
     }
     if(user && isForjaCtcOperatorAccount(user.email)){
