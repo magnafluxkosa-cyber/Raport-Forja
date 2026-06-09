@@ -4827,6 +4827,78 @@ function quickEls(){return {modal:document.getElementById('pmQuickModal'),title:
       if(/\.xlsb$|\.xls$/i.test(file.name||''))throw new Error('Pentru .xls/.xlsb este necesară librăria SheetJS. Salvează fișierul ca .xlsx sau verifică conexiunea.');
       return await minimalRowsFromXlsxBuffer(buffer);
     }
+    function normalizeImportKeyText(value,col){
+      if(value===undefined||value===null)return '';
+      if(col===COL.data)return excelSerialToDateString(value).trim();
+      if(value instanceof Date&&!isNaN(value.getTime()))return excelSerialToDateString(value).trim();
+      const text=String(value).trim();
+      if(text==='')return '';
+      if(col>=COL.plan){
+        const raw=text.replace(/ /g,'').replace(/\s+/g,'').replace(/\./g,'').replace(',','.').replace('%','');
+        if(/^[-+]?\d+(?:\.\d+)?$/.test(raw)){
+          const num=Number(raw);
+          if(isFinite(num))return String(Math.round(num*1000000)/1000000);
+        }
+      }
+      return norm(text).replace(/\s+/g,' ').toUpperCase();
+    }
+    function reportImportIdentityKeyFromValues(values){
+      const v=Array.isArray(values)?values:[];
+      const date=normalizeImportKeyText(v[COL.data],COL.data);
+      const process=normalizeImportKeyText(v[COL.process],COL.process);
+      const equipment=normalizeImportKeyText(v[COL.equipment],COL.equipment);
+      const part=normalizeImportKeyText(v[COL.part],COL.part);
+      const shift=normalizeImportKeyText(v[COL.shift],COL.shift);
+      const operator=normalizeImportKeyText(v[COL.operator],COL.operator);
+      if(!date||!process||!part||!shift||!operator)return '';
+      return [date,process,equipment,part,shift,operator].join('¦');
+    }
+    function reportImportFullKeyFromValues(values){
+      const v=Array.isArray(values)?values:[];
+      const parts=[];
+      for(let c=0;c<Math.min(reportColCount(),COL.matEnd+1);c++){
+        if(isCalc(c))continue;
+        parts.push(normalizeImportKeyText(v[c],c));
+      }
+      const key=parts.join('¦');
+      return key.replace(/¦/g,'').trim()?key:'';
+    }
+    function buildExistingImportKeySets(){
+      const identityKeys=new Set();
+      const fullKeys=new Set();
+      (state.rows||[]).forEach(row=>{
+        ensureReportRowWidth(row);
+        const values=Array.isArray(row.values)?row.values:[];
+        const identityKey=reportImportIdentityKeyFromValues(values);
+        const fullKey=reportImportFullKeyFromValues(values);
+        if(identityKey)identityKeys.add(identityKey);
+        if(fullKey)fullKeys.add(fullKey);
+      });
+      return {identityKeys,fullKeys};
+    }
+    function appendOnlyNewImportedReportRows(imported){
+      const keys=buildExistingImportKeySets();
+      const added=[];
+      let skipped=0;
+      let nextId=getNextRowId();
+      (imported||[]).forEach(src=>{
+        const base=(src&&Array.isArray(src.values)?src.values:[]).slice(0,reportColCount());
+        while(base.length<reportColCount())base.push('');
+        const identityKey=reportImportIdentityKeyFromValues(base);
+        const fullKey=reportImportFullKeyFromValues(base);
+        if((identityKey&&keys.identityKeys.has(identityKey))||(fullKey&&keys.fullKeys.has(fullKey))){
+          skipped++;
+          return;
+        }
+        const row={id:nextId++,monthLabel:(src&&src.monthLabel)||monthLabelFromDateString(base[COL.data]),rawValues:base.slice(),values:base.slice()};
+        ensureReportRowWidth(row);
+        state.rows.push(row);
+        added.push(row);
+        if(identityKey)keys.identityKeys.add(identityKey);
+        if(fullKey)keys.fullKeys.add(fullKey);
+      });
+      return {added,skipped};
+    }
     async function importExcelFile(file){
       if(!file)return;
       if(!state.canEdit){alert('Importul Excel necesită drept de editare.');return;}
@@ -4835,8 +4907,13 @@ function quickEls(){return {modal:document.getElementById('pmQuickModal'),title:
         if(els.btnImportExcel)els.btnImportExcel.disabled=true;
         const data=await readExcelRows(file);
         const imported=rowsFromExcelArray(data);
-        if(!imported.length){alert('Nu am găsit rânduri valide în Excel. Importul caută antetul cu Data / PROCESS / ECHIPAMENT / PART NUMBER / SCHIMB / Nume Operator sau structura originală cu ANUL / MONTH înainte de Data.');return;}
-        state.rows=imported.map((r,idx)=>{const base=r.values.slice(0,reportColCount());while(base.length<reportColCount())base.push('');const row={id:idx+1,monthLabel:r.monthLabel||monthLabelFromDateString(base[COL.data]),rawValues:base.slice(),values:base.slice()};ensureReportRowWidth(row);return row});
+        if(!imported.length){alert('Nu am găsit rânduri valide în partea REPORT/RAPORT din Excel. Importul caută antetul cu Data / PROCESS / ECHIPAMENT / PART NUMBER / SCHIMB / Nume Operator sau structura originală cu ANUL / MONTH înainte de Data.');return;}
+        const result=appendOnlyNewImportedReportRows(imported);
+        if(!result.added.length){
+          alert('Import Excel finalizat. Nu am adăugat rânduri noi: toate cele '+imported.length+' rânduri din REPORT/RAPORT există deja în raport.');
+          return;
+        }
+        state.activeView='raport';
         state.autoBottom=true;
         state.selection=null;
         state.lastCell=null;
@@ -4846,8 +4923,9 @@ function quickEls(){return {modal:document.getElementById('pmQuickModal'),title:
         state.dirty++;
         renderAll();
         const saved=await saveCloudNow(false);
-        if(saved)alert('Import Excel finalizat: '+imported.length+' rânduri. Datele au fost salvate în cloud.');
-        else alert('Import Excel finalizat: '+imported.length+' rânduri. Atenție: salvarea în cloud nu a reușit, apasă Salvează cloud după ce verifici conexiunea.');
+        const info='Import Excel finalizat doar pentru partea REPORT/RAPORT: '+result.added.length+' rânduri noi adăugate, '+result.skipped+' rânduri existente ignorate.';
+        if(saved)alert(info+' Datele au fost salvate în cloud.');
+        else alert(info+' Atenție: salvarea în cloud nu a reușit, apasă Salvează cloud după ce verifici conexiunea.');
       }catch(err){
         console.error('Import Excel Raport PM',err);
         alert('Importul Excel a eșuat: '+(err&&err.message?err.message:'verifică fișierul și încearcă din nou.'));
