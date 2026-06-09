@@ -2572,6 +2572,14 @@ function quickEls(){return {modal:document.getElementById('pmQuickModal'),title:
     function ensureRowAt(index){while(index>=state.rows.length){state.rows.push(createBlankRow(state.rows[state.rows.length-1]||null))}return state.rows[index]}
     function rowHasData(row){ensureReportRowWidth(row);return !!(row&&Array.isArray(row.values)&&row.values.slice(0,reportColCount()).some(v=>String(v??'').trim()!==''))}
     function recalcAllRows(){state.rows.forEach(r=>recalc(r))}
+    function pmYield(){return new Promise(resolve=>setTimeout(resolve,0))}
+    async function recalcAllRowsAsync(batchSize){
+      const batch=Math.max(25,Number(batchSize)||150);
+      for(let i=0;i<state.rows.length;i++){
+        recalc(state.rows[i]);
+        if(i>0&&i%batch===0)await pmYield();
+      }
+    }
     function syncTopButtons(){
       const view=state.activeView||'raport';
       document.body.classList.toggle('pm-view-raport',view==='raport');
@@ -2699,7 +2707,7 @@ function quickEls(){return {modal:document.getElementById('pmQuickModal'),title:
     function getSupabaseClient(){try{if(window.ERPAuth&&typeof window.ERPAuth.getSupabaseClient==='function'){const c=window.ERPAuth.getSupabaseClient();if(c)return c}}catch(_e){}if(window.__RF_SHARED_SUPABASE__)return window.__RF_SHARED_SUPABASE__;const cfg=window.RF_CONFIG||window.rfConfig||window.__RF_CONFIG__||window.RF_SUPABASE||window.SUPABASE_CONFIG||{};const url=cfg.SUPABASE_URL||cfg.supabaseUrl||window.RF_SUPABASE_URL||window.SUPABASE_URL||'';const key=cfg.SUPABASE_ANON_KEY||cfg.supabaseAnonKey||window.RF_SUPABASE_ANON_KEY||window.SUPABASE_ANON_KEY||'';if(!url||!key||!(window.supabase&&window.supabase.createClient))return null;window.__RF_SHARED_SUPABASE__=window.supabase.createClient(url,key,{auth:{persistSession:true,autoRefreshToken:true,detectSessionInUrl:false}});return window.__RF_SHARED_SUPABASE__}
     function normalizeDeletedIds(saved){const out=new Set();(DEFAULT_DELETED_ROW_IDS||[]).forEach(id=>{const nId=Number(id);if(isFinite(nId))out.add(nId)});(Array.isArray(saved&&saved.deletedIds)?saved.deletedIds:[]).forEach(id=>{const nId=Number(id);if(isFinite(nId))out.add(nId)});return out}
     function rememberDeletedRowId(id){const nId=Number(id);if(!isFinite(nId))return;if(!(state.deletedIds instanceof Set))state.deletedIds=new Set();state.deletedIds.add(nId)}
-    function serializeCloudPayload(){const count=reportColCount();state.rows.forEach(r=>{ensureReportRowWidth(r);recalc(r)});const deletedIds=Array.from(state.deletedIds instanceof Set?state.deletedIds:new Set()).map(Number).filter(id=>Number.isFinite(id));return {schema:CLOUD_SCHEMA,docKey:DOC_KEY,version:3,fix:CLOUD_FIX,generatedFrom:'REPORT',updatedAt:new Date().toISOString(),columns:state.columns.slice(0,count),deletedIds,rows:state.rows.map(r=>({id:r.id,monthLabel:r.monthLabel||'',values:((Array.isArray(r.values)?r.values:r.rawValues)||[]).slice(0,count)})),norme:{columns:state.normColumns.slice(),rows:state.normRows.map(r=>({id:r.id,values:(Array.isArray(r.values)?r.values:[]).slice(0,state.normColumns.length)}))}}}
+    function serializeCloudPayload(){const count=reportColCount();state.rows.forEach(r=>ensureReportRowWidth(r));const deletedIds=Array.from(state.deletedIds instanceof Set?state.deletedIds:new Set()).map(Number).filter(id=>Number.isFinite(id));return {schema:CLOUD_SCHEMA,docKey:DOC_KEY,version:3,fix:CLOUD_FIX,generatedFrom:'REPORT',updatedAt:new Date().toISOString(),columns:state.columns.slice(0,count),deletedIds,rows:state.rows.map(r=>({id:r.id,monthLabel:r.monthLabel||'',values:((Array.isArray(r.values)?r.values:r.rawValues)||[]).slice(0,count)})),norme:{columns:state.normColumns.slice(),rows:state.normRows.map(r=>({id:r.id,values:(Array.isArray(r.values)?r.values:[]).slice(0,state.normColumns.length)}))}}}
     async function readCloudPayload(){try{const supa=state.supa||getSupabaseClient();state.supa=supa;if(!supa)return null;const {data,error}=await supa.from('rf_documents').select('content,data,updated_at').eq('doc_key',DOC_KEY).maybeSingle();if(error)throw error;const content=data&&data.content&&typeof data.content==='object'?data.content:(data&&data.data&&typeof data.data==='object'?data.data:null);if(!content||!Array.isArray(content.rows))return null;return content}catch(e){console.warn('Raport PM cloud load',e);state.lastCloudError=e;return null}}
     async function writeCloudPayload(){const supa=state.supa||getSupabaseClient();state.supa=supa;if(!supa)throw new Error('Supabase indisponibil');const content=serializeCloudPayload();let res=await supa.from('rf_documents').upsert({doc_key:DOC_KEY,content,data:content,updated_at:content.updatedAt},{onConflict:'doc_key'}).select('updated_at').maybeSingle();if(res.error){res=await supa.from('rf_documents').upsert({doc_key:DOC_KEY,content,updated_at:content.updatedAt},{onConflict:'doc_key'}).select('updated_at').maybeSingle()}if(res.error)throw res.error;return content}
     function loadSaved(){try{return JSON.parse(localStorage.getItem(STORAGE_KEY)||'null')}catch(e){return null}}
@@ -4877,45 +4885,59 @@ function quickEls(){return {modal:document.getElementById('pmQuickModal'),title:
       });
       return {identityKeys,fullKeys};
     }
-    function appendOnlyNewImportedReportRows(imported){
+    async function appendOnlyNewImportedReportRows(imported,onProgress){
       const keys=buildExistingImportKeySets();
       const added=[];
       let skipped=0;
       let nextId=getNextRowId();
-      (imported||[]).forEach(src=>{
+      const list=Array.isArray(imported)?imported:[];
+      for(let ix=0;ix<list.length;ix++){
+        const src=list[ix];
         const base=(src&&Array.isArray(src.values)?src.values:[]).slice(0,reportColCount());
         while(base.length<reportColCount())base.push('');
         const identityKey=reportImportIdentityKeyFromValues(base);
         const fullKey=reportImportFullKeyFromValues(base);
         if((identityKey&&keys.identityKeys.has(identityKey))||(fullKey&&keys.fullKeys.has(fullKey))){
           skipped++;
-          return;
+        }else{
+          const row={id:nextId++,monthLabel:(src&&src.monthLabel)||monthLabelFromDateString(base[COL.data]),rawValues:base.slice(),values:base.slice()};
+          ensureReportRowWidth(row);
+          recalc(row);
+          state.rows.push(row);
+          added.push(row);
+          if(identityKey)keys.identityKeys.add(identityKey);
+          if(fullKey)keys.fullKeys.add(fullKey);
         }
-        const row={id:nextId++,monthLabel:(src&&src.monthLabel)||monthLabelFromDateString(base[COL.data]),rawValues:base.slice(),values:base.slice()};
-        ensureReportRowWidth(row);
-        recalc(row);
-        state.rows.push(row);
-        added.push(row);
-        if(identityKey)keys.identityKeys.add(identityKey);
-        if(fullKey)keys.fullKeys.add(fullKey);
-      });
+        if(ix%80===0){
+          if(typeof onProgress==='function')onProgress(ix+1,list.length,added.length,skipped);
+          await pmYield();
+        }
+      }
       return {added,skipped};
     }
     async function importExcelFile(file){
       if(!file)return;
       if(!state.canEdit){alert('Importul Excel necesită drept de editare.');return;}
+      const btn=els.btnImportExcel;
+      const oldText=btn?btn.textContent:'';
+      const setImportStatus=(txt)=>{if(btn)btn.textContent=txt;};
       try{
         if(!/\.(xlsx|xls|xlsm|xlsb|csv)$/i.test(file.name||'')){alert('Alege un fișier Excel .xlsx, .xlsm, .xlsb, .xls sau .csv.');return;}
-        if(els.btnImportExcel)els.btnImportExcel.disabled=true;
+        if(btn){btn.disabled=true;btn.textContent='Import...';}
+        setImportStatus('Citesc Excel...');
+        await pmYield();
         const data=await readExcelRows(file);
+        setImportStatus('Pregătesc...');
+        await pmYield();
         const imported=rowsFromExcelArray(data);
+        await pmYield();
         if(!imported.length){alert('Nu am găsit rânduri valide în partea REPORT/RAPORT din Excel. Importul caută antetul cu Data / PROCESS / ECHIPAMENT / PART NUMBER / SCHIMB / Nume Operator sau structura originală cu ANUL / MONTH înainte de Data.');return;}
-        const result=appendOnlyNewImportedReportRows(imported);
-        recalcAllRows();
-        if(!result.added.length){
-          alert('Import Excel finalizat. Nu am adăugat rânduri noi: toate cele '+imported.length+' rânduri din REPORT/RAPORT există deja în raport.');
-          return;
-        }
+        setImportStatus('Adaug rânduri...');
+        const result=await appendOnlyNewImportedReportRows(imported,(done,total)=>{
+          if(done===1||done%240===0||done>=total)setImportStatus('Import '+Math.min(done,total)+'/'+total);
+        });
+        setImportStatus('Recalculez...');
+        await recalcAllRowsAsync(160);
         state.activeView='raport';
         state.autoBottom=true;
         state.selection=null;
@@ -4924,9 +4946,16 @@ function quickEls(){return {modal:document.getElementById('pmQuickModal'),title:
         state.filters={};
         applyLatestMonthFilter();
         state.dirty++;
-        renderAll();
+        updateDirty();
+        setImportStatus('Afișez...');
+        await pmYield();
+        renderAll(false);
+        setImportStatus('Salvez...');
+        await pmYield();
         const saved=await saveCloudNow(false);
-        const info='Import Excel finalizat doar pentru partea REPORT/RAPORT: '+result.added.length+' rânduri noi adăugate, '+result.skipped+' rânduri existente ignorate.';
+        const info=result.added.length
+          ? 'Import Excel finalizat doar pentru partea REPORT/RAPORT: '+result.added.length+' rânduri noi adăugate, '+result.skipped+' rânduri existente ignorate.'
+          : 'Import Excel finalizat. Nu am adăugat rânduri noi: toate cele '+imported.length+' rânduri din REPORT/RAPORT există deja în raport. Formulele au fost reverificate.';
         if(saved)alert(info+' Datele au fost salvate în cloud.');
         else alert(info+' Atenție: salvarea în cloud nu a reușit, apasă Salvează cloud după ce verifici conexiunea.');
       }catch(err){
@@ -4934,7 +4963,7 @@ function quickEls(){return {modal:document.getElementById('pmQuickModal'),title:
         alert('Importul Excel a eșuat: '+(err&&err.message?err.message:'verifică fișierul și încearcă din nou.'));
       }finally{
         if(els.excelImportInput)els.excelImportInput.value='';
-        if(els.btnImportExcel)els.btnImportExcel.disabled=false;
+        if(btn){btn.disabled=false;btn.textContent=oldText||'Import Excel';}
       }
     }
     function isPercentExportCol(col){return col===COL.eff||col===COL.prodOp||col===COL.prodTotal}
