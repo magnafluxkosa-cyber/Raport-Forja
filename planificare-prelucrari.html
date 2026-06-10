@@ -478,6 +478,38 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
     cell.style.setProperty('--manual-fill', normalized);
     cell.classList.add('manual-fill-cell');
   }
+  function cssColorToHex(value){
+    const raw = safeText(value).trim().toLowerCase();
+    if(!raw || raw === 'transparent') return '';
+    const normalized = normalizeColorValue(raw);
+    if(normalized) return normalized;
+    const rgba = raw.match(/^rgba?\(([^)]+)\)$/);
+    if(!rgba) return '';
+    const parts = rgba[1].split(',').map((part) => part.trim());
+    if(parts.length < 3) return '';
+    const alpha = parts.length >= 4 ? Number(parts[3]) : 1;
+    if(Number.isFinite(alpha) && alpha <= 0) return '';
+    const nums = parts.slice(0,3).map((part) => {
+      if(part.endsWith('%')) return Math.round(Math.max(0, Math.min(100, Number(part.slice(0,-1)) || 0)) * 2.55);
+      return Math.round(Math.max(0, Math.min(255, Number(part) || 0)));
+    });
+    if(nums.some((n) => !Number.isFinite(n))) return '';
+    return '#' + nums.map((n) => n.toString(16).padStart(2,'0')).join('');
+  }
+  function getCellFillColor(cell){
+    if(!cell) return '';
+    const stored = getSparseColor(getCellKey(cell));
+    if(stored) return stored;
+    const manualVar = cell.style && cell.style.getPropertyValue ? cell.style.getPropertyValue('--manual-fill') : '';
+    const manualHex = cssColorToHex(manualVar);
+    if(manualHex) return manualHex;
+    const inlineColor = cell.style && (cell.style.backgroundColor || cell.style.background) ? (cell.style.backgroundColor || cell.style.background) : '';
+    const inlineHex = cssColorToHex(inlineColor);
+    if(inlineHex) return inlineHex;
+    let computed = '';
+    try{ computed = window.getComputedStyle(cell).backgroundColor || ''; }catch(_err){}
+    return cssColorToHex(computed);
+  }
   function renderCellValue(cell, raw){
     const normalized = normalizeSpaces(raw);
     cell.dataset.rawValue = normalized;
@@ -952,7 +984,8 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
     return {
       key,
       raw: getSparseValue(key),
-      defaultRaw: normalizeSpaces(cell.dataset.defaultRaw || '')
+      defaultRaw: normalizeSpaces(cell.dataset.defaultRaw || ''),
+      color: getSparseColor(key)
     };
   }
   function restoreCellSnapshot(item){
@@ -966,6 +999,10 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
       setSparseValue(cell, item.raw);
       renderCellValue(cell, item.raw);
     }
+    const color = normalizeColorValue(item.color || '');
+    if(color) state.colors[item.key] = color;
+    else delete state.colors[item.key];
+    applyManualColorToCell(cell, color);
   }
   function clearSelectedCellsForDelete(cells){
     if(!state.canEdit || !Array.isArray(cells) || !cells.length) return false;
@@ -1014,6 +1051,15 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
     if(cell.dataset && cell.dataset.rawValue != null) return normalizeSpaces(cell.dataset.rawValue);
     return normalizeSpaces(cell.textContent);
   }
+  function normalizePasteCellData(value){
+    if(value && typeof value === 'object' && !Array.isArray(value)){
+      return {
+        raw: normalizeSpaces(value.raw != null ? value.raw : (value.text != null ? value.text : value.value)),
+        color: Object.prototype.hasOwnProperty.call(value, 'color') ? normalizeColorValue(value.color) : null
+      };
+    }
+    return { raw: normalizeSpaces(value), color: null };
+  }
   function setMatrixFromPaste(anchorCell, matrix){
     if(!state.canEdit || !anchorCell || !Array.isArray(matrix) || !matrix.length) return false;
     if(state.editingCell){
@@ -1045,9 +1091,13 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
         const key = (startRow + rOffset) + ':' + (startCol + cOffset);
         const cell = cellRegistry[key];
         if(!cell || !table.contains(cell)) return;
-        const raw = normalizeSpaces(value);
-        setSparseValue(cell, raw);
-        renderCellValue(cell, raw);
+        const data = normalizePasteCellData(value);
+        setSparseValue(cell, data.raw);
+        renderCellValue(cell, data.raw);
+        if(data.color !== null){
+          applyManualColorToCell(cell, data.color);
+          setSparseColor(cell, data.color);
+        }
       });
     });
 
@@ -1060,6 +1110,7 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
     undoDelete: undoLastDelete,
     pasteMatrix: setMatrixFromPaste,
     getCellRawText: getRawTextForCell,
+    getCellFillColor: getCellFillColor,
     canEdit: function(){ return !!state.canEdit; }
   };
 
@@ -1216,8 +1267,16 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
     return cellText(cell);
   }
 
-  function buildClipboardTextFromSelection(){
-    if(!selected.size) return '';
+  function fillColorForCell(cell){
+    const api = window.KADPlanificarePrelucrariGridAPI;
+    if(api && typeof api.getCellFillColor === 'function') return String(api.getCellFillColor(cell) || '');
+    let computed = '';
+    try{ computed = window.getComputedStyle(cell).backgroundColor || ''; }catch(_err){}
+    return computed || '';
+  }
+
+  function buildClipboardDataFromSelection(){
+    if(!selected.size) return { text:'', matrix:[] };
     const cells = Array.from(selected);
     let minRow = Infinity, maxRow = -Infinity, minCol = Infinity, maxCol = -Infinity;
     const byKey = new Map();
@@ -1228,18 +1287,35 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
       maxRow = Math.max(maxRow, g.row);
       minCol = Math.min(minCol, g.col);
       maxCol = Math.max(maxCol, g.col);
-      byKey.set(g.row + ':' + g.col, rawTextForCell(cell));
+      byKey.set(g.row + ':' + g.col, { raw: rawTextForCell(cell), color: fillColorForCell(cell) });
     });
-    if(!Number.isFinite(minRow) || !Number.isFinite(minCol)) return '';
+    if(!Number.isFinite(minRow) || !Number.isFinite(minCol)) return { text:'', matrix:[] };
     const lines = [];
+    const matrix = [];
     for(let r = minRow; r <= maxRow; r++){
-      const row = [];
+      const rowText = [];
+      const rowData = [];
       for(let c = minCol; c <= maxCol; c++){
-        row.push(byKey.has(r + ':' + c) ? byKey.get(r + ':' + c) : '');
+        const item = byKey.get(r + ':' + c) || { raw:'', color:'' };
+        rowText.push(item.raw || '');
+        rowData.push({ raw:item.raw || '', color:item.color || '' });
       }
-      lines.push(row.join('\t'));
+      lines.push(rowText.join('\t'));
+      matrix.push(rowData);
     }
-    return lines.join('\n');
+    return { text:lines.join('\n'), matrix };
+  }
+
+  function buildClipboardHtmlFromMatrix(matrix){
+    if(!Array.isArray(matrix) || !matrix.length) return '';
+    const esc = (value) => String(value == null ? '' : value).replace(/[&<>"]/g, s => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[s]));
+    const rows = matrix.map(row => '<tr>' + (Array.isArray(row) ? row : []).map(item => {
+      const raw = item && typeof item === 'object' ? (item.raw || '') : '';
+      const color = item && typeof item === 'object' ? (item.color || '') : '';
+      const style = color ? ' style="background-color:' + esc(color) + ';"' : '';
+      return '<td' + style + '>' + esc(raw).replace(/\n/g, '<br>') + '</td>';
+    }).join('') + '</tr>').join('');
+    return '<table>' + rows + '</table>';
   }
 
   function parseClipboardText(text){
@@ -1248,7 +1324,24 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
     return raw.replace(/\n$/, '').split('\n').map(line => line.split('\t'));
   }
 
+  const KAD_CLIPBOARD_MIME = 'application/x-kad-planificare-prelucrari-cells';
   let internalClipboardText = '';
+  let internalClipboardMatrix = null;
+
+  function readStyledClipboardMatrix(event, text){
+    if(event && event.clipboardData){
+      try{
+        const raw = event.clipboardData.getData(KAD_CLIPBOARD_MIME);
+        if(raw){
+          const parsed = JSON.parse(raw);
+          if(Array.isArray(parsed)) return parsed;
+        }
+      }catch(_err){}
+    }
+    if(internalClipboardMatrix && text === internalClipboardText) return internalClipboardMatrix;
+    if(internalClipboardMatrix && !text && !internalClipboardText) return internalClipboardMatrix;
+    return null;
+  }
 
   function formatNumber(value){
     return new Intl.NumberFormat('ro-RO', { maximumFractionDigits: 2 }).format(value || 0);
@@ -1418,15 +1511,18 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
 
   document.addEventListener('copy', function(event){
     if(!selected.size) return;
-    const text = buildClipboardTextFromSelection();
-    if(!text) return;
-    internalClipboardText = text;
+    const payload = buildClipboardDataFromSelection();
+    if(!payload.matrix.length) return;
+    internalClipboardText = payload.text || '';
+    internalClipboardMatrix = payload.matrix;
     if(event.clipboardData){
-      event.clipboardData.setData('text/plain', text);
+      event.clipboardData.setData('text/plain', payload.text || '');
+      event.clipboardData.setData('text/html', buildClipboardHtmlFromMatrix(payload.matrix));
+      try{ event.clipboardData.setData(KAD_CLIPBOARD_MIME, JSON.stringify(payload.matrix)); }catch(_err){}
       event.preventDefault();
       event.stopPropagation();
     } else if(navigator.clipboard && navigator.clipboard.writeText){
-      navigator.clipboard.writeText(text).catch(function(){});
+      navigator.clipboard.writeText(payload.text || '').catch(function(){});
     }
   });
 
@@ -1438,7 +1534,8 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
     let text = '';
     if(event.clipboardData) text = event.clipboardData.getData('text/plain') || '';
     if(!text) text = internalClipboardText || '';
-    const matrix = parseClipboardText(text);
+    const styledMatrix = readStyledClipboardMatrix(event, text);
+    const matrix = (styledMatrix && styledMatrix.length) ? styledMatrix : parseClipboardText(text);
     if(!matrix.length) return;
     if(api.pasteMatrix(targetCell, matrix)){
       event.preventDefault();
