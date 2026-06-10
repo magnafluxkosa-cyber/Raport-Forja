@@ -9,7 +9,6 @@
   <!-- KAD_ACL_MARKER: page_key="index" can_view can_edit -->
   <script>
   (function(){
-    try { document.documentElement.setAttribute('data-index-acl-loading', '1'); } catch (_) {}
     var LOGIN_PAGE = 'login.html';
     var forceStay = false;
     try {
@@ -87,7 +86,7 @@
             if(!raw || raw === 'null') continue;
             try{
               var parsed = JSON.parse(raw);
-              var user = (parsed && (parsed.user || (parsed.currentSession && parsed.currentSession.user) || (parsed.session && parsed.session.user))) || null;
+              var user = parsed && (parsed.user || (parsed.currentSession && parsed.currentSession.user) || (parsed.session && parsed.session.user));
               if(user && (user.id || user.email)) return user;
             }catch(_){}
           }
@@ -134,12 +133,6 @@
   })();
 </script>
   <style>
-    html[data-index-acl-loading="1"] .item[data-page-key],
-    html[data-index-acl-loading="1"] .subpanel [data-page-key],
-    html[data-index-acl-loading="1"] .innerTrigger[data-button-key]{
-      visibility:hidden !important;
-    }
-
     :root{
       --bg1:#081526;
       --bg2:#123456;
@@ -1390,6 +1383,14 @@
 
       async function loadRolePermissionMap(role){
         if (!sb) return null;
+
+        if (window.RF_ACL && typeof window.RF_ACL.loadPagePermissionMap === 'function') {
+          try {
+            const rfMap = await window.RF_ACL.loadPagePermissionMap(sb, role);
+            if (rfMap instanceof Map && rfMap.size) return rfMap;
+          } catch(_) {}
+        }
+
         try {
           const res = await sb.from('page_permissions').select('page_key,can_view,can_add,can_edit,can_delete,can_export,can_import').eq('role', role);
           if (res.error || !Array.isArray(res.data)) return null;
@@ -1402,11 +1403,12 @@
             can_export: r.can_export === true,
             can_import: r.can_import === true
           }));
-          return map;
+          return map.size ? map : null;
         } catch(_){
           return null;
         }
       }
+
 
       async function loadDashboardAcl(){
         if (!sb) return null;
@@ -1818,17 +1820,17 @@
         return String(pageKey || '').indexOf('group-') === 0;
       }
 
-      function setIndexAclLoading(on){
-        try {
-          if (on) document.documentElement.setAttribute('data-index-acl-loading', '1');
-          else document.documentElement.removeAttribute('data-index-acl-loading');
-        } catch (_) {}
-      }
-
       function hasRoleAclSource(){
         if (currentRolePermissions instanceof Map && currentRolePermissions.size > 0) return true;
         const mirror = getMirrorRoleData();
         return !!((mirror.pagePermissions && Object.keys(mirror.pagePermissions).length) || (mirror.grants && Object.keys(mirror.grants).length));
+      }
+
+      function hasAnyAclSourceForIndex(){
+        if (hasStrictUserAcl()) return true;
+        if (hasRoleAclSource()) return true;
+        const mirror = getMirrorRoleData();
+        return !!((mirror.userPermissions && Object.keys(mirror.userPermissions).length) || (mirror.userGrants && Object.keys(mirror.userGrants).length));
       }
 
       function roleAclHasPage(pageKey, href){
@@ -1875,6 +1877,10 @@
 
         if (!isGroupPageKey(pageKey) && hasRoleAclSource()) {
           return roleAclHasPage(pageKey, href) ? true : false;
+        }
+
+        if (!isGroupPageKey(pageKey) && currentRole !== 'admin') {
+          return false;
         }
 
         return true;
@@ -2176,7 +2182,6 @@
         visibilityRefreshPromise = (async () => {
           await loadIndexButtonVisibilityDoc();
           await applyLayout();
-          setIndexAclLoading(false);
           try { enforceAdminOnlyButtons(); applyVisibilityOverrides(); } catch(_) {}
         })().finally(() => { visibilityRefreshPromise = null; });
         return visibilityRefreshPromise;
@@ -2276,11 +2281,9 @@
       }
 
       async function boot(){
-        setIndexAclLoading(true);
         if (!sb) {
           chipAuth.textContent = 'Config lipsă';
           chipAuth.className = 'chip bad';
-          setIndexAclLoading(false);
           return;
         }
 
@@ -2331,10 +2334,16 @@
         await loadDashboardAcl();
         await loadIndexButtonVisibilityDoc();
         await applyLayout();
-          setIndexAclLoading(false);
       }
 
       if (btnRefresh) btnRefresh.addEventListener('click', () => window.location.reload());
+      window.addEventListener('pageshow', () => {
+        if (currentUser) refreshIndexVisibilityFromCloud(true);
+      });
+      window.addEventListener('focus', () => {
+        if (currentUser) refreshIndexVisibilityFromCloud(false);
+      });
+
 
       function clearAuthStorage(){
         const stores = [window.localStorage, window.sessionStorage];
@@ -2380,7 +2389,6 @@
         clearStoredHiddenIndexButtons();
         try { localStorage.removeItem('rf_user_id'); sessionStorage.removeItem('rf_user_id'); } catch (_) {}
         await applyLayout();
-          setIndexAclLoading(false);
 
         try {
           if (sb) {
@@ -2509,7 +2517,6 @@
 
       sb?.auth.onAuthStateChange(async (event, session) => {
         if (session?.user) {
-          setIndexAclLoading(true);
           clearLogoutFlags();
           currentUser = session.user;
           const resolved = await resolveRole(currentUser);
@@ -2531,7 +2538,6 @@
           await loadDashboardAcl();
           await loadIndexButtonVisibilityDoc();
           await applyLayout();
-          setIndexAclLoading(false);
           try { enforceAdminOnlyButtons(); applyVisibilityOverrides(); } catch(_) {}
           return;
         }
@@ -2540,7 +2546,6 @@
         if (event !== 'SIGNED_OUT' && !logoutFlag) {
           const recoveredSilent = await getActiveSession();
           if (recoveredSilent?.user) {
-            setIndexAclLoading(true);
             clearLogoutFlags();
             currentUser = recoveredSilent.user;
             const resolvedSilent = await resolveRole(currentUser);
@@ -2554,14 +2559,12 @@
             await loadDashboardAcl();
             await loadIndexButtonVisibilityDoc();
             await applyLayout();
-          setIndexAclLoading(false);
           }
           return;
         }
 
         const recovered = await getActiveSession();
         if (recovered?.user) {
-          setIndexAclLoading(true);
           clearLogoutFlags();
           currentUser = recovered.user;
           const resolved = await resolveRole(currentUser);
@@ -2575,7 +2578,6 @@
           await loadDashboardAcl();
           await loadIndexButtonVisibilityDoc();
           await applyLayout();
-          setIndexAclLoading(false);
           try { enforceAdminOnlyButtons(); applyVisibilityOverrides(); } catch(_) {}
           return;
         }
@@ -2589,7 +2591,6 @@
         currentIndexButtonVisibilityDoc = null;
         try { localStorage.removeItem('rf_user_id'); sessionStorage.removeItem('rf_user_id'); } catch (_) {}
         await applyLayout();
-          setIndexAclLoading(false);
 
         const target = './login.html?logout=1';
         window.setTimeout(() => {
