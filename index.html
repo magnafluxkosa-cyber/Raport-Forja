@@ -9,6 +9,7 @@
   <!-- KAD_ACL_MARKER: page_key="index" can_view can_edit -->
   <script>
   (function(){
+    try { document.documentElement.setAttribute('data-index-acl-loading', '1'); } catch (_) {}
     var LOGIN_PAGE = 'login.html';
     var forceStay = false;
     try {
@@ -68,8 +69,41 @@
         var data = JSON.parse(raw);
         if(!data || typeof data !== 'object') return null;
         var hidden = Array.isArray(data.hidden) ? data.hidden.map(function(v){ return String(v || '').trim(); }).filter(Boolean) : [];
-        return { hidden:hidden };
+        var email = String(data.email || '').trim().toLowerCase();
+        var userId = String(data.user_id || '').trim();
+        return { email:email, user_id:userId, hidden:hidden };
       }catch(_){ return null; }
+    }
+    function readAuthUserFromStorage(){
+      try{
+        var stores = [window.localStorage, window.sessionStorage];
+        for(var s = 0; s < stores.length; s += 1){
+          var store = stores[s];
+          if(!store) continue;
+          for(var i = 0; i < store.length; i += 1){
+            var key = store.key(i);
+            if(!key || key.indexOf('sb-') !== 0 || key.indexOf('-auth-token') === -1) continue;
+            var raw = store.getItem(key);
+            if(!raw || raw === 'null') continue;
+            try{
+              var parsed = JSON.parse(raw);
+              var user = (parsed && (parsed.user || (parsed.currentSession && parsed.currentSession.user) || (parsed.session && parsed.session.user))) || null;
+              if(user && (user.id || user.email)) return user;
+            }catch(_){}
+          }
+        }
+      }catch(_){}
+      return null;
+    }
+    function storedMatchesAuthUser(stored, user){
+      if(!stored || !user) return false;
+      var storedEmail = String(stored.email || '').trim().toLowerCase();
+      var storedUserId = String(stored.user_id || '').trim();
+      var email = String(user.email || '').trim().toLowerCase();
+      var userId = String(user.id || '').trim();
+      if(storedEmail && email && storedEmail === email) return true;
+      if(storedUserId && userId && storedUserId === userId) return true;
+      return !storedEmail && !storedUserId;
     }
     function esc(v){
       return String(v || '').replace(/\\/g, '\\\\').replace(/"/g, '\\"');
@@ -92,15 +126,18 @@
         return '[data-page-key="' + safe + '"],[data-button-key="' + safe + '"]{display:none !important;}';
       }).join('\n');
     }
+    var authUser = readAuthUserFromStorage();
+    if(stored && !storedMatchesAuthUser(stored, authUser)) stored = null;
     apply(stored && stored.hidden || []);
     document.head.appendChild(style);
     window.__rfSyncHiddenButtonsStyle = function(keys){ apply(keys); };
   })();
 </script>
   <style>
-    html:not([data-index-acl-ready="1"]) [data-page-key],
-    html:not([data-index-acl-ready="1"]) [data-button-key]{
-      display:none !important;
+    html[data-index-acl-loading="1"] .item[data-page-key],
+    html[data-index-acl-loading="1"] .subpanel [data-page-key],
+    html[data-index-acl-loading="1"] .innerTrigger[data-button-key]{
+      visibility:hidden !important;
     }
 
     :root{
@@ -1781,11 +1818,11 @@
         return String(pageKey || '').indexOf('group-') === 0;
       }
 
-      function setIndexAclReady(on){
+      function setIndexAclLoading(on){
         try {
-          if (on) document.documentElement.setAttribute('data-index-acl-ready', '1');
-          else document.documentElement.removeAttribute('data-index-acl-ready');
-        } catch(_) {}
+          if (on) document.documentElement.setAttribute('data-index-acl-loading', '1');
+          else document.documentElement.removeAttribute('data-index-acl-loading');
+        } catch (_) {}
       }
 
       function hasRoleAclSource(){
@@ -1836,15 +1873,11 @@
         if (explicit === false) return false;
         if (explicit === true) return true;
 
-        if (isGroupPageKey(pageKey)) {
-          return true;
-        }
-
-        if (hasRoleAclSource()) {
+        if (!isGroupPageKey(pageKey) && hasRoleAclSource()) {
           return roleAclHasPage(pageKey, href) ? true : false;
         }
 
-        return false;
+        return true;
       }
 
       function getDeniedMessage(pageKey, href){
@@ -1984,19 +2017,27 @@
 
       function enforceAdminOnlyButtons(){
         const hiddenButtons = getHiddenIndexButtonKeys();
+        const helperDataVisible = !!currentUser && !hiddenButtons.has('helper-data');
+        const aclVisible = !!currentUser && !hiddenButtons.has('helper-acl');
 
-        if (itemHelperData && hiddenButtons.has('helper-data')) {
-          itemHelperData.classList.add('hidden', 'disabled');
-          itemHelperData.style.display = 'none';
-          itemHelperData.setAttribute('aria-disabled', 'true');
-          setDeniedHint(itemHelperData, 'Ascuns din HELPER-ACL pentru acest cont.');
+        if (itemHelperData) {
+          itemHelperData.classList.toggle('hidden', !helperDataVisible);
+          itemHelperData.classList.toggle('disabled', !helperDataVisible);
+          itemHelperData.style.display = helperDataVisible ? '' : 'none';
+          if (helperDataVisible) {
+            itemHelperData.removeAttribute('aria-disabled');
+            setDeniedHint(itemHelperData, '');
+          }
         }
 
-        if (itemAcl && hiddenButtons.has('helper-acl')) {
-          itemAcl.classList.add('hidden', 'disabled');
-          itemAcl.style.display = 'none';
-          itemAcl.setAttribute('aria-disabled', 'true');
-          setDeniedHint(itemAcl, 'Ascuns din HELPER-ACL pentru acest cont.');
+        if (itemAcl) {
+          itemAcl.classList.toggle('hidden', !aclVisible);
+          itemAcl.classList.toggle('disabled', !aclVisible);
+          itemAcl.style.display = aclVisible ? '' : 'none';
+          if (aclVisible) {
+            itemAcl.removeAttribute('aria-disabled');
+            setDeniedHint(itemAcl, '');
+          }
         }
       }
 
@@ -2135,6 +2176,7 @@
         visibilityRefreshPromise = (async () => {
           await loadIndexButtonVisibilityDoc();
           await applyLayout();
+          setIndexAclLoading(false);
           try { enforceAdminOnlyButtons(); applyVisibilityOverrides(); } catch(_) {}
         })().finally(() => { visibilityRefreshPromise = null; });
         return visibilityRefreshPromise;
@@ -2234,9 +2276,11 @@
       }
 
       async function boot(){
+        setIndexAclLoading(true);
         if (!sb) {
           chipAuth.textContent = 'Config lipsă';
           chipAuth.className = 'chip bad';
+          setIndexAclLoading(false);
           return;
         }
 
@@ -2287,7 +2331,7 @@
         await loadDashboardAcl();
         await loadIndexButtonVisibilityDoc();
         await applyLayout();
-        setIndexAclReady(true);
+          setIndexAclLoading(false);
       }
 
       if (btnRefresh) btnRefresh.addEventListener('click', () => window.location.reload());
@@ -2336,6 +2380,7 @@
         clearStoredHiddenIndexButtons();
         try { localStorage.removeItem('rf_user_id'); sessionStorage.removeItem('rf_user_id'); } catch (_) {}
         await applyLayout();
+          setIndexAclLoading(false);
 
         try {
           if (sb) {
@@ -2464,6 +2509,7 @@
 
       sb?.auth.onAuthStateChange(async (event, session) => {
         if (session?.user) {
+          setIndexAclLoading(true);
           clearLogoutFlags();
           currentUser = session.user;
           const resolved = await resolveRole(currentUser);
@@ -2485,6 +2531,7 @@
           await loadDashboardAcl();
           await loadIndexButtonVisibilityDoc();
           await applyLayout();
+          setIndexAclLoading(false);
           try { enforceAdminOnlyButtons(); applyVisibilityOverrides(); } catch(_) {}
           return;
         }
@@ -2493,6 +2540,7 @@
         if (event !== 'SIGNED_OUT' && !logoutFlag) {
           const recoveredSilent = await getActiveSession();
           if (recoveredSilent?.user) {
+            setIndexAclLoading(true);
             clearLogoutFlags();
             currentUser = recoveredSilent.user;
             const resolvedSilent = await resolveRole(currentUser);
@@ -2506,12 +2554,14 @@
             await loadDashboardAcl();
             await loadIndexButtonVisibilityDoc();
             await applyLayout();
+          setIndexAclLoading(false);
           }
           return;
         }
 
         const recovered = await getActiveSession();
         if (recovered?.user) {
+          setIndexAclLoading(true);
           clearLogoutFlags();
           currentUser = recovered.user;
           const resolved = await resolveRole(currentUser);
@@ -2525,6 +2575,7 @@
           await loadDashboardAcl();
           await loadIndexButtonVisibilityDoc();
           await applyLayout();
+          setIndexAclLoading(false);
           try { enforceAdminOnlyButtons(); applyVisibilityOverrides(); } catch(_) {}
           return;
         }
@@ -2538,6 +2589,7 @@
         currentIndexButtonVisibilityDoc = null;
         try { localStorage.removeItem('rf_user_id'); sessionStorage.removeItem('rf_user_id'); } catch (_) {}
         await applyLayout();
+          setIndexAclLoading(false);
 
         const target = './login.html?logout=1';
         window.setTimeout(() => {
