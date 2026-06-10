@@ -3071,7 +3071,8 @@ function loadExportScriptOnce(globalName, url){
 async function ensureExcelExportLibraries(){
   await loadExportScriptOnce('ExcelJS', 'https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js');
   await loadExportScriptOnce('JSZip', 'https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js');
-  if(!window.ExcelJS || !window.JSZip) throw new Error('Bibliotecile pentru export Excel nu sunt disponibile.');
+  await loadExportScriptOnce('html2canvas', 'https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js');
+  if(!window.ExcelJS || !window.JSZip || !window.html2canvas) throw new Error('Bibliotecile pentru export Excel complet nu sunt disponibile.');
 }
 function exportSafeName(value){
   return normText(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-zA-Z0-9_-]+/g,'-').replace(/^-+|-+$/g,'').toLowerCase() || 'export';
@@ -3395,7 +3396,7 @@ function writeCostPerReperSheet(workbook, costRows){
   styleWorksheetDefaults(ws);
   return ws;
 }
-function buildExcelWorkbookData(chartRequests){
+async function buildExcelWorkbookData(chartRequests){
   const workbook = new window.ExcelJS.Workbook();
   workbook.creator = 'K.A.D';
   workbook.created = new Date();
@@ -3403,7 +3404,10 @@ function buildExcelWorkbookData(chartRequests){
   workbook.calcProperties = workbook.calcProperties || {};
   workbook.calcProperties.fullCalcOnLoad = true;
 
-  // Export complet: indiferent de tabul deschis, Excelul conține tot ce există în pagină.
+  // Prima foaie este captura vizuală 1:1, ca pagina din browser: tabel + grafice/carduri.
+  await addVisualPageSheet(workbook);
+
+  // Export complet: indiferent de tabul deschis, Excelul conține tot ce există în pagină și ca date editabile.
   writeExportSummarySheet(workbook);
   writeQualityDataSheet(workbook);
   writeQualityChartsSheet(workbook, chartRequests);
@@ -3485,17 +3489,18 @@ async function addVisualPageSheet(workbook){
   if(!workbook || !window.html2canvas) return;
   const root = getExportVisualRoot();
   if(!root) return;
-  const ws = workbook.addWorksheet('Export vizual 1 la 1');
+  const ws = workbook.addWorksheet('Pagina exacta');
   setupVisualExportSheet(ws);
-  const title = state.view === 'cost' ? 'Cost rebut - export vizual 1:1' : 'Analiză Rebut Calitate - export vizual 1:1';
-  addTitle(ws, title, 'Luna: ' + capMonth(state.luna) + ' • An: ' + state.an + ' • captură vizuală identică cu pagina, inclusiv tabele și grafice', 14);
+  const title = state.view === 'cost' ? 'Cost rebut - pagină exactă' : 'Analiză Rebut Calitate - pagină exactă';
+  addTitle(ws, title, 'Luna: ' + capMonth(state.luna) + ' • An: ' + state.an + ' • imagine 1:1 cu pagina din browser, inclusiv tabelul și graficele exact ca pe ecran', 18);
   const snapshot = await captureElementForExcel(root);
   if(!snapshot || !snapshot.dataUrl) return;
-  const maxWidthPx = 1500;
+  const maxWidthPx = 2400;
   const scale = snapshot.width > maxWidthPx ? maxWidthPx / snapshot.width : 1;
   const drawWidth = Math.round(snapshot.width * scale);
   const drawHeight = Math.round(snapshot.height * scale);
-  const imageId = workbook.addImage({ base64:snapshot.dataUrl, extension:'png' });
+  const imageBase64 = String(snapshot.dataUrl).includes(',') ? String(snapshot.dataUrl).split(',').pop() : snapshot.dataUrl;
+  const imageId = workbook.addImage({ base64:imageBase64, extension:'png' });
   ws.addImage(imageId, { tl:{ col:0, row:3 }, ext:{ width:drawWidth, height:drawHeight } });
   const neededRows = Math.ceil(drawHeight / 18) + 6;
   for(let r=4; r<=neededRows; r++) ws.getRow(r).height = 18;
@@ -3609,7 +3614,7 @@ async function exportExcelOneToOne(){
     els.btnExportExcel.textContent = 'Se exportă...';
     await ensureExcelExportLibraries();
     const chartRequests = [];
-    const workbook = buildExcelWorkbookData(chartRequests);
+    const workbook = await buildExcelWorkbookData(chartRequests);
     const buffer = await workbook.xlsx.writeBuffer();
     const blob = await injectNativeExcelCharts(buffer, chartRequests);
     const finalBlob = blob instanceof Blob ? blob : new Blob([blob], { type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
