@@ -11,6 +11,7 @@
 
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/exceljs/dist/exceljs.min.js"></script>
   <script src="./rf-config.js"></script>
   <script src="./auth-common.js"></script>
   <script src="./kad-logo.js"></script>
@@ -1279,45 +1280,203 @@ function renderUtilajeSummary(){
     els.zaleFoot.appendChild(trZF);
   }
 }
-function exportExcel(){
-  if(!window.XLSX){ alert('Biblioteca Excel nu este disponibilă.'); return; }
-  const rows = state.rows || [];
-  const aoa = [[
-    'Utilaj','Reper','Bucăți realizate','Rebut fără FL/FTT','Media realizate','% rebut','% realizat'
-  ]];
-  rows.forEach(r => aoa.push([
-    r.utilaj, r.reper, Math.round(r.realizate), Math.round(r.rebut_total), Number(r.media_realizate.toFixed(1)), Number(r.procent_rebut.toFixed(1)), Number(r.procent.toFixed(1))
-  ]));
-  const totalReal = rows.reduce((s,r)=> s + r.realizate, 0);
-  const totalReb = rows.reduce((s,r)=> s + r.rebut_total, 0);
-  const totalRebutPct = totalReal > 0 ? (totalReb / totalReal) * 100 : 0;
+function excelMonthTitle(){
+  if(state.filter.luna === 'toate') return 'Toate lunile';
+  const luna = String(state.filter.luna || '');
+  return luna ? luna.charAt(0).toUpperCase() + luna.slice(1) : '';
+}
+function excelPctValue(v){
+  const n = Number(v || 0);
+  return Number.isFinite(n) ? n / 100 : 0;
+}
+function excelShiftPctAvg(){
   const pctList = state.kpiShiftMetrics.map(m => m.percent).filter(v => v != null && Number.isFinite(v));
-  const totalPct = pctList.length ? (pctList.reduce((s,v)=>s+v,0) / pctList.length) * 100 : 0;
-  aoa.push(['TOTAL GENERAL','', Math.round(totalReal), Math.round(totalReb), rows.length ? Number((totalReal / rows.length).toFixed(1)) : 0, Number(totalRebutPct.toFixed(1)), Number(totalPct.toFixed(1))]);
-  const wb = XLSX.utils.book_new();
-  const ws = XLSX.utils.aoa_to_sheet(aoa);
-  ws['!cols'] = [{wch:16},{wch:22},{wch:16},{wch:18},{wch:16},{wch:12},{wch:12}];
-  XLSX.utils.book_append_sheet(wb, ws, 'Eficienta');
-
-  const utilAoA = [['Utilaj','Buc. total','Rebut total','% rebut','% realizat KPI']];
-  (state.utilajeRows || []).forEach(r => utilAoA.push([r.utilaj, Math.round(r.realizate), Math.round(r.rebut_total), Number(r.procent_rebut.toFixed(1)), Number(r.procent.toFixed(1))]));
-  utilAoA.push(['TOTAL UTILAJE', Math.round(totalReal), Math.round(totalReb), Number(totalRebutPct.toFixed(1)), Number(totalPct.toFixed(1))]);
-  const wsUtil = XLSX.utils.aoa_to_sheet(utilAoA);
-  wsUtil['!cols'] = [{wch:16},{wch:14},{wch:14},{wch:12},{wch:14}];
-  XLSX.utils.book_append_sheet(wb, wsUtil, 'Total utilaje');
-
-  const zaleAoA = [['Utilaj','Reper','Zale total','% realizat']];
-  (state.zaleRows || []).forEach(r => zaleAoA.push([r.utilaj, r.reper, Math.round(r.zale_total), Number((r.procent || 0).toFixed(1))]));
-  const zaleTotal = (state.zaleRows || []).reduce((s,r) => s + r.zale_total, 0);
-  const zaleNorma = (state.zaleRows || []).reduce((s,r) => s + Number(r.norma || 0), 0);
+  return pctList.length ? (pctList.reduce((s,v)=>s+v,0) / pctList.length) * 100 : 0;
+}
+function excelArgb(hex){
+  return 'FF' + String(hex || '').replace('#','').toUpperCase();
+}
+function excelPctClassColor(v){
+  const cls = pctClass(Number(v || 0));
+  if(cls === 'good') return excelArgb('#1f8b4c');
+  if(cls === 'mid') return excelArgb('#ca7a13');
+  return excelArgb('#b53636');
+}
+function downloadBlob(blob, filename){
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url), 1000);
+}
+function setExcelBaseStyle(cell, opts){
+  const o = opts || {};
+  cell.border = {
+    top:{style:'thin',color:{argb:excelArgb('#5e88a7')}},
+    left:{style:'thin',color:{argb:excelArgb('#5e88a7')}},
+    bottom:{style:'thin',color:{argb:excelArgb('#5e88a7')}},
+    right:{style:'thin',color:{argb:excelArgb('#5e88a7')}}
+  };
+  cell.alignment = { vertical:'middle', horizontal:o.align || 'center', wrapText:!!o.wrap };
+  cell.font = { name:'Arial', size:o.size || 11, bold:!!o.bold, color:{argb:o.fontColor || excelArgb('#11314f')} };
+  cell.fill = { type:'pattern', pattern:'solid', fgColor:{argb:o.fill || excelArgb('#ffffff')} };
+}
+function addTitle(ws, title, colCount){
+  ws.mergeCells(1,1,1,colCount);
+  const c = ws.getCell(1,1);
+  c.value = title;
+  setExcelBaseStyle(c, { fill:excelArgb('#5b96cf'), fontColor:excelArgb('#ffffff'), bold:true, size:14, align:'left' });
+  ws.getRow(1).height = 24;
+  for(let col=1; col<=colCount; col++){
+    const cell = ws.getCell(1,col);
+    setExcelBaseStyle(cell, { fill:excelArgb('#5b96cf'), fontColor:excelArgb('#ffffff'), bold:true, size:14, align:'left' });
+  }
+  ws.mergeCells(2,1,2,colCount);
+  const info = ws.getCell(2,1);
+  info.value = 'An: ' + String(state.filter.an || '') + '   Luna: ' + excelMonthTitle() + '   Export: ' + new Date().toLocaleString('ro-RO');
+  setExcelBaseStyle(info, { fill:excelArgb('#d9e7f4'), bold:true, size:10, align:'left' });
+  for(let col=1; col<=colCount; col++){
+    const cell = ws.getCell(2,col);
+    setExcelBaseStyle(cell, { fill:excelArgb('#d9e7f4'), bold:true, size:10, align:'left' });
+  }
+}
+function addHeader(ws, rowIndex, headers){
+  const row = ws.getRow(rowIndex);
+  headers.forEach((h, idx)=>{
+    const cell = row.getCell(idx+1);
+    cell.value = h;
+    setExcelBaseStyle(cell, { fill:excelArgb('#5b96cf'), fontColor:excelArgb('#ffffff'), bold:true, size:11, align:'center', wrap:true });
+  });
+  row.height = 26;
+}
+function styleExcelValueCell(cell, type, options){
+  const o = options || {};
+  let align = o.align || 'center';
+  if(type === 'text-left') align = 'left';
+  setExcelBaseStyle(cell, { fill:o.fill || excelArgb('#ffffff'), bold:!!o.bold, align, size:10, fontColor:o.fontColor || excelArgb('#11314f') });
+  if(type === 'int') cell.numFmt = '#,##0';
+  if(type === 'dec') cell.numFmt = '#,##0.0';
+  if(type === 'pct') cell.numFmt = '0.0%';
+  if(type === 'text' || type === 'text-left') cell.numFmt = '@';
+}
+function applySheetFinish(ws, widths, freezeOpts){
+  widths.forEach((w, idx)=>{ ws.getColumn(idx+1).width = w; });
+  ws.views = [{ state:'frozen', xSplit:(freezeOpts && freezeOpts.xSplit) || 0, ySplit:3 }];
+  if(ws.rowCount >= 3){
+    ws.autoFilter = { from:{row:3,column:1}, to:{row:3,column:widths.length} };
+  }
+  ws.pageSetup = {
+    orientation:'landscape', fitToPage:true, fitToWidth:1, fitToHeight:0,
+    margins:{left:0.2,right:0.2,top:0.35,bottom:0.35,header:0.15,footer:0.15}
+  };
+}
+function addMainSheet(wb){
+  const rows = state.rows || [];
+  const ws = wb.addWorksheet('Eficienta');
+  const headers = ['UTILAJ','REPER','BUC. REALIZATE','REBUT FĂRĂ FL/FTT','MEDIA REALIZATE','% REBUT','% REALIZAT'];
+  addTitle(ws, 'EFICIENȚĂ PER UTILAJE', headers.length);
+  addHeader(ws, 3, headers);
+  rows.forEach((r, index)=>{
+    const row = ws.getRow(index + 4);
+    row.values = [
+      r.utilaj,
+      r.reper,
+      Math.round(Number(r.realizate || 0)),
+      Math.round(Number(r.rebut_total || 0)),
+      Number(Number(r.media_realizate || 0).toFixed(1)),
+      excelPctValue(r.procent_rebut),
+      excelPctValue(r.procent)
+    ];
+    styleExcelValueCell(row.getCell(1), 'text-left');
+    styleExcelValueCell(row.getCell(2), 'text-left');
+    styleExcelValueCell(row.getCell(3), 'int');
+    styleExcelValueCell(row.getCell(4), 'int');
+    styleExcelValueCell(row.getCell(5), 'dec');
+    styleExcelValueCell(row.getCell(6), 'pct', { fontColor:excelPctClassColor(100 - Number(r.procent_rebut || 0)), bold:true });
+    styleExcelValueCell(row.getCell(7), 'pct', { fontColor:excelPctClassColor(Number(r.procent || 0)), bold:true });
+  });
+  const totalReal = rows.reduce((s,r)=> s + Number(r.realizate || 0), 0);
+  const totalReb = rows.reduce((s,r)=> s + Number(r.rebut_total || 0), 0);
+  const totalRebutPct = totalReal > 0 ? (totalReb / totalReal) * 100 : 0;
+  const totalPct = excelShiftPctAvg();
+  const totalRow = ws.getRow(rows.length + 4);
+  totalRow.values = ['TOTAL GENERAL','', Math.round(totalReal), Math.round(totalReb), rows.length ? Number((totalReal / rows.length).toFixed(1)) : 0, excelPctValue(totalRebutPct), excelPctValue(totalPct)];
+  for(let c=1;c<=headers.length;c++){
+    styleExcelValueCell(totalRow.getCell(c), c<=2 ? 'text-left' : (c===5 ? 'dec' : (c>=6 ? 'pct' : 'int')), { fill:excelArgb('#d9e7f4'), bold:true, fontColor:c===6 ? excelPctClassColor(100-totalRebutPct) : (c===7 ? excelPctClassColor(totalPct) : excelArgb('#11314f')) });
+  }
+  applySheetFinish(ws, [16,24,16,20,16,13,13], {xSplit:2});
+  return ws;
+}
+function addUtilajeSheet(wb){
+  const rows = state.utilajeRows || [];
+  const ws = wb.addWorksheet('Total utilaje');
+  const headers = ['UTILAJ','BUC. TOTAL','REBUT TOTAL','% REBUT','% REALIZAT KPI'];
+  addTitle(ws, 'TOTAL PE UTILAJE', headers.length);
+  addHeader(ws, 3, headers);
+  rows.forEach((r, index)=>{
+    const row = ws.getRow(index + 4);
+    row.values = [r.utilaj, Math.round(Number(r.realizate || 0)), Math.round(Number(r.rebut_total || 0)), excelPctValue(r.procent_rebut), excelPctValue(r.procent)];
+    styleExcelValueCell(row.getCell(1), 'text-left');
+    styleExcelValueCell(row.getCell(2), 'int');
+    styleExcelValueCell(row.getCell(3), 'int');
+    styleExcelValueCell(row.getCell(4), 'pct', { fontColor:excelPctClassColor(100 - Number(r.procent_rebut || 0)), bold:true });
+    styleExcelValueCell(row.getCell(5), 'pct', { fontColor:excelPctClassColor(Number(r.procent || 0)), bold:true });
+  });
+  const totalReal = rows.reduce((s,r)=> s + Number(r.realizate || 0), 0);
+  const totalReb = rows.reduce((s,r)=> s + Number(r.rebut_total || 0), 0);
+  const totalRebutPct = totalReal > 0 ? (totalReb / totalReal) * 100 : 0;
+  const totalPct = excelShiftPctAvg();
+  const totalRow = ws.getRow(rows.length + 4);
+  totalRow.values = ['TOTAL UTILAJE', Math.round(totalReal), Math.round(totalReb), excelPctValue(totalRebutPct), excelPctValue(totalPct)];
+  for(let c=1;c<=headers.length;c++){
+    styleExcelValueCell(totalRow.getCell(c), c===1 ? 'text-left' : (c>=4 ? 'pct' : 'int'), { fill:excelArgb('#d9e7f4'), bold:true, fontColor:c===4 ? excelPctClassColor(100-totalRebutPct) : (c===5 ? excelPctClassColor(totalPct) : excelArgb('#11314f')) });
+  }
+  applySheetFinish(ws, [18,15,15,13,15], {xSplit:1});
+  return ws;
+}
+function addZaleSheet(wb){
+  const rows = state.zaleRows || [];
+  const ws = wb.addWorksheet('Zale utilaje');
+  const headers = ['UTILAJ','REPER','ZALE TOTAL','% REALIZAT'];
+  addTitle(ws, 'ZALE PE UTILAJE', headers.length);
+  addHeader(ws, 3, headers);
+  rows.forEach((r, index)=>{
+    const row = ws.getRow(index + 4);
+    row.values = [r.utilaj, r.reper, Math.round(Number(r.zale_total || 0)), excelPctValue(r.procent || 0)];
+    styleExcelValueCell(row.getCell(1), 'text-left');
+    styleExcelValueCell(row.getCell(2), 'text-left');
+    styleExcelValueCell(row.getCell(3), 'int');
+    styleExcelValueCell(row.getCell(4), 'pct', { fontColor:excelPctClassColor(Number(r.procent || 0)), bold:true });
+  });
+  const zaleTotal = rows.reduce((s,r) => s + Number(r.zale_total || 0), 0);
+  const zaleNorma = rows.reduce((s,r) => s + Number(r.norma || 0), 0);
   const zalePct = zaleNorma > 0 ? (zaleTotal / zaleNorma) * 100 : 0;
-  zaleAoA.push(['TOTAL ZALE', '', Math.round(zaleTotal), Number(zalePct.toFixed(1))]);
-  const wsZale = XLSX.utils.aoa_to_sheet(zaleAoA);
-  wsZale['!cols'] = [{wch:16},{wch:42},{wch:14},{wch:12}];
-  XLSX.utils.book_append_sheet(wb, wsZale, 'Zale utilaje');
-
+  const totalRow = ws.getRow(rows.length + 4);
+  totalRow.values = ['TOTAL ZALE', '', Math.round(zaleTotal), excelPctValue(zalePct)];
+  for(let c=1;c<=headers.length;c++){
+    styleExcelValueCell(totalRow.getCell(c), c<=2 ? 'text-left' : (c===4 ? 'pct' : 'int'), { fill:excelArgb('#d9e7f4'), bold:true, fontColor:c===4 ? excelPctClassColor(zalePct) : excelArgb('#11314f') });
+  }
+  applySheetFinish(ws, [18,42,15,14], {xSplit:2});
+  return ws;
+}
+async function exportExcel(){
+  if(!(window.ExcelJS && window.ExcelJS.Workbook)){
+    alert('Biblioteca ExcelJS nu este disponibilă. Reîncarcă pagina și încearcă din nou.');
+    return;
+  }
+  const wb = new window.ExcelJS.Workbook();
+  wb.creator = 'K.A.D';
+  wb.created = new Date();
+  wb.modified = new Date();
+  addMainSheet(wb);
+  addUtilajeSheet(wb);
+  addZaleSheet(wb);
+  const buffer = await wb.xlsx.writeBuffer();
   const suffix = state.filter.luna === 'toate' ? 'toate-lunile' : state.filter.luna;
-  XLSX.writeFile(wb, 'eficienta_' + String(state.filter.an || '') + '_' + suffix + '.xlsx');
+  downloadBlob(new Blob([buffer], {type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}), 'eficienta_' + String(state.filter.an || '') + '_' + suffix + '.xlsx');
 }
 async function loadAll(){
   setCloud('se încarcă...');
