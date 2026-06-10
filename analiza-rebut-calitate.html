@@ -3071,7 +3071,8 @@ function loadExportScriptOnce(globalName, url){
 async function ensureExcelExportLibraries(){
   await loadExportScriptOnce('ExcelJS', 'https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js');
   await loadExportScriptOnce('JSZip', 'https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js');
-  if(!window.ExcelJS || !window.JSZip) throw new Error('Bibliotecile pentru export Excel nu sunt disponibile.');
+  await loadExportScriptOnce('html2canvas', 'https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js');
+  if(!window.ExcelJS || !window.JSZip || !window.html2canvas) throw new Error('Bibliotecile pentru export Excel nu sunt disponibile.');
 }
 function exportSafeName(value){
   return normText(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-zA-Z0-9_-]+/g,'-').replace(/^-+|-+$/g,'').toLowerCase() || 'export';
@@ -3322,6 +3323,87 @@ function buildExcelWorkbookData(chartRequests){
   });
   return workbook;
 }
+function requestExportAnimationFrame(){
+  return new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+}
+function getExportVisualRoot(){
+  if(state.view === 'cost') return els.costSection;
+  return document.getElementById('tableWrap') || document.querySelector('.table-wrap');
+}
+function restoreScrollPositions(scrollPositions){
+  (scrollPositions || []).forEach(item => {
+    try{
+      item.el.scrollLeft = item.left;
+      item.el.scrollTop = item.top;
+    }catch(_e){}
+  });
+}
+function rememberScrollPositions(root){
+  const items = [];
+  const nodes = [document.documentElement, document.body, root].concat(Array.from((root || document).querySelectorAll ? (root || document).querySelectorAll('.table-wrap,.cost-scroll,.rebut-chart-body,.fq-chart-body,.mahle-def-body,.cost-reper-charts') : []));
+  nodes.forEach(el => {
+    if(!el) return;
+    items.push({ el, left:el.scrollLeft || 0, top:el.scrollTop || 0 });
+  });
+  return items;
+}
+async function captureElementForExcel(element){
+  if(!element || !window.html2canvas) return null;
+  const scrollPositions = rememberScrollPositions(element);
+  try{
+    scrollPositions.forEach(item => { try{ item.el.scrollLeft = 0; item.el.scrollTop = 0; }catch(_e){} });
+    document.body.classList.add('kad-excel-exporting');
+    await requestExportAnimationFrame();
+    const rect = element.getBoundingClientRect();
+    const width = Math.ceil(Math.max(element.scrollWidth || 0, rect.width || 0, element.offsetWidth || 0));
+    const height = Math.ceil(Math.max(element.scrollHeight || 0, rect.height || 0, element.offsetHeight || 0));
+    if(!width || !height) return null;
+    const maxSide = Math.max(width, height);
+    const scale = maxSide > 3800 ? Math.max(0.72, 3800 / maxSide) : 1;
+    const canvas = await window.html2canvas(element, {
+      backgroundColor:'#ffffff',
+      scale:scale,
+      useCORS:true,
+      allowTaint:true,
+      logging:false,
+      width:width,
+      height:height,
+      windowWidth:Math.max(document.documentElement.scrollWidth || 0, width + 40),
+      windowHeight:Math.max(document.documentElement.scrollHeight || 0, height + 40),
+      scrollX:0,
+      scrollY:0
+    });
+    return { dataUrl:canvas.toDataURL('image/png'), width:canvas.width, height:canvas.height };
+  }finally{
+    document.body.classList.remove('kad-excel-exporting');
+    restoreScrollPositions(scrollPositions);
+  }
+}
+function setupVisualExportSheet(ws){
+  ws.views = [{ showGridLines:false }];
+  ws.properties.defaultRowHeight = 18;
+  for(let c=1; c<=26; c++) ws.getColumn(c).width = 12;
+  ws.pageSetup = { orientation:'landscape', fitToPage:true, fitToWidth:1, fitToHeight:0, paperSize:9 };
+}
+async function addVisualPageSheet(workbook){
+  if(!workbook || !window.html2canvas) return;
+  const root = getExportVisualRoot();
+  if(!root) return;
+  const ws = workbook.addWorksheet('Export vizual 1 la 1');
+  setupVisualExportSheet(ws);
+  const title = state.view === 'cost' ? 'Cost rebut - export vizual 1:1' : 'Analiză Rebut Calitate - export vizual 1:1';
+  addTitle(ws, title, 'Luna: ' + capMonth(state.luna) + ' • An: ' + state.an + ' • captură vizuală identică cu pagina, inclusiv tabele și grafice', 14);
+  const snapshot = await captureElementForExcel(root);
+  if(!snapshot || !snapshot.dataUrl) return;
+  const maxWidthPx = 1500;
+  const scale = snapshot.width > maxWidthPx ? maxWidthPx / snapshot.width : 1;
+  const drawWidth = Math.round(snapshot.width * scale);
+  const drawHeight = Math.round(snapshot.height * scale);
+  const imageId = workbook.addImage({ base64:snapshot.dataUrl, extension:'png' });
+  ws.addImage(imageId, { tl:{ col:0, row:3 }, ext:{ width:drawWidth, height:drawHeight } });
+  const neededRows = Math.ceil(drawHeight / 18) + 6;
+  for(let r=4; r<=neededRows; r++) ws.getRow(r).height = 18;
+}
 function colorSpPr(hex){
   hex = String(hex || '2F80ED').replace('#','').toUpperCase();
   return '<c:spPr><a:solidFill><a:srgbClr val="' + xmlEscape(hex) + '"/></a:solidFill><a:ln><a:noFill/></a:ln></c:spPr>';
@@ -3432,6 +3514,7 @@ async function exportExcelOneToOne(){
     await ensureExcelExportLibraries();
     const chartRequests = [];
     const workbook = buildExcelWorkbookData(chartRequests);
+    await addVisualPageSheet(workbook);
     const buffer = await workbook.xlsx.writeBuffer();
     const blob = await injectNativeExcelCharts(buffer, chartRequests);
     const finalBlob = blob instanceof Blob ? blob : new Blob([blob], { type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
