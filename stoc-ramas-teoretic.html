@@ -1693,6 +1693,78 @@
     els.unmappedSalesAlert.classList.add('is-visible');
   }
 
+  function clonePlainObject(value){
+    return JSON.parse(JSON.stringify(value||{}));
+  }
+  function makeSyntheticMaterialSnapshot(diam,cal,steelInv,steelRealInv,steelEntries,steelDebitated){
+    const finalDiam=normalizeDiam(diam);
+    const finalCal=normalizeQuality(cal);
+    const steelKey=[finalDiam,finalCal].join('|');
+    const looseKey=looseMaterialKey(finalDiam,finalCal);
+    const startSteel=(steelInv.get(steelKey)?.qty)||0;
+    const intrariSteel=(steelEntries.exact&&steelEntries.exact.get(steelKey)) || (steelEntries.loose&&steelEntries.loose.get(looseKey)) || 0;
+    const debitatKg=(steelDebitated.byMaterial&&steelDebitated.byMaterial.get(steelKey)) || 0;
+    const stocRealOtel=(steelRealInv.exact&&steelRealInv.exact.get(steelKey)) || (steelRealInv.loose&&steelRealInv.loose.get(looseKey)) || 0;
+    return {
+      steelKey,
+      diametru:finalDiam,
+      calitate:finalCal,
+      stocStartOtel:startSteel,
+      intrariOtel:intrariSteel,
+      debitatDinOtelKg:debitatKg,
+      otelRamasKg:startSteel+intrariSteel-debitatKg,
+      stocRealOtel,
+      debGroups:[]
+    };
+  }
+  function mergeDebGroupsForSyntheticMaterial(target,source){
+    if(!target || !source) return target;
+    const existingByDeb=new Map((target.debGroups||[]).map(deb=>[normalizeReper(deb&&deb.reperDebitat),deb]));
+    (source.debGroups||[]).forEach(sourceDeb=>{
+      const debKey=normalizeReper(sourceDeb&&sourceDeb.reperDebitat);
+      if(!debKey) return;
+      const existing=existingByDeb.get(debKey);
+      if(!existing){
+        const cloned=clonePlainObject(sourceDeb);
+        target.debGroups.push(cloned);
+        existingByDeb.set(debKey,cloned);
+        return;
+      }
+      const existingForjats=new Set((existing.forjats||[]).map(f=>normalizeReper(f&&f.reperForjat)));
+      (sourceDeb.forjats||[]).forEach(sourceForjat=>{
+        const reper=normalizeReper(sourceForjat&&sourceForjat.reperForjat);
+        if(!reper || existingForjats.has(reper)) return;
+        if(!Array.isArray(existing.forjats)) existing.forjats=[];
+        existing.forjats.push(clonePlainObject(sourceForjat));
+        existingForjats.add(reper);
+      });
+      existing.forjats=applySharedForjatCombinedValues((existing.forjats||[]).sort(compareForjatRepers));
+    });
+    return target;
+  }
+  function addSynthetic56C45MaterialGroup(groups,steelInv,steelRealInv,steelEntries,steelDebitated){
+    const list=Array.isArray(groups)?groups.slice():[];
+    const source=list.find(material=>normalizeDiam(material&&material.diametru)==='55' && normalizeQuality(material&&material.calitate)==='C45')
+      || list.find(material=>normalizeDiam(material&&material.diametru)==='55' && normalizeQuality(material&&material.calitate)==='C35');
+    if(!source) return list;
+    let target=list.find(material=>normalizeDiam(material&&material.diametru)==='56' && normalizeQuality(material&&material.calitate)==='C45');
+    if(!target){
+      target=makeSyntheticMaterialSnapshot('56','C45',steelInv,steelRealInv,steelEntries,steelDebitated);
+      list.push(target);
+    }
+    mergeDebGroupsForSyntheticMaterial(target,source);
+    target.debGroups=(target.debGroups||[])
+      .map(deb=>({...deb, forjats:applySharedForjatCombinedValues((deb.forjats||[]).sort(compareForjatRepers))}))
+      .sort((a,b)=>normalizeReper(a.reperDebitat).localeCompare(normalizeReper(b.reperDebitat),'ro'));
+    return list.sort((a,b)=>{
+      const aDiam=diamSortValue(a.diametru), bDiam=diamSortValue(b.diametru);
+      if(aDiam!==bDiam) return aDiam-bDiam;
+      const aDiamTxt=normalizeDiam(a.diametru), bDiamTxt=normalizeDiam(b.diametru);
+      if(aDiamTxt!==bDiamTxt) return aDiamTxt.localeCompare(bDiamTxt,'ro');
+      return normalizeQuality(a.calitate).localeCompare(normalizeQuality(b.calitate),'ro');
+    });
+  }
+
   function buildRows(){
     const helperIndex=buildHelperIndex(state.raw.helper,state.raw.debitate,state.raw.forjate,state.helperTables.forjate);
     const debMeta=buildDebitatMeta(state.raw.helper,state.raw.debitate,state.helperTables.debitare,state.helperTables.forjate,helperIndex);
@@ -1888,7 +1960,7 @@
       if(aDiamTxt!==bDiamTxt) return aDiamTxt.localeCompare(bDiamTxt,'ro');
       return normalizeQuality(a.calitate).localeCompare(normalizeQuality(b.calitate),'ro');
     });
-    state.groups=groups;
+    state.groups=addSynthetic56C45MaterialGroup(groups,steelInv,steelRealInv,steelEntries,steelDebitated);
   }
 
   function applyFilters(){
