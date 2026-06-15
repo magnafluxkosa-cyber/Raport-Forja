@@ -508,7 +508,7 @@
       machineName: byId('machineName'), shiftInput: byId('shiftInput'), brixInput: byId('brixInput'), etalonInput: byId('etalonInput'), etalonStatusText: byId('etalonStatusText'), normOperators: byId('normOperators'), normTarget: byId('normTarget'), normDone: byId('normDone'), normPercent: byId('normPercent'), normStatus: byId('normStatus'), monthNormLabel: byId('monthNormLabel'), monthNormOperator: byId('monthNormOperator'), monthNormDone: byId('monthNormDone'), monthNormTarget: byId('monthNormTarget'), monthNormPercent: byId('monthNormPercent'), monthNormStatus: byId('monthNormStatus'), totalGroupsBody: byId('totalGroupsBody'), perReperBody: byId('perReperBody'), savedSheetsBody: byId('savedSheetsBody'), btnOpenSavedSheets: byId('btnOpenSavedSheets'), btnLiveOperators: byId('btnLiveOperators'), liveOperatorsModal: byId('liveOperatorsModal'), liveOperatorsBody: byId('liveOperatorsBody'), btnRefreshLiveOperators: byId('btnRefreshLiveOperators'), btnCloseLiveOperators: byId('btnCloseLiveOperators'), liveSheetModal: byId('liveSheetModal'), liveSheetBody: byId('liveSheetBody'), liveSheetSubtitle: byId('liveSheetSubtitle'), btnCloseLiveSheet: byId('btnCloseLiveSheet'), btnMagInstructions: byId('btnMagInstructions'), btnDefectCatalog: byId('btnDefectCatalog'), savedSheetsHint: byId('savedSheetsHint'), savedSheetsModal: byId('savedSheetsModal'), savedSheetsModalBody: byId('savedSheetsModalBody'), btnCloseSavedSheets: byId('btnCloseSavedSheets'), savedSheetFullModal: byId('savedSheetFullModal'), savedSheetFullBody: byId('savedSheetFullBody'), btnCloseSavedSheetFull: byId('btnCloseSavedSheetFull'), btnEditSavedSheetFull: byId('btnEditSavedSheetFull'), btnDeleteSavedSheetFull: byId('btnDeleteSavedSheetFull'), btnExportSavedSheetFull: byId('btnExportSavedSheetFull'), pptxModal: byId('pptxModal'), pptxModalTitle: byId('pptxModalTitle'), pptxModalSubtitle: byId('pptxModalSubtitle'), pptxFileStatus: byId('pptxFileStatus'), pptxUploadBox: byId('pptxUploadBox'), pptxFileInput: byId('pptxFileInput'), btnOpenPptx: byId('btnOpenPptx'), btnDownloadPptx: byId('btnDownloadPptx'), btnSavePptx: byId('btnSavePptx'), btnClosePptxModal: byId('btnClosePptxModal')
     };
 
-    const state = { client:null, session:null, user:null, role:'viewer', canEdit:false, pinConfig:[], activeOperator:null, rows:[], repere:[], reperMap:new Map(), pendingGroups:null, savedSheets:[], activeSavedSheetIndex:null, editingSheetIndex:null, editingSheetId:null, editingOriginalGroupIds:[], editingOriginalYear:null, pendingSheetId:null, pptxFiles:{}, activePptxType:null, pptxLoaded:false, liveSessionId:null, livePublishTimer:null, livePublishInterval:null, liveAdminPoll:null, liveEntries:[], liveChannel:null, livePresenceReady:false, liveLastPresence:[], liveCloudLastSaveMs:0 };
+    const state = { client:null, session:null, user:null, role:'viewer', canEdit:false, pinConfig:[], activeOperator:null, rows:[], repere:[], reperMap:new Map(), pendingGroups:null, savedSheets:[], activeSavedSheetIndex:null, editingSheetIndex:null, editingSheetId:null, editingOriginalGroupIds:[], editingOriginalYear:null, pendingSheetId:null, saveInProgress:false, pptxFiles:{}, activePptxType:null, pptxLoaded:false, liveSessionId:null, livePublishTimer:null, livePublishInterval:null, liveAdminPoll:null, liveEntries:[], liveChannel:null, livePresenceReady:false, liveLastPresence:[], liveCloudLastSaveMs:0 };
 
     function byId(id){ return document.getElementById(id); }
     function norm(v){ return String(v||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().trim(); }
@@ -1417,9 +1417,49 @@ function allMaintenanceChecked(){
         edit_history: previousSheet && Array.isArray(previousSheet.edit_history) ? previousSheet.edit_history.concat([{ edited_at:new Date().toISOString(), edited_by:currentEmail() }]).slice(-30) : []
       };
     }
+
+    function savedSheetDuplicateSignature(sheet){
+      const groups = Array.isArray(sheet && sheet.groups) ? sheet.groups : [];
+      const groupKey = groups.map(g => [
+        norm(g && g.reper),
+        norm(g && g.cod_cat),
+        norm(g && g.nr_lada),
+        intVal(g && g.controlate),
+        intVal(g && g.acceptate),
+        defectKeys.map(k => intVal(g && g[k])).join(',')
+      ].join('~')).sort().join('|');
+      return [
+        String(sheet && sheet.data || '').slice(0,10),
+        norm(sheet && sheet.operator),
+        norm(sheet && sheet.operator_principal),
+        norm(sheet && sheet.operator_2),
+        norm(sheet && sheet.utilaj),
+        norm(sheet && sheet.schimb),
+        intVal(sheet && (sheet.total_controlate || sumSheetGroups(sheet, 'controlate'))),
+        intVal(sheet && (sheet.total_acceptate || sumSheetGroups(sheet, 'acceptate'))),
+        groupKey
+      ].join('||');
+    }
+
+    function dedupeSavedSheets(sheets){
+      const list = Array.isArray(sheets) ? sheets : [];
+      const byId = new Map();
+      list.forEach(sheet => {
+        const id = String(sheet && sheet.id || '').trim();
+        if(id) byId.set(id, sheet);
+      });
+      const source = byId.size ? Array.from(byId.values()) : list.slice();
+      const bySignature = new Map();
+      source.forEach(sheet => {
+        const signature = savedSheetDuplicateSignature(sheet);
+        if(signature) bySignature.set(signature, sheet);
+      });
+      return Array.from(bySignature.values()).slice(-500);
+    }
+
     async function loadSavedSheets(){
       const doc = await fetchDoc(SHEETS_DOC_KEY);
-      state.savedSheets = Array.isArray(doc && doc.sheets) ? doc.sheets : [];
+      state.savedSheets = dedupeSavedSheets(Array.isArray(doc && doc.sheets) ? doc.sheets : []);
       renderSavedSheets();
     }
     function sheetOwnerName(sheet){
@@ -2355,6 +2395,48 @@ function allMaintenanceChecked(){
     function extractNumeralKod(cod){ const clean=String(cod||'').toUpperCase().replace(/[^A-Z0-9]/g,''); return clean.slice(-3); }
     function compressValues(values){ const uniq=Array.from(new Set(values.filter(Boolean))); return uniq.length<=3 ? uniq.join(' / ') : `${uniq[0]} ... ${uniq[uniq.length-1]}`; }
 
+
+    function magnafluxRowDuplicateSignature(row){
+      const keys = [
+        'an','luna','data','operator','operator_principal','operator_2','reper','cod_cat','numeral_kod',
+        'val_magnetica','val_electrica','controlate','acceptate','rz','bav','planeit','lov','lm','ibt','sm','ftt','fl','lmc','des','as','fb','procent','procent2','total_rebut','utilaj','schimb','brix','etalon','nr_lada','sarja','sarja_material'
+      ];
+      return keys.map(key => norm(row && row[key])).join('||');
+    }
+
+    function dedupeMagnafluxRows(rows){
+      const out = [];
+      const seenIds = new Set();
+      const seenOperatorRows = new Set();
+      (Array.isArray(rows) ? rows : []).forEach(row => {
+        if(!row || typeof row !== 'object') return;
+        const id = String(row.id || '').trim();
+        if(id && seenIds.has(id)) return;
+        if(id) seenIds.add(id);
+        const isOperatorRow = norm(row.source).includes('magnaflux-operatori') || !!String(row.sheet_id || '').trim();
+        if(isOperatorRow){
+          const signature = magnafluxRowDuplicateSignature(row);
+          if(signature && seenOperatorRows.has(signature)) return;
+          if(signature) seenOperatorRows.add(signature);
+        }
+        out.push(row);
+      });
+      return out;
+    }
+
+    function mergeMagnafluxRows(existing, groups, sheetId){
+      const newSignatures = new Set((Array.isArray(groups) ? groups : []).map(magnafluxRowDuplicateSignature));
+      const sid = String(sheetId || '').trim();
+      const base = dedupeMagnafluxRows(existing).filter(row => {
+        if(!row || typeof row !== 'object') return false;
+        if(sid && String(row.sheet_id || '').trim() === sid) return false;
+        const isOperatorRow = norm(row.source).includes('magnaflux-operatori') || !!String(row.sheet_id || '').trim();
+        if(isOperatorRow && newSignatures.has(magnafluxRowDuplicateSignature(row))) return false;
+        return true;
+      });
+      return dedupeMagnafluxRows(base.concat(Array.isArray(groups) ? groups : []));
+    }
+
     function openConfirm(){
       const sheetId = state.editingSheetId || uuid();
       const groups=groupRowsForSave(sheetId);
@@ -2390,6 +2472,10 @@ function allMaintenanceChecked(){
       await ensureFreshSession();
       const groups=state.pendingGroups || [];
       if(!groups.length) return;
+      if(state.saveInProgress) return toast('Salvarea este deja în curs. Așteaptă finalizarea.');
+      state.saveInProgress = true;
+      if(el.btnConfirmSave) el.btnConfirmSave.disabled = true;
+      if(el.btnSave) el.btnSave.disabled = true;
       const year = String(groups[0].an || CURRENT_YEAR);
       const isCorrection = state.editingSheetIndex !== null;
       const sheetId = state.pendingSheetId || state.editingSheetId || uuid();
@@ -2404,7 +2490,7 @@ function allMaintenanceChecked(){
           const docKey = MAG_DOC_PREFIX + year;
           const doc = await fetchDocStrict(docKey);
           const existing = Array.isArray(doc && doc.rows) ? doc.rows : [];
-          const newDoc = { page_key:'magnaflux', year:Number(year), rows:[...existing, ...groups], updated_at:updatedAt };
+          const newDoc = { page_key:'magnaflux', year:Number(year), rows:mergeMagnafluxRows(existing, groups, sheetId), updated_at:updatedAt };
           await upsertDoc(docKey, newDoc);
         }
 
@@ -2420,7 +2506,7 @@ function allMaintenanceChecked(){
 
         try{
           const sheetsDoc = await fetchDocStrict(SHEETS_DOC_KEY) || {};
-          const saved = Array.isArray(sheetsDoc.sheets) ? sheetsDoc.sheets : [];
+          const saved = dedupeSavedSheets(Array.isArray(sheetsDoc.sheets) ? sheetsDoc.sheets : []);
           let previousSheet = null;
           let targetIndex = -1;
           if(isCorrection){
@@ -2431,9 +2517,9 @@ function allMaintenanceChecked(){
           const sheetRecord = sheetSnapshot(groups, sheetId, previousSheet);
           if(isCorrection && targetIndex >= 0){
             saved[targetIndex] = sheetRecord;
-            state.savedSheets = saved.slice(-500);
+            state.savedSheets = dedupeSavedSheets(saved).slice(-500);
           } else {
-            state.savedSheets = [...saved, sheetRecord].slice(-500);
+            state.savedSheets = dedupeSavedSheets([...saved, sheetRecord]).slice(-500);
           }
           await upsertDoc(SHEETS_DOC_KEY, { page_key:PAGE_KEY, sheets:state.savedSheets, updated_at:updatedAt });
           renderSavedSheets();
@@ -2457,6 +2543,10 @@ function allMaintenanceChecked(){
         try{
           alert((isCorrection ? 'Corectarea a eșuat: ' : 'Salvarea a eșuat: ') + detail + '\n\nDacă eroarea apare pe contul op@magnaflux.local, rulează SQL-ul din arhiva livrată: supabase-sql/rf_documents_magnaflux_operator_fix.sql.');
         }catch(_){}
+      }finally{
+        state.saveInProgress = false;
+        if(el.btnConfirmSave) el.btnConfirmSave.disabled = false;
+        if(el.btnSave) el.btnSave.disabled = !state.canEdit;
       }
     }
 
@@ -2479,7 +2569,7 @@ function allMaintenanceChecked(){
         const newDocKey = MAG_DOC_PREFIX + targetYear;
         const newDoc = await fetchDocStrict(newDocKey) || {};
         const newRows = Array.isArray(newDoc.rows) ? newDoc.rows : [];
-        await upsertDoc(newDocKey, { page_key:'magnaflux', year:Number(targetYear), rows:[...newRows, ...groups], updated_at:updatedAt });
+        await upsertDoc(newDocKey, { page_key:'magnaflux', year:Number(targetYear), rows:mergeMagnafluxRows(newRows, groups, sheetId), updated_at:updatedAt });
         return;
       }
 
@@ -2487,7 +2577,7 @@ function allMaintenanceChecked(){
       const doc = await fetchDocStrict(docKey) || {};
       const existing = Array.isArray(doc.rows) ? doc.rows : [];
       const filtered = existing.filter(r=>!matchesOldRow(r));
-      await upsertDoc(docKey, { page_key:'magnaflux', year:Number(targetYear), rows:[...filtered, ...groups], updated_at:updatedAt });
+      await upsertDoc(docKey, { page_key:'magnaflux', year:Number(targetYear), rows:mergeMagnafluxRows(filtered, groups, sheetId), updated_at:updatedAt });
     }
 
     async function updateMagnafluxIndex(year, updatedAt){

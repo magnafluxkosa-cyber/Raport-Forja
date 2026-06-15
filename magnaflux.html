@@ -1848,6 +1848,40 @@
         return computeDerived(row);
       }
 
+
+      function rowComesFromOperatorSheet(row){
+        return normalizeText(row && row.source).includes('magnaflux-operatori') || !!String(row && row.sheet_id || '').trim();
+      }
+
+      function magnafluxDuplicateSignature(row){
+        const keys = [
+          'an','luna','data','operator','operator_principal','operator_2','reper','cod_cat','numeral_kod',
+          'val_magnetica','val_electrica','controlate','acceptate','rz','bav','planeit','lov','lm','ibt','sm','ftt','fl','lmc','des','as','fb','procent','procent2','total_rebut','utilaj','schimb','brix','etalon','nr_lada','sarja','sarja_material'
+        ];
+        return keys.map(key => normalizeText(row && row[key])).join('||');
+      }
+
+      function dedupeMagnafluxRows(rows){
+        const out = [];
+        const seenIds = new Set();
+        const seenOperatorRows = new Set();
+        (Array.isArray(rows) ? rows : []).forEach(raw => {
+          const row = sanitizeRow(raw);
+          const id = String(row.id || '').trim();
+          if(id && seenIds.has(id)) return;
+          if(id) seenIds.add(id);
+
+          if(rowComesFromOperatorSheet(row)){
+            const signature = magnafluxDuplicateSignature(row);
+            if(signature && seenOperatorRows.has(signature)) return;
+            if(signature) seenOperatorRows.add(signature);
+          }
+
+          out.push(row);
+        });
+        return out;
+      }
+
       function normalizeYearValue(value){
         const text = String(value == null ? '' : value).trim();
         const match = text.match(/(19|20)\d{2}/);
@@ -2009,7 +2043,7 @@
       function saveYearLocal(year, rows, updatedAt){
         const y = ensureYearInIndex(year);
         const payload = buildYearPayload(y, rows, updatedAt);
-        const cleanRows = sortRowsByDateInPlace(payload.rows.map(sanitizeRow));
+        const cleanRows = sortRowsByDateInPlace(dedupeMagnafluxRows(payload.rows));
         state.yearCache[y] = cleanRows;
         state.yearMeta[y] = { updated_at: payload.updated_at };
         state.cloudIndexState.updated_at_by_year[y] = payload.updated_at;
@@ -2031,7 +2065,7 @@
             return state.yearCache[y];
           }
           const doc = JSON.parse(raw);
-          const rows = Array.isArray(doc && doc.rows) ? doc.rows.map(sanitizeRow) : [];
+          const rows = Array.isArray(doc && doc.rows) ? dedupeMagnafluxRows(doc.rows) : [];
           state.yearCache[y] = rows;
           state.yearMeta[y] = { updated_at: doc && doc.updated_at ? doc.updated_at : null };
           if(doc && doc.updated_at){
@@ -2419,7 +2453,7 @@
         const cloudTime = cloudDoc && cloudDoc.updated_at ? cloudDoc.updated_at : '';
 
         if(cloudDoc && Array.isArray(cloudDoc.rows)){
-          const cloudRows = cloudDoc.rows.map(sanitizeRow);
+          const cloudRows = dedupeMagnafluxRows(cloudDoc.rows);
           const shouldUseCloud = opts.forceCloud || !localRows.length || !localTime || (cloudTime && cloudTime >= localTime) || shouldPreferCloudOverPreexistingLocal(y, localRows, localTime, cloudDoc, opts);
           const replacedPreexistingLocal = shouldPreferCloudOverPreexistingLocal(y, localRows, localTime, cloudDoc, opts) && !opts.forceCloud && !state.sessionEditedYears.has(y);
 
@@ -3173,7 +3207,7 @@
           try{
             const cloudDoc = await fetchDocByKey(getYearDocKey(y));
             if(cloudDoc && Array.isArray(cloudDoc.rows)){
-              const cloudRows = cloudDoc.rows.map(sanitizeRow);
+              const cloudRows = dedupeMagnafluxRows(cloudDoc.rows);
               state.yearCache[y] = cloudRows;
               state.yearMeta[y] = { updated_at: cloudDoc.updated_at || nowIso() };
               saveYearLocal(y, cloudRows, state.yearMeta[y].updated_at);
