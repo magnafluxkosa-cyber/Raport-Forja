@@ -158,6 +158,12 @@
     .opPlanTable tr.opPlanSaturday td,.opPlanTable tr.opPlanSunday td{background:#00ffff!important}
     .opPlanTable tr.opPlanToday td{border-top:3px solid #1e3a8a!important;border-bottom:3px solid #1e3a8a!important;background:#e8f3ff!important}
     .opPlanTable tr:hover td{filter:brightness(.985)}
+    .opPlanTable td.opPlanTextBlack{color:#000!important;font-weight:900}
+    .opPlanTable td.opPlanTextRed{color:#c00000!important;font-weight:900}
+    .opPlanTable td.opPlanRealCell{color:#000!important;font-weight:900}
+    .opPlanTable td.opPlanRealOk{background:#dcefd7!important;color:#1b5e20!important;font-weight:900}
+    .opPlanTable td.opPlanRealWarn{background:#ffe4bf!important;color:#9a5a00!important;font-weight:900}
+    .opPlanTable td.opPlanRealEmpty{color:#000!important;font-weight:900}
     .opPlanEmpty{min-height:260px;display:flex;align-items:center;justify-content:center;text-align:center;font-weight:900;color:#314762;padding:24px}
     .opPlanStatus{font-weight:900;color:#071b33;text-align:right}.opPlanStatus.err{color:#b91c1c}.opPlanStatus.ok{color:#0f7a2d}
     .opPlanViewOnlyBadge{display:inline-flex;align-items:center;border:1px solid #7f1d1d;border-radius:999px;background:#fff4e5;color:#9a3412;font-size:12px;font-weight:900;padding:6px 10px;white-space:nowrap}
@@ -448,6 +454,7 @@
   let selectedIntrariRow=null, intrariEditContext=null;
   let numeralKodBySarja=new Map(), numeralKodByCombo=new Map();
   let opPlanRows=[], opPlanLoaded=false, opPlanAutoScrolled=false;
+  let opPlanForjateSummary=Object.create(null), opPlanLoadedForjateYears=new Set();
 
   function norm(v){return String(v??'').trim();}
   function email(v){return String(v||'').trim().toLowerCase();}
@@ -1435,7 +1442,108 @@
     const reper=pick(slot,['reper','reperForjat','reper_forjat','part','cod','name'])||pick(row,[machine+'_reper',machine+'_reper_forjat',flatPrefix+'_reper']);
     const planificat=pick(slot,['planificat','plan','planned','cantitate','qty','cantitate_planificata'])||pick(row,[machine+'_planificat',machine+'_plan',flatPrefix+'_planificat']);
     const realizat=pick(slot,['realizat','realizat_live','realizatLive','realizat_seed','realizatSeed','real','done','executat'])||pick(row,[machine+'_realizat',machine+'_real',flatPrefix+'_realizat']);
-    return {reper:norm(reper),planificat:norm(planificat),realizat:norm(realizat)};
+    return {reper:norm(reper),planificat:norm(planificat),realizat:norm(realizat),raw:slot};
+  }
+  function opPlanFlagText(obj,field){
+    const src=obj&&typeof obj==='object'?obj:{};
+    const vals=[];
+    const fieldBase=field?String(field):'';
+    if(fieldBase){
+      vals.push(pick(src,[fieldBase+'Color',fieldBase+'_color',fieldBase+'TextColor',fieldBase+'_text_color',fieldBase+'Class',fieldBase+'_class',fieldBase+'Status',fieldBase+'_status']));
+    }
+    vals.push(pick(src,['textColor','text_color','fontColor','font_color','color','className','class','cssClass','css_class','status','stockStatus','stock_status','planStockStatus','plan_stock_status','alert','alertStatus','alert_status','missingStock','missing_stock','shortage','shortageStatus','shortage_status']));
+    return plain(vals.filter(Boolean).join(' '));
+  }
+  function opPlanIsExplicitRed(slot,field){
+    const txt=opPlanFlagText(slot&&slot.raw?slot.raw:slot,field);
+    if(!txt) return false;
+    if(txt.includes('negru')||txt.includes('black')||txt.includes('#000')) return false;
+    return txt.includes('rosu')||txt.includes('roșu')||txt.includes('red')||txt.includes('#c00000')||txt.includes('#c1121f')||txt.includes('planstockempty')||txt.includes('stockempty')||txt.includes('empty')||txt.includes('partial')||txt.includes('lipsa')||txt.includes('lipsă')||txt.includes('missing')||txt.includes('alert')||txt.includes('shortage');
+  }
+  function opPlanNumber(v){
+    const n=parseNum(v);
+    return Number.isFinite(n)?n:0;
+  }
+  function opPlanNormalizeMachine(value){
+    const k=cleanKey(value);
+    if(!k) return '';
+    if(k.includes('5TCHINA')||k.includes('5TCH')) return '5 T CHINA';
+    if(k==='MP'||k.includes('MAXIPRESA')||k.includes('MP2500')) return 'MP';
+    if(k.includes('125T')||k.includes('1T25')) return '1,25 T';
+    if(k.includes('25T')&&!k.includes('125')) return '2,5 T';
+    if(k.includes('3TBR')) return '3 T BR';
+    if(k.includes('3TZR')||k.includes('3TCH')||k.includes('3TCHINA')) return '3 T ZR';
+    const found=PLANIFICARE_MACHINES.find(m=>cleanKey(m)===k);
+    return found||norm(value);
+  }
+  function opPlanRealizedKey(dataIso,machine,reper){
+    return [norm(dataIso),opPlanNormalizeMachine(machine),norm(reper).toUpperCase()].join('|');
+  }
+  function opPlanExtractAnyRows(payload){
+    if(!payload) return [];
+    if(Array.isArray(payload)) return payload;
+    if(payload&&typeof payload==='object'){
+      for(const k of ['rows','data','items','records','entries']){if(Array.isArray(payload[k])) return payload[k];}
+      if(payload.content&&typeof payload.content==='object'){const r=opPlanExtractAnyRows(payload.content); if(r.length) return r;}
+      if(payload.payload&&typeof payload.payload==='object'){const r=opPlanExtractAnyRows(payload.payload); if(r.length) return r;}
+    }
+    return [];
+  }
+  function opPlanNormalizeForjateRow(row,index){
+    const obj=row&&typeof row==='object'?row:{};
+    const data=toIsoDate(Array.isArray(row)?row[2]:pick(obj,['data','DATA','date','Date','data_forjare','DATA_FORJARE','Data forjare','data raport','Data raport']));
+    const an=norm(Array.isArray(row)?row[0]:pick(obj,['an','AN','anul','ANUL','year','Year']))||(data?data.slice(0,4):'');
+    const machineRaw=Array.isArray(row)?row[4]:pick(obj,['ciocan','CIOCAN','Ciocan','linie de forjare','Linie de forjare','LINIE DE FORJARE','linie_de_forjare','linieForjare','linie','Linie','LINIE','utilaj','Utilaj','UTILAJ','echipament','Echipament','ECHIPAMENT','machine','Machine','MACHINE','E','BO']);
+    const reperRaw=Array.isArray(row)?row[5]:pick(obj,['reper','REPER','Reper','reper_forjat','REPER_FORJAT','Reper forjat','denumire_reper','Denumire reper']);
+    const realizatRaw=Array.isArray(row)?row[17]:pick(obj,['buc_realizate','BUC_REALIZATE','bucRealizate','Buc Realizate','BUC Realizate','BUC REALIZATE','buc realizate','Buc realizate','cantitate_realizata','Cantitate realizata','cantitate realizată','Cantitate realizată','realizat','REALIZAT','Realizat','realizat_sch','REALIZAT/SCH','realizat/sch','buc','BUC','CB']);
+    return {id:norm(Array.isArray(row)?'':pick(obj,['id','_id']))||('op-forjate-'+index),an,data,machine:opPlanNormalizeMachine(machineRaw),reper:norm(reperRaw).toUpperCase(),realizat:Math.max(0,Math.round(opPlanNumber(realizatRaw)))};
+  }
+  function opPlanMergeForjateRows(rows,year){
+    (Array.isArray(rows)?rows:[]).forEach((row,index)=>{
+      const item=opPlanNormalizeForjateRow(row,index);
+      const rowYear=item.an||(item.data?item.data.slice(0,4):'');
+      if(year&&String(rowYear)!==String(year)) return;
+      if(!item.data||!item.machine||!item.reper||item.realizat<=0) return;
+      const key=opPlanRealizedKey(item.data,item.machine,item.reper);
+      const fallback=opPlanRealizedKey(item.data,'',item.reper);
+      opPlanForjateSummary[key]=Math.max(0,Math.round(opPlanNumber(opPlanForjateSummary[key])+item.realizat));
+      opPlanForjateSummary[fallback]=Math.max(0,Math.round(opPlanNumber(opPlanForjateSummary[fallback])+item.realizat));
+    });
+  }
+  async function opPlanLoadForjateYear(year,force){
+    const y=norm(year);
+    if(!y) return;
+    if(force){
+      opPlanLoadedForjateYears.delete(y);
+      Object.keys(opPlanForjateSummary).forEach(k=>{if(k.startsWith(y+'-')) delete opPlanForjateSummary[k];});
+    }
+    if(opPlanLoadedForjateYears.has(y)) return;
+    const keys=['forjate:'+y,'FORJATE:'+y,'forjate-'+y,'FORJATE-'+y,'forjate'];
+    for(const key of keys){
+      try{
+        const doc=await readDoc(key);
+        const rows=opPlanExtractAnyRows(getPayload(doc)||{});
+        if(rows.length){opPlanMergeForjateRows(rows,y);}
+      }catch(_e){}
+    }
+    opPlanLoadedForjateYears.add(y);
+  }
+  async function opPlanLoadVisibleForjate(force){
+    const y=norm(($('opPlanYear')||{}).value)||opPlanCurrentYear();
+    await opPlanLoadForjateYear(y,!!force);
+  }
+  function opPlanRealizatForSlot(row,machine,slot){
+    const reper=norm(slot&&slot.reper);
+    if(!reper) return 0;
+    const y=norm(row&&row.an);
+    const key=opPlanRealizedKey(row&&row.data,machine,reper);
+    const fallback=opPlanRealizedKey(row&&row.data,'',reper);
+    if(opPlanLoadedForjateYears.has(y)){
+      const exact=opPlanNumber(opPlanForjateSummary[key]);
+      if(exact>0) return Math.max(0,Math.round(exact));
+      return Math.max(0,Math.round(opPlanNumber(opPlanForjateSummary[fallback])));
+    }
+    return Math.max(0,Math.round(opPlanNumber(slot&&slot.realizat)));
   }
   function opPlanNormalizeRow(row,index){
     const data=toIsoDate(pick(row,['data','date','zi_data','data_planificare']))||norm(pick(row,['data','date']));
@@ -1488,14 +1596,25 @@
       if(wd.includes('sambata')) tr.classList.add('opPlanSaturday');
       if(wd.includes('duminica')) tr.classList.add('opPlanSunday');
       function tdText(text,cls,title){const td=document.createElement('td'); if(cls) td.className=cls; td.textContent=text||''; if(title) td.title=title; return td;}
-      tr.appendChild(tdText(formatDateRo(row.data)||row.data,'opPlanSticky1'));
-      tr.appendChild(tdText(row.luna,'opPlanSticky2'));
-      tr.appendChild(tdText(row.zi,'opPlanSticky3'));
+      function textClass(isRed,extra){return (extra?extra+' ':'')+(isRed?'opPlanTextRed':'opPlanTextBlack');}
+      tr.appendChild(tdText(formatDateRo(row.data)||row.data,'opPlanSticky1 opPlanTextBlack'));
+      tr.appendChild(tdText(row.luna,'opPlanSticky2 opPlanTextBlack'));
+      tr.appendChild(tdText(row.zi,'opPlanSticky3 opPlanTextBlack'));
       PLANIFICARE_MACHINES.forEach(machine=>{
         const slot=row.slots[machine]||{};
-        tr.appendChild(tdText(slot.reper,'',slot.reper));
-        tr.appendChild(tdText(norm(slot.planificat),'',slot.planificat));
-        tr.appendChild(tdText(norm(slot.realizat),'opPlanGroupEnd',slot.realizat));
+        const plan=opPlanNumber(slot.planificat);
+        const realizat=opPlanRealizatForSlot(row,machine,slot);
+        const redReper=opPlanIsExplicitRed(slot,'reper');
+        const redPlan=opPlanIsExplicitRed(slot,'planificat')||opPlanIsExplicitRed(slot,'plan');
+        const redReal=opPlanIsExplicitRed(slot,'realizat');
+        const realDisplay=(realizat>0||plan>0||norm(slot.reper))?String(Math.round(realizat)):'';
+        let realCls='opPlanRealCell opPlanRealEmpty';
+        if(plan>0&&realizat>=plan) realCls='opPlanRealCell opPlanRealOk';
+        else if(plan>0&&realizat>0&&realizat<plan) realCls='opPlanRealCell opPlanRealWarn';
+        if(redReal) realCls+=' opPlanTextRed';
+        tr.appendChild(tdText(slot.reper,textClass(redReper),slot.reper));
+        tr.appendChild(tdText(plan?String(Math.round(plan)):'',textClass(redPlan),slot.planificat));
+        tr.appendChild(tdText(realDisplay,realCls+' opPlanGroupEnd',realDisplay));
       });
       tb.appendChild(tr);
     });
@@ -1513,7 +1632,12 @@
     if(row){row.scrollIntoView({block:'center',inline:'nearest'}); wrap.scrollLeft=0;}
   }
   async function loadOpPlanificare(force){
-    if(opPlanLoaded&&!force){opPlanRenderBody(!opPlanAutoScrolled); opPlanAutoScrolled=true; return;}
+    if(opPlanLoaded&&!force){
+      await opPlanLoadVisibleForjate(false);
+      opPlanRenderBody(!opPlanAutoScrolled);
+      opPlanAutoScrolled=true;
+      return;
+    }
     try{
       opPlanStatusSet('Se încarcă planificarea...','');
       const doc=await readDoc(PLANIFICARE_DOC_KEY);
@@ -1521,9 +1645,10 @@
       opPlanRows=opPlanSortRows(opPlanExtractRowsFromPayload(payload).map(opPlanNormalizeRow));
       opPlanLoaded=true;
       opPlanPopulateYears();
+      await opPlanLoadVisibleForjate(!!force);
       opPlanRenderBody(true);
       opPlanAutoScrolled=true;
-      opPlanStatusSet(opPlanRows.length?('Încărcate '+opPlanRows.length+' rânduri. Poziționat pe data curentă.'):'Nu există rânduri în documentul de planificare.','ok');
+      opPlanStatusSet(opPlanRows.length?('Încărcate '+opPlanRows.length+' rânduri. Culorile roșu/negru și realizatul sunt afișate în mod vizualizare.'):'Nu există rânduri în documentul de planificare.','ok');
     }catch(e){
       console.error(e);
       opPlanLoaded=false; opPlanRows=[];
@@ -2060,7 +2185,7 @@
   $('pontajMonth').addEventListener('change',()=>{if(pontajLoaded) renderPontajDebitari();});
   $('btnReloadOpPlan').addEventListener('click',()=>{opPlanAutoScrolled=false; loadOpPlanificare(true);});
   $('btnOpPlanToday').addEventListener('click',()=>{opPlanScrollToToday();});
-  $('opPlanYear').addEventListener('change',()=>{opPlanRenderBody(true);});
+  $('opPlanYear').addEventListener('change',async()=>{await opPlanLoadVisibleForjate(false); opPlanRenderBody(true);});
   $('opPlanSearch').addEventListener('input',()=>{opPlanRenderBody(false);});
   $('btnSetOperatorPin').addEventListener('click',()=>{openPinModal().catch(e=>{console.error(e);alert(e&&e.message?e.message:'Eroare la deschiderea setării PIN.');});});
   $('btnSaveOperatorPin').addEventListener('click',()=>{saveOperatorPin().catch(e=>{console.error(e);setPinStatus(e&&e.message?e.message:'Eroare la salvarea PIN-ului.','err');});});
