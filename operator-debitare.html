@@ -164,6 +164,14 @@
     .opPlanTable td.opPlanRealOk{background:#dcefd7!important;color:#1b5e20!important;font-weight:900}
     .opPlanTable td.opPlanRealWarn{background:#ffe4bf!important;color:#9a5a00!important;font-weight:900}
     .opPlanTable td.opPlanRealEmpty{color:#000!important;font-weight:900}
+    .opPlanTable td.opPlanTextRed,
+    .opPlanTable tr.opPlanSaturday td.opPlanTextRed,
+    .opPlanTable tr.opPlanSunday td.opPlanTextRed,
+    .opPlanTable tr.opPlanToday td.opPlanTextRed{color:#c00000!important;font-weight:900!important}
+    .opPlanTable td.opPlanTextBlack{color:#000!important;font-weight:900!important}
+    .opPlanTable td.opPlanStockPartial{background:#ffd966!important;color:#c00000!important;font-weight:900!important}
+    .opPlanTable td.opPlanRealOk{background:#dcefd7!important;color:#1b5e20!important;font-weight:900!important}
+    .opPlanTable td.opPlanRealWarn{background:#ffe4bf!important;color:#9a5a00!important;font-weight:900!important}
     .opPlanEmpty{min-height:260px;display:flex;align-items:center;justify-content:center;text-align:center;font-weight:900;color:#314762;padding:24px}
     .opPlanStatus{font-weight:900;color:#071b33;text-align:right}.opPlanStatus.err{color:#b91c1c}.opPlanStatus.ok{color:#0f7a2d}
     .opPlanViewOnlyBadge{display:inline-flex;align-items:center;border:1px solid #7f1d1d;border-radius:999px;background:#fff4e5;color:#9a3412;font-size:12px;font-weight:900;padding:6px 10px;white-space:nowrap}
@@ -455,6 +463,7 @@
   let numeralKodBySarja=new Map(), numeralKodByCombo=new Map();
   let opPlanRows=[], opPlanLoaded=false, opPlanAutoScrolled=false;
   let opPlanForjateSummary=Object.create(null), opPlanLoadedForjateYears=new Set();
+  let opPlanRedByCell=Object.create(null), opPlanLoadedRedYears=new Set(), opPlanForjaHelperMap=Object.create(null);
 
   function norm(v){return String(v??'').trim();}
   function email(v){return String(v||'').trim().toLowerCase();}
@@ -1583,44 +1592,221 @@
       return PLANIFICARE_MACHINES.some(m=>cleanKey(row.slots[m]&&row.slots[m].reper).includes(search));
     });
   }
+  function opPlanCellKey(row,machine){
+    return [norm(row&&row.id),norm(machine)].join('|');
+  }
+  function opPlanArrayCell(row,index,fallback){
+    if(Array.isArray(row) && index>=0 && index<row.length){
+      const v=row[index];
+      if(v!=null && v!=='') return v;
+    }
+    return fallback==null?'':fallback;
+  }
+  function opPlanSpecKey(diam,cal){return cleanKey(diam)+'|'+cleanKey(cal);}
+  function opPlanNormReper(v){return norm(v).toUpperCase().replace(/[Øø⌀]/g,'').replace(/\s+/g,' ').trim();}
+  function opPlanMonthNum(v){
+    const direct=monthIndexRo(v); if(direct) return direct;
+    const s=norm(v); const n=Number(s); if(Number.isFinite(n)&&n>=1&&n<=12) return n;
+    const iso=toIsoDate(s); if(iso) return Number(iso.slice(5,7))||0;
+    return 0;
+  }
+  function opPlanEomIso(year,month){
+    const y=Number(year)||0, m=Number(month)||0; if(!y||!m) return '';
+    const d=new Date(y,m,0); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+  }
+  function opPlanNextDayIso(iso){
+    if(!/^\d{4}-\d{2}-\d{2}$/.test(norm(iso))) return '';
+    const d=new Date(norm(iso)+'T00:00:00'); d.setDate(d.getDate()+1);
+    return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+  }
+  function opPlanAddDelta(container,date,key,delta){
+    const d=norm(date), k=norm(key), v=opPlanNumber(delta); if(!d||!k||!v) return;
+    container[d]=container[d]||Object.create(null);
+    container[d][k]=opPlanNumber(container[d][k])+v;
+  }
+  async function opPlanReadDocsBulk(keys){
+    const list=Array.from(new Set((keys||[]).map(norm).filter(Boolean)));
+    if(!list.length||!sb) return [];
+    try{
+      const {data,error}=await sb.from('rf_documents').select('doc_key,content,data,updated_at').in('doc_key',list);
+      if(error) throw error;
+      return Array.isArray(data)?data:[];
+    }catch(e){console.warn('opPlanReadDocsBulk',e); return [];}
+  }
+  function opPlanRowsFromDoc(doc){return opPlanExtractAnyRows(getPayload(doc)||{});}
+  async function opPlanLoadForjaHelperMap(){
+    if(Object.keys(opPlanForjaHelperMap||{}).length) return;
+    opPlanForjaHelperMap=Object.create(null);
+    try{
+      const {data,error}=await sb.from('rf_helper_repere_forjate').select('*').order('sort_order',{ascending:true});
+      if(error) throw error;
+      (data||[]).forEach(row=>{
+        if(!isActive(row)) return;
+        const reper=norm(pick(row,['reper_forjat','REPER_FORJAT','reper','Reper'])).toUpperCase();
+        if(!reper) return;
+        opPlanForjaHelperMap[opPlanNormReper(reper)]={
+          reper_forjat:reper,
+          reper_debitare_origine:norm(pick(row,['reper_debitare_origine','REPER_DEBITARE_ORIGINE','reperDebitareOrigine'])).toUpperCase(),
+          dimensiune_otel:norm(pick(row,['dimensiune_otel','DIMENSIUNE_OTEL','diametru_otel','diametruOtel'])),
+          calitate_otel:norm(pick(row,['calitate_otel','CALITATE_OTEL','calitateOtel'])),
+          kg_buc_forjat:opPlanNumber(pick(row,['kg_buc_forjat','KG_BUC_FORJAT','kgBucForjat']))
+        };
+      });
+    }catch(e){console.warn('helper forjate indisponibil',e);}
+  }
+  function opPlanResolveHelper(reper){
+    const r=opPlanNormReper(reper);
+    const forja=opPlanForjaHelperMap[r]||null;
+    const origin=opPlanNormReper((forja&&forja.reper_debitare_origine)||r);
+    const debitInfo=getReperInfo(origin)||getReperInfo(r)||null;
+    const diam=norm((debitInfo&&debitInfo.diam)||(forja&&forja.dimensiune_otel));
+    const cal=norm((debitInfo&&debitInfo.cal)||(forja&&forja.calitate_otel));
+    const kg=opPlanNumber((debitInfo&&debitInfo.kg)||(forja&&forja.kg_buc_forjat));
+    return {origin:origin||r, diam, cal, kg};
+  }
+  function opPlanNormSteelInv(row,i){
+    const isArr=Array.isArray(row); let an='',luna='',diam='',cal='',cant=0;
+    if(isArr){
+      const first=/^\d{4}$/.test(norm(opPlanArrayCell(row,0,''))), second=/^\d{4}$/.test(norm(opPlanArrayCell(row,1,'')));
+      if(second&&opPlanMonthNum(opPlanArrayCell(row,2,''))){an=norm(opPlanArrayCell(row,1,''));luna=opPlanArrayCell(row,2,'');cant=opPlanArrayCell(row,4,0);diam=opPlanArrayCell(row,5,'');cal=opPlanArrayCell(row,6,'');}
+      else if(first&&opPlanMonthNum(opPlanArrayCell(row,1,''))){an=norm(opPlanArrayCell(row,0,''));luna=opPlanArrayCell(row,1,'');cant=opPlanArrayCell(row,3,0);diam=opPlanArrayCell(row,4,'');cal=opPlanArrayCell(row,5,'');}
+      else {const off=second&&!first?1:0; an=norm(opPlanArrayCell(row,off+0,'')||opPlanArrayCell(row,off+1,'')); luna=opPlanArrayCell(row,off+1,'')||opPlanArrayCell(row,off+2,''); diam=opPlanArrayCell(row,off+2,''); cal=opPlanArrayCell(row,off+3,''); cant=opPlanArrayCell(row,off+6,0);}
+    }else{
+      an=norm(pick(row,['an','anul','year','AN','Year','Anul'])); luna=pick(row,['luna','month','LUNA','Month','Luna']);
+      diam=pick(row,['diametru','diametru otel','diametru_otel','Dimensiune OTEL','DIMENSIUNE OTEL','dimensiune_otel']);
+      cal=pick(row,['calitate','calitate otel','calitate_otel','Calitate OTEL','Calitate Otel','marca material']);
+      cant=pick(row,['cantitateKg','cantitate','cantitate kg','cantitate_kg','kg','stoc_final','stoc final','STOC FINAL KG','Stoc Otel (Kg)','STOC OTEL (KG)']);
+    }
+    const m=opPlanMonthNum(luna); return {an:Number(an)||0,lunaNum:m,diametru:norm(diam),calitate:norm(cal),cantitateKg:opPlanNumber(cant)};
+  }
+  function opPlanNormDebInv(row,i){
+    const off=Array.isArray(row)&&/^\d{4}$/.test(norm(opPlanArrayCell(row,1,'')))&&!/^\d{4}$/.test(norm(opPlanArrayCell(row,0,'')))?1:0;
+    const an=Array.isArray(row)?(norm(opPlanArrayCell(row,off+0,''))||norm(opPlanArrayCell(row,off+1,''))):norm(pick(row,['an','anul','year','AN','Year','Anul']));
+    const luna=Array.isArray(row)?(opPlanArrayCell(row,off+1,'')||opPlanArrayCell(row,off+2,'')):pick(row,['luna','month','LUNA','Month','Luna']);
+    const reper=Array.isArray(row)?opPlanArrayCell(row,off+2,''):pick(row,['reper','REPER','Reper','denumire reper debitare','reper debitare','Stoc Debitat Reper']);
+    const cant=Array.isArray(row)?opPlanArrayCell(row,off+5,0):pick(row,['cantitateBuc','STOC DEBITATE FINAL (buc)','Stoc debitate final (buc)','Stoc Debitat (Buc)','cantitate','buc']);
+    return {an:Number(an)||0,lunaNum:opPlanMonthNum(luna),reper:opPlanNormReper(reper),cantitateBuc:Math.max(0,Math.round(opPlanNumber(cant)))};
+  }
+  function opPlanNormIntrare(row,i){
+    const data=toIsoDate(Array.isArray(row)?opPlanArrayCell(row,2,''):pick(row,['data','date','DATA','Date','data intrare','Data intrare']));
+    return {data,diametru:norm(Array.isArray(row)?opPlanArrayCell(row,3,''):pick(row,['diametru','diametru otel','diametru_otel','Diametru oțel','Diametru','diametru material','Dimensiune Otel','Dimensiune Oțel'])),calitate:norm(Array.isArray(row)?opPlanArrayCell(row,4,''):pick(row,['calitate','calitate otel','calitate_otel','Calitate oțel','Calitate','marca material'])),cantitateKg:opPlanNumber(Array.isArray(row)?opPlanArrayCell(row,7,0):pick(row,['cantitateKg','cantitate','cantitate kg','cantitate_kg','kg','Cantitate (kg)','Cantitate KG']))};
+  }
+  function opPlanNormDebitareFlow(row,i){
+    const off=Array.isArray(row)&&/^\d{4}$/.test(norm(opPlanArrayCell(row,1,'')))&&!/^\d{4}$/.test(norm(opPlanArrayCell(row,0,'')))?1:0;
+    const data=toIsoDate(Array.isArray(row)?opPlanArrayCell(row,off+2,''):pick(row,['data','date','DATA','Date','data debitare','Data debitare','data raport']));
+    return {data,reper:opPlanNormReper(Array.isArray(row)?opPlanArrayCell(row,off+4,''):pick(row,['reper','REPER','Reper','denumire reper debitare'])),diametru:norm(Array.isArray(row)?opPlanArrayCell(row,off+5,''):pick(row,['diametru','diametru otel','diametru_otel','Dimensiune OTEL','diametru material'])),calitate:norm(Array.isArray(row)?opPlanArrayCell(row,off+6,''):pick(row,['calitate','calitate otel','calitate_otel','Cod Oțel CALITATE','cod otel calitate'])),cantitateBuc:Math.max(0,Math.round(opPlanNumber(Array.isArray(row)?opPlanArrayCell(row,off+10,0):pick(row,['cantitateBuc','cantitate','buc','realizat','Cantitate (buc)'])))),totalKgDebitat:opPlanNumber(Array.isArray(row)?opPlanArrayCell(row,off+12,0):pick(row,['totalKgDebitat','total kg debitat','total_kg_debitat','Total kg debitat','Cantitate (kg)','cantitate kg']))};
+  }
+  function opPlanNormForjateCons(row,i){
+    const item=opPlanNormalizeForjateRow(row,i);
+    const obj=row&&typeof row==='object'?row:{};
+    const rebut=Array.isArray(row)?opPlanArrayCell(row,18,0):pick(obj,['rebut','REBUT','Rebut','rebuturi','Rebuturi','rebut pm','Rebut PM','CC']);
+    item.rebutBuc=Math.max(0,Math.round(opPlanNumber(rebut)));
+    return item;
+  }
+  function opPlanPickLatestPeriod(rows){
+    let by='', y=0,m=0;
+    (rows||[]).forEach(r=>{const yy=Number(r.an)||0, mm=Number(r.lunaNum)||0; if(yy>y||(yy===y&&mm>m)){y=yy;m=mm;}});
+    return {year:y,month:m,endIso:opPlanEomIso(y,m),rows:(rows||[]).filter(r=>(!y||Number(r.an)===y)&&(!m||Number(r.lunaNum)===m))};
+  }
+  function opPlanClearRedForYear(year){
+    Object.keys(opPlanRedByCell||{}).forEach(k=>{const item=opPlanRedByCell[k]; if(item&&String(item.year)===String(year)) delete opPlanRedByCell[k];});
+  }
+  async function opPlanBuildRedMarkersForYear(year,force){
+    const y=norm(year); if(!y) return;
+    if(force){opPlanLoadedRedYears.delete(y); opPlanClearRedForYear(y);}
+    if(opPlanLoadedRedYears.has(y)) return;
+    opPlanStatusSet('Planificarea este afișată. Se calculează marcajele roșii și realizatul...','');
+    await opPlanLoadForjaHelperMap();
+    const docs=await opPlanReadDocsBulk(['inventar-otel','inventar-debitat:'+y,'inventar-debitat','intrari-otel:'+y,'intrari-otel','debitate:'+y,'debitate','forjate:'+y,'forjate']);
+    const docByKey=Object.create(null); docs.forEach(d=>{docByKey[norm(d.doc_key)]=d;});
+    const steelRows=(docByKey['inventar-otel']?opPlanRowsFromDoc(docByKey['inventar-otel']):[]).map(opPlanNormSteelInv);
+    const debRows=((docByKey['inventar-debitat:'+y]&&opPlanRowsFromDoc(docByKey['inventar-debitat:'+y]).length?opPlanRowsFromDoc(docByKey['inventar-debitat:'+y]):(docByKey['inventar-debitat']?opPlanRowsFromDoc(docByKey['inventar-debitat']):[]))).map(opPlanNormDebInv);
+    const intrariRows=((docByKey['intrari-otel:'+y]&&opPlanRowsFromDoc(docByKey['intrari-otel:'+y]).length?opPlanRowsFromDoc(docByKey['intrari-otel:'+y]):(docByKey['intrari-otel']?opPlanRowsFromDoc(docByKey['intrari-otel']):[]))).map(opPlanNormIntrare);
+    const debitariRows=((docByKey['debitate:'+y]&&opPlanRowsFromDoc(docByKey['debitate:'+y]).length?opPlanRowsFromDoc(docByKey['debitate:'+y]):(docByKey['debitate']?opPlanRowsFromDoc(docByKey['debitate']):[]))).map(opPlanNormDebitareFlow);
+    const forjateRows=((docByKey['forjate:'+y]&&opPlanRowsFromDoc(docByKey['forjate:'+y]).length?opPlanRowsFromDoc(docByKey['forjate:'+y]):(docByKey['forjate']?opPlanRowsFromDoc(docByKey['forjate']):[]))).map(opPlanNormForjateCons);
+    const planRows=opPlanRows.filter(r=>String(r.an)===String(y));
+    if(!planRows.length){opPlanLoadedRedYears.add(y); return;}
+    const minPlan=planRows.reduce((a,r)=>!a||r.data<a?r.data:a,'');
+    const maxPlan=planRows.reduce((a,r)=>!a||r.data>a?r.data:a,'');
+    const steelSnap=opPlanPickLatestPeriod(steelRows); const debSnap=opPlanPickLatestPeriod(debRows);
+    const steelStock=Object.create(null), debStock=Object.create(null);
+    (steelSnap.rows||[]).forEach(r=>{if(r.diametru&&r.calitate) steelStock[opPlanSpecKey(r.diametru,r.calitate)]=opPlanNumber(steelStock[opPlanSpecKey(r.diametru,r.calitate)])+r.cantitateKg;});
+    (debSnap.rows||[]).forEach(r=>{if(r.reper) debStock[r.reper]=opPlanNumber(debStock[r.reper])+r.cantitateBuc;});
+    const steelFrom=opPlanNextDayIso(steelSnap.endIso)||minPlan; const debFrom=opPlanNextDayIso(debSnap.endIso)||minPlan;
+    const steelDelta=Object.create(null), debDelta=Object.create(null), realByCell=Object.create(null);
+    intrariRows.forEach(r=>{if(r.data&&r.data>=steelFrom&&r.data<=maxPlan&&r.diametru&&r.calitate) opPlanAddDelta(steelDelta,r.data,opPlanSpecKey(r.diametru,r.calitate),r.cantitateKg);});
+    debitariRows.forEach(r=>{if(!r.data||r.data>maxPlan) return; if(r.data>=debFrom&&r.reper) opPlanAddDelta(debDelta,r.data,r.reper,r.cantitateBuc); if(r.data>=steelFrom&&r.diametru&&r.calitate) opPlanAddDelta(steelDelta,r.data,opPlanSpecKey(r.diametru,r.calitate),-r.totalKgDebitat);});
+    forjateRows.forEach(r=>{if(!r.data||r.data>maxPlan||!r.reper) return; const rk=opPlanRealizedKey(r.data,r.machine,r.reper); if(r.realizat>0) realByCell[rk]=true; if(r.data>=debFrom){const h=opPlanResolveHelper(r.reper); if(h.origin) opPlanAddDelta(debDelta,r.data,h.origin,-(opPlanNumber(r.realizat)+opPlanNumber(r.rebutBuc)));}});
+    const planByDate=Object.create(null);
+    planRows.forEach((row,idx)=>PLANIFICARE_MACHINES.forEach(machine=>{const s=row.slots[machine]||{}; const p=Math.round(opPlanNumber(s.planificat)); if(!row.data||!norm(s.reper)||p<=0) return; (planByDate[row.data]=planByDate[row.data]||[]).push({row,idx,machine,slot:s,plan:p});}));
+    Object.keys(planByDate).forEach(d=>planByDate[d].sort((a,b)=>Number(a.row.row_no||0)-Number(b.row.row_no||0)||a.idx-b.idx));
+    const dates=Array.from(new Set([].concat(Object.keys(planByDate),Object.keys(steelDelta),Object.keys(debDelta)))).filter(d=>d>=minPlan&&d<=maxPlan).sort();
+    let redCount=0;
+    dates.forEach(date=>{
+      Object.entries(steelDelta[date]||{}).forEach(([k,v])=>{steelStock[k]=opPlanNumber(steelStock[k])+opPlanNumber(v);});
+      Object.entries(debDelta[date]||{}).forEach(([k,v])=>{debStock[k]=opPlanNumber(debStock[k])+opPlanNumber(v);});
+      (planByDate[date]||[]).forEach(item=>{
+        const key=opPlanCellKey(item.row,item.machine); const h=opPlanResolveHelper(item.slot.reper); const kg=Math.max(0,opPlanNumber(h.kg)); const spec=h.diam&&h.cal?opPlanSpecKey(h.diam,h.cal):''; const debKey=h.origin;
+        const hasReal=!!realByCell[opPlanRealizedKey(date,item.machine,item.slot.reper)];
+        if(hasReal){opPlanRedByCell[key]={year:y,status:'ok'}; return;}
+        const debAvail=Math.max(0,opPlanNumber(debStock[debKey])); const steelAvail=Math.max(0,opPlanNumber(steelStock[spec])); const steelPieces=kg>0?steelAvail/kg:0; const coverage=item.plan>0?(debAvail+steelPieces)/item.plan:1;
+        let status=coverage>=0.999?'ok':(coverage>0?'partial':'empty');
+        if(status!=='ok') redCount+=1;
+        opPlanRedByCell[key]={year:y,status};
+        if(item.plan<=0) return;
+        let need=item.plan;
+        const useDeb=Math.min(debAvail,need); if(debKey) debStock[debKey]=Math.max(0,debAvail-useDeb); need-=useDeb;
+        if(need>0&&kg>0&&spec){const useKg=Math.min(steelAvail,need*kg); steelStock[spec]=Math.max(0,steelAvail-useKg);}
+      });
+    });
+    opPlanLoadedRedYears.add(y);
+    opPlanStatusSet('Încărcate '+opPlanRows.length+' rânduri. Marcaje roșii calculate: '+redCount+'.','ok');
+  }
   function opPlanRenderBody(scrollToToday){
     opPlanRenderHead();
     const tb=$('opPlanBody'), table=$('opPlanTable'), empty=$('opPlanEmpty'); if(!tb||!table||!empty) return;
     const rows=opPlanFilteredRows();
-    tb.innerHTML='';
-    if(!rows.length){table.classList.add('hidden'); empty.classList.remove('hidden'); empty.textContent=opPlanRows.length?'Nu există rânduri pentru filtrul selectat.':'Nu există planificare încărcată.'; return;}
+    if(!rows.length){tb.innerHTML=''; table.classList.add('hidden'); empty.classList.remove('hidden'); empty.textContent=opPlanRows.length?'Nu există rânduri pentru filtrul selectat.':'Nu există planificare încărcată.'; return;}
+    const html=[];
+    function tdText(text,cls,title){return '<td'+(cls?' class="'+escapeAttr(cls)+'"':'')+(title?' title="'+escapeAttr(title)+'"':'')+'>'+escapeHtml(text||'')+'</td>';}
+    function textClass(isRed,extra){return (extra?extra+' ':'')+(isRed?'opPlanTextRed':'opPlanTextBlack');}
     rows.forEach(row=>{
-      const tr=document.createElement('tr'); tr.dataset.date=row.data||''; tr.dataset.rowId=row.id||'';
       const wd=plain(row.zi||opPlanWeekdayFromIso(row.data));
-      if(row.data===todayIso()) tr.classList.add('opPlanToday');
-      if(wd.includes('sambata')) tr.classList.add('opPlanSaturday');
-      if(wd.includes('duminica')) tr.classList.add('opPlanSunday');
-      function tdText(text,cls,title){const td=document.createElement('td'); if(cls) td.className=cls; td.textContent=text||''; if(title) td.title=title; return td;}
-      function textClass(isRed,extra){return (extra?extra+' ':'')+(isRed?'opPlanTextRed':'opPlanTextBlack');}
-      tr.appendChild(tdText(formatDateRo(row.data)||row.data,'opPlanSticky1 opPlanTextBlack'));
-      tr.appendChild(tdText(row.luna,'opPlanSticky2 opPlanTextBlack'));
-      tr.appendChild(tdText(row.zi,'opPlanSticky3 opPlanTextBlack'));
+      const trClasses=[];
+      if(row.data===todayIso()) trClasses.push('opPlanToday');
+      if(wd.includes('sambata')) trClasses.push('opPlanSaturday');
+      if(wd.includes('duminica')) trClasses.push('opPlanSunday');
+      html.push('<tr data-date="'+escapeAttr(row.data||'')+'" data-row-id="'+escapeAttr(row.id||'')+'"'+(trClasses.length?' class="'+trClasses.join(' ')+'"':'')+'>');
+      html.push(tdText(formatDateRo(row.data)||row.data,'opPlanSticky1 opPlanTextBlack'));
+      html.push(tdText(row.luna,'opPlanSticky2 opPlanTextBlack'));
+      html.push(tdText(row.zi,'opPlanSticky3 opPlanTextBlack'));
       PLANIFICARE_MACHINES.forEach(machine=>{
         const slot=row.slots[machine]||{};
         const plan=opPlanNumber(slot.planificat);
         const realizat=opPlanRealizatForSlot(row,machine,slot);
-        const redReper=opPlanIsExplicitRed(slot,'reper');
-        const redPlan=opPlanIsExplicitRed(slot,'planificat')||opPlanIsExplicitRed(slot,'plan');
+        const marker=opPlanRedByCell[opPlanCellKey(row,machine)]||null;
+        const shortageRed=marker&&(marker.status==='empty'||marker.status==='partial');
+        const redReper=opPlanIsExplicitRed(slot,'reper')||shortageRed;
+        const redPlan=opPlanIsExplicitRed(slot,'planificat')||opPlanIsExplicitRed(slot,'plan')||shortageRed;
         const redReal=opPlanIsExplicitRed(slot,'realizat');
         const realDisplay=(realizat>0||plan>0||norm(slot.reper))?String(Math.round(realizat)):'';
         let realCls='opPlanRealCell opPlanRealEmpty';
         if(plan>0&&realizat>=plan) realCls='opPlanRealCell opPlanRealOk';
         else if(plan>0&&realizat>0&&realizat<plan) realCls='opPlanRealCell opPlanRealWarn';
         if(redReal) realCls+=' opPlanTextRed';
-        tr.appendChild(tdText(slot.reper,textClass(redReper),slot.reper));
-        tr.appendChild(tdText(plan?String(Math.round(plan)):'',textClass(redPlan),slot.planificat));
-        tr.appendChild(tdText(realDisplay,realCls+' opPlanGroupEnd',realDisplay));
+        let planCls=textClass(redPlan);
+        if(marker&&marker.status==='partial') planCls+=' opPlanStockPartial';
+        html.push(tdText(slot.reper,textClass(redReper),slot.reper));
+        html.push(tdText(plan?String(Math.round(plan)):'',planCls,slot.planificat));
+        html.push(tdText(realDisplay,realCls+' opPlanGroupEnd',realDisplay));
       });
-      tb.appendChild(tr);
+      html.push('</tr>');
     });
+    tb.innerHTML=html.join('');
     table.classList.remove('hidden'); empty.classList.add('hidden');
     if(scrollToToday) setTimeout(opPlanScrollToToday,80);
   }
+
   function opPlanScrollToToday(){
     const wrap=$('opPlanTableWrap'); if(!wrap) return;
     const body=$('opPlanBody'); if(!body) return;
@@ -1631,11 +1817,17 @@
     }
     if(row){row.scrollIntoView({block:'center',inline:'nearest'}); wrap.scrollLeft=0;}
   }
+  async function opPlanRefreshDerived(force){
+    const y=norm(($('opPlanYear')||{}).value)||opPlanCurrentYear();
+    await opPlanLoadVisibleForjate(!!force);
+    await opPlanBuildRedMarkersForYear(y,!!force);
+    opPlanRenderBody(false);
+  }
   async function loadOpPlanificare(force){
     if(opPlanLoaded&&!force){
-      await opPlanLoadVisibleForjate(false);
       opPlanRenderBody(!opPlanAutoScrolled);
       opPlanAutoScrolled=true;
+      opPlanRefreshDerived(false).catch(e=>console.warn('opPlanRefreshDerived',e));
       return;
     }
     try{
@@ -1645,10 +1837,10 @@
       opPlanRows=opPlanSortRows(opPlanExtractRowsFromPayload(payload).map(opPlanNormalizeRow));
       opPlanLoaded=true;
       opPlanPopulateYears();
-      await opPlanLoadVisibleForjate(!!force);
       opPlanRenderBody(true);
       opPlanAutoScrolled=true;
-      opPlanStatusSet(opPlanRows.length?('Încărcate '+opPlanRows.length+' rânduri. Culorile roșu/negru și realizatul sunt afișate în mod vizualizare.'):'Nu există rânduri în documentul de planificare.','ok');
+      opPlanStatusSet(opPlanRows.length?('Planificarea este afișată rapid. Se încarcă realizatul și marcajele roșii...'):'Nu există rânduri în documentul de planificare.','ok');
+      opPlanRefreshDerived(!!force).catch(e=>{console.warn('opPlanRefreshDerived',e); opPlanStatusSet('Planificarea este afișată, dar marcajele roșii nu s-au putut recalcula complet.','err');});
     }catch(e){
       console.error(e);
       opPlanLoaded=false; opPlanRows=[];
@@ -1656,9 +1848,6 @@
       opPlanStatusSet(e&&e.message?e.message:'Eroare la încărcarea planificării.','err');
     }
   }
-
-
-
 
   /* ===== Interfață operator NUMERALKOD ===== */
   const NK_DOC_KEY='numeralkod';
@@ -2185,7 +2374,7 @@
   $('pontajMonth').addEventListener('change',()=>{if(pontajLoaded) renderPontajDebitari();});
   $('btnReloadOpPlan').addEventListener('click',()=>{opPlanAutoScrolled=false; loadOpPlanificare(true);});
   $('btnOpPlanToday').addEventListener('click',()=>{opPlanScrollToToday();});
-  $('opPlanYear').addEventListener('change',async()=>{await opPlanLoadVisibleForjate(false); opPlanRenderBody(true);});
+  $('opPlanYear').addEventListener('change',()=>{opPlanRenderBody(true); opPlanRefreshDerived(false).catch(e=>console.warn('opPlanRefreshDerived',e));});
   $('opPlanSearch').addEventListener('input',()=>{opPlanRenderBody(false);});
   $('btnSetOperatorPin').addEventListener('click',()=>{openPinModal().catch(e=>{console.error(e);alert(e&&e.message?e.message:'Eroare la deschiderea setării PIN.');});});
   $('btnSaveOperatorPin').addEventListener('click',()=>{saveOperatorPin().catch(e=>{console.error(e);setPinStatus(e&&e.message?e.message:'Eroare la salvarea PIN-ului.','err');});});
