@@ -1470,8 +1470,30 @@
     return txt.includes('rosu')||txt.includes('roșu')||txt.includes('red')||txt.includes('#c00000')||txt.includes('#c1121f')||txt.includes('planstockempty')||txt.includes('stockempty')||txt.includes('empty')||txt.includes('partial')||txt.includes('lipsa')||txt.includes('lipsă')||txt.includes('missing')||txt.includes('alert')||txt.includes('shortage');
   }
   function opPlanNumber(v){
-    const n=parseNum(v);
-    return Number.isFinite(n)?n:0;
+    if(typeof v === 'number') return Number.isFinite(v) ? v : 0;
+    let raw = norm(v);
+    if(!raw) return 0;
+    raw = raw.replace(/\s+/g,'').replace(/[^0-9,.-]/g,'');
+    if(!raw || raw==='-' || raw===',' || raw==='.') return 0;
+    const hasComma = raw.includes(',');
+    const hasDot = raw.includes('.');
+    if(hasComma && hasDot){
+      const lastComma = raw.lastIndexOf(',');
+      const lastDot = raw.lastIndexOf('.');
+      if(lastComma > lastDot) return Number(raw.replace(/\./g,'').replace(',','.')) || 0;
+      return Number(raw.replace(/,/g,'')) || 0;
+    }
+    if(hasComma){
+      const parts = raw.split(',');
+      if(parts.length > 2 || (parts.length === 2 && /^\d{3}$/.test(parts[1]))) return Number(raw.replace(/,/g,'')) || 0;
+      return Number(raw.replace(',','.')) || 0;
+    }
+    if(hasDot){
+      const parts = raw.split('.');
+      if(parts.length > 2 || (parts.length === 2 && /^\d{3}$/.test(parts[1]))) return Number(raw.replace(/\./g,'')) || 0;
+      return Number(raw) || 0;
+    }
+    return Number(raw) || 0;
   }
   function opPlanNormalizeMachine(value){
     const k=cleanKey(value);
@@ -1485,6 +1507,103 @@
     const found=PLANIFICARE_MACHINES.find(m=>cleanKey(m)===k);
     return found||norm(value);
   }
+  const OP_PLAN_SHARED_DEBITAT_GROUP_ALIASES=[
+    { group:'248-2307/08', aliases:['248-2307','248-2308','378-8241','378-8242','418-2091','418-2092'] },
+    { group:'417-3595/96', aliases:['417-3595','417-3596'] },
+    { group:'9K-6628/29', aliases:['9K-6628','9K-6629'] },
+    { group:'229-6909/10', aliases:['229-6909','229-6910'] },
+    { group:'503-0761/62', aliases:['503-0761','503-0762'] },
+    { group:'106-1625/26', aliases:['106-1625','106-1626'] },
+    { group:'7G-0521/22', aliases:['7G-0521','7G-0522'] },
+    { group:'358-5253/55', aliases:['358-5253','358-5255'] },
+    { group:'9P-9664/65', aliases:['9P-9664','9P-9665'] }
+  ];
+  function opPlanDebitatAliasHash(value){
+    return opPlanNormReper(value).replace(/[^A-Z0-9]+/g,'');
+  }
+  function opPlanAddAliasKey(set,value){
+    const clean=opPlanNormReper(value);
+    if(!clean) return;
+    set.add(clean);
+    const compact=opPlanDebitatAliasHash(clean);
+    if(compact) set.add(compact);
+  }
+  function opPlanExpandDebitatAliases(value){
+    const set=new Set();
+    const raw=opPlanNormReper(value);
+    opPlanAddAliasKey(set,raw);
+    if(!raw) return Array.from(set);
+    const normalized=raw.replace(/[–—_]/g,'-');
+    opPlanAddAliasKey(set,normalized);
+    opPlanAddAliasKey(set,normalized.replace(/\//g,'-'));
+    const match=normalized.match(/^(.+?)(\d+)(?:\/(\d+))$/);
+    if(match){
+      const prefix=match[1], baseNum=match[2], suffix=match[3];
+      if(suffix && suffix.length<=baseNum.length){
+        opPlanAddAliasKey(set,prefix+baseNum);
+        opPlanAddAliasKey(set,prefix+baseNum.slice(0,baseNum.length-suffix.length)+suffix);
+      }
+    }
+    OP_PLAN_SHARED_DEBITAT_GROUP_ALIASES.forEach(item=>{
+      const rawHash=opPlanDebitatAliasHash(raw);
+      const groupHash=opPlanDebitatAliasHash(item.group);
+      const all=[item.group].concat(item.aliases||[]);
+      const hit=all.some(alias=>{const h=opPlanDebitatAliasHash(alias); return h&&(h===rawHash||groupHash===rawHash);});
+      if(hit){opPlanAddAliasKey(set,item.group); (item.aliases||[]).forEach(alias=>opPlanAddAliasKey(set,alias));}
+    });
+    return Array.from(set);
+  }
+  function opPlanFindForjaHelper(reper){
+    const raw=opPlanNormReper(reper);
+    if(!raw) return null;
+    if(opPlanForjaHelperMap[raw]) return opPlanForjaHelperMap[raw];
+    const foundKey=Object.keys(opPlanForjaHelperMap||{}).find(k=>opPlanNormReper(k)===raw);
+    return foundKey?opPlanForjaHelperMap[foundKey]:null;
+  }
+  function opPlanBuildDebitatAliasMap(debStock){
+    const map=Object.create(null), conflicts=Object.create(null);
+    Object.keys(debStock||{}).forEach(stockKey=>{
+      opPlanExpandDebitatAliases(stockKey).forEach(alias=>{
+        if(!alias) return;
+        if(map[alias]&&map[alias]!==stockKey){conflicts[alias]=true; return;}
+        map[alias]=stockKey;
+      });
+    });
+    OP_PLAN_SHARED_DEBITAT_GROUP_ALIASES.forEach(item=>{
+      const candidates=opPlanExpandDebitatAliases(item.group).map(alias=>map[alias]).filter(Boolean);
+      const unique=Array.from(new Set(candidates));
+      if(unique.length!==1) return;
+      const stockKey=unique[0];
+      [item.group].concat(item.aliases||[]).forEach(aliasValue=>{
+        opPlanExpandDebitatAliases(aliasValue).forEach(alias=>{
+          if(!alias||conflicts[alias]) return;
+          if(!map[alias]) map[alias]=stockKey;
+        });
+      });
+    });
+    Object.keys(opPlanForjaHelperMap||{}).forEach(forjatKey=>{
+      const helper=opPlanForjaHelperMap[forjatKey]||null;
+      const origin=opPlanNormReper(helper&&helper.reper_debitare_origine);
+      if(!origin) return;
+      const originStockKey=opPlanResolveDebitatStockKey(origin,debStock,map);
+      if(!Object.prototype.hasOwnProperty.call(debStock||Object.create(null),originStockKey)) return;
+      opPlanExpandDebitatAliases(forjatKey).forEach(alias=>{if(alias&&!conflicts[alias]) map[alias]=originStockKey;});
+    });
+    Object.keys(conflicts).forEach(alias=>{delete map[alias];});
+    return map;
+  }
+  function opPlanResolveDebitatStockKey(reperKey,debStock,aliasMap){
+    const direct=opPlanNormReper(reperKey);
+    if(!direct) return '';
+    if(Object.prototype.hasOwnProperty.call(debStock||Object.create(null),direct)) return direct;
+    const aliases=opPlanExpandDebitatAliases(direct);
+    for(const alias of aliases){
+      if(aliasMap&&aliasMap[alias]) return aliasMap[alias];
+      if(Object.prototype.hasOwnProperty.call(debStock||Object.create(null),alias)) return alias;
+    }
+    return direct;
+  }
+
   function opPlanRealizedKey(dataIso,machine,reper){
     return [norm(dataIso),opPlanNormalizeMachine(machine),norm(reper).toUpperCase()].join('|');
   }
@@ -1656,12 +1775,12 @@
   }
   function opPlanResolveHelper(reper){
     const r=opPlanNormReper(reper);
-    const forja=opPlanForjaHelperMap[r]||null;
+    const forja=opPlanFindForjaHelper(r)||null;
     const origin=opPlanNormReper((forja&&forja.reper_debitare_origine)||r);
     const debitInfo=getReperInfo(origin)||getReperInfo(r)||null;
     const diam=norm((debitInfo&&debitInfo.diam)||(forja&&forja.dimensiune_otel));
     const cal=norm((debitInfo&&debitInfo.cal)||(forja&&forja.calitate_otel));
-    const kg=opPlanNumber((debitInfo&&debitInfo.kg)||(forja&&forja.kg_buc_forjat));
+    const kg=opPlanNumber((debitInfo&&debitInfo.kg)||(forja&&forja.kg_buc_debitat)||(forja&&forja.kg_buc_forjat));
     return {origin:origin||r, diam, cal, kg};
   }
   function opPlanNormSteelInv(row,i){
@@ -1708,59 +1827,214 @@
     (rows||[]).forEach(r=>{const yy=Number(r.an)||0, mm=Number(r.lunaNum)||0; if(yy>y||(yy===y&&mm>m)){y=yy;m=mm;}});
     return {year:y,month:m,endIso:opPlanEomIso(y,m),rows:(rows||[]).filter(r=>(!y||Number(r.an)===y)&&(!m||Number(r.lunaNum)===m))};
   }
+  function opPlanMinIso(a,b){
+    const aa=norm(a), bb=norm(b);
+    if(aa&&bb) return aa<bb?aa:bb;
+    return aa||bb||'';
+  }
+  function opPlanPreviousMonthPeriod(year,month){
+    let y=Number(year)||0, m=Number(month)||0;
+    if(!y||!m) return {year:0,month:0,endIso:''};
+    m-=1;
+    if(m<1){m=12;y-=1;}
+    return {year:y,month:m,endIso:opPlanEomIso(y,m)};
+  }
+  function opPlanBuildSteelSnapshotIndex(rows){
+    const byEnd=Object.create(null);
+    (rows||[]).forEach(row=>{
+      const eom=opPlanEomIso(row&&row.an,row&&row.lunaNum);
+      if(!eom||!row.diametru||!row.calitate) return;
+      const specKey=opPlanSpecKey(row.diametru,row.calitate);
+      if(!specKey) return;
+      byEnd[eom]=byEnd[eom]||Object.create(null);
+      byEnd[eom][specKey]=opPlanNumber(byEnd[eom][specKey])+opPlanNumber(row.cantitateKg);
+    });
+    return {byEnd,ends:Object.keys(byEnd).sort()};
+  }
+  function opPlanBuildDebitatSnapshotIndex(rows){
+    const byEnd=Object.create(null);
+    (rows||[]).forEach(row=>{
+      const eom=opPlanEomIso(row&&row.an,row&&row.lunaNum);
+      if(!eom||!row.reper) return;
+      const repKey=opPlanNormReper(row.reper);
+      if(!repKey) return;
+      byEnd[eom]=byEnd[eom]||Object.create(null);
+      byEnd[eom][repKey]=opPlanNumber(byEnd[eom][repKey])+opPlanNumber(row.cantitateBuc);
+    });
+    return {byEnd,ends:Object.keys(byEnd).sort()};
+  }
+  function opPlanPickSnapshotEndAtOrBefore(index,limitEndIso){
+    const limit=norm(limitEndIso);
+    let best='';
+    ((index&&index.ends)||[]).forEach(eom=>{
+      if(limit&&eom>limit) return;
+      if(!best||eom>best) best=eom;
+    });
+    return best;
+  }
+  function opPlanReplaceObjectContent(target,source){
+    Object.keys(target||{}).forEach(key=>{delete target[key];});
+    Object.keys(source||{}).forEach(key=>{target[key]=opPlanNumber(source[key]);});
+  }
+  function opPlanBuildSnapshotApplyMap(index,currentEndIso,minIso,maxIso){
+    const map=Object.create(null);
+    const currentEnd=norm(currentEndIso), minDate=norm(minIso), maxDate=norm(maxIso);
+    ((index&&index.ends)||[]).forEach(eom=>{
+      if(currentEnd&&eom<=currentEnd) return;
+      const applyIso=opPlanNextDayIso(eom);
+      if(!applyIso) return;
+      if(minDate&&applyIso<minDate) return;
+      if(maxDate&&applyIso>maxDate) return;
+      map[applyIso]=eom;
+    });
+    return map;
+  }
+
   function opPlanClearRedForYear(year){
     Object.keys(opPlanRedByCell||{}).forEach(k=>{const item=opPlanRedByCell[k]; if(item&&String(item.year)===String(year)) delete opPlanRedByCell[k];});
   }
   async function opPlanBuildRedMarkersForYear(year,force){
-    const y=norm(year); if(!y) return;
+    const y=norm(year);
+    if(!y) return;
     if(force){opPlanLoadedRedYears.delete(y); opPlanClearRedForYear(y);}
     if(opPlanLoadedRedYears.has(y)) return;
     opPlanStatusSet('Planificarea este afișată. Se calculează marcajele roșii și realizatul...','');
     await opPlanLoadForjaHelperMap();
     const docs=await opPlanReadDocsBulk(['inventar-otel','inventar-debitat:'+y,'inventar-debitat','intrari-otel:'+y,'intrari-otel','debitate:'+y,'debitate','forjate:'+y,'forjate']);
-    const docByKey=Object.create(null); docs.forEach(d=>{docByKey[norm(d.doc_key)]=d;});
-    const steelRows=(docByKey['inventar-otel']?opPlanRowsFromDoc(docByKey['inventar-otel']):[]).map(opPlanNormSteelInv);
-    const debRows=((docByKey['inventar-debitat:'+y]&&opPlanRowsFromDoc(docByKey['inventar-debitat:'+y]).length?opPlanRowsFromDoc(docByKey['inventar-debitat:'+y]):(docByKey['inventar-debitat']?opPlanRowsFromDoc(docByKey['inventar-debitat']):[]))).map(opPlanNormDebInv);
-    const intrariRows=((docByKey['intrari-otel:'+y]&&opPlanRowsFromDoc(docByKey['intrari-otel:'+y]).length?opPlanRowsFromDoc(docByKey['intrari-otel:'+y]):(docByKey['intrari-otel']?opPlanRowsFromDoc(docByKey['intrari-otel']):[]))).map(opPlanNormIntrare);
-    const debitariRows=((docByKey['debitate:'+y]&&opPlanRowsFromDoc(docByKey['debitate:'+y]).length?opPlanRowsFromDoc(docByKey['debitate:'+y]):(docByKey['debitate']?opPlanRowsFromDoc(docByKey['debitate']):[]))).map(opPlanNormDebitareFlow);
-    const forjateRows=((docByKey['forjate:'+y]&&opPlanRowsFromDoc(docByKey['forjate:'+y]).length?opPlanRowsFromDoc(docByKey['forjate:'+y]):(docByKey['forjate']?opPlanRowsFromDoc(docByKey['forjate']):[]))).map(opPlanNormForjateCons);
-    const planRows=opPlanRows.filter(r=>String(r.an)===String(y));
-    if(!planRows.length){opPlanLoadedRedYears.add(y); return;}
-    const minPlan=planRows.reduce((a,r)=>!a||r.data<a?r.data:a,'');
-    const maxPlan=planRows.reduce((a,r)=>!a||r.data>a?r.data:a,'');
-    const steelSnap=opPlanPickLatestPeriod(steelRows); const debSnap=opPlanPickLatestPeriod(debRows);
+    const docByKey=Object.create(null);
+    docs.forEach(d=>{docByKey[norm(d.doc_key)]=d;});
+
+    const steelRows=(docByKey['inventar-otel']?opPlanRowsFromDoc(docByKey['inventar-otel']):[]).map(opPlanNormSteelInv).filter(r=>r.an&&r.lunaNum);
+    const debRows=((docByKey['inventar-debitat:'+y]&&opPlanRowsFromDoc(docByKey['inventar-debitat:'+y]).length?opPlanRowsFromDoc(docByKey['inventar-debitat:'+y]):(docByKey['inventar-debitat']?opPlanRowsFromDoc(docByKey['inventar-debitat']):[]))).map(opPlanNormDebInv).filter(r=>r.an&&r.lunaNum);
+    const intrariRows=((docByKey['intrari-otel:'+y]&&opPlanRowsFromDoc(docByKey['intrari-otel:'+y]).length?opPlanRowsFromDoc(docByKey['intrari-otel:'+y]):(docByKey['intrari-otel']?opPlanRowsFromDoc(docByKey['intrari-otel']):[]))).map(opPlanNormIntrare).filter(r=>!y||String((r.data||'').slice(0,4))===String(y));
+    const debitariRows=((docByKey['debitate:'+y]&&opPlanRowsFromDoc(docByKey['debitate:'+y]).length?opPlanRowsFromDoc(docByKey['debitate:'+y]):(docByKey['debitate']?opPlanRowsFromDoc(docByKey['debitate']):[]))).map(opPlanNormDebitareFlow).filter(r=>!y||String((r.data||'').slice(0,4))===String(y));
+    const forjateRows=((docByKey['forjate:'+y]&&opPlanRowsFromDoc(docByKey['forjate:'+y]).length?opPlanRowsFromDoc(docByKey['forjate:'+y]):(docByKey['forjate']?opPlanRowsFromDoc(docByKey['forjate']):[]))).map(opPlanNormForjateCons).filter(r=>!y||String(r.an||'')===String(y));
+
+    const allPlanItems=[];
+    opPlanRows.forEach((row,index)=>{
+      const rowIso=norm(row&&row.data);
+      if(!rowIso || String(rowIso).slice(0,4)!==String(y)) return;
+      PLANIFICARE_MACHINES.forEach(machine=>{
+        const slot=row.slots[machine]||{};
+        const reper=norm(slot.reper).toUpperCase();
+        const planBuc=Math.max(0,Math.round(opPlanNumber(slot.planificat)));
+        if(!reper||planBuc<=0) return;
+        allPlanItems.push({row,index,rowIso,machine,reper,planBuc});
+      });
+    });
+    if(!allPlanItems.length){opPlanLoadedRedYears.add(y); return;}
+
+    const currentDate=new Date();
+    const currentYear=String(currentDate.getFullYear());
+    let calcStartMonthNum=0;
+    if(String(y)===currentYear){
+      calcStartMonthNum=currentDate.getMonth()+1;
+    }else{
+      allPlanItems.forEach(item=>{
+        const m=Number(String(item.rowIso||'').slice(5,7))||0;
+        if(m>0&&(!calcStartMonthNum||m<calcStartMonthNum)) calcStartMonthNum=m;
+      });
+    }
+    const planItems=allPlanItems.filter(item=>{
+      if(calcStartMonthNum){
+        const rowMonth=Number(String(item.rowIso||'').slice(5,7))||0;
+        if(rowMonth<calcStartMonthNum) return false;
+      }
+      return true;
+    });
+    let minPlanIso='', maxPlanIso='';
+    planItems.forEach(item=>{if(!minPlanIso||item.rowIso<minPlanIso) minPlanIso=item.rowIso; if(!maxPlanIso||item.rowIso>maxPlanIso) maxPlanIso=item.rowIso;});
+    if(!planItems.length||!minPlanIso||!maxPlanIso){opPlanLoadedRedYears.add(y); return;}
+
+    const basePeriod=opPlanPreviousMonthPeriod(Number(y),calcStartMonthNum||Number(String(minPlanIso).slice(5,7))||0);
+    const baseInventoryEndIso=norm(basePeriod.endIso);
+    const steelIndex=opPlanBuildSteelSnapshotIndex(steelRows);
+    const debIndex=opPlanBuildDebitatSnapshotIndex(debRows);
+    const snapEndSteel=opPlanPickSnapshotEndAtOrBefore(steelIndex,baseInventoryEndIso);
+    const snapEndDeb=opPlanPickSnapshotEndAtOrBefore(debIndex,baseInventoryEndIso);
+
     const steelStock=Object.create(null), debStock=Object.create(null);
-    (steelSnap.rows||[]).forEach(r=>{if(r.diametru&&r.calitate) steelStock[opPlanSpecKey(r.diametru,r.calitate)]=opPlanNumber(steelStock[opPlanSpecKey(r.diametru,r.calitate)])+r.cantitateKg;});
-    (debSnap.rows||[]).forEach(r=>{if(r.reper) debStock[r.reper]=opPlanNumber(debStock[r.reper])+r.cantitateBuc;});
-    const steelFrom=opPlanNextDayIso(steelSnap.endIso)||minPlan; const debFrom=opPlanNextDayIso(debSnap.endIso)||minPlan;
-    const steelDelta=Object.create(null), debDelta=Object.create(null), realByCell=Object.create(null);
-    intrariRows.forEach(r=>{if(r.data&&r.data>=steelFrom&&r.data<=maxPlan&&r.diametru&&r.calitate) opPlanAddDelta(steelDelta,r.data,opPlanSpecKey(r.diametru,r.calitate),r.cantitateKg);});
-    debitariRows.forEach(r=>{if(!r.data||r.data>maxPlan) return; if(r.data>=debFrom&&r.reper) opPlanAddDelta(debDelta,r.data,r.reper,r.cantitateBuc); if(r.data>=steelFrom&&r.diametru&&r.calitate) opPlanAddDelta(steelDelta,r.data,opPlanSpecKey(r.diametru,r.calitate),-r.totalKgDebitat);});
-    forjateRows.forEach(r=>{if(!r.data||r.data>maxPlan||!r.reper) return; const rk=opPlanRealizedKey(r.data,r.machine,r.reper); if(r.realizat>0) realByCell[rk]=true; if(r.data>=debFrom){const h=opPlanResolveHelper(r.reper); if(h.origin) opPlanAddDelta(debDelta,r.data,h.origin,-(opPlanNumber(r.realizat)+opPlanNumber(r.rebutBuc)));}});
+    if(snapEndSteel) opPlanReplaceObjectContent(steelStock,steelIndex.byEnd[snapEndSteel]);
+    if(snapEndDeb) opPlanReplaceObjectContent(debStock,debIndex.byEnd[snapEndDeb]);
+    let debAliasMap=opPlanBuildDebitatAliasMap(debStock);
+
+    const fromIsoSteel=opPlanNextDayIso(snapEndSteel)||minPlanIso;
+    const fromIsoDeb=opPlanNextDayIso(snapEndDeb)||minPlanIso;
+    const steelSnapshotApplyByDate=opPlanBuildSnapshotApplyMap(steelIndex,snapEndSteel,minPlanIso,maxPlanIso);
+    const debSnapshotApplyByDate=opPlanBuildSnapshotApplyMap(debIndex,snapEndDeb,minPlanIso,maxPlanIso);
+    const steelDelta=Object.create(null), debDelta=Object.create(null);
+
+    intrariRows.forEach(r=>{if(r.data&&r.data>=fromIsoSteel&&r.data<=maxPlanIso&&r.diametru&&r.calitate&&opPlanNumber(r.cantitateKg)!==0) opPlanAddDelta(steelDelta,r.data,opPlanSpecKey(r.diametru,r.calitate),opPlanNumber(r.cantitateKg));});
+    debitariRows.forEach(r=>{
+      if(!r.data||r.data>maxPlanIso) return;
+      const repKey=opPlanResolveDebitatStockKey(opPlanNormReper(r.reper),debStock,debAliasMap);
+      if(r.data>=fromIsoDeb&&repKey&&opPlanNumber(r.cantitateBuc)!==0) opPlanAddDelta(debDelta,r.data,repKey,opPlanNumber(r.cantitateBuc));
+      if(r.data>=fromIsoSteel&&r.diametru&&r.calitate&&opPlanNumber(r.totalKgDebitat)!==0) opPlanAddDelta(steelDelta,r.data,opPlanSpecKey(r.diametru,r.calitate),-opPlanNumber(r.totalKgDebitat));
+    });
+
+    const dictHasReal=Object.create(null), dictRealBuc=Object.create(null);
+    forjateRows.forEach(r=>{
+      if(!r.data||r.data>maxPlanIso||!r.machine||!r.reper) return;
+      const keyReal=opPlanRealizedKey(r.data,r.machine,r.reper);
+      if(opPlanNumber(r.realizat)>0){
+        dictHasReal[keyReal]=true;
+        dictRealBuc[keyReal]=Math.max(0,Math.round(opPlanNumber(dictRealBuc[keyReal])+opPlanNumber(r.realizat)));
+      }
+      if(r.data<fromIsoDeb) return;
+      const cons=Math.max(0,Math.round(opPlanNumber(r.realizat)+opPlanNumber(r.rebutBuc)));
+      if(cons>0){
+        const h=opPlanResolveHelper(r.reper);
+        const repDeb=opPlanResolveDebitatStockKey(h.origin||opPlanNormReper(r.reper),debStock,debAliasMap);
+        if(repDeb) opPlanAddDelta(debDelta,r.data,repDeb,-cons);
+      }
+    });
+
     const planByDate=Object.create(null);
-    planRows.forEach((row,idx)=>PLANIFICARE_MACHINES.forEach(machine=>{const s=row.slots[machine]||{}; const p=Math.round(opPlanNumber(s.planificat)); if(!row.data||!norm(s.reper)||p<=0) return; (planByDate[row.data]=planByDate[row.data]||[]).push({row,idx,machine,slot:s,plan:p});}));
-    Object.keys(planByDate).forEach(d=>planByDate[d].sort((a,b)=>Number(a.row.row_no||0)-Number(b.row.row_no||0)||a.idx-b.idx));
-    const dates=Array.from(new Set([].concat(Object.keys(planByDate),Object.keys(steelDelta),Object.keys(debDelta)))).filter(d=>d>=minPlan&&d<=maxPlan).sort();
+    planItems.forEach(item=>{planByDate[item.rowIso]=planByDate[item.rowIso]||[]; planByDate[item.rowIso].push(item);});
+    Object.keys(planByDate).forEach(date=>planByDate[date].sort((a,b)=>Number(a.row.row_no||0)-Number(b.row.row_no||0)||a.index-b.index));
+
+    const timelineStart=opPlanMinIso(minPlanIso,opPlanMinIso(fromIsoSteel,fromIsoDeb))||minPlanIso;
+    const dates=Array.from(new Set([].concat(Object.keys(planByDate),Object.keys(steelDelta),Object.keys(debDelta),Object.keys(steelSnapshotApplyByDate),Object.keys(debSnapshotApplyByDate))))
+      .filter(d=>d>=timelineStart&&d<=maxPlanIso).sort();
     let redCount=0;
     dates.forEach(date=>{
+      const steelSnap=steelSnapshotApplyByDate[date]||'';
+      if(steelSnap) opPlanReplaceObjectContent(steelStock,steelIndex.byEnd[steelSnap]);
+      const debSnap=debSnapshotApplyByDate[date]||'';
+      if(debSnap){opPlanReplaceObjectContent(debStock,debIndex.byEnd[debSnap]); debAliasMap=opPlanBuildDebitatAliasMap(debStock);}
       Object.entries(steelDelta[date]||{}).forEach(([k,v])=>{steelStock[k]=opPlanNumber(steelStock[k])+opPlanNumber(v);});
       Object.entries(debDelta[date]||{}).forEach(([k,v])=>{debStock[k]=opPlanNumber(debStock[k])+opPlanNumber(v);});
       (planByDate[date]||[]).forEach(item=>{
-        const key=opPlanCellKey(item.row,item.machine); const h=opPlanResolveHelper(item.slot.reper); const kg=Math.max(0,opPlanNumber(h.kg)); const spec=h.diam&&h.cal?opPlanSpecKey(h.diam,h.cal):''; const debKey=h.origin;
-        const hasReal=!!realByCell[opPlanRealizedKey(date,item.machine,item.slot.reper)];
-        if(hasReal){opPlanRedByCell[key]={year:y,status:'ok'}; return;}
-        const debAvail=Math.max(0,opPlanNumber(debStock[debKey])); const steelAvail=Math.max(0,opPlanNumber(steelStock[spec])); const steelPieces=kg>0?steelAvail/kg:0; const coverage=item.plan>0?(debAvail+steelPieces)/item.plan:1;
-        let status=coverage>=0.999?'ok':(coverage>0?'partial':'empty');
+        const key=opPlanCellKey(item.row,item.machine);
+        const keyReal=opPlanRealizedKey(date,item.machine,item.reper);
+        const hasReal=!!dictHasReal[keyReal];
+        const realizatBuc=Math.max(0,Math.round(opPlanNumber(dictRealBuc[keyReal])));
+        const h=opPlanResolveHelper(item.reper);
+        const debKey=opPlanResolveDebitatStockKey(h.origin||opPlanNormReper(item.reper),debStock,debAliasMap);
+        const spec=h.diam&&h.cal?opPlanSpecKey(h.diam,h.cal):'';
+        const kg=Math.max(0,opPlanNumber(h.kg));
+        const stOtelInainte=spec?opPlanNumber(steelStock[spec]):0;
+        const stDebInainte=debKey?opPlanNumber(debStock[debKey]):0;
+        const coverageRatio=hasReal?1:(item.planBuc>0?Math.max(0,Math.min(1,((Math.max(0,stDebInainte)+(kg>0?(Math.max(0,stOtelInainte)/kg):0))/item.planBuc))):0);
+        const status=hasReal?'ok':(coverageRatio>=0.999?'ok':(coverageRatio>0?'partial':'empty'));
         if(status!=='ok') redCount+=1;
-        opPlanRedByCell[key]={year:y,status};
-        if(item.plan<=0) return;
-        let need=item.plan;
-        const useDeb=Math.min(debAvail,need); if(debKey) debStock[debKey]=Math.max(0,debAvail-useDeb); need-=useDeb;
-        if(need>0&&kg>0&&spec){const useKg=Math.min(steelAvail,need*kg); steelStock[spec]=Math.max(0,steelAvail-useKg);}
+        opPlanRedByCell[key]={year:y,status,realizat:realizatBuc};
+        const bucDeSimulat=hasReal?0:item.planBuc;
+        if(!debKey||bucDeSimulat<=0||kg<=0||!spec) return;
+        if(stDebInainte>=bucDeSimulat){
+          debStock[debKey]=Math.max(0,stDebInainte-bucDeSimulat);
+        }else{
+          const deficitDeb=Math.max(0,bucDeSimulat-Math.max(0,stDebInainte));
+          const availableSteelKg=Math.max(0,stOtelInainte);
+          const needSteelKg=deficitDeb*kg;
+          const steelUsedKg=Math.min(availableSteelKg,needSteelKg);
+          steelStock[spec]=Math.max(0,availableSteelKg-steelUsedKg);
+          debStock[debKey]=0;
+        }
       });
     });
     opPlanLoadedRedYears.add(y);
-    opPlanStatusSet('Încărcate '+opPlanRows.length+' rânduri. Marcaje roșii calculate: '+redCount+'.','ok');
+    opPlanStatusSet('Încărcate '+opPlanRows.length+' rânduri. Marcaje roșii calculate după aceeași regulă ca Planificare Forjă: '+redCount+'.','ok');
   }
   function opPlanRenderBody(scrollToToday){
     opPlanRenderHead();
