@@ -221,6 +221,13 @@
     .empty{padding:24px 16px;font-weight:700;color:var(--muted)}
     .footerNote{font-size:11px;color:var(--muted)}
     .pill{display:inline-flex;align-items:center;gap:6px;padding:5px 10px;border-radius:999px;background:rgba(255,255,255,.72);border:1px solid rgba(29,29,29,.16);font-size:11px;font-weight:700;color:#0b1f46}
+    .cloud-save-indicator{height:36px;display:inline-flex;align-items:center;justify-content:center;gap:7px;padding:0 12px;border-radius:999px;border:1px solid rgba(29,29,29,.18);background:rgba(255,255,255,.92);color:#0b1f46;font-size:11px;font-weight:900;box-shadow:0 10px 26px rgba(33,56,88,.10);white-space:nowrap}
+    .cloud-save-indicator::before{content:'';width:10px;height:10px;border-radius:50%;background:#64748b;box-shadow:0 0 0 3px rgba(100,116,139,.18)}
+    .cloud-save-indicator.is-saving::before{background:#f59e0b;box-shadow:0 0 0 3px rgba(245,158,11,.18)}
+    .cloud-save-indicator.is-ok::before{background:#16a34a;box-shadow:0 0 0 3px rgba(22,163,74,.18)}
+    .cloud-save-indicator.is-error::before{background:#b42318;box-shadow:0 0 0 3px rgba(180,35,24,.16)}
+    .cloud-save-indicator.is-blocked{background:#fff1f2;color:#991b1b;border-color:rgba(180,35,24,.24)}
+    .cloud-save-indicator.is-blocked::before{background:#b42318;box-shadow:0 0 0 3px rgba(180,35,24,.16)}
     @media (max-width:1100px){
       .statusbar{grid-template-columns:repeat(2,minmax(170px,1fr))}
     }
@@ -709,6 +716,7 @@ body.rf-mobile #tableWrap > table{
         <button class="btn secondary" type="button" id="btnViewIntrariOtel">Vizualizare Intrări Oțel</button>
         <button class="btn secondary" type="button" id="btnGenerator">Generator plan propus</button>
         <button class="btn" type="button" id="btnSave">Salvează acum</button>
+        <span class="cloud-save-indicator" id="cloudSaveIndicator">Cloud: verificare...</span>
       </div>
       <div class="top-alert-row">
         <div class="delivery-alert-anchor">
@@ -1031,6 +1039,7 @@ body.rf-mobile #tableWrap > table{
       btnDeleteRow: document.getElementById('btnDeleteRow'),
       btnGenerator: document.getElementById('btnGenerator'),
       btnSave: document.getElementById('btnSave'),
+      cloudSaveIndicator: document.getElementById('cloudSaveIndicator'),
       tableWrap: document.getElementById('tableWrap'),
       generatorBackdrop: document.getElementById('generatorBackdrop'),
       generatorYearInput: document.getElementById('generatorYearInput'),
@@ -1136,6 +1145,11 @@ body.rf-mobile #tableWrap > table{
       lockSyncBusy: false,
       planSyncBusy: false,
       hasPendingLocalChanges: false,
+      lastCloudRowsWithData: 0,
+      lastCloudSlotsWithData: 0,
+      lastCloudRowsTotal: 0,
+      lastCloudSource: '',
+      lastBackupDocKey: '',
       planBroadcastChannel: null,
       planDbChannel: null,
       remoteApplyTimer: null,
@@ -1626,6 +1640,107 @@ body.rf-mobile #tableWrap > table{
         }))
       };
     }
+    function countRowsWithPlanData(rows){
+      const list = Array.isArray(rows) ? rows : [];
+      return list.filter(row => {
+        const slots = row && row.slots && typeof row.slots === 'object' ? row.slots : {};
+        return MACHINE_ORDER.some(machine => {
+          const slot = slots[machine] || {};
+          return trimText(slot.reper) !== '' || toNumber(slot.planificat) !== 0 || toNumber(slot.realizat_seed) !== 0;
+        });
+      }).length;
+    }
+    function countSlotsWithPlanData(rows){
+      const list = Array.isArray(rows) ? rows : [];
+      return list.reduce((total, row) => {
+        const slots = row && row.slots && typeof row.slots === 'object' ? row.slots : {};
+        return total + MACHINE_ORDER.reduce((slotTotal, machine) => {
+          const slot = slots[machine] || {};
+          return slotTotal + ((trimText(slot.reper) !== '' || toNumber(slot.planificat) !== 0 || toNumber(slot.realizat_seed) !== 0) ? 1 : 0);
+        }, 0);
+      }, 0);
+    }
+    function countPayloadRowsWithPlanData(payload){
+      return countRowsWithPlanData(extractRowsPayload(payload).map((row, index) => normalizePlanRow(row, index)));
+    }
+    function countPayloadSlotsWithPlanData(payload){
+      return countSlotsWithPlanData(extractRowsPayload(payload).map((row, index) => normalizePlanRow(row, index)));
+    }
+    function getPayloadRowsTotal(payload){
+      return extractRowsPayload(payload).length;
+    }
+    function setCloudIndicator(status, text){
+      if(!els.cloudSaveIndicator) return;
+      els.cloudSaveIndicator.className = 'cloud-save-indicator' + (status ? ' ' + status : '');
+      els.cloudSaveIndicator.textContent = text || 'Cloud: -';
+    }
+    function makePlanBackupKey(ts){
+      const stamp = trimText(ts || nowIso()).replace(/[^0-9]/g, '').slice(0, 14) || String(Date.now());
+      return DOC_KEY + ':backup-auto:' + stamp;
+    }
+    function getDocumentPayloadFromDoc(doc){
+      return doc && (doc.content || doc.data) ? (doc.content || doc.data) : null;
+    }
+    async function readRemoteDocumentDirect(docKey){
+      const cleanKey = trimText(docKey);
+      if(!cleanKey || !state.supabase) return null;
+      const res = await state.supabase.from('rf_documents').select('doc_key,content,data,updated_at').eq('doc_key', cleanKey).maybeSingle();
+      if(res && res.error) throw res.error;
+      return res && res.data ? normalizeCachedRfDocument(res.data, cleanKey) : null;
+    }
+    function rememberCloudDocumentStats(doc, sourceLabel){
+      const payload = getDocumentPayloadFromDoc(doc);
+      state.lastCloudRowsTotal = payload ? getPayloadRowsTotal(payload) : 0;
+      state.lastCloudRowsWithData = payload ? countPayloadRowsWithPlanData(payload) : 0;
+      state.lastCloudSlotsWithData = payload ? countPayloadSlotsWithPlanData(payload) : 0;
+      state.lastCloudSource = sourceLabel || '';
+    }
+    function validatePlanSaveSafety(currentPayload, remoteDoc){
+      const remotePayload = getDocumentPayloadFromDoc(remoteDoc);
+      if(!remotePayload) return { ok:true, currentRowsWithData:countPayloadRowsWithPlanData(currentPayload), remoteRowsWithData:0 };
+      const remoteRowsWithData = countPayloadRowsWithPlanData(remotePayload);
+      const currentRowsWithData = countPayloadRowsWithPlanData(currentPayload);
+      const remoteSlotsWithData = countPayloadSlotsWithPlanData(remotePayload);
+      const currentSlotsWithData = countPayloadSlotsWithPlanData(currentPayload);
+      const remoteRowsTotal = getPayloadRowsTotal(remotePayload);
+      const currentRowsTotal = getPayloadRowsTotal(currentPayload);
+      const rowsDrop = remoteRowsWithData - currentRowsWithData;
+      const slotsDrop = remoteSlotsWithData - currentSlotsWithData;
+      const totalDrop = remoteRowsTotal - currentRowsTotal;
+      const dangerousRowsDrop = remoteRowsWithData >= 25 && rowsDrop >= 10 && currentRowsWithData < Math.floor(remoteRowsWithData * 0.70);
+      const dangerousSlotsDrop = remoteSlotsWithData >= 40 && slotsDrop >= 20 && currentSlotsWithData < Math.floor(remoteSlotsWithData * 0.70);
+      const dangerousTotalDrop = remoteRowsTotal >= 100 && totalDrop >= 25 && currentRowsTotal < Math.floor(remoteRowsTotal * 0.85);
+      if(dangerousRowsDrop || dangerousSlotsDrop || dangerousTotalDrop){
+        return {
+          ok:false,
+          reason:'Salvare blocată: planul din browser are mult mai puține date decât cloud-ul. Cloud: ' + remoteRowsWithData + ' rânduri cu date / ' + remoteSlotsWithData + ' sloturi. Browser: ' + currentRowsWithData + ' rânduri cu date / ' + currentSlotsWithData + ' sloturi.',
+          currentRowsWithData,
+          remoteRowsWithData,
+          currentSlotsWithData,
+          remoteSlotsWithData
+        };
+      }
+      return { ok:true, currentRowsWithData, remoteRowsWithData, currentSlotsWithData, remoteSlotsWithData };
+    }
+    async function backupRemotePlanBeforeSave(remoteDoc){
+      const remotePayload = getDocumentPayloadFromDoc(remoteDoc);
+      if(!remotePayload) return '';
+      const backupKey = makePlanBackupKey((remoteDoc && remoteDoc.updated_at) || nowIso());
+      const backupPayload = {
+        app: 'PLANIFICARE_FORJA_BACKUP',
+        source_doc_key: DOC_KEY,
+        source_updated_at: (remoteDoc && remoteDoc.updated_at) || '',
+        backup_created_at: nowIso(),
+        rows_with_data: countPayloadRowsWithPlanData(remotePayload),
+        slots_with_data: countPayloadSlotsWithPlanData(remotePayload),
+        rows_total: getPayloadRowsTotal(remotePayload),
+        snapshot: remotePayload
+      };
+      await writeDocumentCompat(backupKey, backupPayload);
+      state.lastBackupDocKey = backupKey;
+      return backupKey;
+    }
+
     function cellFieldKey(rowId, machine, field){
       return [trimText(rowId), trimText(machine), trimText(field)].join('||');
     }
@@ -2460,6 +2575,18 @@ function getDefaultPermissions(role){
       if(!cleanKey) return null;
       const cached = readCachedRfDocument(cleanKey);
       if(!state.supabase) return cached;
+      if(cleanKey === DOC_KEY){
+        try{
+          const res = await state.supabase.from('rf_documents').select('doc_key,content,data,updated_at').eq('doc_key', cleanKey).maybeSingle();
+          if(!res.error && res.data){
+            const doc = normalizeCachedRfDocument(res.data, cleanKey);
+            writeCachedRfDocument(doc);
+            rememberCloudDocumentStats(doc, 'remote-direct');
+            return doc;
+          }
+        }catch(_e){}
+        return cached || null;
+      }
       if(cached){
         try{
           const metaRes = await state.supabase.from('rf_documents').select('doc_key,updated_at').eq('doc_key', cleanKey).maybeSingle();
@@ -7658,10 +7785,26 @@ function addRow(){
         state.saveTimer = null;
       }
       try{
-        state.updatedAt = nowIso();
+        setCloudIndicator('is-saving', 'Cloud: verific salvarea...');
+        const remoteDoc = await readRemoteDocumentDirect(DOC_KEY);
+        const nextUpdatedAt = nowIso();
         const payload = buildPayload();
-        payload.updated_at = state.updatedAt;
+        payload.updated_at = nextUpdatedAt;
+        const validation = validatePlanSaveSafety(payload, remoteDoc);
+        if(!validation.ok){
+          state.hasPendingLocalChanges = true;
+          els.cloudValue.textContent = 'Salvare blocată';
+          els.cloudSub.textContent = validation.reason;
+          setCloudIndicator('is-blocked', 'Blocată: date mai puține decât cloud');
+          window.alert(validation.reason + '\n\nNu s-a salvat nimic peste cloud. Reîncarcă pagina sau verifică backup-ul înainte de salvare.');
+          return;
+        }
+        setCloudIndicator('is-saving', 'Cloud: creez backup...');
+        const backupKey = await backupRemotePlanBeforeSave(remoteDoc);
+        state.updatedAt = nextUpdatedAt;
+        setCloudIndicator('is-saving', 'Cloud: salvez...');
         await writeDocumentCompat(DOC_KEY, payload);
+        rememberCloudDocumentStats({ content: payload, updated_at: state.updatedAt }, 'saved');
         if(state.planBroadcastChannel && typeof state.planBroadcastChannel.send === 'function'){
           try{
             state.planBroadcastChannel.send({
@@ -7679,12 +7822,14 @@ function addRow(){
         }
         state.hasPendingLocalChanges = false;
         els.cloudValue.textContent = 'Cloud salvat';
-        els.cloudSub.textContent = 'Ultima sincronizare plan: ' + formatDateTime(state.updatedAt);
+        els.cloudSub.textContent = 'Ultima sincronizare plan: ' + formatDateTime(state.updatedAt) + (backupKey ? ' • backup: ' + backupKey : '');
+        setCloudIndicator('is-ok', 'Cloud salvat: ' + validation.currentRowsWithData + ' rânduri cu date');
       }catch(error){
         state.hasPendingLocalChanges = true;
         console.error(error);
         els.cloudValue.textContent = 'Eroare cloud';
         els.cloudSub.textContent = trimText(error && error.message || 'Nu am putut salva documentul.');
+        setCloudIndicator('is-error', 'Eroare salvare cloud');
       }
     }
     function queueSave(delayMs){
@@ -7693,6 +7838,7 @@ function addRow(){
       state.hasPendingLocalChanges = true;
       els.cloudValue.textContent = 'Salvare...';
       els.cloudSub.textContent = 'Pregătesc payload-ul pentru rf_documents.';
+      setCloudIndicator('is-saving', 'Cloud: salvare în așteptare');
       if(state.saveTimer) clearTimeout(state.saveTimer);
       state.saveTimer = setTimeout(() => { saveNow(); }, delay);
     }
@@ -7714,15 +7860,19 @@ function addRow(){
           state.rows = hydratedRows;
           state.updatedAt = remoteUpdated || nowIso();
           state.hasPendingLocalChanges = false;
+          rememberCloudDocumentStats({ content: payload, updated_at: remoteUpdated || state.updatedAt }, doc && doc.__fromCache ? 'cache' : 'cloud');
           els.cloudValue.textContent = doc && doc.__fromCache ? 'Cache local' : 'Cloud încărcat';
           els.cloudSub.textContent = 'Ultima sincronizare plan: ' + formatDateTime(state.updatedAt);
+          setCloudIndicator(doc && doc.__fromCache ? 'is-saving' : 'is-ok', (doc && doc.__fromCache ? 'Cache local' : 'Cloud') + ': ' + state.lastCloudRowsWithData + ' rânduri cu date');
           return true;
         }
         if(rows.length){
+          rememberCloudDocumentStats({ content: payload, updated_at: remoteUpdated || state.updatedAt }, doc && doc.__fromCache ? 'cache' : 'cloud');
           els.cloudValue.textContent = doc && doc.__fromCache ? 'Cache local' : 'Cloud încărcat';
           els.cloudSub.textContent = 'Ultima sincronizare plan: ' + formatDateTime(remoteUpdated || state.updatedAt);
           state.rows = state.rows.length ? state.rows : hydratedRows;
           state.hasPendingLocalChanges = false;
+          setCloudIndicator(doc && doc.__fromCache ? 'is-saving' : 'is-ok', (doc && doc.__fromCache ? 'Cache local' : 'Cloud') + ': ' + state.lastCloudRowsWithData + ' rânduri cu date');
           return true;
         }
       }
@@ -7732,6 +7882,7 @@ function addRow(){
         state.hasPendingLocalChanges = false;
         els.cloudValue.textContent = 'Model local';
         els.cloudSub.textContent = 'Încă nu există document cloud pentru planificare.';
+        setCloudIndicator('is-error', 'Cloud: document lipsă');
       }
       return false;
     }
