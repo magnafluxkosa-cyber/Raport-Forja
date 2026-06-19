@@ -2446,6 +2446,7 @@
     const DEFAULT_DELETED_ROW_IDS=Array.from({length:5000},(_,i)=>i+1);
     const RAW_FINAL_OFFSET=55;
     const COL={data:0,process:1,equipment:2,part:3,shift:4,operator:5,plan:6,good:7,prodDef:8,prodReman:9,totalTime:10,timePerf:11,mgmtStart:12,mgmtEnd:20,prodStart:21,prodEnd:31,matStart:32,matEnd:49,eff:50,pmDef:51,fjDef:52,prodOp:53,prodTotal:54};
+    const MANUAL_EDITABLE_COLS=new Set([COL.totalTime,COL.timePerf,COL.pmDef,COL.fjDef,COL.eff,COL.prodOp,COL.prodTotal]);
     const DISPLAY_COLS=VISIBLE_COLS+2; // + coloanele Anul și Luna, afișate înainte de Data fără să schimbe formulele interne
     const YEAR_FILTER_COL='__year__';
     const MONTH_FILTER_COL='__month__';
@@ -2465,7 +2466,30 @@
       if(!Array.isArray(row.rawValues))row.rawValues=row.values.slice();
       while(row.values.length<count)row.values.push('');
       while(row.rawValues.length<count)row.rawValues.push('');
+      normalizeManualOverrides(row);
       return row;
+    }
+    function normalizeManualOverrides(row){
+      if(!row)return {};
+      if(!row.manual||typeof row.manual!=='object'||Array.isArray(row.manual))row.manual={};
+      const count=reportColCount();
+      Object.keys(row.manual).forEach(k=>{
+        const col=Number(k);
+        if(!Number.isInteger(col)||col<0||col>=count||!MANUAL_EDITABLE_COLS.has(col))delete row.manual[k];
+      });
+      return row.manual;
+    }
+    function isManualEditableCol(col){return MANUAL_EDITABLE_COLS.has(Number(col))}
+    function hasManualOverride(row,col){const manual=normalizeManualOverrides(row);return Object.prototype.hasOwnProperty.call(manual,String(Number(col)))}
+    function getManualOverride(row,col){const manual=normalizeManualOverrides(row);return manual[String(Number(col))]}
+    function setManualOverride(row,col,value){const c=Number(col);if(!isManualEditableCol(c))return;const manual=normalizeManualOverrides(row);manual[String(c)]=value===null||value===undefined?'':value}
+    function assignAutoOrManual(row,col,value){if(hasManualOverride(row,col)){row.values[col]=getManualOverride(row,col)}else{row.values[col]=value}}
+    function setCellModelValue(row,col,value){
+      ensureReportRowWidth(row);
+      row.values[col]=value;
+      if(!Array.isArray(row.rawValues))row.rawValues=(row.values||[]).slice(0,reportColCount());
+      row.rawValues[col]=value;
+      if(isManualEditableCol(col))setManualOverride(row,col,value);
     }
     function cleanReportColumn(col){
       const label=String(col&&col.label?col.label:'Coloană nouă').trim()||'Coloană nouă';
@@ -2498,14 +2522,58 @@
       const good=n(goodRaw);
       return good>=plan?' pm-good-ok':' pm-good-under';
     }
-    function recalc(row){ensureReportRowWidth(row);const sourceVals=Array.isArray(row.rawValues)?row.rawValues:row.values;const hasUserInput=sourceVals.slice(0,COL.eff).some((v,i)=>i!==COL.timePerf&&String(v??'').trim()!=='');if(!hasUserInput){[COL.totalTime,COL.timePerf,COL.pmDef,COL.fjDef,COL.eff,COL.prodOp,COL.prodTotal].forEach(i=>{row.values[i]=''});return row}const loss=lossSum(row);let total=n(row.values[COL.totalTime]);let perf=n(row.values[COL.timePerf]);if(!total && (perf||loss))total=perf+loss;if(total){perf=total-loss;row.values[COL.totalTime]=total;row.values[COL.timePerf]=perf}else{row.values[COL.totalTime]='';row.values[COL.timePerf]=perf||''}const plan=n(row.values[COL.plan]);const goodCellHasValue=hasCellValue(row.values[COL.good]);const good=n(row.values[COL.good]);const pm=materialPm(row);const fj=materialFj(row);row.values[COL.pmDef]=pm;row.values[COL.fjDef]=fj;if(!plan){row.values[COL.eff]='';row.values[COL.prodOp]='';row.values[COL.prodTotal]='';return row}
+    function recalc(row){
+      ensureReportRowWidth(row);
+      const sourceVals=Array.isArray(row.rawValues)?row.rawValues:row.values;
+      const hasManualInput=Object.keys(normalizeManualOverrides(row)).length>0;
+      const hasUserInput=hasManualInput||sourceVals.slice(0,COL.eff).some((v,i)=>i!==COL.timePerf&&String(v??'').trim()!=='');
+      if(!hasUserInput){
+        [COL.totalTime,COL.timePerf,COL.pmDef,COL.fjDef,COL.eff,COL.prodOp,COL.prodTotal].forEach(i=>assignAutoOrManual(row,i,''));
+        return row;
+      }
+      const loss=lossSum(row);
+      const manualTotal=hasManualOverride(row,COL.totalTime);
+      let total=n(manualTotal?getManualOverride(row,COL.totalTime):row.values[COL.totalTime]);
+      let perf=n(row.values[COL.timePerf]);
+      if(!manualTotal&&!total&&(perf||loss))total=perf+loss;
+      assignAutoOrManual(row,COL.totalTime,total||'');
+      total=n(row.values[COL.totalTime]);
+      if(total){
+        assignAutoOrManual(row,COL.timePerf,total-loss);
+      }else{
+        assignAutoOrManual(row,COL.timePerf,perf||'');
+      }
+      perf=n(row.values[COL.timePerf]);
+      const plan=n(row.values[COL.plan]);
+      const goodCellHasValue=hasCellValue(row.values[COL.good]);
+      const good=n(row.values[COL.good]);
+      const pm=materialPm(row);
+      const fj=materialFj(row);
+      assignAutoOrManual(row,COL.pmDef,pm);
+      assignAutoOrManual(row,COL.fjDef,fj);
+      if(!plan){
+        assignAutoOrManual(row,COL.eff,'');
+        assignAutoOrManual(row,COL.prodOp,'');
+        assignAutoOrManual(row,COL.prodTotal,'');
+        return row;
+      }
       // EFICIENTA OPERATOR % = Excel: IF(M=0;"";IF(I="";"";I/M/H*450))
-      const denomEff=plan*(perf/450);row.values[COL.eff]=(perf&&goodCellHasValue&&denomEff)?good/denomEff:'';
+      const denomEff=plan*(perf/450);
+      assignAutoOrManual(row,COL.eff,(perf&&goodCellHasValue&&denomEff)?good/denomEff:'');
       // PRODUCTIVITATE OPERATOR % = Excel: IF(M=0;"";IF(W&T&S&Q&R&N=0;I/H;I/(H*((L-W-T-S-Q-R-N-O-P-Z-AA-AB-AD)/450))))
-      if(!perf){row.values[COL.prodOp]=''}else if(excelConcatEqualsZero(row,PROD_OP_GATE_INDEXES)){row.values[COL.prodOp]=good/plan}else{const adjustedTotal=total-sumIndexes(row,PROD_OP_LOSS_INDEXES);const denomProdOp=plan*(adjustedTotal/450);row.values[COL.prodOp]=denomProdOp?good/denomProdOp:''}
+      let prodOpValue='';
+      if(perf){
+        if(excelConcatEqualsZero(row,PROD_OP_GATE_INDEXES)){prodOpValue=good/plan}
+        else{const adjustedTotal=total-sumIndexes(row,PROD_OP_LOSS_INDEXES);const denomProdOp=plan*(adjustedTotal/450);prodOpValue=denomProdOp?good/denomProdOp:''}
+      }
+      assignAutoOrManual(row,COL.prodOp,prodOpValue);
       // PRODUCTIVITATEA TOTALA % = Excel: IF(H="";"";IF(R&Q=0;I/H;I/(H*(L/450))))
-      if(excelConcatEqualsZero(row,PROD_TOTAL_GATE_INDEXES)){row.values[COL.prodTotal]=good/plan}else{const denomProdTotal=plan*(total/450);row.values[COL.prodTotal]=denomProdTotal?good/denomProdTotal:''}
-      return row}
+      let prodTotalValue='';
+      if(excelConcatEqualsZero(row,PROD_TOTAL_GATE_INDEXES)){prodTotalValue=good/plan}
+      else{const denomProdTotal=plan*(total/450);prodTotalValue=denomProdTotal?good/denomProdTotal:''}
+      assignAutoOrManual(row,COL.prodTotal,prodTotalValue);
+      return row
+    }
     function getNextRowId(){let max=0;state.rows.forEach(r=>{const id=Number(r&&r.id);if(isFinite(id)&&id>max)max=id});if(state.deletedIds instanceof Set){state.deletedIds.forEach(id=>{const nId=Number(id);if(isFinite(nId)&&nId>max)max=nId})}return max+1}
     function createBlankRow(afterRow){const values=Array(reportColCount()).fill('');const row={id:getNextRowId(),monthLabel:(afterRow&&afterRow.monthLabel)||'',values,rawValues:values.slice()};return row}
     function displayYear(row){const text=excelSerialToDateString(row&&row.values?row.values[COL.data]:'');const m=String(text||'').match(/(\d{4})$/);return m?m[1]:''}
@@ -2822,11 +2890,11 @@ function quickEls(){return {modal:document.getElementById('pmQuickModal'),title:
     function getSupabaseClient(){try{if(window.ERPAuth&&typeof window.ERPAuth.getSupabaseClient==='function'){const c=window.ERPAuth.getSupabaseClient();if(c)return c}}catch(_e){}if(window.__RF_SHARED_SUPABASE__)return window.__RF_SHARED_SUPABASE__;const cfg=window.RF_CONFIG||window.rfConfig||window.__RF_CONFIG__||window.RF_SUPABASE||window.SUPABASE_CONFIG||{};const url=cfg.SUPABASE_URL||cfg.supabaseUrl||window.RF_SUPABASE_URL||window.SUPABASE_URL||'';const key=cfg.SUPABASE_ANON_KEY||cfg.supabaseAnonKey||window.RF_SUPABASE_ANON_KEY||window.SUPABASE_ANON_KEY||'';if(!url||!key||!(window.supabase&&window.supabase.createClient))return null;window.__RF_SHARED_SUPABASE__=window.supabase.createClient(url,key,{auth:{persistSession:true,autoRefreshToken:true,detectSessionInUrl:false}});return window.__RF_SHARED_SUPABASE__}
     function normalizeDeletedIds(saved){const out=new Set();(DEFAULT_DELETED_ROW_IDS||[]).forEach(id=>{const nId=Number(id);if(isFinite(nId))out.add(nId)});(Array.isArray(saved&&saved.deletedIds)?saved.deletedIds:[]).forEach(id=>{const nId=Number(id);if(isFinite(nId))out.add(nId)});return out}
     function rememberDeletedRowId(id){const nId=Number(id);if(!isFinite(nId))return;if(!(state.deletedIds instanceof Set))state.deletedIds=new Set();state.deletedIds.add(nId)}
-    function serializeCloudPayload(){const count=reportColCount();state.rows.forEach(r=>ensureReportRowWidth(r));const deletedIds=Array.from(state.deletedIds instanceof Set?state.deletedIds:new Set()).map(Number).filter(id=>Number.isFinite(id));return {schema:CLOUD_SCHEMA,docKey:DOC_KEY,version:3,fix:CLOUD_FIX,generatedFrom:'REPORT',updatedAt:new Date().toISOString(),columns:state.columns.slice(0,count),deletedIds,rows:state.rows.map(r=>({id:r.id,monthLabel:r.monthLabel||'',values:((Array.isArray(r.values)?r.values:r.rawValues)||[]).slice(0,count)})),norme:{columns:state.normColumns.slice(),rows:state.normRows.map(r=>({id:r.id,values:(Array.isArray(r.values)?r.values:[]).slice(0,state.normColumns.length)}))}}}
+    function serializeCloudPayload(){const count=reportColCount();state.rows.forEach(r=>ensureReportRowWidth(r));const deletedIds=Array.from(state.deletedIds instanceof Set?state.deletedIds:new Set()).map(Number).filter(id=>Number.isFinite(id));return {schema:CLOUD_SCHEMA,docKey:DOC_KEY,version:3,fix:CLOUD_FIX,generatedFrom:'REPORT',updatedAt:new Date().toISOString(),columns:state.columns.slice(0,count),deletedIds,rows:state.rows.map(r=>{const manual=normalizeManualOverrides(r);const out={id:r.id,monthLabel:r.monthLabel||'',values:((Array.isArray(r.values)?r.values:r.rawValues)||[]).slice(0,count)};if(Object.keys(manual).length)out.manual=Object.assign({},manual);return out}),norme:{columns:state.normColumns.slice(),rows:state.normRows.map(r=>({id:r.id,values:(Array.isArray(r.values)?r.values:[]).slice(0,state.normColumns.length)}))}}}
     async function readCloudPayload(){try{const supa=state.supa||getSupabaseClient();state.supa=supa;if(!supa)return null;const {data,error}=await supa.from('rf_documents').select('content,data,updated_at').eq('doc_key',DOC_KEY).maybeSingle();if(error)throw error;const content=data&&data.content&&typeof data.content==='object'?data.content:(data&&data.data&&typeof data.data==='object'?data.data:null);if(!content||!Array.isArray(content.rows))return null;return content}catch(e){console.warn('Raport PM cloud load',e);state.lastCloudError=e;return null}}
     async function writeCloudPayload(){const supa=state.supa||getSupabaseClient();state.supa=supa;if(!supa)throw new Error('Supabase indisponibil');const content=serializeCloudPayload();let res=await supa.from('rf_documents').upsert({doc_key:DOC_KEY,content,data:content,updated_at:content.updatedAt},{onConflict:'doc_key'}).select('updated_at').maybeSingle();if(res.error){res=await supa.from('rf_documents').upsert({doc_key:DOC_KEY,content,updated_at:content.updatedAt},{onConflict:'doc_key'}).select('updated_at').maybeSingle()}if(res.error)throw res.error;return content}
     function loadSaved(){try{return JSON.parse(localStorage.getItem(STORAGE_KEY)||'null')}catch(e){return null}}
-    function buildRowsFromSaved(payload,saved){const savedRows=Array.isArray(saved&&saved.rows)?saved.rows:[];const deletedIds=normalizeDeletedIds(saved);state.deletedIds=deletedIds;const savedMap=new Map(savedRows.filter(r=>!deletedIds.has(Number(r.id))).map(r=>[Number(r.id),r]));const used=new Set();const rows=payload.rows.filter(r=>!deletedIds.has(Number(r.id))).map(r=>{const id=Number(r.id);const local=savedMap.get(id);used.add(id);const baseValues=local&&Array.isArray(local.values)?local.values.slice():r.values.slice();while(baseValues.length<reportColCount())baseValues.push('');const row={id:id,monthLabel:(local&&local.monthLabel)||r.monthLabel,rawValues:baseValues.slice(0,reportColCount()),values:baseValues.slice(0,reportColCount())};ensureReportRowWidth(row);recalc(row);return row});savedRows.forEach(local=>{const id=Number(local.id);if(!isFinite(id)||deletedIds.has(id)||used.has(id)||!Array.isArray(local.values))return;const baseValues=local.values.slice();while(baseValues.length<reportColCount())baseValues.push('');const row={id:id,monthLabel:local.monthLabel||'',rawValues:baseValues.slice(0,reportColCount()),values:baseValues.slice(0,reportColCount())};ensureReportRowWidth(row);recalc(row);rows.push(row);used.add(id)});return rows}
+    function buildRowsFromSaved(payload,saved){const savedRows=Array.isArray(saved&&saved.rows)?saved.rows:[];const deletedIds=normalizeDeletedIds(saved);state.deletedIds=deletedIds;const savedMap=new Map(savedRows.filter(r=>!deletedIds.has(Number(r.id))).map(r=>[Number(r.id),r]));const used=new Set();const rows=payload.rows.filter(r=>!deletedIds.has(Number(r.id))).map(r=>{const id=Number(r.id);const local=savedMap.get(id);used.add(id);const baseValues=local&&Array.isArray(local.values)?local.values.slice():r.values.slice();while(baseValues.length<reportColCount())baseValues.push('');const row={id:id,monthLabel:(local&&local.monthLabel)||r.monthLabel,rawValues:baseValues.slice(0,reportColCount()),values:baseValues.slice(0,reportColCount()),manual:(local&&local.manual&&typeof local.manual==='object'&&!Array.isArray(local.manual))?Object.assign({},local.manual):{}};ensureReportRowWidth(row);recalc(row);return row});savedRows.forEach(local=>{const id=Number(local.id);if(!isFinite(id)||deletedIds.has(id)||used.has(id)||!Array.isArray(local.values))return;const baseValues=local.values.slice();while(baseValues.length<reportColCount())baseValues.push('');const row={id:id,monthLabel:local.monthLabel||'',rawValues:baseValues.slice(0,reportColCount()),values:baseValues.slice(0,reportColCount()),manual:(local.manual&&typeof local.manual==='object'&&!Array.isArray(local.manual))?Object.assign({},local.manual):{}};ensureReportRowWidth(row);recalc(row);rows.push(row);used.add(id)});return rows}
     function cloudPayloadMatchesThisVersion(saved){return !!(saved&&saved.schema===CLOUD_SCHEMA&&saved.fix===CLOUD_FIX&&Array.isArray(saved.rows))}
     async function loadData(){const payload=JSON.parse($('#reportData').textContent);state.supa=getSupabaseClient();let saved=await readCloudPayload();let repairCloud=false;if(saved&&!cloudPayloadMatchesThisVersion(saved)){saved=null;repairCloud=true}if(!saved){const local=loadSaved();if(cloudPayloadMatchesThisVersion(local))saved=local;else repairCloud=true}const baseColumns=payload.columns.slice(0,VISIBLE_COLS);const savedColumns=Array.isArray(saved&&saved.columns)?saved.columns:[];const savedRows=Array.isArray(saved&&saved.rows)?saved.rows:[];state.removedExtraColumns=savedColumns.length>VISIBLE_COLS||savedRows.some(r=>Array.isArray(r&&r.values)&&r.values.length>VISIBLE_COLS);state.columns=baseColumns;state.rows=buildRowsFromSaved(payload,saved);setNormeData(saved);state.autoBottom=true;applyLatestMonthFilter();if((state.removedExtraColumns||repairCloud)&&state.canEdit){state.dirty++;setTimeout(()=>saveCloudNow(false),350)}}
     function saveLocal(){return saveCloudNow(false)}
@@ -3237,6 +3305,7 @@ function quickEls(){return {modal:document.getElementById('pmQuickModal'),title:
       delete td.dataset.pmEditStart;
       delete td.dataset.pmDirty;
       if(wasDirty){
+        if(isManualEditableCol(synced.col))setManualOverride(synced.row,synced.col,synced.text);
         recalc(synced.row);
         markDirty();
         if(synced.col<=COL.operator){
@@ -3509,9 +3578,7 @@ function quickEls(){return {modal:document.getElementById('pmQuickModal'),title:
           for(let c=b.c1;c<=b.c2;c++){
             if(c<0||c>=reportColCount())continue;
             const pastedValue=cleanPastedValue(c,pastedRaw);
-            row.values[c]=pastedValue;
-            if(!Array.isArray(row.rawValues))row.rawValues=(row.values||[]).slice(0,reportColCount());
-            row.rawValues[c]=pastedValue;
+            setCellModelValue(row,c,pastedValue);
             changed=true;
           }
           recalc(row);
@@ -3541,9 +3608,7 @@ function quickEls(){return {modal:document.getElementById('pmQuickModal'),title:
           const col=start.col+c;
           if(col>=reportColCount())break;
           const pastedValue=cleanPastedValue(col,grid[r][c]);
-          row.values[col]=pastedValue;
-          if(!Array.isArray(row.rawValues))row.rawValues=(row.values||[]).slice(0,reportColCount());
-          row.rawValues[col]=pastedValue;
+          setCellModelValue(row,col,pastedValue);
           changed=true;
         }
         recalc(row);
@@ -3574,7 +3639,7 @@ function quickEls(){return {modal:document.getElementById('pmQuickModal'),title:
         if(!row||!row.values)continue;
         for(let c=b.c1;c<=b.c2;c++){
           if(c<0||c>=reportColCount())continue;
-          if(String(row.values[c]??'')!==''){row.values[c]='';changed=true}
+          if(String(row.values[c]??'')!==''||String((row.rawValues||[])[c]??'')!==''||hasManualOverride(row,c)){setCellModelValue(row,c,'');changed=true}
         }
         recalc(row);
       }
@@ -5420,6 +5485,7 @@ function quickEls(){return {modal:document.getElementById('pmQuickModal'),title:
 <!-- update: buton Sterge rand rapid fara confirmare in Raport - 2026-06-07 -->
 <!-- fix: import Excel file chooser deschide corect - 2026-06-09 -->
 <!-- update: buton Curăță raport pentru golire completă raport PM înainte de import - 2026-06-16 -->
+<!-- fix: celulele modificate manual în Raport PM rămân editabile și nu mai sunt suprascrise de recalcularea automată - 2026-06-19 -->
 </body>
 </html>
 <!-- update: OPERATORI_ZILE calculat ca în foaia Excel OPERATORI_ZILE - 2026-06-07 -->
