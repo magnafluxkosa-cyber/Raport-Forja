@@ -2818,13 +2818,7 @@ function quickEls(){return {modal:document.getElementById('pmQuickModal'),title:
       }
     }
     function getSelectedReportRowIndexes(){
-      const idxs=new Set();
-      const b=selectionBounds&&selectionBounds();
-      if(b){
-        for(let r=b.r1;r<=b.r2;r++){
-          if(Number.isFinite(r)&&state.rows[r])idxs.add(r);
-        }
-      }
+      const idxs=new Set(selectionRowIndexes());
       if(!idxs.size){
         const active=activeCellStart&&activeCellStart();
         if(active&&Number.isFinite(active.rowIndex)&&state.rows[active.rowIndex])idxs.add(active.rowIndex);
@@ -3493,6 +3487,35 @@ function quickEls(){return {modal:document.getElementById('pmQuickModal'),title:
       if(!s)return null;
       return {r1:Math.min(s.anchor.rowIndex,s.focus.rowIndex),r2:Math.max(s.anchor.rowIndex,s.focus.rowIndex),c1:Math.min(s.anchor.col,s.focus.col),c2:Math.max(s.anchor.col,s.focus.col)};
     }
+    function selectionColumnBounds(){
+      const s=state.selection;
+      if(!s)return null;
+      return {c1:Math.min(s.anchor.col,s.focus.col),c2:Math.max(s.anchor.col,s.focus.col)};
+    }
+    function selectionRowIndexes(){
+      const s=state.selection;
+      if(!s)return [];
+      const anchorRow=state.rows[s.anchor.rowIndex];
+      const focusRow=state.rows[s.focus.rowIndex];
+      const visibleRows=(state.activeView==='raport')?filteredRows():state.rows.slice();
+      const aVisible=visibleRows.indexOf(anchorRow);
+      const fVisible=visibleRows.indexOf(focusRow);
+      if(aVisible>=0&&fVisible>=0){
+        const from=Math.min(aVisible,fVisible);
+        const to=Math.max(aVisible,fVisible);
+        const out=[];
+        for(let i=from;i<=to;i++){
+          const gi=state.rows.indexOf(visibleRows[i]);
+          if(gi>=0)out.push(gi);
+        }
+        return out;
+      }
+      const b=selectionBounds();
+      if(!b)return [];
+      const out=[];
+      for(let r=b.r1;r<=b.r2;r++)if(state.rows[r])out.push(r);
+      return out;
+    }
     function selectedNumericValue(row,col){
       if(!row||!row.values)return null;
       const raw=row.values[col];
@@ -3515,13 +3538,14 @@ function quickEls(){return {modal:document.getElementById('pmQuickModal'),title:
     }
     function updateSelectionSummary(){
       if(!els.selectionSummary)return;
-      const b=selectionBounds();
-      if(!b){
+      const cols=selectionColumnBounds();
+      const rowIndexes=selectionRowIndexes();
+      if(!cols||!rowIndexes.length){
         els.selectionSummary.classList.remove('visible');
         els.selectionSummary.innerHTML='';
         return;
       }
-      const selectedCells=(b.r2-b.r1+1)*(b.c2-b.c1+1);
+      const selectedCells=rowIndexes.length*(cols.c2-cols.c1+1);
       if(selectedCells<=1){
         els.selectionSummary.classList.remove('visible');
         els.selectionSummary.innerHTML='';
@@ -3529,36 +3553,38 @@ function quickEls(){return {modal:document.getElementById('pmQuickModal'),title:
       }
       let sum=0;
       let numericCount=0;
-      for(let r=b.r1;r<=b.r2;r++){
+      rowIndexes.forEach(r=>{
         const row=state.rows[r];
-        for(let c=b.c1;c<=b.c2;c++){
+        for(let c=cols.c1;c<=cols.c2;c++){
           const val=selectedNumericValue(row,c);
           if(val===null)continue;
           sum+=val;
           numericCount++;
         }
-      }
+      });
       const avg=numericCount?sum/numericCount:0;
       els.selectionSummary.innerHTML=`<span class="pm-selection-pill">Sumă: ${esc(fmtSelectionNumber(sum))}</span><span class="pm-selection-pill">Selectate: ${esc(fmtSelectionNumber(selectedCells))}</span><span class="pm-selection-pill">Medie: ${esc(fmtSelectionNumber(avg))}</span>`;
       els.selectionSummary.classList.add('visible');
     }
     function applySelectionVisual(){
       if(!els.table)return;
-      const b=selectionBounds();
+      const cols=selectionColumnBounds();
+      const rowIndexes=selectionRowIndexes();
       const markedSelector='tbody td.pm-copy-selected,tbody td.pm-copy-anchor,tbody td.pm-paste-target';
       const hasMarked=els.table.querySelector(markedSelector);
-      if(!b&&!state.pasteFlash){
+      if((!cols||!rowIndexes.length)&&!state.pasteFlash){
         if(hasMarked)els.table.querySelectorAll(markedSelector).forEach(td=>td.classList.remove('pm-copy-selected','pm-copy-anchor','pm-paste-target'));
         updateSelectionSummary();
         return;
       }
       if(hasMarked)els.table.querySelectorAll(markedSelector).forEach(td=>td.classList.remove('pm-copy-selected','pm-copy-anchor','pm-paste-target'));
+      const selectedRows=new Set(rowIndexes);
       els.table.querySelectorAll('tbody tr[data-row-index]').forEach(tr=>{
         const ri=Number(tr.dataset.rowIndex);
-        if(ri<b.r1||ri>b.r2)return;
+        if(!selectedRows.has(ri))return;
         tr.querySelectorAll('td[data-col]').forEach(td=>{
           const ci=Number(td.dataset.col);
-          if(ci>=b.c1&&ci<=b.c2)td.classList.add('pm-copy-selected');
+          if(cols&&ci>=cols.c1&&ci<=cols.c2)td.classList.add('pm-copy-selected');
         });
       });
       const a=state.selection&&state.selection.anchor;
@@ -3611,15 +3637,21 @@ function quickEls(){return {modal:document.getElementById('pmQuickModal'),title:
       return null;
     }
     function selectionText(){
-      const b=selectionBounds()||(()=>{const s=activeCellStart();return s?{r1:s.rowIndex,r2:s.rowIndex,c1:s.col,c2:s.col}:null})();
-      if(!b)return '';
+      let cols=selectionColumnBounds();
+      let rows=selectionRowIndexes();
+      if(!cols||!rows.length){
+        const s=activeCellStart();
+        if(!s)return '';
+        cols={c1:s.col,c2:s.col};
+        rows=[s.rowIndex];
+      }
       const lines=[];
-      for(let r=b.r1;r<=b.r2;r++){
+      rows.forEach(r=>{
         const row=state.rows[r];
         const parts=[];
-        for(let c=b.c1;c<=b.c2;c++)parts.push(copyValue(row,c));
+        for(let c=cols.c1;c<=cols.c2;c++)parts.push(copyValue(row,c));
         lines.push(parts.join('\t'));
-      }
+      });
       return lines.join('\n');
     }
     function copyValue(row,col){
@@ -3637,36 +3669,55 @@ function quickEls(){return {modal:document.getElementById('pmQuickModal'),title:
       if(!isExtraCol(col)&&col>=COL.plan)text=text.replace(/\s+/g,'').replace(/\./g,'').replace(',','.');
       return text;
     }
+    function pasteTargetAreaHasData(startRow,startCol,grid){
+      for(let r=0;r<grid.length;r++){
+        const row=state.rows[startRow+r];
+        if(!row)continue;
+        for(let c=0;c<grid[r].length;c++){
+          const col=startCol+c;
+          if(col<0||col>=reportColCount())continue;
+          if(String((row.values&&row.values[col])??'')!==''||String((row.rawValues&&row.rawValues[col])??'')!==''||hasManualOverride(row,col))return true;
+        }
+      }
+      return false;
+    }
+    function insertBlankRowsForPaste(startRow,count){
+      const base=state.rows[Math.max(0,startRow-1)]||state.rows[startRow]||null;
+      const rows=[];
+      for(let i=0;i<count;i++)rows.push(createBlankRow(base));
+      state.rows.splice(startRow,0,...rows);
+      return rows;
+    }
     function pasteTextAt(text,start){
       if(!state.canEdit||!start)return false;
       const grid=parsePasteText(text);
       if(!grid.length)return false;
 
       // Dacă se lipește o singură valoare peste o selecție multiplă, aceeași valoare se aplică în toate celulele selectate.
-      const b=selectionBounds();
+      const selectedRows=selectionRowIndexes();
+      const selectedCols=selectionColumnBounds();
       const singlePasteValue=grid.length===1&&grid[0]&&grid[0].length===1;
-      const multiSelection=!!(b&&(b.r1!==b.r2||b.c1!==b.c2));
+      const multiSelection=!!(selectedCols&&selectedRows.length&&((selectedRows.length>1)||(selectedCols.c1!==selectedCols.c2)));
       if(singlePasteValue&&multiSelection){
         let changed=false;
         const pastedRaw=grid[0][0];
-        for(let r=b.r1;r<=b.r2;r++){
+        selectedRows.forEach(r=>{
           const row=ensureRowAt(r);
-          for(let c=b.c1;c<=b.c2;c++){
+          for(let c=selectedCols.c1;c<=selectedCols.c2;c++){
             if(c<0||c>=reportColCount())continue;
             const pastedValue=cleanPastedValue(c,pastedRaw);
             setCellModelValue(row,c,pastedValue);
             changed=true;
           }
           recalc(row);
-        }
+        });
         if(!changed)return false;
         recalcAllRows();
         state.dirty++;
-        state.selection={anchor:{rowIndex:b.r1,col:b.c1},focus:{rowIndex:b.r2,col:b.c2}};
-        state.lastCell={rowIndex:b.r1,col:b.c1};
-        state.pasteFlash={rowIndex:b.r1,col:b.c1};
+        state.lastCell={rowIndex:selectedRows[0],col:selectedCols.c1};
+        state.pasteFlash={rowIndex:selectedRows[0],col:selectedCols.c1};
         const currentRows=filteredRows();
-        const rowObj=state.rows[b.r1];
+        const rowObj=state.rows[selectedRows[0]];
         const filteredIndex=currentRows.indexOf(rowObj);
         if(filteredIndex>=0)state.page=Math.floor(filteredIndex/state.pageSize)+1;
         renderAll(false);
@@ -3677,6 +3728,9 @@ function quickEls(){return {modal:document.getElementById('pmQuickModal'),title:
       let startRow=start.rowIndex;
       const multiRow=grid.length>1;
       if(startRow===state.rows.length-1&&multiRow&&rowHasData(state.rows[startRow]))startRow=state.rows.length;
+      const pasteLooksLikeReportRows=multiRow&&start.col===COL.data&&Math.max(...grid.map(r=>r.length))>=6;
+      const insertRows=pasteLooksLikeReportRows&&startRow<state.rows.length&&pasteTargetAreaHasData(startRow,start.col,grid);
+      if(insertRows)insertBlankRowsForPaste(startRow,grid.length);
       let changed=false;
       for(let r=0;r<grid.length;r++){
         const row=ensureRowAt(startRow+r);
@@ -3707,18 +3761,19 @@ function quickEls(){return {modal:document.getElementById('pmQuickModal'),title:
     }
     function clearSelectedCells(){
       if(!state.canEdit)return false;
-      const b=selectionBounds();
-      if(!b)return false;
+      const cols=selectionColumnBounds();
+      const rowIndexes=selectionRowIndexes();
+      if(!cols||!rowIndexes.length)return false;
       let changed=false;
-      for(let r=b.r1;r<=b.r2;r++){
+      rowIndexes.forEach(r=>{
         const row=state.rows[r];
-        if(!row||!row.values)continue;
-        for(let c=b.c1;c<=b.c2;c++){
+        if(!row||!row.values)return;
+        for(let c=cols.c1;c<=cols.c2;c++){
           if(c<0||c>=reportColCount())continue;
           if(String(row.values[c]??'')!==''||String((row.rawValues||[])[c]??'')!==''||hasManualOverride(row,c)){setCellModelValue(row,c,'');changed=true}
         }
         recalc(row);
-      }
+      });
       if(!changed)return false;
       recalcAllRows();
       state.dirty++;
