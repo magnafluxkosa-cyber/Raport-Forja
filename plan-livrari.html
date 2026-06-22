@@ -350,8 +350,8 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
   const STORAGE_CACHE = 'kad-plan-livrari-cache-v5';
   const STORAGE_PENDING = 'kad-plan-livrari-pending-cloud-v1';
   const STORAGE_UI = 'kad-plan-livrari-ui-state-v1';
-  const SAVE_DEBOUNCE_MS = 140; // păstrat doar pentru compatibilitate; salvarea în cloud este manuală
-  const REMOTE_POLL_MS = 120000;
+  const SAVE_DEBOUNCE_MS = 900; // live sync: autosalvare debounced după modificări
+  const REMOTE_POLL_MS = 10000;
   const FIXED_COLS = 2;
   const HEADER_ROWS = 3;
   const DAY_NAMES = ['duminică','luni','marți','miercuri','joi','vineri','sâmbătă'];
@@ -385,6 +385,8 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
     canEdit: false,
     localPriority: false,
     dirty: false,
+    basePayload: null,
+    baseSignature: '',
     pageLoaded: false
   };
 
@@ -844,6 +846,133 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
     if(!payload) return '';
     return `${payload.hiddenWeekIds ? payload.hiddenWeekIds.join('|') : ''}::${payload.tableHtml || ''}`;
   }
+
+  function clonePayloadForState(payload){
+    if(!payload) return null;
+    return {
+      version: payload.version || 1,
+      editedAt: payload.editedAt || '',
+      hiddenWeekIds: Array.isArray(payload.hiddenWeekIds) ? payload.hiddenWeekIds.map(String) : [],
+      tableHtml: String(payload.tableHtml || '')
+    };
+  }
+
+  function rememberBasePayload(payload){
+    state.basePayload = clonePayloadForState(payload);
+    state.baseSignature = payloadSignature(state.basePayload);
+  }
+
+  function createDetachedTableFromHtml(tableHtml){
+    const detached = document.createElement('table');
+    detached.innerHTML = String(tableHtml || '');
+    return detached;
+  }
+
+  function tableStructureSignature(tableEl){
+    if(!tableEl) return '';
+    const cols = Array.from(tableEl.querySelectorAll('colgroup col')).map(col => String(col.getAttribute('style') || '') + '|' + String(col.style.display || '')).join(';;');
+    const rowsSig = Array.from(tableEl.rows || []).map(row => {
+      return Array.from(row.cells || []).map(cell => {
+        return [cell.tagName, cell.colSpan || 1, cell.rowSpan || 1, cell.style.display || ''].join(':');
+      }).join(',');
+    }).join('||');
+    return cols + '##' + rowsSig;
+  }
+
+  function cellFingerprint(cell){
+    if(!cell) return '__missing__';
+    return JSON.stringify({
+      tag: cell.tagName || '',
+      html: cell.innerHTML || '',
+      cls: cell.className || '',
+      style: cell.getAttribute('style') || '',
+      palette: cell.getAttribute('data-palette-color') || '',
+      colspan: cell.getAttribute('colspan') || '',
+      rowspan: cell.getAttribute('rowspan') || ''
+    });
+  }
+
+  function copyCellState(target, source){
+    if(!target || !source) return false;
+    target.innerHTML = source.innerHTML;
+    target.className = source.className;
+    target.setAttribute('style', source.getAttribute('style') || '');
+    ['data-palette-color', 'colspan', 'rowspan'].forEach(attr => {
+      if(source.hasAttribute(attr)) target.setAttribute(attr, source.getAttribute(attr));
+      else target.removeAttribute(attr);
+    });
+    return true;
+  }
+
+  function mergeRemoteWithLocalChanges(remotePayload, localPayload){
+    if(!remotePayload || !remotePayload.tableHtml || !localPayload || !localPayload.tableHtml) return localPayload;
+    const basePayload = state.basePayload && state.basePayload.tableHtml ? state.basePayload : null;
+    if(!basePayload) return localPayload;
+
+    const baseTable = createDetachedTableFromHtml(basePayload.tableHtml);
+    const remoteTable = createDetachedTableFromHtml(remotePayload.tableHtml);
+    const localTable = createDetachedTableFromHtml(localPayload.tableHtml);
+
+    const baseStructure = tableStructureSignature(baseTable);
+    const localStructure = tableStructureSignature(localTable);
+    const remoteStructure = tableStructureSignature(remoteTable);
+
+    /* Dacă structura a fost schimbată local sau remote (săptămâni adăugate/ascunse), păstrăm varianta locală.
+       Pentru modificările normale pe celule, facem merge celulă-cu-celulă ca să nu suprascriem lucrul altui utilizator. */
+    if(localStructure !== baseStructure || remoteStructure !== baseStructure){
+      return localPayload;
+    }
+
+    let localChanges = 0;
+    const localRows = Array.from(localTable.rows || []);
+    for(let r = 0; r < localRows.length; r++){
+      const localCells = Array.from(localRows[r].cells || []);
+      const baseRow = baseTable.rows[r];
+      const remoteRow = remoteTable.rows[r];
+      if(!baseRow || !remoteRow) return localPayload;
+      for(let c = 0; c < localCells.length; c++){
+        const localCell = localCells[c];
+        const baseCell = baseRow.cells[c];
+        const remoteCell = remoteRow.cells[c];
+        if(!baseCell || !remoteCell) return localPayload;
+        if(cellFingerprint(localCell) !== cellFingerprint(baseCell)){
+          copyCellState(remoteCell, localCell);
+          localChanges++;
+        }
+      }
+    }
+
+    if(!localChanges) return remotePayload;
+    return {
+      version: Math.max(Number(remotePayload.version || 1), Number(localPayload.version || 1), 1),
+      editedAt: localPayload.editedAt || new Date().toISOString(),
+      hiddenWeekIds: Array.isArray(localPayload.hiddenWeekIds) ? localPayload.hiddenWeekIds.map(String) : [],
+      tableHtml: remoteTable.innerHTML
+    };
+  }
+
+  function applyRemotePayloadPreservingLocalChanges(remotePayload, updatedAt){
+    if(!remotePayload || !remotePayload.tableHtml) return;
+    const localPayload = buildPayload();
+    const mergedPayload = mergeRemoteWithLocalChanges(remotePayload, localPayload);
+    const keep = { left: scrollEl.scrollLeft, top: scrollEl.scrollTop };
+    table.innerHTML = mergedPayload.tableHtml;
+    cleanTransientSelectionMarks(table);
+    state.hiddenWeekIds = Array.isArray(mergedPayload.hiddenWeekIds) ? mergedPayload.hiddenWeekIds.map(String) : [];
+    state.activeCell = null;
+    syncUiAfterStructureChange();
+    requestAnimationFrame(() => {
+      scrollEl.scrollLeft = keep.left;
+      scrollEl.scrollTop = keep.top;
+    });
+    rememberBasePayload(remotePayload);
+    state.lastAppliedRemoteSignature = payloadSignature(remotePayload);
+    state.cloudUpdatedAt = updatedAt || state.cloudUpdatedAt;
+    state.currentSignature = payloadSignature(buildPayload());
+    state.dirty = true;
+    saveLocalCache(mergedPayload);
+    setSaveStatus('Live actualizat · nesalvat', 'dirty');
+  }
   function setSaveStatus(text, cls){
     if(!saveStatusEl) return;
     saveStatusEl.textContent = text || '';
@@ -915,6 +1044,7 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
     state.currentSignature = payloadSignature(payload);
     state.lastSavedSignature = state.currentSignature;
     state.lastAppliedRemoteSignature = state.currentSignature;
+    rememberBasePayload(payload);
     if(!(fromRemote && state.localPriority)) saveLocalCache(payload);
   }
 
@@ -922,9 +1052,13 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
     if(!state.canEdit) return;
     const payload = buildPayload();
     state.currentSignature = payloadSignature(payload);
-    /* Salvare manuală: orice modificare doar marchează pagina ca nesalvată.
-       Nu se mai scrie automat în cloud la input, focusout, culori, ascundere sau adăugare săptămâni. */
     markDirty();
+    state.pendingSave = true;
+    if(state.saveTimer) clearTimeout(state.saveTimer);
+    state.saveTimer = window.setTimeout(() => {
+      state.saveTimer = 0;
+      if(state.dirty) persistNow(false);
+    }, force ? 0 : SAVE_DEBOUNCE_MS);
   }
 
   function getSupabaseClient(){
@@ -1023,8 +1157,8 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
       clearTimeout(state.saveTimer);
       state.saveTimer = 0;
     }
-    const payload = buildPayload();
-    const signature = payloadSignature(payload);
+    let payload = buildPayload();
+    let signature = payloadSignature(payload);
     state.currentSignature = signature;
     if(signature === state.lastSavedSignature && !state.dirty && !forceSave){
       setSaveStatus('Nemodificat', 'saved');
@@ -1035,18 +1169,32 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
       window.alert('Nu există conexiune Supabase. Modificările NU au fost salvate în cloud.');
       return;
     }
-    if(state.saving) return;
+    if(state.saving){
+      state.pendingSave = true;
+      return;
+    }
     state.saving = true;
+    state.pendingSave = false;
     setSaveStatus('Se salvează...', 'saving');
     try{
+      const latestRemote = await readCloudPayload().catch(() => null);
+      if(latestRemote && latestRemote.payload){
+        const remoteSignature = payloadSignature(latestRemote.payload);
+        if(remoteSignature && remoteSignature !== state.baseSignature && remoteSignature !== signature){
+          payload = mergeRemoteWithLocalChanges(latestRemote.payload, payload);
+          signature = payloadSignature(payload);
+          state.currentSignature = signature;
+        }
+      }
       const updatedAt = await writeCloudPayload(payload);
       state.cloudUpdatedAt = updatedAt || state.cloudUpdatedAt;
       state.lastSavedSignature = signature;
       state.lastAppliedRemoteSignature = signature;
+      rememberBasePayload(payload);
       state.dirty = false;
-      saveLocalCache(payload);
+      applyPayload(payload, false);
       markLocalSavedToCloud();
-      setSaveStatus('Salvat', 'saved');
+      setSaveStatus('Salvat live', 'saved');
       await broadcastChange(signature);
     }catch(error){
       console.warn('Plan Livrari save cloud', error);
@@ -1054,13 +1202,15 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
       window.alert('Salvarea în cloud a eșuat. Modificările NU sunt salvate. Reîncearcă butonul „Salvează modificările”.');
     }finally{
       state.saving = false;
+      if(state.pendingSave && state.dirty){
+        state.pendingSave = false;
+        scheduleSave(false);
+      }
     }
   }
 
   async function fetchAndApplyRemote(force){
     if(!state.supa) return;
-    if(state.editingCell && !force) return;
-    if(state.dirty) return; // nu suprascrie modificările nesalvate
     try{
       if(!force){
         const meta = await readCloudMeta();
@@ -1070,8 +1220,16 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
       const remote = await readCloudPayload();
       if(!remote || !remote.payload) return;
       const signature = payloadSignature(remote.payload);
-      if(!force && signature === state.lastAppliedRemoteSignature){
+      if(signature && signature === state.lastAppliedRemoteSignature){
         state.cloudUpdatedAt = remote.updatedAt || state.cloudUpdatedAt;
+        return;
+      }
+      if(state.editingCell){
+        state.pendingRemote = { payload: remote.payload, updatedAt: remote.updatedAt || '' };
+        return;
+      }
+      if(state.dirty){
+        applyRemotePayloadPreservingLocalChanges(remote.payload, remote.updatedAt || '');
         return;
       }
       applyPayload(remote.payload, true);
@@ -1097,7 +1255,6 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
       state.channel = state.supa.channel('plan-livrari-sync')
         .on('broadcast', { event: 'changed' }, ({ payload }) => {
           if(!payload || payload.clientId === state.clientId) return;
-          if(state.dirty) return;
           fetchAndApplyRemote(true);
         })
         .on('postgres_changes', {
@@ -1106,7 +1263,6 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
           table: 'rf_documents',
           filter: 'doc_key=eq.' + DOC_KEY
         }, payload => {
-          if(state.dirty) return;
           const updatedAt = payload && payload.new ? payload.new.updated_at : '';
           if(updatedAt && updatedAt === state.cloudUpdatedAt) return;
           fetchAndApplyRemote(true);
@@ -1125,8 +1281,10 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
       state.dirty = false;
       setSaveStatus('Nemodificat', 'saved');
     }else{
-      state.currentSignature = payloadSignature(buildPayload());
+      const initialPayload = buildPayload();
+      state.currentSignature = payloadSignature(initialPayload);
       state.lastSavedSignature = state.currentSignature;
+      rememberBasePayload(initialPayload);
       state.dirty = false;
       setSaveStatus('Nemodificat', 'saved');
     }
@@ -1154,10 +1312,13 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
     state.editingCell = null;
     setActiveCell(cell);
     scheduleSave(false);
-    if(state.pendingRemote && !state.dirty){
-      const payload = state.pendingRemote;
+    if(state.pendingRemote){
+      const pending = state.pendingRemote;
       state.pendingRemote = null;
-      applyPayload(payload, true);
+      const payload = pending && pending.payload ? pending.payload : pending;
+      const updatedAt = pending && pending.updatedAt ? pending.updatedAt : '';
+      if(state.dirty) applyRemotePayloadPreservingLocalChanges(payload, updatedAt);
+      else applyPayload(payload, true);
     }
   });
   table.addEventListener('input', event => {
