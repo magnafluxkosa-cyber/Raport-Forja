@@ -351,6 +351,7 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
   const STORAGE_PENDING = 'kad-plan-livrari-pending-cloud-v1';
   const STORAGE_UI = 'kad-plan-livrari-ui-state-v1';
   const SAVE_DEBOUNCE_MS = 900; // păstrat doar compatibil; salvarea rămâne manuală
+  const LIVE_PATCH_DEBOUNCE_MS = 180;
   const REMOTE_POLL_MS = 10000;
   const FIXED_COLS = 2;
   const HEADER_ROWS = 3;
@@ -378,6 +379,7 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
     editingCell: null,
     activeCell: null,
     pendingRemote: null,
+    livePatchTimers: new Map(),
     supa: null,
     channel: null,
     pollTimer: 0,
@@ -589,6 +591,7 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
     table.querySelectorAll('.ms-selected-cell').forEach(cell => cell.classList.remove('ms-selected-cell'));
     setActiveCell(null);
     scheduleSave(false);
+    broadcastCellsPatch(targets, 'color');
   }
 
   function clearAutoColorMarks(){
@@ -902,6 +905,105 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
       else target.removeAttribute(attr);
     });
     return true;
+  }
+
+  function cellKey(cell){
+    if(!cell || !cell.parentElement) return '';
+    return `${cell.parentElement.rowIndex}:${cell.cellIndex}`;
+  }
+
+  function cleanCellClone(cell){
+    const clone = cell.cloneNode(true);
+    clone.classList.remove('palette-target', 'ms-selected-cell', 'kad-today-date-cell');
+    return clone;
+  }
+
+  function cellPatchFromCell(cell, reason){
+    if(!cell || !cell.parentElement) return null;
+    const clone = cleanCellClone(cell);
+    return {
+      clientId: state.clientId,
+      docKey: DOC_KEY,
+      rowIndex: cell.parentElement.rowIndex,
+      cellIndex: cell.cellIndex,
+      innerHTML: clone.innerHTML || '&nbsp;',
+      className: clone.className || '',
+      style: clone.getAttribute('style') || '',
+      palette: clone.getAttribute('data-palette-color') || '',
+      reason: reason || 'edit',
+      editedAt: new Date().toISOString()
+    };
+  }
+
+  function applyCellPatch(payload){
+    const patch = payload && payload.payload ? payload.payload : payload;
+    if(!patch || patch.clientId === state.clientId || patch.docKey !== DOC_KEY) return;
+    const rowIndex = Number(patch.rowIndex);
+    const cellIndex = Number(patch.cellIndex);
+    if(!Number.isInteger(rowIndex) || !Number.isInteger(cellIndex)) return;
+    const row = table.rows[rowIndex];
+    const cell = row && row.cells ? row.cells[cellIndex] : null;
+    if(!cell) return;
+
+    if(state.editingCell && state.editingCell.parentElement && state.editingCell.parentElement.rowIndex === rowIndex && state.editingCell.cellIndex === cellIndex){
+      return;
+    }
+
+    const before = cellFingerprint(cell);
+    cell.innerHTML = patch.innerHTML || '&nbsp;';
+    cell.className = patch.className || '';
+    cell.setAttribute('style', patch.style || '');
+    if(patch.palette) cell.setAttribute('data-palette-color', patch.palette);
+    else cell.removeAttribute('data-palette-color');
+    cell.classList.remove('palette-target', 'ms-selected-cell', 'kad-today-date-cell');
+    if(rowIndex >= HEADER_ROWS && cellIndex >= FIXED_COLS){
+      cell.classList.add('editable-grid-cell');
+      cell.setAttribute('contenteditable', state.canEdit ? 'true' : 'false');
+      cell.setAttribute('spellcheck', 'false');
+      cell.setAttribute('tabindex', state.canEdit ? '0' : '-1');
+    }
+    const after = cellFingerprint(cell);
+    if(after === before) return;
+
+    applyCustomPaletteColors();
+    const nextPayload = buildPayload();
+    state.currentSignature = payloadSignature(nextPayload);
+    saveLocalCache(nextPayload);
+    if(state.canEdit){
+      state.dirty = true;
+      try{ localStorage.setItem(STORAGE_PENDING, JSON.stringify(nextPayload)); }catch(_err){}
+      setSaveStatus('Live primit · nesalvat', 'dirty');
+    }
+  }
+
+  async function broadcastCellPatch(cell, reason){
+    if(!state.channel || !state.canEdit || !cell) return;
+    const patch = cellPatchFromCell(cell, reason);
+    if(!patch) return;
+    try{
+      await state.channel.send({ type: 'broadcast', event: 'cell_patch', payload: patch });
+    }catch(_err){}
+  }
+
+  function scheduleLiveCellPatch(cell, reason, immediate){
+    if(!state.canEdit || !cell) return;
+    const key = cellKey(cell);
+    if(!key) return;
+    const existing = state.livePatchTimers.get(key);
+    if(existing) clearTimeout(existing);
+    const sendNow = () => {
+      state.livePatchTimers.delete(key);
+      broadcastCellPatch(cell, reason);
+    };
+    if(immediate){
+      sendNow();
+      return;
+    }
+    state.livePatchTimers.set(key, window.setTimeout(sendNow, LIVE_PATCH_DEBOUNCE_MS));
+  }
+
+  function broadcastCellsPatch(cells, reason){
+    (cells || []).forEach(cell => scheduleLiveCellPatch(cell, reason || 'bulk-edit', true));
   }
 
   function mergeRemoteWithLocalChanges(remotePayload, localPayload){
@@ -1230,6 +1332,14 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
         return;
       }
       if(state.dirty){
+        const localSignature = payloadSignature(buildPayload());
+        if(localSignature && localSignature === signature){
+          applyPayload(remote.payload, true);
+          state.cloudUpdatedAt = remote.updatedAt || state.cloudUpdatedAt;
+          state.dirty = false;
+          setSaveStatus('Nemodificat', 'saved');
+          return;
+        }
         applyRemotePayloadPreservingLocalChanges(remote.payload, remote.updatedAt || '');
         return;
       }
@@ -1257,6 +1367,9 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
         .on('broadcast', { event: 'changed' }, ({ payload }) => {
           if(!payload || payload.clientId === state.clientId) return;
           fetchAndApplyRemote(true);
+        })
+        .on('broadcast', { event: 'cell_patch' }, ({ payload }) => {
+          applyCellPatch(payload);
         })
         .on('postgres_changes', {
           event: '*',
@@ -1313,6 +1426,7 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
     state.editingCell = null;
     setActiveCell(cell);
     scheduleSave(false);
+    scheduleLiveCellPatch(cell, 'commit', true);
     if(state.pendingRemote){
       const pending = state.pendingRemote;
       state.pendingRemote = null;
@@ -1327,6 +1441,7 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
     if(!cell) return;
     if(!state.canEdit) return;
     scheduleSave(false);
+    scheduleLiveCellPatch(cell, 'input', false);
   });
   table.addEventListener('keydown', event => {
     const cell = event.target.closest('td.editable-grid-cell');
@@ -1336,6 +1451,7 @@ body{margin:0;font-family:Calibri,Arial,sans-serif;background:var(--bg);color:va
     if(event.key === 'Enter'){
       event.preventDefault();
       commitCell(cell);
+      scheduleLiveCellPatch(cell, 'commit', true);
       move = event.shiftKey ? 'up' : 'down';
     }else if(event.key === 'ArrowRight') move = 'right';
     else if(event.key === 'ArrowLeft') move = 'left';
