@@ -159,6 +159,16 @@
       justify-self:start;
     }
     .monthlyTotalsHeadControls{ display:flex; align-items:flex-end; gap:10px; flex-wrap:wrap; }
+
+    #monthlyTotalsYear[multiple]{
+      height:58px;
+      min-width:118px;
+      padding:2px 8px;
+    }
+    #btnExportMonthlyTotalsXlsx{
+      height:34px;
+      align-self:flex-end;
+    }
     .monthlyTotalsWrap{
       min-height:0;
       max-height:none;
@@ -817,13 +827,14 @@ body.rf-access-denied-body{
           <div class="summaryCardHead">
             <div>
               <div class="summaryCardTitle">Centralizator lunar</div>
-              <div class="summaryCardSub">Totaluri pe fiecare lună pentru anul selectat</div>
+              <div class="summaryCardSub">Totaluri pe fiecare lună pentru anul/anii selectați</div>
             </div>
             <div class="monthlyTotalsHeadControls">
               <div class="fltGroup">
                 <label>An</label>
-                <select id="monthlyTotalsYear"><option value="">(alege anul)</option></select>
+                <select id="monthlyTotalsYear" multiple size="3" title="Ține Ctrl apăsat pentru a selecta mai mulți ani"></select>
               </div>
+              <button class="btn secondary" id="btnExportMonthlyTotalsXlsx">⬇ Export Excel</button>
             </div>
           </div>
           <div class="summaryWrap monthlyTotalsWrap">
@@ -1285,6 +1296,7 @@ const summaryFltLuna = document.getElementById('summaryFltLuna');
 const btnSummaryReset = document.getElementById('btnSummaryReset');
 const monthlyTotalsYear = document.getElementById('monthlyTotalsYear');
 const monthlyTotalsBody = document.getElementById('monthlyTotalsBody');
+const btnExportMonthlyTotalsXlsx = document.getElementById('btnExportMonthlyTotalsXlsx');
 
 /* ===============================
    UTIL
@@ -2594,38 +2606,199 @@ function bindForjateMultiSelection(){
   document.getElementById('tableWrap')?.addEventListener('scroll', updateForjateSelectionBubble, { passive:true });
 }
 
+function getMonthlyTotalsRawSelectedYears(){
+  if(!monthlyTotalsYear) return [];
+  return Array.from(monthlyTotalsYear.selectedOptions || [])
+    .map(opt=> normalizeYearValue(opt && opt.value))
+    .filter(Boolean)
+    .filter((year, idx, arr)=> arr.indexOf(year) === idx)
+    .sort((a,b)=> Number(a) - Number(b));
+}
+
+function getMonthlyTotalsSelectedYears(){
+  const selected = getMonthlyTotalsRawSelectedYears();
+  if(selected.length) return selected;
+  const fallback = normalizeYearValue((summaryFltAn && summaryFltAn.value) || activeYear) || String(CURRENT_YEAR);
+  return fallback ? [fallback] : [];
+}
+
+function buildMonthlyTotalsData(){
+  const selectedYears = getMonthlyTotalsSelectedYears();
+  const years = (selectedYears.length ? selectedYears : [normalizeYearValue(activeYear) || String(CURRENT_YEAR)])
+    .map(normalizeYearValue)
+    .filter(Boolean)
+    .filter((year, idx, arr)=> arr.indexOf(year) === idx)
+    .sort((a,b)=> Number(a) - Number(b));
+
+  const rowsOut = [];
+  let grandBuc = 0;
+  let grandKg = 0;
+  const showYearInMonth = years.length > 1;
+
+  years.forEach(year=>{
+    const sourceRows = getRowsForYear(year) || [];
+    const byMonth = new Map();
+
+    MONTHS.forEach(monthName=>{
+      byMonth.set(monthName, { year, luna:monthName, buc:0, kgSemif:0, type:'month' });
+    });
+
+    sourceRows.forEach(row=>{
+      const luna = String(row && row.luna || '').trim().toLowerCase();
+      if(!luna) return;
+      if(!byMonth.has(luna)) byMonth.set(luna, { year, luna, buc:0, kgSemif:0, type:'month' });
+      const item = byMonth.get(luna);
+      item.buc += toNum(row && row.buc_realizate);
+      item.kgSemif += normalizeKgTotalValue(row && row.kg_semif_debit, row, 'kg_semif_debit');
+    });
+
+    const orderedMonths = MONTHS.concat(Array.from(byMonth.keys()).filter(m=>!MONTHS.includes(m)).sort((a,b)=> a.localeCompare(b, 'ro', { sensitivity:'base' })));
+    let yearBuc = 0;
+    let yearKg = 0;
+
+    orderedMonths.forEach(monthName=>{
+      const item = byMonth.get(monthName) || { year, luna:monthName, buc:0, kgSemif:0, type:'month' };
+      yearBuc += item.buc;
+      yearKg += item.kgSemif;
+      rowsOut.push({
+        year,
+        luna:item.luna,
+        label: showYearInMonth ? (year + ' - ' + item.luna) : item.luna,
+        buc:item.buc,
+        kgSemif:item.kgSemif,
+        type:'month'
+      });
+    });
+
+    grandBuc += yearBuc;
+    grandKg += yearKg;
+    rowsOut.push({
+      year,
+      luna: years.length > 1 ? ('TOTAL ' + year) : 'TOTAL GENERAL',
+      label: years.length > 1 ? ('TOTAL ' + year) : 'TOTAL GENERAL',
+      buc:yearBuc,
+      kgSemif:yearKg,
+      type:'total'
+    });
+  });
+
+  if(years.length > 1){
+    rowsOut.push({ year:'', luna:'TOTAL GENERAL', label:'TOTAL GENERAL', buc:grandBuc, kgSemif:grandKg, type:'grandTotal' });
+  }
+
+  return { years, rows: rowsOut, totalBuc: grandBuc, totalKg: grandKg };
+}
+
+async function ensureMonthlyTotalsYearsLoaded(){
+  const years = getMonthlyTotalsSelectedYears();
+  for(const year of years){
+    await ensureYearLoaded(year, { preferCloud:true });
+  }
+  return years;
+}
+
 function renderMonthlyTotals(){
   if(!monthlyTotalsBody) return;
 
-  const active = normalizeYearValue(activeYear) || String(CURRENT_YEAR);
-  const selectedYear = normalizeYearValue((monthlyTotalsYear && monthlyTotalsYear.value) || (summaryFltAn && summaryFltAn.value) || active) || active;
-  const rows = getRowsForYear(selectedYear) || [];
-  const byMonth = new Map();
+  const data = buildMonthlyTotalsData();
+  const html = data.rows.map(item=>{
+    const cls = item.type === 'total' || item.type === 'grandTotal' ? ' class="totalRow"' : '';
+    return '<tr' + cls + '><td>' + escapeHtml(item.label) + '</td><td class="right">' + roInt(item.buc) + '</td><td class="right">' + formatKgTotal(item.kgSemif) + '</td></tr>';
+  }).join('');
 
-  MONTHS.forEach(monthName=>{
-    byMonth.set(monthName, { luna:monthName, buc:0, kgSemif:0 });
+  monthlyTotalsBody.innerHTML = html || '<tr><td colspan="3" class="center">Nu există date pentru anul/anii selectați.</td></tr>';
+}
+
+async function exportMonthlyTotalsXlsx(){
+  await ensureXLSX();
+  await ensureMonthlyTotalsYearsLoaded();
+  const data = buildMonthlyTotalsData();
+  if(!data.rows.length){
+    alert('Nu există date pentru export în Centralizator lunar.');
+    return;
+  }
+
+  const headers = ['LUNA', 'BUC. TOTAL', 'KG SEMIF. DEBIT TOTAL'];
+  const aoa = [headers].concat(data.rows.map(item=> [item.label, Math.round(Number(item.buc) || 0), Math.round(Number(item.kgSemif) || 0)]));
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  const lastRow = Math.max(0, aoa.length - 1);
+  const lastCol = headers.length - 1;
+  const range = XLSX.utils.encode_range({ s:{ r:0, c:0 }, e:{ r:lastRow, c:lastCol } });
+
+  ws['!cols'] = [{ wch:24 }, { wch:16 }, { wch:24 }];
+  ws['!autofilter'] = { ref: range };
+  ws['!freeze'] = { xSplit:0, ySplit:1, topLeftCell:'A2', activePane:'bottomLeft', state:'frozen' };
+
+  const borderThin = {
+    top:{ style:'thin', color:{ rgb:'000000' } },
+    bottom:{ style:'thin', color:{ rgb:'000000' } },
+    left:{ style:'thin', color:{ rgb:'000000' } },
+    right:{ style:'thin', color:{ rgb:'000000' } }
+  };
+  const headerStyle = {
+    font:{ name:'Calibri', bold:true, color:{ rgb:'000000' }, sz:10 },
+    fill:{ patternType:'solid', fgColor:{ rgb:'C9D7EA' } },
+    alignment:{ horizontal:'center', vertical:'center', wrapText:true },
+    border:borderThin
+  };
+  const bodyStyle = {
+    font:{ name:'Calibri', color:{ rgb:'000000' }, sz:10 },
+    fill:{ patternType:'solid', fgColor:{ rgb:'E8E4F6' } },
+    alignment:{ horizontal:'left', vertical:'center', wrapText:false },
+    border:borderThin
+  };
+  const numberStyle = {
+    font:{ name:'Calibri', color:{ rgb:'000000' }, sz:10 },
+    fill:{ patternType:'solid', fgColor:{ rgb:'E8E4F6' } },
+    alignment:{ horizontal:'right', vertical:'center', wrapText:false },
+    border:borderThin
+  };
+  const totalStyle = {
+    font:{ name:'Calibri', bold:true, color:{ rgb:'000000' }, sz:10 },
+    fill:{ patternType:'solid', fgColor:{ rgb:'DCEBFF' } },
+    alignment:{ horizontal:'right', vertical:'center', wrapText:false },
+    border:borderThin
+  };
+  const totalLabelStyle = {
+    font:{ name:'Calibri', bold:true, color:{ rgb:'000000' }, sz:10 },
+    fill:{ patternType:'solid', fgColor:{ rgb:'DCEBFF' } },
+    alignment:{ horizontal:'left', vertical:'center', wrapText:false },
+    border:borderThin
+  };
+
+  for(let c=0; c<headers.length; c++){
+    const ref = XLSX.utils.encode_cell({ r:0, c });
+    if(ws[ref]) ws[ref].s = headerStyle;
+  }
+
+  data.rows.forEach((item, idx)=>{
+    const r = idx + 1;
+    for(let c=0; c<headers.length; c++){
+      const ref = XLSX.utils.encode_cell({ r, c });
+      if(!ws[ref]) continue;
+      const isTotal = item.type === 'total' || item.type === 'grandTotal';
+      if(c === 0){
+        ws[ref].s = isTotal ? totalLabelStyle : bodyStyle;
+      }else{
+        ws[ref].t = 'n';
+        ws[ref].z = '#,##0';
+        ws[ref].s = isTotal ? totalStyle : numberStyle;
+      }
+    }
   });
 
-  rows.forEach(row=>{
-    const luna = String(row && row.luna || '').trim().toLowerCase();
-    if(!luna) return;
-    if(!byMonth.has(luna)) byMonth.set(luna, { luna, buc:0, kgSemif:0 });
-    const item = byMonth.get(luna);
-    item.buc += toNum(row && row.buc_realizate);
-    item.kgSemif += normalizeKgTotalValue(row && row.kg_semif_debit, row, 'kg_semif_debit');
-  });
+  const wb = XLSX.utils.book_new();
+  wb.Props = {
+    Title:'FORJATE - Centralizator lunar',
+    Subject:'Export Centralizator lunar FORJATE K.A.D',
+    Author:'K.A.D',
+    CreatedDate:new Date()
+  };
+  XLSX.utils.book_append_sheet(wb, ws, 'Centralizator lunar');
 
-  const orderedMonths = MONTHS.concat(Array.from(byMonth.keys()).filter(m=>!MONTHS.includes(m)).sort((a,b)=> a.localeCompare(b, 'ro', { sensitivity:'base' })));
-  let totalBuc = 0;
-  let totalKg = 0;
-  const html = orderedMonths.map(monthName=>{
-    const item = byMonth.get(monthName) || { luna:monthName, buc:0, kgSemif:0 };
-    totalBuc += item.buc;
-    totalKg += item.kgSemif;
-    return '<tr><td>' + escapeHtml(item.luna) + '</td><td class="right">' + roInt(item.buc) + '</td><td class="right">' + formatKgTotal(item.kgSemif) + '</td></tr>';
-  }).join('') + '<tr class="totalRow"><td>TOTAL GENERAL</td><td class="right">' + roInt(totalBuc) + '</td><td class="right">' + formatKgTotal(totalKg) + '</td></tr>';
-
-  monthlyTotalsBody.innerHTML = html;
+  const yearsLabel = (data.years.length ? data.years.join('-') : (normalizeYearValue(activeYear) || String(CURRENT_YEAR))).replace(/[^0-9\-]/g, '');
+  const name = `FORJATE_Centralizator_Lunar_${yearsLabel}_${new Date().toISOString().slice(0,10)}.xlsx`;
+  XLSX.writeFile(wb, name, { bookType:'xlsx', cellStyles:true });
 }
 
 function renderSummary(){
@@ -4377,6 +4550,25 @@ function fillFilterSelect(selectEl, placeholderText, values){
   if((values || []).includes(current)) selectEl.value = current;
 }
 
+function fillMonthlyTotalsYearSelect(values, preferredYears){
+  if(!monthlyTotalsYear) return [];
+  const yearList = (values || []).map(normalizeYearValue).filter(Boolean).filter((year, idx, arr)=> arr.indexOf(year) === idx).sort((a,b)=> Number(a)-Number(b));
+  const currentSelected = getMonthlyTotalsRawSelectedYears ? getMonthlyTotalsRawSelectedYears() : [];
+  let selected = (currentSelected.length ? currentSelected : (Array.isArray(preferredYears) ? preferredYears : [preferredYears]))
+    .map(normalizeYearValue)
+    .filter(Boolean)
+    .filter((year, idx, arr)=> arr.indexOf(year) === idx);
+  const active = normalizeYearValue(activeYear) || String(CURRENT_YEAR);
+  selected = selected.filter(year=> yearList.includes(year));
+  if(!selected.length){
+    selected = yearList.includes(active) ? [active] : (yearList.length ? [yearList[yearList.length - 1]] : []);
+  }
+  monthlyTotalsYear.innerHTML = yearList.map(year=> '<option value="' + escapeHtml(year) + '">' + escapeHtml(year) + '</option>').join('');
+  const selectedSet = new Set(selected);
+  Array.from(monthlyTotalsYear.options || []).forEach(opt=>{ opt.selected = selectedSet.has(normalizeYearValue(opt.value)); });
+  return selected;
+}
+
 function refreshFilterOptions(){
   const years = Array.from(new Set((STATE.rows || []).map(r=> String(r?.an ?? '').trim()).filter(Boolean)))
     .sort((a,b)=> (Number(a) || 0) - (Number(b) || 0));
@@ -5135,10 +5327,11 @@ function refreshFilterOptions(){
   fillFilterSelect(fltLuna, '(toate lunile)', months);
   fillFilterSelect(summaryFltAn, '(toți anii)', years);
   fillFilterSelect(summaryFltLuna, '(toate lunile)', summaryMonths);
-  fillFilterSelect(monthlyTotalsYear, '(alege anul)', years);
 
-  const monthlyYear = normalizeYearValue((monthlyTotalsYear && monthlyTotalsYear.value) || summaryYear || active) || active;
-  if(monthlyTotalsYear) monthlyTotalsYear.value = years.includes(monthlyYear) ? monthlyYear : active;
+  const monthlySelectedYears = getMonthlyTotalsRawSelectedYears();
+  const monthlyYear = normalizeYearValue((monthlySelectedYears[0]) || summaryYear || active) || active;
+  fillMonthlyTotalsYearSelect(years, monthlySelectedYears.length ? monthlySelectedYears : [monthlyYear]);
+
   if(fltAn) fltAn.value = years.includes(filterYear) ? filterYear : active;
   if(fltLuna) fltLuna.value = months.includes(filterMonth) ? filterMonth : '';
   if(summaryFltAn) summaryFltAn.value = years.includes(summaryYear) ? summaryYear : active;
@@ -5443,9 +5636,15 @@ if(btnSummaryReset){
 if(monthlyTotalsYear){
   monthlyTotalsYear.addEventListener('change', async (e)=>{
     e.stopImmediatePropagation();
-    const selectedYear = normalizeYearValue(monthlyTotalsYear.value || activeYear) || (normalizeYearValue(activeYear) || String(CURRENT_YEAR));
-    await ensureYearLoaded(selectedYear, { preferCloud:true });
+    await ensureMonthlyTotalsYearsLoaded();
     renderMonthlyTotals();
+  }, true);
+}
+if(btnExportMonthlyTotalsXlsx){
+  btnExportMonthlyTotalsXlsx.addEventListener('click', async (e)=>{
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    await exportMonthlyTotalsXlsx();
   }, true);
 }
 const btnRestoreEl = document.getElementById('btnRestore');
