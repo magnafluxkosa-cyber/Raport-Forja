@@ -111,13 +111,44 @@
       };
       const state = { supabase:null, user:null, role:'viewer', maps:null, customerOrders:[], openingStocks:[], steelOrders:[], forjateRows:[], planRows:[], aggregate:null, lastSyncAt:'' };
 
-      function updateDefaults(){
+      function getCurrentMonthKey(){
         const today = new Date();
-        const from = String(today.getFullYear()) + '-' + String(today.getMonth()+1).padStart(2,'0');
-        const end = new Date(today.getFullYear(), today.getMonth()+4, 1);
-        const to = String(end.getFullYear()) + '-' + String(end.getMonth()+1).padStart(2,'0');
-        if (!els.filterFromMonth.value) els.filterFromMonth.value = from;
-        if (!els.filterToMonth.value) els.filterToMonth.value = to;
+        return String(today.getFullYear()) + '-' + String(today.getMonth()+1).padStart(2,'0');
+      }
+
+      function addMonthToKey(monthKey, delta){
+        const txt = String(monthKey || '').slice(0,7);
+        const y = Number(txt.slice(0,4));
+        const m = Number(txt.slice(5,7));
+        if(!y || !m) return '';
+        const d = new Date(y, m - 1 + Number(delta || 0), 1);
+        return String(d.getFullYear()) + '-' + String(d.getMonth() + 1).padStart(2,'0');
+      }
+
+      function updateDefaults(){
+        const current = getCurrentMonthKey();
+        if (!els.filterFromMonth.value) els.filterFromMonth.value = current;
+        if (!els.filterToMonth.value) els.filterToMonth.value = current;
+      }
+
+      function getLatestCustomerOrderMonthKey(){
+        const current = getCurrentMonthKey();
+        const months = (state.customerOrders || [])
+          .map(row => MRC.displayToIso(row && row.delivery_date || ''))
+          .filter(Boolean)
+          .map(iso => iso.slice(0,7))
+          .filter(month => month >= current)
+          .sort();
+        return months.length ? months[months.length - 1] : current;
+      }
+
+      function applyDefaultRangeFromOrders(){
+        const current = getCurrentMonthKey();
+        const latest = getLatestCustomerOrderMonthKey();
+        let changed = false;
+        if (els.filterFromMonth.value !== current){ els.filterFromMonth.value = current; changed = true; }
+        if (els.filterToMonth.value !== latest){ els.filterToMonth.value = latest; changed = true; }
+        return changed;
       }
 
       async function initAuth(){
@@ -135,6 +166,194 @@
         return true;
       }
 
+
+      function localPick(obj, keys){
+        if(!obj || typeof obj !== 'object') return '';
+        for(let i = 0; i < keys.length; i += 1){
+          const key = keys[i];
+          if(Object.prototype.hasOwnProperty.call(obj, key) && obj[key] != null && obj[key] !== '') return obj[key];
+          const wanted = MRC.normalizeText ? MRC.normalizeText(key) : String(key || '').toUpperCase().replace(/[^A-Z0-9]+/g, '');
+          const found = Object.keys(obj).find(function(k){
+            const current = MRC.normalizeText ? MRC.normalizeText(k) : String(k || '').toUpperCase().replace(/[^A-Z0-9]+/g, '');
+            return current === wanted;
+          });
+          if(found && obj[found] != null && obj[found] !== '') return obj[found];
+        }
+        return '';
+      }
+
+      function localToNumber(value){
+        if(typeof MRC.toNumber === 'function') return MRC.toNumber(value);
+        if(typeof value === 'number' && Number.isFinite(value)) return value;
+        let txt = String(value == null ? '' : value).trim();
+        if(!txt) return 0;
+        txt = txt.replace(/\s+/g, '').replace(/[^0-9,.-]/g, '');
+        if(txt.indexOf(',') >= 0 && txt.indexOf('.') >= 0){
+          txt = txt.lastIndexOf(',') > txt.lastIndexOf('.') ? txt.replace(/\./g, '').replace(',', '.') : txt.replace(/,/g, '');
+        } else if(txt.indexOf(',') >= 0){
+          txt = /^-?\d{1,3}(,\d{3})+$/.test(txt) ? txt.replace(/,/g, '') : txt.replace(',', '.');
+        } else if(/^-?\d{1,3}(\.\d{3})+$/.test(txt)){
+          txt = txt.replace(/\./g, '');
+        }
+        const n = Number(txt);
+        return Number.isFinite(n) ? n : 0;
+      }
+
+      function localMonthNumber(value){
+        if(typeof MRC.monthNumberFromAny === 'function') return MRC.monthNumberFromAny(value);
+        const txt = String(value == null ? '' : value).trim().toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+        const months = { ianuarie:1, februarie:2, martie:3, aprilie:4, mai:5, iunie:6, iulie:7, august:8, septembrie:9, octombrie:10, noiembrie:11, decembrie:12 };
+        const n = Number(txt);
+        if(n >= 1 && n <= 12) return Math.round(n);
+        return months[txt] || 0;
+      }
+
+      function normalizeSourceName(value){
+        return String(value == null ? '' : value)
+          .normalize('NFD')
+          .replace(/[̀-ͯ]/g, '')
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, ' ')
+          .trim();
+      }
+
+      function isInventoryPrelucrariSource(source){
+        const src = normalizeSourceName(source);
+        return src.includes('prelucrari');
+      }
+
+      function effectiveInventoryMonthKey(row, source){
+        const sourceName = source || row.stock_source || row.source_label || row.doc_key || '';
+        const month = String(row.month_key || '').slice(0,7);
+        if(!month) return '';
+        return isInventoryPrelucrariSource(sourceName) ? month : addMonthToKey(month, 1);
+      }
+
+      function normalizeInventoryOpeningRow(raw, index, maps, sourceName){
+        const row = MRC.normalizeOpeningStockRow(raw, index, maps || {});
+        row.stock_source = sourceName;
+        row.source_label = sourceName;
+        row.month_key = effectiveInventoryMonthKey(row, sourceName);
+        if(row.month_key){
+          row.year = Number(row.month_key.slice(0,4)) || row.year;
+          row.month_num = Number(row.month_key.slice(5,7)) || row.month_num;
+        }
+        return row;
+      }
+
+      function normalizeInventarOtelRow(raw, index, maps){
+        const dataIso = MRC.displayToIso(localPick(raw, ['data','date','DATA','Date','Data','data inventar','Data inventar']));
+        const year = Number(localPick(raw, ['year','an','AN','Year','Anul'])) || (dataIso ? Number(dataIso.slice(0,4)) : 0);
+        const monthNum = Number(localPick(raw, ['month_num','luna_num','monthNumber'])) || localMonthNumber(localPick(raw, ['luna','month','Luna','Month'])) || (dataIso ? Number(dataIso.slice(5,7)) : 0);
+        const obj = {
+          year: year,
+          month_num: monthNum,
+          raw_reper: '',
+          reper_intern: '',
+          material: String(localPick(raw, ['material','Material','calitate','calitate otel','calitate_otel','Calitate Otel','Calitate oțel','Calitate']) || '').trim().toUpperCase(),
+          diametru: String(localPick(raw, ['diametru','diametru otel','diametru_otel','Dimensiune OTEL','dimensiune otel','Dimensiune Oțel','dimensiune','Diametru oțel','Diametru']) || '').trim(),
+          stoc_otel_kg: localToNumber(localPick(raw, ['cantitateKg','cantitate','cantitate kg','cantitate_kg','kg','Stoc Otel (Kg)','Stoc Otel Kg','Stoc Otel','STOC OTEL (KG)','stoc_otel_kg']))
+        };
+        const row = normalizeInventoryOpeningRow(obj, index, maps, 'Inventar Oțel');
+        row.stock_type = 'otel';
+        return row;
+      }
+
+      function normalizeInventarForjatRow(raw, index, maps){
+        return normalizeInventoryOpeningRow({
+          year: localPick(raw, ['year','an','anul','AN','Year','Anul']),
+          luna: localPick(raw, ['luna','month','Luna','Month']),
+          raw_reper: localPick(raw, ['raw_reper','reper','REPER','Reper']),
+          reper_intern: localPick(raw, ['reper_intern','reper','REPER','Reper']),
+          material: localPick(raw, ['material','calitate','calitate_otel','calitate otel','Calitate']),
+          diametru: localPick(raw, ['diametru','dimensiune','Dimensiune','Dimensiune OTEL']),
+          stoc_forja: localToNumber(localPick(raw, ['stoc_forja','stocFinal','stoc FINAL Piese Forjate (buc)','Stoc FINAL Piese Forjate (buc)','stoc final piese forjate (buc)']))
+        }, index, maps, 'Inventar Forjat');
+      }
+
+      function normalizeInventarDebitatRow(raw, index, maps){
+        return normalizeInventoryOpeningRow({
+          year: localPick(raw, ['year','an','anul','AN','Year','Anul']),
+          luna: localPick(raw, ['luna','month','Luna','Month']),
+          raw_reper: localPick(raw, ['raw_reper','reper','REPER','Reper','denumire reper debitare','Denumire reper debitare']),
+          reper_intern: localPick(raw, ['reper_intern','reper','REPER','Reper','denumire reper debitare','Denumire reper debitare']),
+          material: localPick(raw, ['material','calitate','calitate_otel','calitate otel','Calitate']),
+          diametru: localPick(raw, ['diametru','dimensiune','Dimensiune','Dimensiune OTEL']),
+          stoc_debitat: localToNumber(localPick(raw, ['stoc_debitat','cantitateBuc','STOC DEBITATE FINAL (buc)','Stoc debitate final (buc)','Stoc Debitat (Buc)']))
+        }, index, maps, 'Inventar Debitat');
+      }
+
+      function extractInventoryRowsFromMonthlyPayload(docKey, payload, maps){
+        const rows = [];
+        const months = payload && payload.months && typeof payload.months === 'object' ? payload.months : null;
+        if(!months) return rows;
+        Object.keys(months).forEach(function(monthKey){
+          const block = months[monthKey] || {};
+          const year = Number(block.year || monthKey.slice(0,4)) || 0;
+          const monthNum = Number(block.month || monthKey.slice(5,7)) || 0;
+          const blockRows = block.rows && typeof block.rows === 'object' ? block.rows : {};
+          Object.keys(blockRows).forEach(function(model){
+            const value = blockRows[model] || {};
+            const row = normalizeInventoryOpeningRow({
+              year: year,
+              month_num: monthNum,
+              raw_reper: model,
+              stoc_ambalat: localToNumber(value.ambalat),
+              stoc_finite: localToNumber(value.finite),
+              stoc_wip: localToNumber(value.wip),
+              stoc_forja: localToNumber(value.forja),
+              stoc_debitat: localToNumber(value.debitat),
+              stoc_otel_kg: localToNumber(value.otel)
+            }, rows.length, maps, 'Inventar Prelucrări');
+            if(row.raw_reper || row.reper_intern || row.total_piese || row.stoc_otel_kg) rows.push(row);
+          });
+        });
+        return rows;
+      }
+
+      function buildInventoryDocKeys(years){
+        const keys = ['inventar-otel', 'inventar-prelucrari'];
+        (years || []).forEach(function(year){
+          const y = Number(year || 0);
+          if(!y) return;
+          keys.push('inventar-forjat:' + y, 'inventar-forjate:' + y, 'inventar_piese_forjate:' + y, 'stoc-forjate:' + y, 'stoc_forjate:' + y);
+          keys.push('inventar-debitat:' + y, 'inventar_debitat:' + y, 'stoc-initial-debitat:' + y, 'stoc_initial_debitat:' + y);
+        });
+        return Array.from(new Set(keys));
+      }
+
+      async function loadInventoryStockRowsForYearsCompat(sb, years, maps){
+        if(typeof MRC.loadInventoryStockRowsForYears === 'function'){
+          return MRC.loadInventoryStockRowsForYears(sb, years, maps || {});
+        }
+        const keys = buildInventoryDocKeys(years);
+        const docs = typeof MRC.queryDocsByKeys === 'function'
+          ? await MRC.queryDocsByKeys(sb, keys)
+          : [];
+        const rows = [];
+        let updatedAt = '';
+        docs.forEach(function(doc){
+          if(!doc) return;
+          if(doc.updated_at && (!updatedAt || doc.updated_at > updatedAt)) updatedAt = doc.updated_at;
+          const docKey = String(doc.doc_key || '');
+          const payload = doc.content || doc.data || {};
+          if(payload && payload.months && typeof payload.months === 'object'){
+            rows.push.apply(rows, extractInventoryRowsFromMonthlyPayload(docKey, payload, maps));
+            return;
+          }
+          const rawRows = MRC.extractRowsPayload(payload) || [];
+          rawRows.forEach(function(raw, index){
+            let row = null;
+            if(docKey.indexOf('inventar-otel') === 0){ row = normalizeInventarOtelRow(raw, rows.length + index, maps); }
+            else if(docKey.indexOf('inventar-debitat') === 0 || docKey.indexOf('inventar_debitat') === 0 || docKey.indexOf('stoc-initial-debitat') === 0 || docKey.indexOf('stoc_initial_debitat') === 0){ row = normalizeInventarDebitatRow(raw, rows.length + index, maps); }
+            else { row = normalizeInventarForjatRow(raw, rows.length + index, maps); }
+            if(row && (row.raw_reper || row.reper_intern || row.total_piese || row.stoc_otel_kg)) rows.push(row);
+          });
+        });
+        const deduped = typeof MRC.dedupeOpeningStocks === 'function' ? MRC.dedupeOpeningStocks(rows) : rows;
+        return { rows: deduped, updatedAt: updatedAt, source: 'compat-local-inventare' };
+      }
+
       async function loadDocs(){
         state.maps = await MRC.loadHelperMaps(state.supabase);
         const [orderDoc, steelDoc] = await Promise.all([
@@ -146,8 +365,13 @@
         state.lastSyncAt = orderDoc && orderDoc.updated_at || steelDoc && steelDoc.updated_at || '';
         const fromYear = Number((els.filterFromMonth.value || '').slice(0,4)) || new Date().getFullYear();
         const toYear = Number((els.filterToMonth.value || '').slice(0,4)) || fromYear;
-        const years = []; for (let y=fromYear; y<=toYear; y+=1) years.push(y);
-        const [forjate, plan, inventory] = await Promise.all([ MRC.loadForjateRowsForYears(state.supabase, years), MRC.loadPlanRows(state.supabase), MRC.loadInventoryStockRowsForYears(state.supabase, years, state.maps || {}) ]);
+        const years = []; for (let y=fromYear - 1; y<=toYear; y+=1) years.push(y);
+        const planLoader = typeof MRC.loadPlanRows === 'function' ? MRC.loadPlanRows(state.supabase) : Promise.resolve({ rows:[] });
+        const [forjate, plan, inventory] = await Promise.all([
+          MRC.loadForjateRowsForYears(state.supabase, years),
+          planLoader,
+          loadInventoryStockRowsForYearsCompat(state.supabase, years, state.maps || {})
+        ]);
         state.openingStocks = inventory.rows || [];
         if(inventory.updatedAt) state.lastSyncAt = [state.lastSyncAt, inventory.updatedAt].filter(Boolean).sort().pop() || state.lastSyncAt;
         state.forjateRows = forjate.rows || [];
@@ -267,6 +491,7 @@
         bind();
         await initAuth();
         await loadDocs();
+        if(applyDefaultRangeFromOrders()) await loadDocs();
         renderAll();
       }
       boot().catch(function(error){ console.error(error); alert(error && error.message ? error.message : 'Eroare la încărcarea paginii MRC săptămânale.'); });
