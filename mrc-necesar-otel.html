@@ -242,7 +242,7 @@
       <div class="orders-modal-head">
         <div>
           <div class="orders-modal-title" id="inventoryModalTitle">Fișă inventar MRC</div>
-          <div class="orders-modal-sub">Inventarul folosit de MRC este citit din Inventar Oțel, Inventar Forjat, Inventar Debitat și Inventar Prelucrări. Stocul inițial vechi nu mai este citit în calcul.</div>
+          <div class="orders-modal-sub">Inventarul folosit de MRC este citit din luna anterioară lunii selectate: dacă în MRC selectezi iunie, calculul folosește inventarele din mai. Surse: Inventar Oțel, Inventar Forjat, Inventar Debitat și Inventar Prelucrări. Stocul inițial vechi nu mai este citit în calcul.</div>
         </div>
         <div class="orders-modal-actions">
           <button class="btn secondary" id="btnCloseInventory" type="button">Închide</button>
@@ -491,6 +491,16 @@
     }
 
     function getYearsInRange(fromIso, toIso){ const fy = Number(String(fromIso || '').slice(0,4)) || new Date().getFullYear(); const ty = Number(String(toIso || '').slice(0,4)) || fy; const years=[]; for(let y=fy; y<=ty; y+=1) years.push(y); return years; }
+    function addMonthToKey(monthKey, delta){
+      const txt = String(monthKey || '').slice(0,7);
+      const y = Number(txt.slice(0,4));
+      const m = Number(txt.slice(5,7));
+      if(!y || !m) return '';
+      const d = new Date(y, m - 1 + Number(delta || 0), 1);
+      return String(d.getFullYear()) + '-' + String(d.getMonth() + 1).padStart(2,'0');
+    }
+    function previousInventoryMonthKey(monthKey){ return addMonthToKey(monthKey, -1); }
+    function monthKeyToIsoStart(monthKey){ return monthKey ? String(monthKey).slice(0,7) + '-01' : ''; }
 
     async function loadDocs(){
       const docs = await Promise.all([MRC.readDocumentCompat(state.supabase, DOC_KEYS.mapping), MRC.readDocumentCompat(state.supabase, DOC_KEYS.orders), MRC.readDocumentCompat(state.supabase, DOC_KEYS.steel)]);
@@ -507,7 +517,10 @@
       const fromIso = MRC.startOfMonthIsoFromInput(els.filterFromMonth.value);
       const toIso = MRC.endOfMonthIso(els.filterToMonth.value);
       const coverWeeks = getCoverWeeks();
-      const years = getYearsInRange(fromIso, toIso);
+      const selectedYears = getYearsInRange(fromIso, toIso);
+      const inventoryFromIso = monthKeyToIsoStart(previousInventoryMonthKey(els.filterFromMonth.value || String(fromIso || '').slice(0,7)));
+      const inventoryYears = getYearsInRange(inventoryFromIso || fromIso, toIso);
+      const years = Array.from(new Set(selectedYears.concat(inventoryYears))).sort();
       const arr = await Promise.all([MRC.loadForjateRowsForYears(state.supabase, years), MRC.loadIntrariRowsForYears(state.supabase, years), MRC.loadInventoryStockRowsForYears(state.supabase, years, state.maps || {})]);
       state.forjateRows = arr[0].rows || [];
       state.intrariRows = arr[1].rows || [];
@@ -711,10 +724,11 @@
         weekKeys.forEach(week => {
           const iso = weekEndIso(week);
           const monthKey = iso ? iso.slice(0,7) : '';
-          const startPieces = Number(group.month_start_pieces_kg[monthKey] || 0);
-          const startSteel = Number(group.month_start_steel_kg[monthKey] || 0) + Number((specInventorySteelByMonth[group.spec_key] || {})[monthKey] || 0);
+          const inventoryMonthKey = previousInventoryMonthKey(monthKey);
+          const startPieces = Number(group.month_start_pieces_kg[inventoryMonthKey] || 0);
+          const startSteel = Number(group.month_start_steel_kg[inventoryMonthKey] || 0) + Number((specInventorySteelByMonth[group.spec_key] || {})[inventoryMonthKey] || 0);
           const monthStartTotal = startPieces + startSteel;
-          const hasExplicitMonthStock = Object.prototype.hasOwnProperty.call(group.month_start_pieces_kg, monthKey) || Object.prototype.hasOwnProperty.call(group.month_start_steel_kg, monthKey);
+          const hasExplicitMonthStock = Object.prototype.hasOwnProperty.call(group.month_start_pieces_kg, inventoryMonthKey) || Object.prototype.hasOwnProperty.call(group.month_start_steel_kg, inventoryMonthKey) || Object.prototype.hasOwnProperty.call((specInventorySteelByMonth[group.spec_key] || {}), inventoryMonthKey);
           const weekDelta = Number(group.intrari_by_week[week] || 0) + Number(group.po_by_week[week] || 0) - Number(group.customer_kg_by_week[week] || 0);
 
           if(monthKey !== currentMonth){
@@ -746,8 +760,9 @@
         if(!group.first_month_total_kg && weekKeys.length){
           const isoFirst = weekEndIso(weekKeys[0]);
           const firstMonthKey = isoFirst ? isoFirst.slice(0,7) : '';
-          group.first_month_pieces_kg = Number(group.month_start_pieces_kg[firstMonthKey] || 0);
-          group.first_month_steel_kg = Number(group.month_start_steel_kg[firstMonthKey] || 0);
+          const firstInventoryMonthKey = previousInventoryMonthKey(firstMonthKey);
+          group.first_month_pieces_kg = Number(group.month_start_pieces_kg[firstInventoryMonthKey] || 0);
+          group.first_month_steel_kg = Number(group.month_start_steel_kg[firstInventoryMonthKey] || 0) + Number((specInventorySteelByMonth[group.spec_key] || {})[firstInventoryMonthKey] || 0);
           group.first_month_total_kg = group.first_month_pieces_kg + group.first_month_steel_kg;
         }
         weekKeys.forEach((week, index) => {
@@ -786,7 +801,7 @@
     function renderSummary(agg){
       const rows = agg.rows || [];
       const totalDemandKg = rows.reduce((sum, row) => sum + Object.values(row.customer_kg_by_week).reduce((s, v) => s + Number(v || 0), 0), 0);
-      const totalStartKg = rows.reduce((sum, row) => sum + Number(row.start_total_kg || 0), 0);
+      const totalStartKg = rows.reduce((sum, row) => sum + Number(row.first_month_total_kg || 0), 0);
       const totalIntrariKg = rows.reduce((sum, row) => sum + Object.values(row.intrari_by_week).reduce((s, v) => s + Number(v || 0), 0), 0);
       const totalPoKg = rows.reduce((sum, row) => sum + Object.values(row.po_by_week).reduce((s, v) => s + Number(v || 0), 0), 0);
       const riskCount = rows.filter(row => row.status !== 'OK').length;
@@ -820,8 +835,8 @@
           '<td class="right mono fixed" rowspan="7">' + kgHtml + '</td>',
           '<td class="left fixed" rowspan="7">' + esc(row.material || '-') + '</td>',
           '<td class="fixed" rowspan="7">' + esc(row.diametru || '-') + '</td>',
-          '<td class="right mono fixed" rowspan="7">' + esc(fmtKg(row.first_month_pieces_kg)) + '<div class="muted small">prima lună</div></td>',
-          '<td class="right mono fixed" rowspan="7">' + esc(fmtKg(row.first_month_steel_kg)) + '<div class="muted small">prima lună</div></td>',
+          '<td class="right mono fixed" rowspan="7">' + esc(fmtKg(row.first_month_pieces_kg)) + '<div class="muted small">luna anterioară</div></td>',
+          '<td class="right mono fixed" rowspan="7">' + esc(fmtKg(row.first_month_steel_kg)) + '<div class="muted small">luna anterioară</div></td>',
           '<td class="right mono fixed" rowspan="7"><strong>' + esc(fmtKg(row.first_month_total_kg)) + '</strong><div class="muted small">reset doar dacă există stoc nou</div></td>',
           '<td class="fixed ' + esc(row.statusTone || '') + '" rowspan="7">' + esc(row.status) + '</td>'
         ];
@@ -1038,8 +1053,8 @@
     function getVisibleInventoryRows(){
       const src = MRC.trimText(els.inventorySourceFilter && els.inventorySourceFilter.value || '');
       const q = MRC.normalizeText(els.inventorySearch && els.inventorySearch.value || '');
-      const fromMonth = els.filterFromMonth.value || '';
-      const toMonth = els.filterToMonth.value || '';
+      const fromMonth = previousInventoryMonthKey(els.filterFromMonth.value || '');
+      const toMonth = previousInventoryMonthKey(els.filterToMonth.value || '');
       return (state.inventoryRows || []).filter(function(row){
         if(src && row.stock_source !== src) return false;
         if(fromMonth && row.month_key < fromMonth) return false;
@@ -1057,7 +1072,10 @@
       const rows = getVisibleInventoryRows();
       if(els.inventoryModalInfo){
         const total = state.inventoryRows ? state.inventoryRows.length : 0;
-        els.inventoryModalInfo.textContent = String(rows.length) + ' / ' + String(total) + ' rânduri inventar · ' + (state.inventorySource || 'surse inventar');
+        const fromInv = previousInventoryMonthKey(els.filterFromMonth.value || '');
+        const toInv = previousInventoryMonthKey(els.filterToMonth.value || '');
+        const intervalInv = fromInv && toInv ? (' · inventar folosit: ' + fromInv + ' - ' + toInv) : '';
+        els.inventoryModalInfo.textContent = String(rows.length) + ' / ' + String(total) + ' rânduri inventar · ' + (state.inventorySource || 'surse inventar') + intervalInv;
       }
       if(!rows.length){
         els.inventoryBody.innerHTML = '<tr><td colspan="13" class="empty">Nu există inventar pentru filtrul selectat.</td></tr>';
