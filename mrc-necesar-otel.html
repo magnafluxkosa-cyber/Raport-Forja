@@ -1089,6 +1089,84 @@
         .map(v => MRC.trimText(v)).join(' ');
     }
 
+
+    function resolvePartOrderMappingFromText(text){
+      const query = MRC.trimText(text || '').toUpperCase();
+      if(!query || !state.maps) return null;
+      const partKey = typeof MRC.normalizePart === 'function' ? MRC.normalizePart(query) : MRC.normalizeText(query);
+      const looseKey = typeof MRC.normalizeLoose === 'function' ? MRC.normalizeLoose(query) : MRC.normalizeText(query);
+      const direct = (partKey && (state.maps.byRawPart && state.maps.byRawPart[partKey] || state.maps.byNormPart && state.maps.byNormPart[partKey])) ||
+        (looseKey && (state.maps.byInternalReper && state.maps.byInternalReper[looseKey] || state.maps.byDebitare && state.maps.byDebitare[looseKey])) || null;
+      if(direct) return direct;
+      const rows = Array.isArray(state.maps.mappingRows) ? state.maps.mappingRows : [];
+      let best = null;
+      let bestScore = 0;
+      rows.forEach(function(row){
+        const candidates = [
+          { key: typeof MRC.normalizePart === 'function' ? MRC.normalizePart(row.raw_part) : MRC.normalizeText(row.raw_part), hay:partKey, score:60 },
+          { key: typeof MRC.normalizePart === 'function' ? MRC.normalizePart(row.part_norm) : MRC.normalizeText(row.part_norm), hay:partKey, score:55 },
+          { key: typeof MRC.normalizeLoose === 'function' ? MRC.normalizeLoose(row.reper_intern) : MRC.normalizeText(row.reper_intern), hay:looseKey, score:50 },
+          { key: typeof MRC.normalizeLoose === 'function' ? MRC.normalizeLoose(row.reper_debitare_origine) : MRC.normalizeText(row.reper_debitare_origine), hay:looseKey, score:45 }
+        ];
+        candidates.forEach(function(candidate){
+          if(!candidate.key || !candidate.hay) return;
+          const exact = candidate.hay === candidate.key;
+          const partial = !exact && (candidate.hay.includes(candidate.key) || candidate.key.includes(candidate.hay));
+          if(!exact && !partial) return;
+          const score = candidate.score + candidate.key.length + (exact ? 1000 : 0);
+          if(score > bestScore){ best = row; bestScore = score; }
+        });
+      });
+      return best;
+    }
+
+    function applyMappingToPartOrderRow(index, typedText){
+      const idx = Number(index);
+      if(!Number.isInteger(idx) || idx < 0 || idx >= state.customerOrders.length) return false;
+      const row = state.customerOrders[idx];
+      if(!row) return false;
+      const query = MRC.trimText(typedText || row.reper_intern || row.raw_part || '');
+      if(!query) return false;
+      const mapping = resolvePartOrderMappingFromText(query);
+      if(!mapping) {
+        row.mapping_status = row.reper_intern ? 'Parțial' : 'Nemapat';
+        return false;
+      }
+
+      const previousQuantity = row.quantity_buc;
+      const previousDate = row.delivery_date;
+      const previousWeek = row.week_key;
+      const previousSource = row.source_file;
+      const previousSheet = row.sheet_name;
+      const previousLineId = row.line_id;
+      const previousOrderNo = row.order_no;
+
+      const mapped = typeof MRC.applyPartMapping === 'function'
+        ? MRC.applyPartMapping(Object.assign({}, row, {
+            raw_part: row.raw_part || mapping.raw_part || query,
+            reper_intern: row.reper_intern || mapping.reper_intern || query
+          }), state.maps)
+        : Object.assign({}, row, mapping);
+
+      row.client_name = row.client_name || mapped.client_name || mapping.client_name || '';
+      row.raw_part = row.raw_part || mapped.raw_part || mapping.raw_part || query.toUpperCase();
+      row.part_norm = mapped.part_norm || mapping.part_norm || row.part_norm || (typeof MRC.normalizePart === 'function' ? MRC.normalizePart(row.raw_part) : row.raw_part);
+      row.reper_intern = mapped.reper_intern || mapping.reper_intern || row.reper_intern || query.toUpperCase();
+      row.reper_debitare_origine = mapped.reper_debitare_origine || mapping.reper_debitare_origine || row.reper_debitare_origine || '';
+      row.material = mapped.material || mapping.material || row.material || '';
+      row.diametru = mapped.diametru || mapping.diametru || row.diametru || '';
+      row.kg_per_buc = Number(mapped.kg_per_buc || mapping.kg_per_buc || row.kg_per_buc || 0);
+      row.quantity_buc = previousQuantity;
+      row.delivery_date = previousDate;
+      row.week_key = previousWeek || (row.delivery_date ? MRC.isoWeekKey(row.delivery_date) : '');
+      row.source_file = previousSource || 'Editare manuală MRC';
+      row.sheet_name = previousSheet || 'Comenzi piese';
+      row.line_id = previousLineId || ('MRC-MANUAL-' + Date.now());
+      row.order_no = previousOrderNo || '';
+      row.mapping_status = typeof MRC.hasFullMapping === 'function' && MRC.hasFullMapping(row) ? 'Mapat' : (row.reper_intern ? 'Parțial' : 'Nemapat');
+      return true;
+    }
+
     function getVisiblePartOrders(){
       const q = MRC.normalizeText(els.ordersSearch && els.ordersSearch.value || '');
       return (state.customerOrders || []).map(function(row, index){ return { row:row, index:index }; }).filter(function(item){
@@ -1174,6 +1252,9 @@
       else if(field === 'kg_per_buc') row[field] = Math.max(0, MRC.toNumber(value));
       else if(field === 'delivery_date') { row[field] = MRC.displayToIso(value); row.week_key = row[field] ? MRC.isoWeekKey(row[field]) : ''; }
       else row[field] = MRC.trimText(value);
+      if(field === 'raw_part' || field === 'reper_intern'){
+        applyMappingToPartOrderRow(idx, value);
+      }
       markOrdersDirty();
     }
 
@@ -1196,6 +1277,14 @@
       }, state.customerOrders.length, state.maps);
       state.customerOrders.push(row);
       markOrdersDirty();
+      setTimeout(function(){
+        const index = state.customerOrders.length - 1;
+        const input = els.ordersEditBody && (
+          els.ordersEditBody.querySelector('[data-order-index="' + index + '"][data-order-field="reper_intern"]') ||
+          els.ordersEditBody.querySelector('[data-order-index="' + index + '"][data-order-field="raw_part"]')
+        );
+        if(input){ input.focus(); input.select(); }
+      }, 0);
     }
 
     function deletePartOrder(index){
