@@ -800,6 +800,248 @@
     return rows;
   }
 
+
+  const INVENTORY_PM_ALIAS_RULES = [
+    { target:'AU1CZ01A', tokens:['AU1CZ01A','AU1CZ','PC728001','CE2KE01A','PC729001','CE2KV01A','BV4UL01A'] },
+    { target:'BF27K01A', tokens:['BF27K01A','KN752001'] },
+    { target:'AT-355', tokens:['AT35501A','AT355','AT-355','PC727001','CE2HR01A'] },
+    { target:'B87K501A', tokens:['B87K501A','KP686001'] },
+    { target:'BF5C001A', tokens:['BF5C001A','KN743001'] },
+    { target:'BF32C01A', tokens:['BF32C01A','KN745001'] },
+    { target:'BF58101A', tokens:['BF58101A','BF58001A','BF58001','KN741001','KN741002'] },
+    { target:'ASOLLO_M', tokens:['ASOLLO_M','ASOLLO','ASOLL','AS0LL','KT700002','KT70002','AS0LL01A','ASOLL01A'] },
+    { target:'BF3E301A', tokens:['BF3E301A','KN740001'] },
+    { target:'SK-203034', tokens:['SK203034','SK-203034','203034','FLANSA203034'] },
+    { target:'SK-304234', tokens:['SK304234','SK-304234','304234'] },
+    { target:'6I-8077', tokens:['6I8077','6I-8077'] },
+    { target:'9P-9664', tokens:['9P9664','9P-9664'] },
+    { target:'9P-9665', tokens:['9P9665','9P-9665'] },
+    { target:'7G-0521', tokens:['7G0521','7G-0521'] },
+    { target:'7G-0522', tokens:['7G0522','7G-0522'] },
+    { target:'7G-2532', tokens:['7G2532','7G-2532'] },
+    { target:'7G-2534', tokens:['7G2534','7G-2534'] },
+    { target:'358-5253', tokens:['3585253','358-5253'] },
+    { target:'358-5255', tokens:['3585255','358-5255'] },
+    { target:'422-2973', tokens:['4222973','422-2973'] },
+    { target:'106-1625', tokens:['1061625','106-1625'] },
+    { target:'106-1626', tokens:['1061626','106-1626'] },
+    { target:'9K-6628', tokens:['9K6628','9K-6628'] },
+    { target:'9K-6629', tokens:['9K6629','9K-6629'] },
+    { target:'229-6909', tokens:['2296909','229-6909'] },
+    { target:'229-6910', tokens:['2296910','229-6910'] },
+    { target:'248-2307', tokens:['2482307','248-2307'] },
+    { target:'248-2308', tokens:['2482308','248-2308'] },
+    { target:'503-0761', tokens:['5030761','503-0761'] },
+    { target:'503-0762', tokens:['5030762','503-0762'] },
+    { target:'417-3595', tokens:['4173595','417-3595'] },
+    { target:'417-3596', tokens:['4173596','417-3596'] },
+    { target:'418-2091', tokens:['4182091','418-2091'] },
+    { target:'418-2092', tokens:['4182092','418-2092'] }
+  ];
+
+  function resolveKnownInventoryReper(value){
+    const hay = normalizeText(value);
+    if (!hay) return '';
+    for (let i = 0; i < INVENTORY_PM_ALIAS_RULES.length; i += 1){
+      const rule = INVENTORY_PM_ALIAS_RULES[i];
+      for (let j = 0; j < rule.tokens.length; j += 1){
+        const token = normalizeText(rule.tokens[j]);
+        if (token && (hay === token || hay.includes(token))) return rule.target;
+      }
+    }
+    return '';
+  }
+
+  function yearMonthFromInventoryRow(row){
+    const dataIso = displayToIso(pick(row, ['data','date','DATA','Date','Data','data inventar','Data inventar']));
+    const year = Number(pick(row, ['year','an','AN','Year','Anul'])) || (dataIso ? Number(dataIso.slice(0,4)) : 0);
+    const monthNum = Number(pick(row, ['month_num','luna_num','monthNumber'])) || monthNumberFromAny(pick(row, ['luna','month','Luna','Month'])) || (dataIso ? Number(dataIso.slice(5,7)) : 0);
+    return { year, monthNum, dataIso };
+  }
+
+  function applyInventoryStockMapping(seed, maps){
+    const source = Object.assign({}, seed || {});
+    const rawText = trimText(source.raw_reper || source.raw_part || source.reper_intern || source.reper_debitare_origine);
+    const known = resolveKnownInventoryReper(rawText);
+    if (known && !trimText(source.reper_intern)) source.reper_intern = known;
+
+    if (maps && source.stock_type === 'debitat' && source.reper_debitare_origine && !trimText(source.reper_intern)){
+      const debitKey = normalizeLoose(source.reper_debitare_origine);
+      const match = (maps.mappingRows || []).find(row => normalizeLoose(row.reper_debitare_origine) === debitKey || normalizeLoose(row.reper_intern) === debitKey);
+      if (match){
+        source.reper_intern = match.reper_intern || source.reper_intern || '';
+        source.raw_part = source.raw_part || match.raw_part || '';
+        source.material = source.material || match.material || '';
+        source.diametru = source.diametru || match.diametru || '';
+        source.kg_per_buc = source.kg_per_buc || match.kg_per_buc || 0;
+      }
+    }
+
+    const mapped = applyPartMapping(source, maps || {});
+    mapped.raw_reper = trimText(source.raw_reper || mapped.raw_reper || rawText).toUpperCase();
+    mapped.stock_source = source.stock_source || '';
+    mapped.stock_type = source.stock_type || '';
+    mapped.year = source.year || 0;
+    mapped.month_num = source.month_num || 0;
+    mapped.month = getMonthName(mapped.month_num);
+    mapped.month_key = monthKey(mapped.year, mapped.month_num);
+    mapped.stoc_ambalat = toRound(source.stoc_ambalat);
+    mapped.stoc_finite = toRound(source.stoc_finite);
+    mapped.stoc_wip = toRound(source.stoc_wip);
+    mapped.stoc_forja = toRound(source.stoc_forja);
+    mapped.stoc_debitat = toRound(source.stoc_debitat);
+    mapped.stoc_otel_kg = toNumber(source.stoc_otel_kg);
+    mapped.inventory_otel_kg = toNumber(source.inventory_otel_kg != null ? source.inventory_otel_kg : source.stoc_otel_kg);
+    mapped.total_piese = toRound(source.total_piese);
+    mapped.source_label = source.source_label || mapped.stock_source || '';
+    return mapped;
+  }
+
+  function normalizeInventoryOtelRow(row, index, maps){
+    const ym = yearMonthFromInventoryRow(row || {});
+    return applyInventoryStockMapping({
+      id: trimText(pick(row, ['id','_id'])) || ('inv-otel-' + index),
+      stock_source: 'Inventar Oțel',
+      stock_type: 'otel',
+      year: ym.year,
+      month_num: ym.monthNum,
+      raw_reper: '',
+      reper_intern: '',
+      material: trimText(pick(row, ['calitate','calitate otel','calitate_otel','Calitate oțel','Calitate','material','Material'])).toUpperCase(),
+      diametru: trimText(pick(row, ['diametru','diametru otel','diametru_otel','Dimensiune Oțel','Diametru oțel','Diametru','dimensiune'])),
+      stoc_otel_kg: toNumber(pick(row, ['cantitateKg','cantitate','cantitate kg','cantitate_kg','kg','STOC OTEL (KG)','stoc_otel_kg'])),
+      inventory_otel_kg: toNumber(pick(row, ['cantitateKg','cantitate','cantitate kg','cantitate_kg','kg','STOC OTEL (KG)','stoc_otel_kg'])),
+      total_piese: 0,
+      source_label: 'inventar-otel'
+    }, maps);
+  }
+
+  function normalizeInventoryForjatRow(row, index, maps){
+    const ym = yearMonthFromInventoryRow(row || {});
+    const qty = toRound(pick(row, ['stocFinal','stoc FINAL Piese Forjate (buc)','Stoc FINAL Piese Forjate (buc)','stoc final piese forjate (buc)','cantitateBuc','cantitate','buc']));
+    return applyInventoryStockMapping({
+      id: trimText(pick(row, ['id','_id'])) || ('inv-forjat-' + index),
+      stock_source: 'Inventar Forjat',
+      stock_type: 'forjat',
+      year: ym.year,
+      month_num: ym.monthNum,
+      raw_reper: trimText(pick(row, ['reper','REPER','Reper'])).toUpperCase(),
+      reper_intern: trimText(pick(row, ['reper','REPER','Reper'])).toUpperCase(),
+      material: trimText(pick(row, ['calitate','calitate_otel','Calitate Otel','Calitate','material'])).toUpperCase(),
+      diametru: trimText(pick(row, ['dimensiune','diametru','diametru_otel','Dimensiune','Dimensiune otel','Dimensiune oțel'])),
+      stoc_forja: qty,
+      total_piese: qty,
+      source_label: 'inventar-forjat'
+    }, maps);
+  }
+
+  function normalizeInventoryDebitatRow(row, index, maps){
+    const ym = yearMonthFromInventoryRow(row || {});
+    const rawReper = trimText(pick(row, ['reper','REPER','Reper','denumire reper debitare','Denumire reper debitare'])).toUpperCase();
+    const qty = toRound(pick(row, ['cantitateBuc','STOC DEBITATE FINAL (buc)','Stoc debitate final (buc)','Stoc Debitat (Buc)','cantitate','buc']));
+    return applyInventoryStockMapping({
+      id: trimText(pick(row, ['id','_id'])) || ('inv-debitat-' + index),
+      stock_source: 'Inventar Debitat',
+      stock_type: 'debitat',
+      year: ym.year,
+      month_num: ym.monthNum,
+      raw_reper: rawReper,
+      raw_part: rawReper,
+      reper_debitare_origine: rawReper,
+      material: trimText(pick(row, ['calitate','calitate_otel','calitate otel','Calitate','Calitate Otel','material'])).toUpperCase(),
+      diametru: trimText(pick(row, ['diametru','diametru_otel','dimensiune','Dimensiune','Dimensiune OTEL'])),
+      stoc_debitat: qty,
+      total_piese: qty,
+      source_label: 'inventar-debitat'
+    }, maps);
+  }
+
+  function normalizeInventoryPrelucrariRows(payload, maps){
+    const rows = [];
+    const content = payload && typeof payload === 'object' ? payload : {};
+    const months = content.months && typeof content.months === 'object' ? content.months : {};
+    Object.keys(months).forEach(monthKeyValue => {
+      const monthObj = months[monthKeyValue] && typeof months[monthKeyValue] === 'object' ? months[monthKeyValue] : {};
+      const year = Number(monthObj.year || String(monthKeyValue).slice(0,4)) || 0;
+      const monthNum = Number(monthObj.month || String(monthKeyValue).slice(5,7)) || 0;
+      const sourceRows = monthObj.rows && typeof monthObj.rows === 'object' ? monthObj.rows : {};
+      Object.keys(sourceRows).forEach(model => {
+        const row = sourceRows[model] && typeof sourceRows[model] === 'object' ? sourceRows[model] : {};
+        const ambalat = toRound(row.ambalat);
+        const finite = toRound(row.finite);
+        const wip = toRound(row.wip);
+        const forja = toRound(row.forja);
+        const debitat = toRound(row.debitat);
+        const otel = toNumber(row.otel);
+        if (!(ambalat || finite || wip || forja || debitat || otel)) return;
+        rows.push(applyInventoryStockMapping({
+          id: 'inv-prelucrari-' + monthKeyValue + '-' + normalizeLoose(model),
+          stock_source: 'Inventar Prelucrări',
+          stock_type: 'prelucrari',
+          year: year,
+          month_num: monthNum,
+          raw_reper: trimText(model).toUpperCase(),
+          raw_part: trimText(model).toUpperCase(),
+          stoc_ambalat: ambalat,
+          stoc_finite: finite,
+          stoc_wip: wip,
+          stoc_forja: forja,
+          stoc_debitat: debitat,
+          stoc_otel_kg: 0,
+          inventory_otel_kg: otel,
+          total_piese: ambalat + finite + wip,
+          source_label: 'inventar-prelucrari'
+        }, maps));
+      });
+    });
+    return rows;
+  }
+
+  async function loadInventoryStockRowsForYears(sb, years, maps){
+    const uniqueYears = Array.from(new Set((years || []).map(v => Number(v)).filter(v => v > 0)));
+    const docKeys = ['inventar-otel','inventar-prelucrari'];
+    uniqueYears.forEach(year => {
+      docKeys.push('inventar-forjat:' + year, 'inventar-forjate:' + year, 'inventar-debitat:' + year, 'inventar_debitat:' + year);
+    });
+    const docs = await queryDocsByKeys(sb, docKeys);
+    const rows = [];
+    const sources = [];
+    const updated = [];
+    docs.forEach(doc => {
+      const key = trimText(doc && doc.doc_key);
+      const payload = doc && (doc.content || doc.data) || null;
+      if (!payload) return;
+      if (doc.updated_at) updated.push(doc.updated_at);
+      if (key === 'inventar-otel'){
+        sources.push(key);
+        extractRowsPayload(payload).forEach((raw, index) => rows.push(normalizeInventoryOtelRow(raw, index, maps)));
+      } else if (key.indexOf('inventar-forjat:') === 0 || key.indexOf('inventar-forjate:') === 0){
+        sources.push(key);
+        extractRowsPayload(payload).forEach((raw, index) => rows.push(normalizeInventoryForjatRow(raw, index, maps)));
+      } else if (key.indexOf('inventar-debitat:') === 0 || key.indexOf('inventar_debitat:') === 0){
+        sources.push(key);
+        extractRowsPayload(payload).forEach((raw, index) => rows.push(normalizeInventoryDebitatRow(raw, index, maps)));
+      } else if (key === 'inventar-prelucrari'){
+        sources.push(key);
+        rows.push.apply(rows, normalizeInventoryPrelucrariRows(payload, maps));
+      }
+    });
+    const filtered = rows.filter(row => {
+      if (!row || !row.year || !row.month_num) return false;
+      if (uniqueYears.length && !uniqueYears.includes(Number(row.year))) return false;
+      const hasPieces = Number(row.total_piese || 0) || Number(row.stoc_ambalat || 0) || Number(row.stoc_finite || 0) || Number(row.stoc_wip || 0) || Number(row.stoc_forja || 0) || Number(row.stoc_debitat || 0);
+      const hasSteel = Number(row.stoc_otel_kg || 0) || Number(row.inventory_otel_kg || 0);
+      const hasKey = trimText(row.reper_intern || row.raw_reper) || (trimText(row.material) && trimText(row.diametru));
+      return hasKey && (hasPieces || hasSteel);
+    });
+    return {
+      rows: dedupeOpeningStocks(filtered),
+      detailRows: filtered,
+      source: Array.from(new Set(sources)).join(', '),
+      updatedAt: updated.sort().pop() || ''
+    };
+  }
+
   function normalizeSteelPoRow(row, index){
     const obj = row || {};
     const etaIso = displayToIso(pick(obj, ['eta_date','ETA','data_livrare','delivery_date','Data','date']));
@@ -992,6 +1234,12 @@
     });
 
     openingStocks.filter(row => row && row.month_key === startMonthKey).forEach(row => {
+      const isSpecOnlySteel = (row.stock_type === 'otel') || (!trimText(row.reper_intern || row.reper || row.raw_reper) && trimText(row.material) && trimText(row.diametru));
+      if (isSpecOnlySteel){
+        const specOnly = buildSpecKey(row.material, row.diametru);
+        if (specOnly) specOpening[specOnly] = toNumber(specOpening[specOnly]) + toNumber(row.stoc_otel_kg || row.inventory_otel_kg);
+        return;
+      }
       const item = ensureReper(row);
       if (!item) return;
       item.opening_pieces += toRound(row.total_piese);
@@ -1060,6 +1308,7 @@
       item.clients = Array.from(item.clients).sort();
       const spec = buildSpecKey(item.material, item.diametru);
       item.steel_po_kg = (specPoRows[spec] || []).reduce((sum, po) => sum + toNumber(po.qty_kg), 0);
+      if (!toNumber(item.opening_steel_kg) && toNumber(specOpening[spec])) item.opening_steel_kg = toNumber(specOpening[spec]);
       item.available_pieces = item.opening_pieces + item.forged_good_buc + item.planned_future_buc;
       item.piece_gap = Math.max(0, item.demand_buc - item.available_pieces);
       item.available_steel_kg = item.opening_steel_kg + item.steel_po_kg;
@@ -1150,6 +1399,12 @@
     mergeOpeningStocks,
     hasFullMapping,
     importOpeningStockFromWorkbook,
+    resolveKnownInventoryReper,
+    normalizeInventoryOtelRow,
+    normalizeInventoryForjatRow,
+    normalizeInventoryDebitatRow,
+    normalizeInventoryPrelucrariRows,
+    loadInventoryStockRowsForYears,
     normalizeSteelPoRow,
     normalizeIntrariOtelRow,
     normalizeForjateFlowRow,
