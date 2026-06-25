@@ -358,6 +358,34 @@
   }
   function canonicalReper(v){return normalizeReper(v).replace(/_/g,'-');}
   function normalizeLooseReper(v){return canonicalReper(v).replace(/[^A-Z0-9]/g,'');}
+  const SHARED_DEBITAT_GROUP_ALIASES=[
+    {group:'248-2307/08', aliases:['248-2307','248-2308','378-8241','378-8242','418-2091','418-2092']},
+    {group:'417-3595/96', aliases:['417-3595','417-3596']},
+    {group:'9K-6628/29', aliases:['9K-6628','9K-6629']},
+    {group:'229-6909/10', aliases:['229-6909','229-6910']},
+    {group:'503-0761/62', aliases:['503-0761','503-0762']},
+    {group:'106-1625/26', aliases:['106-1625','106-1626']},
+    {group:'7G-0521/22', aliases:['7G-0521','7G-0522']},
+    {group:'358-5253/55', aliases:['358-5253','358-5255']},
+    {group:'9P-9664/65', aliases:['9P-9664','9P-9665']}
+  ];
+  function addDebitatAliasKey(set,value){ const clean=canonicalReper(value); if(!clean) return; set.add(clean); const loose=normalizeLooseReper(clean); if(loose) set.add(loose); }
+  function expandDebitatReperAliases(value){
+    const set=new Set();
+    const raw=canonicalReper(value);
+    addDebitatAliasKey(set,raw);
+    if(!raw) return Array.from(set);
+    addDebitatAliasKey(set,raw.replace(/\//g,'-'));
+    const m=raw.match(/^(.+?)(\d+)(?:\/(\d+))$/);
+    if(m){ const prefix=m[1], base=m[2], suffix=m[3]; if(suffix && suffix.length<=base.length){ addDebitatAliasKey(set,prefix+base); addDebitatAliasKey(set,prefix+base.slice(0,base.length-suffix.length)+suffix); } }
+    const rawLoose=normalizeLooseReper(raw);
+    SHARED_DEBITAT_GROUP_ALIASES.forEach(item=>{
+      const all=[item.group].concat(item.aliases||[]);
+      const hit=all.some(alias=>normalizeLooseReper(alias)===rawLoose);
+      if(hit) all.forEach(alias=>addDebitatAliasKey(set,alias));
+    });
+    return Array.from(set);
+  }
   function isExcludedDisplayReper(v){ const c=canonicalReper(v); if(!c) return false; if(c.includes('MENTENANTA')) return true; if(EXCLUDED_PHANTOM_REPERS.has(c)) return true; return EXCLUDED_DISPLAY_REPERS.has(c); }
   function isExcludedDebitatSource(v){ const c=canonicalReper(v); if(!c) return false; if(c.includes('MENTENANTA')) return true; return EXCLUDED_PHANTOM_REPERS.has(c); }
   function isActiveRow(row){
@@ -806,12 +834,34 @@
     const debKey=normalizeReper(meta.reperDebitat || meta.reperForjat || '');
     if(!debKey) return;
     if(!map._variants) map._variants=new Map();
-    const list=map._variants.get(debKey)||[];
-    const key=helperVariantKey(debKey, meta.diametru, meta.calitate);
-    const idx=list.findIndex(item=>helperVariantKey(debKey, item.diametru, item.calitate)===key);
-    if(idx>=0) list[idx]=meta;
-    else list.push(meta);
-    map._variants.set(debKey,list);
+    const aliasKeys=Array.from(new Set(expandDebitatReperAliases(debKey).concat([debKey]).map(normalizeReper).filter(Boolean)));
+    aliasKeys.forEach(aliasKey=>{
+      const list=map._variants.get(aliasKey)||[];
+      const key=helperVariantKey(aliasKey, meta.diametru, meta.calitate);
+      const idx=list.findIndex(item=>helperVariantKey(aliasKey, item.diametru, item.calitate)===key);
+      if(idx>=0) list[idx]=meta;
+      else list.push(meta);
+      map._variants.set(aliasKey,list);
+      if(!map.has(aliasKey)) map.set(aliasKey, meta);
+    });
+  }
+  function getHelperVariants(map, reper){
+    const key=normalizeReper(reper);
+    if(!key) return [];
+    const aliases=Array.from(new Set(expandDebitatReperAliases(key).concat([key]).map(normalizeReper).filter(Boolean)));
+    const out=[];
+    const seen=new Set();
+    aliases.forEach(alias=>{
+      const list=(map && map._variants && map._variants.get(alias)) || [];
+      (Array.isArray(list)?list:[]).forEach(item=>{
+        const sig=helperVariantKey(alias,item&&item.diametru,item&&item.calitate);
+        if(!sig || seen.has(sig)) return;
+        seen.add(sig);
+        out.push(item);
+      });
+    });
+    if(!out.length && map && map.get && map.get(key)) out.push(map.get(key));
+    return out;
   }
   function getHelperVariant(map, reper, diam, cal){
     const key=normalizeReper(reper);
@@ -835,12 +885,31 @@
     return (map && map.get && map.get(key)) || null;
   }
 
-  function buildHelperIndex(helperRows,debitateRows,forjateRows,helperForjateRows){
+  function buildHelperIndex(helperRows,debitateRows,forjateRows,helperForjateRows,helperDebitateRows){
     const map=new Map(), debMeta=new Map();
     debitateRows.forEach(row=>{
       const reper=normalizeReper(pickValue(row,['reper','reper debitat','denumire reper debitare'])); if(!reper) return;
       const existing=debMeta.get(reper)||{};
       debMeta.set(reper,{reperDebitat:reper,diametru:normalizeDiam(pickValue(row,['diametru','diametru_otel','diametru otel','dimensiune_otel','dimensiune otel']))||existing.diametru||'',calitate:normalizeQuality(pickValue(row,['calitate','material','calitate_otel','calitate otel']))||existing.calitate||'',kgBuc:toNumber(pickValue(row,['kgBuc','kg_buc','kg_buc_debitat','kg/buc','kg buc','greutate','kg pe buc']))||existing.kgBuc||0});
+    });
+    const explicitDebRowsForIndex=((helperDebitateRows&&helperDebitateRows.length)?helperDebitateRows:helperRows.filter(row=>{
+      if(Array.isArray(row)) return false;
+      return Object.prototype.hasOwnProperty.call(row||{}, 'reper_debitare') || Object.prototype.hasOwnProperty.call(row||{}, 'REPER_DEBITARE');
+    })).filter(isActiveRow);
+    explicitDebRowsForIndex.forEach(row=>{
+      const reper=normalizeReper(row.reper_debitare ?? row.REPER_DEBITARE ?? row.reper ?? row.REPER ?? '');
+      if(!reper) return;
+      const meta={
+        reperForjat:reper,
+        reperDebitat:reper,
+        diametru:normalizeDiam(row.diametru_otel ?? row.DIAMETRU_OTEL ?? row.dimensiune_otel ?? row.DIMENSIUNE_OTEL ?? ''),
+        calitate:normalizeQuality(row.calitate_otel ?? row.CALITATE_OTEL ?? row.material ?? row.MATERIAL ?? ''),
+        kgBuc:toNumber(row.kg_buc_debitat ?? row.KG_BUC_DEBITAT ?? row.kg_buc ?? row.kgBuc ?? 0)
+      };
+      const existing=debMeta.get(reper)||{};
+      debMeta.set(reper,{reperDebitat:reper,diametru:meta.diametru||existing.diametru||'',calitate:meta.calitate||existing.calitate||'',kgBuc:meta.kgBuc||existing.kgBuc||0});
+      if(!map.has(reper)) map.set(reper,meta);
+      attachHelperVariant(map,meta);
     });
     const helperSource=((Array.isArray(helperForjateRows)&&helperForjateRows.length)?helperForjateRows:helperRows).filter(isActiveRow);
     helperSource.forEach(row=>{
@@ -1817,7 +1886,7 @@
 
 
   function buildRows(){
-    const helperIndex=buildHelperIndex(state.raw.helper,state.raw.debitate,state.raw.forjate,state.helperTables.forjate);
+    const helperIndex=buildHelperIndex(state.raw.helper,state.raw.debitate,state.raw.forjate,state.helperTables.forjate,state.helperTables.debitare);
     const debMeta=buildDebitatMeta(state.raw.helper,state.raw.debitate,state.helperTables.debitare,state.helperTables.forjate,helperIndex);
     const helperForjateByDeb=buildHelperForjateByDeb(state.raw.helper,state.helperTables.forjate);
     const steelInv=latestInventoryMapForPeriod(state.raw.inventarOtel,'steel');
@@ -1841,6 +1910,24 @@
 
     const materialMap=new Map();
     const resolveSteelMaterial=buildSteelMaterialResolver(steelInv, steelRealInv, steelEntries, steelDebitated);
+    function helperMaterialScore(meta){
+      if(!meta) return 0;
+      const diam=normalizeDiam(meta.diametru||meta.diametru_otel||'');
+      const cal=normalizeQuality(meta.calitate||meta.calitate_otel||'');
+      if(!diam || !cal) return 0;
+      const key=[diam,cal].join('|');
+      return Math.abs(toNumber((steelInv.get(key)||{}).qty || steelInv.get(key)))
+        + Math.abs(toNumber(steelRealInv && steelRealInv.exact && steelRealInv.exact.get(key)))
+        + Math.abs(toNumber(steelEntries && steelEntries.exact && steelEntries.exact.get(key)))
+        + Math.abs(toNumber(steelDebitated && steelDebitated.byMaterial && steelDebitated.byMaterial.get(key)));
+    }
+    function chooseActiveHelperVariant(map,reper,fallback){
+      const variants=getHelperVariants(map,reper);
+      if(!variants.length) return fallback||null;
+      let best=variants[0], bestScore=helperMaterialScore(variants[0]);
+      variants.slice(1).forEach(meta=>{ const score=helperMaterialScore(meta); if(score>bestScore){ best=meta; bestScore=score; } });
+      return best || fallback || null;
+    }
     function ensureMaterial(diam, cal){
       const resolved=resolveSteelMaterial(diam, cal);
       const finalDiam=resolved.diam, finalCal=resolved.cal, steelKey=resolved.key;
@@ -1891,7 +1978,7 @@
       const knownAsDebitat=debMeta.has(reperForjat) || debProduced.has(reperForjat) || debInv.has(reperForjat);
       const knownFromStocPm=stocPm.has(reperForjat) || forjRealInv.has(reperForjat);
       if(!knownFromHelper && !knownAsDebitat && !knownFromStocPm) continue;
-      const meta=getHelperVariant(helperIndex,reperForjat,'','')||{reperForjat:reperForjat,reperDebitat:reperForjat,diametru:'',calitate:'',kgBuc:0};
+      const meta=chooseActiveHelperVariant(helperIndex,reperForjat,getHelperVariant(helperIndex,reperForjat,'',''))||{reperForjat:reperForjat,reperDebitat:reperForjat,diametru:'',calitate:'',kgBuc:0};
       const debKey=meta.reperDebitat||reperForjat;
       if(!debKey || isExcludedDebitatSource(debKey)) continue;
       let diam=meta.diametru||'', cal=meta.calitate||'';
@@ -1945,7 +2032,7 @@
       const mirrorForjat=isExcludedDisplayReper(debKey)?'':debKey;
       const mirrorHasData=hasRealForjatActivity(mirrorForjat, forjInv, forjProduced, livrate) || toNumber(forjRealInv.get(mirrorForjat))!==0 || toNumber(forjRebut.get(mirrorForjat))!==0 || toNumber(rebutAfterForjare.get(mirrorForjat))!==0;
       if(!debHasActivity && !explicitMirror && !mirrorHasData) continue;
-      const dm=getHelperVariant(debMeta, debKey, '', '')||{diametru:'',calitate:''};
+      const dm=chooseActiveHelperVariant(debMeta, debKey, getHelperVariant(debMeta, debKey, '', ''))||{diametru:'',calitate:''};
       const material=ensureMaterial(dm.diametru||'', dm.calitate||'');
       const debGroup=ensureDeb(material, debKey);
       if(!debGroup.forjats.length && mirrorForjat && (mirrorHasData || explicitMirror)){

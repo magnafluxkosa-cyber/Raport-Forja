@@ -3337,25 +3337,42 @@ function getDefaultPermissions(role){
       const looseKey = normalizeReperLoose(rawKey);
       if(!looseKey) return;
 
+      const aliasKeys = Array.from(new Set(expandDebitatReperAliases(rawKey).concat([rawKey, looseKey]).map(normalizeReperLoose).filter(Boolean)));
       const variantKey = helperDebitVariantKey(info);
-      const list = debitVariantsByReper[looseKey] || [];
-      const idx = list.findIndex(item => helperDebitVariantKey(item) === variantKey);
-      if(idx >= 0) list[idx] = info;
-      else list.push(info);
-      debitVariantsByReper[looseKey] = list;
+
+      aliasKeys.forEach(aliasKey => {
+        const list = debitVariantsByReper[aliasKey] || [];
+        const idx = list.findIndex(item => helperDebitVariantKey(item) === variantKey);
+        if(idx >= 0) list[idx] = info;
+        else list.push(info);
+        debitVariantsByReper[aliasKey] = list;
+
+        if(!Object.prototype.hasOwnProperty.call(debitByReper, aliasKey)) debitByReper[aliasKey] = info;
+        const current = debitByReper[aliasKey];
+        if(current && (!current.diametru_otel || !current.calitate_otel) && (info.diametru_otel || info.calitate_otel)){
+          debitByReper[aliasKey] = info;
+        }
+      });
 
       if(rawKey && !Object.prototype.hasOwnProperty.call(debitByReper, rawKey)) debitByReper[rawKey] = info;
-      if(!Object.prototype.hasOwnProperty.call(debitByReper, looseKey)) debitByReper[looseKey] = info;
-      const current = debitByReper[looseKey] || debitByReper[rawKey];
-      if(current && (!current.diametru_otel || !current.calitate_otel) && (info.diametru_otel || info.calitate_otel)){
-        debitByReper[looseKey] = info;
-        if(rawKey) debitByReper[rawKey] = info;
-      }
+    }
+    function getDebitHelperVariantList(debitVariantsByReper, reper){
+      const keys = Array.from(new Set(expandDebitatReperAliases(reper).concat([trimText(reper).toUpperCase(), normalizeReperLoose(reper)]).map(normalizeReperLoose).filter(Boolean)));
+      const out = [];
+      const seen = new Set();
+      keys.forEach(key => {
+        const list = (debitVariantsByReper && debitVariantsByReper[key]) || [];
+        (Array.isArray(list) ? list : []).forEach(item => {
+          const vKey = helperDebitVariantKey(item);
+          if(!vKey || seen.has(vKey)) return;
+          seen.add(vKey);
+          out.push(item);
+        });
+      });
+      return out;
     }
     function findDebitHelperVariant(debitByReper, debitVariantsByReper, reper, preferredDiam, preferredCal){
-      const rawKey = trimText(reper).toUpperCase();
-      const looseKey = normalizeReperLoose(reper);
-      const list = (debitVariantsByReper && (debitVariantsByReper[looseKey] || debitVariantsByReper[rawKey])) || [];
+      const list = getDebitHelperVariantList(debitVariantsByReper, reper);
       const diamKey = helperDebitDiamKey(preferredDiam);
       const calKey = helperDebitCalKey(preferredCal);
       if(Array.isArray(list) && list.length){
@@ -3666,7 +3683,7 @@ function getDefaultPermissions(role){
     }
     function applyLiveHelperForDebitariFlowRow(row){
       const out = Object.assign({}, row || {});
-      const helper = resolvePlanningHelper(out.reper);
+      const helper = resolvePlanningHelper(out.reper, out.diametru, out.calitate);
       const cantitateBuc = Math.max(0, toNumber(out.cantitateBuc));
       const helperKgBuc = Math.max(0, toNumber(helper && helper.kgBuc));
 
@@ -3803,19 +3820,50 @@ function getDefaultPermissions(role){
       };
     }
 
-    function resolvePlanningHelper(reper){
+    function resolvePlanningHelper(reper, preferredDiam, preferredCal){
       const reperRaw = normUpper(reper);
       const reperKey = normalizeReperLoose(reper);
       const forja = findLooseMapValue(state.helperMaps.forjaByReper, reperRaw) || null;
       const originReperRaw = trimText((forja && forja.reper_debitare_origine) || reperRaw).toUpperCase();
       const originReper = normalizeReperLoose(originReperRaw || reperKey);
-      const debit = findDebitHelperVariant(state.helperMaps.debitByReper, state.helperMaps.debitVariantsByReper, originReperRaw, forja && forja.dimensiune_otel, forja && forja.calitate_otel)
-        || findDebitHelperVariant(state.helperMaps.debitByReper, state.helperMaps.debitVariantsByReper, reperRaw, forja && forja.dimensiune_otel, forja && forja.calitate_otel)
+      const prefDiam = trimText(preferredDiam || (forja && forja.dimensiune_otel) || '');
+      const prefCal = trimText(preferredCal || (forja && forja.calitate_otel) || '');
+      const debit = findDebitHelperVariant(state.helperMaps.debitByReper, state.helperMaps.debitVariantsByReper, originReperRaw, prefDiam, prefCal)
+        || findDebitHelperVariant(state.helperMaps.debitByReper, state.helperMaps.debitVariantsByReper, reperRaw, prefDiam, prefCal)
         || null;
-      const diametru = trimText((debit && debit.diametru_otel) || (forja && forja.dimensiune_otel) || '');
-      const calitate = trimText((debit && debit.calitate_otel) || (forja && forja.calitate_otel) || '');
+      const diametru = trimText((debit && debit.diametru_otel) || prefDiam || '');
+      const calitate = trimText((debit && debit.calitate_otel) || prefCal || '');
       const kgBuc = Math.max(0, toNumber((debit && debit.kg_buc_debitat) || 0));
       return { reperKey, reperRaw, forja, debit, originReper, originReperRaw, diametru, calitate, kgBuc };
+    }
+    function resolvePlanningHelperWithSteel(reper, steelStock){
+      const base = resolvePlanningHelper(reper);
+      const candidates = getDebitHelperVariantList(state.helperMaps.debitVariantsByReper, base.originReperRaw || reper)
+        .concat(getDebitHelperVariantList(state.helperMaps.debitVariantsByReper, reper));
+      const seen = new Set();
+      const unique = candidates.filter(item => {
+        const key = helperDebitVariantKey(item);
+        if(!key || seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+      if(!unique.length) return base;
+      let best = null;
+      let bestQty = -1;
+      unique.forEach(item => {
+        const specKey = buildSpecKey(item.diametru_otel, item.calitate_otel);
+        const qty = specKey ? toNumber((steelStock || Object.create(null))[specKey]) : 0;
+        const exactPreferred = base.diametru && base.calitate && helperDebitDiamKey(item.diametru_otel) === helperDebitDiamKey(base.diametru) && helperDebitCalKey(item.calitate_otel) === helperDebitCalKey(base.calitate);
+        const score = qty > 0 ? (1000000000 + qty) : (exactPreferred ? 1 : 0);
+        if(score > bestQty){ bestQty = score; best = item; }
+      });
+      if(!best) return base;
+      return Object.assign({}, base, {
+        debit: best,
+        diametru: trimText(best.diametru_otel || base.diametru),
+        calitate: trimText(best.calitate_otel || base.calitate),
+        kgBuc: Math.max(0, toNumber(best.kg_buc_debitat || base.kgBuc))
+      });
     }
     function cellCalcKey(rowId, machine){
       return String(rowId) + '|' + String(machine);
@@ -5079,7 +5127,8 @@ function getDefaultPermissions(role){
             const rawShortageKg = Math.max(0, toNumber(calc.shortageSteelKg || (Math.max(0, toNumber(calc.needSteelKg)) - Math.max(0, toNumber(calc.beforeSteelKg)))));
             const shortageKg = planBuc > 0 ? rawShortageKg * (effectivePlanBuc / planBuc) : rawShortageKg;
             if(shortageKg <= 0) return;
-            const helper = resolvePlanningHelper(reper);
+            const calcSpecParts = trimText(calc.specLabel).split('/').map(v => trimText(v));
+            const helper = (calcSpecParts.length >= 2 && calcSpecParts[0] && calcSpecParts[1]) ? resolvePlanningHelper(reper, calcSpecParts[0], calcSpecParts[1]) : resolvePlanningHelper(reper);
             const specKey = helper && helper.diametru && helper.calitate ? buildSpecKey(helper.diametru, helper.calitate) : (trimText(calc.specLabel) || ('spec|' + reper));
             let weekEntry = weekMap[bucket.key];
             if(!weekEntry){
@@ -5693,7 +5742,7 @@ function getDefaultPermissions(role){
           addDailyDelta(debDeltaByDate, row.data, repKey, toNumber(row.cantitateBuc));
         }
         if(row.data >= fromIsoSteel){
-          const helperSteel = resolvePlanningHelper(row.reper);
+          const helperSteel = resolvePlanningHelper(row.reper, row.diametru, row.calitate);
           const helperKgBuc = Math.max(0, toNumber(helperSteel && helperSteel.kgBuc));
           const liveDiametru = trimText((helperSteel && helperSteel.diametru) || row.diametru);
           const liveCalitate = trimText((helperSteel && helperSteel.calitate) || row.calitate);
@@ -5719,7 +5768,7 @@ function getDefaultPermissions(role){
         if(row.data < fromIsoDeb) return;
         const cons = Math.max(0, Math.round(toNumber(row.realizatBuc) + toNumber(row.rebutBuc)));
         if(cons > 0){
-          const helper = resolvePlanningHelper(row.reper);
+          const helper = resolvePlanningHelper(row.reper, row.diametru, row.calitate);
           const repDeb = resolveDebitatStockKey(helper.originReper || normalizeReperLoose(row.reper), debStock, debStockAliasMap);
           if(repDeb) addDailyDelta(debDeltaByDate, row.data, repDeb, -cons);
         }
@@ -5789,7 +5838,7 @@ function getDefaultPermissions(role){
           const realizatBuc = Math.max(0, Math.round(toNumber(dictRealBuc[keyReal])));
           const bucDeSimulat = hasReal ? 0 : planBuc;
 
-          const helper = resolvePlanningHelper(reperForjat);
+          const helper = resolvePlanningHelperWithSteel(reperForjat, steelStock);
           const reperDebRaw = helper.originReper || normalizeReperLoose(reperForjat);
           const reperDeb = resolveDebitatStockKey(reperDebRaw, debStock, debStockAliasMap);
           const specKey = helper.diametru && helper.calitate ? buildSpecKey(helper.diametru, helper.calitate) : '';
