@@ -798,6 +798,43 @@
     els.syncSub.textContent=state.updatedAt?'Ultima modificare detectată într-una dintre sursele citite.':'Așteaptă încărcarea datelor în foile sursă.';
   }
 
+  function helperVariantKey(reper, diam, cal){
+    return [normalizeReper(reper), normalizeDiam(diam), normalizeQuality(cal)].join('|');
+  }
+  function attachHelperVariant(map, meta){
+    if(!map || !meta) return;
+    const debKey=normalizeReper(meta.reperDebitat || meta.reperForjat || '');
+    if(!debKey) return;
+    if(!map._variants) map._variants=new Map();
+    const list=map._variants.get(debKey)||[];
+    const key=helperVariantKey(debKey, meta.diametru, meta.calitate);
+    const idx=list.findIndex(item=>helperVariantKey(debKey, item.diametru, item.calitate)===key);
+    if(idx>=0) list[idx]=meta;
+    else list.push(meta);
+    map._variants.set(debKey,list);
+  }
+  function getHelperVariant(map, reper, diam, cal){
+    const key=normalizeReper(reper);
+    if(!key) return null;
+    const list=(map && map._variants && map._variants.get(key)) || [];
+    const d=normalizeDiam(diam), c=normalizeQuality(cal);
+    if(Array.isArray(list) && list.length){
+      if(d && c){
+        const exact=list.find(item=>normalizeDiam(item.diametru)===d && normalizeQuality(item.calitate)===c);
+        if(exact) return exact;
+      }
+      if(d){
+        const byDiam=list.find(item=>normalizeDiam(item.diametru)===d);
+        if(byDiam) return byDiam;
+      }
+      if(c){
+        const byCal=list.find(item=>normalizeQuality(item.calitate)===c);
+        if(byCal) return byCal;
+      }
+    }
+    return (map && map.get && map.get(key)) || null;
+  }
+
   function buildHelperIndex(helperRows,debitateRows,forjateRows,helperForjateRows){
     const map=new Map(), debMeta=new Map();
     debitateRows.forEach(row=>{
@@ -822,25 +859,30 @@
         kgBuc:kg||fallback.kgBuc||0
       };
       map.set(reperKey, helperMeta);
-      if(helperMeta.reperForjat && helperMeta.reperForjat!==reperKey) map.set(helperMeta.reperForjat, helperMeta);
-      if(helperMeta.reperDebitat && helperMeta.reperDebitat!==reperKey) map.set(helperMeta.reperDebitat, helperMeta);
+      attachHelperVariant(map, helperMeta);
+      if(helperMeta.reperForjat && helperMeta.reperForjat!==reperKey){ map.set(helperMeta.reperForjat, helperMeta); attachHelperVariant(map, helperMeta); }
+      if(helperMeta.reperDebitat && helperMeta.reperDebitat!==reperKey){ if(!map.has(helperMeta.reperDebitat)) map.set(helperMeta.reperDebitat, helperMeta); attachHelperVariant(map, helperMeta); }
     });
     debMeta.forEach((fallback,debKey)=>{
       if(!debKey || map.has(debKey)) return;
-      map.set(debKey,{reperForjat:debKey,reperDebitat:debKey,diametru:fallback.diametru||'',calitate:fallback.calitate||'',kgBuc:fallback.kgBuc||0});
+      const meta={reperForjat:debKey,reperDebitat:debKey,diametru:fallback.diametru||'',calitate:fallback.calitate||'',kgBuc:fallback.kgBuc||0};
+      map.set(debKey,meta);
+      attachHelperVariant(map, meta);
     });
-    forjateRows.forEach(row=>{ const reper=normalizeReper(pickValue(row,['reper','reper_forjat','reper forjat'])); if(!reper||map.has(reper)) return; const fallback=debMeta.get(reper)||{}; map.set(reper,{reperForjat:reper,reperDebitat:reper,diametru:normalizeDiam(pickValue(row,['dimensiune_otel','dimensiune otel','diametru','diametru_otel','diametru otel']))||fallback.diametru||'',calitate:normalizeQuality(pickValue(row,['calitate','material','calitate_otel','calitate otel']))||fallback.calitate||'',kgBuc:toNumber(pickValue(row,['kg_buc_forjat','kgForj','kg forj']))||fallback.kgBuc||0}); });
+    forjateRows.forEach(row=>{ const reper=normalizeReper(pickValue(row,['reper','reper_forjat','reper forjat'])); if(!reper||map.has(reper)) return; const fallback=debMeta.get(reper)||{}; const meta={reperForjat:reper,reperDebitat:reper,diametru:normalizeDiam(pickValue(row,['dimensiune_otel','dimensiune otel','diametru','diametru_otel','diametru otel']))||fallback.diametru||'',calitate:normalizeQuality(pickValue(row,['calitate','material','calitate_otel','calitate otel']))||fallback.calitate||'',kgBuc:toNumber(pickValue(row,['kg_buc_forjat','kgForj','kg forj']))||fallback.kgBuc||0}; map.set(reper,meta); attachHelperVariant(map, meta); });
 
     const auBase=map.get('AU1CZ01A')||{};
     const auDebKey=normalizeReper(auBase.reperDebitat||'AU1CZ01A');
     const auDebMeta=debMeta.get(auDebKey)||debMeta.get('AU1CZ01A')||{};
-    map.set('BV4UL01A',{
+    const bv4Meta={
       reperForjat:'BV4UL01A',
       reperDebitat:auDebKey||'AU1CZ01A',
       diametru:normalizeDiam(auBase.diametru||auDebMeta.diametru||''),
       calitate:normalizeQuality(auBase.calitate||auDebMeta.calitate||''),
       kgBuc:toNumber(auBase.kgBuc||auDebMeta.kgBuc||0)
-    });
+    };
+    map.set('BV4UL01A', bv4Meta);
+    attachHelperVariant(map, bv4Meta);
     return map;
   }
 
@@ -870,12 +912,14 @@
     function upsert(debKey, info){
       if(!debKey) return;
       const current=map.get(debKey)||{reperDebitat:debKey,diametru:'',calitate:'',kgBuc:0};
-      map.set(debKey,{
+      const meta={
         reperDebitat:debKey,
         diametru:info.diametru||current.diametru||'',
         calitate:info.calitate||current.calitate||'',
         kgBuc:info.kgBuc||current.kgBuc||0
-      });
+      };
+      if(!map.has(debKey) || (!current.diametru && !current.calitate)) map.set(debKey, meta);
+      attachHelperVariant(map, meta);
     }
     debitateRows.forEach(row=>{
       const debKey=resolveDebKeyRaw(pickValue(row,['reper','reper debitat','denumire reper debitare']), helperIndex);
@@ -1152,10 +1196,12 @@
     const byReper=new Map(), byMaterial=new Map();
     state.raw.debitate.forEach(row=>{
       if(!rowInSelectedPeriod(row)) return;
+      const rowDiam=normalizeDiam(pickValue(row,['diametru','diametru_otel','diametru otel','dimensiune otel','dimensiune_otel']));
+      const rowCal=normalizeQuality(pickValue(row,['calitate','material','calitate_otel','calitate otel']));
       const reper=resolveDebKeyRaw(pickValue(row,['reper','reper_debitare','reper debitat','denumire reper debitare']), helperIndex);
-      const helperMeta=(debMeta&&debMeta.get(reper)) || (helperIndex&&helperIndex.get(reper)) || {};
-      const diam=normalizeDiam(helperMeta.diametru || pickValue(row,['diametru','diametru_otel','diametru otel','dimensiune otel','dimensiune_otel']));
-      const cal=normalizeQuality(helperMeta.calitate || pickValue(row,['calitate','material','calitate_otel','calitate otel']));
+      const helperMeta=getHelperVariant(debMeta,reper,rowDiam,rowCal) || getHelperVariant(helperIndex,reper,rowDiam,rowCal) || {};
+      const diam=normalizeDiam(rowDiam || helperMeta.diametru || '');
+      const cal=normalizeQuality(rowCal || helperMeta.calitate || '');
       const qty=toNumber(pickValue(row,['cantitate','cantitateBuc','cantitate_buc','cantitate buc','buc','realizat']));
       const helperKgBuc=toNumber(helperMeta.kgBuc || helperMeta.kg_buc_debitat || helperMeta.kg_buc || helperMeta['kg/buc']);
       const savedKgBuc=toNumber(pickValue(row,['kgBuc','kg_buc','kg_buc_debitat','kg/buc','kg buc','greutate','kg pe buc']));
@@ -1845,12 +1891,12 @@
       const knownAsDebitat=debMeta.has(reperForjat) || debProduced.has(reperForjat) || debInv.has(reperForjat);
       const knownFromStocPm=stocPm.has(reperForjat) || forjRealInv.has(reperForjat);
       if(!knownFromHelper && !knownAsDebitat && !knownFromStocPm) continue;
-      const meta=helperIndex.get(reperForjat)||{reperForjat:reperForjat,reperDebitat:reperForjat,diametru:'',calitate:'',kgBuc:0};
+      const meta=getHelperVariant(helperIndex,reperForjat,'','')||{reperForjat:reperForjat,reperDebitat:reperForjat,diametru:'',calitate:'',kgBuc:0};
       const debKey=meta.reperDebitat||reperForjat;
       if(!debKey || isExcludedDebitatSource(debKey)) continue;
       let diam=meta.diametru||'', cal=meta.calitate||'';
-      if((!diam||!cal) && debMeta.get(debKey)){
-        const dm=debMeta.get(debKey);
+      if((!diam||!cal) && getHelperVariant(debMeta, debKey, diam, cal)){
+        const dm=getHelperVariant(debMeta, debKey, diam, cal);
         diam=diam||dm.diametru||'';
         cal=cal||dm.calitate||'';
       }
@@ -1861,8 +1907,8 @@
           cal=cal||normalizeQuality(pickValue(fromForjate,['calitate','material','calitate otel']));
         }
       }
-      if((!diam||!cal) && debMeta.get(debKey)){
-        const dm=debMeta.get(debKey);
+      if((!diam||!cal) && getHelperVariant(debMeta, debKey, diam, cal)){
+        const dm=getHelperVariant(debMeta, debKey, diam, cal);
         diam=diam||dm.diametru||'';
         cal=cal||dm.calitate||'';
       }
@@ -1899,7 +1945,7 @@
       const mirrorForjat=isExcludedDisplayReper(debKey)?'':debKey;
       const mirrorHasData=hasRealForjatActivity(mirrorForjat, forjInv, forjProduced, livrate) || toNumber(forjRealInv.get(mirrorForjat))!==0 || toNumber(forjRebut.get(mirrorForjat))!==0 || toNumber(rebutAfterForjare.get(mirrorForjat))!==0;
       if(!debHasActivity && !explicitMirror && !mirrorHasData) continue;
-      const dm=debMeta.get(debKey)||{diametru:'',calitate:''};
+      const dm=getHelperVariant(debMeta, debKey, '', '')||{diametru:'',calitate:''};
       const material=ensureMaterial(dm.diametru||'', dm.calitate||'');
       const debGroup=ensureDeb(material, debKey);
       if(!debGroup.forjats.length && mirrorForjat && (mirrorHasData || explicitMirror)){
