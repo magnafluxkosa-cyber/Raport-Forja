@@ -1068,6 +1068,8 @@ body.rf-access-denied-body{
   const INVENTAR_CACHE_KEY = "rf_inventar_otel_master_cache_v2";
   const INVENTAR_DOC_KEYS = ["stoc-initial-otel","stoc_initial_otel","inventar-otel","inventar_otel","inventar-otel-initial","inventar_otel_initial"];
   const SARJA_ALERT_TOLERANCE_KG = 1;
+  const NUMERALKOD_DOC_KEY = "numeralkod";
+  const NUMERALKOD_LOCAL_KEY = "NUMERALKOD_autosave_v1";
   let _helpers = null;
   let _mapRepDebitare = null;
   let _repereDebitareCloud = [];
@@ -1075,6 +1077,8 @@ body.rf-access-denied-body{
   let _intrariYearCache = {};
   let _inventarRowsCache = null;
   let _sarjaWarnReqSeq = 0;
+  let _numeralKodBySarja = new Map();
+  let _numeralKodCloudUpdatedAt = null;
 
   function addUniqueLabel(setLike, value){
     const v = (value ?? "").toString().trim();
@@ -1186,6 +1190,7 @@ body.rf-access-denied-body{
       changed = true;
     }
 
+    if (applyNumeralKodInfoToDebitareRow(row)) changed = true;
     if (changed) recalcRow(row);
     return changed;
   }
@@ -1289,6 +1294,151 @@ body.rf-access-denied-body{
     refreshRepereDebitareDatalist();
   }
 
+  function normalizeNumeralKodLookup(value){
+    return stripDia(value)
+      .toUpperCase()
+      .replace(/Ø/g, '')
+      .replace(/[\s_\/\\.\-–—]+/g, '')
+      .replace(/[^A-Z0-9]/g, '');
+  }
+
+  function numeralKodRowToInfo(row){
+    if (!row || typeof row !== "object") return null;
+    const marcaj = (row.marcaj ?? row.marcajSarja ?? row.marcaj_sarja ?? row["MARCAJ SARJA"] ?? row.code ?? "").toString().trim().toUpperCase();
+    const dim = normalizeDiam(row.dim ?? row.diametru ?? row.diametruMaterial ?? row.dimensiune ?? row["DIMENSIUNE MATERIAL"] ?? row["Dimensiune material"] ?? "");
+    const grade = (row.grade ?? row.calitate ?? row.calitateOtel ?? row["CALITATE (Grade)"] ?? row["CALITATE"] ?? "").toString().trim();
+    const sarja = (row.sarja ?? row.sarjaOtel ?? row.sarja_otel ?? row["SARJA OTEL"] ?? row["Sarja otel"] ?? "").toString().trim();
+    const scurt = (row.scurt ?? row.codScurt ?? row.cod_scurt ?? row["COD SCURT"] ?? "").toString().trim();
+    if (!marcaj && !sarja && !scurt) return null;
+    if (!dim && !grade) return null;
+    return { marcaj, dim, grade, sarja, scurt };
+  }
+
+  function collectNumeralKodRowsFromPayload(payload){
+    const out = [];
+    const addRow = (row) => {
+      const info = numeralKodRowToInfo(row);
+      if (info) out.push(info);
+    };
+    const addRows = (rows) => {
+      (Array.isArray(rows) ? rows : []).forEach(addRow);
+    };
+
+    if (!payload) return out;
+    if (Array.isArray(payload)){
+      addRows(payload);
+      return out;
+    }
+    if (typeof payload !== "object") return out;
+
+    if (Array.isArray(payload.tables)){
+      payload.tables.forEach(table => addRows(table && table.rows));
+    }
+    [payload.zale, payload.alte, payload.rows, payload.items].forEach(list => {
+      (Array.isArray(list) ? list : []).forEach(item => {
+        if (item && Array.isArray(item.rows)) addRows(item.rows);
+        else addRow(item);
+      });
+    });
+    return out;
+  }
+
+  function rebuildNumeralKodMap(payload){
+    const map = new Map();
+    collectNumeralKodRowsFromPayload(payload).forEach(info => {
+      const keys = [info.marcaj, info.sarja, info.scurt].map(normalizeNumeralKodLookup).filter(Boolean);
+      keys.forEach(key => {
+        if (!map.has(key)) map.set(key, info);
+      });
+    });
+    _numeralKodBySarja = map;
+    return map.size;
+  }
+
+  function loadNumeralKodLocal(){
+    if (!CAN_STORE) return false;
+    try{
+      const raw = localStorage.getItem(NUMERALKOD_LOCAL_KEY);
+      if (!raw) return false;
+      const payload = JSON.parse(raw);
+      return rebuildNumeralKodMap(payload) > 0;
+    }catch(e){
+      console.warn("NumeralKOD local indisponibil:", e);
+      return false;
+    }
+  }
+
+  async function pullNumeralKodCloud(force){
+    const supa = window.__SUPA__;
+    if (!supa) return false;
+    try{
+      if (!force){
+        const meta = await rfReadDocumentMetaCompat(supa, NUMERALKOD_DOC_KEY);
+        const ts = meta && meta.updated_at ? String(meta.updated_at) : "";
+        if (ts && _numeralKodCloudUpdatedAt && ts <= _numeralKodCloudUpdatedAt) return false;
+      }
+      const doc = await rfReadDocumentCompat(supa, NUMERALKOD_DOC_KEY);
+      const payload = doc && doc.payload ? doc.payload : null;
+      if (!payload) return false;
+      _numeralKodCloudUpdatedAt = doc.updated_at || new Date().toISOString();
+      rebuildNumeralKodMap(payload);
+      try{ localStorage.setItem(NUMERALKOD_LOCAL_KEY, JSON.stringify(payload)); }catch(_e){}
+      applyNumeralKodSarjaAutofill();
+      return true;
+    }catch(e){
+      console.warn("pullNumeralKodCloud failed:", e);
+      if (!_numeralKodBySarja || !_numeralKodBySarja.size) loadNumeralKodLocal();
+      return false;
+    }
+  }
+
+  function findNumeralKodBySarja(value){
+    if (!_numeralKodBySarja || !_numeralKodBySarja.size) loadNumeralKodLocal();
+    const key = normalizeNumeralKodLookup(value);
+    if (!key || !_numeralKodBySarja) return null;
+    return _numeralKodBySarja.get(key) || null;
+  }
+
+  function applyNumeralKodInfoToDebitareRow(row){
+    if (!row || typeof row !== "object") return false;
+    const info = findNumeralKodBySarja(row.sarja ?? row.codInternOtel ?? row.codIntern ?? row.material ?? row.codSarjaFurnizor ?? "");
+    if (!info) return false;
+    let changed = false;
+    const dim = normalizeDiam(info.dim);
+    const grade = (info.grade || "").toString().trim();
+    if (dim && !sameHelperValue(normalizeDiam(row.diametru), dim)){
+      row.diametru = dim;
+      changed = true;
+    }
+    if (grade && !sameHelperValue(row.calitate, grade)){
+      row.calitate = grade;
+      changed = true;
+    }
+    if (changed) recalcRow(row);
+    return changed;
+  }
+
+  function applyNumeralKodSarjaAutofill(){
+    const override = $("mOverride")?.checked;
+    if (override) return false;
+    const sarjaValue = $("mSarja")?.value?.trim();
+    const info = findNumeralKodBySarja(sarjaValue);
+    if (!info) return false;
+    let changed = false;
+    const dim = normalizeDiam(info.dim);
+    const grade = (info.grade || "").toString().trim();
+    if (dim && $("mDiam") && normalizeDiam($("mDiam").value) !== dim){
+      $("mDiam").value = dim;
+      changed = true;
+    }
+    if (grade && $("mCal") && $("mCal").value.trim() !== grade){
+      $("mCal").value = grade;
+      changed = true;
+    }
+    return changed;
+  }
+
+
   // Reîncarcă helperele când sunt modificate în pagina HELPER
   window.addEventListener('message', (ev) => {
     if (!ev || !ev.data) return;
@@ -1389,10 +1539,12 @@ body.rf-access-denied-body{
     pullHelpersCloud(true);
     pullRepereDebitareCloud(true);
     pullDebitareOperatoriCloud(true);
+    pullNumeralKodCloud(true);
   }
   window.reloadHelpersNow = reloadHelpersNow;
   window.pullHelpersCloud = pullHelpersCloud;
   window.pullRepereDebitareCloud = pullRepereDebitareCloud;
+  window.pullNumeralKodCloud = pullNumeralKodCloud;
   window.refreshDebitareRowsFromHelper = refreshDebitareRowsFromHelper;
 
   // Storage event (instant între tab-uri pe același device)
@@ -1403,6 +1555,9 @@ body.rf-access-denied-body{
       try{ buildHelperMaps(); }catch(_e){}
       try{ pullRepereDebitareCloud(true); }catch(_e){}
       try{ pullDebitareOperatoriCloud(true); }catch(_e){}
+    }
+    if(e && e.key === NUMERALKOD_LOCAL_KEY){
+      try{ loadNumeralKodLocal(); applyNumeralKodSarjaAutofill(); }catch(_e){}
     }
   });
 
@@ -1483,6 +1638,9 @@ function setAutofillReadonly(isReadonly){
       const n = parseNumberRO(info.lung);
       $("mLungime").value = Number.isFinite(n) ? String(Math.trunc(n)) : "";
     }
+
+    // Prioritate finală: dacă Sarja există în NUMERALKOD, diametrul/calitatea se iau de acolo.
+    applyNumeralKodSarjaAutofill();
   }
 
 
@@ -1871,6 +2029,7 @@ function setAutofillReadonly(isReadonly){
       const yy = normalizeYearValue(r.an || y);
       r.an = yy ? Number(yy) : Number(y);
       try{ rfNormalizeDebitareSarjaFields(r); }catch(_e){}
+      try{ applyNumeralKodInfoToDebitareRow(r); }catch(_e){}
       recalcRow(r);
     });
     return sortRowsByDateAsc(out.filter(r => normalizeYearValue(r.an) === y));
@@ -2987,6 +3146,8 @@ function setAutofillReadonly(isReadonly){
     $("mEchip").value = (r.echipament ?? "");
     buildHelperMaps();
     pullRepereDebitareCloud(true);
+    loadNumeralKodLocal();
+    pullNumeralKodCloud(true).then(()=>applyNumeralKodSarjaAutofill()).catch(()=>{});
     $("mReper").value = (r.reper ?? "");
 
     $("mOverride").checked = false;
@@ -2997,6 +3158,7 @@ function setAutofillReadonly(isReadonly){
     $("mKgBuc").value = Number.isFinite(Number(r.kgBuc)) ? fmtKgBuc(Number(r.kgBuc)) : (r.kgBuc ?? "");
     $("mLungime").value = (r.lungime ?? "");
     $("mSarja").value = (r.sarja ?? "");
+    applyNumeralKodSarjaAutofill();
     $("mPlan").value = (r.planificat ?? "");
     $("mCant").value = (r.cantitate ?? "");
     $("mSchimb").value = (r.schimbul ?? "");
@@ -3018,6 +3180,7 @@ function setAutofillReadonly(isReadonly){
     if (!dataIso) err.push("Data este obligatorie.");
 
     applyReperAutofill();
+    applyNumeralKodSarjaAutofill();
 
     const echip = $("mEchip").value.trim();
     const reper = $("mReper").value.trim();
@@ -3115,6 +3278,8 @@ function setAutofillReadonly(isReadonly){
     setAutofillReadonly(true);
     buildHelperMaps();
     pullRepereDebitareCloud(true);
+    loadNumeralKodLocal();
+    pullNumeralKodCloud(true).then(()=>applyNumeralKodSarjaAutofill()).catch(()=>{});
     $("mReper").value = "";
     $("mDiam").value = "";
     $("mCal").value = "";
@@ -3150,6 +3315,7 @@ function setAutofillReadonly(isReadonly){
     if (!dataIso) err.push("Data este obligatorie.");
     const echip = $("mEchip").value.trim();
     applyReperAutofill();
+    applyNumeralKodSarjaAutofill();
     const reper = $("mReper").value.trim();
     const diam = normalizeDiam($("mDiam").value);
     const cal = $("mCal").value.trim();
@@ -3577,10 +3743,16 @@ function setAutofillReadonly(isReadonly){
 
     // inițializează helperele (repere/utilaje) pentru autocomplete + autofill
     buildHelperMaps();
+    loadNumeralKodLocal();
     pullRepereDebitareCloud(true);
     pullDebitareOperatoriCloud(true);
-    const _mr = $("mReper"); if (_mr) _mr.addEventListener("input", applyReperAutofill);
-    const _ov = $("mOverride"); if (_ov) _ov.addEventListener("change", () => { setAutofillReadonly(!_ov.checked); if(!_ov.checked) applyReperAutofill(); });
+    pullNumeralKodCloud(true);
+    const _mr = $("mReper"); if (_mr) _mr.addEventListener("input", () => { applyReperAutofill(); applyNumeralKodSarjaAutofill(); });
+    const _ms = $("mSarja"); if (_ms) {
+      _ms.addEventListener("input", applyNumeralKodSarjaAutofill);
+      _ms.addEventListener("change", () => { applyNumeralKodSarjaAutofill(); pullNumeralKodCloud(false).then(()=>applyNumeralKodSarjaAutofill()).catch(()=>{}); });
+    }
+    const _ov = $("mOverride"); if (_ov) _ov.addEventListener("change", () => { setAutofillReadonly(!_ov.checked); if(!_ov.checked){ applyReperAutofill(); applyNumeralKodSarjaAutofill(); } });
 
     // normalize months
     rows.forEach(r => {
@@ -3592,6 +3764,7 @@ function setAutofillReadonly(isReadonly){
       const _y = parseNumberRO(r.an);
       if (Number.isFinite(_y)) r.an = Math.trunc(_y);
       try{ rfNormalizeDebitareSarjaFields(r); }catch(_e){}
+      try{ applyNumeralKodInfoToDebitareRow(r); }catch(_e){}
       recalcRow(r);
     });
     rows.sort((a,b)=> (a.data||"").localeCompare(b.data||""));
@@ -4281,6 +4454,7 @@ function setAutofillReadonly(isReadonly){
   setCloud(true,'Cloud: conectare...');
   (async function bootCloud(){
     await pullCloudIndex(true);
+    await pullNumeralKodCloud(true);
     await ensureYearLoaded(activeYear, { preferCloud:true });
     setActiveYearLocal(activeYear);
     refreshFilterUI(true);
