@@ -246,7 +246,7 @@
           <button class="btn secondary" type="button" id="btnAddIntrariRows">Adaugă rânduri goale</button>
           <button class="btn danger" type="button" id="btnDeleteIntrariRow">Șterge rând selectat</button>
           <label for="intrariCalcReper">Reper calcul bucăți:</label>
-          <input id="intrariCalcReper" type="text" list="repereList" placeholder="alege reper" data-view-control />
+          <input id="intrariCalcReper" type="text" list="repereList" placeholder="opțional - Kg/buc din Helper Data" data-view-control />
         </div>
         <div class="toolHint">Înregistrările salvate rămân afișate permanent; dublu click pe rând salvat pentru editare.</div>
       </div>
@@ -433,6 +433,7 @@
   const PAGE_KEY='operator-debitare';
   const UNLOCK_KEY='kad:operator-debitare:unlock';
   const OPERATOR_KEY='kad:operator-debitare:operator';
+  const HELPERS_KEY='RF_HELPERS_v1';
   const INTRARI_PREFIX='intrari-otel:';
   const INTRARI_INDEX='intrari-otel:index';
   const DEBITATE_PREFIX='debitate:';
@@ -802,7 +803,7 @@
       const handler=(notify)=>{
         markIntrareRowTouched(tr);
         if(['diametru','calitate','sarja'].includes(k)) refreshIntrareAutoFields(tr,notify);
-        if(k==='cantitate') updateIntrariCalcRow(tr);
+        if(['diametru','calitate','cantitate'].includes(k)) updateIntrariCalcRow(tr);
       };
       el.addEventListener('input',()=>handler(false));
       el.addEventListener('change',()=>handler(true));
@@ -819,25 +820,70 @@
     setTimeout(go,250);
     setTimeout(go,700);
   }
+  function normalizeHelperReperDebitareRow(row){
+    if(!row||typeof row!=='object') return null;
+    const reper=norm(pick(row,['reper_debitare','REPER_DEBITARE','reperDebitare','denumire_reper_debitare','denumireReperDebitare','reper','REPER','denumire','label','cod','code']));
+    if(!reper) return null;
+    const active=pick(row,['is_active','IS_ACTIVE','active','activ','enabled']);
+    if(!(active===''||active==null||active===true||active===1||active==='1'||String(active).toLowerCase()==='true'||String(active).toLowerCase()==='da')) return null;
+    return {
+      reper,
+      diam:norm(pick(row,['diametru_otel','DIAMETRU_OTEL','diametruOtel','diametru_material','diametruMaterial','diametru','diameter','DIA','dia'])),
+      cal:norm(pick(row,['calitate_otel','CALITATE_OTEL','calitateOtel','codOtelCalitate','cod_otel_calitate','calitate','quality','otel_calitate'])),
+      kg:pick(row,['kg_buc_debitat','KG_BUC_DEBITAT','kgBucDebitat','kg_buc','kgBuc','kg_per_buc','greutate_kg_buc','greutate','kg']),
+      lung:pick(row,['lungime_debitare_mm','LUNGIME_DEBITARE_MM','lungimeDebitareMm','lungime_debitat','lungimeDebitat','lungime_mm','lungime','length_mm'])
+    };
+  }
+  function addReperDebitareInfo(info, overwrite){
+    if(!info||!info.reper) return;
+    const key=reperKey(info.reper);
+    if(!key) return;
+    if(overwrite || !repereMap.has(key)) repereMap.set(key,info);
+  }
+  function collectLocalHelperRepere(){
+    const out=[];
+    try{
+      const raw=localStorage.getItem(HELPERS_KEY);
+      if(!raw) return out;
+      const helpers=JSON.parse(raw);
+      if(helpers&&Array.isArray(helpers.repere_debitare)) helpers.repere_debitare.forEach(row=>out.push(row));
+      if(helpers&&Array.isArray(helpers.repereDebitare)) helpers.repereDebitare.forEach(row=>out.push(row));
+    }catch(e){console.warn('Helper Data local indisponibil pentru repere debitare:',e);}
+    return out;
+  }
+  function collectDocumentHelperRepere(payload){
+    const out=[];
+    const scan=node=>{
+      if(!node) return;
+      if(Array.isArray(node)){node.forEach(scan); return;}
+      if(typeof node!=='object') return;
+      if(pick(node,['reper_debitare','REPER_DEBITARE','reperDebitare','reper'])) out.push(node);
+      Object.entries(node).forEach(([k,v])=>{
+        const kk=cleanKey(k);
+        if(kk.includes('REPEREDEBITARE')||kk==='REPERE_DEBITARE'||kk==='REPEREDEBITARE') scan(v);
+      });
+    };
+    if(payload&&Array.isArray(payload.repere_debitare)) payload.repere_debitare.forEach(row=>out.push(row));
+    if(payload&&Array.isArray(payload.repereDebitare)) payload.repereDebitare.forEach(row=>out.push(row));
+    scan(payload&&payload.tables);
+    return out;
+  }
   async function loadRepere(){
     repereMap.clear();
+    try{
+      collectLocalHelperRepere().forEach(r=>addReperDebitareInfo(normalizeHelperReperDebitareRow(r),false));
+    }catch(_e){}
+    try{
+      const doc=await readDoc('helpers');
+      collectDocumentHelperRepere(getPayload(doc)||{}).forEach(r=>addReperDebitareInfo(normalizeHelperReperDebitareRow(r),false));
+    }catch(_e){}
     try{
       const {data,error}=await sb.from('rf_helper_repere_debitare').select('*');
       if(error) throw error;
       (data||[]).sort((a,b)=>Number(pick(a,['sort_order','sortOrder','ordine'])||0)-Number(pick(b,['sort_order','sortOrder','ordine'])||0)).forEach(r=>{
-        if(!isActive(r)) return;
-        const reper=norm(pick(r,['reper_debitare','reperDebitare','denumire_reper_debitare','denumireReperDebitare','reper','denumire','label','cod','code']));
-        if(!reper) return;
-        const info={
-          reper,
-          diam:norm(pick(r,['diametru_otel','diametruOtel','diametru','diameter','DIA','dia'])),
-          cal:norm(pick(r,['calitate_otel','calitateOtel','calitate','quality','otel_calitate'])),
-          kg:pick(r,['kg_buc_debitat','kgBucDebitat','kg_buc','kgBuc','kg_per_buc','greutate_kg_buc','greutate']),
-          lung:pick(r,['lungime_debitare_mm','lungimeDebitareMm','lungime_debitat','lungimeDebitat','lungime_mm','lungime','length_mm'])
-        };
-        repereMap.set(reperKey(reper),info);
+        addReperDebitareInfo(normalizeHelperReperDebitareRow(r),true);
       });
-    }catch(e){console.warn('Repere debitate indisponibile:',e);}
+    }catch(e){console.warn('Repere debitate cloud indisponibile:',e);}
     const dl=$('repereList'); dl.innerHTML='';
     Array.from(repereMap.values()).map(x=>x.reper).sort((a,b)=>a.localeCompare(b,'ro',{sensitivity:'base'})).forEach(k=>{const o=document.createElement('option'); o.value=k; dl.appendChild(o);});
     updateIntrariLists();
@@ -891,6 +937,7 @@
     }else{
       tr.dataset.touched='0';
     }
+    if(rec.reper) tr.dataset.reperCalc=norm(rec.reper);
     tr.addEventListener('click',()=>selectIntrariRow(tr));
     tr.addEventListener('dblclick',(e)=>{if(saved){e.preventDefault();openIntrariEditModal(tr);}});
     const pretestValue=saved?pretestDisplayForRecord(rec):'';
@@ -949,8 +996,52 @@
     return String(Math.floor(n)).replace(/\B(?=(\d{3})+(?!\d))/g,'.');
   }
   function selectedIntrariCalcReper(){return norm(($('intrariCalcReper')||{}).value);}
-  function calcBucDebitabileFromKg(cantitateKg, reper){
-    const info=getReperInfo(reper);
+  function calcDiamKey(v){
+    const n=parseCalcNumber(v);
+    return Number.isFinite(n)?String(Math.round(n*1000)/1000):cleanKey(v);
+  }
+  function sameCalcDiam(a,b){
+    const an=parseCalcNumber(a), bn=parseCalcNumber(b);
+    if(Number.isFinite(an)&&Number.isFinite(bn)) return Math.abs(an-bn)<0.001;
+    return cleanKey(a)===cleanKey(b);
+  }
+  function sameCalcCal(a,b){return cleanKey(a)===cleanKey(b);}
+  function kgBucKeyFromInfo(info){
+    const n=parseCalcNumber(info&&info.kg);
+    return Number.isFinite(n)?String(Math.round(n*1000000)/1000000):'';
+  }
+  function findHelperInfoByDiamCal(diam, cal){
+    diam=norm(diam); cal=norm(cal);
+    if(!diam || !cal || !repereMap || !repereMap.size) return null;
+    const matches=Array.from(repereMap.values()).filter(info=>info && sameCalcDiam(info.diam,diam) && sameCalcCal(info.cal,cal) && Number.isFinite(parseCalcNumber(info.kg)) && parseCalcNumber(info.kg)>0);
+    if(matches.length===1) return {info:matches[0],mode:'diam-cal-unique'};
+    if(matches.length>1){
+      const kgKeys=Array.from(new Set(matches.map(kgBucKeyFromInfo).filter(Boolean)));
+      if(kgKeys.length===1) return {info:matches[0],mode:'diam-cal-same-kg',count:matches.length};
+      return {info:null,mode:'ambiguous',count:matches.length};
+    }
+    return null;
+  }
+  function resolveIntrariCalcInfo(tr){
+    const selected=selectedIntrariCalcReper();
+    if(selected){
+      const info=getReperInfo(selected);
+      if(info) return {info,mode:'selected',label:info.reper||selected};
+      return {info:null,mode:'selected-missing',label:selected};
+    }
+    const rowReper=norm((tr&&tr.dataset&&tr.dataset.reperCalc)||'');
+    if(rowReper){
+      const info=getReperInfo(rowReper);
+      if(info) return {info,mode:'row-reper',label:info.reper||rowReper};
+    }
+    const diam=norm((tr&&tr.querySelector('[data-k="diametru"]')||{}).value);
+    const cal=norm((tr&&tr.querySelector('[data-k="calitate"]')||{}).value);
+    const byDim=findHelperInfoByDiamCal(diam,cal);
+    if(byDim&&byDim.info) return {info:byDim.info,mode:byDim.mode,label:(byDim.info.reper||'Helper Data')};
+    if(byDim&&byDim.mode==='ambiguous') return {info:null,mode:'ambiguous',label:'Diametru + Calitate'};
+    return {info:null,mode:'none',label:''};
+  }
+  function calcBucDebitabileFromKg(cantitateKg, info){
     if(!info) return '';
     const kgBuc=parseCalcNumber(info.kg);
     const totalKg=parseCalcNumber(cantitateKg);
@@ -962,9 +1053,21 @@
     const out=tr.querySelector('[data-k="bucDebitat"]');
     if(!out) return;
     const cant=norm((tr.querySelector('[data-k="cantitate"]')||{}).value);
-    const reper=selectedIntrariCalcReper();
-    out.value=calcBucDebitabileFromKg(cant,reper);
-    out.title=reper?('Calcul: Cantitate (Kg) împărțit la Kg/buc pentru '+reper):'Alege reperul sus pentru calcul.';
+    const resolved=resolveIntrariCalcInfo(tr);
+    out.value=calcBucDebitabileFromKg(cant,resolved&&resolved.info);
+    if(resolved&&resolved.info){
+      const kg=fmtNum(resolved.info.kg);
+      if(resolved.mode==='selected') out.title='Calcul automat din Helper Data: Cantitate (Kg) / Kg/buc ('+kg+') pentru reperul '+(resolved.label||'selectat')+'.';
+      else if(resolved.mode==='diam-cal-unique') out.title='Calcul automat din Helper Data după Diametru + Calitate: Kg/buc '+kg+' pentru reperul '+(resolved.label||'găsit')+'.';
+      else if(resolved.mode==='diam-cal-same-kg') out.title='Calcul automat din Helper Data după Diametru + Calitate: mai multe repere au același Kg/buc '+kg+'.';
+      else out.title='Calcul automat din Helper Data: Cantitate (Kg) / Kg/buc ('+kg+').';
+    }else if(resolved&&resolved.mode==='ambiguous'){
+      out.title='Există mai multe repere în Helper Data cu același Diametru + Calitate, dar Kg/buc diferit. Alege reperul sus pentru calcul corect.';
+    }else if(resolved&&resolved.mode==='selected-missing'){
+      out.title='Reperul ales nu a fost găsit în Helper Data / Repere debitare.';
+    }else{
+      out.title='Se calculează automat din Helper Data. Dacă Diametru + Calitate nu identifică un singur Kg/buc, alege reperul sus.';
+    }
   }
   function updateIntrariCalcCells(){
     document.querySelectorAll('#intrariBody tr').forEach(updateIntrariCalcRow);
@@ -974,15 +1077,15 @@
     if(Array.isArray(row)){
       if(isIntrariCurrentArray(row, meta)){
         const year=row[0]||''; const luna=row[1]||''; const data=toIsoDate(meta.data||row[2]||'',year,monthIndexRo(luna));
-        return {year:year,luna:luna,data:data,diametru:row[3]||'',calitate:row[4]||'',numeral:row[5]||'',sarja:row[6]||'',cantitate:row[7]||'',pretest:row[8]||meta.pretest||'Nu are pretest',furnizor:row[9]||'',doc:intrariPickDoc(null,meta,row[10]||''),aspect:row[11]||meta.aspect||'C',dimensional:row[12]||meta.dimensional||'C',operator:row[13]||meta.operator_receptie||meta.operator||operatorName(),savedAt:meta.savedAt||''};
+        return {year:year,luna:luna,data:data,diametru:row[3]||'',calitate:row[4]||'',numeral:row[5]||'',sarja:row[6]||'',cantitate:row[7]||'',pretest:row[8]||meta.pretest||'Nu are pretest',furnizor:row[9]||'',doc:intrariPickDoc(null,meta,row[10]||''),aspect:row[11]||meta.aspect||'C',dimensional:row[12]||meta.dimensional||'C',operator:row[13]||meta.operator_receptie||meta.operator||operatorName(),reper:pick(meta,['reper','reper_debitare','reperDebitare','reper_calcul','reperCalcul']),savedAt:meta.savedAt||''};
       }
       const data=toIsoDate(meta.data||row[0]||'',meta.year||meta.an||new Date().getFullYear());
       const parts=dateToParts(data||todayIso());
-      return {year:parts.year,luna:parts.month,data:data,diametru:row[1]||'',calitate:row[2]||'',sarja:row[3]||'',doc:intrariPickDoc(null,meta,row[4]||''),furnizor:row[5]||'',pretest:row[6]||meta.pretest||'Nu are pretest',aspect:row[7]||meta.aspect||'C',dimensional:row[8]||meta.dimensional||'C',numeral:row[9]||'',cantitate:row[10]||'',operator:row[11]||meta.operator_receptie||meta.operator||operatorName(),savedAt:meta.savedAt||''};
+      return {year:parts.year,luna:parts.month,data:data,diametru:row[1]||'',calitate:row[2]||'',sarja:row[3]||'',doc:intrariPickDoc(null,meta,row[4]||''),furnizor:row[5]||'',pretest:row[6]||meta.pretest||'Nu are pretest',aspect:row[7]||meta.aspect||'C',dimensional:row[8]||meta.dimensional||'C',numeral:row[9]||'',cantitate:row[10]||'',operator:row[11]||meta.operator_receptie||meta.operator||operatorName(),reper:pick(meta,['reper','reper_debitare','reperDebitare','reper_calcul','reperCalcul']),savedAt:meta.savedAt||''};
     }
     if(row&&typeof row==='object'){
       const year=pick(row,['an','year']); const luna=pick(row,['luna','month']); const data=toIsoDate(pick(row,['data','date'])||meta.data||'',year,monthIndexRo(luna));
-      return {year:year,luna:luna,data:data,diametru:pick(row,['diametru','diametruMaterial','diametru_material']),calitate:pick(row,['calitate','codOtel','calitateOtel','cod_otel_calitate','codOtelCalitate']),numeral:pick(row,['numeral','numeralKod','numeral_kod','codIntern','codInternOtel','cod_intern_otel']),sarja:pick(row,['sarja','codSarja','cod_sarja','material']),cantitate:pick(row,['cantitate','kg','cantitateKg','cantitate_kg']),pretest:pick(row,['pretest','certificat'])||pick(meta,['pretest','certificat'])||'Nu are pretest',furnizor:pick(row,['furnizor']),doc:intrariPickDoc(row,meta,''),aspect:pick(row,['aspect'])||pick(meta,['aspect'])||'C',dimensional:pick(row,['dimensional'])||pick(meta,['dimensional'])||'C',operator:pick(row,['operator','operatorReceptie','operator_receptie'])||pick(meta,['operator','operator_receptie','operatorReceptie'])||operatorName(),savedAt:pick(row,['savedAt','updated_at'])||pick(meta,['savedAt','updated_at'])};
+      return {year:year,luna:luna,data:data,diametru:pick(row,['diametru','diametruMaterial','diametru_material']),calitate:pick(row,['calitate','codOtel','calitateOtel','cod_otel_calitate','codOtelCalitate']),numeral:pick(row,['numeral','numeralKod','numeral_kod','codIntern','codInternOtel','cod_intern_otel']),sarja:pick(row,['sarja','codSarja','cod_sarja','material']),cantitate:pick(row,['cantitate','kg','cantitateKg','cantitate_kg']),pretest:pick(row,['pretest','certificat'])||pick(meta,['pretest','certificat'])||'Nu are pretest',furnizor:pick(row,['furnizor']),doc:intrariPickDoc(row,meta,''),aspect:pick(row,['aspect'])||pick(meta,['aspect'])||'C',dimensional:pick(row,['dimensional'])||pick(meta,['dimensional'])||'C',operator:pick(row,['operator','operatorReceptie','operator_receptie'])||pick(meta,['operator','operator_receptie','operatorReceptie'])||operatorName(),reper:pick(row,['reper','reperDebitare','reper_debitare','reperCalcul','reper_calcul'])||pick(meta,['reper','reperDebitare','reper_debitare','reperCalcul','reper_calcul']),savedAt:pick(row,['savedAt','updated_at'])||pick(meta,['savedAt','updated_at'])};
     }
     return null;
   }
