@@ -1072,6 +1072,7 @@ body.rf-access-denied-body{
   const NUMERALKOD_LOCAL_KEY = "NUMERALKOD_autosave_v1";
   let _helpers = null;
   let _mapRepDebitare = null;
+  let _repereDebitareByName = null;
   let _repereDebitareCloud = [];
   let _operatoriDebitareCloud = [];
   let _intrariYearCache = {};
@@ -1160,6 +1161,59 @@ body.rf-access-denied-body{
     };
   }
 
+
+  function reperDebitareNameKey(value){
+    return stripDia(value).toUpperCase().replace(/[\s_\/\.\-–—]+/g,'').replace(/[^A-Z0-9]/g,'');
+  }
+
+  function reperDebitareCalKey(value){
+    return stripDia(value).toUpperCase().replace(/\s+/g,'').replace(/[^A-Z0-9]/g,'');
+  }
+
+  function reperDebitareVariantKey(info){
+    if (!info || !info.reper) return '';
+    return reperDebitareNameKey(info.reper) + '|' + normalizeDiam(info.diam) + '|' + reperDebitareCalKey(info.cal);
+  }
+
+  function addReperDebitareInfo(info, overwrite){
+    if (!info || !info.reper) return;
+    if (!_mapRepDebitare) _mapRepDebitare = new Map();
+    if (!_repereDebitareByName) _repereDebitareByName = new Map();
+
+    const nameKey = reperDebitareNameKey(info.reper);
+    const variantKey = reperDebitareVariantKey(info);
+    if (!nameKey || !variantKey) return;
+
+    if (overwrite || !_mapRepDebitare.has(variantKey)) _mapRepDebitare.set(variantKey, info);
+
+    const list = _repereDebitareByName.get(nameKey) || [];
+    const idx = list.findIndex(x => reperDebitareVariantKey(x) === variantKey);
+    if (idx >= 0){
+      if (overwrite) list[idx] = info;
+    } else {
+      list.push(info);
+    }
+    _repereDebitareByName.set(nameKey, list);
+  }
+
+  function findReperDebitareInfo(reper, diam, cal){
+    if (!_repereDebitareByName) return null;
+    const list = _repereDebitareByName.get(reperDebitareNameKey(reper)) || [];
+    if (!list.length) return null;
+
+    const diamKey = normalizeDiam(diam);
+    const calKey = reperDebitareCalKey(cal);
+    if (diamKey && calKey){
+      const exact = list.find(info => normalizeDiam(info.diam) === diamKey && reperDebitareCalKey(info.cal) === calKey);
+      if (exact) return exact;
+    }
+    if (diamKey){
+      const byDiam = list.find(info => normalizeDiam(info.diam) === diamKey);
+      if (byDiam) return byDiam;
+    }
+    return list[0];
+  }
+
   function sameHelperValue(a, b){
     return String(a ?? "").trim() === String(b ?? "").trim();
   }
@@ -1202,8 +1256,11 @@ body.rf-access-denied-body{
     let changed = false;
     rows.forEach(row => {
       const reper = (row.reper ?? "").toString().trim();
-      if (!reper || !_mapRepDebitare.has(reper)) return;
-      if (applyHelperInfoToDebitareRow(row, _mapRepDebitare.get(reper))) changed = true;
+      if (!reper) return;
+      if (applyNumeralKodInfoToDebitareRow(row)) changed = true;
+      const info = findReperDebitareInfo(reper, row.diametru, row.calitate);
+      if (!info) return;
+      if (applyHelperInfoToDebitareRow(row, info)) changed = true;
     });
 
     if (changed){
@@ -1222,19 +1279,20 @@ body.rf-access-denied-body{
 
   function applyRepereDebitareToMap(list){
     if (!_mapRepDebitare) _mapRepDebitare = new Map();
+    if (!_repereDebitareByName) _repereDebitareByName = new Map();
     (Array.isArray(list) ? list : []).forEach(row => {
       const info = normalizeReperDebitareCloudRow(row);
       if (!info || !info.reper) return;
       // Tabelul dedicat rf_helper_repere_debitare are prioritate peste helperul vechi/local.
-      _mapRepDebitare.set(info.reper, info);
+      addReperDebitareInfo(info, true);
     });
   }
 
   function refreshRepereDebitareDatalist(){
     const dlR = $("dlRepereDebitare");
-    if (!dlR || !_mapRepDebitare) return;
+    if (!dlR || !_repereDebitareByName) return;
     dlR.innerHTML = "";
-    Array.from(_mapRepDebitare.keys()).sort((a,b)=>a.localeCompare(b, "ro", { sensitivity:"base" })).forEach(k => {
+    Array.from(_repereDebitareByName.values()).map(list => list && list[0] && list[0].reper).filter(Boolean).sort((a,b)=>a.localeCompare(b, "ro", { sensitivity:"base" })).forEach(k => {
       const o = document.createElement("option");
       o.value = k;
       dlR.appendChild(o);
@@ -1257,6 +1315,7 @@ body.rf-access-denied-body{
   function buildHelperMaps(){
     const h = loadHelpers();
     _mapRepDebitare = new Map();
+    _repereDebitareByName = new Map();
     const dlR = $("dlRepereDebitare");
     const dlU = $("dlUtilajeDebitare");
     if (dlR) dlR.innerHTML = "";
@@ -1268,13 +1327,13 @@ body.rf-access-denied-body{
       (h.repere_debitare || []).forEach(row => {
         const k = (row.REPER_DEBITARE ?? "").toString().trim();
         if (!k) return;
-        _mapRepDebitare.set(k, {
+        addReperDebitareInfo({
           reper: k,
           diam: row.DIAMETRU_OTEL,
           cal: (row.CALITATE_OTEL ?? "").toString().trim(),
           kgBuc: row.KG_BUC_DEBITAT,
           lung: row.LUNGIME_DEBITARE_MM
-        });
+        }, false);
       });
 
       // Utilaje debitare (autocomplete)
@@ -1435,6 +1494,9 @@ body.rf-access-denied-body{
       $("mCal").value = grade;
       changed = true;
     }
+    if (changed) {
+      try{ applyReperAutofill(); }catch(_e){}
+    }
     return changed;
   }
 
@@ -1445,6 +1507,7 @@ body.rf-access-denied-body{
     if (ev.data.type === 'HELPERS_UPDATED') {
       _helpers = null;
       _mapRepDebitare = null;
+      _repereDebitareByName = null;
       try{ buildHelperMaps(); }catch(e){}
       try{ pullRepereDebitareCloud(true); }catch(_e){}
       try{ pullDebitareOperatoriCloud(true); }catch(_e){}
@@ -1468,6 +1531,7 @@ body.rf-access-denied-body{
       try{ localStorage.setItem(HELPERS_KEY, JSON.stringify(doc.payload)); }catch(_e){}
       _helpers = null;
       _mapRepDebitare = null;
+      _repereDebitareByName = null;
       try{ buildHelperMaps(); }catch(_e){}
       try{ pullRepereDebitareCloud(true); }catch(_e){}
       try{ pullDebitareOperatoriCloud(true); }catch(_e){}
@@ -1552,6 +1616,7 @@ body.rf-access-denied-body{
     if(e && e.key === HELPERS_KEY){
       _helpers = null;
       _mapRepDebitare = null;
+      _repereDebitareByName = null;
       try{ buildHelperMaps(); }catch(_e){}
       try{ pullRepereDebitareCloud(true); }catch(_e){}
       try{ pullDebitareOperatoriCloud(true); }catch(_e){}
@@ -1621,8 +1686,9 @@ function setAutofillReadonly(isReadonly){
     if (override) return;
     if (!_mapRepDebitare) buildHelperMaps();
     const key = $("mReper")?.value?.trim();
-    if (!key || !_mapRepDebitare || !_mapRepDebitare.has(key)) return;
-    const info = _mapRepDebitare.get(key);
+    if (!key) return;
+    const info = findReperDebitareInfo(key, $("mDiam")?.value, $("mCal")?.value);
+    if (!info) return;
 
     if ($("mDiam")) $("mDiam").value = (info.diam ?? "") === "" ? "" : String(info.diam);
     if ($("mCal")) $("mCal").value = info.cal || "";
