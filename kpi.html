@@ -1130,7 +1130,10 @@
           const realized = toNumber(pickField(row, ['buc realizate','bucati realizate','realizat','cantitate realizata','cantitate'], ['cb'])) ?? 0;
           const tact = toNumber(pickField(row, ['tact','tact sec','tact secunde','sec','secunde'], ['ek']));
           const shift = normalizeShift(pickField(row, ['schimbul','schimb'], ['d']) ?? '1');
-          return { date, equipment, reper, realized, tact, shift, raw: row };
+          const hours = toNumber(pickField(row, ['total_ore_lucrate','total ore lucrate','ore lucrate','ore lucru','ore'], []));
+          const updatedAt = pickField(row, ['saved_at','updated_at','created_at','updated at','created at'], []);
+          const reportId = String(pickField(row, ['id','report_id','document_id'], []) ?? '').trim();
+          return { date, equipment, reper, realized, tact, shift, hours, updatedAt, reportId, raw: row };
         }).filter(item => item.date && item.equipment && item.reper);
       }
 
@@ -1168,6 +1171,148 @@
           const hours = toNumber(pickField(row, ['ore lucrate','ore','hours']));
           return { date, equipment, shift, hours };
         }).filter(item => item.date && item.equipment && item.hours != null);
+      }
+
+      function programKeyFromParts(date, equipment, shift){
+        if (!(date instanceof Date) || isNaN(date) || !equipment) return '';
+        return `${formatDate(date)}|${normalizeEquipment(equipment)}|${normalizeShift(shift)}`;
+      }
+
+      function timestampFromAny(value){
+        if (!value) return 0;
+        const d = value instanceof Date ? value : new Date(value);
+        return d instanceof Date && !isNaN(d) ? d.getTime() : 0;
+      }
+
+      function buildProgramRowsFromForjateHours(rows){
+        const map = new Map();
+        (rows || []).forEach(row => {
+          const hours = Number(row.hours);
+          if (!(hours > 0)) return;
+          const key = programKeyFromParts(row.date, row.equipment, row.shift);
+          if (!key) return;
+          const previous = map.get(key);
+          const stamp = timestampFromAny(row.updatedAt);
+          if (previous && previous._stamp > stamp) return;
+          map.set(key, {
+            date: row.date,
+            equipment: row.equipment,
+            shift: row.shift,
+            hours,
+            source: 'raport-forja',
+            reportId: row.reportId || '',
+            reper: row.reper || '',
+            realized: row.realized || 0,
+            updatedAt: row.updatedAt || '',
+            _stamp: stamp
+          });
+        });
+        return Array.from(map.values()).map(({_stamp, ...row}) => row);
+      }
+
+      function mergeProgramRowsWithReportHours(existingRows, reportRows){
+        const map = new Map();
+        (existingRows || []).forEach(row => {
+          const key = programKeyFromParts(row.date, row.equipment, row.shift);
+          if (key) map.set(key, row);
+        });
+        buildProgramRowsFromForjateHours(reportRows).forEach(row => {
+          const key = programKeyFromParts(row.date, row.equipment, row.shift);
+          if (key) map.set(key, row);
+        });
+        return Array.from(map.values());
+      }
+
+      function normalizeProgramPayloadRow(row){
+        const date = parseDateAny(pickField(row, ['data']), row);
+        const equipment = normalizeEquipment(pickField(row, ['utilaj','ciocan','echipament']) ?? '');
+        const shift = normalizeShift(pickField(row, ['schimbul','schimb']) ?? '1');
+        const hours = toNumber(pickField(row, ['ore lucrate','ore','hours']));
+        if (!date || !equipment || !(hours > 0)) return null;
+        const data = formatDate(date);
+        const id = String(pickField(row, ['id'], []) || `${data}|${shift}|${equipment}`).trim();
+        return {
+          id,
+          an: String(pickField(row, ['an','anul','year'], []) ?? date.getFullYear()),
+          luna: String(pickField(row, ['luna','month'], []) ?? MONTHS[date.getMonth()]).toLowerCase(),
+          data,
+          schimbul: String(shift),
+          utilaj: equipment,
+          ore_lucrate: hours,
+          observatii: String(pickField(row, ['observatii','observații','note'], []) ?? '').trim(),
+          source: String(pickField(row, ['source','sursa'], []) ?? '').trim(),
+          report_id: String(pickField(row, ['report_id','report id'], []) ?? '').trim(),
+          updated_at: String(pickField(row, ['updated_at','updated at'], []) ?? '').trim()
+        };
+      }
+
+      function rawRowsFromProgramDoc(programDocs){
+        if (!programDocs || !programDocs.length) return [];
+        const first = programDocs.find(doc => normalizeDocKey(doc?.doc_key) === normalizeDocKey('program-utilaje')) || programDocs[0];
+        return extractAllRowsFromDocs([first]);
+      }
+
+      async function syncProgramUtilajeFromForjaHours(programDocs, reportRows){
+        const reportProgramRows = buildProgramRowsFromForjateHours(reportRows);
+        if (!reportProgramRows.length || !supabaseClient) return { changed:false, rows:[] };
+
+        const currentDoc = (programDocs || []).find(doc => normalizeDocKey(doc?.doc_key) === normalizeDocKey('program-utilaje')) || null;
+        const payload = currentDoc ? (extractDocPayload(currentDoc) || { rows:[] }) : { app:'PROGRAM_UTILAJE', rows:[] };
+        const currentRows = rawRowsFromProgramDoc(programDocs).map(normalizeProgramPayloadRow).filter(Boolean);
+        const map = new Map();
+        currentRows.forEach(row => {
+          const key = `${row.data}|${row.schimbul}|${row.utilaj}`;
+          if (key) map.set(key, row);
+        });
+
+        let changed = false;
+        reportProgramRows.forEach(row => {
+          const data = formatDate(row.date);
+          const key = `${data}|${row.shift}|${row.equipment}`;
+          const next = {
+            id: key,
+            an: String(row.date.getFullYear()),
+            luna: MONTHS[row.date.getMonth()].toLowerCase(),
+            data,
+            schimbul: String(row.shift),
+            utilaj: row.equipment,
+            ore_lucrate: Math.round(Number(row.hours) * 100) / 100,
+            observatii: `Automat din Raport Forjă • ${String(row.hours).replace('.', ',')} ore${row.reper ? ' • ' + row.reper : ''}${row.realized ? ' • ' + Math.round(row.realized) + ' buc' : ''}`,
+            source: 'raport-forja',
+            report_id: row.reportId || '',
+            updated_at: new Date().toISOString()
+          };
+          const prev = map.get(key);
+          if (!prev || Number(prev.ore_lucrate) !== Number(next.ore_lucrate) || String(prev.source || '') !== 'raport-forja') {
+            map.set(key, { ...(prev || {}), ...next });
+            changed = true;
+          }
+        });
+
+        const rows = Array.from(map.values()).sort((a,b) => {
+          const ad = parseDateAny(a.data, a);
+          const bd = parseDateAny(b.data, b);
+          const at = ad ? ad.getTime() : 0;
+          const bt = bd ? bd.getTime() : 0;
+          if (at !== bt) return at - bt;
+          const ss = Number(a.schimbul || 0) - Number(b.schimbul || 0);
+          if (ss) return ss;
+          return String(a.utilaj || '').localeCompare(String(b.utilaj || ''), 'ro', { numeric:true, sensitivity:'base' });
+        });
+
+        if (changed) {
+          const nextPayload = payload && typeof payload === 'object' && !Array.isArray(payload) ? { ...payload } : { app:'PROGRAM_UTILAJE' };
+          nextPayload.rows = rows;
+          nextPayload.updated_at = new Date().toISOString();
+          try {
+            await supabaseClient
+              .from('rf_documents')
+              .upsert({ doc_key:'program-utilaje', content:nextPayload, updated_at:nextPayload.updated_at }, { onConflict:'doc_key' });
+          } catch (error) {
+            console.warn('KPI: Program utilaje nu a putut fi actualizat automat din Raport Forjă.', error);
+          }
+        }
+        return { changed, rows };
       }
 
       function scoreProblemaRow(row){
@@ -1624,7 +1769,10 @@
 
           forjateRows = dedupeTransformedRows(transformForjate(rawForjateRows), row => `${formatDate(row.date)}|${row.equipment}|${row.shift}|${row.reper}|${row.realized}|${row.tact ?? ''}|${buildRawRowSignature(row)}`);
           tactRows = dedupeTransformedRows(transformTact(rawHelperRows), row => `${row.equipment}|${row.reper}|${row.tact ?? ''}|${buildRawRowSignature(row)}`);
-          programRows = dedupeTransformedRows(transformProgram(rawProgramRows), row => `${formatDate(row.date)}|${row.equipment}|${row.shift}|${row.hours ?? ''}|${buildRawRowSignature(row)}`);
+          const programSync = await syncProgramUtilajeFromForjaHours(programDocs, forjateRows);
+          const syncedProgramRawRows = programSync.rows && programSync.rows.length ? programSync.rows : rawProgramRows;
+          const loadedProgramRows = dedupeTransformedRows(transformProgram(syncedProgramRawRows), row => `${formatDate(row.date)}|${row.equipment}|${row.shift}|${row.hours ?? ''}|${buildRawRowSignature(row)}`);
+          programRows = mergeProgramRowsWithReportHours(loadedProgramRows, forjateRows);
           problemeRows = dedupeTransformedRows(transformProbleme(rawProblemeRows), row => `${formatDate(row.date)}|${row.equipment}|${row.shift}|${row.minutes ?? ''}|${row.label || ''}`);
           buildIndices();
 
