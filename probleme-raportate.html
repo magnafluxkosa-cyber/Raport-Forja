@@ -4292,50 +4292,407 @@ async function resolvePagePermissions() {
       return base || fallback || "Utilaj";
     }
 
-    function appendReportGroupToAoa(aoa, merges, group) {
-      const startTitleRow = aoa.length;
+    function makeReportExcelStyles() {
+      const border = {
+        top: { style: "thin", color: { rgb: "000000" } },
+        bottom: { style: "thin", color: { rgb: "000000" } },
+        left: { style: "thin", color: { rgb: "000000" } },
+        right: { style: "thin", color: { rgb: "000000" } }
+      };
+      const center = { horizontal: "center", vertical: "center", wrapText: true };
+      const left = { horizontal: "left", vertical: "center", wrapText: true };
+      return {
+        title: {
+          font: { bold: true, sz: 16, color: { rgb: "102336" } },
+          fill: { patternType: "solid", fgColor: { rgb: "CFE1F2" } },
+          alignment: left
+        },
+        subtitle: {
+          font: { bold: true, sz: 11, color: { rgb: "4D647A" } },
+          fill: { patternType: "solid", fgColor: { rgb: "EEF5FB" } },
+          alignment: left
+        },
+        utilajHead: {
+          font: { bold: true, sz: 13, color: { rgb: "102336" } },
+          fill: { patternType: "solid", fgColor: { rgb: "B9D3EA" } },
+          border,
+          alignment: left
+        },
+        utilajMeta: {
+          font: { bold: true, sz: 10, color: { rgb: "4D647A" } },
+          fill: { patternType: "solid", fgColor: { rgb: "B9D3EA" } },
+          border,
+          alignment: { horizontal: "right", vertical: "center", wrapText: true }
+        },
+        header1: {
+          font: { bold: true, sz: 10, color: { rgb: "102336" } },
+          fill: { patternType: "solid", fgColor: { rgb: "CFE1F2" } },
+          border,
+          alignment: center
+        },
+        header2: {
+          font: { bold: true, sz: 10, color: { rgb: "102336" } },
+          fill: { patternType: "solid", fgColor: { rgb: "BFD4E8" } },
+          border,
+          alignment: center
+        },
+        data: {
+          font: { sz: 10, color: { rgb: "102336" } },
+          fill: { patternType: "solid", fgColor: { rgb: "FFFFFF" } },
+          border,
+          alignment: center
+        },
+        dataAlt: {
+          font: { sz: 10, color: { rgb: "102336" } },
+          fill: { patternType: "solid", fgColor: { rgb: "F8FBFF" } },
+          border,
+          alignment: center
+        },
+        obs: {
+          font: { sz: 10, color: { rgb: "102336" } },
+          fill: { patternType: "solid", fgColor: { rgb: "FFFFFF" } },
+          border,
+          alignment: left
+        },
+        obsAlt: {
+          font: { sz: 10, color: { rgb: "102336" } },
+          fill: { patternType: "solid", fgColor: { rgb: "F8FBFF" } },
+          border,
+          alignment: left
+        },
+        total: {
+          font: { bold: true, sz: 10, color: { rgb: "102336" } },
+          fill: { patternType: "solid", fgColor: { rgb: "EDF5FC" } },
+          border,
+          alignment: center
+        },
+        totalLeft: {
+          font: { bold: true, sz: 10, color: { rgb: "102336" } },
+          fill: { patternType: "solid", fgColor: { rgb: "EDF5FC" } },
+          border,
+          alignment: left
+        },
+        note: {
+          font: { bold: true, sz: 9, color: { rgb: "4D647A" } },
+          fill: { patternType: "solid", fgColor: { rgb: "F7FBFF" } },
+          border,
+          alignment: left
+        }
+      };
+    }
+
+    function setSheetCellStyle(ws, rowIndex, colIndex, style) {
+      const ref = XLSX.utils.encode_cell({ r: rowIndex, c: colIndex });
+      if (!ws[ref]) ws[ref] = { t: "s", v: "" };
+      ws[ref].s = style;
+    }
+
+    function setSheetRowStyle(ws, rowIndex, colCount, style) {
+      for (let c = 0; c < colCount; c += 1) setSheetCellStyle(ws, rowIndex, c, style);
+    }
+
+    function setSheetRangeStyle(ws, r1, c1, r2, c2, style) {
+      for (let r = r1; r <= r2; r += 1) {
+        for (let c = c1; c <= c2; c += 1) setSheetCellStyle(ws, r, c, style);
+      }
+    }
+
+    function reportExcelNumber(value, decimals = 0) {
+      const n = Number(value);
+      if (!Number.isFinite(n) || n === 0) return "";
+      return decimals ? Number(n.toFixed(decimals)) : n;
+    }
+
+    async function ensureStyledSheetJs() {
+      if (window.__kadXlsxStyleReady && window.XLSX) return window.XLSX;
+      if (!state.sheetJsStylePromise) {
+        state.sheetJsStylePromise = new Promise((resolve, reject) => {
+          const script = document.createElement("script");
+          script.src = "https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.min.js";
+          script.onload = () => {
+            window.__kadXlsxStyleReady = true;
+            resolve(window.XLSX);
+          };
+          script.onerror = () => reject(new Error("Nu s-a putut încărca biblioteca XLSX cu stiluri."));
+          document.head.appendChild(script);
+        });
+      }
+      return state.sheetJsStylePromise;
+    }
+
+    function appendReportGroupToStyledAoa(aoa, merges, rowTypes, group, maxCols) {
       const totalCols = 5 + group.operations.length * 2;
-      aoa.push([group.utilaj]);
-      merges.push({ s: { r: startTitleRow, c: 0 }, e: { r: startTitleRow, c: Math.max(0, totalCols - 1) } });
+      const groupStart = aoa.length;
+      const metaText = `${group.rows.length} rânduri • ${formatReportNumber(group.totals.totalMinutes)} minute pierdute`;
+      const titleRow = Array.from({ length: maxCols }, () => "");
+      titleRow[0] = group.utilaj;
+      const metaStart = totalCols > 6 ? Math.max(1, totalCols - 4) : -1;
+      if (metaStart >= 0) titleRow[metaStart] = metaText;
+      aoa.push(titleRow);
+      rowTypes.push({ type: "utilaj", totalCols, metaStart });
+      if (totalCols > 6) {
+        merges.push({ s: { r: groupStart, c: 0 }, e: { r: groupStart, c: Math.max(0, totalCols - 5) } });
+        merges.push({ s: { r: groupStart, c: metaStart }, e: { r: groupStart, c: totalCols - 1 } });
+      } else {
+        merges.push({ s: { r: groupStart, c: 0 }, e: { r: groupStart, c: Math.max(0, totalCols - 1) } });
+      }
 
-      const head1 = ["DATA", "LUNA", "SCHIMB", "REPER", "CANTITATE"];
-      const head2 = ["", "", "", "", ""];
+      const head1 = Array.from({ length: maxCols }, () => "");
+      const head2 = Array.from({ length: maxCols }, () => "");
+      ["DATA", "LUNA", "SCHIMB", "REPER", "CANTITATE"].forEach((value, index) => { head1[index] = value; });
       group.operations.forEach(op => {
-        const opStart = head1.length;
-        head1.push(op, "");
-        head2.push("Timp Minute Pierdute", "Observații");
-        const r = aoa.length;
-        merges.push({ s: { r, c: opStart }, e: { r, c: opStart + 1 } });
+        const opStart = 5 + group.operations.indexOf(op) * 2;
+        head1[opStart] = op;
+        head2[opStart] = "Timp Minute Pierdute";
+        head2[opStart + 1] = "Observații";
       });
+      const h1Row = aoa.length;
+      const h2Row = aoa.length + 1;
       aoa.push(head1);
+      rowTypes.push({ type: "header1", totalCols });
       aoa.push(head2);
+      rowTypes.push({ type: "header2", totalCols });
+      for (let c = 0; c < 5; c += 1) merges.push({ s: { r: h1Row, c }, e: { r: h2Row, c } });
+      group.operations.forEach((op, index) => {
+        const opStart = 5 + index * 2;
+        merges.push({ s: { r: h1Row, c: opStart }, e: { r: h1Row, c: opStart + 1 } });
+      });
 
-      group.rows.forEach(row => {
-        const out = [row.data, row.luna, row.schimbul, row.reper, toInt(row.cantitate) || ""];
-        group.operations.forEach(op => {
+      group.rows.forEach((row, rowIndex) => {
+        const out = Array.from({ length: maxCols }, () => "");
+        out[0] = row.data;
+        out[1] = row.luna;
+        out[2] = row.schimbul;
+        out[3] = row.reper;
+        out[4] = reportExcelNumber(row.cantitate);
+        group.operations.forEach((op, index) => {
           const item = row.operations.get(operationKey(op));
-          out.push(item && toInt(item.minutes) ? toInt(item.minutes) : "");
-          out.push(item ? item.observations.join("; ") : "");
+          const startCol = 5 + index * 2;
+          out[startCol] = item && toInt(item.minutes) ? toInt(item.minutes) : "";
+          out[startCol + 1] = item ? item.observations.join("; ") : "";
         });
         aoa.push(out);
+        rowTypes.push({ type: rowIndex % 2 ? "dataAlt" : "data", totalCols });
       });
 
-      const totalRow = ["TOTAL", "", "", "", group.totals.totalCantitate || ""];
-      group.operations.forEach(op => {
+      const totalRow = Array.from({ length: maxCols }, () => "");
+      totalRow[0] = "TOTAL";
+      totalRow[4] = reportExcelNumber(group.totals.totalCantitate);
+      group.operations.forEach((op, index) => {
         const key = operationKey(op);
         const minutes = group.rows.reduce((sum, row) => {
           const item = row.operations.get(key);
           return sum + (item ? toInt(item.minutes) : 0);
         }, 0);
-        totalRow.push(minutes || "", "");
+        totalRow[5 + index * 2] = minutes || "";
       });
+      const totalRowIndex = aoa.length;
       aoa.push(totalRow);
+      rowTypes.push({ type: "total", totalCols });
+      merges.push({ s: { r: totalRowIndex, c: 0 }, e: { r: totalRowIndex, c: 3 } });
 
-      const avgRow = ["MEDIA PIESELOR REALIZATE", "", "", "", group.totals.avgCantitate ? Number(group.totals.avgCantitate.toFixed(2)) : ""];
-      group.operations.forEach(() => avgRow.push("", ""));
+      const avgRow = Array.from({ length: maxCols }, () => "");
+      avgRow[0] = "MEDIA PIESELOR REALIZATE";
+      avgRow[4] = reportExcelNumber(group.totals.avgCantitate, 2);
+      if (totalCols > 5) avgRow[5] = "Media este calculată pe rândurile unde există cantitate preluată din Forjate.";
+      const avgRowIndex = aoa.length;
       aoa.push(avgRow);
+      rowTypes.push({ type: "avg", totalCols });
+      merges.push({ s: { r: avgRowIndex, c: 0 }, e: { r: avgRowIndex, c: 3 } });
+      if (totalCols > 6) merges.push({ s: { r: avgRowIndex, c: 5 }, e: { r: avgRowIndex, c: totalCols - 1 } });
 
-      aoa.push([]);
+      const kpiRow = Array.from({ length: maxCols }, () => "");
+      kpiRow[0] = `Total piese realizate: ${formatReportNumber(group.totals.totalCantitate)}`;
+      kpiRow[2] = `Total minute pierdute: ${formatReportNumber(group.totals.totalMinutes)}`;
+      kpiRow[4] = `Media pieselor realizate: ${formatReportNumber(group.totals.avgCantitate, 2)}`;
+      const kpiRowIndex = aoa.length;
+      aoa.push(kpiRow);
+      rowTypes.push({ type: "kpi", totalCols });
+      if (totalCols > 1) merges.push({ s: { r: kpiRowIndex, c: 0 }, e: { r: kpiRowIndex, c: Math.min(1, totalCols - 1) } });
+      if (totalCols > 3) merges.push({ s: { r: kpiRowIndex, c: 2 }, e: { r: kpiRowIndex, c: Math.min(3, totalCols - 1) } });
+      if (totalCols > 5) merges.push({ s: { r: kpiRowIndex, c: 4 }, e: { r: kpiRowIndex, c: Math.min(6, totalCols - 1) } });
+
+      aoa.push(Array.from({ length: maxCols }, () => ""));
+      rowTypes.push({ type: "blank", totalCols });
+    }
+
+    function buildReportStyledWorkbook(XLSX, report) {
+      const maxOps = Math.max(1, ...report.groups.map(group => group.operations.length));
+      const maxCols = 5 + maxOps * 2;
+      const totalRows = report.groups.reduce((sum, group) => sum + group.rows.length, 0);
+      const totalMinutes = report.groups.reduce((sum, group) => sum + group.totals.totalMinutes, 0);
+      const totalQty = report.groups.reduce((sum, group) => sum + group.totals.totalCantitate, 0);
+      const filterParts = [];
+      if (report.filters?.an) filterParts.push(`an ${report.filters.an}`);
+      if (report.filters?.luna) filterParts.push(`luna ${report.filters.luna}`);
+      const filterLabel = filterParts.length ? filterParts.join(" • ") : "toate rândurile";
+
+      const aoa = [];
+      const merges = [];
+      const rowTypes = [];
+      aoa.push(["Fișă probleme pe utilaje"]);
+      rowTypes.push({ type: "title", totalCols: maxCols });
+      merges.push({ s: { r: 0, c: 0 }, e: { r: 0, c: maxCols - 1 } });
+      aoa.push([`Filtru fișă: ${filterLabel} • ${report.groups.length} utilaje • ${totalRows} rânduri • ${formatReportNumber(totalQty)} piese realizate • ${formatReportNumber(totalMinutes)} minute pierdute`]);
+      rowTypes.push({ type: "subtitle", totalCols: maxCols });
+      merges.push({ s: { r: 1, c: 0 }, e: { r: 1, c: maxCols - 1 } });
+      aoa.push(Array.from({ length: maxCols }, () => ""));
+      rowTypes.push({ type: "blank", totalCols: maxCols });
+
+      report.groups.forEach(group => appendReportGroupToStyledAoa(aoa, merges, rowTypes, group, maxCols));
+
+      const ws = XLSX.utils.aoa_to_sheet(aoa);
+      ws["!merges"] = merges;
+      ws["!cols"] = [
+        { wch: 13 }, { wch: 13 }, { wch: 9 }, { wch: 16 }, { wch: 13 },
+        ...Array.from({ length: maxOps }, () => [{ wch: 19 }, { wch: 44 }]).flat()
+      ];
+      ws["!rows"] = rowTypes.map(info => {
+        if (info.type === "title") return { hpt: 24 };
+        if (info.type === "subtitle") return { hpt: 22 };
+        if (info.type === "utilaj") return { hpt: 26 };
+        if (info.type === "header1" || info.type === "header2") return { hpt: 22 };
+        if (info.type === "data" || info.type === "dataAlt") return { hpt: 25 };
+        if (info.type === "kpi") return { hpt: 24 };
+        return { hpt: 20 };
+      });
+
+      const styles = makeReportExcelStyles();
+      rowTypes.forEach((info, r) => {
+        if (info.type === "blank") return;
+        const totalCols = info.totalCols || maxCols;
+        if (info.type === "title") {
+          setSheetRowStyle(ws, r, maxCols, styles.title);
+          return;
+        }
+        if (info.type === "subtitle") {
+          setSheetRowStyle(ws, r, maxCols, styles.subtitle);
+          return;
+        }
+        if (info.type === "utilaj") {
+          setSheetRowStyle(ws, r, totalCols, styles.utilajHead);
+          if (info.metaStart >= 0) setSheetRangeStyle(ws, r, info.metaStart, r, totalCols - 1, styles.utilajMeta);
+          return;
+        }
+        if (info.type === "header1") {
+          setSheetRowStyle(ws, r, totalCols, styles.header1);
+          return;
+        }
+        if (info.type === "header2") {
+          setSheetRowStyle(ws, r, totalCols, styles.header2);
+          return;
+        }
+        if (info.type === "total") {
+          setSheetRowStyle(ws, r, totalCols, styles.total);
+          setSheetRangeStyle(ws, r, 0, r, 3, styles.totalLeft);
+          return;
+        }
+        if (info.type === "avg") {
+          setSheetRowStyle(ws, r, totalCols, styles.total);
+          setSheetRangeStyle(ws, r, 0, r, 3, styles.totalLeft);
+          if (totalCols > 5) setSheetRangeStyle(ws, r, 5, r, totalCols - 1, styles.note);
+          return;
+        }
+        if (info.type === "kpi") {
+          setSheetRowStyle(ws, r, totalCols, styles.note);
+          return;
+        }
+        const dataStyle = info.type === "dataAlt" ? styles.dataAlt : styles.data;
+        const obsStyle = info.type === "dataAlt" ? styles.obsAlt : styles.obs;
+        setSheetRowStyle(ws, r, totalCols, dataStyle);
+        for (let c = 6; c < totalCols; c += 2) setSheetCellStyle(ws, r, c, obsStyle);
+      });
+
+      const range = XLSX.utils.decode_range(ws["!ref"]);
+      for (let r = range.s.r; r <= range.e.r; r += 1) {
+        for (let c = range.s.c; c <= range.e.c; c += 1) {
+          const cell = ws[XLSX.utils.encode_cell({ r, c })];
+          if (!cell) continue;
+          if (typeof cell.v === "number") {
+            cell.z = c === 4 && rowTypes[r]?.type === "avg" ? "#,##0.00" : "#,##0";
+          }
+        }
+      }
+
+      const wb = XLSX.utils.book_new();
+      wb.Workbook = { Views: [{ RTL: false }] };
+      XLSX.utils.book_append_sheet(wb, ws, "Fișă utilaje");
+      return wb;
+    }
+
+    function htmlExcelEscape(value) {
+      return String(value ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+    }
+
+    function downloadReportHtmlExcel(report) {
+      const totalRows = report.groups.reduce((sum, group) => sum + group.rows.length, 0);
+      const totalMinutes = report.groups.reduce((sum, group) => sum + group.totals.totalMinutes, 0);
+      const totalQty = report.groups.reduce((sum, group) => sum + group.totals.totalCantitate, 0);
+      const filterParts = [];
+      if (report.filters?.an) filterParts.push(`an ${report.filters.an}`);
+      if (report.filters?.luna) filterParts.push(`luna ${report.filters.luna}`);
+      const filterLabel = filterParts.length ? filterParts.join(" • ") : "toate rândurile";
+      const maxOps = Math.max(1, ...report.groups.map(group => group.operations.length));
+      const maxCols = 5 + maxOps * 2;
+      const css = `
+        table { border-collapse: collapse; font-family: Calibri, Arial, sans-serif; font-size: 11px; color: #102336; }
+        th, td { border: 1px solid #000; padding: 5px 6px; text-align: center; vertical-align: middle; white-space: normal; }
+        .title { background:#cfe1f2; font-size:16px; font-weight:700; text-align:left; }
+        .subtitle { background:#eef5fb; color:#4d647a; font-weight:700; text-align:left; }
+        .utilaj { background:#b9d3ea; font-size:13px; font-weight:800; text-align:left; }
+        .meta { text-align:right; color:#4d647a; font-size:10px; }
+        .head1 { background:#cfe1f2; font-weight:800; }
+        .head2 { background:#bfd4e8; font-weight:800; }
+        .alt td { background:#f8fbff; }
+        .obs { text-align:left; min-width:280px; }
+        .total th, .total td { background:#edf5fc; font-weight:800; }
+        .note { background:#f7fbff; color:#4d647a; font-weight:700; text-align:left; }
+      `;
+      const sections = report.groups.map(group => {
+        const totalCols = 5 + group.operations.length * 2;
+        const headOps = group.operations.map(op => `<th class="head1" colspan="2">${htmlExcelEscape(op)}</th>`).join("");
+        const subOps = group.operations.map(() => `<th class="head2">Timp Minute Pierdute</th><th class="head2">Observații</th>`).join("");
+        const rows = group.rows.map((row, index) => {
+          const cells = group.operations.map(op => {
+            const item = row.operations.get(operationKey(op));
+            return `<td>${item && toInt(item.minutes) ? toInt(item.minutes) : ""}</td><td class="obs">${htmlExcelEscape(item ? item.observations.join("; ") : "")}</td>`;
+          }).join("");
+          return `<tr class="${index % 2 ? "alt" : ""}"><td>${htmlExcelEscape(row.data)}</td><td>${htmlExcelEscape(row.luna)}</td><td>${htmlExcelEscape(row.schimbul)}</td><td>${htmlExcelEscape(row.reper)}</td><td>${htmlExcelEscape(formatReportNumber(row.cantitate))}</td>${cells}</tr>`;
+        }).join("");
+        const totalCells = group.operations.map(op => {
+          const key = operationKey(op);
+          const minutes = group.rows.reduce((sum, row) => {
+            const item = row.operations.get(key);
+            return sum + (item ? toInt(item.minutes) : 0);
+          }, 0);
+          return `<td>${minutes ? htmlExcelEscape(formatReportNumber(minutes)) : ""}</td><td></td>`;
+        }).join("");
+        return `<tr><th class="utilaj" colspan="${Math.max(1, totalCols - 4)}">${htmlExcelEscape(group.utilaj)}</th><th class="utilaj meta" colspan="4">${group.rows.length} rânduri • ${formatReportNumber(group.totals.totalMinutes)} minute pierdute</th></tr>
+          <tr><th class="head1" rowspan="2">DATA</th><th class="head1" rowspan="2">LUNA</th><th class="head1" rowspan="2">SCHIMB</th><th class="head1" rowspan="2">REPER</th><th class="head1" rowspan="2">CANTITATE</th>${headOps}</tr>
+          <tr>${subOps}</tr>
+          ${rows}
+          <tr class="total"><th colspan="4" style="text-align:left">TOTAL</th><th>${htmlExcelEscape(formatReportNumber(group.totals.totalCantitate))}</th>${totalCells}</tr>
+          <tr class="total"><th colspan="4" style="text-align:left">MEDIA PIESELOR REALIZATE</th><th>${htmlExcelEscape(formatReportNumber(group.totals.avgCantitate, 2))}</th><td class="note" colspan="${Math.max(1, totalCols - 5)}">Media este calculată pe rândurile unde există cantitate preluată din Forjate.</td></tr>
+          <tr><td class="note" colspan="2">Total piese realizate: ${htmlExcelEscape(formatReportNumber(group.totals.totalCantitate))}</td><td class="note" colspan="2">Total minute pierdute: ${htmlExcelEscape(formatReportNumber(group.totals.totalMinutes))}</td><td class="note" colspan="${Math.max(1, totalCols - 4)}">Media pieselor realizate: ${htmlExcelEscape(formatReportNumber(group.totals.avgCantitate, 2))}</td></tr>
+          <tr><td colspan="${totalCols}"></td></tr>`;
+      }).join("");
+
+      const html = `<!doctype html><html><head><meta charset="utf-8"><style>${css}</style></head><body><table><tr><th class="title" colspan="${maxCols}">Fișă probleme pe utilaje</th></tr><tr><th class="subtitle" colspan="${maxCols}">Filtru fișă: ${htmlExcelEscape(filterLabel)} • ${report.groups.length} utilaje • ${totalRows} rânduri • ${htmlExcelEscape(formatReportNumber(totalQty))} piese realizate • ${htmlExcelEscape(formatReportNumber(totalMinutes))} minute pierdute</th></tr><tr><td colspan="${maxCols}"></td></tr>${sections}</table></body></html>`;
+      const blob = new Blob([html], { type: "application/vnd.ms-excel;charset=utf-8" });
+      const link = document.createElement("a");
+      const today = formatDateRo(new Date()).replace(/\./g, "-");
+      link.href = URL.createObjectURL(blob);
+      link.download = `Probleme_raportate_fisa_utilaje_${today}.xls`;
+      document.body.appendChild(link);
+      link.click();
+      setTimeout(() => {
+        URL.revokeObjectURL(link.href);
+        link.remove();
+      }, 0);
     }
 
     async function exportReportSheet() {
@@ -4346,28 +4703,15 @@ async function resolvePagePermissions() {
           return;
         }
 
-        const XLSX = await ensureSheetJs();
-        const wb = XLSX.utils.book_new();
-        const aoa = [];
-        const merges = [];
-        const filterParts = [];
-        if (report.filters?.an) filterParts.push(`an ${report.filters.an}`);
-        if (report.filters?.luna) filterParts.push(`luna ${report.filters.luna}`);
-        aoa.push(["Fișă probleme pe utilaje"]);
-        aoa.push([`Filtru: ${filterParts.length ? filterParts.join(" • ") : "toate rândurile"}`]);
-        aoa.push([]);
-
-        report.groups.forEach(group => appendReportGroupToAoa(aoa, merges, group));
-        const ws = XLSX.utils.aoa_to_sheet(aoa);
-        ws["!merges"] = merges;
-        ws["!cols"] = [
-          { wch: 12 }, { wch: 13 }, { wch: 9 }, { wch: 16 }, { wch: 12 },
-          ...Array.from({ length: 32 }, (_, index) => ({ wch: index % 2 === 0 ? 18 : 34 }))
-        ];
-        XLSX.utils.book_append_sheet(wb, ws, "Fișă utilaje");
-
-        const today = formatDateRo(new Date()).replace(/\./g, "-");
-        XLSX.writeFile(wb, `Probleme_raportate_fisa_utilaje_${today}.xlsx`);
+        try {
+          const XLSX = await ensureStyledSheetJs();
+          const wb = buildReportStyledWorkbook(XLSX, report);
+          const today = formatDateRo(new Date()).replace(/\./g, "-");
+          XLSX.writeFile(wb, `Probleme_raportate_fisa_utilaje_${today}.xlsx`);
+        } catch (styleError) {
+          console.warn("Export XLSX cu stiluri indisponibil, se folosește export Excel HTML.", styleError);
+          downloadReportHtmlExcel(report);
+        }
       } catch (error) {
         console.error("exportReportSheet", error);
         alert("Exportul fișei nu a reușit.");
