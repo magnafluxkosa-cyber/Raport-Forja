@@ -244,7 +244,7 @@
       <div class="orders-modal-head">
         <div>
           <div class="orders-modal-title" id="inventoryModalTitle">Fișă inventar MRC</div>
-          <div class="orders-modal-sub">Inventarul folosit de MRC se citește astfel: Stoc piese kg se ia direct din Inventar Forjat + Inventar Debitat din luna anterioară, iar Stoc material kg se ia din Inventar Oțel din luna anterioară. Inventar Prelucrări nu intră în Stoc piese kg.</div>
+          <div class="orders-modal-sub">Inventarul folosit de MRC se citește astfel: Stoc piese kg se ia direct doar din Inventar Forjat + Inventar Debitat din luna anterioară. Rebut Analiza și Inventar Prelucrări nu intră în Stoc piese kg.</div>
         </div>
         <div class="orders-modal-actions">
           <button class="btn secondary" id="btnCloseInventory" type="button">Închide</button>
@@ -641,16 +641,23 @@
       };
     }
 
+
+    async function queryRfDocumentsByExactKeys(keys){
+      const uniqueKeys = Array.from(new Set((keys || []).map(function(key){ return MRC.trimText(key); }).filter(Boolean)));
+      if(!uniqueKeys.length) return [];
+      const result = [];
+      for(let i = 0; i < uniqueKeys.length; i += 50){
+        const chunk = uniqueKeys.slice(i, i + 50);
+        const response = await state.supabase.from('rf_documents').select('doc_key,content,data,updated_at').in('doc_key', chunk);
+        if(response.error) throw response.error;
+        if(Array.isArray(response.data)) result.push.apply(result, response.data);
+      }
+      return result;
+    }
+
     async function loadInventarOtelDirectRowsForYears(years){
       const uniqueYears = Array.from(new Set((years || []).map(v => Number(v)).filter(v => v > 0)));
-      let docs = [];
-      if(typeof MRC.queryDocsByKeys === 'function'){
-        docs = await MRC.queryDocsByKeys(state.supabase, ['inventar-otel']);
-      } else {
-        const response = await state.supabase.from('rf_documents').select('doc_key,content,data,updated_at').in('doc_key', ['inventar-otel']);
-        if(response.error) throw response.error;
-        docs = Array.isArray(response.data) ? response.data : [];
-      }
+      const docs = await queryRfDocumentsByExactKeys(['inventar-otel']);
       const rows = [];
       let updatedAt = '';
       docs.forEach(function(doc){
@@ -778,14 +785,7 @@
         keys.push('inventar-forjat:' + year, 'inventar-forjate:' + year, 'inventar_piese_forjate:' + year, 'stoc-forjate:' + year, 'stoc_forjate:' + year);
         keys.push('inventar-debitat:' + year, 'inventar_debitat:' + year, 'stoc-initial-debitat:' + year, 'stoc_initial_debitat:' + year);
       });
-      let docs = [];
-      if(keys.length && typeof MRC.queryDocsByKeys === 'function'){
-        docs = await MRC.queryDocsByKeys(state.supabase, keys);
-      } else if(keys.length) {
-        const response = await state.supabase.from('rf_documents').select('doc_key,content,data,updated_at').in('doc_key', keys);
-        if(response.error) throw response.error;
-        docs = Array.isArray(response.data) ? response.data : [];
-      }
+      const docs = keys.length ? await queryRfDocumentsByExactKeys(keys) : [];
       const rows = [];
       let updatedAt = '';
       let index = 0;
@@ -847,15 +847,10 @@
       const baseRows = Array.isArray(inventoryResult.rows) ? inventoryResult.rows : [];
       const detailRows = Array.isArray(inventoryResult.detailRows) ? inventoryResult.detailRows : baseRows;
       const directPieceRows = Array.isArray(directPiese.rows) ? directPiese.rows : [];
-      const fallbackPieceRows = baseRows.filter(function(row){
-        return !isInventarOtelRow(row) && !isInventarPrelucrariRow(row) && (isInventarForjatRow(row) || isInventarDebitatRow(row));
-      });
-      const pieceRowsForCalc = directPieceRows.length ? directPieceRows : fallbackPieceRows;
+      const pieceRowsForCalc = directPieceRows;
       const otelRowsForCalc = directOtel.rows && directOtel.rows.length ? directOtel.rows : baseRows.filter(isInventarOtelRow);
       state.openingStocks = pieceRowsForCalc.concat(otelRowsForCalc);
-      state.inventoryRows = (directPieceRows.length ? directPieceRows : detailRows.filter(function(row){
-        return !isInventarOtelRow(row) && !isInventarPrelucrariRow(row) && (isInventarForjatRow(row) || isInventarDebitatRow(row));
-      })).concat(otelRowsForCalc);
+      state.inventoryRows = pieceRowsForCalc.concat(otelRowsForCalc);
       const sources = [directPiese.source || '', inventoryResult.source || '', otelRowsForCalc.length ? 'inventar-otel' : ''].filter(Boolean);
       state.inventorySource = Array.from(new Set(sources.join(', ').split(',').map(v => MRC.trimText(v)).filter(Boolean))).join(', ');
       const updatedAt = [inventoryResult.updatedAt || '', directOtel.updatedAt || '', directPiese.updatedAt || ''].filter(Boolean).sort().pop() || '';
@@ -962,6 +957,7 @@
           }
           return;
         }
+        if(!(isInventarForjatRow(r) || isInventarDebitatRow(r))) return;
         const rawKey = MRC.normalizeLoose(r.reper_intern || r.reper || r.raw_reper || r.reper_debitare_origine);
         if(!rawKey) return;
         const mappedKey = mappedKeys.has(rawKey) ? rawKey : (mappedAliasToKey[rawKey] || '');
@@ -969,7 +965,6 @@
         const item = mappedByReper[mappedKey];
         if(!item || !calcMonthKey) return;
         item.month_start_pieces_kg[calcMonthKey] = Number(item.month_start_pieces_kg[calcMonthKey] || 0) + Number(r.total_piese || 0) * Number(item.kg_per_buc || 0);
-        item.month_start_steel_kg[calcMonthKey] = Number(item.month_start_steel_kg[calcMonthKey] || 0) + Number(r.stoc_otel_kg || 0);
       });
 
       state.forjateRows.filter(r => r.data && r.data >= fromIso && r.data <= capForjateTo).forEach(r => {
