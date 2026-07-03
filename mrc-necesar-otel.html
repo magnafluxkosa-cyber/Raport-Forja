@@ -244,7 +244,7 @@
       <div class="orders-modal-head">
         <div>
           <div class="orders-modal-title" id="inventoryModalTitle">Fișă inventar MRC</div>
-          <div class="orders-modal-sub">Inventarul folosit de MRC se citește astfel: Inventar Prelucrări din luna curentă selectată în MRC, iar Inventar Oțel, Inventar Forjat și Inventar Debitat din luna anterioară. Stocul inițial vechi nu mai este citit în calcul.</div>
+          <div class="orders-modal-sub">Inventarul folosit de MRC se citește astfel: Stoc piese kg se ia direct din Inventar Forjat + Inventar Debitat din luna anterioară, iar Stoc material kg se ia din Inventar Oțel din luna anterioară. Inventar Prelucrări nu intră în Stoc piese kg.</div>
         </div>
         <div class="orders-modal-actions">
           <button class="btn secondary" id="btnCloseInventory" type="button">Închide</button>
@@ -669,6 +669,143 @@
       return { rows: rows, updatedAt: updatedAt };
     }
 
+    function normalizeInventorySourceText(row){
+      return normalizeSourceName([
+        row && row.stock_source,
+        row && row.source_label,
+        row && row.source,
+        row && row.doc_key,
+        row && row.stock_type
+      ].filter(Boolean).join(' '));
+    }
+
+    function isInventarForjatRow(row){
+      const sourceText = normalizeInventorySourceText(row);
+      return sourceText.includes('inventar forjat') || sourceText.includes('inventarforjat') || sourceText.includes('forjat') || sourceText.includes('forjate');
+    }
+
+    function isInventarDebitatRow(row){
+      const sourceText = normalizeInventorySourceText(row);
+      return sourceText.includes('inventar debitat') || sourceText.includes('inventardebitat') || sourceText.includes('debitat') || sourceText.includes('debitate');
+    }
+
+    function normalizeInventarForjatDirectRow(row, index){
+      if(Array.isArray(row)){
+        row = { an:row[0], luna:row[1], reper:row[2], dimensiune:row[3], calitate:row[4], stocFinal:row[6] };
+      }
+      const ym = getYearMonthFromInventarOtel(row || {});
+      const reper = MRC.trimText(localPick(row, ['reper','REPER','Reper','reper_intern','Reper intern'])).toUpperCase();
+      const dimensiune = MRC.trimText(localPick(row, ['dimensiune','Dimensiune','Dimensiune OTEL','Diametru','diametru']));
+      const calitate = MRC.trimText(localPick(row, ['calitate','calitate otel','calitate_otel','Calitate Otel','Calitate oțel','Calitate'])).toUpperCase();
+      const stocFinal = Math.max(0, Math.round(localToNumber(localPick(row, [
+        'stocFinal',
+        'stoc FINAL Piese Forjate (buc)',
+        'Stoc FINAL Piese Forjate (buc)',
+        'stoc final piese forjate (buc)',
+        'STOC FINAL PIESE FORJATE (BUC)'
+      ]))));
+      return {
+        id: MRC.trimText(localPick(row, ['id','_id'])) || ('inv-forjat-direct-' + index),
+        stock_source: 'Inventar Forjat',
+        stock_type: 'forjat',
+        year: ym.year,
+        month_num: ym.monthNum,
+        month: MRC.getMonthName(ym.monthNum),
+        month_key: MRC.monthKey(ym.year, ym.monthNum),
+        raw_reper: reper,
+        reper_intern: reper,
+        reper_debitare_origine: '',
+        material: calitate,
+        diametru: dimensiune,
+        kg_per_buc: 0,
+        stoc_ambalat: 0,
+        stoc_finite: 0,
+        stoc_wip: 0,
+        stoc_forja: stocFinal,
+        stoc_debitat: 0,
+        stoc_otel_kg: 0,
+        inventory_otel_kg: 0,
+        total_piese: stocFinal,
+        source_label: 'inventar-forjat'
+      };
+    }
+
+    function normalizeInventarDebitatDirectRow(row, index){
+      if(Array.isArray(row)){
+        row = { an:row[0], luna:row[1], reper:row[2], dimensiune:row[3], calitate:row[4], cantitateBuc:row[5] };
+      }
+      const ym = getYearMonthFromInventarOtel(row || {});
+      const reper = MRC.trimText(localPick(row, ['reper','REPER','Reper','denumire reper debitare','Denumire reper debitare','reper_debitare_origine'])).toUpperCase();
+      const dimensiune = MRC.trimText(localPick(row, ['dimensiune','Dimensiune','Dimensiune OTEL','Diametru','diametru']));
+      const calitate = MRC.trimText(localPick(row, ['calitate','calitate otel','calitate_otel','Calitate Otel','Calitate oțel','Calitate'])).toUpperCase();
+      const stocDebitat = Math.max(0, Math.round(localToNumber(localPick(row, [
+        'cantitateBuc',
+        'STOC DEBITATE FINAL (buc)',
+        'Stoc debitate final (buc)',
+        'Stoc Debitat (Buc)',
+        'STOC DEBITAT (BUC)'
+      ]))));
+      return {
+        id: MRC.trimText(localPick(row, ['id','_id'])) || ('inv-debitat-direct-' + index),
+        stock_source: 'Inventar Debitat',
+        stock_type: 'debitat',
+        year: ym.year,
+        month_num: ym.monthNum,
+        month: MRC.getMonthName(ym.monthNum),
+        month_key: MRC.monthKey(ym.year, ym.monthNum),
+        raw_reper: reper,
+        reper_intern: '',
+        reper_debitare_origine: reper,
+        material: calitate,
+        diametru: dimensiune,
+        kg_per_buc: 0,
+        stoc_ambalat: 0,
+        stoc_finite: 0,
+        stoc_wip: 0,
+        stoc_forja: 0,
+        stoc_debitat: stocDebitat,
+        stoc_otel_kg: 0,
+        inventory_otel_kg: 0,
+        total_piese: stocDebitat,
+        source_label: 'inventar-debitat'
+      };
+    }
+
+    async function loadInventarPieseDirectRowsForYears(years){
+      const uniqueYears = Array.from(new Set((years || []).map(v => Number(v)).filter(v => v > 0)));
+      const keys = [];
+      uniqueYears.forEach(function(year){
+        keys.push('inventar-forjat:' + year, 'inventar-forjate:' + year, 'inventar_piese_forjate:' + year, 'stoc-forjate:' + year, 'stoc_forjate:' + year);
+        keys.push('inventar-debitat:' + year, 'inventar_debitat:' + year, 'stoc-initial-debitat:' + year, 'stoc_initial_debitat:' + year);
+      });
+      let docs = [];
+      if(keys.length && typeof MRC.queryDocsByKeys === 'function'){
+        docs = await MRC.queryDocsByKeys(state.supabase, keys);
+      } else if(keys.length) {
+        const response = await state.supabase.from('rf_documents').select('doc_key,content,data,updated_at').in('doc_key', keys);
+        if(response.error) throw response.error;
+        docs = Array.isArray(response.data) ? response.data : [];
+      }
+      const rows = [];
+      let updatedAt = '';
+      let index = 0;
+      docs.forEach(function(doc){
+        if(!doc || !doc.doc_key) return;
+        if(doc.updated_at && (!updatedAt || doc.updated_at > updatedAt)) updatedAt = doc.updated_at;
+        const payload = doc.content || doc.data;
+        const isForjatDoc = /^inventar[-_]forjat:|^inventar[-_]forjate:|^inventar_piese_forjate:|^stoc[-_]forjate:/i.test(doc.doc_key);
+        const isDebitatDoc = /^inventar[-_]debitat:|^stoc[-_]initial[-_]debitat:/i.test(doc.doc_key);
+        (MRC.extractRowsPayload(payload) || []).forEach(function(raw){
+          const row = isForjatDoc ? normalizeInventarForjatDirectRow(raw, index++) : (isDebitatDoc ? normalizeInventarDebitatDirectRow(raw, index++) : null);
+          if(!row || !row.year || !row.month_num || !row.month_key) return;
+          if(!MRC.trimText(row.raw_reper || row.reper_intern || row.reper_debitare_origine)) return;
+          if(!(Number(row.total_piese || 0) > 0)) return;
+          rows.push(row);
+        });
+      });
+      return { rows: rows, updatedAt: updatedAt, source: rows.length ? 'inventar-forjat, inventar-debitat' : '' };
+    }
+
     function isInventarOtelRow(row){
       return !!(row && (row.stock_type === 'otel' || row.stock_source === 'Inventar Oțel' || row.source_label === 'inventar-otel'));
     }
@@ -699,24 +836,29 @@
         MRC.loadForjateRowsForYears(state.supabase, years),
         MRC.loadIntrariRowsForYears(state.supabase, years),
         inventoryLoader,
-        loadInventarOtelDirectRowsForYears(years)
+        loadInventarOtelDirectRowsForYears(years),
+        loadInventarPieseDirectRowsForYears(years)
       ]);
       state.forjateRows = arr[0].rows || [];
       state.intrariRows = arr[1].rows || [];
       const inventoryResult = arr[2] || { rows:[], detailRows:[], source:'', updatedAt:'' };
       const directOtel = arr[3] || { rows:[], updatedAt:'' };
+      const directPiese = arr[4] || { rows:[], updatedAt:'', source:'' };
       const baseRows = Array.isArray(inventoryResult.rows) ? inventoryResult.rows : [];
       const detailRows = Array.isArray(inventoryResult.detailRows) ? inventoryResult.detailRows : baseRows;
-      if(directOtel.rows && directOtel.rows.length){
-        state.openingStocks = baseRows.filter(row => !isInventarOtelRow(row)).concat(directOtel.rows);
-        state.inventoryRows = detailRows.filter(row => !isInventarOtelRow(row)).concat(directOtel.rows);
-      } else {
-        state.openingStocks = baseRows;
-        state.inventoryRows = detailRows;
-      }
-      const sources = [inventoryResult.source || '', directOtel.rows && directOtel.rows.length ? 'inventar-otel' : ''].filter(Boolean);
+      const directPieceRows = Array.isArray(directPiese.rows) ? directPiese.rows : [];
+      const fallbackPieceRows = baseRows.filter(function(row){
+        return !isInventarOtelRow(row) && !isInventarPrelucrariRow(row) && (isInventarForjatRow(row) || isInventarDebitatRow(row));
+      });
+      const pieceRowsForCalc = directPieceRows.length ? directPieceRows : fallbackPieceRows;
+      const otelRowsForCalc = directOtel.rows && directOtel.rows.length ? directOtel.rows : baseRows.filter(isInventarOtelRow);
+      state.openingStocks = pieceRowsForCalc.concat(otelRowsForCalc);
+      state.inventoryRows = (directPieceRows.length ? directPieceRows : detailRows.filter(function(row){
+        return !isInventarOtelRow(row) && !isInventarPrelucrariRow(row) && (isInventarForjatRow(row) || isInventarDebitatRow(row));
+      })).concat(otelRowsForCalc);
+      const sources = [directPiese.source || '', inventoryResult.source || '', otelRowsForCalc.length ? 'inventar-otel' : ''].filter(Boolean);
       state.inventorySource = Array.from(new Set(sources.join(', ').split(',').map(v => MRC.trimText(v)).filter(Boolean))).join(', ');
-      const updatedAt = [inventoryResult.updatedAt || '', directOtel.updatedAt || ''].filter(Boolean).sort().pop() || '';
+      const updatedAt = [inventoryResult.updatedAt || '', directOtel.updatedAt || '', directPiese.updatedAt || ''].filter(Boolean).sort().pop() || '';
       if(updatedAt) state.lastSyncAt = [state.lastSyncAt, updatedAt].filter(Boolean).sort().pop() || state.lastSyncAt;
     }
 
