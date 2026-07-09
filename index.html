@@ -1233,6 +1233,79 @@
         try { document.body.classList.add('acl-loading'); } catch (_) {}
       }
 
+      const INDEX_AUTO_RECOVERY_KEY = 'rf_index_acl_auto_recovery_v3';
+
+      function visibleMenuButtonCount(){
+        try {
+          return qsa('#leftMenu [data-page-key], .subpanel [data-page-key]')
+            .filter(node => node && !node.classList.contains('hidden') && node.style.display !== 'none')
+            .length;
+        } catch (_) {
+          return 0;
+        }
+      }
+
+      function clearIndexOnlyCachedVisibility(){
+        try { localStorage.removeItem('rf_hidden_index_buttons'); } catch (_) {}
+        try { sessionStorage.removeItem('rf_hidden_index_buttons'); } catch (_) {}
+        try { if (window.__rfSyncHiddenButtonsStyle) window.__rfSyncHiddenButtonsStyle([]); } catch (_) {}
+      }
+
+      function requestServiceWorkerUpdate(){
+        try {
+          if (!('serviceWorker' in navigator)) return;
+          navigator.serviceWorker.getRegistrations().then(regs => {
+            (regs || []).forEach(reg => { try { reg.update(); } catch (_) {} });
+          }).catch(() => {});
+        } catch (_) {}
+      }
+
+      function forceOneTimeIndexReload(reason){
+        try {
+          const already = sessionStorage.getItem(INDEX_AUTO_RECOVERY_KEY) === '1';
+          if (already) return false;
+          sessionStorage.setItem(INDEX_AUTO_RECOVERY_KEY, '1');
+          clearIndexOnlyCachedVisibility();
+          requestServiceWorkerUpdate();
+          const url = new URL(window.location.href);
+          url.searchParams.set('kad_acl_refresh', String(Date.now()));
+          url.searchParams.set('kad_acl_reason', String(reason || 'acl'));
+          window.location.replace(url.toString());
+          return true;
+        } catch (_) {
+          try { window.location.reload(); return true; } catch (__) {}
+        }
+        return false;
+      }
+
+      function clearIndexAutoRecoveryFlagSoon(){
+        try {
+          window.setTimeout(() => {
+            try { sessionStorage.removeItem(INDEX_AUTO_RECOVERY_KEY); } catch (_) {}
+          }, 15000);
+        } catch (_) {}
+      }
+
+      function scheduleAclLoadingWatchdog(){
+        try {
+          window.setTimeout(() => {
+            try {
+              if (document.body.classList.contains('acl-loading')) {
+                forceOneTimeIndexReload('loading-stuck');
+              }
+            } catch (_) {}
+          }, 4500);
+
+          window.setTimeout(() => {
+            try {
+              if (currentUser && visibleMenuButtonCount() === 0) {
+                forceOneTimeIndexReload('empty-menu');
+              }
+            } catch (_) {}
+          }, 7000);
+        } catch (_) {}
+      }
+
       const ADMIN_ONLY_KEYS = new Set([]);
       const ADMIN_ONLY_HREFS = new Set([]);
       const ID_STORAGE_KEYS = ['rf_display_id','rf_login_id','rf_user_id','rf_user_email','rf_email'];
@@ -2126,6 +2199,7 @@
           : firstVisiblePanel();
         showPanel(desiredPanel);
         applyVisibilityOverrides();
+        if (currentUser && visibleMenuButtonCount() > 0) clearIndexAutoRecoveryFlagSoon();
       }
 
       async function refreshIndexVisibilityFromCloud(force){
@@ -2236,6 +2310,10 @@
       }
 
       async function boot(){
+        markAclLayoutLoading();
+        requestServiceWorkerUpdate();
+        scheduleAclLoadingWatchdog();
+        try {
         if (!sb) {
           chipAuth.textContent = 'Config lipsă';
           chipAuth.className = 'chip bad';
@@ -2291,6 +2369,13 @@
         await loadIndexButtonVisibilityDoc();
         await applyLayout();
         markAclLayoutReady();
+        if (visibleMenuButtonCount() > 0) clearIndexAutoRecoveryFlagSoon();
+        } catch (err) {
+          if (!forceOneTimeIndexReload('boot-error')) {
+            try { console.error('K.A.D index boot error:', err); } catch (_) {}
+            markAclLayoutReady();
+          }
+        }
       }
 
       if (btnRefresh) btnRefresh.addEventListener('click', () => window.location.reload());
@@ -2568,7 +2653,9 @@
 (function(){
   if (!("serviceWorker" in navigator)) return;
   window.addEventListener("load", function(){
-    navigator.serviceWorker.register("/service-worker.js").catch(function(err){
+    navigator.serviceWorker.register("/service-worker.js").then(function(reg){
+      try { if (reg && reg.update) reg.update(); } catch (_) {}
+    }).catch(function(err){
       console.warn("K.A.D service worker registration failed:", err);
     });
   });
