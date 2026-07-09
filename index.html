@@ -1222,6 +1222,7 @@
       let visibilityRefreshPromise = null;
       let lastVisibilityRefreshAt = 0;
       const INDEX_VISIBILITY_REFRESH_MS = 120000;
+      let controlAccessCache = new Map();
       let currentPanel = null;
       const currentInnerPanels = Object.create(null);
 
@@ -1564,59 +1565,6 @@
           return currentIndexButtonVisibilityDoc;
         }
 
-        const tableUsers = {};
-        let newestStamp = '';
-        try {
-          const allRows = await sb.from('user_index_visibility').select('email,user_id,hidden_buttons,updated_at').order('updated_at', { ascending:false }).limit(500);
-          if (!allRows.error && Array.isArray(allRows.data) && allRows.data.length) {
-            allRows.data.forEach((row) => {
-              const rowEmail = String(row && row.email || '').trim().toLowerCase();
-              const rowUserId = String(row && row.user_id || '').trim();
-              const hidden = Array.isArray(row && row.hidden_buttons) ? row.hidden_buttons.map(v => String(v || '').trim()).filter(Boolean) : [];
-              if (!hidden.length && !rowEmail && !rowUserId) return;
-              const addKey = (key) => {
-                key = String(key || '').trim();
-                if (!key) return;
-                tableUsers[key] = { hidden: hidden.slice(), account_email: rowEmail, account_user_id: rowUserId, updated_at: String(row && row.updated_at || '') };
-              };
-              addKey(rowEmail);
-              addKey(rowEmail.toLowerCase());
-              addKey(rowEmail.toUpperCase());
-              const lp = rowEmail.includes('@') ? rowEmail.split('@')[0] : rowEmail;
-              addKey(lp);
-              addKey(lp.toLowerCase());
-              addKey(lp.toUpperCase());
-              addKey(safeIdFromEmail(rowEmail));
-              addKey(rowUserId);
-              addKey(rowUserId.toLowerCase());
-              addKey(rowUserId.toUpperCase());
-              const stamp = String(row && row.updated_at || '');
-              if (stamp > newestStamp) newestStamp = stamp;
-            });
-            const sample = tableUsers[email] || tableUsers[userId] || tableUsers[localPart] || tableUsers[displayId] || null;
-            if (sample && Array.isArray(sample.hidden)) storeHiddenIndexButtons(sample.hidden, 'table-scan');
-            currentIndexButtonVisibilityDoc = { users: tableUsers, updated_at: newestStamp || new Date().toISOString() };
-            indexVisibilityLoadedFromCloud = true;
-            return currentIndexButtonVisibilityDoc;
-          }
-        } catch(_){ }
-
-        const directRows = await readVisibilityRows('index_button_visibility_v1');
-        const directDoc = pickBestVisibilityDoc(directRows, 'content', 'users') || pickBestVisibilityDoc(directRows, 'data', 'users');
-        if (directDoc) {
-          currentIndexButtonVisibilityDoc = directDoc;
-          indexVisibilityLoadedFromCloud = true;
-          return currentIndexButtonVisibilityDoc;
-        }
-
-        const mirrorRows = await readVisibilityRows('dashboard_acl_v1');
-        const mirrorDoc = pickBestVisibilityDoc(mirrorRows, 'content', 'dashboard') || pickBestVisibilityDoc(mirrorRows, 'data', 'dashboard');
-        if (mirrorDoc) {
-          currentIndexButtonVisibilityDoc = mirrorDoc;
-          indexVisibilityLoadedFromCloud = true;
-          return currentIndexButtonVisibilityDoc;
-        }
-
         const stored = readStoredHiddenIndexButtons();
         if (stored && Array.isArray(stored.hidden)) {
           currentIndexButtonVisibilityDoc = { users: { [email || userId || 'current']: { hidden: stored.hidden.slice(), account_email: stored.email || email, account_user_id: stored.user_id || userId } } };
@@ -1627,6 +1575,19 @@
         currentIndexButtonVisibilityDoc = { users:{} };
         indexVisibilityLoadedFromCloud = true;
         return currentIndexButtonVisibilityDoc;
+
+              }
+
+      async function loadAclDataForCurrentUser(){
+        const results = await Promise.all([
+          loadUserPermissionMap(currentUser),
+          loadRolePermissionMap(currentRole),
+          loadDashboardAcl(),
+          loadIndexButtonVisibilityDoc()
+        ]);
+        currentUserPermissions = results[0] || null;
+        currentRolePermissions = results[1] || null;
+        currentPermissions = currentUserPermissions || currentRolePermissions;
       }
 
       function getHiddenIndexButtonKeys(){
@@ -1843,15 +1804,27 @@
       }
 
       async function controlAllowed(controlKey){
+        const key = String(controlKey || '').trim();
         if (currentRole === 'admin') return true;
-        if (!currentUser) return controlKey === 'nav.login';
-        try {
-          if (window.RF_ACL && typeof window.RF_ACL.resolveControlAccess === 'function') {
-            const res = await window.RF_ACL.resolveControlAccess('index', controlKey, { client: sb, user: currentUser, role: currentRole });
-            return !!(res && res.can_view === true);
-          }
-        } catch (_) {}
-        return true;
+        if (!currentUser) return key === 'nav.login';
+        if (!key) return true;
+        const cacheKey = [String(currentUser && currentUser.id || currentUserEmail() || ''), String(currentRole || ''), key].join('|');
+        if (controlAccessCache.has(cacheKey)) return controlAccessCache.get(cacheKey);
+        const promise = (async () => {
+          try {
+            if (window.RF_ACL && typeof window.RF_ACL.resolveControlAccess === 'function') {
+              const res = await window.RF_ACL.resolveControlAccess('index', key, { client: sb, user: currentUser, role: currentRole });
+              return !!(res && res.can_view === true);
+            }
+          } catch (_) {}
+          return true;
+        })();
+        controlAccessCache.set(cacheKey, promise);
+        return promise;
+      }
+
+      function clearControlAccessCache(){
+        try { controlAccessCache = new Map(); } catch (_) {}
       }
 
       function hasStrictUserAcl(){
@@ -2104,6 +2077,13 @@
           if (item.type === 'page') navControlByPage[item.key] = 'nav.' + item.key;
           if (item.type === 'group') navControlByGroup[item.key] = 'nav.' + item.key;
         });
+
+        try {
+          const preloadControls = new Set(['nav.login','nav.logout','nav.helper-data','nav.helper-acl']);
+          Object.values(navControlByPage).forEach(value => { if (value) preloadControls.add(value); });
+          Object.values(navControlByGroup).forEach(value => { if (value) preloadControls.add(value); });
+          await Promise.all(Array.from(preloadControls).map(key => controlAllowed(key)));
+        } catch (_) {}
 
         const pageItems = qsa('.page-item[data-page-key]');
         for (const item of pageItems) {
@@ -2362,11 +2342,8 @@
         } catch (_) {}
 
         setupVisibilityRealtime();
-        currentUserPermissions = await loadUserPermissionMap(currentUser);
-        currentRolePermissions = await loadRolePermissionMap(currentRole);
-        currentPermissions = currentUserPermissions || currentRolePermissions;
-        await loadDashboardAcl();
-        await loadIndexButtonVisibilityDoc();
+        clearControlAccessCache();
+        await loadAclDataForCurrentUser();
         await applyLayout();
         markAclLayoutReady();
         if (visibleMenuButtonCount() > 0) clearIndexAutoRecoveryFlagSoon();
@@ -2568,11 +2545,8 @@
             }
           } catch (_) {}
           setupVisibilityRealtime();
-          currentUserPermissions = await loadUserPermissionMap(currentUser);
-          currentRolePermissions = await loadRolePermissionMap(currentRole);
-          currentPermissions = currentUserPermissions || currentRolePermissions;
-          await loadDashboardAcl();
-          await loadIndexButtonVisibilityDoc();
+          clearControlAccessCache();
+          await loadAclDataForCurrentUser();
           await applyLayout();
           markAclLayoutReady();
           try { enforceAdminOnlyButtons(); applyVisibilityOverrides(); } catch(_) {}
@@ -2590,11 +2564,8 @@
             try { localStorage.setItem('rf_cached_role', currentRole); } catch (_) {}
             try { sessionStorage.setItem('rf_cached_role', currentRole); } catch (_) {}
           try { if (currentUser?.id) { localStorage.setItem('rf_user_id', currentUser.id); sessionStorage.setItem('rf_user_id', currentUser.id); } } catch (_) {}
-            currentUserPermissions = await loadUserPermissionMap(currentUser);
-            currentRolePermissions = await loadRolePermissionMap(currentRole);
-            currentPermissions = currentUserPermissions || currentRolePermissions;
-            await loadDashboardAcl();
-            await loadIndexButtonVisibilityDoc();
+            clearControlAccessCache();
+            await loadAclDataForCurrentUser();
             await applyLayout();
             markAclLayoutReady();
           }
@@ -2610,11 +2581,8 @@
           try { localStorage.setItem('rf_cached_role', currentRole); } catch (_) {}
           try { sessionStorage.setItem('rf_cached_role', currentRole); } catch (_) {}
           try { if (currentUser?.id) { localStorage.setItem('rf_user_id', currentUser.id); sessionStorage.setItem('rf_user_id', currentUser.id); } } catch (_) {}
-          currentUserPermissions = await loadUserPermissionMap(currentUser);
-          currentRolePermissions = await loadRolePermissionMap(currentRole);
-          currentPermissions = currentUserPermissions || currentRolePermissions;
-          await loadDashboardAcl();
-          await loadIndexButtonVisibilityDoc();
+          clearControlAccessCache();
+          await loadAclDataForCurrentUser();
           await applyLayout();
           markAclLayoutReady();
           try { enforceAdminOnlyButtons(); applyVisibilityOverrides(); } catch(_) {}
