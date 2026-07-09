@@ -616,6 +616,22 @@
       line-height:1.12!important;
     }
 
+
+    /* Modal intern: Urmărire temperaturi TT - doar tabelul, fără navigare pe pagina separată */
+    .tt-tracking-modal{width:min(1500px,100%);max-height:92vh;display:flex;flex-direction:column;}
+    .tt-tracking-modal .modal-body{min-height:0;overflow:hidden;display:flex;flex-direction:column;gap:10px;}
+    .tt-tracking-wrap{min-height:0;max-height:68vh;overflow:auto;border:1px solid #6f879c;border-radius:10px;background:#fff;}
+    .tt-tracking-table{width:100%;min-width:1550px;border-collapse:collapse;background:#fff;font-size:12px;color:#000;}
+    .tt-tracking-table th,.tt-tracking-table td{border:1px solid #b7c5d2;padding:6px 8px;text-align:center;white-space:nowrap;vertical-align:middle;}
+    .tt-tracking-table th{position:sticky;top:0;z-index:2;background:#c0c0c0;color:#000;font-weight:900;}
+    .tt-tracking-table td.left{text-align:left;}
+    .tt-tracking-table tr.tt-track-nok td{background:#fff0f0;}
+    .tt-tracking-table tr.tt-track-ok td{background:#fbfffb;}
+    .tt-tracking-status-ok{font-weight:900;color:#197744;}
+    .tt-tracking-status-nok{font-weight:900;color:#9a2c2c;}
+    .tt-tracking-empty{padding:24px;text-align:center;color:#4d647a;font-weight:900;}
+    .tt-tracking-tools{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;}
+
 </style>
 </head>
 <body class="loading">
@@ -1047,6 +1063,33 @@
 </div>
 </div>
 </div>
+<div class="modal-backdrop" id="trackingTTModal">
+<div class="modal tt-tracking-modal">
+<div class="modal-head">
+<h2>Urmărire temperaturi TT</h2>
+<div class="modal-subtitle">Tabel valori salvate din fișa autocontrol tratament termic</div>
+</div>
+<div class="modal-body">
+<div class="tt-tracking-tools">
+<span class="chip warn" id="trackingTTMsg">Se încarcă tabelul...</span>
+<button class="btn secondary" id="btnRefreshTrackingTT" type="button">Reîncarcă tabel</button>
+</div>
+<div class="tt-tracking-wrap">
+<table class="tt-tracking-table" aria-label="Urmărire temperaturi TT">
+<thead><tr>
+<th>Data</th><th>Ora</th><th>Sch.</th><th>Reper</th><th>Slot</th><th>Șarja/COD CAT</th><th>Operator T.T.</th><th>Nr.</th>
+<th>Aust. Z1</th><th>Aust. Z2</th><th>Aust. Z3</th><th>Aust. Z4</th><th>Bazin călire</th><th>Duritate HRC</th><th>Temp. reman.</th><th>% Polimer</th><th>Timp scuf.</th><th>Rev. Z1</th><th>Rev. Z2</th><th>Bazin răcire</th><th>Status</th>
+</tr></thead>
+<tbody id="trackingTTBody"></tbody>
+</table>
+</div>
+</div>
+<div class="modal-footer">
+<button class="btn secondary" id="btnCloseTrackingTT" type="button">Închide</button>
+</div>
+</div>
+</div>
+
 <script>
     (function(){
       'use strict';
@@ -5678,6 +5721,94 @@
         fitSheet();
       }
 
+
+      function trackingModalValue(row, key){
+        var v = row && row.values && row.values[key];
+        if(v && typeof v === 'object') return v.text == null ? '' : String(v.text);
+        return v == null ? '' : String(v);
+      }
+      function trackingModalLimitStatus(row, key){
+        var l = row && row.limits && row.limits[key];
+        return l && l.status ? String(l.status) : '';
+      }
+      function trackingModalIsNok(row){
+        if(String(row && row.status || '').toUpperCase() === 'NOK') return true;
+        return TT_PARAM_KEYS.some(function(key){
+          var l = row && row.limits && row.limits[key];
+          return !!(l && l.ok === false);
+        });
+      }
+      function trackingModalSort(a,b){
+        var ak = String(a && a.date_iso || '') + ' ' + String(a && a.ora_ctrl || '') + ' ' + String(a && a.reper || '') + ' ' + String(a && a.nr_crt || '');
+        var bk = String(b && b.date_iso || '') + ' ' + String(b && b.ora_ctrl || '') + ' ' + String(b && b.reper || '') + ' ' + String(b && b.nr_crt || '');
+        return ak.localeCompare(bk, 'ro', { numeric:true });
+      }
+      async function loadTrackingRowsForModal(){
+        var remoteRows = [];
+        var localRows = [];
+        try{
+          var remoteDoc = await fetchDoc(TRACKING_DOC_KEY);
+          remoteRows = Array.isArray(remoteDoc && remoteDoc.rows) ? remoteDoc.rows : [];
+        }catch(error){
+          console.warn('Nu am putut citi urmărirea TT din cloud pentru fereastra internă.', error);
+        }
+        try{
+          var localDoc = readTrackingLocalDoc();
+          localRows = Array.isArray(localDoc && localDoc.rows) ? localDoc.rows : [];
+        }catch(_){ localRows = []; }
+        var merged = mergeTrackingRows(remoteRows, localRows, '');
+        try{
+          var currentRows = collectTrackingRows();
+          if(currentRows && currentRows.length) merged = mergeTrackingRows(merged, currentRows, getTrackingSessionId());
+        }catch(error){
+          console.warn('Nu am putut include valorile curente nesalvate în fereastra de urmărire TT.', error);
+        }
+        merged.sort(trackingModalSort);
+        return merged;
+      }
+      function renderTrackingTTModalTable(rows){
+        if(!els.trackingTTBody) return;
+        rows = Array.isArray(rows) ? rows : [];
+        if(!rows.length){
+          els.trackingTTBody.innerHTML = '<tr><td colspan="21" class="tt-tracking-empty">Nu există înregistrări salvate în urmărirea temperaturilor TT.</td></tr>';
+          setChip(els.trackingTTMsg, '0 înregistrări', 'warn');
+          return;
+        }
+        els.trackingTTBody.innerHTML = rows.map(function(row){
+          var nok = trackingModalIsNok(row);
+          var cells = TT_PARAM_KEYS.map(function(key){
+            var title = trackingModalLimitStatus(row, key);
+            return '<td title="' + escHtml(title) + '">' + escHtml(trackingModalValue(row, key)) + '</td>';
+          }).join('');
+          return '<tr class="' + (nok ? 'tt-track-nok' : 'tt-track-ok') + '">' +
+            '<td>' + escHtml(row.date_text || dateRo(row.date_iso)) + '</td>' +
+            '<td>' + escHtml(row.ora_ctrl || '') + '</td>' +
+            '<td>' + escHtml(row.shift || '') + '</td>' +
+            '<td class="left">' + escHtml(row.reper || '') + '</td>' +
+            '<td>' + escHtml(row.reper_slot || '') + '</td>' +
+            '<td>' + escHtml(row.sarja || row.filter_sarja || row.cod_cat || '') + '</td>' +
+            '<td class="left">' + escHtml(row.operator_tt || '') + '</td>' +
+            '<td>' + escHtml(row.nr_crt || '') + '</td>' +
+            cells +
+            '<td class="' + (nok ? 'tt-tracking-status-nok' : 'tt-tracking-status-ok') + '">' + (nok ? 'NOK' : 'OK') + '</td>' +
+            '</tr>';
+        }).join('');
+        setChip(els.trackingTTMsg, rows.length + ' înregistrări', rows.length ? 'ok' : 'warn');
+      }
+      async function openTrackingTTModal(){
+        if(!els.trackingTTModal) return;
+        els.trackingTTModal.classList.add('show');
+        setChip(els.trackingTTMsg, 'Se încarcă tabelul...', 'warn');
+        try{
+          var rows = await loadTrackingRowsForModal();
+          renderTrackingTTModalTable(rows);
+        }catch(error){
+          console.error(error);
+          setChip(els.trackingTTMsg, 'Eroare la încărcarea tabelului', 'bad');
+          if(els.trackingTTBody) els.trackingTTBody.innerHTML = '<tr><td colspan="21" class="tt-tracking-empty">Nu am putut încărca tabelul de urmărire temperaturi TT.</td></tr>';
+        }
+      }
+
       function bindActions(){
         if(els.btnBack) els.btnBack.addEventListener('click', function(event){
           if(isTratamentOperatorUiAccount()){
@@ -5692,7 +5823,7 @@
         if(els.btnClear) els.btnClear.addEventListener('click', clearDraft);
         if(els.btnPinAdmin) els.btnPinAdmin.addEventListener('click', openPinAdmin);
         if(els.btnTempSettings) els.btnTempSettings.addEventListener('click', function(){ openTempSettings().catch(function(err){ alert('Nu am putut deschide setarea temperaturilor: ' + (err && err.message || err)); }); });
-        if(els.btnTrackingTT) els.btnTrackingTT.addEventListener('click', function(){ window.location.href = 'urmarire-temperaturi-tt.html'; });
+        if(els.btnTrackingTT) els.btnTrackingTT.addEventListener('click', function(){ openTrackingTTModal().catch(function(err){ alert('Nu am putut deschide urmărirea temperaturilor TT: ' + (err && err.message || err)); }); });
         if(els.btnOperatorSheets) els.btnOperatorSheets.addEventListener('click', function(){ openOperatorSheets().catch(function(err){ alert('Nu am putut deschide fișele operatorilor: ' + (err && err.message || err)); }); });
         if(els.btnBackToAdminSheet) els.btnBackToAdminSheet.addEventListener('click', function(){ returnToAdminSheet().catch(function(err){ alert('Nu am putut reveni la fișa admin: ' + (err && err.message || err)); }); });
         if(els.btnSaveAdminChanges) els.btnSaveAdminChanges.addEventListener('click', async function(){
@@ -5719,6 +5850,8 @@
         if(els.btnClosePinAdmin) els.btnClosePinAdmin.addEventListener('click', function(){ if(els.pinAdminModal) els.pinAdminModal.classList.remove('show'); });
         if(els.btnCloseTempSettings) els.btnCloseTempSettings.addEventListener('click', function(){ if(els.tempSettingsModal) els.tempSettingsModal.classList.remove('show'); });
         if(els.btnCloseOperatorSheets) els.btnCloseOperatorSheets.addEventListener('click', function(){ if(els.operatorSheetsModal) els.operatorSheetsModal.classList.remove('show'); });
+        if(els.btnCloseTrackingTT) els.btnCloseTrackingTT.addEventListener('click', function(){ if(els.trackingTTModal) els.trackingTTModal.classList.remove('show'); });
+        if(els.btnRefreshTrackingTT) els.btnRefreshTrackingTT.addEventListener('click', function(){ openTrackingTTModal().catch(function(err){ setChip(els.trackingTTMsg, 'Eroare la reîncărcare', 'bad'); console.warn(err); }); });
         if(els.btnRefreshOperatorSheets) els.btnRefreshOperatorSheets.addEventListener('click', function(){ loadOperatorSheets(true).then(renderOperatorSheetsList).catch(function(err){ setChip(els.operatorSheetsMsg, 'Eroare la reîncărcare', 'bad'); console.warn(err); }); });
         if(els.operatorSheetsSearch) els.operatorSheetsSearch.addEventListener('input', renderOperatorSheetsList);
         if(els.btnAddTempRow) els.btnAddTempRow.addEventListener('click', function(){ addTempSettingsRow(''); });
@@ -5806,6 +5939,11 @@
         els.btnRefreshOperatorSheets = qs('btnRefreshOperatorSheets');
         els.btnExportOperatorSheetsPdf = qs('btnExportOperatorSheetsPdf');
         els.btnCloseOperatorSheets = qs('btnCloseOperatorSheets');
+        els.trackingTTModal = qs('trackingTTModal');
+        els.trackingTTBody = qs('trackingTTBody');
+        els.trackingTTMsg = qs('trackingTTMsg');
+        els.btnCloseTrackingTT = qs('btnCloseTrackingTT');
+        els.btnRefreshTrackingTT = qs('btnRefreshTrackingTT');
 
         els.ttReportStatus = qs('ttReportStatus');
         els.ttReportSlot = qs('ttReportSlot');
