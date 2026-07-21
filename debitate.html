@@ -3303,16 +3303,23 @@ function setAutofillReadonly(isReadonly){
       schimbul: Math.trunc(schimb),
       operator: oper,
       oreLucrate: Number.isFinite(ore) ? ore : 8.0,
-      weekNr: isoWeekNumber(dataIso)
+      weekNr: isoWeekNumber(dataIso),
+      // Protejează editarea făcută direct în DEBITATE față de resincronizarea
+      // automată a rândurilor provenite din fișa Operator Debitare.
+      debitateManualOverride: true,
+      debitateManualOverrideAt: new Date().toISOString()
     };
     recalcRow(updatedRow);
 
     if (targetYear === sourceYear){
       const idx = rows.findIndex(x => x.id === editingRowId);
       if (idx >= 0) rows[idx] = updatedRow;
-      saveYearLocal(sourceYear, rows);
+      rows = saveYearLocal(sourceYear, rows);
+      selectedRowId = updatedRow.id;
       scheduleSave(sourceYear);
-      setTimeout(() => renderBody(), 0);
+      renderBody();
+      refreshSummaryTable();
+      refreshSarjaWarningTable();
     } else {
       removeRowFromYear(sourceYear, editingRowId);
       upsertRowIntoYear(targetYear, updatedRow);
@@ -4194,6 +4201,14 @@ function setAutofillReadonly(isReadonly){
     return sortRowsByDateAsc(out);
   }
 
+  function rfStableJson(value){
+    if (Array.isArray(value)) return '[' + value.map(rfStableJson).join(',') + ']';
+    if (value && typeof value === 'object'){
+      return '{' + Object.keys(value).sort().map(key => JSON.stringify(key) + ':' + rfStableJson(value[key])).join(',') + '}';
+    }
+    return JSON.stringify(value);
+  }
+
   function rfMergeOperatorDebitareRows(baseRows, operatorRows){
     const base = Array.isArray(baseRows) ? baseRows : [];
     const op = Array.isArray(operatorRows) ? operatorRows : [];
@@ -4202,6 +4217,7 @@ function setAutofillReadonly(isReadonly){
 
     const fisaKeys = new Set(op.map(r => r && r.fisaKey).filter(Boolean));
     const opIds = new Set(op.map(r => r && r.id).filter(Boolean));
+    const existingById = new Map(base.filter(r => r && r.id).map(r => [r.id, r]));
 
     const cleaned = base.filter(r => {
       if (!r || typeof r !== 'object') return false;
@@ -4210,8 +4226,26 @@ function setAutofillReadonly(isReadonly){
       return true;
     });
 
-    const merged = sortRowsByDateAsc(cleaned.concat(op));
-    const changed = merged.length !== base.length || op.some(r => !base.some(x => x && x.id === r.id));
+    const operatorRowsResolved = op.map(operatorRow => {
+      const existing = operatorRow && operatorRow.id ? existingById.get(operatorRow.id) : null;
+      if (!existing || existing.debitateManualOverride !== true) return operatorRow;
+
+      // Rândul a fost editat explicit în DEBITATE. Păstrăm valorile editate,
+      // dar menținem legătura tehnică cu fișa Operator Debitare.
+      const preserved = {
+        ...operatorRow,
+        ...existing,
+        id: operatorRow.id,
+        fisaKey: operatorRow.fisaKey || existing.fisaKey || '',
+        source: 'operator-debitare',
+        debitateManualOverride: true
+      };
+      recalcRow(preserved);
+      return preserved;
+    });
+
+    const merged = sortRowsByDateAsc(cleaned.concat(operatorRowsResolved));
+    const changed = rfStableJson(merged) !== rfStableJson(base);
     return { rows: merged, changed };
   }
 
