@@ -1537,7 +1537,8 @@
         yearMeta: {},
         dirtyYearsSet: new Set(),
         cloudIndexState: { years:[String(CURRENT_YEAR)], updated_at_by_year:{} },
-        sessionEditedYears: new Set()
+        sessionEditedYears: new Set(),
+        yearFilterInitialized: false
       };
 
       function showToast(message){
@@ -1604,16 +1605,15 @@
           if(!parsed || typeof parsed !== 'object') return;
           state.filters = sanitizeUiFilters(parsed.filters);
           state.supplierSummaryFilters = sanitizeUiSupplierFilters(parsed.supplierSummaryFilters);
-          const restoredYear = normalizeYearValue(parsed.activeYear || state.filters.an);
-          if(restoredYear){
-            state.activeYear = restoredYear;
-            state.filters.an = restoredYear;
-          }else if(!state.filters.an){
-            state.filters.an = state.activeYear;
+          if(Object.prototype.hasOwnProperty.call(parsed.filters || {}, 'an')){
+            state.yearFilterInitialized = true;
+            state.filters.an = rfFilterToArray(state.filters.an).map(normalizeYearValue).filter(Boolean);
           }
+          const restoredFilterYears = rfFilterToArray(state.filters.an).map(normalizeYearValue).filter(Boolean);
+          const restoredYear = normalizeYearValue(parsed.activeYear) || restoredFilterYears[restoredFilterYears.length - 1];
+          if(restoredYear) state.activeYear = restoredYear;
         }catch(_err){
           state.filters = state.filters && typeof state.filters === 'object' ? state.filters : {};
-          state.filters.an = state.activeYear;
         }
       }
 
@@ -2109,7 +2109,10 @@
       function updateActiveRowsFromCache(year){
         const y = ensureYearInIndex(year || state.activeYear);
         state.activeYear = y;
-        state.filters.an = y;
+        if(!state.yearFilterInitialized){
+          state.filters.an = [y];
+          state.yearFilterInitialized = true;
+        }
         state.rows = sortRowsByDateInPlace(getRowsForYear(y));
         state.lastCloudUpdatedAt = state.yearMeta[y] && state.yearMeta[y].updated_at ? state.yearMeta[y].updated_at : null;
         refreshDirtyFlag();
@@ -2125,6 +2128,32 @@
           if(list.some(row => row.id === id)) return year;
         }
         return '';
+      }
+
+      function findRowByIdAcrossYears(id){
+        if(!id) return null;
+        const year = findYearOfRowId(id);
+        if(!year) return null;
+        return getRowsForYear(year).find(row => row.id === id) || null;
+      }
+
+      function getSelectedMainYears(){
+        const selected = rfFilterToArray(state.filters.an).map(normalizeYearValue).filter(Boolean);
+        return selected.length ? sortYearsAsc(selected) : getKnownYears();
+      }
+
+      function getRowsForMainTable(){
+        const out = [];
+        getSelectedMainYears().forEach(year => out.push(...getRowsForYear(year)));
+        return sortRowsByDateInPlace(out);
+      }
+
+      async function ensureMainYearsLoaded(years){
+        const targets = sortYearsAsc((Array.isArray(years) && years.length ? years : getKnownYears()));
+        for(const year of targets){
+          await ensureSummaryYearLoaded(year);
+        }
+        return targets;
       }
 
       function buildCloudIndexPayload(){
@@ -2826,6 +2855,7 @@
         el.tableHead.innerHTML = '';
         el.tableHead.appendChild(head1);
         el.tableHead.appendChild(head2);
+        columns.forEach(col => rfUpdateColumnFilterButton(col.key));
       }
 
       function formatCell(row, col){
@@ -2912,7 +2942,7 @@
         }
         const col = columns.find(c => c.key === key) || { key };
         const values = new Map();
-        (Array.isArray(state.rows) ? state.rows : []).forEach(row => {
+        getRowsForMainTable().forEach(row => {
           const value = String(formatCell(row, col) == null ? '' : formatCell(row, col)).trim();
           const norm = rfMfNorm(value);
           if(value && !values.has(norm)) values.set(norm, value);
@@ -2929,12 +2959,7 @@
         const btn = document.querySelector('.kad-mf-btn[data-key="' + safeKey + '"]');
         if(!btn) return;
         const selected = rfFilterToArray(state.filters[key]);
-        if(key === 'an'){
-          const activeYear = normalizeYearValue(selected[0]) || normalizeYearValue(state.activeYear) || String(CURRENT_YEAR);
-          btn.textContent = activeYear;
-          btn.title = `An activ: ${activeYear}`;
-          return;
-        }
+        if(key === 'an' && !selected.length){ btn.textContent = 'Toți anii'; btn.title = 'Toți anii'; return; }
         if(!selected.length){ btn.textContent = 'Toate'; btn.title = btn.dataset.label || key; }
         else if(selected.length === 1){ btn.textContent = selected[0]; btn.title = selected[0]; }
         else { btn.textContent = selected.length + ' selectate'; btn.title = selected.join(', '); }
@@ -2953,8 +2978,8 @@
         const top = Math.min(rect.bottom + 4, Math.max(6, window.innerHeight - 330));
         menu.style.left = left + 'px';
         menu.style.top = top + 'px';
-        const clearLabel = key === 'an' ? '' : 'Toate';
-        menu.innerHTML = '<div class="kad-mf-menu-head"><span>' + escapeHtml(label) + '</span><span class="kad-mf-clear" tabindex="0"' + (key === 'an' ? ' style="display:none"' : '') + '>' + clearLabel + '</span></div><input class="kad-mf-search" type="text" placeholder="Caută..."><div class="kad-mf-list"></div>';
+        const clearLabel = key === 'an' ? 'Toți anii' : 'Toate';
+        menu.innerHTML = '<div class="kad-mf-menu-head"><span>' + escapeHtml(label) + '</span><span class="kad-mf-clear" tabindex="0">' + clearLabel + '</span></div><input class="kad-mf-search" type="text" placeholder="Caută..."><div class="kad-mf-list"></div>';
         document.body.appendChild(menu);
         rfOpenMfMenu = menu;
         const list = menu.querySelector('.kad-mf-list');
@@ -2969,27 +2994,30 @@
           }).join('');
           list.querySelectorAll('input[type="checkbox"]').forEach(input => {
             input.addEventListener('change', () => {
+              if(input.checked) selected.add(rfMfNorm(input.value)); else selected.delete(rfMfNorm(input.value));
+              state.filters[key] = values.filter(v => selected.has(rfMfNorm(v)));
               if(key === 'an'){
-                if(!input.checked){
-                  input.checked = true;
-                  return;
+                state.yearFilterInitialized = true;
+                const selectedYears = rfFilterToArray(state.filters.an).map(normalizeYearValue).filter(Boolean);
+                if(input.checked){
+                  const wantedYear = normalizeYearValue(input.value);
+                  if(wantedYear) state.activeYear = wantedYear;
+                }else if(selectedYears.length && !selectedYears.includes(normalizeYearValue(state.activeYear))){
+                  state.activeYear = selectedYears[selectedYears.length - 1];
                 }
-                const wantedYear = normalizeYearValue(input.value);
-                if(!wantedYear) return;
-                selected.clear();
-                selected.add(rfMfNorm(wantedYear));
-                state.filters.an = wantedYear;
-                rfUpdateColumnFilterButton('an');
+                rfUpdateColumnFilterButton(key);
                 persistUiState();
-                rfCloseColumnFilterMenu();
-                switchActiveYear(wantedYear, { allowCloud:true }).catch(() => {
-                  setSyncBadge('Nu am putut încărca anul cerut', 'err');
-                  showToast('Anul selectat nu a putut fi încărcat.');
+                setSyncBadge('Încarc anii selectați...', 'warn');
+                ensureMainYearsLoaded(selectedYears.length ? selectedYears : getKnownYears()).then(() => {
+                  updateActiveRowsFromCache(state.activeYear);
+                  renderAll();
+                  setSyncBadge('Pregătit', state.dirty ? 'warn' : 'ok');
+                }).catch(() => {
+                  setSyncBadge('Nu am putut încărca anii selectați', 'err');
+                  showToast('Unul dintre anii selectați nu a putut fi încărcat.');
                 });
                 return;
               }
-              if(input.checked) selected.add(rfMfNorm(input.value)); else selected.delete(rfMfNorm(input.value));
-              state.filters[key] = values.filter(v => selected.has(rfMfNorm(v)));
               rfUpdateColumnFilterButton(key);
               persistUiState();
               state.forceScrollToBottom = true;
@@ -3003,10 +3031,19 @@
         search.addEventListener('input', () => renderList(search.value));
         menu.querySelector('.kad-mf-clear').addEventListener('click', () => {
           state.filters[key] = [];
+          if(key === 'an') state.yearFilterInitialized = true;
           rfUpdateColumnFilterButton(key);
           rfCloseColumnFilterMenu();
           persistUiState();
           state.forceScrollToBottom = true;
+          if(key === 'an'){
+            setSyncBadge('Încarc toți anii...', 'warn');
+            ensureMainYearsLoaded(getKnownYears()).then(() => {
+              renderAll();
+              setSyncBadge('Pregătit', state.dirty ? 'warn' : 'ok');
+            }).catch(() => setSyncBadge('Nu am putut încărca toți anii', 'err'));
+            return;
+          }
           renderBody();
           renderKodFlSummary(filteredRows());
           renderDefectFilterSummary(filteredRows());
@@ -3019,7 +3056,7 @@
       document.addEventListener('keydown', event => { if(event.key === 'Escape') rfCloseColumnFilterMenu(); });
 
       function filteredRows(){
-        return sortRowsByDateInPlace(state.rows.filter(row => {
+        return sortRowsByDateInPlace(getRowsForMainTable().filter(row => {
           return columns.every(col => {
             const f = state.filters[col.key];
             if(!rfColumnFilterActive(f)) return true;
@@ -3917,7 +3954,9 @@ ${Array.isArray(metaRows) && metaRows.length ? `<h4>Filtre</h4>${htmlTableFromRo
         const dirtyYears = sortYearsAsc(Array.from(state.dirtyYearsSet));
         const dirtyYearsText = dirtyYears.length ? ` · ani modificați: ${dirtyYears.join(', ')}` : '';
         const cloudText = state.lastCloudUpdatedAt ? `ultima versiune: ${new Date(state.lastCloudUpdatedAt).toLocaleString('ro-RO')}` : 'ultima versiune: încă neluată';
-        el.gridMeta.textContent = `An activ: ${state.activeYear} · sursă activă: ${state.sourceLabel} · ${dirtyText}${dirtyYearsText} · ${cloudText} · total rânduri: ${total}`;
+        const selectedYears = getSelectedMainYears();
+        const selectedText = selectedYears.length ? selectedYears.join(', ') : state.activeYear;
+        el.gridMeta.textContent = `Ani afișați: ${selectedText} · an activ pentru adăugare: ${state.activeYear} · sursă activă: ${state.sourceLabel} · ${dirtyText}${dirtyYearsText} · ${cloudText} · rânduri an activ: ${total}`;
       }
 
       function renderAll(){
@@ -3960,7 +3999,7 @@ ${Array.isArray(metaRows) && metaRows.length ? `<h4>Filtre</h4>${htmlTableFromRo
 
       function openEditor(id){
         refreshDatalists();
-        const row = id ? clone(state.rows.find(r => r.id === id)) : defaultRow();
+        const row = id ? clone(findRowByIdAcrossYears(id)) : defaultRow();
         state.editorId = id ? row.id : null;
         fillForm(row);
         el.modalTitle.textContent = id ? 'Editează înregistrare MAGNAFLUX' : 'Adaugă înregistrare MAGNAFLUX';
@@ -4016,7 +4055,7 @@ ${Array.isArray(metaRows) && metaRows.length ? `<h4>Filtre</h4>${htmlTableFromRo
       function formSnapshot(){
         return computeDerived({
           id: state.editorId || uuid(),
-          created_at: (state.rows.find(r => r.id === state.editorId) || {}).created_at || new Date().toISOString(),
+          created_at: (findRowByIdAcrossYears(state.editorId) || {}).created_at || new Date().toISOString(),
           data: el.fData.value || nowIsoDate(),
           an: Number(el.fAn.value || 0),
           luna: el.fLuna.value || '',
@@ -4097,7 +4136,9 @@ ${Array.isArray(metaRows) && metaRows.length ? `<h4>Filtre</h4>${htmlTableFromRo
 
           touchedYears.push(sourceYear, targetYear);
           state.activeYear = targetYear;
-          state.filters.an = targetYear;
+          if(Array.isArray(state.filters.an) && state.filters.an.length && !state.filters.an.includes(targetYear)){
+            state.filters.an = sortYearsAsc(state.filters.an.concat([targetYear]));
+          }
           state.rows = getRowsForYear(targetYear);
         }
 
@@ -4945,7 +4986,12 @@ ${Array.isArray(metaRows) && metaRows.length ? `<h4>Filtre</h4>${htmlTableFromRo
           await resolvePermissions();
           await loadHelperData();
           await mergeCloudIndex();
-          await switchActiveYear(state.activeYear, { allowCloud:true, silent:true });
+          const preferredMainYear = normalizeYearValue(state.activeYear) || String(CURRENT_YEAR);
+          const initialMainYears = getSelectedMainYears();
+          for(const year of initialMainYears){
+            await switchActiveYear(year, { allowCloud:true, silent:true });
+          }
+          await switchActiveYear(initialMainYears.includes(preferredMainYear) ? preferredMainYear : (initialMainYears[initialMainYears.length - 1] || preferredMainYear), { allowCloud:true, silent:true });
           await loadIntrariLookup(true);
 
           renderAll();

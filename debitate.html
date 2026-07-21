@@ -474,6 +474,7 @@
     .kad-mf-option:hover{background:#eaf4ff;}
     .kad-mf-option input{width:auto;height:auto;margin:0;accent-color:#2b6cb0;}
     .kad-mf-empty{padding:8px 6px;color:#64748b;font-size:12px;}
+    #fltYear[multiple]{min-height:76px;padding:4px 6px;}
 
 </style>
 
@@ -807,7 +808,7 @@ body.rf-access-denied-body{
         <div class="grid2">
           <div class="field">
             <label for="fltYear">An</label>
-            <select id="fltYear"></select>
+            <select id="fltYear" multiple size="3" title="Poți selecta mai mulți ani simultan"></select>
           </div>
           <div class="field">
             <label for="fltMonth">Lună</label>
@@ -1041,6 +1042,8 @@ body.rf-access-denied-body{
   let availableYears = [];
   let yearCache = {};
   let rows = [];
+  const MAIN_YEAR_FILTER_STORAGE_KEY = 'DEBITATE_main_year_filter_v1';
+  let mainYearFilterInitialized = false;
   let filters = null; // filters removed (add via modal only)
   let saveTimer = null;
 
@@ -2084,6 +2087,79 @@ function setAutofillReadonly(isReadonly){
     if (!years.size) years.add(normalizeYearValue(activeYear) || String(CURRENT_YEAR));
     return Array.from(years).sort((a,b)=> Number(a)-Number(b));
   }
+
+  function uniqueYears(values){
+    return Array.from(new Set((values || []).map(normalizeYearValue).filter(Boolean))).sort((a,b)=>Number(a)-Number(b));
+  }
+
+  function getSelectedMainYears(){
+    const selected = uniqueYears(COL_FILTERS && COL_FILTERS.an);
+    if(selected.length) return selected;
+    if(mainYearFilterInitialized) return getKnownYears();
+    return [normalizeYearValue(activeYear) || String(CURRENT_YEAR)];
+  }
+
+  function getMainSourceRows(){
+    const out = [];
+    getSelectedMainYears().forEach(year => out.push(...getRowsForYear(year)));
+    return sortRowsByDateAsc(out);
+  }
+
+  function persistMainYearSelection(){
+    try{ localStorage.setItem(MAIN_YEAR_FILTER_STORAGE_KEY, JSON.stringify({ initialized:mainYearFilterInitialized, years:uniqueYears(COL_FILTERS.an) })); }catch(_e){}
+  }
+
+  function restoreMainYearSelection(){
+    try{
+      const parsed = JSON.parse(localStorage.getItem(MAIN_YEAR_FILTER_STORAGE_KEY) || 'null');
+      if(parsed && parsed.initialized){
+        mainYearFilterInitialized = true;
+        COL_FILTERS.an = uniqueYears(parsed.years);
+        return;
+      }
+    }catch(_e){}
+    mainYearFilterInitialized = true;
+    COL_FILTERS.an = [normalizeYearValue(activeYear) || String(CURRENT_YEAR)];
+  }
+
+  function syncMainYearSelect(){
+    const sel = $("fltYear");
+    if(!sel) return;
+    const selected = new Set(getSelectedMainYears());
+    Array.from(sel.options || []).forEach(opt => { opt.selected = selected.has(normalizeYearValue(opt.value)); });
+  }
+
+  function findRowLocationById(rowId){
+    const id = String(rowId || '');
+    if(!id) return null;
+    for(const year of getKnownYears()){
+      const list = getRowsForYear(year);
+      const index = list.findIndex(row => String(row && row.id || '') === id);
+      if(index >= 0) return { year, index, row:list[index] };
+    }
+    return null;
+  }
+
+  async function applyMainYearSelection(years, options={}){
+    mainYearFilterInitialized = true;
+    COL_FILTERS.an = uniqueYears(years);
+    const targets = COL_FILTERS.an.length ? COL_FILTERS.an : getKnownYears();
+    for(const year of targets){
+      if(window.rfEnsureYearLoaded) await window.rfEnsureYearLoaded(year, { preferCloud: options.preferCloud !== false });
+      else loadYearLocal(year);
+    }
+    if(COL_FILTERS.an.length){
+      const preferred = normalizeYearValue(options.activeYear) || COL_FILTERS.an[COL_FILTERS.an.length - 1];
+      setActiveYearLocal(preferred);
+    }
+    persistMainYearSelection();
+    refreshFilterUI(true);
+    syncMainYearSelect();
+    autoScrollBottom = true;
+    renderBody();
+    refreshSummaryTable();
+    refreshSarjaWarningTable();
+  }
   function hydrateYearRows(year, arr){
     const y = normalizeYearValue(year) || String(CURRENT_YEAR);
     const out = Array.isArray(arr) ? arr.map(r => ({ ...r })) : [];
@@ -2313,10 +2389,8 @@ function setAutofillReadonly(isReadonly){
   }
 
   function getFilteredRows(){
-    const ySel = ($("fltYear")?.value || "").trim();
     const mSel = monthLower(($("fltMonth")?.value || "").trim());
-    return rows.filter(r => {
-      if (ySel && String(r.an ?? "").trim() !== ySel) return false;
+    return getMainSourceRows().filter(r => {
       if (mSel && monthLower(r.luna) !== mSel) return false;
 
       // col filters
@@ -2353,8 +2427,9 @@ function setAutofillReadonly(isReadonly){
   }
 
   function rfUniqueColumnValues(key){
+    if(key === 'an') return getKnownYears().slice().sort((a,b)=>Number(b)-Number(a));
     const set = new Map();
-    (Array.isArray(rows) ? rows : []).forEach(row => {
+    getMainSourceRows().forEach(row => {
       const value = rfDisplayValue(row, key);
       const k = rfNorm(value);
       if (value && !set.has(k)) set.set(k, value);
@@ -2385,8 +2460,8 @@ function setAutofillReadonly(isReadonly){
     const selected = Array.isArray(COL_FILTERS[key]) ? COL_FILTERS[key] : [];
     const col = rfColumnMeta(key);
     if (!selected.length) {
-      btn.textContent = 'Toate';
-      btn.title = col.label || key;
+      btn.textContent = key === 'an' ? 'Toți anii' : 'Toate';
+      btn.title = key === 'an' ? 'Toți anii' : (col.label || key);
     } else if (selected.length === 1) {
       btn.textContent = selected[0];
       btn.title = selected[0];
@@ -2410,7 +2485,7 @@ function setAutofillReadonly(isReadonly){
     menu.style.left = left + 'px';
     menu.style.top = top + 'px';
     menu.innerHTML = `
-      <div class="kad-mf-menu-head"><span>${String(col.label || key).replace(/</g,'&lt;')}</span><span class="kad-mf-clear" tabindex="0">Toate</span></div>
+      <div class="kad-mf-menu-head"><span>${String(col.label || key).replace(/</g,'&lt;')}</span><span class="kad-mf-clear" tabindex="0">${key === 'an' ? 'Toți anii' : 'Toate'}</span></div>
       <input class="kad-mf-search" type="text" placeholder="Caută...">
       <div class="kad-mf-list"></div>
     `;
@@ -2434,6 +2509,10 @@ function setAutofillReadonly(isReadonly){
           else selected.delete(rfNorm(inp.value));
           COL_FILTERS[key] = values.filter(v => selected.has(rfNorm(v)));
           rfUpdateColumnFilterButton(key);
+          if(key === 'an'){
+            applyMainYearSelection(COL_FILTERS.an, { preferCloud:true, activeYear: inp.checked ? inp.value : '' });
+            return;
+          }
           autoScrollBottom = true;
           renderBody();
           refreshSummaryTable();
@@ -2447,6 +2526,10 @@ function setAutofillReadonly(isReadonly){
       COL_FILTERS[key] = [];
       rfUpdateColumnFilterButton(key);
       rfCloseColumnFilterMenu();
+      if(key === 'an'){
+        applyMainYearSelection([], { preferCloud:true });
+        return;
+      }
       autoScrollBottom = true;
       renderBody();
       refreshSummaryTable();
@@ -2482,7 +2565,7 @@ function setAutofillReadonly(isReadonly){
   }
   function uniqMonthsAll(){
     const ms = new Set();
-    rows.forEach(r => {
+    getMainSourceRows().forEach(r => {
       const m = monthLower(r.luna);
       if (m) ms.add(m);
     });
@@ -2516,15 +2599,11 @@ function setAutofillReadonly(isReadonly){
     const years = uniqYears();
     if (!ySel || !mSel) return;
 
-    const prevY = normalizeYearValue(ySel.value);
-    setSelectOptions(ySel, years, "(toți anii)");
+    const selectedYears = new Set(getSelectedMainYears());
+    ySel.innerHTML = years.map(year => `<option value="${year}">${year}</option>`).join('');
+    Array.from(ySel.options || []).forEach(opt => { opt.selected = selectedYears.has(normalizeYearValue(opt.value)); });
 
-    // restore year selection if desired
-    if (preserve && years.includes(prevY)) ySel.value = prevY;
-    else ySel.value = normalizeYearValue(activeYear) || "";
-
-    // months depend on year
-    const months = ySel.value ? uniqMonthsForYear(ySel.value) : uniqMonthsAll();
+    const months = uniqMonthsAll();
     const prevM = mSel.value;
     setSelectOptions(mSel, months, "(toate lunile)");
     if (preserve && months.includes(monthLower(prevM))) mSel.value = monthLower(prevM);
@@ -2542,12 +2621,12 @@ function setAutofillReadonly(isReadonly){
   }
 
   function resetUIFilters(){
-    if ($("fltYear")) $("fltYear").value = "";
     if ($("fltMonth")) $("fltMonth").value = "";
     Object.keys(COL_FILTERS).forEach(k => { COL_FILTERS[k] = []; rfUpdateColumnFilterButton(k); });
+    mainYearFilterInitialized = true;
+    persistMainYearSelection();
     rfCloseColumnFilterMenu();
-    refreshFilterUI(true);
-    applyUIFilters();
+    applyMainYearSelection([], { preferCloud:true });
   }
 
   // ===== SUMMARY (independent) =====
@@ -2976,7 +3055,7 @@ function setAutofillReadonly(isReadonly){
     body.innerHTML = "";
 
     // normalize and recalc
-    rows.forEach(r => recalcRow(r));
+    getMainSourceRows().forEach(r => recalcRow(r));
 
     const view = getFilteredRows();
 
@@ -2991,7 +3070,7 @@ function setAutofillReadonly(isReadonly){
     pillTotalKg.textContent = `${fmtIntDots(total)} kg total`;
 
     // keep selection if row still exists
-    if (selectedRowId && !rows.some(x => x.id === selectedRowId)) selectedRowId = null;
+    if (selectedRowId && !getMainSourceRows().some(x => x.id === selectedRowId)) selectedRowId = null;
 
     for (let idx=0; idx<slice.length; idx++){
       const r = slice[idx];
@@ -3045,10 +3124,10 @@ function setAutofillReadonly(isReadonly){
       bDel.title = "Șterge";
       bDel.addEventListener("click", () => {
         if (!confirm("Ștergi rândul selectat?")) return;
-        const realIdx = rows.findIndex(x => x.id === r.id);
-        if (realIdx >= 0) rows.splice(realIdx, 1);
+        const sourceYear = normalizeYearValue(r.an) || normalizeYearValue(activeYear) || String(CURRENT_YEAR);
+        removeRowFromYear(sourceYear, r.id);
         if (selectedRowId === r.id) selectedRowId = null;
-        scheduleSave();
+        scheduleSave(sourceYear);
         setTimeout(() => renderBody(), 0);
       });
 
@@ -3200,7 +3279,8 @@ function setAutofillReadonly(isReadonly){
   }
 
   function openEditModal(rowId){
-    const r = rows.find(x => x.id === rowId);
+    const location = findRowLocationById(rowId);
+    const r = location && location.row;
     if (!r) return;
 
     modalMode = "edit";
@@ -3277,9 +3357,10 @@ function setAutofillReadonly(isReadonly){
       return;
     }
 
-    const sourceYear = normalizeYearValue(activeYear) || String(CURRENT_YEAR);
+    const sourceLocation = findRowLocationById(editingRowId);
+    const sourceYear = sourceLocation ? sourceLocation.year : (normalizeYearValue(activeYear) || String(CURRENT_YEAR));
     const targetYear = normalizeYearValue(dataIso.slice(0,4)) || sourceYear;
-    const sourceRow = rows.find(x => x.id === editingRowId);
+    const sourceRow = sourceLocation && sourceLocation.row;
     if (!sourceRow){
       $("mErr").textContent = "Rândul nu mai există (a fost șters sau resync).";
       return;
@@ -3312,9 +3393,11 @@ function setAutofillReadonly(isReadonly){
     recalcRow(updatedRow);
 
     if (targetYear === sourceYear){
-      const idx = rows.findIndex(x => x.id === editingRowId);
-      if (idx >= 0) rows[idx] = updatedRow;
-      rows = saveYearLocal(sourceYear, rows);
+      const sourceList = [...getRowsForYear(sourceYear)];
+      const idx = sourceList.findIndex(x => x.id === editingRowId);
+      if (idx >= 0) sourceList[idx] = updatedRow;
+      saveYearLocal(sourceYear, sourceList);
+      if(sourceYear === normalizeYearValue(activeYear)) rows = getRowsForYear(sourceYear);
       selectedRowId = updatedRow.id;
       scheduleSave(sourceYear);
       renderBody();
@@ -3323,12 +3406,11 @@ function setAutofillReadonly(isReadonly){
     } else {
       removeRowFromYear(sourceYear, editingRowId);
       upsertRowIntoYear(targetYear, updatedRow);
-      if (window.switchActiveYear){
-        await window.switchActiveYear(targetYear, { preferCloud:false, syncSelectors:true });
-      } else {
-        setActiveYearLocal(targetYear);
-        render();
-      }
+      if(COL_FILTERS.an.length && !COL_FILTERS.an.includes(targetYear)) COL_FILTERS.an = uniqueYears(COL_FILTERS.an.concat([targetYear]));
+      setActiveYearLocal(targetYear);
+      persistMainYearSelection();
+      refreshFilterUI(true);
+      render();
     }
 
     modalMode = "add";
@@ -3453,12 +3535,11 @@ function setAutofillReadonly(isReadonly){
     } else {
       upsertRowIntoYear(targetYear, r);
       autoScrollBottom = true;
-      if (window.switchActiveYear){
-        await window.switchActiveYear(targetYear, { preferCloud:false, syncSelectors:true });
-      } else {
-        setActiveYearLocal(targetYear);
-        render();
-      }
+      if(COL_FILTERS.an.length && !COL_FILTERS.an.includes(targetYear)) COL_FILTERS.an = uniqueYears(COL_FILTERS.an.concat([targetYear]));
+      setActiveYearLocal(targetYear);
+      persistMainYearSelection();
+      refreshFilterUI(true);
+      render();
     }
 
     $("mErr").textContent = "";
@@ -3776,16 +3857,13 @@ function setAutofillReadonly(isReadonly){
 
   (function init(){
     load();
+    restoreMainYearSelection();
     // UI: filtre + sumar
     const _fy = $("fltYear");
     const _fm = $("fltMonth");
     if (_fy) _fy.addEventListener("change", async () => {
-      const selected = normalizeYearValue(_fy.value);
-      if (selected && selected !== normalizeYearValue(activeYear) && window.switchActiveYear){
-        await window.switchActiveYear(selected, { preferCloud:true, syncSelectors:false });
-      }
-      refreshFilterUI(true);
-      applyUIFilters();
+      const selected = uniqueYears(Array.from(_fy.selectedOptions || []).map(opt => opt.value));
+      await applyMainYearSelection(selected, { preferCloud:true, activeYear:selected[selected.length - 1] || '' });
     });
     if (_fm) _fm.addEventListener("change", () => { applyUIFilters(); });
 
@@ -4458,7 +4536,7 @@ function setAutofillReadonly(isReadonly){
     setActiveYearLocal(y);
 
     refreshFilterUI(true);
-    if ($("fltYear")) $("fltYear").value = y;
+    syncMainYearSelect();
 
     refreshSummaryUI(true);
     refreshSarjaWarnUI(true);
@@ -4557,8 +4635,10 @@ function setAutofillReadonly(isReadonly){
     await pullNumeralKodCloud(true);
     await ensureYearLoaded(activeYear, { preferCloud:true });
     setActiveYearLocal(activeYear);
+    const initialMainYears = getSelectedMainYears();
+    for(const year of initialMainYears){ await ensureYearLoaded(year, { preferCloud:true }); }
     refreshFilterUI(true);
-    if ($("fltYear")) $("fltYear").value = normalizeYearValue(activeYear) || String(CURRENT_YEAR);
+    syncMainYearSelect();
     refreshSummaryUI(true);
     refreshSarjaWarnUI(true);
     if ($("sumYear") && !$("sumYear").value) $("sumYear").value = normalizeYearValue(activeYear) || String(CURRENT_YEAR);

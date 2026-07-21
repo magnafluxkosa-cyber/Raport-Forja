@@ -1038,6 +1038,9 @@ function closeForm(){
   }
 
   function rfUniqueValuesForCol(col){
+    if (Number(col) === 0 && typeof window.rfIntrariGetKnownYears === 'function') {
+      return window.rfIntrariGetKnownYears().slice().sort((a,b) => Number(b) - Number(a));
+    }
     const rows = Array.from(document.querySelectorAll('#tbody tr'));
     const set = new Map();
     rows.forEach(tr => {
@@ -1065,8 +1068,8 @@ function closeForm(){
     if (!btn) return;
     const selected = Array.isArray(RF_MULTI_FILTERS[col]) ? RF_MULTI_FILTERS[col] : [];
     if (!selected.length) {
-      btn.textContent = RF_FILTER_LABELS[col] || 'Toate';
-      btn.title = 'Toate';
+      btn.textContent = Number(col) === 0 ? 'Toți anii' : (RF_FILTER_LABELS[col] || 'Toate');
+      btn.title = Number(col) === 0 ? 'Toți anii' : 'Toate';
     } else if (selected.length === 1) {
       btn.textContent = selected[0];
       btn.title = selected[0];
@@ -1090,7 +1093,7 @@ function closeForm(){
     menu.style.left = left + 'px';
     menu.style.top = top + 'px';
     menu.innerHTML = `
-      <div class="kad-mf-menu-head"><span>${RF_FILTER_LABELS[col] || 'Filtru'}</span><span class="kad-mf-clear" tabindex="0">Toate</span></div>
+      <div class="kad-mf-menu-head"><span>${RF_FILTER_LABELS[col] || 'Filtru'}</span><span class="kad-mf-clear" tabindex="0">${Number(col) === 0 ? 'Toți anii' : 'Toate'}</span></div>
       <input class="kad-mf-search" type="text" placeholder="Caută...">
       <div class="kad-mf-list"></div>
     `;
@@ -1110,13 +1113,17 @@ function closeForm(){
         return `<label class="kad-mf-option"><input type="checkbox" value="${safe}"${checked}><span>${safe}</span></label>`;
       }).join('');
       list.querySelectorAll('input[type="checkbox"]').forEach(inp => {
-        inp.addEventListener('change', () => {
+        inp.addEventListener('change', async () => {
           const val = inp.value;
           if (inp.checked) selected.add(rfNorm(val));
           else selected.delete(rfNorm(val));
           const selectedOriginals = values.filter(v => selected.has(rfNorm(v)));
           RF_MULTI_FILTERS[col] = selectedOriginals;
           rfUpdateFilterButton(col);
+          if (Number(col) === 0 && typeof window.rfIntrariApplyYearSelection === 'function') {
+            await window.rfIntrariApplyYearSelection(selectedOriginals);
+            return;
+          }
           applyFilters();
         });
       });
@@ -1124,10 +1131,14 @@ function closeForm(){
 
     renderList();
     search.addEventListener('input', () => renderList(search.value));
-    menu.querySelector('.kad-mf-clear').addEventListener('click', () => {
+    menu.querySelector('.kad-mf-clear').addEventListener('click', async () => {
       RF_MULTI_FILTERS[col] = [];
       rfUpdateFilterButton(col);
       rfCloseMultiMenu();
+      if (Number(col) === 0 && typeof window.rfIntrariApplyYearSelection === 'function') {
+        await window.rfIntrariApplyYearSelection([]);
+        return;
+      }
       applyFilters();
     });
     setTimeout(()=>search.focus(), 0);
@@ -1176,9 +1187,13 @@ function closeForm(){
     filterRow.style.display = filtersVisible ? '' : 'none';
   }
 
-  function clearFilters(){
+  async function clearFilters(){
     RF_FILTER_COLS.forEach(col => { RF_MULTI_FILTERS[col] = []; rfUpdateFilterButton(col); });
     rfCloseMultiMenu();
+    if (typeof window.rfIntrariApplyYearSelection === 'function') {
+      await window.rfIntrariApplyYearSelection([]);
+      return;
+    }
     applyFilters();
   }
 
@@ -1237,7 +1252,8 @@ function closeForm(){
   function fillTopDown(dataRows){
     const tbody = document.getElementById('tbody');
     const rows = Array.from(tbody.querySelectorAll('tr'));
-    dataRows.forEach((vals, i) => {
+    dataRows.forEach((entry, i) => {
+      const vals = entry && !Array.isArray(entry) && Array.isArray(entry.values) ? entry.values : entry;
       if (i >= rows.length){
         const tr = document.createElement('tr');
         for (let c=0; c<10; c++){ 
@@ -1249,8 +1265,16 @@ function closeForm(){
         tbody.appendChild(tr);
         rows.push(tr);
       }
-      const tds = rows[i].querySelectorAll('td');
-      for (let c=0; c<10; c++) tds[c].textContent = (c === 2) ? toDisplayDate(vals[c]) : (vals[c] ?? "").toString();
+      const tr = rows[i];
+      if (entry && !Array.isArray(entry) && Array.isArray(entry.values)) {
+        tr.dataset.sourceYear = String(entry.sourceYear || vals?.[0] || '');
+        tr.dataset.sourceIndex = String(Number.isInteger(entry.sourceIndex) ? entry.sourceIndex : i);
+      } else {
+        tr.dataset.sourceYear = String(vals?.[0] || '');
+        tr.dataset.sourceIndex = String(i);
+      }
+      const tds = tr.querySelectorAll('td');
+      for (let c=0; c<10; c++) tds[c].textContent = (c === 2) ? toDisplayDate(vals?.[c]) : (vals?.[c] ?? "").toString();
     });
   }
 
@@ -2007,6 +2031,8 @@ function closeForm(){
   let yearMeta = {};
   let pendingYears = {};
   let activeYear = String(CURRENT_YEAR);
+  const MAIN_YEAR_FILTER_STORAGE_KEY = 'INTRARI_OTEL_main_year_filter_v1';
+  let mainYearFilterInitialized = false;
 
   function normalizeText(v){
     return (v ?? '').toString().trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
@@ -2975,6 +3001,86 @@ function closeForm(){
     return Array.from(years).sort((a,b) => Number(a) - Number(b));
   }
 
+
+  function uniqueMainYears(values){
+    return Array.from(new Set((Array.isArray(values) ? values : []).map(normalizeYearValue).filter(Boolean)))
+      .sort((a,b) => Number(a) - Number(b));
+  }
+
+  function persistMainYearSelection(){
+    try{
+      localStorage.setItem(MAIN_YEAR_FILTER_STORAGE_KEY, JSON.stringify({
+        initialized: true,
+        years: uniqueMainYears(RF_MULTI_FILTERS[0] || [])
+      }));
+    }catch(_e){}
+  }
+
+  function restoreMainYearSelection(){
+    let years = [];
+    try{
+      const parsed = JSON.parse(localStorage.getItem(MAIN_YEAR_FILTER_STORAGE_KEY) || 'null');
+      if (parsed && parsed.initialized === true) {
+        mainYearFilterInitialized = true;
+        years = uniqueMainYears(parsed.years || []);
+      }
+    }catch(_e){}
+    if (!mainYearFilterInitialized) {
+      years = [normalizeYearValue(activeYear) || String(CURRENT_YEAR)];
+      mainYearFilterInitialized = true;
+    }
+    RF_MULTI_FILTERS[0] = years;
+    if (typeof rfUpdateFilterButton === 'function') rfUpdateFilterButton(0);
+    return years;
+  }
+
+  function getSelectedMainYears(){
+    const selected = uniqueMainYears(RF_MULTI_FILTERS[0] || []);
+    if (selected.length) return selected;
+    if (mainYearFilterInitialized) return getKnownYears();
+    return [normalizeYearValue(activeYear) || String(CURRENT_YEAR)];
+  }
+
+  function getMainRowsWithOrigin(){
+    const entries = [];
+    getSelectedMainYears().forEach(year => {
+      getRowsForYear(year).forEach((values, sourceIndex) => {
+        entries.push({ values, sourceYear:year, sourceIndex });
+      });
+    });
+    entries.sort((a,b) => {
+      const da = String(a.values?.[2] || '');
+      const db = String(b.values?.[2] || '');
+      const ya = Number(a.sourceYear || 0);
+      const yb = Number(b.sourceYear || 0);
+      return ya - yb || da.localeCompare(db, 'ro', { numeric:true, sensitivity:'base' });
+    });
+    return entries;
+  }
+
+  function ensureYearInMainSelection(year){
+    const y = normalizeYearValue(year);
+    if (!y) return;
+    const selected = uniqueMainYears(RF_MULTI_FILTERS[0] || []);
+    if (selected.length && !selected.includes(y)) RF_MULTI_FILTERS[0] = uniqueMainYears(selected.concat(y));
+    if (typeof rfUpdateFilterButton === 'function') rfUpdateFilterButton(0);
+    persistMainYearSelection();
+  }
+
+  window.rfIntrariGetKnownYears = getKnownYears;
+  window.rfIntrariApplyYearSelection = async function(years){
+    mainYearFilterInitialized = true;
+    RF_MULTI_FILTERS[0] = uniqueMainYears(years || []);
+    const wanted = getSelectedMainYears();
+    for (const year of wanted) await ensureYearLoaded(year, { preferCloud:true, force:false });
+    if (RF_MULTI_FILTERS[0].length) activeYear = RF_MULTI_FILTERS[0][RF_MULTI_FILTERS[0].length - 1];
+    APP.activeYear = activeYear;
+    persistMainYearSelection();
+    if (typeof rfUpdateFilterButton === 'function') rfUpdateFilterButton(0);
+    renderActiveYear({ syncYearInput:false, syncSummaryYear:false, scrollBottom:false });
+    return wanted;
+  };
+
   function monthLower(v){
     return String(v ?? '').trim().toLowerCase();
   }
@@ -3069,17 +3175,16 @@ function closeForm(){
 
   function renderActiveYear(options = {}){
     const y = normalizeYearValue(activeYear) || String(CURRENT_YEAR);
-    const rows = getRowsForYear(y);
-    const needed = Math.max(30, rows.length + 5);
+    const entries = getMainRowsWithOrigin();
+    const needed = Math.max(30, entries.length + 5);
     if (typeof rebuildTbody === 'function') rebuildTbody(needed);
-    if (typeof fillTopDown === 'function') fillTopDown(rows);
+    if (typeof fillTopDown === 'function') fillTopDown(entries);
     if (typeof applyFilters === 'function') applyFilters();
     buildSummaryFilters();
     refreshSummary();
     try{ applyPretestDocsToTbody(); }catch(_e){}
 
-    const yearInput = document.querySelector('#filterRow input[data-col="0"]');
-    if (yearInput && options.syncYearInput) yearInput.value = y;
+    if (typeof rfUpdateFilterButton === 'function') rfUpdateFilterButton(0);
 
     if (sumYearSel && (options.syncSummaryYear || !sumYearSel.value)) {
       const known = getKnownYears();
@@ -3398,9 +3503,16 @@ function closeForm(){
   window.importXLSX = importXLSX;
 
   function getRowIndexFromTr(tr){
+    if (!tr) return -1;
+    const stored = Number(tr.dataset?.sourceIndex);
+    if (Number.isInteger(stored) && stored >= 0) return stored;
     const tbody = document.getElementById('tbody');
-    if (!tbody || !tr) return -1;
+    if (!tbody) return -1;
     return Array.from(tbody.children).indexOf(tr);
+  }
+
+  function getRowYearFromTr(tr){
+    return normalizeYearValue(tr?.dataset?.sourceYear) || normalizeYearValue(activeYear) || String(CURRENT_YEAR);
   }
 
   function buildFormRowArray(){
@@ -3442,7 +3554,9 @@ function closeForm(){
     if (!row) return;
 
     const targetYear = normalizeYearValue(row[0]) || (normalizeYearValue(activeYear) || String(CURRENT_YEAR));
-    const currentYear = normalizeYearValue(activeYear) || String(CURRENT_YEAR);
+    const currentYear = (typeof __EDIT_TR !== 'undefined' && __EDIT_TR)
+      ? getRowYearFromTr(__EDIT_TR)
+      : (normalizeYearValue(activeYear) || String(CURRENT_YEAR));
     let touchedYears = [targetYear];
     let auditAction = 'CREATE';
     let auditOldRow = null;
@@ -3491,11 +3605,10 @@ function closeForm(){
 
     markDirty(touchedYears);
 
-    if (targetYear !== currentYear) {
-      switchActiveYear(targetYear, { preferCloud:false, syncSelectors:true, scrollBottom:true });
-    } else {
-      renderActiveYear({ syncYearInput:true, syncSummaryYear:true, scrollBottom:true });
-    }
+    ensureYearInMainSelection(targetYear);
+    activeYear = targetYear;
+    APP.activeYear = targetYear;
+    renderActiveYear({ syncYearInput:false, syncSummaryYear:true, scrollBottom:true });
   }
 
   function deleteCurrentRow(){
@@ -3509,7 +3622,7 @@ function closeForm(){
       return;
     }
 
-    const y = normalizeYearValue(activeYear) || String(CURRENT_YEAR);
+    const y = getRowYearFromTr(__EDIT_TR);
     const idx = getRowIndexFromTr(__EDIT_TR);
     const list = [...getRowsForYear(y)];
     if (idx >= 0 && idx < list.length) {
@@ -3823,8 +3936,12 @@ function closeForm(){
       wireYearSelectors();
       await loadCloudLists();
       await pullCloudIndex(true);
-      await ensureYearLoaded(activeYear, { preferCloud:true, force:true });
-      setActiveYearLocal(activeYear, { syncYearInput:true, syncSummaryYear:true });
+      restoreMainYearSelection();
+      const initialYears = getSelectedMainYears();
+      for (const year of initialYears) await ensureYearLoaded(year, { preferCloud:true, force:true });
+      if (RF_MULTI_FILTERS[0].length) activeYear = RF_MULTI_FILTERS[0][RF_MULTI_FILTERS[0].length - 1];
+      APP.activeYear = activeYear;
+      renderActiveYear({ syncYearInput:false, syncSummaryYear:true });
       wirePretestFilesUi();
       await loadPretestDocs();
       setCloudStatus('Cloud: ' + activeYear + ' ON', true);
