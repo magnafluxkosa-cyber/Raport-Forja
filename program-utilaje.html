@@ -494,14 +494,20 @@
       let rows = [];
       let utilajOptions = [];
       let refreshTimer = null;
-      let saveTimer = null;
+      let isSaving = false;
       let activeChannel = null;
       let editingId = null;
       let currentRole = 'viewer';
-      let currentAccess = { can_view:true, can_add:false, can_edit:false, can_delete:false };
-      function canProgramEdit(){ return !!(currentAccess.can_edit === true || currentAccess.can_add === true || currentAccess.can_import === true); }
-      function canProgramDelete(){ return !!(currentAccess.can_delete === true || currentAccess.can_edit === true); }
-      function applyProgramAccessUi(){ try{ els.btnAdd.disabled = !canProgramEdit(); }catch(_e){} }
+      let currentAccess = { can_view:false, can_add:false, can_edit:false, can_delete:false, can_import:false };
+      function canProgramAdd(){ return currentAccess.can_view === true && currentAccess.can_add === true; }
+      function canProgramEdit(){ return currentAccess.can_view === true && currentAccess.can_edit === true; }
+      function canProgramDelete(){ return currentAccess.can_view === true && currentAccess.can_delete === true; }
+      function canSaveCurrentModal(){ return editingId ? canProgramEdit() : canProgramAdd(); }
+      function applyProgramAccessUi(){
+        try{ els.btnAdd.disabled = !canProgramAdd(); }catch(_e){}
+        try{ els.btnSave.disabled = !canSaveCurrentModal() || isSaving; }catch(_e){}
+        try{ els.btnDelete.disabled = !canProgramDelete() || isSaving; }catch(_e){}
+      }
 
       const els = {
         tbody: document.getElementById('tbody'),
@@ -779,27 +785,53 @@
       }
 
       async function saveData(){
-        const payload = buildPayload();
+        if (isSaving) return false;
+        isSaving = true;
+        const originalSaveText = els.btnSave.textContent;
+        const stamp = new Date().toISOString();
+        const payload = { ...buildPayload(), updated_at: stamp };
         cacheRows();
         setCloudText('Cloud: salvare');
+        setSyncText('Sincronizat: se salvează...');
+        els.btnSave.textContent = 'Se salvează...';
+        applyProgramAccessUi();
+
         try {
-          const { error } = await supabaseClient
+          const { data: savedDoc, error } = await supabaseClient
             .from('rf_documents')
-            .upsert({ doc_key: DOC_KEY, content: payload }, { onConflict: 'doc_key' });
+            .upsert({
+              doc_key: DOC_KEY,
+              content: payload,
+              updated_at: stamp
+            }, { onConflict: 'doc_key' })
+            .select('doc_key,content,data,updated_at')
+            .single();
           if (error) throw error;
+
+          const savedPayload = savedDoc?.content ?? savedDoc?.data ?? null;
+          const savedRows = extractRows(savedPayload).map(normalizeProgramRow).filter(Boolean);
+          const expectedSignature = JSON.stringify(sortRows(rows).map(r => ({ ...r })));
+          const savedSignature = JSON.stringify(sortRows(savedRows).map(r => ({ ...r })));
+          if (expectedSignature !== savedSignature) {
+            throw new Error('Verificarea după salvare nu corespunde datelor trimise.');
+          }
+
           setCloudText('Cloud: pregătit');
           setSourceText('Sursă: cloud');
-          setSyncText(`Sincronizat: ${new Date().toLocaleString('ro-RO')}`);
+          setSyncText(`Salvat în cloud: ${new Date(savedDoc.updated_at || stamp).toLocaleString('ro-RO')}`);
+          return true;
         } catch (error) {
           console.error('Program utilaje save error:', error);
           setCloudText('Cloud: eroare salvare');
-          setSyncText('Sincronizat: salvare locală, cloud eșuat');
+          setSourceText('Sursă: local');
+          setSyncText('Sincronizat: modificarea NU a fost salvată în cloud');
+          alert(`Modificarea nu a fost salvată în cloud.\n${error?.message || error}`);
+          return false;
+        } finally {
+          isSaving = false;
+          els.btnSave.textContent = originalSaveText;
+          applyProgramAccessUi();
         }
-      }
-
-      function debounceSave(){
-        window.clearTimeout(saveTimer);
-        saveTimer = window.setTimeout(saveData, 900);
       }
 
       function populateFilterOptions(){
@@ -881,10 +913,10 @@
       }
 
       function openModal(row = null){
-        if (!canProgramEdit()) return;
+        if (row ? !canProgramEdit() : !canProgramAdd()) return;
         editingId = row?.id || null;
         els.modalTitle.textContent = editingId ? 'Editează program utilaj' : 'Adaugă program utilaj';
-        els.btnDelete.classList.toggle('hidden', !editingId);
+        els.btnDelete.classList.toggle('hidden', !editingId || !canProgramDelete());
         els.inpDate.value = row?.data || formatDate(new Date());
         els.inpShift.value = row?.schimbul || '1';
         els.inpUtilaj.value = row?.utilaj || '';
@@ -892,6 +924,7 @@
         els.inpObs.value = row?.observatii || '';
         els.modal.classList.add('open');
         els.modal.setAttribute('aria-hidden', 'false');
+        applyProgramAccessUi();
         window.setTimeout(() => els.inpDate.focus(), 30);
       }
 
@@ -901,8 +934,8 @@
         els.modal.setAttribute('aria-hidden', 'true');
       }
 
-      function saveFromModal(){
-        if (!canProgramEdit()) return;
+      async function saveFromModal(){
+        if (!canSaveCurrentModal() || isSaving) return;
         const data = normalizeDate(els.inpDate.value);
         const parts = splitDate(data);
         const schimbul = normalizeShift(els.inpShift.value);
@@ -914,31 +947,62 @@
         if (!utilaj) { alert('Selectează utilajul.'); els.inpUtilaj.focus(); return; }
         if (!ore) { alert('Completează orele lucrate.'); els.inpHours.focus(); return; }
 
+        const previousRows = rows.map(r => ({ ...r }));
         const an = String(parts.year);
         const luna = MONTHS[parts.month - 1];
         const id = `${data}|${schimbul}|${utilaj}`;
-        const row = { id, an, luna, data, schimbul, utilaj, ore_lucrate: ore, observatii };
+        const previousRow = editingId ? rows.find(r => r.id === editingId) : null;
+        const row = {
+          ...(previousRow || {}),
+          id,
+          an,
+          luna,
+          data,
+          schimbul,
+          utilaj,
+          ore_lucrate: ore,
+          observatii,
+          updated_at: new Date().toISOString()
+        };
 
-        const existingIndex = rows.findIndex(r => r.id === id || (editingId && r.id === editingId));
-        if (existingIndex >= 0) rows.splice(existingIndex, 1, row);
+        const duplicateIndex = rows.findIndex(r => r.id === id && r.id !== editingId);
+        const editingIndex = editingId ? rows.findIndex(r => r.id === editingId) : -1;
+        if (editingIndex >= 0) rows.splice(editingIndex, 1);
+        const targetIndex = rows.findIndex(r => r.id === id);
+        if (targetIndex >= 0) rows.splice(targetIndex, 1, row);
+        else if (duplicateIndex >= 0) rows.splice(duplicateIndex, 1, row);
         else rows.push(row);
         rows = sortRows(rows);
 
         populateFilterOptions();
         renderTable();
-        debounceSave();
-        closeModal();
+        const saved = await saveData();
+        if (saved) {
+          closeModal();
+          return;
+        }
+
+        rows = sortRows(previousRows);
+        populateFilterOptions();
+        renderTable();
       }
 
-      function deleteCurrent(){
-        if (!canProgramDelete()) return;
+      async function deleteCurrent(){
+        if (!canProgramDelete() || isSaving) return;
         if (!editingId) return;
         if (!confirm('Ștergi acest program utilaj?')) return;
+        const previousRows = rows.map(r => ({ ...r }));
         rows = rows.filter(r => r.id !== editingId);
         populateFilterOptions();
         renderTable();
-        debounceSave();
-        closeModal();
+        const saved = await saveData();
+        if (saved) {
+          closeModal();
+          return;
+        }
+        rows = sortRows(previousRows);
+        populateFilterOptions();
+        renderTable();
       }
 
       function bindTableEvents(){
@@ -997,28 +1061,41 @@
 
       async function ensurePageAccess(){
         try {
-          if (window.ERPAuth && typeof window.ERPAuth.requireAuth === 'function') {
-            const auth = await window.ERPAuth.requireAuth({ next:'program-utilaje.html', redirectToLogin:true });
-            currentRole = String((auth && auth.role) || currentRole || 'viewer').toLowerCase();
-            els.roleChip.textContent = `Cont: ${currentRole}`;
-            const access = await window.ERPAuth.getPageAccess('program-utilaje', { user: auth.user, role: currentRole });
-            currentAccess = access && access.permissions ? access.permissions : currentAccess;
-            if (currentAccess.can_view === false) {
-              alert('Nu ai acces în această foaie.');
-              window.location.href = 'index.html';
-              return false;
-            }
-            applyProgramAccessUi();
-            return true;
+          if (!window.ERPAuth || typeof window.ERPAuth.requireAuth !== 'function' || typeof window.ERPAuth.getPageAccess !== 'function') {
+            throw new Error('Modulul de autentificare/ACL nu este disponibil.');
           }
+          const auth = await window.ERPAuth.requireAuth({ next:'program-utilaje.html', redirectToLogin:true });
+          if (!auth || !auth.user) return false;
+          currentRole = String(auth.role || currentRole || 'viewer').toLowerCase();
+          els.roleChip.textContent = `Cont: ${currentRole}`;
+          const access = await window.ERPAuth.getPageAccess('program-utilaje', { user: auth.user, role: currentRole });
+          currentAccess = access && access.permissions
+            ? {
+                can_view: access.permissions.can_view === true,
+                can_add: access.permissions.can_add === true,
+                can_edit: access.permissions.can_edit === true,
+                can_delete: access.permissions.can_delete === true,
+                can_import: access.permissions.can_import === true
+              }
+            : { can_view:false, can_add:false, can_edit:false, can_delete:false, can_import:false };
+          if (currentAccess.can_view !== true) {
+            alert('Nu ai acces în această foaie.');
+            window.location.href = 'index.html';
+            return false;
+          }
+          applyProgramAccessUi();
           return true;
-        } catch (_) {
-          return true;
+        } catch (error) {
+          console.error('Program utilaje ACL error:', error);
+          currentAccess = { can_view:false, can_add:false, can_edit:false, can_delete:false, can_import:false };
+          alert('Accesul nu a putut fi verificat. Pagina a fost blocată.');
+          window.location.href = 'index.html';
+          return false;
         }
       }
 
       function bindButtons(){
-        els.btnAdd.addEventListener('click', () => { if (!canProgramEdit()) return; openModal(); });
+        els.btnAdd.addEventListener('click', () => { if (!canProgramAdd()) return; openModal(); });
         els.btnRefresh.addEventListener('click', () => loadData());
         els.btnCloseX.addEventListener('click', closeModal);
         els.btnCancel.addEventListener('click', closeModal);
