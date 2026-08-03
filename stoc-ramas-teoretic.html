@@ -1193,8 +1193,24 @@
   }
   function rowInSelectedPeriod(row){ const selected=getSelectedPeriod(); if(!selected.year) return true; const period=getRowPeriod(row); if(!period) return false; return selected.month ? (period.year===selected.year && period.month===selected.month) : period.year===selected.year; }
   function aggregateSteelEntriesThisPeriod(){ const exact=new Map(), loose=new Map(); state.raw.intrariOtel.forEach(row=>{ if(!rowInSelectedPeriod(row)) return; const diam=normalizeDiam(pickValue(row,['diametru','diametru otel','dimensiune otel','dimensiune_otel'])); const cal=normalizeQuality(pickValue(row,['calitate','material','calitate otel','calitate_otel'])); const qty=toSteelKg(pickValue(row,['cantitateKg','cantitate kg','cantitate_kg','cantitate in kg','cantitate','kg'])); if(!diam&&!cal) return; const key=[diam,cal].join('|'); const lkey=looseMaterialKey(diam,cal); exact.set(key,(exact.get(key)||0)+qty); loose.set(lkey,(loose.get(lkey)||0)+qty); }); return {exact,loose}; }
+  function debMaterialMetricKey(reper,diam,cal){
+    return [normalizeReper(reper),normalizeDiam(diam),normalizeQuality(cal)].join('|');
+  }
+  function getDebMetricByMaterial(source,reper,diam,cal){
+    const debKey=normalizeReper(reper);
+    if(!debKey || !source) return 0;
+    const variantMap=source.byVariant instanceof Map ? source.byVariant : null;
+    const variantRepers=source.variantRepers instanceof Set ? source.variantRepers : null;
+    if(variantMap){
+      const exactKey=debMaterialMetricKey(debKey,diam,cal);
+      if(variantMap.has(exactKey)) return toNumber(variantMap.get(exactKey));
+      if(variantRepers && variantRepers.has(debKey)) return 0;
+    }
+    const totalMap=source instanceof Map ? source : source.byReper;
+    return totalMap instanceof Map ? toNumber(totalMap.get(debKey)||0) : 0;
+  }
   function aggregateSteelDebitatedThisPeriod(helperIndex, debMeta){
-    const byReper=new Map(), byMaterial=new Map();
+    const byReper=new Map(), byMaterial=new Map(), byVariant=new Map(), variantRepers=new Set();
     state.raw.debitate.forEach(row=>{
       if(!rowInSelectedPeriod(row)) return;
       const rowDiam=normalizeDiam(pickValue(row,['diametru','diametru_otel','diametru otel','dimensiune otel','dimensiune_otel']));
@@ -1214,13 +1230,64 @@
       }else{
         totalKg=toNumber(pickValue(row,['totalKg','total_kg','total kg debitat','total kg','kg total']));
       }
-      if(reper) byReper.set(reper,(byReper.get(reper)||0)+totalKg);
+      if(reper){
+        byReper.set(reper,(byReper.get(reper)||0)+totalKg);
+        if(diam||cal){
+          const vkey=debMaterialMetricKey(reper,diam,cal);
+          byVariant.set(vkey,(byVariant.get(vkey)||0)+totalKg);
+          variantRepers.add(reper);
+        }
+      }
       if(diam||cal){ const mkey=[diam,cal].join('|'); byMaterial.set(mkey,(byMaterial.get(mkey)||0)+totalKg); }
     });
-    return {byReper,byMaterial};
+    return {byReper,byMaterial,byVariant,variantRepers};
   }
-  function aggregateDebitateProducedThisPeriod(helperIndex){ const map=new Map(); state.raw.debitate.forEach(row=>{ if(!rowInSelectedPeriod(row)) return; const reper=resolveDebKeyRaw(pickValue(row,['reper','reper debitat','denumire reper debitare']), helperIndex); if(!reper) return; map.set(reper,(map.get(reper)||0)+toNumber(pickValue(row,['cantitate','cantitateBuc','cantitate_buc','cantitate buc','buc']))); }); return map; }
-  function aggregateDebitateConsumedThisPeriod(helperIndex){ const map=new Map(); state.raw.forjate.forEach(row=>{ if(!rowInSelectedPeriod(row)) return; const reperForjat=normalizeReper(pickValue(row,['reper','reper forjat'])); if(!reperForjat) return; const helper=helperIndex.get(reperForjat)||{reperDebitat:reperForjat}; const reperDebitat=helper.reperDebitat||reperForjat; const bune=toNumber(pickValue(row,['buc_realizate','buc realizate','bucRealizate','realizat','cantitate','buc'])); const rebut=toNumber(pickValue(row,['rebut','rebuturi'])); map.set(reperDebitat,(map.get(reperDebitat)||0)+(bune+rebut)); }); return map; }
+  function aggregateDebitateProducedThisPeriod(helperIndex){
+    const map=new Map(), byVariant=new Map(), variantRepers=new Set();
+    state.raw.debitate.forEach(row=>{
+      if(!rowInSelectedPeriod(row)) return;
+      const reper=resolveDebKeyRaw(pickValue(row,['reper','reper debitat','denumire reper debitare']), helperIndex);
+      if(!reper) return;
+      const qty=toNumber(pickValue(row,['cantitate','cantitateBuc','cantitate_buc','cantitate buc','buc']));
+      const diam=normalizeDiam(pickValue(row,['diametru','diametru_otel','diametru otel','dimensiune otel','dimensiune_otel']));
+      const cal=normalizeQuality(pickValue(row,['calitate','material','calitate_otel','calitate otel']));
+      map.set(reper,(map.get(reper)||0)+qty);
+      if(diam||cal){
+        const vkey=debMaterialMetricKey(reper,diam,cal);
+        byVariant.set(vkey,(byVariant.get(vkey)||0)+qty);
+        variantRepers.add(reper);
+      }
+    });
+    map.byVariant=byVariant;
+    map.variantRepers=variantRepers;
+    return map;
+  }
+  function aggregateDebitateConsumedThisPeriod(helperIndex){
+    const map=new Map(), byVariant=new Map(), variantRepers=new Set();
+    state.raw.forjate.forEach(row=>{
+      if(!rowInSelectedPeriod(row)) return;
+      const reperForjat=normalizeReper(pickValue(row,['reper','reper forjat']));
+      if(!reperForjat) return;
+      const rowDiam=normalizeDiam(pickValue(row,['dimensiune otel','dimensiune_otel','diametru','diametru otel','diametru_otel']));
+      const rowCal=normalizeQuality(pickValue(row,['calitate','material','calitate otel','calitate_otel']));
+      const helper=getHelperVariant(helperIndex,reperForjat,rowDiam,rowCal) || helperIndex.get(reperForjat) || {reperDebitat:reperForjat};
+      const reperDebitat=normalizeReper(helper.reperDebitat||reperForjat);
+      const diam=normalizeDiam(rowDiam || helper.diametru || '');
+      const cal=normalizeQuality(rowCal || helper.calitate || '');
+      const bune=toNumber(pickValue(row,['buc_realizate','buc realizate','bucRealizate','realizat','cantitate','buc']));
+      const rebut=toNumber(pickValue(row,['rebut','rebuturi']));
+      const qty=bune+rebut;
+      map.set(reperDebitat,(map.get(reperDebitat)||0)+qty);
+      if(diam||cal){
+        const vkey=debMaterialMetricKey(reperDebitat,diam,cal);
+        byVariant.set(vkey,(byVariant.get(vkey)||0)+qty);
+        variantRepers.add(reperDebitat);
+      }
+    });
+    map.byVariant=byVariant;
+    map.variantRepers=variantRepers;
+    return map;
+  }
   function aggregateForjateProducedThisPeriod(){ const map=new Map(); state.raw.forjate.forEach(row=>{ if(!rowInSelectedPeriod(row)) return; const reper=normalizeReper(pickValue(row,['reper','reper forjat'])); if(!reper) return; map.set(reper,(map.get(reper)||0)+toNumber(pickValue(row,['buc_realizate','buc realizate','bucRealizate','realizat','cantitate','buc']))); }); return map; }
   function aggregateForjateRebutThisPeriod(){ const map=new Map(); state.raw.forjate.forEach(row=>{ if(!rowInSelectedPeriod(row)) return; const reper=normalizeReper(pickValue(row,['reper','reper forjat'])); if(!reper) return; const qty=toNumber(pickValue(row,['rebut','REBUT','Rebut','rebuturi','Rebut Fj.','rebut_fj','rebutFj','CC'])); if(!qty) return; map.set(reper,(map.get(reper)||0)+qty); }); return map; }
   function defectCodeFromValue(value){
@@ -1795,7 +1862,7 @@
     });
     return target;
   }
-  function ensureSk304234MaterialLinks(groups,steelInv,steelRealInv,steelEntries,steelDebitated){
+  function ensureSk304234MaterialLinks(groups,steelInv,steelRealInv,steelEntries,steelDebitated,debInvLookup,debRealInvLookup,debProduced,debConsumed){
     const list=(Array.isArray(groups)?groups:[]).filter(material=>!(normalizeDiam(material&&material.diametru)==='80' && normalizeQuality(material&&material.calitate)==='C45'));
     const mappings=[
       {diametru:'140',calitate:'16MNCR05'},
@@ -1814,6 +1881,13 @@
         deb={debKey:'SK-304234',reperDebitat:'SK-304234',stocDebitat:0,debitatBuc:0,debitatKg:0,forjatDinDebitat:0,debitatRamas:0,stocRealDebitat:0,diferentaDebitat:0,forjats:[]};
         material.debGroups.push(deb);
       }
+      deb.stocDebitat=getDebInventoryQty(debInvLookup,'SK-304234',diam,cal);
+      deb.debitatBuc=getDebMetricByMaterial(debProduced,'SK-304234',diam,cal);
+      deb.debitatKg=getDebMetricByMaterial(steelDebitated,'SK-304234',diam,cal);
+      deb.forjatDinDebitat=getDebMetricByMaterial(debConsumed,'SK-304234',diam,cal);
+      deb.debitatRamas=deb.stocDebitat+deb.debitatBuc-deb.forjatDinDebitat;
+      deb.stocRealDebitat=getDebInventoryQty(debRealInvLookup,'SK-304234',diam,cal);
+      deb.diferentaDebitat=deb.stocRealDebitat-deb.debitatRamas;
       if(!Array.isArray(deb.forjats)) deb.forjats=[];
       if(!deb.forjats.some(item=>normalizeReper(item&&item.reperForjat)==='SK-304234')){
         deb.forjats.push({reperForjat:'SK-304234',stocStartForjat:0,forjatBuc:0,rebutForja:0,rebutDupaForjare:0,livrat:0,vanzari:0,stocPmInitial:0,stocPm:0,forjatRamas:0,stocRealForjat:0,diferentaForjat:0});
@@ -1913,9 +1987,9 @@
       let debGroup=material.debGroups.get(debKey);
       if(!debGroup){
         const startDeb=getDebInventoryQty(debInvLookup, debKey, material.diametru, material.calitate);
-        const debBuc=debProduced.get(debKey)||0;
-        const debKg=steelDebitated.byReper.get(debKey)||0;
-        const forjatDinDeb=debConsumed.get(debKey)||0;
+        const debBuc=getDebMetricByMaterial(debProduced,debKey,material.diametru,material.calitate);
+        const debKg=getDebMetricByMaterial(steelDebitated,debKey,material.diametru,material.calitate);
+        const forjatDinDeb=getDebMetricByMaterial(debConsumed,debKey,material.diametru,material.calitate);
         const debitatRamas=startDeb+debBuc-forjatDinDeb;
         const stocRealDebitat=getDebInventoryQty(debRealInvLookup, debKey, material.diametru, material.calitate);
         debGroup={debKey, reperDebitat:debKey, stocDebitat:startDeb, debitatBuc:debBuc, debitatKg:debKg, forjatDinDebitat:forjatDinDeb, debitatRamas, stocRealDebitat, diferentaDebitat:stocRealDebitat-debitatRamas, forjats:[]};
@@ -2065,7 +2139,7 @@
       if(aDiamTxt!==bDiamTxt) return aDiamTxt.localeCompare(bDiamTxt,'ro');
       return normalizeQuality(a.calitate).localeCompare(normalizeQuality(b.calitate),'ro');
     });
-    state.groups=ensureSk304234MaterialLinks(addSynthetic56C45MaterialGroup(groups,steelInv,steelRealInv,steelEntries,steelDebitated),steelInv,steelRealInv,steelEntries,steelDebitated);
+    state.groups=ensureSk304234MaterialLinks(addSynthetic56C45MaterialGroup(groups,steelInv,steelRealInv,steelEntries,steelDebitated),steelInv,steelRealInv,steelEntries,steelDebitated,debInvLookup,debRealInvLookup,debProduced,debConsumed);
   }
 
   function applyFilters(){
