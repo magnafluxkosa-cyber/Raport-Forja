@@ -4,6 +4,9 @@
 <!-- KAD_FORM_AUDIT_CONFIRM: confirmare pentru actiuni destructive; utilizatorul trebuie sa fie sigur inainte de stergere/remove/delete. -->
 
   <meta charset="utf-8" />
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+  <meta http-equiv="Pragma" content="no-cache" />
+  <meta http-equiv="Expires" content="0" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Stoc rămas teoretic - K.A.D</title>
   <!-- KAD_ACL_MARKER: page_key="stoc-ramas-teoretic" can_view can_edit -->
@@ -273,6 +276,7 @@
 (() => {
   'use strict';
   const PAGE_KEY='stoc-ramas-teoretic';
+  const BUILD_VERSION='2026-08-03-sk304234-v3-refresh-safe';
   const STORAGE_KEY='kad-stoc-ramas-teoretic-filters';
   const MONTHS_RO={1:'Ianuarie',2:'Februarie',3:'Martie',4:'Aprilie',5:'Mai',6:'Iunie',7:'Iulie',8:'August',9:'Septembrie',10:'Octombrie',11:'Noiembrie',12:'Decembrie'};
   const ZALE_REPERS=['106-1625','106-1626','9K-6628','9K-6629','229-6909','229-6910','248-2307','248-2308','503-0761','503-0762','417-3595','417-3596','418-2091','418-2092'];
@@ -1196,29 +1200,61 @@
   function debMaterialMetricKey(reper,diam,cal){
     return [normalizeReper(reper),normalizeDiam(diam),normalizeQuality(cal)].join('|');
   }
-  function getDebMetricByMaterial(source,reper,diam,cal){
+  function debDiameterMetricKey(reper,diam){
+    return [normalizeReper(reper),normalizeDiam(diam)].join('|');
+  }
+  function normalizeSk304234Material(reper,diam,cal){
     const debKey=normalizeReper(reper);
+    const d=normalizeDiam(diam);
+    let c=normalizeQuality(cal);
+    if(debKey==='SK-304234'){
+      if(d==='140') c='16MNCR05';
+      else if(d==='145') c='20MNCRS5';
+    }
+    return {reper:debKey,diam:d,cal:c};
+  }
+  function readDebitateMaterial(row,reper,helperIndex,debMeta){
+    const rawDiam=pickValue(row,['diametru','diametruOtel','diametru_otel','diametru otel','dimensiune_otel','dimensiune otel','dimensiune']);
+    const rawCal=pickValue(row,['calitate','codOtelCalitate','cod_otel_calitate','calitateOtel','calitate_otel','calitate otel','grade']);
+    let diam=normalizeDiam(rawDiam);
+    let cal=normalizeQuality(rawCal);
+    const helperMeta=getHelperVariant(debMeta,reper,diam,cal) || getHelperVariant(helperIndex,reper,diam,cal) || {};
+    diam=diam || normalizeDiam(helperMeta.diametru||'');
+    cal=cal || normalizeQuality(helperMeta.calitate||'');
+    const normalized=normalizeSk304234Material(reper,diam,cal);
+    return {...normalized,helperMeta};
+  }
+  function getDebMetricByMaterial(source,reper,diam,cal){
+    const normalized=normalizeSk304234Material(reper,diam,cal);
+    const debKey=normalized.reper;
     if(!debKey || !source) return 0;
     const variantMap=source.byVariant instanceof Map ? source.byVariant : null;
+    const diameterMap=source.byDiameter instanceof Map ? source.byDiameter : null;
     const variantRepers=source.variantRepers instanceof Set ? source.variantRepers : null;
     if(variantMap){
-      const exactKey=debMaterialMetricKey(debKey,diam,cal);
+      const exactKey=debMaterialMetricKey(debKey,normalized.diam,normalized.cal);
       if(variantMap.has(exactKey)) return toNumber(variantMap.get(exactKey));
-      if(variantRepers && variantRepers.has(debKey)) return 0;
     }
+    if(diameterMap && normalized.diam){
+      const diameterKey=debDiameterMetricKey(debKey,normalized.diam);
+      if(diameterMap.has(diameterKey)) return toNumber(diameterMap.get(diameterKey));
+    }
+    // SK-304234 are două materiale distincte. Nu se permite niciodată
+    // revenirea la totalul general al reperului, deoarece ar dubla 240 buc.
+    if(debKey==='SK-304234') return 0;
+    if(variantRepers && variantRepers.has(debKey)) return 0;
     const totalMap=source instanceof Map ? source : source.byReper;
     return totalMap instanceof Map ? toNumber(totalMap.get(debKey)||0) : 0;
   }
   function aggregateSteelDebitatedThisPeriod(helperIndex, debMeta){
-    const byReper=new Map(), byMaterial=new Map(), byVariant=new Map(), variantRepers=new Set();
+    const byReper=new Map(), byMaterial=new Map(), byVariant=new Map(), byDiameter=new Map(), variantRepers=new Set();
     state.raw.debitate.forEach(row=>{
       if(!rowInSelectedPeriod(row)) return;
-      const rowDiam=normalizeDiam(pickValue(row,['diametru','diametru_otel','diametru otel','dimensiune otel','dimensiune_otel']));
-      const rowCal=normalizeQuality(pickValue(row,['calitate','material','calitate_otel','calitate otel']));
       const reper=resolveDebKeyRaw(pickValue(row,['reper','reper_debitare','reper debitat','denumire reper debitare']), helperIndex);
-      const helperMeta=getHelperVariant(debMeta,reper,rowDiam,rowCal) || getHelperVariant(helperIndex,reper,rowDiam,rowCal) || {};
-      const diam=normalizeDiam(rowDiam || helperMeta.diametru || '');
-      const cal=normalizeQuality(rowCal || helperMeta.calitate || '');
+      const materialInfo=readDebitateMaterial(row,reper,helperIndex,debMeta);
+      const diam=materialInfo.diam;
+      const cal=materialInfo.cal;
+      const helperMeta=materialInfo.helperMeta||{};
       const qty=toNumber(pickValue(row,['cantitate','cantitateBuc','cantitate_buc','cantitate buc','buc','realizat']));
       const helperKgBuc=toNumber(helperMeta.kgBuc || helperMeta.kg_buc_debitat || helperMeta.kg_buc || helperMeta['kg/buc']);
       const savedKgBuc=toNumber(pickValue(row,['kgBuc','kg_buc','kg_buc_debitat','kg/buc','kg buc','greutate','kg pe buc']));
@@ -1234,36 +1270,42 @@
         byReper.set(reper,(byReper.get(reper)||0)+totalKg);
         if(diam||cal){
           const vkey=debMaterialMetricKey(reper,diam,cal);
+          const dkey=debDiameterMetricKey(reper,diam);
           byVariant.set(vkey,(byVariant.get(vkey)||0)+totalKg);
+          byDiameter.set(dkey,(byDiameter.get(dkey)||0)+totalKg);
           variantRepers.add(reper);
         }
       }
       if(diam||cal){ const mkey=[diam,cal].join('|'); byMaterial.set(mkey,(byMaterial.get(mkey)||0)+totalKg); }
     });
-    return {byReper,byMaterial,byVariant,variantRepers};
+    return {byReper,byMaterial,byVariant,byDiameter,variantRepers};
   }
-  function aggregateDebitateProducedThisPeriod(helperIndex){
-    const map=new Map(), byVariant=new Map(), variantRepers=new Set();
+  function aggregateDebitateProducedThisPeriod(helperIndex,debMeta){
+    const map=new Map(), byVariant=new Map(), byDiameter=new Map(), variantRepers=new Set();
     state.raw.debitate.forEach(row=>{
       if(!rowInSelectedPeriod(row)) return;
       const reper=resolveDebKeyRaw(pickValue(row,['reper','reper debitat','denumire reper debitare']), helperIndex);
       if(!reper) return;
       const qty=toNumber(pickValue(row,['cantitate','cantitateBuc','cantitate_buc','cantitate buc','buc']));
-      const diam=normalizeDiam(pickValue(row,['diametru','diametru_otel','diametru otel','dimensiune otel','dimensiune_otel']));
-      const cal=normalizeQuality(pickValue(row,['calitate','material','calitate_otel','calitate otel']));
+      const materialInfo=readDebitateMaterial(row,reper,helperIndex,debMeta);
+      const diam=materialInfo.diam;
+      const cal=materialInfo.cal;
       map.set(reper,(map.get(reper)||0)+qty);
       if(diam||cal){
         const vkey=debMaterialMetricKey(reper,diam,cal);
+        const dkey=debDiameterMetricKey(reper,diam);
         byVariant.set(vkey,(byVariant.get(vkey)||0)+qty);
+        byDiameter.set(dkey,(byDiameter.get(dkey)||0)+qty);
         variantRepers.add(reper);
       }
     });
     map.byVariant=byVariant;
+    map.byDiameter=byDiameter;
     map.variantRepers=variantRepers;
     return map;
   }
   function aggregateDebitateConsumedThisPeriod(helperIndex){
-    const map=new Map(), byVariant=new Map(), variantRepers=new Set();
+    const map=new Map(), byVariant=new Map(), byDiameter=new Map(), variantRepers=new Set();
     state.raw.forjate.forEach(row=>{
       if(!rowInSelectedPeriod(row)) return;
       const reperForjat=normalizeReper(pickValue(row,['reper','reper forjat']));
@@ -1272,19 +1314,23 @@
       const rowCal=normalizeQuality(pickValue(row,['calitate','material','calitate otel','calitate_otel']));
       const helper=getHelperVariant(helperIndex,reperForjat,rowDiam,rowCal) || helperIndex.get(reperForjat) || {reperDebitat:reperForjat};
       const reperDebitat=normalizeReper(helper.reperDebitat||reperForjat);
-      const diam=normalizeDiam(rowDiam || helper.diametru || '');
-      const cal=normalizeQuality(rowCal || helper.calitate || '');
+      const normalizedMaterial=normalizeSk304234Material(reperDebitat,rowDiam || helper.diametru || '',rowCal || helper.calitate || '');
+      const diam=normalizedMaterial.diam;
+      const cal=normalizedMaterial.cal;
       const bune=toNumber(pickValue(row,['buc_realizate','buc realizate','bucRealizate','realizat','cantitate','buc']));
       const rebut=toNumber(pickValue(row,['rebut','rebuturi']));
       const qty=bune+rebut;
       map.set(reperDebitat,(map.get(reperDebitat)||0)+qty);
       if(diam||cal){
         const vkey=debMaterialMetricKey(reperDebitat,diam,cal);
+        const dkey=debDiameterMetricKey(reperDebitat,diam);
         byVariant.set(vkey,(byVariant.get(vkey)||0)+qty);
+        byDiameter.set(dkey,(byDiameter.get(dkey)||0)+qty);
         variantRepers.add(reperDebitat);
       }
     });
     map.byVariant=byVariant;
+    map.byDiameter=byDiameter;
     map.variantRepers=variantRepers;
     return map;
   }
@@ -1957,7 +2003,7 @@
     const forjRealInv=currentForjatInventoryMapForSelectedPeriod(state.raw.inventarForjate);
     const steelEntries=aggregateSteelEntriesThisPeriod();
     const steelDebitated=aggregateSteelDebitatedThisPeriod(helperIndex, debMeta);
-    const debProduced=aggregateDebitateProducedThisPeriod(helperIndex);
+    const debProduced=aggregateDebitateProducedThisPeriod(helperIndex,debMeta);
     const debConsumed=aggregateDebitateConsumedThisPeriod(helperIndex);
     const forjProduced=aggregateForjateProducedThisPeriod();
     const forjRebut=aggregateForjateRebutThisPeriod();
