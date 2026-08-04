@@ -456,7 +456,7 @@
           <textarea id="txtObservatii" class="hidden"></textarea>
         </div>
 
-        <div id="modalHint" class="modalNote">Introdu denumirea reperului de debitare și pagina completează automat din DEBITATE Dimensiune și Calitate. Formularul nu se închide după salvare, iar anul, luna și data rămân păstrate exact ca la rândul precedent.</div>
+        <div id="modalHint" class="modalNote">Introdu denumirea reperului de debitare și pagina completează automat Dimensiunea, Calitatea și STOCUL DEBITAT TEORETIC pentru luna selectată. Cantitatea completată automat rămâne editabilă.</div>
       </div>
 
       <div class="modalFoot">
@@ -501,6 +501,13 @@
       indexUpdatedAtByYear: {},
       lookupDocKey: 'debitate',
       lookup: new Map(),
+      theoreticalSourceCache: new Map(),
+      theoreticalValueCache: new Map(),
+      helperForjateRows: null,
+      helperForjateIndex: null,
+      theoreticalTimer: null,
+      theoreticalRequestId: 0,
+      quantityManuallyEdited: false,
       pendingScrollBottom: false,
       user: null
     };
@@ -1006,6 +1013,464 @@ function shouldReplaceLookup(existing, candidate){
       return (candidate._index || 0) > (existing._index || 0);
     }
 
+
+    function normalizeTheoryReper(value){
+      return upper(value).replace(/\s+/g,'').replace(/[–—]/g,'-').replace(/_/g,'-').trim();
+    }
+
+    function normalizeTheoryDiam(value){
+      return upper(value)
+        .replace(/Ø/g,'')
+        .replace(/MM/g,'')
+        .replace(/\s+/g,'')
+        .replace(',', '.')
+        .replace(/[^0-9.\/-]/g,'')
+        .trim();
+    }
+
+    function normalizeTheoryQuality(value){
+      return upper(value).replace(/\s+/g,' ').trim();
+    }
+
+    function normalizeTheoryMaterial(reper, diametru, calitate){
+      const reperKey = normalizeTheoryReper(reper);
+      const diamKey = normalizeTheoryDiam(diametru);
+      let calKey = normalizeTheoryQuality(calitate);
+      if (reperKey === 'SK-304234') {
+        if (diamKey === '140') calKey = '16MNCR05';
+        else if (diamKey === '145') calKey = '20MNCRS5';
+      }
+      return { reper: reperKey, diametru: diamKey, calitate: calKey };
+    }
+
+    function theoryPeriodFromValues(an, luna, data){
+      let year = Number(normalizeYearValue(an) || 0);
+      let month = monthSortValue(monthNameFromAny(luna));
+      if (month === 99) month = 0;
+      const formatted = formatDate(data);
+      if ((!year || !month) && /^\d{2}\.\d{2}\.\d{4}$/.test(formatted)) {
+        if (!year) year = Number(formatted.slice(6,10));
+        if (!month) month = Number(formatted.slice(3,5));
+      }
+      if (!year || month < 1 || month > 12) return null;
+      return { year, month, code: year * 12 + month };
+    }
+
+    function theoryRowPeriod(row, type){
+      if (Array.isArray(row)) {
+        return theoryPeriodFromValues(row[0], row[1], row[2]);
+      }
+      return theoryPeriodFromValues(
+        pick(row, ['an','anul','year','AN','Year','Anul']),
+        pick(row, ['luna','month','Luna','Month']),
+        pick(row, ['data','date','Data','Date','data debitare','data forjare'])
+      );
+    }
+
+    function theoryDocKeyVariants(prefixes, year, month){
+      const y = String(year || '');
+      const m = String(month || '');
+      const mm = m.padStart(2,'0');
+      const keys = [];
+      (prefixes || []).forEach(prefix => {
+        if (!prefix) return;
+        keys.push(prefix, `${prefix}:index`);
+        if (!y) return;
+        keys.push(`${prefix}:${y}`, `${prefix}:${y}:index`);
+        if (month) {
+          keys.push(
+            `${prefix}:${y}-${mm}`,
+            `${prefix}:${y}-${m}`,
+            `${prefix}:${y}:${mm}`,
+            `${prefix}:${y}:${m}`,
+            `${prefix}:${y}/${mm}`,
+            `${prefix}:${y}/${m}`
+          );
+        }
+      });
+      return Array.from(new Set(keys));
+    }
+
+    function theoryDocLevel(docKey, prefixes, year, month){
+      const key = String(docKey || '');
+      const y = String(year || '');
+      const m = String(month || '');
+      const mm = m.padStart(2,'0');
+      for (const prefix of (prefixes || [])) {
+        if (month && [
+          `${prefix}:${y}-${mm}`, `${prefix}:${y}-${m}`,
+          `${prefix}:${y}:${mm}`, `${prefix}:${y}:${m}`,
+          `${prefix}:${y}/${mm}`, `${prefix}:${y}/${m}`
+        ].includes(key)) return 3;
+        if (key === `${prefix}:${y}`) return 2;
+        if (key === prefix) return 1;
+      }
+      return 0;
+    }
+
+    function theoryRowSignature(type, row, index){
+      if (row && typeof row === 'object' && !Array.isArray(row)) {
+        const id = clean(pick(row, ['id','_id','row_id','fisaKey','fisa_key']));
+        if (id) return `${type}|ID|${id}`;
+      }
+      if (type === 'inventar') {
+        const parsed = readTheoryInventoryRow(row);
+        return ['INV', parsed.period?.code || 0, parsed.reper, parsed.diametru, parsed.calitate, parsed.cantitate].join('|');
+      }
+      if (type === 'debitate') {
+        const parsed = readTheoryDebitateRow(row);
+        return ['DEB', parsed.period?.code || 0, parsed.data, parsed.reper, parsed.diametru, parsed.calitate, parsed.cantitate, parsed.echipament, parsed.schimb, parsed.operator].join('|');
+      }
+      const parsed = readTheoryForjateRow(row);
+      return ['FORJ', parsed.period?.code || 0, parsed.data, parsed.reper, parsed.diametru, parsed.calitate, parsed.bune, parsed.rebut, parsed.linie, parsed.schimb].join('|');
+    }
+
+    function dedupeTheoryRows(type, rows){
+      const out = [];
+      const seen = new Set();
+      (rows || []).forEach((row, index) => {
+        const signature = theoryRowSignature(type, row, index);
+        if (seen.has(signature)) return;
+        seen.add(signature);
+        out.push(row);
+      });
+      return out;
+    }
+
+    async function loadTheorySourceRows(type, prefixes, year, month, includePreviousYear = false){
+      const cacheKey = [type, year, month || 0, includePreviousYear ? 'prev' : 'single'].join('|');
+      if (state.theoreticalSourceCache.has(cacheKey)) return state.theoreticalSourceCache.get(cacheKey);
+
+      const loadPromise = (async () => {
+        const years = includePreviousYear ? [Number(year) - 1, Number(year)] : [Number(year)];
+        const keys = [];
+        years.forEach(y => keys.push(...theoryDocKeyVariants(prefixes, y, month)));
+        const docs = await queryDocsByKeys(Array.from(new Set(keys)));
+        let selectedDocs = [];
+
+        years.forEach(y => {
+          const docsForYear = docs.filter(doc => theoryDocLevel(doc?.doc_key, prefixes, y, month) > 0);
+          const bestLevel = docsForYear.reduce((best, doc) => Math.max(best, theoryDocLevel(doc?.doc_key, prefixes, y, month)), 0);
+          if (bestLevel > 0) selectedDocs.push(...docsForYear.filter(doc => theoryDocLevel(doc?.doc_key, prefixes, y, month) === bestLevel));
+        });
+
+        if (!selectedDocs.length) selectedDocs = docs.filter(doc => extractRows(doc).length);
+        return dedupeTheoryRows(type, selectedDocs.flatMap(doc => extractRows(doc)));
+      })();
+
+      state.theoreticalSourceCache.set(cacheKey, loadPromise);
+      try {
+        const rows = await loadPromise;
+        state.theoreticalSourceCache.set(cacheKey, rows);
+        return rows;
+      } catch (error) {
+        state.theoreticalSourceCache.delete(cacheKey);
+        throw error;
+      }
+    }
+
+    function readTheoryInventoryRow(row){
+      if (Array.isArray(row)) {
+        const period = theoryPeriodFromValues(row[0], row[1], '');
+        const material = normalizeTheoryMaterial(row[2], row[3], row[4]);
+        return { period, ...material, cantitate: Math.round(toNumber(row[5])) };
+      }
+      const period = theoryRowPeriod(row, 'inventar');
+      const material = normalizeTheoryMaterial(
+        pick(row, ['reper','REPER','Reper','denumire reper debitare','Denumire reper debitare','reper_debitare','reper debitare']),
+        pick(row, ['diametru','diametru_otel','diametru otel','dimensiune','Dimensiune','Dimensiune OTEL']),
+        pick(row, ['calitate','calitate_otel','calitate otel','Calitate','Calitate Otel'])
+      );
+      const cantitate = Math.round(toNumber(pick(row, [
+        'cantitateBuc','cantitate buc','cantitate_buc','STOC DEBITATE FINAL (buc)',
+        'stoc debitate final (buc)','stoc debitat final (buc)','stoc debitate final','stoc debitat final','stoc'
+      ])));
+      return { period, ...material, cantitate };
+    }
+
+    function readTheoryDebitateRow(row){
+      if (Array.isArray(row)) {
+        const isFull = row.length >= 12;
+        const period = theoryPeriodFromValues(row[0], row[1], row[2]);
+        const material = normalizeTheoryMaterial(
+          isFull ? row[4] : row[2],
+          isFull ? row[5] : row[3],
+          isFull ? row[6] : row[4]
+        );
+        return {
+          period,
+          data: clean(row[2]),
+          ...material,
+          cantitate: Math.round(toNumber(isFull ? row[11] : row[5])),
+          echipament: clean(isFull ? row[3] : ''),
+          schimb: clean(isFull ? row[12] : ''),
+          operator: clean(isFull ? row[15] : '')
+        };
+      }
+      const period = theoryRowPeriod(row, 'debitate');
+      const material = normalizeTheoryMaterial(
+        pick(row, ['reper','reper_debitare','reper debitat','denumire reper debitare']),
+        pick(row, ['diametru','diametruOtel','diametru_otel','diametru otel','dimensiune_otel','dimensiune otel','dimensiune']),
+        pick(row, ['calitate','codOtelCalitate','cod_otel_calitate','calitateOtel','calitate_otel','calitate otel','grade'])
+      );
+      return {
+        period,
+        data: clean(pick(row, ['data','date','data debitare'])),
+        ...material,
+        cantitate: Math.round(toNumber(pick(row, ['cantitate','cantitateBuc','cantitate_buc','cantitate buc','buc','realizat']))),
+        echipament: clean(pick(row, ['echipament','utilaj'])),
+        schimb: clean(pick(row, ['schimbul','schimb'])),
+        operator: clean(pick(row, ['operator','operator debitare','nume operator']))
+      };
+    }
+
+    function readTheoryForjateRow(row){
+      if (Array.isArray(row)) {
+        const isFull = row.length >= 19;
+        const period = theoryPeriodFromValues(row[0], row[1], row[2]);
+        return {
+          period,
+          data: clean(row[2]),
+          reper: normalizeTheoryReper(isFull ? row[5] : row[2]),
+          diametru: normalizeTheoryDiam(isFull ? row[6] : row[3]),
+          calitate: normalizeTheoryQuality(isFull ? row[7] : row[4]),
+          bune: Math.round(toNumber(isFull ? row[17] : row[5])),
+          rebut: Math.round(toNumber(isFull ? row[18] : row[6])),
+          linie: clean(isFull ? row[4] : ''),
+          schimb: clean(isFull ? row[3] : '')
+        };
+      }
+      const period = theoryRowPeriod(row, 'forjate');
+      return {
+        period,
+        data: clean(pick(row, ['data','date','data forjare'])),
+        reper: normalizeTheoryReper(pick(row, ['reper','reper forjat','reper_forjat'])),
+        diametru: normalizeTheoryDiam(pick(row, ['dimensiune otel','dimensiune_otel','diametru','diametru otel','diametru_otel'])),
+        calitate: normalizeTheoryQuality(pick(row, ['calitate','material','calitate otel','calitate_otel'])),
+        bune: Math.round(toNumber(pick(row, ['buc_realizate','buc realizate','bucRealizate','realizat','cantitate','buc']))),
+        rebut: Math.round(toNumber(pick(row, ['rebut','rebuturi']))),
+        linie: clean(pick(row, ['linie de forjare','utilaj','linie'])),
+        schimb: clean(pick(row, ['schimbul','schimb']))
+      };
+    }
+
+    function theoryHelperActive(row){
+      const raw = pick(row, ['is_active','is active','activ']);
+      if (raw === '' || raw === null || raw === undefined) return true;
+      if (typeof raw === 'boolean') return raw;
+      const value = normText(raw);
+      return !['0','false','fals','nu','n','off','inactive'].includes(value);
+    }
+
+    async function loadTheoryForjateHelpers(){
+      if (Array.isArray(state.helperForjateRows)) return state.helperForjateRows;
+      const tableNames = ['rf_helper_repere_forjate','helper_repere_forjate'];
+      for (const tableName of tableNames) {
+        try {
+          let result = await state.supabase
+            .from(tableName)
+            .select('reper_forjat,reper_debitare_origine,dimensiune_otel,calitate_otel,is_active,sort_order')
+            .limit(10000);
+          if (result?.error) result = await state.supabase.from(tableName).select('*').limit(10000);
+          if (!result?.error && Array.isArray(result?.data)) {
+            state.helperForjateRows = result.data.filter(theoryHelperActive);
+            return state.helperForjateRows;
+          }
+        } catch (_) {}
+      }
+      state.helperForjateRows = [];
+      return state.helperForjateRows;
+    }
+
+    function buildTheoryForjateIndex(rows){
+      const byReper = new Map();
+      (rows || []).forEach(row => {
+        const reperForjat = normalizeTheoryReper(pick(row, ['reper_forjat','REPER_FORJAT','reper forjat']));
+        const reperDebitat = normalizeTheoryReper(pick(row, ['reper_debitare_origine','REPER_DEBITARE_ORIGINE','reper debitare origine'])) || reperForjat;
+        if (!reperForjat || !reperDebitat) return;
+        const item = {
+          reperForjat,
+          reperDebitat,
+          diametru: normalizeTheoryDiam(pick(row, ['dimensiune_otel','DIMENSIUNE_OTEL','diametru_otel','DIAMETRU_OTEL'])),
+          calitate: normalizeTheoryQuality(pick(row, ['calitate_otel','CALITATE_OTEL','material','MATERIAL']))
+        };
+        const list = byReper.get(reperForjat) || [];
+        list.push(item);
+        byReper.set(reperForjat, list);
+      });
+      return byReper;
+    }
+
+    function getTheoryForjateHelper(index, reperForjat, diametru, calitate){
+      const list = index?.get(normalizeTheoryReper(reperForjat)) || [];
+      if (!list.length) return null;
+      const d = normalizeTheoryDiam(diametru);
+      const c = normalizeTheoryQuality(calitate);
+      if (d && c) {
+        const exact = list.find(item => item.diametru === d && item.calitate === c);
+        if (exact) return exact;
+      }
+      if (d) {
+        const byDiam = list.find(item => item.diametru === d);
+        if (byDiam) return byDiam;
+      }
+      if (c) {
+        const byQuality = list.find(item => item.calitate === c);
+        if (byQuality) return byQuality;
+      }
+      return list[0];
+    }
+
+    function createTheoryMetric(){
+      return { byReper:new Map(), byVariant:new Map(), byDiameter:new Map(), variantsByReper:new Map() };
+    }
+
+    function addTheoryMetric(metric, reper, diametru, calitate, quantity){
+      const material = normalizeTheoryMaterial(reper, diametru, calitate);
+      if (!material.reper || !quantity) return;
+      metric.byReper.set(material.reper, (metric.byReper.get(material.reper) || 0) + quantity);
+      const variantKey = [material.reper, material.diametru, material.calitate].join('|');
+      const diameterKey = [material.reper, material.diametru].join('|');
+      metric.byVariant.set(variantKey, (metric.byVariant.get(variantKey) || 0) + quantity);
+      if (material.diametru) metric.byDiameter.set(diameterKey, (metric.byDiameter.get(diameterKey) || 0) + quantity);
+      const variants = metric.variantsByReper.get(material.reper) || new Set();
+      variants.add([material.diametru, material.calitate].join('|'));
+      metric.variantsByReper.set(material.reper, variants);
+    }
+
+    function theoryMetricValue(metric, reper, diametru, calitate){
+      const material = normalizeTheoryMaterial(reper, diametru, calitate);
+      const variantKey = [material.reper, material.diametru, material.calitate].join('|');
+      if (metric.byVariant.has(variantKey)) return toNumber(metric.byVariant.get(variantKey));
+      if (material.diametru) {
+        const diameterKey = [material.reper, material.diametru].join('|');
+        if (metric.byDiameter.has(diameterKey)) return toNumber(metric.byDiameter.get(diameterKey));
+      }
+      const variants = metric.variantsByReper.get(material.reper);
+      if (material.reper === 'SK-304234' || (variants && variants.size > 1)) return 0;
+      return toNumber(metric.byReper.get(material.reper) || 0);
+    }
+
+    function buildTheoryInitialInventory(rows, selectedCode){
+      const parsedRows = (rows || []).map(readTheoryInventoryRow).filter(item => item.period && item.period.code < selectedCode);
+      const targetCode = parsedRows.reduce((best, item) => Math.max(best, item.period.code), -Infinity);
+      const exact = new Map();
+      const byDiameter = new Map();
+      const byReper = new Map();
+      const variantsByReper = new Map();
+      if (!Number.isFinite(targetCode)) return { targetCode:null, exact, byDiameter, byReper, variantsByReper };
+      parsedRows.filter(item => item.period.code === targetCode).forEach(item => {
+        const variantKey = [item.reper, item.diametru, item.calitate].join('|');
+        const diameterKey = [item.reper, item.diametru].join('|');
+        exact.set(variantKey, (exact.get(variantKey) || 0) + item.cantitate);
+        if (item.diametru) byDiameter.set(diameterKey, (byDiameter.get(diameterKey) || 0) + item.cantitate);
+        byReper.set(item.reper, (byReper.get(item.reper) || 0) + item.cantitate);
+        const variants = variantsByReper.get(item.reper) || new Set();
+        variants.add([item.diametru, item.calitate].join('|'));
+        variantsByReper.set(item.reper, variants);
+      });
+      return { targetCode, exact, byDiameter, byReper, variantsByReper };
+    }
+
+    function theoryInitialValue(lookup, reper, diametru, calitate){
+      const material = normalizeTheoryMaterial(reper, diametru, calitate);
+      const variantKey = [material.reper, material.diametru, material.calitate].join('|');
+      if (lookup.exact.has(variantKey)) return toNumber(lookup.exact.get(variantKey));
+      if (material.diametru) {
+        const diameterKey = [material.reper, material.diametru].join('|');
+        if (lookup.byDiameter.has(diameterKey)) return toNumber(lookup.byDiameter.get(diameterKey));
+      }
+      const variants = lookup.variantsByReper.get(material.reper);
+      if (material.reper === 'SK-304234' || (variants && variants.size > 1)) return 0;
+      return toNumber(lookup.byReper.get(material.reper) || 0);
+    }
+
+    async function calculateTheoryStock(an, luna, reper, diametru, calitate){
+      const year = Number(normalizeYearValue(an) || 0);
+      const month = monthSortValue(monthNameFromAny(luna));
+      const material = normalizeTheoryMaterial(reper, diametru, calitate);
+      if (!year || month === 99 || !material.reper) return null;
+      const cacheKey = [year, month, material.reper, material.diametru, material.calitate].join('|');
+      if (state.theoreticalValueCache.has(cacheKey)) return state.theoreticalValueCache.get(cacheKey);
+
+      const [inventoryRows, debitateRows, forjateRows, helperRows] = await Promise.all([
+        loadTheorySourceRows('inventar', ['inventar-debitat','inventar_debitat','stoc-initial-debitat','stoc_initial_debitat'], year, 0, true),
+        loadTheorySourceRows('debitate', ['debitate','debitari'], year, month, false),
+        loadTheorySourceRows('forjate', ['forjate'], year, month, false),
+        loadTheoryForjateHelpers()
+      ]);
+
+      if (!state.helperForjateIndex) state.helperForjateIndex = buildTheoryForjateIndex(helperRows);
+      const selectedCode = year * 12 + month;
+      const initialLookup = buildTheoryInitialInventory(inventoryRows, selectedCode);
+      const produced = createTheoryMetric();
+      const consumed = createTheoryMetric();
+
+      debitateRows.map(readTheoryDebitateRow).forEach(item => {
+        if (!item.period || item.period.code !== selectedCode) return;
+        addTheoryMetric(produced, item.reper, item.diametru, item.calitate, item.cantitate);
+      });
+
+      forjateRows.map(readTheoryForjateRow).forEach(item => {
+        if (!item.period || item.period.code !== selectedCode || !item.reper) return;
+        const helper = getTheoryForjateHelper(state.helperForjateIndex, item.reper, item.diametru, item.calitate);
+        const debitatReper = helper?.reperDebitat || item.reper;
+        const debitatDiam = item.diametru || helper?.diametru || '';
+        const debitatCal = item.calitate || helper?.calitate || '';
+        addTheoryMetric(consumed, debitatReper, debitatDiam, debitatCal, item.bune + item.rebut);
+      });
+
+      const stocInitial = theoryInitialValue(initialLookup, material.reper, material.diametru, material.calitate);
+      const debitatLuna = theoryMetricValue(produced, material.reper, material.diametru, material.calitate);
+      const consumatForja = theoryMetricValue(consumed, material.reper, material.diametru, material.calitate);
+      const result = {
+        stocInitial,
+        debitatLuna,
+        consumatForja,
+        stocTeoretic: Math.round(stocInitial + debitatLuna - consumatForja),
+        luna: monthNameFromAny(month),
+        an: String(year)
+      };
+      state.theoreticalValueCache.set(cacheKey, result);
+      return result;
+    }
+
+    function scheduleTheoryAutofill(delay = 250){
+      clearTimeout(state.theoreticalTimer);
+      state.quantityManuallyEdited = false;
+      const requestId = ++state.theoreticalRequestId;
+      state.theoreticalTimer = setTimeout(async () => {
+        if (state.selectedId) return;
+        const reper = clean(els.txtReper.value);
+        const an = normalizeYearValue(els.txtAn.value);
+        const luna = monthNameFromAny(els.txtLuna.value);
+        if (!reper || !an || !luna) return;
+        try {
+          setHint(`Se calculează stocul debitat teoretic pentru ${upper(reper)}, ${luna} ${an}...`);
+          const result = await calculateTheoryStock(an, luna, reper, els.txtDiametru.value, els.txtCalitate.value);
+          if (requestId !== state.theoreticalRequestId || state.selectedId || !result) return;
+          if (state.quantityManuallyEdited) {
+            setHint(
+              `Stocul teoretic calculat pentru ${upper(reper)}, ${result.luna} ${result.an} este ${prettyInt(result.stocTeoretic)} buc, ` +
+              'dar am păstrat cantitatea introdusă manual.'
+            );
+            return;
+          }
+          els.txtCantitateBuc.value = String(result.stocTeoretic);
+          recalcTotalKg();
+          setHint(
+            `Stoc teoretic completat automat pentru ${upper(reper)}, ${result.luna} ${result.an}: ` +
+            `${prettyInt(result.stocInitial)} stoc inițial + ${prettyInt(result.debitatLuna)} debitate − ` +
+            `${prettyInt(result.consumatForja)} consumate în forjă = ${prettyInt(result.stocTeoretic)} buc. Valoarea rămâne editabilă.`
+          );
+        } catch (error) {
+          console.error('calculateTheoryStock', error);
+          if (requestId !== state.theoreticalRequestId || state.selectedId) return;
+          setHint('Nu am putut calcula automat stocul teoretic din sursele cloud. Cantitatea poate fi introdusă manual.');
+        }
+      }, delay);
+    }
+
     function getYearDocKeys(year){
       const y = normalizeYearValue(year) || CURRENT_YEAR;
       return [
@@ -1302,8 +1767,9 @@ function renderStatus(){
       els.txtData.value = keepData || buildDateFromMonthYear(els.txtAn.value, els.txtLuna.value) || todayStr();
 
       state.selectedId = '';
+      state.quantityManuallyEdited = false;
       setModalMode(false);
-      setHint('Introdu denumirea reperului de debitare și pagina va completa automat Dimensiune și Calitate din DEBITATE. După salvare, anul, luna și data rămân păstrate.');
+      setHint('Introdu denumirea reperului de debitare și pagina va completa automat Dimensiunea, Calitatea și stocul debitat teoretic pentru luna selectată. Cantitatea rămâne editabilă.');
     }
 
     function fillForm(row){
@@ -1778,6 +2244,10 @@ async function handleImportXlsx(file){
 
     async function loadCloud(reason = 'Manual'){
       els.btnRefresh.disabled = true;
+      state.theoreticalSourceCache.clear();
+      state.theoreticalValueCache.clear();
+      state.helperForjateRows = null;
+      state.helperForjateIndex = null;
       try {
         await fetchIndex();
         await fetchDebitateLookup();
@@ -1860,20 +2330,34 @@ async function handleImportXlsx(file){
         const nextDate = buildDateFromMonthYear(els.txtAn.value, els.txtLuna.value);
         if (nextDate) els.txtData.value = nextDate;
       };
-      els.txtAn.addEventListener('change', syncDateFromPeriod);
-      els.txtLuna.addEventListener('change', syncDateFromPeriod);
+      els.txtAn.addEventListener('change', () => {
+        syncDateFromPeriod();
+        scheduleTheoryAutofill();
+      });
+      els.txtLuna.addEventListener('change', () => {
+        syncDateFromPeriod();
+        scheduleTheoryAutofill();
+      });
 
       const tryLookupNow = () => {
         els.txtReper.value = upper(els.txtReper.value);
         const ok = applyLookupFromReper(els.txtReper.value, true);
         if (!ok && clean(els.txtReper.value)) {
-          setHint(`Nu am găsit reperul ${els.txtReper.value} în ${state.lookupDocKey}. Verifică dacă există în DEBITATE și dacă a fost salvat în cloud.`);
+          setHint(`Nu am găsit reperul ${els.txtReper.value} în ${state.lookupDocKey}. Se încearcă totuși calculul stocului teoretic din sursele disponibile.`);
         }
+        scheduleTheoryAutofill();
       };
       els.txtReper.addEventListener('input', tryLookupNow);
       els.txtReper.addEventListener('change', tryLookupNow);
       els.txtReper.addEventListener('blur', tryLookupNow);
+      [els.txtDiametru, els.txtCalitate].forEach(el => {
+        el.addEventListener('input', () => scheduleTheoryAutofill());
+        el.addEventListener('change', () => scheduleTheoryAutofill());
+      });
 
+      els.txtCantitateBuc.addEventListener('input', () => {
+        if (!state.selectedId) state.quantityManuallyEdited = true;
+      });
       [els.txtCantitateBuc, els.txtKgBuc].forEach(el => {
         el.addEventListener('input', recalcTotalKg);
         el.addEventListener('change', recalcTotalKg);
