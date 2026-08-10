@@ -1217,6 +1217,167 @@ function tableToWorksheet(tableId, ws, options){
   }
 }
 
+
+function excelColName(col){
+  let n=Math.max(1,Number(col)||1),out='';
+  while(n>0){n--;out=String.fromCharCode(65+(n%26))+out;n=Math.floor(n/26)}
+  return out;
+}
+function excelFormulaResult(cell){
+  const v=cell&&cell.value;
+  if(typeof v==='number'&&isFinite(v))return v;
+  if(v&&typeof v==='object'&&typeof v.result==='number'&&isFinite(v.result))return v.result;
+  const n=parseExcelNumber(String(v==null?'':v));
+  return n===null?0:Number(n)||0;
+}
+function setExcelFormula(cell,formula,numFmt,resultOverride){
+  const result=(resultOverride!=null&&isFinite(Number(resultOverride)))?Number(resultOverride):excelFormulaResult(cell);
+  cell.value={formula:String(formula||''),result};
+  if(numFmt)cell.numFmt=numFmt;
+}
+function enableExcelAutoCalculation(wb){
+  try{
+    if(!wb.calcProperties)wb.calcProperties={};
+    wb.calcProperties.calcMode='auto';
+    wb.calcProperties.fullCalcOnLoad=true;
+    wb.calcProperties.forceFullCalc=true;
+  }catch(e){}
+}
+function operatorExcelRowMap(tableId,startRow){
+  const table=$(tableId),map=new Map();
+  if(!table)return map;
+  const base=Math.max(1,Number(startRow||1));
+  Array.from(table.rows).forEach((tr,i)=>{
+    if(!tr.querySelector('td')||tr.cells.length<2)return;
+    const name=canonicalOperator(String(tr.cells[1].innerText||tr.cells[1].textContent||'').trim());
+    const key=operatorKey(name);
+    if(!key||/^TOTAL\b/i.test(name))return;
+    map.set(key,base+i);
+  });
+  return map;
+}
+function applyBonusLunarExportFormulas(ws){
+  const table=$('bonusTable');
+  if(!table)return;
+  const data=buildBonusOperatorRows();
+  const opMap=new Map((data.rows||[]).map(op=>[operatorKey(op.name),op]));
+  const hourCols=LINES.map((_,i)=>3+i*3);
+  const normCols=LINES.map((_,i)=>4+i*3);
+  const rebutCols=LINES.map((_,i)=>5+i*3);
+  const totalHoursCol=3+LINES.length*3;
+  const totalRebutCol=totalHoursCol+1;
+  const totalNormCol=totalHoursCol+2;
+  const bonusCol=totalHoursCol+3;
+  Array.from(table.rows).forEach((tr,i)=>{
+    if(!tr.querySelector('td')||tr.cells.length<(2+LINES.length*3+4))return;
+    const row=i+1;
+    const name=canonicalOperator(String(tr.cells[1].innerText||tr.cells[1].textContent||'').trim());
+    const op=opMap.get(operatorKey(name));
+    if(!op)return;
+    const special=!!op.specialMode;
+    LINES.forEach((l,idx)=>{
+      const lk=lineKey(l),item=op.lines[lk]||null;
+      let hours=item?Number(item.ore)||0:0;
+      let normPct=null;
+      let rebutPct=Number(data.lineRebutMap.get(lk))||0;
+      let showRebut=true;
+      if(!special){
+        if(item&&hours>0&&Number(item.std)>0)normPct=Number(item.std)/hours;
+      }else if(op.specialMode==='NON_MP'){
+        if(lk===lineKey('MP')){showRebut=false;normPct=null;hours=0;}
+        else{const lm=data.lineNormMap.get(lk);normPct=lm&&Number(lm.normPct)>0?Number(lm.normPct):null;hours=0;}
+      }else if(op.specialMode==='MP'){
+        if(lk!==lineKey('MP')){showRebut=false;normPct=null;hours=0;}
+        else{const lm=data.lineNormMap.get(lk);normPct=lm&&Number(lm.normPct)>0?Number(lm.normPct):null;hours=Number(op.totalHoursOverride!=null?op.totalHoursOverride:hours)||0;}
+      }
+      const hc=ws.getCell(row,hourCols[idx]);hc.value=hours;hc.numFmt='0.##';
+      const nc=ws.getCell(row,normCols[idx]);nc.value=normPct==null?'':normPct;nc.numFmt='0.00%';
+      const rc=ws.getCell(row,rebutCols[idx]);rc.value=showRebut?rebutPct:'';rc.numFmt='0.00%';
+    });
+    const hourRefs=hourCols.map(c=>excelColName(c)+row);
+    const normTerms=hourCols.map((c,idx)=>excelColName(c)+row+'*'+excelColName(normCols[idx])+row);
+    const rebutTerms=hourCols.map((c,idx)=>excelColName(c)+row+'*'+excelColName(rebutCols[idx])+row);
+    const denom=hourRefs.join('+');
+    if(!special){
+      setExcelFormula(ws.getCell(row,totalHoursCol),'SUM('+hourRefs.join(',')+')','0.##',Number(op.totalHours)||0);
+      setExcelFormula(ws.getCell(row,totalRebutCol),'IFERROR(('+rebutTerms.join('+')+')/('+denom+'),0)','0.00%',Number(op.totalRebutPct)||0);
+      setExcelFormula(ws.getCell(row,totalNormCol),'IFERROR(('+normTerms.join('+')+')/('+denom+'),0)','0.00%',Number(op.totalNormPct)||0);
+    }else{
+      ws.getCell(row,totalHoursCol).value=Number(op.totalHoursOverride!=null?op.totalHoursOverride:op.totalHours)||0;ws.getCell(row,totalHoursCol).numFmt='0.##';
+      ws.getCell(row,totalRebutCol).value=Number(op.totalRebutPct)||0;ws.getCell(row,totalRebutCol).numFmt='0.00%';
+      ws.getCell(row,totalNormCol).value=Number(op.totalNormPct)||0;ws.getCell(row,totalNormCol).numFmt='0.00%';
+    }
+    const normRef=excelColName(totalNormCol)+row,rebutRef=excelColName(totalRebutCol)+row;
+    const bonusFormula='IF('+normRef+'<1,0,IF('+rebutRef+'>0.01,0,IF('+normRef+'<1.05,IF('+rebutRef+'>=0.0076,0.15,0.20),IF('+normRef+'<=1.10,IF('+rebutRef+'>=0.0076,0.20,0.25),IF('+rebutRef+'>=0.0076,0.25,0.35)))))';
+    setExcelFormula(ws.getCell(row,bonusCol),bonusFormula,'0.00%',calcBonusPercent(Number(op.totalNormPct)||0,Number(op.totalRebutPct)||0));
+  });
+}
+function applyBonusOtherExportFormulas(ws,startRow){
+  const table=$('bonusOtherTable');if(!table)return;
+  const base=Math.max(1,Number(startRow||1));
+  let groupRows=[];const allDataRows=[];
+  Array.from(table.rows).forEach((tr,i)=>{
+    const row=base+i;
+    if(!tr.querySelector('td'))return;
+    if(tr.querySelector('.deptTitleCell')){groupRows=[];return;}
+    const first=String(tr.cells[0]?.innerText||tr.cells[0]?.textContent||'').trim();
+    if(tr.cells.length===5&&!/^TOTAL\b/i.test(first)){
+      groupRows.push(row);allDataRows.push(row);return;
+    }
+    if(/^TOTAL\b/i.test(first)&&groupRows.length){
+      const formula='SUM('+groupRows.map(r=>'C'+r).join(',')+')';
+      setExcelFormula(ws.getCell(row,3),formula,'0.##');
+      groupRows=[];
+    }
+  });
+  if(allDataRows.length){
+    const footer=Array.from(table.rows).findIndex(tr=>/^TOTAL GENERAL\b/i.test(String(tr.cells[0]?.innerText||tr.cells[0]?.textContent||'').trim()));
+    if(footer>=0)setExcelFormula(ws.getCell(base+footer,3),'SUM('+allDataRows.map(r=>'C'+r).join(',')+')','0.##');
+  }
+}
+function applyDeptDowntimeExportFormulas(ws,startRow,startCol){
+  const table=$('deptDowntimeTable');if(!table)return;
+  const baseRow=Math.max(1,Number(startRow||1)),baseCol=Math.max(1,Number(startCol||1));
+  Array.from(table.rows).forEach((tr,i)=>{
+    if(!tr.querySelector('td')||tr.cells.length<8)return;
+    const row=baseRow+i;
+    const planned=excelColName(baseCol+1)+row;
+    [[baseCol+2,baseCol+3],[baseCol+4,baseCol+5],[baseCol+6,baseCol+7]].forEach(([lostCol,pctCol])=>{
+      const lost=excelColName(lostCol)+row;
+      setExcelFormula(ws.getCell(row,pctCol),'IFERROR('+lost+'/'+planned+',0)','0.00%');
+    });
+  });
+}
+function applyBonusAllExportLinks(wsAll,wsBonus,wsOther){
+  const table=$('bonusAllTable');if(!table)return;
+  const bonusMap=operatorExcelRowMap('bonusTable',1);
+  const otherMap=operatorExcelRowMap('bonusOtherTable',2);
+  const dataRows=[];
+  Array.from(table.rows).forEach((tr,i)=>{
+    if(!tr.querySelector('td'))return;
+    const row=i+1;
+    if(tr.cells.length===5){
+      const name=canonicalOperator(String(tr.cells[1].innerText||tr.cells[1].textContent||'').trim());
+      const key=operatorKey(name);
+      if(!key)return;
+      dataRows.push(row);
+      if(bonusMap.has(key)){
+        const src=bonusMap.get(key);
+        setExcelFormula(wsAll.getCell(row,3),"'BONUS LUNAR'!U"+src,'0.##');
+        setExcelFormula(wsAll.getCell(row,4),"'BONUS LUNAR'!X"+src,'0.00%');
+      }else if(otherMap.has(key)){
+        const src=otherMap.get(key);
+        setExcelFormula(wsAll.getCell(row,3),"'BONUS ALTII'!C"+src,'0.##');
+        setExcelFormula(wsAll.getCell(row,4),"'BONUS ALTII'!D"+src,'0.00%');
+        setExcelFormula(wsAll.getCell(row,5),"'BONUS ALTII'!E"+src,'#,##0.00 "lei"');
+      }
+      return;
+    }
+    const first=String(tr.cells[0]?.innerText||tr.cells[0]?.textContent||'').trim();
+    if(/^TOTAL GENERAL\b/i.test(first)&&dataRows.length)setExcelFormula(wsAll.getCell(row,3),'SUM('+dataRows.map(r=>'C'+r).join(',')+')','0.##');
+  });
+}
+
 function getForjateExtractRows(){const y=selectedYear(),m=selectedMonth(),filterLine=selectedLine();return FORJATE.filter(r=>{const d=rowDate(r);const ry=rowYear(r)||String((d.match(/\d{4}$/)||[''])[0]);let rm=rowMonth(r)||monthOfDate(d);const mi=monthIndexFromText(rm);rm=mi>=0?MONTHS[mi]:String(rm||'').toLowerCase();const lin=rowLineValue(r);if(ry&&String(ry)!==y)return false;if(rm&&String(rm).toLowerCase()!==m)return false;if(filterLine&&lineKey(lin)!==lineKey(filterLine))return false;return true}).map(r=>({data:rowDate(r),schimb:rowShiftValue(r),utilaj:rowLineValue(r),reper:rowReperValue(r),realizat:rowBucValue(r)})).filter(r=>r.data||r.utilaj||r.reper||r.realizat).sort((a,b)=>dmyToInput(a.data).localeCompare(dmyToInput(b.data))||Number(a.schimb)-Number(b.schimb)||String(a.utilaj).localeCompare(String(b.utilaj),'ro')||String(a.reper).localeCompare(String(b.reper),'ro'))}
 function styleGeneratedWorksheet(ws,headerRowCount){const headerRows=headerRowCount||1;ws.eachRow((row,rowNumber)=>{row.eachCell(cell=>{cell.border={top:{style:'thin',color:{argb:'FF111827'}},left:{style:'thin',color:{argb:'FF111827'}},bottom:{style:'thin',color:{argb:'FF111827'}},right:{style:'thin',color:{argb:'FF111827'}}};cell.alignment={vertical:'middle',horizontal:rowNumber<=headerRows?'center':(cell.col===3||cell.col===4?'left':'center'),wrapText:false};cell.font={name:'Calibri',size:rowNumber<=headerRows?11:10,bold:rowNumber<=headerRows,color:{argb:'FF000000'}};cell.fill={type:'pattern',pattern:'solid',fgColor:{argb:rowNumber<=headerRows?'FFCFE3F6':'FFFFFFFF'}}})});ws.views=[{state:'frozen',ySplit:headerRows}];if(ws.rowCount>1)ws.autoFilter={from:{row:1,column:1},to:{row:1,column:ws.columnCount}};ws.columns.forEach(col=>{let max=8;col.eachCell({includeEmpty:true},cell=>{max=Math.max(max,Math.min(36,String(cell.value==null?'':cell.value).length+2))});col.width=max});ws.getColumn(1).numFmt='@';ws.getColumn(2).numFmt='@';ws.getColumn(3).numFmt='@';ws.getColumn(4).numFmt='@';ws.getColumn(5).numFmt='#,##0'}
 function addRealizariWorksheet(wb){const ws=wb.addWorksheet('Realizari');ws.addRow(['DATA','SHIMBUL','UTILAJUL','REPERUL','REALIZAT']);getForjateExtractRows().forEach(r=>{ws.addRow([r.data,String(r.schimb||''),r.utilaj,r.reper,Number(r.realizat)||0])});styleGeneratedWorksheet(ws,1);return ws}
@@ -1282,7 +1443,7 @@ function styleDetailExportWorksheet(ws){
   ws.getColumn(5).numFmt='@';
   ws.getColumn(6).numFmt='@';
   ws.getColumn(7).numFmt='#,##0';
-  ws.getColumn(8).numFmt='@';
+  ws.getColumn(8).numFmt='0.##';
   ws.getColumn(9).numFmt='0.00';
   ws.getColumn(10).numFmt='0.00%';
   ws.eachRow((row,rowNumber)=>{
@@ -1303,9 +1464,11 @@ function addDetailMonthWorksheet(wb,month,rows){
   ws.addRow(['Sursă','Data','Linie','Schimb','Operator','Reper','Cantitate','Norma','Ore efective','Procent']);
   rows.slice().sort((a,b)=>String(a.data||'').localeCompare(String(b.data||''))||String(a.linie||'').localeCompare(String(b.linie||''),'ro')||String(a.operator||'').localeCompare(String(b.operator||''),'ro')).forEach(r=>{
     const norma=lookupNormaFor(r.reper,r.linie);
+    const normaNum=parseExcelNumber(String(norma||''));
+    const standard=calcNormHoursForDetail(r,8);
     const oreEfective=calcEffectiveHoursForDetail(r);
     const procent=calcPercentForDetail(r,oreEfective);
-    ws.addRow([
+    const xlRow=ws.addRow([
       r.source==='auto'?'RAPORT ORE':'MANUAL',
       String(r.data||''),
       String(r.linie||''),
@@ -1313,10 +1476,20 @@ function addDetailMonthWorksheet(wb,month,rows){
       String(r.operator||''),
       String(r.reper||''),
       Math.round(toNum(r.buc)),
-      String(norma||''),
+      normaNum!==null?Number(normaNum):String(norma||''),
       oreEfective==null?'':Number(oreEfective),
       procent==null?'':Number(procent)
     ]);
+    if(standard!=null&&isFinite(Number(standard))&&Number(standard)>0){
+      const rr=xlRow.number,qty=toNum(r.buc),std=Number(standard);
+      let stdExpr=String(std);
+      if(normaNum!==null&&Number(normaNum)>0){
+        const direct=(qty/Number(normaNum))*8;
+        if(isFinite(direct)&&Math.abs(direct-std)<=1e-7*Math.max(1,Math.abs(std)))stdExpr='(G'+rr+'/H'+rr+')*8';
+      }
+      setExcelFormula(ws.getCell(rr,9),'IFERROR(MIN('+stdExpr+',8),\"\")','0.00',oreEfective==null?0:Number(oreEfective));
+      setExcelFormula(ws.getCell(rr,10),'IFERROR(('+stdExpr+')/I'+rr+',\"\")','0.00%',procent==null?0:Number(procent));
+    }
   });
   styleDetailExportWorksheet(ws);
   return ws;
@@ -1330,6 +1503,7 @@ async function exportDetailExcelMultiMonth(){
   try{
     const wb=new window.ExcelJS.Workbook();
     wb.creator='K.A.D';wb.created=new Date();wb.modified=new Date();
+    enableExcelAutoCalculation(wb);
     months.forEach(month=>addDetailMonthWorksheet(wb,month,computeDetailRowsForMonth(month)));
     const buffer=await wb.xlsx.writeBuffer();
     const suffix=months.length===1?months[0]:(months.length+'-luni');
@@ -1348,9 +1522,11 @@ async function exportExcel(){
   recalcAndRender();
   const wb=new window.ExcelJS.Workbook();
   wb.creator='K.A.D';wb.created=new Date();wb.modified=new Date();
+  enableExcelAutoCalculation(wb);
 
   const wsBonus=wb.addWorksheet('BONUS LUNAR');
   tableToWorksheet('bonusTable',wsBonus,{freeze:true,xSplit:2,ySplit:3});
+  applyBonusLunarExportFormulas(wsBonus);
 
   const wsAltii=wb.addWorksheet('BONUS ALTII');
   renderBonusOtherTable();
@@ -1358,11 +1534,14 @@ async function exportExcel(){
   prepareBonusOtherExportSheet(wsAltii);
   tableToWorksheet('bonusOtherTable',wsAltii,{startRow:2,startCol:1});
   tableToWorksheet('deptDowntimeTable',wsAltii,{startRow:2,startCol:6});
+  applyBonusOtherExportFormulas(wsAltii,2);
+  applyDeptDowntimeExportFormulas(wsAltii,2,6);
   wsAltii.views=[{state:'frozen',ySplit:2}];
 
   const wsToti=wb.addWorksheet('TOTI OPERATORII');
   renderBonusAllTable();
   tableToWorksheet('bonusAllTable',wsToti,{freeze:true,xSplit:0,ySplit:1});
+  applyBonusAllExportLinks(wsToti,wsBonus,wsAltii);
 
   [wsBonus,wsAltii,wsToti].forEach(ws=>{
     ws.pageSetup={orientation:'landscape',fitToPage:true,fitToWidth:1,fitToHeight:0,margins:{left:0.2,right:0.2,top:0.35,bottom:0.35,header:0.15,footer:0.15}};
