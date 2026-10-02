@@ -186,7 +186,6 @@
     var days = Number(options.days || getTrustDaysForRole(role));
     if(!Number.isFinite(days) || days <= 0) days = DEFAULT_DAYS;
     var token = randomHex(32);
-    if(!setStoredToken(user, token)) return { ok:false, reason:'local-storage-unavailable' };
 
     try{
       var ctx = await buildContext(user, token);
@@ -207,6 +206,29 @@
       };
       var res = await sb.from(TABLE_NAME).upsert(row, { onConflict:'user_id,device_id_hash' }).select('id,trusted_until').maybeSingle();
       if(res.error) throw res.error;
+
+      if(!setStoredToken(user, token)){
+        try{
+          await sb.from(TABLE_NAME)
+            .update({ revoked_at: new Date().toISOString(), updated_at: new Date().toISOString() })
+            .eq('user_id', user.id)
+            .eq('device_id_hash', ctx.deviceIdHash);
+        }catch(_e){}
+        return { ok:false, reason:'local-storage-unavailable' };
+      }
+
+      var verified = await isTrustedDevice(sb, user, {});
+      if(!verified){
+        removeStoredToken(user);
+        try{
+          await sb.from(TABLE_NAME)
+            .update({ revoked_at: new Date().toISOString(), updated_at: new Date().toISOString() })
+            .eq('user_id', user.id)
+            .eq('device_id_hash', ctx.deviceIdHash);
+        }catch(_e){}
+        return { ok:false, reason:'saved-but-verification-failed' };
+      }
+
       return { ok:true, days:days, trusted_until: row.trusted_until, row: res.data || null };
     }catch(error){
       removeStoredToken(user);
