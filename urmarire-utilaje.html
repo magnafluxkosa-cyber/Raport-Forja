@@ -65,13 +65,16 @@
     thead .sticky-c{position:sticky;left:240px;z-index:12}
     .day-cell{min-width:35px;width:35px;font-size:12px;font-weight:900;background:#fff;color:#111}
     .day-cell.zero-weekday{background:#fff;color:#c00000}
-    .day-cell.zero-weekend{background:var(--weekend);color:transparent}
+    .day-cell.zero-weekend{background:var(--weekend);color:#c00000}
     .day-cell.active{background:#fff;color:#111}
     .day-cell.active.weekend-cell{background:var(--weekend);color:#111}
     .manual-cell{padding:0}
     .manual-hour{display:block;width:100%;height:29px;border:0;outline:0;background:transparent;text-align:center;font:900 12px Arial,Helvetica,sans-serif;color:#111;padding:0;margin:0}
     .manual-hour.zero{color:#c00000}
-    .manual-hour.weekend-empty{color:transparent}
+    .manual-hour.weekend-empty{color:#c00000}
+    .day-cell.future-cell{color:transparent}
+    .manual-cell.future-cell .manual-hour{color:transparent;pointer-events:none}
+    .manual-cell.future-cell .manual-hour:disabled{-webkit-text-fill-color:transparent}
     .manual-hour:focus{box-shadow:inset 0 0 0 2px #2563eb;background:rgba(255,255,255,.72);color:#111}
     .manual-hour:disabled{cursor:default;opacity:1;-webkit-text-fill-color:currentColor}
     .manual-cell.weekend-cell{background:var(--weekend)}
@@ -137,13 +140,13 @@
   const SOURCE_GROUPS = ['forja','tratament','magnaflux','debitare'];
   const TABLE_GROUPS = [
     {label:'FORJA',rows:[
-      {id:'forja-5t-china',label:'Linia 5 T CHINA',source:'forja',aliases:['LINIA 5 T CHINA','LINIA5TCHINA','5 T CHINA','5TCHINA']},
-      {id:'forja-125',label:'LINIA 1,25',source:'forja',aliases:['LINIA 1,25','LINIA 1.25','LINIA1,25','LINIA1.25','LINIA125']},
-      {id:'forja-25',label:'LINIA 2,5',source:'forja',aliases:['LINIA 2,5','LINIA 2.5','LINIA2,5','LINIA2.5','LINIA25']},
-      {id:'forja-3t-zarnesti',label:'LINIA 3T ZARNESTI',source:'forja',aliases:['LINIA 3T ZARNESTI','LINIA3TZARNESTI','3T ZARNESTI','3TZARNESTI','3 T ZR','3TZR']}
+      {id:'forja-5t-china',label:'Linia 5 T CHINA',source:'forja',aliases:['5 T CHINA','5TCHINA','LINIA 5 T CHINA','LINIA5TCHINA']},
+      {id:'forja-125',label:'LINIA 1,25',source:'forja',aliases:['1.25 T','1,25 T','1.25T','1,25T','LINIA 1,25','LINIA 1.25','LINIA1,25','LINIA1.25','LINIA125']},
+      {id:'forja-25',label:'LINIA 2,5',source:'forja',aliases:['2.5 T','2,5 T','2.5T','2,5T','LINIA 2,5','LINIA 2.5','LINIA2,5','LINIA2.5','LINIA25']},
+      {id:'forja-3t-zarnesti',label:'LINIA 3T ZARNESTI',source:'forja',aliases:['3 T ZR','3TZR','LINIA 3T ZARNESTI','LINIA3TZARNESTI','3T ZARNESTI','3TZARNESTI']}
     ]},
     {label:'Maxipresa',rows:[
-      {id:'maxipresa-2500',label:'Maxipresa 2500',source:'forja',aliases:['MAXIPRESA 2500','MAXIPRESA2500','MAXIPRESA']},
+      {id:'maxipresa-2500',label:'Maxipresa 2500',source:'forja',aliases:['MP','MAXIPRESA','MAXIPRESA 2500','MAXIPRESA2500']},
       {id:'ga-55-vsd',label:'GA 55 VSD',manual:true}
     ]},
     {label:'TT/Magnaflux',rows:[
@@ -230,6 +233,12 @@
   function machineLabel(value){ return clean(value); }
   function monthDays(year,month){ return new Date(Date.UTC(year,month,0)).getUTCDate(); }
   function isWeekend(year,month,day){ const wd=new Date(Date.UTC(year,month-1,day)).getUTCDay(); return wd===0 || wd===6; }
+  function isFutureDate(year,month,day){
+    const now=new Date();
+    const today=new Date(now.getFullYear(),now.getMonth(),now.getDate());
+    const target=new Date(year,month-1,day);
+    return target.getTime()>today.getTime();
+  }
   function displayDateTime(iso){
     if(!iso) return '';
     const d=new Date(iso); if(Number.isNaN(d.getTime())) return '';
@@ -343,16 +352,28 @@
   function matchConfiguredRow(sourceKey,rawMachine){
     const raw=norm(rawMachine);
     if(!raw&&sourceKey!=='tratament') return null;
+    const rows=[];
     for(const group of TABLE_GROUPS){
       for(const row of group.rows){
         if(row.manual||row.source!==sourceKey) continue;
         if(row.matchAll) return row;
-        const aliases=(row.aliases||[]).map(norm);
-        if(aliases.includes(raw)) return row;
-        if(aliases.some(a=>a && raw.includes(a))) return row;
+        rows.push(row);
       }
     }
-    return null;
+    // 1) Potrivire exactă cu denumirea reală din foaia-sursă (prioritară).
+    for(const row of rows){
+      const aliases=(row.aliases||[]).map(norm).filter(Boolean);
+      if(aliases.includes(raw)) return row;
+    }
+    // 2) Fallback doar pentru denumiri mai lungi/explicate care conțin aliasul.
+    const candidates=[];
+    for(const row of rows){
+      for(const alias of (row.aliases||[]).map(norm).filter(a=>a.length>=4)){
+        if(raw.includes(alias)) candidates.push({row,len:alias.length});
+      }
+    }
+    candidates.sort((a,b)=>b.len-a.len);
+    return candidates.length?candidates[0].row:null;
   }
 
   async function loadSources(){
@@ -424,17 +445,29 @@
       machines.forEach((machine,index)=>{
         let total=0; const cells=[];
         for(let day=1;day<=days;day++){
-          const hours=rowHours(machine,day); total+=hours;
+          const future=isFutureDate(year,month,day);
           const weekend=isWeekend(year,month,day);
+          const hours=future?0:rowHours(machine,day);
+          if(!future) total+=hours;
           if(machine.manual){
-            const val=(hours>0||!weekend)?String(hours):'';
-            const classes=['day-cell','manual-cell']; if(weekend)classes.push('weekend-cell');
-            cells.push('<td class="'+classes.join(' ')+'"><input class="manual-hour '+(hours===0&&!weekend?'zero ':'')+(hours===0&&weekend?'weekend-empty':'')+'" data-row-id="'+esc(machine.id)+'" data-day="'+day+'" inputmode="numeric" maxlength="2" value="'+esc(val)+'" '+(state.canEdit?'':'disabled')+' aria-label="'+esc(machine.label+' ziua '+day)+'"></td>');
+            const val=future?'':String(hours);
+            const classes=['day-cell','manual-cell'];
+            if(weekend) classes.push('weekend-cell');
+            if(future) classes.push('future-cell');
+            const inputClasses=['manual-hour'];
+            if(!future&&hours===0) inputClasses.push(weekend?'weekend-empty':'zero');
+            const disabled=(!state.canEdit||future)?'disabled':'';
+            cells.push('<td class="'+classes.join(' ')+'"><input class="'+inputClasses.join(' ')+'" data-row-id="'+esc(machine.id)+'" data-day="'+day+'" inputmode="numeric" maxlength="2" value="'+esc(val)+'" '+disabled+' aria-label="'+esc(machine.label+' ziua '+day)+'"></td>');
           }else{
             let cls='day-cell ';
-            if(weekend) cls+=(hours>0?'active weekend-cell':'zero-weekend');
-            else cls+=(hours>0?'active':'zero-weekday');
-            cells.push('<td class="'+cls+'">'+(hours>0?hours:(weekend?'':'0'))+'</td>');
+            if(future){
+              cls+='future-cell'+(weekend?' weekend-cell':'');
+              cells.push('<td class="'+cls+'"></td>');
+            }else{
+              if(weekend) cls+=(hours>0?'active weekend-cell':'zero-weekend');
+              else cls+=(hours>0?'active':'zero-weekday');
+              cells.push('<td class="'+cls+'">'+(hours>0?hours:'0')+'</td>');
+            }
           }
         }
         totalHours+=total;
@@ -452,8 +485,9 @@
     return n;
   }
   function refreshManualRowTotal(rowId){
-    const days=monthDays(Number($('yearSelect').value),Number($('monthSelect').value));
-    let total=0; for(let d=1;d<=days;d++) total+=getManualValue(rowId,d);
+    const year=Number($('yearSelect').value),month=Number($('monthSelect').value);
+    const days=monthDays(year,month);
+    let total=0; for(let d=1;d<=days;d++) if(!isFutureDate(year,month,d)) total+=getManualValue(rowId,d);
     const cell=document.querySelector('[data-total-row="'+CSS.escape(rowId)+'"]'); if(cell)cell.textContent=String(total);
   }
   function bindManualInputs(year,month){
@@ -463,6 +497,7 @@
       inp.addEventListener('change',async()=>{
         if(!state.canEdit){renderTable(year,month);return;}
         const rowId=inp.dataset.rowId,day=Number(inp.dataset.day),weekend=isWeekend(year,month,day);
+        if(isFutureDate(year,month,day)){ renderTable(year,month); return; }
         const value=sanitizeManualHours(inp.value);
         setManualValue(rowId,day,value);
         inp.value=(value>0||!weekend)?String(value):'';
