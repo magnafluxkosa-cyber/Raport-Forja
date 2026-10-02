@@ -1,5 +1,5 @@
-// KAD_FORM_AUDIT_CAN_EDIT: can_edit readonly view-only guard prezent prin pagina/autentificare comuna.
-// KAD_FORM_AUDIT_CONFIRM: confirmare pentru actiuni destructive; utilizatorul trebuie sa fie sigur inainte de stergere/remove/delete.
+// K.A.D. - Trusted device helper for MFA
+// v2: RPC-backed persistence, AAL2-only enrollment, AAL1 login verification.
 (function(){
   'use strict';
 
@@ -10,6 +10,8 @@
   var ADMIN_DAYS = 7;
   var EDITOR_DAYS = 14;
   var OPERATOR_DAYS = 30;
+  var COOKIE_DEVICE = 'rf_td_device_v2';
+  var VERSION = '2.0.0-20261002';
 
   function normalizeEmail(value){
     return String(value || '').trim().toLowerCase();
@@ -20,11 +22,39 @@
   }
 
   function safeSet(key, value){
-    try { localStorage.setItem(key, value); return true; } catch(_e) { return false; }
+    try { localStorage.setItem(key, value); return localStorage.getItem(key) === String(value); } catch(_e) { return false; }
   }
 
   function safeRemove(key){
     try { localStorage.removeItem(key); } catch(_e) {}
+  }
+
+  function cookieGet(name){
+    try{
+      var needle = encodeURIComponent(name) + '=';
+      var parts = String(document.cookie || '').split(';');
+      for(var i=0;i<parts.length;i++){
+        var p = parts[i].trim();
+        if(p.indexOf(needle) === 0) return decodeURIComponent(p.slice(needle.length));
+      }
+    }catch(_e){}
+    return '';
+  }
+
+  function cookieSet(name, value, days){
+    try{
+      var maxAge = Math.max(1, Math.floor(Number(days || 31) * 86400));
+      var secure = location && location.protocol === 'https:' ? '; Secure' : '';
+      document.cookie = encodeURIComponent(name) + '=' + encodeURIComponent(String(value || '')) + '; Path=/; Max-Age=' + maxAge + '; SameSite=Lax' + secure;
+      return cookieGet(name) === String(value || '');
+    }catch(_e){ return false; }
+  }
+
+  function cookieRemove(name){
+    try{
+      var secure = location && location.protocol === 'https:' ? '; Secure' : '';
+      document.cookie = encodeURIComponent(name) + '=; Path=/; Max-Age=0; SameSite=Lax' + secure;
+    }catch(_e){}
   }
 
   function bytesToHex(bytes){
@@ -42,12 +72,17 @@
     return out;
   }
 
+  function userCookieTokenName(user){
+    return 'rf_td_token_v2_' + String(user && user.id || 'unknown').replace(/[^a-zA-Z0-9]/g,'').slice(0,32);
+  }
+
   function getOrCreateDeviceId(){
-    var value = String(safeGet(DEVICE_ID_KEY) || '').trim();
+    var value = String(safeGet(DEVICE_ID_KEY) || cookieGet(COOKIE_DEVICE) || '').trim();
     if(!value){
       value = randomHex(24);
-      safeSet(DEVICE_ID_KEY, value);
     }
+    safeSet(DEVICE_ID_KEY, value);
+    cookieSet(COOKIE_DEVICE, value, 365);
     return value;
   }
 
@@ -56,15 +91,23 @@
   }
 
   function getStoredToken(user){
-    return String(safeGet(tokenKey(user)) || '').trim();
+    var value = String(safeGet(tokenKey(user)) || cookieGet(userCookieTokenName(user)) || '').trim();
+    if(value){
+      safeSet(tokenKey(user), value);
+      cookieSet(userCookieTokenName(user), value, 31);
+    }
+    return value;
   }
 
-  function setStoredToken(user, token){
-    return safeSet(tokenKey(user), token);
+  function setStoredToken(user, token, days){
+    var okLocal = safeSet(tokenKey(user), token);
+    var okCookie = cookieSet(userCookieTokenName(user), token, Math.min(31, Math.max(1, Number(days || 31))));
+    return okLocal || okCookie;
   }
 
   function removeStoredToken(user){
     safeRemove(tokenKey(user));
+    cookieRemove(userCookieTokenName(user));
   }
 
   async function sha256(value){
@@ -80,21 +123,6 @@
       h = Math.imul(h, 0x01000193);
     }
     return ('00000000' + (h >>> 0).toString(16)).slice(-8);
-  }
-
-  function getUserAgentFingerprintSource(){
-    var nav = window.navigator || {};
-    var screenInfo = window.screen || {};
-    var parts = [
-      nav.userAgent || '',
-      nav.platform || '',
-      nav.language || '',
-      String(screenInfo.width || ''),
-      String(screenInfo.height || ''),
-      String(screenInfo.colorDepth || ''),
-      (Intl && Intl.DateTimeFormat ? (Intl.DateTimeFormat().resolvedOptions().timeZone || '') : '')
-    ];
-    return parts.join('|');
   }
 
   function getDeviceLabel(){
@@ -126,29 +154,39 @@
       token: token,
       deviceIdHash: await sha256('kad-device:' + deviceId),
       tokenHash: token ? await sha256('kad-token:' + token) : '',
-      userAgentHash: await sha256('kad-ua:' + getUserAgentFingerprintSource()),
       deviceLabel: getDeviceLabel()
     };
   }
 
-  function isFreshDate(value, maxAgeMs){
-    var time = Date.parse(String(value || ''));
-    if(!Number.isFinite(time)) return false;
-    return (Date.now() - time) <= maxAgeMs;
+  async function rpcTrustedCheck(sb, ctx){
+    if(!sb || typeof sb.rpc !== 'function') return { available:false, trusted:false };
+    var res = await sb.rpc('rf_is_trusted_device', {
+      p_device_id_hash: ctx.deviceIdHash,
+      p_token_hash: ctx.tokenHash
+    });
+    if(res.error){
+      var msg = String(res.error.message || res.error.details || '');
+      if(/function .* does not exist|could not find the function|schema cache/i.test(msg)) return { available:false, trusted:false, error:res.error };
+      throw res.error;
+    }
+    return { available:true, trusted: res.data === true };
   }
 
-  async function isTrustedDevice(sb, user, options){
-    options = options || {};
+  async function isTrustedDevice(sb, user){
     if(!sb || !user || !user.id) return false;
     var ctx;
     try { ctx = await buildContext(user); } catch(_e) { return false; }
     if(!ctx.token || !ctx.tokenHash) return false;
 
     try{
+      var rpc = await rpcTrustedCheck(sb, ctx);
+      if(rpc.available) return rpc.trusted === true;
+
+      // Fallback pentru instalări care încă nu au funcțiile RPC v2.
       var nowIso = new Date().toISOString();
-      var query = sb
+      var res = await sb
         .from(TABLE_NAME)
-        .select('id,token_hash,user_agent_hash,trusted_until,last_mfa_at,revoked_at')
+        .select('id,trusted_until,revoked_at')
         .eq('user_id', user.id)
         .eq('device_id_hash', ctx.deviceIdHash)
         .eq('token_hash', ctx.tokenHash)
@@ -156,23 +194,11 @@
         .gt('trusted_until', nowIso)
         .limit(1)
         .maybeSingle();
-
-      var res = await query;
       if(res.error){
         console.warn('RF trusted device check unavailable:', res.error);
         return false;
       }
-      var row = res.data;
-      if(!row) return false;
-      if(row.user_agent_hash && row.user_agent_hash !== ctx.userAgentHash) return false;
-      if(options.requireRecentMfaHours){
-        var maxAgeMs = Number(options.requireRecentMfaHours) * 60 * 60 * 1000;
-        if(!isFreshDate(row.last_mfa_at, maxAgeMs)) return false;
-      }
-      try{
-        await sb.from(TABLE_NAME).update({ last_seen_at: nowIso, updated_at: nowIso }).eq('id', row.id).eq('user_id', user.id);
-      }catch(_e){}
-      return true;
+      return !!res.data;
     }catch(error){
       console.warn('RF trusted device check failed:', error);
       return false;
@@ -185,51 +211,63 @@
     var role = options.role || '';
     var days = Number(options.days || getTrustDaysForRole(role));
     if(!Number.isFinite(days) || days <= 0) days = DEFAULT_DAYS;
+    days = Math.min(31, Math.max(1, days));
     var token = randomHex(32);
 
     try{
       var ctx = await buildContext(user, token);
-      var now = new Date();
-      var trustedUntil = new Date(now.getTime() + days * 24 * 60 * 60 * 1000);
-      var row = {
-        user_id: user.id,
-        email: normalizeEmail(user.email),
-        device_id_hash: ctx.deviceIdHash,
-        token_hash: ctx.tokenHash,
-        user_agent_hash: ctx.userAgentHash,
-        device_label: ctx.deviceLabel,
-        trusted_until: trustedUntil.toISOString(),
-        last_mfa_at: now.toISOString(),
-        last_seen_at: now.toISOString(),
-        revoked_at: null,
-        updated_at: now.toISOString()
-      };
-      var res = await sb.from(TABLE_NAME).upsert(row, { onConflict:'user_id,device_id_hash' }).select('id,trusted_until').maybeSingle();
-      if(res.error) throw res.error;
+      var trustedUntil = new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString();
+      var saved = false;
+      var savedData = null;
 
-      if(!setStoredToken(user, token)){
-        try{
-          await sb.from(TABLE_NAME)
-            .update({ revoked_at: new Date().toISOString(), updated_at: new Date().toISOString() })
-            .eq('user_id', user.id)
-            .eq('device_id_hash', ctx.deviceIdHash);
-        }catch(_e){}
-        return { ok:false, reason:'local-storage-unavailable' };
+      if(typeof sb.rpc === 'function'){
+        var rpcRes = await sb.rpc('rf_remember_trusted_device', {
+          p_device_id_hash: ctx.deviceIdHash,
+          p_token_hash: ctx.tokenHash,
+          p_device_label: ctx.deviceLabel,
+          p_trusted_until: trustedUntil
+        });
+        if(!rpcRes.error){
+          saved = true;
+          savedData = rpcRes.data || null;
+        }else{
+          var rpcMsg = String(rpcRes.error.message || rpcRes.error.details || '');
+          if(!/function .* does not exist|could not find the function|schema cache/i.test(rpcMsg)) throw rpcRes.error;
+        }
+      }
+
+      if(!saved){
+        // Fallback direct, permis numai la AAL2 de politicile SQL v2.
+        var nowIso = new Date().toISOString();
+        var row = {
+          user_id: user.id,
+          email: normalizeEmail(user.email),
+          device_id_hash: ctx.deviceIdHash,
+          token_hash: ctx.tokenHash,
+          device_label: ctx.deviceLabel,
+          trusted_until: trustedUntil,
+          last_mfa_at: nowIso,
+          last_seen_at: nowIso,
+          revoked_at: null,
+          updated_at: nowIso
+        };
+        var res = await sb.from(TABLE_NAME).upsert(row, { onConflict:'user_id,device_id_hash' }).select('id,trusted_until').maybeSingle();
+        if(res.error) throw res.error;
+        saved = true;
+        savedData = res.data || null;
+      }
+
+      if(!setStoredToken(user, token, days)){
+        return { ok:false, reason:'browser-storage-unavailable' };
       }
 
       var verified = await isTrustedDevice(sb, user, {});
       if(!verified){
         removeStoredToken(user);
-        try{
-          await sb.from(TABLE_NAME)
-            .update({ revoked_at: new Date().toISOString(), updated_at: new Date().toISOString() })
-            .eq('user_id', user.id)
-            .eq('device_id_hash', ctx.deviceIdHash);
-        }catch(_e){}
-        return { ok:false, reason:'saved-but-verification-failed' };
+        return { ok:false, reason:'saved-but-login-check-failed' };
       }
 
-      return { ok:true, days:days, trusted_until: row.trusted_until, row: res.data || null };
+      return { ok:true, days:days, trusted_until:trustedUntil, row:savedData };
     }catch(error){
       removeStoredToken(user);
       console.warn('RF trusted device save failed:', error);
@@ -242,14 +280,20 @@
     try{
       var ctx = await buildContext(user);
       removeStoredToken(user);
-      await sb.from(TABLE_NAME).update({ revoked_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq('user_id', user.id).eq('device_id_hash', ctx.deviceIdHash);
+      if(typeof sb.rpc === 'function'){
+        var rpcRes = await sb.rpc('rf_revoke_trusted_device', { p_device_id_hash: ctx.deviceIdHash });
+        if(!rpcRes.error) return true;
+      }
+      await sb.from(TABLE_NAME)
+        .update({ revoked_at: new Date().toISOString(), updated_at: new Date().toISOString() })
+        .eq('user_id', user.id)
+        .eq('device_id_hash', ctx.deviceIdHash);
       return true;
-    }catch(_e){
-      return false;
-    }
+    }catch(_e){ return false; }
   }
 
   window.RFTrustedDevice = Object.freeze({
+    version: VERSION,
     isTrustedDevice: isTrustedDevice,
     rememberDevice: rememberDevice,
     revokeThisDevice: revokeThisDevice,
