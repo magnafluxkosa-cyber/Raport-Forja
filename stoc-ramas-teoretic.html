@@ -1298,6 +1298,45 @@
     });
     return {byReper,byMaterial,byVariant,byDiameter,variantRepers};
   }
+  // Reconciliere finală STRICTĂ a consumului de oțel pe materialul salvat în DEBITATE.
+  // Această hartă NU folosește maparea reperului pentru a decide diametrul consumat.
+  // Cheia este exclusiv: DIAMETRU + CALITATE din rândul DEBITATE (cu helper doar ca fallback
+  // dacă unul dintre cele două câmpuri lipsește). Astfel un reper existent pe Ø70 și Ø71
+  // rămâne contabilizat separat pe fiecare material.
+  function aggregateStrictDebitatedKgBySavedMaterial(helperIndex,debMeta){
+    const map=new Map();
+    state.raw.debitate.forEach(row=>{
+      if(!rowInSelectedPeriod(row)) return;
+      const rawReper=pickValue(row,['reper','reper_debitare','reper debitat','denumire reper debitare']);
+      const reper=resolveDebKeyRaw(rawReper,helperIndex);
+      let diam=normalizeDiam(pickValue(row,['diametru','diametruOtel','diametru_otel','diametru otel','dimensiune_otel','dimensiune otel','dimensiune']));
+      let cal=normalizeQuality(pickValue(row,['calitate','codOtelCalitate','cod_otel_calitate','calitateOtel','calitate_otel','calitate otel','material','grade']));
+
+      if((!diam || !cal) && reper){
+        const meta=getHelperVariant(debMeta,reper,diam,cal) || getHelperVariant(helperIndex,reper,diam,cal) || {};
+        diam=diam || normalizeDiam(meta.diametru||'');
+        cal=cal || normalizeQuality(meta.calitate||'');
+      }
+      if(!diam || !cal) return;
+
+      const qty=toNumber(pickValue(row,['cantitate','cantitateBuc','cantitate_buc','cantitate buc','buc','realizat']));
+      const savedTotalKg=toNumber(pickValue(row,['totalKg','total_kg','total kg debitat','total kg','kg total']));
+      const savedKgBuc=toNumber(pickValue(row,['kgBuc','kg_buc','kg_buc_debitat','kg/buc','kg buc','greutate','kg pe buc']));
+      let totalKg=savedTotalKg;
+      if(!(totalKg>0) && savedKgBuc>0 && qty) totalKg=savedKgBuc*qty;
+      if(!(totalKg>0) && reper){
+        const meta=getHelperVariant(debMeta,reper,diam,cal) || getHelperVariant(helperIndex,reper,diam,cal) || {};
+        const helperKgBuc=toNumber(meta.kgBuc || meta.kg_buc_debitat || meta.kg_buc || meta['kg/buc']);
+        if(helperKgBuc>0 && qty) totalKg=helperKgBuc*qty;
+      }
+      if(!(totalKg>0)) return;
+
+      const key=[diam,cal].join('|');
+      map.set(key,(map.get(key)||0)+totalKg);
+    });
+    return map;
+  }
+
   function aggregateDebitateProducedThisPeriod(helperIndex,debMeta){
     const map=new Map(), byVariant=new Map(), byDiameter=new Map(), variantRepers=new Set();
     state.raw.debitate.forEach(row=>{
@@ -2021,6 +2060,7 @@
     const forjRealInv=currentForjatInventoryMapForSelectedPeriod(state.raw.inventarForjate);
     const steelEntries=aggregateSteelEntriesThisPeriod();
     const steelDebitated=aggregateSteelDebitatedThisPeriod(helperIndex, debMeta);
+    const strictDebitatedKgByMaterial=aggregateStrictDebitatedKgBySavedMaterial(helperIndex,debMeta);
     const debProduced=aggregateDebitateProducedThisPeriod(helperIndex,debMeta);
     const debConsumed=aggregateDebitateConsumedThisPeriod(helperIndex);
     const forjProduced=aggregateForjateProducedThisPeriod();
@@ -2204,6 +2244,17 @@
       return normalizeQuality(a.calitate).localeCompare(normalizeQuality(b.calitate),'ro');
     });
     state.groups=ensureSk304234MaterialLinks(addSynthetic56C45MaterialGroup(groups,steelInv,steelRealInv,steelEntries,steelDebitated),steelInv,steelRealInv,steelEntries,steelDebitated,debInvLookup,debRealInvLookup,debProduced,debConsumed);
+
+    // PAS FINAL: consumul din DEBITATE are prioritate absolută pe DIAMETRU + CALITATE.
+    // Recalculăm direct coloanele de oțel după ce toate mapările/sintetizările au fost făcute,
+    // ca nicio logică de reper să nu mai poată muta kg între Ø70 și Ø71 (sau alte diametre).
+    state.groups.forEach(material=>{
+      const key=[normalizeDiam(material&&material.diametru),normalizeQuality(material&&material.calitate)].join('|');
+      if(!strictDebitatedKgByMaterial.has(key)) return;
+      const exactDebitatKg=toNumber(strictDebitatedKgByMaterial.get(key));
+      material.debitatDinOtelKg=exactDebitatKg;
+      material.otelRamasKg=toNumber(material.stocStartOtel)+toNumber(material.intrariOtel)-exactDebitatKg;
+    });
   }
 
   function applyFilters(){
