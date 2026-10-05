@@ -1304,7 +1304,7 @@
   // dacă unul dintre cele două câmpuri lipsește). Astfel un reper existent pe Ø70 și Ø71
   // rămâne contabilizat separat pe fiecare material.
   function aggregateStrictDebitatedKgBySavedMaterial(helperIndex,debMeta){
-    const map=new Map();
+    const map=new Map(), loose=new Map(), byDiameter=new Map();
     state.raw.debitate.forEach(row=>{
       if(!rowInSelectedPeriod(row)) return;
       const rawReper=pickValue(row,['reper','reper_debitare','reper debitat','denumire reper debitare']);
@@ -1332,8 +1332,15 @@
       if(!(totalKg>0)) return;
 
       const key=[diam,cal].join('|');
+      const looseKey=looseMaterialKey(diam,cal);
       map.set(key,(map.get(key)||0)+totalKg);
+      loose.set(looseKey,(loose.get(looseKey)||0)+totalKg);
+      byDiameter.set(diam,(byDiameter.get(diam)||0)+totalKg);
     });
+    // Hărți auxiliare folosite DOAR pentru coloanele de oțel laminat.
+    // Nu modifică în niciun fel secțiunea OȚEL DEBITAT.
+    map.loose=loose;
+    map.byDiameter=byDiameter;
     return map;
   }
 
@@ -2249,9 +2256,40 @@
     // Recalculăm direct coloanele de oțel după ce toate mapările/sintetizările au fost făcute,
     // ca nicio logică de reper să nu mai poată muta kg între Ø70 și Ø71 (sau alte diametre).
     state.groups.forEach(material=>{
-      const key=[normalizeDiam(material&&material.diametru),normalizeQuality(material&&material.calitate)].join('|');
-      if(!strictDebitatedKgByMaterial.has(key)) return;
-      const exactDebitatKg=toNumber(strictDebitatedKgByMaterial.get(key));
+      const diam=normalizeDiam(material&&material.diametru);
+      const cal=normalizeQuality(material&&material.calitate);
+      const key=[diam,cal].join('|');
+      let exactDebitatKg=null;
+
+      // 1) Potrivire exactă DIAMETRU + CALITATE.
+      if(strictDebitatedKgByMaterial.has(key)){
+        exactDebitatKg=toNumber(strictDebitatedKgByMaterial.get(key));
+      }else{
+        // 2) Aceeași combinație, dar tolerantă la diferențe de scriere
+        //    (spații, slash, cratimă Unicode etc.).
+        const lkey=looseMaterialKey(diam,cal);
+        const looseMap=strictDebitatedKgByMaterial.loose;
+        if(looseMap instanceof Map && looseMap.has(lkey)){
+          exactDebitatKg=toNumber(looseMap.get(lkey));
+        }else{
+          // 3) Fallback sigur doar dacă pentru acel diametru există o singură
+          //    linie de material activă (stoc/intrări). Astfel Ø70 nu poate
+          //    rămâne cu 0 kg debitate doar din cauza unei diferențe de text
+          //    în calitate, fără să mutăm consumul pe Ø71.
+          const diameterMap=strictDebitatedKgByMaterial.byDiameter;
+          if(diameterMap instanceof Map && diameterMap.has(diam)){
+            const activeSameDiameter=state.groups.filter(m=>
+              normalizeDiam(m&&m.diametru)===diam &&
+              (toNumber(m&&m.stocStartOtel)!==0 || toNumber(m&&m.intrariOtel)!==0)
+            );
+            if(activeSameDiameter.length===1 && activeSameDiameter[0]===material){
+              exactDebitatKg=toNumber(diameterMap.get(diam));
+            }
+          }
+        }
+      }
+
+      if(exactDebitatKg===null) return;
       material.debitatDinOtelKg=exactDebitatKg;
       material.otelRamasKg=toNumber(material.stocStartOtel)+toNumber(material.intrariOtel)-exactDebitatKg;
     });
