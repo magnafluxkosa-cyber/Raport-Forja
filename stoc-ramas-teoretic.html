@@ -808,15 +808,20 @@
   }
   function attachHelperVariant(map, meta){
     if(!map || !meta) return;
-    const debKey=normalizeReper(meta.reperDebitat || meta.reperForjat || '');
-    if(!debKey) return;
+    const keys=Array.from(new Set([
+      normalizeReper(meta.reperDebitat || ''),
+      normalizeReper(meta.reperForjat || '')
+    ].filter(Boolean)));
+    if(!keys.length) return;
     if(!map._variants) map._variants=new Map();
-    const list=map._variants.get(debKey)||[];
-    const key=helperVariantKey(debKey, meta.diametru, meta.calitate);
-    const idx=list.findIndex(item=>helperVariantKey(debKey, item.diametru, item.calitate)===key);
-    if(idx>=0) list[idx]=meta;
-    else list.push(meta);
-    map._variants.set(debKey,list);
+    keys.forEach(reperKey=>{
+      const list=map._variants.get(reperKey)||[];
+      const key=helperVariantKey(reperKey, meta.diametru, meta.calitate);
+      const idx=list.findIndex(item=>helperVariantKey(reperKey, item.diametru, item.calitate)===key);
+      if(idx>=0) list[idx]=meta;
+      else list.push(meta);
+      map._variants.set(reperKey,list);
+    });
   }
   function getHelperVariant(map, reper, diam, cal){
     const key=normalizeReper(reper);
@@ -979,8 +984,8 @@
   }
   function buildDebInventoryLookup(rows, helperIndex){
     const targetCode=resolveTargetInventoryCode(rows||[]);
-    const exact=new Map(), simple=new Map();
-    if(targetCode==null) return {exact,simple};
+    const exact=new Map(), simple=new Map(), variantRepers=new Set();
+    if(targetCode==null) return {exact,simple,variantRepers};
     (rows||[]).forEach(row=>{
       const period=getRowPeriod(row);
       if(!period || period.code!==targetCode) return;
@@ -990,6 +995,7 @@
       const diam=normalizeDiam(pickValue(row,['diametru','diametru otel','diametru_otel','dimensiune','dimensiune otel','dimensiune_otel']));
       const cal=normalizeQuality(pickValue(row,['calitate','material','calitate otel','calitate_otel']));
       const exactKey=[debKey,diam,cal].join('|');
+      if(diam||cal) variantRepers.add(debKey);
       const qty=getInventoryQty(row,'debitate');
       const date=parseDateFromRow(row)||new Date(period.year,period.month-1,1);
       const addCandidate=(map,key)=>{
@@ -1008,20 +1014,22 @@
       addCandidate(exact, exactKey);
       addCandidate(simple, debKey);
     });
-    return {exact,simple};
+    return {exact,simple,variantRepers};
   }
 
   function getDebInventoryQty(lookup, debKey, diam, cal){
     if(!lookup || !debKey) return 0;
     const exactKey=[normalizeReper(debKey), normalizeDiam(diam), normalizeQuality(cal)].join('|');
+    const normalizedDebKey=normalizeReper(debKey);
     const exact=lookup.exact && lookup.exact.get(exactKey);
     if(exact) return toNumber(exact.qty);
-    const simple=lookup.simple && lookup.simple.get(normalizeReper(debKey));
+    if(lookup.variantRepers && lookup.variantRepers.has(normalizedDebKey)) return 0;
+    const simple=lookup.simple && lookup.simple.get(normalizedDebKey);
     return simple ? toNumber(simple.qty) : 0;
   }
   function currentDebInventoryLookupForSelectedPeriod(rows, helperIndex){
     const selected=getSelectedPeriod();
-    const exact=new Map(), simple=new Map();
+    const exact=new Map(), simple=new Map(), variantRepers=new Set();
     (rows||[]).forEach(row=>{
       const period=getRowPeriod(row);
       if(!period) return;
@@ -1039,6 +1047,7 @@
       const cal=normalizeQuality(pickValue(row,['calitate','material','calitate otel','calitate_otel']));
       const qty=getInventoryQty(row,'debitate');
       const exactKey=[debKey,diam,cal].join('|');
+      if(diam||cal) variantRepers.add(debKey);
       const addQty=(map,key)=>{
         const current=map.get(key);
         map.set(key,{qty:(current?toNumber(current.qty):0)+qty,code:period.code,date:parseDateFromRow(row)||new Date(period.year,period.month-1,1),row});
@@ -1046,7 +1055,7 @@
       addQty(exact, exactKey);
       addQty(simple, debKey);
     });
-    return {exact,simple};
+    return {exact,simple,variantRepers};
   }
   function currentForjatInventoryMapForSelectedPeriod(rows){
     const selected=getSelectedPeriod();
@@ -1246,6 +1255,251 @@
     const totalMap=source instanceof Map ? source : source.byReper;
     return totalMap instanceof Map ? toNumber(totalMap.get(debKey)||0) : 0;
   }
+
+  function forjatMaterialMetricKey(reper,diam,cal){
+    return [normalizeReper(reper),normalizeDiam(diam),normalizeQuality(cal)].join('|');
+  }
+  function forjatDiameterMetricKey(reper,diam){
+    return [normalizeReper(reper),normalizeDiam(diam)].join('|');
+  }
+  function getForjatMetricByMaterial(source,reper,diam,cal,totalMap){
+    const reperKey=normalizeReper(reper);
+    const d=normalizeDiam(diam);
+    const c=normalizeQuality(cal);
+    if(!reperKey) return 0;
+    if(source && source.byVariant instanceof Map){
+      const exactKey=forjatMaterialMetricKey(reperKey,d,c);
+      if(source.byVariant.has(exactKey)) return toNumber(source.byVariant.get(exactKey));
+    }
+    if(source && source.byDiameter instanceof Map && d){
+      const diameterKey=forjatDiameterMetricKey(reperKey,d);
+      if(source.byDiameter.has(diameterKey)) return toNumber(source.byDiameter.get(diameterKey));
+    }
+    if(source && source.variantRepers instanceof Set && source.variantRepers.has(reperKey)) return 0;
+    return totalMap instanceof Map ? toNumber(totalMap.get(reperKey)||0) : 0;
+  }
+  function aggregateForjateMaterialMetricsThisPeriod(helperIndex){
+    const produced={byVariant:new Map(),byDiameter:new Map(),variantRepers:new Set()};
+    const rebut={byVariant:new Map(),byDiameter:new Map(),variantRepers:new Set()};
+    const repersByDebVariant=new Map();
+    state.raw.forjate.forEach(row=>{
+      if(!rowInSelectedPeriod(row)) return;
+      const reperForjat=normalizeReper(pickValue(row,['reper','reper forjat','reper_forjat']));
+      if(!reperForjat) return;
+      let diam=normalizeDiam(pickValue(row,['dimensiune','dimensiune otel','dimensiune_otel','diametru','diametru otel','diametru_otel']));
+      let cal=normalizeQuality(pickValue(row,['calitate','material','calitate otel','calitate_otel']));
+      const helper=getHelperVariant(helperIndex,reperForjat,diam,cal) || (helperIndex&&helperIndex.get&&helperIndex.get(reperForjat)) || {};
+      const reperDebitat=normalizeReper(helper.reperDebitat||reperForjat);
+      diam=diam || normalizeDiam(helper.diametru||'');
+      cal=cal || normalizeQuality(helper.calitate||'');
+      const bune=toNumber(pickValue(row,['buc_realizate','buc realizate','bucRealizate','realizat','cantitate','buc']));
+      const rebutQty=toNumber(pickValue(row,['rebut','REBUT','Rebut','rebuturi','Rebut Fj.','rebut_fj','rebutFj','CC']));
+      if(diam||cal){
+        const vkey=forjatMaterialMetricKey(reperForjat,diam,cal);
+        const dkey=forjatDiameterMetricKey(reperForjat,diam);
+        produced.byVariant.set(vkey,(produced.byVariant.get(vkey)||0)+bune);
+        produced.byDiameter.set(dkey,(produced.byDiameter.get(dkey)||0)+bune);
+        produced.variantRepers.add(reperForjat);
+        rebut.byVariant.set(vkey,(rebut.byVariant.get(vkey)||0)+rebutQty);
+        rebut.byDiameter.set(dkey,(rebut.byDiameter.get(dkey)||0)+rebutQty);
+        rebut.variantRepers.add(reperForjat);
+        if(reperDebitat){
+          const debVariantKey=debMaterialMetricKey(reperDebitat,diam,cal);
+          const set=repersByDebVariant.get(debVariantKey)||new Set();
+          set.add(reperForjat);
+          repersByDebVariant.set(debVariantKey,set);
+        }
+      }
+    });
+    return {produced,rebut,repersByDebVariant};
+  }
+  function buildForjatInventoryLookup(rows,currentSelected){
+    const exact=new Map(), simple=new Map(), variantRepers=new Set();
+    const selected=getSelectedPeriod();
+    const targetCode=currentSelected ? null : resolveTargetInventoryCode(rows||[]);
+    (rows||[]).forEach(row=>{
+      const period=getRowPeriod(row);
+      if(!period) return;
+      if(currentSelected){
+        if(selected.year && selected.month){
+          if(period.year!==selected.year || period.month!==selected.month) return;
+        }else if(selected.year){
+          if(period.year!==selected.year) return;
+        }else{
+          return;
+        }
+      }else{
+        if(targetCode==null || period.code!==targetCode) return;
+      }
+      const reper=normalizeReper(pickValue(row,['reper','reper forjat','reper_forjat']));
+      if(!reper) return;
+      const diam=normalizeDiam(pickValue(row,['dimensiune','dimensiune otel','dimensiune_otel','diametru','diametru otel','diametru_otel']));
+      const cal=normalizeQuality(pickValue(row,['calitate','material','calitate otel','calitate_otel']));
+      const qty=getInventoryQty(row,'forjate');
+      if(diam||cal) variantRepers.add(reper);
+      const exactKey=forjatMaterialMetricKey(reper,diam,cal);
+      exact.set(exactKey,(exact.get(exactKey)||0)+qty);
+      simple.set(reper,(simple.get(reper)||0)+qty);
+    });
+    return {exact,simple,variantRepers};
+  }
+  function getForjatInventoryQty(lookup,reper,diam,cal){
+    const reperKey=normalizeReper(reper);
+    if(!lookup || !reperKey) return 0;
+    const exactKey=forjatMaterialMetricKey(reperKey,diam,cal);
+    if(lookup.exact && lookup.exact.has(exactKey)) return toNumber(lookup.exact.get(exactKey));
+    if(lookup.variantRepers && lookup.variantRepers.has(reperKey)) return 0;
+    return lookup.simple && lookup.simple.has(reperKey) ? toNumber(lookup.simple.get(reperKey)) : 0;
+  }
+  function collectMultiMaterialDebKeys(debMeta,steelDebitated,debProduced,debConsumed,debInvLookup,debRealInvLookup){
+    const variantsByDeb=new Map();
+    const add=(reper,diam,cal)=>{
+      const debKey=normalizeReper(reper);
+      const d=normalizeDiam(diam), c=normalizeQuality(cal);
+      if(!debKey || (!d&&!c)) return;
+      const set=variantsByDeb.get(debKey)||new Set();
+      set.add([d,c].join('|'));
+      variantsByDeb.set(debKey,set);
+    };
+    if(debMeta && debMeta._variants instanceof Map){
+      debMeta._variants.forEach((list,reper)=>{
+        (list||[]).forEach(meta=>add(reper,meta&&meta.diametru,meta&&meta.calitate));
+      });
+    }
+    [steelDebitated,debProduced,debConsumed].forEach(source=>{
+      if(!(source&&source.byVariant instanceof Map)) return;
+      source.byVariant.forEach((_qty,key)=>{
+        const parts=String(key||'').split('|');
+        add(parts[0],parts[1],parts.slice(2).join('|'));
+      });
+    });
+    [debInvLookup,debRealInvLookup].forEach(lookup=>{
+      if(!(lookup&&lookup.exact instanceof Map)) return;
+      lookup.exact.forEach((_entry,key)=>{
+        const parts=String(key||'').split('|');
+        add(parts[0],parts[1],parts.slice(2).join('|'));
+      });
+    });
+    const result=new Set();
+    variantsByDeb.forEach((set,reper)=>{
+      if(set.size>1 && reper!=='SK-304234') result.add(reper);
+    });
+    return result;
+  }
+  function reconcileMultiMaterialDebGroups(groups,ctx){
+    const list=Array.isArray(groups)?groups:[];
+    const multiDebKeys=collectMultiMaterialDebKeys(ctx.debMeta,ctx.steelDebitated,ctx.debProduced,ctx.debConsumed,ctx.debInvLookup,ctx.debRealInvLookup);
+    if(!multiDebKeys.size) return list;
+
+    const primaryForjatMaterial=new Map();
+    list.forEach(material=>{
+      const materialKey=[normalizeDiam(material&&material.diametru),normalizeQuality(material&&material.calitate)].join('|');
+      (material.debGroups||[]).forEach(deb=>{
+        const debKey=normalizeReper(deb&&deb.reperDebitat);
+        (deb&&deb.forjats||[]).forEach(f=>{
+          const reper=normalizeReper(f&&f.reperForjat);
+          const key=debKey+'|'+reper;
+          if(debKey && reper && !primaryForjatMaterial.has(key)) primaryForjatMaterial.set(key,materialKey);
+        });
+      });
+    });
+
+    function hasExactDebVariant(source,debKey,diam,cal){
+      return !!(source&&source.byVariant instanceof Map&&source.byVariant.has(debMaterialMetricKey(debKey,diam,cal)));
+    }
+    function hasExactDebInventory(lookup,debKey,diam,cal){
+      const key=[normalizeReper(debKey),normalizeDiam(diam),normalizeQuality(cal)].join('|');
+      return !!(lookup&&lookup.exact instanceof Map&&lookup.exact.has(key));
+    }
+    function hasExactHelperVariant(debKey,diam,cal){
+      const variants=(ctx.debMeta&&ctx.debMeta._variants&&ctx.debMeta._variants.get(normalizeReper(debKey)))||[];
+      return variants.some(meta=>normalizeDiam(meta&&meta.diametru)===normalizeDiam(diam) && normalizeQuality(meta&&meta.calitate)===normalizeQuality(cal));
+    }
+
+    list.forEach(material=>{
+      const diam=normalizeDiam(material&&material.diametru);
+      const cal=normalizeQuality(material&&material.calitate);
+      if(!Array.isArray(material.debGroups)) material.debGroups=[];
+      multiDebKeys.forEach(debKey=>{
+        const exactActivity=
+          hasExactDebVariant(ctx.steelDebitated,debKey,diam,cal) ||
+          hasExactDebVariant(ctx.debProduced,debKey,diam,cal) ||
+          hasExactDebVariant(ctx.debConsumed,debKey,diam,cal) ||
+          hasExactDebInventory(ctx.debInvLookup,debKey,diam,cal) ||
+          hasExactDebInventory(ctx.debRealInvLookup,debKey,diam,cal) ||
+          hasExactHelperVariant(debKey,diam,cal);
+        if(!exactActivity) return;
+
+        let deb=material.debGroups.find(item=>normalizeReper(item&&item.reperDebitat)===debKey);
+        if(!deb){
+          deb={debKey,reperDebitat:debKey,stocDebitat:0,debitatBuc:0,debitatKg:0,forjatDinDebitat:0,debitatRamas:0,stocRealDebitat:0,diferentaDebitat:0,forjats:[]};
+          material.debGroups.push(deb);
+        }
+        deb.stocDebitat=getDebInventoryQty(ctx.debInvLookup,debKey,diam,cal);
+        deb.debitatBuc=getDebMetricByMaterial(ctx.debProduced,debKey,diam,cal);
+        deb.debitatKg=getDebMetricByMaterial(ctx.steelDebitated,debKey,diam,cal);
+        deb.forjatDinDebitat=getDebMetricByMaterial(ctx.debConsumed,debKey,diam,cal);
+        deb.debitatRamas=deb.stocDebitat+deb.debitatBuc-deb.forjatDinDebitat;
+        deb.stocRealDebitat=getDebInventoryQty(ctx.debRealInvLookup,debKey,diam,cal);
+        deb.diferentaDebitat=deb.stocRealDebitat-deb.debitatRamas;
+
+        const candidates=new Set((deb.forjats||[]).map(f=>normalizeReper(f&&f.reperForjat)).filter(Boolean));
+        (ctx.helperForjateByDeb.get(debKey)||[]).forEach(reper=>candidates.add(normalizeReper(reper)));
+        const activitySet=ctx.forjatMaterialActivity.repersByDebVariant.get(debMaterialMetricKey(debKey,diam,cal));
+        if(activitySet) activitySet.forEach(reper=>candidates.add(normalizeReper(reper)));
+
+        const rebuilt=[];
+        candidates.forEach(reperForjat=>{
+          if(!reperForjat || isExcludedDisplayReper(reperForjat)) return;
+          const locationKey=debKey+'|'+reperForjat;
+          let primaryKey=primaryForjatMaterial.get(locationKey);
+          if(!primaryKey){
+            const helper=(ctx.helperIndex&&ctx.helperIndex.get&&ctx.helperIndex.get(reperForjat))||{};
+            primaryKey=[normalizeDiam(helper.diametru||diam),normalizeQuality(helper.calitate||cal)].join('|');
+            primaryForjatMaterial.set(locationKey,primaryKey);
+          }
+          const materialKey=[diam,cal].join('|');
+          const isPrimary=primaryKey===materialKey;
+
+          const stocStartForjat=getForjatInventoryQty(ctx.forjInvLookup,reperForjat,diam,cal);
+          const forjatBuc=getForjatMetricByMaterial(ctx.forjatMaterialActivity.produced,reperForjat,diam,cal,ctx.forjProduced);
+          const rebutForja=getForjatMetricByMaterial(ctx.forjatMaterialActivity.rebut,reperForjat,diam,cal,ctx.forjRebut);
+          const stocRealForjat=getForjatInventoryQty(ctx.forjRealInvLookup,reperForjat,diam,cal);
+
+          const rebutDupaForjare=isPrimary?(ctx.rebutAfterForjare.get(reperForjat)||0):0;
+          const livrat=isPrimary?(ctx.livrate.get(reperForjat)||0):0;
+          const vanzari=isPrimary?(ctx.vanzariZale.get(reperForjat)||0):0;
+          const stocPmInitial=isPrimary?(ctx.stocPmInitial.get(reperForjat)||0):0;
+          const stocPm=isPrimary?(ctx.stocPm.get(reperForjat)||0):0;
+          const forjatRamas=stocStartForjat+forjatBuc-(vanzari-stocPmInitial+stocPm)-rebutDupaForjare;
+
+          const hasVariantData=
+            stocStartForjat!==0 || forjatBuc!==0 || rebutForja!==0 || stocRealForjat!==0 ||
+            isPrimary || (activitySet&&activitySet.has(reperForjat));
+          if(!hasVariantData && !hasExactHelperVariant(debKey,diam,cal)) return;
+
+          rebuilt.push({
+            reperForjat,
+            stocStartForjat,
+            forjatBuc,
+            rebutForja,
+            rebutDupaForjare,
+            livrat,
+            vanzari,
+            stocPmInitial,
+            stocPm,
+            forjatRamas,
+            stocRealForjat,
+            diferentaForjat:stocRealForjat-forjatRamas
+          });
+        });
+        deb.forjats=applySharedForjatCombinedValues(rebuilt.sort(compareForjatRepers));
+      });
+      material.debGroups.sort((a,b)=>normalizeReper(a&&a.reperDebitat).localeCompare(normalizeReper(b&&b.reperDebitat),'ro'));
+    });
+    return list;
+  }
+
   function aggregateSteelDebitatedThisPeriod(helperIndex, debMeta){
     const byReper=new Map(), byMaterial=new Map(), byVariant=new Map(), byDiameter=new Map(), variantRepers=new Set();
     state.raw.debitate.forEach(row=>{
@@ -2025,6 +2279,9 @@
     const debConsumed=aggregateDebitateConsumedThisPeriod(helperIndex);
     const forjProduced=aggregateForjateProducedThisPeriod();
     const forjRebut=aggregateForjateRebutThisPeriod();
+    const forjatMaterialActivity=aggregateForjateMaterialMetricsThisPeriod(helperIndex);
+    const forjInvLookup=buildForjatInventoryLookup(state.raw.inventarForjate,false);
+    const forjRealInvLookup=buildForjatInventoryLookup(state.raw.inventarForjate,true);
     const rebutAfterForjare=aggregateRebutDupaForjareThisPeriod(helperIndex);
     const livrate=aggregateLivrariThisPeriod(helperIndex);
     const vanzariZale=aggregateVanzariZaleThisPeriod();
@@ -2203,7 +2460,27 @@
       if(aDiamTxt!==bDiamTxt) return aDiamTxt.localeCompare(bDiamTxt,'ro');
       return normalizeQuality(a.calitate).localeCompare(normalizeQuality(b.calitate),'ro');
     });
-    state.groups=ensureSk304234MaterialLinks(addSynthetic56C45MaterialGroup(groups,steelInv,steelRealInv,steelEntries,steelDebitated),steelInv,steelRealInv,steelEntries,steelDebitated,debInvLookup,debRealInvLookup,debProduced,debConsumed);
+    const linkedGroups=ensureSk304234MaterialLinks(addSynthetic56C45MaterialGroup(groups,steelInv,steelRealInv,steelEntries,steelDebitated),steelInv,steelRealInv,steelEntries,steelDebitated,debInvLookup,debRealInvLookup,debProduced,debConsumed);
+    state.groups=reconcileMultiMaterialDebGroups(linkedGroups,{
+      helperIndex,
+      debMeta,
+      helperForjateByDeb,
+      steelDebitated,
+      debProduced,
+      debConsumed,
+      debInvLookup,
+      debRealInvLookup,
+      forjatMaterialActivity,
+      forjInvLookup,
+      forjRealInvLookup,
+      forjProduced,
+      forjRebut,
+      rebutAfterForjare,
+      livrate,
+      vanzariZale,
+      stocPmInitial,
+      stocPm
+    });
   }
 
   function applyFilters(){
