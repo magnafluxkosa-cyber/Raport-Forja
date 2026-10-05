@@ -2256,25 +2256,51 @@
       material.otelRamasKg=toNumber(material.stocStartOtel)+toNumber(material.intrariOtel)-exactDebitatKg;
     });
 
-    // 248-2307/08: în partea OTEL DEBITAT se afișează o singură dată, cu valorile
-    // cumulate indiferent dacă semifabricatul a fost debitat din Ø70 sau Ø71.
-    // IMPORTANT: partea OTEL LAMINAT nu este atinsă deloc; Ø70 și Ø71 rămân
-    // separate, în ordinea lor normală, cu propriile intrări/debitări/kg rămase.
+    // 248-2307/08 este același semifabricat debitat chiar dacă provine din Ø70 sau Ø71.
+    // OȚELUL rămâne strict separat pe diametru, dar partea OTEL DEBITAT se cumulează.
+    // Folosim valorile deja calculate corect pe fiecare variantă, ca să nu pierdem
+    // debitarea efectivă de pe unul dintre diametre.
     const sharedDebKey=normalizeReper('248-2307/08');
     const sharedSources=[];
     state.groups.forEach(material=>{
       (material.debGroups||[]).forEach(deb=>{
-        if(normalizeReper(deb&&deb.reperDebitat)===sharedDebKey) sharedSources.push({material,deb});
+        if(normalizeReper(deb&&deb.reperDebitat)===sharedDebKey){
+          sharedSources.push({material,deb});
+        }
       });
     });
     if(sharedSources.length>1){
-      // Păstrăm reperul debitat pe poziția lui istorică (Ø71), ca să nu mutăm/inversăm
-      // vizual rândurile Ø70 și Ø71. Dacă Ø71 nu există, folosim prima poziție existentă.
+      // Păstrăm poziția vizuală existentă de la Ø71; nu mutăm și nu inversăm materialele.
       const anchorEntry=sharedSources.find(({material})=>
         normalizeDiam(material&&material.diametru)==='71' &&
         normalizeQuality(material&&material.calitate)==='1E-1287/15B34'
-      ) || sharedSources[0];
+      ) || sharedSources[sharedSources.length-1];
       const anchor=anchorEntry.material;
+
+      // Stocul de debitate: dacă inventarul este separat pe material, îl însumăm exact.
+      // Dacă inventarul este doar pe reper, îl luăm o singură dată, nu îl dublăm.
+      const exactStart=[];
+      const exactReal=[];
+      sharedSources.forEach(({material})=>{
+        const exactKey=[sharedDebKey,normalizeDiam(material&&material.diametru),normalizeQuality(material&&material.calitate)].join('|');
+        const s=debInvLookup.exact&&debInvLookup.exact.get(exactKey);
+        const r=debRealInvLookup.exact&&debRealInvLookup.exact.get(exactKey);
+        if(s) exactStart.push(toNumber(s.qty));
+        if(r) exactReal.push(toNumber(r.qty));
+      });
+      const stocDebitat=exactStart.length
+        ? exactStart.reduce((a,b)=>a+b,0)
+        : toNumber((debInvLookup.simple&&debInvLookup.simple.get(sharedDebKey)&&debInvLookup.simple.get(sharedDebKey).qty)||0);
+      const stocRealDebitat=exactReal.length
+        ? exactReal.reduce((a,b)=>a+b,0)
+        : toNumber((debRealInvLookup.simple&&debRealInvLookup.simple.get(sharedDebKey)&&debRealInvLookup.simple.get(sharedDebKey).qty)||0);
+
+      // IMPORTANT: acestea sunt valorile efective calculate separat în v6.
+      // Le adunăm direct: Ø70 + Ø71.
+      const debitatBuc=sharedSources.reduce((sum,{deb})=>sum+toNumber(deb&&deb.debitatBuc),0);
+      const debitatKg=sharedSources.reduce((sum,{deb})=>sum+toNumber(deb&&deb.debitatKg),0);
+      const forjatDinDebitat=sharedSources.reduce((sum,{deb})=>sum+toNumber(deb&&deb.forjatDinDebitat),0);
+      const debitatRamas=stocDebitat+debitatBuc-forjatDinDebitat;
 
       const mergedForjats=[];
       const seenForjats=new Set();
@@ -2286,14 +2312,6 @@
           mergedForjats.push(clonePlainObject(forjat));
         });
       });
-
-      const stocDebitat=toNumber(debInv.get(sharedDebKey)||0);
-      const debitatBuc=toNumber(debProduced.get(sharedDebKey)||0);
-      const debitatKg=toNumber((steelDebitated.byReper&&steelDebitated.byReper.get(sharedDebKey))||0);
-      const forjatDinDebitat=toNumber(debConsumed.get(sharedDebKey)||0);
-      const debitatRamas=stocDebitat+debitatBuc-forjatDinDebitat;
-      const realCandidate=debRealInvLookup.simple&&debRealInvLookup.simple.get(sharedDebKey);
-      const stocRealDebitat=realCandidate?toNumber(realCandidate.qty):0;
 
       const combinedDeb={
         debKey:sharedDebKey,
@@ -2308,8 +2326,8 @@
         forjats:applySharedForjatCombinedValues(mergedForjats.sort(compareForjatRepers))
       };
 
-      // Eliminăm dublura numai din secțiunea OTEL DEBITAT, apoi afișăm totalul comun
-      // pe poziția Ø71. Nu modificăm diametrul/calitatea/materialul din OTEL LAMINAT.
+      // Eliminăm doar dublura din secțiunea OTEL DEBITAT.
+      // Nu atingem deloc Ø70/Ø71 din OTEL LAMINAT și nici kg scăzute din ele.
       state.groups.forEach(material=>{
         material.debGroups=(material.debGroups||[]).filter(deb=>normalizeReper(deb&&deb.reperDebitat)!==sharedDebKey);
       });
