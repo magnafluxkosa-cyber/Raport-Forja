@@ -1552,6 +1552,102 @@
     });
     return {byReper,byMaterial,byVariant,byDiameter,variantRepers};
   }
+  // Sursă strictă pentru materialul consumat în DEBITATE.
+  // Diametrul/calitatea salvate pe rând au prioritate absolută. Helper-ul este
+  // folosit doar dacă unul dintre aceste două câmpuri lipsește din rând.
+  // Această hartă este folosită ca protecție finală pentru reperele care există
+  // pe mai multe diametre (ex. 248-2307/08 pe Ø70 și Ø71).
+  function aggregateDirectDebitateMaterialTruth(helperIndex,debMeta){
+    const byMaterial=new Map(), byVariant=new Map();
+    state.raw.debitate.forEach(row=>{
+      if(!rowInSelectedPeriod(row)) return;
+      const rawReper=pickValue(row,['reper','reper_debitare','reper debitat','denumire reper debitare']);
+      const debKey=resolveDebKeyRaw(rawReper,helperIndex) || normalizeReper(rawReper);
+      if(!debKey) return;
+
+      const rawDiam=normalizeDiam(pickValue(row,['diametru','diametruOtel','diametru_otel','diametru otel','dimensiune_otel','dimensiune otel','dimensiune']));
+      const rawCal=normalizeQuality(pickValue(row,['calitate','codOtelCalitate','cod_otel_calitate','calitateOtel','calitate_otel','calitate otel','material','grade']));
+      const fallback=readDebitateMaterial(row,debKey,helperIndex,debMeta);
+      const diam=rawDiam || normalizeDiam(fallback&&fallback.diam);
+      const cal=rawCal || normalizeQuality(fallback&&fallback.cal);
+      if(!diam && !cal) return;
+
+      const qty=toNumber(pickValue(row,['cantitate','cantitateBuc','cantitate_buc','cantitate buc','buc','realizat']));
+      const savedKgBuc=toNumber(pickValue(row,['kgBuc','kg_buc','kg_buc_debitat','kg/buc','kg buc','greutate','kg pe buc']));
+      const savedTotalKg=toNumber(pickValue(row,['totalKg','total_kg','total kg debitat','total kg','kg total']));
+      const helperMeta=(fallback&&fallback.helperMeta)||{};
+      const helperKgBuc=toNumber(helperMeta.kgBuc || helperMeta.kg_buc_debitat || helperMeta.kg_buc || helperMeta['kg/buc']);
+      let totalKg=0;
+      if(savedTotalKg>0) totalKg=savedTotalKg;
+      else if(savedKgBuc>0 && qty) totalKg=savedKgBuc*qty;
+      else if(helperKgBuc>0 && qty) totalKg=helperKgBuc*qty;
+
+      const materialKey=[diam,cal].join('|');
+      const material=byMaterial.get(materialKey)||{diam,cal,kg:0};
+      material.kg+=totalKg;
+      byMaterial.set(materialKey,material);
+
+      const variantKey=[materialKey,debKey].join('||');
+      const variant=byVariant.get(variantKey)||{diam,cal,debKey,buc:0,kg:0};
+      variant.buc+=qty;
+      variant.kg+=totalKg;
+      byVariant.set(variantKey,variant);
+    });
+    return {byMaterial,byVariant};
+  }
+
+  function applyDirectDebitateMaterialTruth(groups,direct,ctx){
+    const list=Array.isArray(groups)?groups:[];
+    if(!direct || !(direct.byMaterial instanceof Map)) return list;
+
+    direct.byMaterial.forEach(info=>{
+      const diam=normalizeDiam(info&&info.diam), cal=normalizeQuality(info&&info.cal);
+      let material=list.find(item=>normalizeDiam(item&&item.diametru)===diam && normalizeQuality(item&&item.calitate)===cal);
+      if(!material){
+        material=makeSyntheticMaterialSnapshot(diam,cal,ctx.steelInv,ctx.steelRealInv,ctx.steelEntries,ctx.steelDebitated);
+        material.debGroups=[];
+        list.push(material);
+      }
+      // Pentru materialele prezente explicit în DEBITATE, totalul direct este
+      // autoritar. Nu se mai permite ca același reper de pe alt diametru să mute kg.
+      material.debitatDinOtelKg=toNumber(info.kg);
+      material.otelRamasKg=toNumber(material.stocStartOtel)+toNumber(material.intrariOtel)-toNumber(material.debitatDinOtelKg);
+    });
+
+    if(direct.byVariant instanceof Map){
+      direct.byVariant.forEach(info=>{
+        const diam=normalizeDiam(info&&info.diam), cal=normalizeQuality(info&&info.cal), debKey=normalizeReper(info&&info.debKey);
+        if(!debKey) return;
+        let material=list.find(item=>normalizeDiam(item&&item.diametru)===diam && normalizeQuality(item&&item.calitate)===cal);
+        if(!material) return;
+        if(!Array.isArray(material.debGroups)) material.debGroups=[];
+        let deb=material.debGroups.find(item=>normalizeReper(item&&item.reperDebitat)===debKey);
+        if(!deb){
+          deb={debKey,reperDebitat:debKey,stocDebitat:0,debitatBuc:0,debitatKg:0,forjatDinDebitat:0,debitatRamas:0,stocRealDebitat:0,diferentaDebitat:0,forjats:[]};
+          material.debGroups.push(deb);
+        }
+        deb.stocDebitat=getDebInventoryQty(ctx.debInvLookup,debKey,diam,cal);
+        deb.debitatBuc=toNumber(info.buc);
+        deb.debitatKg=toNumber(info.kg);
+        deb.forjatDinDebitat=getDebMetricByMaterial(ctx.debConsumed,debKey,diam,cal);
+        deb.debitatRamas=deb.stocDebitat+deb.debitatBuc-deb.forjatDinDebitat;
+        deb.stocRealDebitat=getDebInventoryQty(ctx.debRealInvLookup,debKey,diam,cal);
+        deb.diferentaDebitat=deb.stocRealDebitat-deb.debitatRamas;
+      });
+    }
+
+    list.forEach(material=>{
+      if(Array.isArray(material.debGroups)) material.debGroups.sort((a,b)=>normalizeReper(a&&a.reperDebitat).localeCompare(normalizeReper(b&&b.reperDebitat),'ro'));
+    });
+    return list.sort((a,b)=>{
+      const aDiam=diamSortValue(a&&a.diametru), bDiam=diamSortValue(b&&b.diametru);
+      if(aDiam!==bDiam) return aDiam-bDiam;
+      const aDiamTxt=normalizeDiam(a&&a.diametru), bDiamTxt=normalizeDiam(b&&b.diametru);
+      if(aDiamTxt!==bDiamTxt) return aDiamTxt.localeCompare(bDiamTxt,'ro');
+      return normalizeQuality(a&&a.calitate).localeCompare(normalizeQuality(b&&b.calitate),'ro');
+    });
+  }
+
   function aggregateDebitateProducedThisPeriod(helperIndex,debMeta){
     const map=new Map(), byVariant=new Map(), byDiameter=new Map(), variantRepers=new Set();
     state.raw.debitate.forEach(row=>{
@@ -2275,6 +2371,7 @@
     const forjRealInv=currentForjatInventoryMapForSelectedPeriod(state.raw.inventarForjate);
     const steelEntries=aggregateSteelEntriesThisPeriod();
     const steelDebitated=aggregateSteelDebitatedThisPeriod(helperIndex, debMeta);
+    const directDebitateTruth=aggregateDirectDebitateMaterialTruth(helperIndex,debMeta);
     const debProduced=aggregateDebitateProducedThisPeriod(helperIndex,debMeta);
     const debConsumed=aggregateDebitateConsumedThisPeriod(helperIndex);
     const forjProduced=aggregateForjateProducedThisPeriod();
@@ -2461,7 +2558,7 @@
       return normalizeQuality(a.calitate).localeCompare(normalizeQuality(b.calitate),'ro');
     });
     const linkedGroups=ensureSk304234MaterialLinks(addSynthetic56C45MaterialGroup(groups,steelInv,steelRealInv,steelEntries,steelDebitated),steelInv,steelRealInv,steelEntries,steelDebitated,debInvLookup,debRealInvLookup,debProduced,debConsumed);
-    state.groups=reconcileMultiMaterialDebGroups(linkedGroups,{
+    const reconciledGroups=reconcileMultiMaterialDebGroups(linkedGroups,{
       helperIndex,
       debMeta,
       helperForjateByDeb,
@@ -2480,6 +2577,15 @@
       vanzariZale,
       stocPmInitial,
       stocPm
+    });
+    state.groups=applyDirectDebitateMaterialTruth(reconciledGroups,directDebitateTruth,{
+      steelInv,
+      steelRealInv,
+      steelEntries,
+      steelDebitated,
+      debInvLookup,
+      debRealInvLookup,
+      debConsumed
     });
   }
 
