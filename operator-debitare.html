@@ -96,6 +96,9 @@
     .nkTable tr:hover input:not([readonly]){background:#eef6ff}
     .nkTable tr.nkSeriesStart td{border-top:4px double #000!important}
     .nkTable tr.nkSeriesStart input{border-top:0}
+    .nkTable tr.nkReserved td,.nkTable tr.nkReserved input{background:#ffe4e6!important}
+    .nkTable tr.nkReserved input{cursor:not-allowed!important;color:#111!important;opacity:1!important}
+    .nkTable tr.nkReserved td:nth-child(3),.nkTable tr.nkReserved td:nth-child(3) input{background:#fda4af!important;font-weight:900}
     .nkStatus{font-weight:900;color:#071b33;flex:1;text-align:right}.nkStatus.err{color:#b91c1c}.nkStatus.ok{color:#0f7a2d}
     @media(max-width:1100px){.nkGrid{grid-template-columns:1fr}.nkTable{min-width:760px}}
 
@@ -1837,6 +1840,58 @@
 
   function nkStatus(msg,type){const el=$('numeralKodStatus'); if(!el)return; el.textContent=msg||''; el.className='nkStatus '+(type||'');}
   function nkSeries(v){return norm(v).toUpperCase().replace(/\s+/g,'');}
+  function nkMarcaj(v){return norm(v).toUpperCase().replace(/\s+/g,'');}
+  function nkReservedForMarcaj(marcaj, state){
+    const code=nkMarcaj(marcaj);
+    const src=state||operatorNkState;
+    return (src&&Array.isArray(src.reserved)?src.reserved:[]).find(r=>nkMarcaj(r&&r.marcaj)===code)||null;
+  }
+  function nkReservedMessage(res){
+    if(!res) return 'Acest cod NUMERALKOD este rezervat și nu poate fi modificat.';
+    const code=nkMarcaj(res.marcaj);
+    const details=[];
+    if(norm(res.reper)) details.push('REPER: '+norm(res.reper));
+    if(norm(res.dim)) details.push('DIMENSIUNE: '+norm(res.dim));
+    if(norm(res.grade)) details.push('CALITATE: '+norm(res.grade));
+    if(norm(res.sarja)) details.push('ȘARJĂ OȚEL: '+norm(res.sarja));
+    return 'NUMERALKOD '+code+' este REZERVAT'+(details.length?' pentru '+details.join(' | '):'')+'. Rândul este blocat și nu poate fi completat de operator.';
+  }
+  function nkFindRowByMarcaj(state, group, marcaj){
+    const code=nkMarcaj(marcaj);
+    for(const serie of ((state&&state[group])||[])){
+      const series=nkSeries(serie&&serie.series);
+      const rows=Array.isArray(serie&&serie.rows)?serie.rows:[];
+      for(let i=0;i<rows.length;i++){
+        const row=nkCleanRow(rows[i],series,i);
+        if(nkMarcaj(row.marcaj)===code) return row;
+      }
+    }
+    return null;
+  }
+  function nkProtectReservedRowsFromLatest(latestState){
+    const beforeReserved=JSON.stringify(operatorNkState.reserved||[]);
+    let changed=false;
+    operatorNkState.reserved=Array.isArray(latestState&&latestState.reserved)?latestState.reserved.map(r=>({...r})):[];
+    if(beforeReserved!==JSON.stringify(operatorNkState.reserved||[])) changed=true;
+    ['zale','alte'].forEach(group=>{
+      (operatorNkState[group]||[]).forEach(serie=>{
+        const series=nkSeries(serie&&serie.series);
+        if(!Array.isArray(serie.rows)) serie.rows=[];
+        serie.rows=NK_LETTERS.map((_l,i)=>{
+          const current=nkCleanRow(serie.rows[i],series,i);
+          const reserved=nkReservedForMarcaj(current.marcaj,operatorNkState);
+          if(!reserved) return current;
+          const latest=nkFindRowByMarcaj(latestState,group,current.marcaj);
+          let protectedRow;
+          if(latest) protectedRow=nkCleanRow(latest,series,i);
+          else {protectedRow={...current,dim:'',grade:'',sarja:'',scurt:''};}
+          if(JSON.stringify(current)!==JSON.stringify(protectedRow)) changed=true;
+          return protectedRow;
+        });
+      });
+    });
+    return changed;
+  }
   function nkValidateSeries(series){
     const s=nkSeries(series); const m=s.match(/^([A-Z])(\d{1,2})$/);
     if(!m) return {ok:false,msg:'Seria trebuie să fie de forma N1, N5, D10.'};
@@ -1932,7 +1987,15 @@
       const rows=NK_LETTERS.map((_l,i)=>nkCleanRow((serieObj.rows||[])[i],series,i));
       serieObj.rows=rows;
       rows.forEach((row,rIdx)=>{
+        const reserved=nkReservedForMarcaj(row.marcaj,operatorNkState);
+        const reservedMsg=reserved?nkReservedMessage(reserved):'';
         const tr=document.createElement('tr'); if(rIdx===0 && sIdx>0) tr.classList.add('nkSeriesStart'); tr.dataset.group=group; tr.dataset.s=String(sIdx); tr.dataset.r=String(rIdx);
+        if(reserved){
+          tr.classList.add('nkReserved');
+          tr.dataset.nkReserved='1';
+          tr.title=reservedMsg;
+          tr.addEventListener('click',()=>{nkStatus(reservedMsg,'err'); alert(reservedMsg);});
+        }
         const cells=[
           ['numar',row.numar,true],['series',row.series,true],['marcaj',row.marcaj,true],['dim',row.dim,false],['grade',row.grade,false],['sarja',row.sarja,false],['scurt',row.scurt,false]
         ];
@@ -1940,7 +2003,8 @@
           const td=document.createElement('td');
           const inp=document.createElement('input'); inp.value=v||''; inp.dataset.k=k; inp.setAttribute('data-edit-field','data-edit-field');
           if(k==='grade') inp.setAttribute('list','codOtelCalitateList');
-          if(ro) inp.readOnly=true;
+          if(ro || reserved) inp.readOnly=true;
+          if(reserved){inp.title=reservedMsg; inp.setAttribute('aria-label',reservedMsg);}
           inp.addEventListener('input',()=>commitNumeralKodInput(inp));
           inp.addEventListener('change',()=>{commitNumeralKodInput(inp); scheduleNumeralKodSave();});
           inp.addEventListener('blur',()=>{commitNumeralKodInput(inp); scheduleNumeralKodSave();});
@@ -1968,8 +2032,19 @@
       const btn=$('btnSaveNumeralKod'); if(btn) btn.disabled=true;
       if(!silent) nkStatus('Se salvează în foaia NumeralKOD reală...','');
       collectNumeralKodFromEditor();
+      // Protecție server-side logică: înainte de fiecare salvare recitim NUMERALKOD real,
+      // păstrăm lista REZERVAT actuală și anulăm orice editare făcută între timp pe un cod rezervat.
+      let reservedChanged=false;
+      try{
+        const latestDoc=await readDoc(NK_DOC_KEY);
+        const latestState=nkPayloadToState(getPayload(latestDoc)||{});
+        reservedChanged=nkProtectReservedRowsFromLatest(latestState);
+      }catch(e){
+        throw new Error('Nu pot verifica lista NUMERALKOD REZERVAT. Salvarea a fost oprită pentru siguranță. Reîncarcă și încearcă din nou.');
+      }
       const payload=nkStateToPayload();
       await writeNumeralKodDocument(payload);
+      if(reservedChanged) renderNumeralKodEditor();
       try{localStorage.setItem('NUMERALKOD_autosave_v1',JSON.stringify(payload));}catch(_e){}
       await loadNumeralKodData();
       updateCodInternOtelList();
