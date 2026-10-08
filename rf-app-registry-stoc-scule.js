@@ -2,12 +2,18 @@
   'use strict';
   var reg = window.RF_APP_REGISTRY;
   if (!reg || !reg.index || !Array.isArray(reg.index.items)) return;
-  var PAGE_KEY = 'stoc-consum-scule';
-  var LABEL = 'STOC ȘI CONSUM SCULE';
-  var HREF = 'stoc-consum-scule.html';
 
-  function hasItem(list){
-    return Array.isArray(list) && list.some(function(x){ return x && (x.key === PAGE_KEY || x[0] === PAGE_KEY); });
+  var PAGES = [
+    { key:'stoc-consum-scule', label:'STOC ȘI CONSUM SCULE', href:'stoc-consum-scule.html' },
+    { key:'stoc-scule-reascutite', label:'STOC SCULE REASCUTITE', href:'stoc-scule-reascutite.html' }
+  ];
+
+  function itemKey(x){ return x && (x.key || x[0]); }
+  function hasKey(list,key){ return Array.isArray(list) && list.some(function(x){ return itemKey(x) === key; }); }
+  function insertAfter(list, afterKey, item){
+    if (!Array.isArray(list) || hasKey(list,item.key || item[0])) return;
+    var idx=list.findIndex(function(x){ return itemKey(x)===afterKey; });
+    if(idx>=0) list.splice(idx+1,0,item); else list.push(item);
   }
 
   try{
@@ -15,11 +21,8 @@
     if (group && Array.isArray(group.sections) && group.sections.length) {
       var sec = group.sections[0];
       sec.items = Array.isArray(sec.items) ? sec.items : [];
-      if (!hasItem(sec.items)) {
-        var item = { key:PAGE_KEY, label:LABEL, href:HREF };
-        var idx = sec.items.findIndex(function(x){ return x && x.key === 'inventar-prelucrari'; });
-        if (idx >= 0) sec.items.splice(idx + 1, 0, item); else sec.items.push(item);
-      }
+      insertAfter(sec.items, 'inventar-prelucrari', {key:PAGES[0].key,label:PAGES[0].label,href:PAGES[0].href});
+      insertAfter(sec.items, PAGES[0].key, {key:PAGES[1].key,label:PAGES[1].label,href:PAGES[1].href});
     }
 
     if (reg.helperAcl) {
@@ -30,19 +33,15 @@
         reg.helperAcl.pageGroups.push(pg);
       }
       pg.items = Array.isArray(pg.items) ? pg.items : [];
-      if (!hasItem(pg.items)) {
-        var pidx = pg.items.findIndex(function(x){ return x && x[0] === 'inventar-prelucrari'; });
-        if (pidx >= 0) pg.items.splice(pidx + 1, 0, [PAGE_KEY, LABEL]); else pg.items.push([PAGE_KEY, LABEL]);
-      }
+      insertAfter(pg.items, 'inventar-prelucrari', [PAGES[0].key,PAGES[0].label]);
+      insertAfter(pg.items, PAGES[0].key, [PAGES[1].key,PAGES[1].label]);
 
       reg.helperAcl.buttonGroups = Array.isArray(reg.helperAcl.buttonGroups) ? reg.helperAcl.buttonGroups : [];
       var bg = reg.helperAcl.buttonGroups.find(function(x){ return x && x.key === 'prelucrari'; });
       if (bg) {
         bg.items = Array.isArray(bg.items) ? bg.items : [];
-        if (!hasItem(bg.items)) {
-          var bidx = bg.items.findIndex(function(x){ return x && x[0] === 'inventar-prelucrari'; });
-          if (bidx >= 0) bg.items.splice(bidx + 1, 0, [PAGE_KEY, LABEL]); else bg.items.push([PAGE_KEY, LABEL]);
-        }
+        insertAfter(bg.items, 'inventar-prelucrari', [PAGES[0].key,PAGES[0].label]);
+        insertAfter(bg.items, PAGES[0].key, [PAGES[1].key,PAGES[1].label]);
       }
     }
 
