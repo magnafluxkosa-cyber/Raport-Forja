@@ -1061,10 +1061,29 @@
 
   function getDebInventoryQty(lookup, debKey, diam, cal){
     if(!lookup || !debKey) return 0;
-    const exactKey=[normalizeReper(debKey), normalizeDiam(diam), normalizeQuality(cal)].join('|');
+    const reperKey=normalizeReper(debKey);
+    const exactKey=[reperKey, normalizeDiam(diam), normalizeQuality(cal)].join('|');
     const exact=lookup.exact && lookup.exact.get(exactKey);
     if(exact) return toNumber(exact.qty);
-    const simple=lookup.simple && lookup.simple.get(normalizeReper(debKey));
+
+    // Dacă inventarul are deja materialul precizat pentru acest reper, nu folosim
+    // totalul simplu ca fallback pe o altă variantă de material. Altfel același
+    // stoc inițial s-ar copia simultan pe Ø53 și Ø65.
+    if(lookup.exact instanceof Map){
+      let hasMaterialSpecificInventory=false;
+      const prefix=reperKey+'|';
+      for(const key of lookup.exact.keys()){
+        if(!String(key).startsWith(prefix)) continue;
+        const parts=String(key).split('|');
+        const invDiam=normalizeDiam(parts[1]||'');
+        const invCal=normalizeQuality(parts.slice(2).join('|')||'');
+        if(invDiam || invCal){ hasMaterialSpecificInventory=true; break; }
+      }
+      if(hasMaterialSpecificInventory) return 0;
+    }
+
+    // Fallback doar pentru inventare vechi în care materialul nu a fost salvat.
+    const simple=lookup.simple && lookup.simple.get(reperKey);
     return simple ? toNumber(simple.qty) : 0;
   }
   function currentDebInventoryLookupForSelectedPeriod(rows, helperIndex){
@@ -1264,8 +1283,17 @@
   function readDebitateMaterial(row,reper,helperIndex,debMeta){
     const rawDiam=pickValue(row,['diametru','diametruOtel','diametru_otel','diametru otel','dimensiune_otel','dimensiune otel','dimensiune']);
     const rawCal=pickValue(row,['calitate','codOtelCalitate','cod_otel_calitate','calitateOtel','calitate_otel','calitate otel','grade']);
-    let diam=normalizeDiam(rawDiam);
-    let cal=normalizeQuality(rawCal);
+
+    // Sursa de adevăr pentru materialul folosit la debitare este materialul real
+    // identificat prin NumeralKod / cod intern / șarjă. Pagina DEBITATE poate afișa
+    // corect Ø65 chiar dacă reperul are în Helper diametrul standard Ø53; aceeași
+    // regulă trebuie folosită și aici, altfel cantitatea debitată ajunge pe Ø53.
+    const nkMaterial=getNumeralkodMaterialForDebitareRow(row);
+    let diam=normalizeDiam((nkMaterial&&nkMaterial.diam) || rawDiam);
+    let cal=normalizeQuality((nkMaterial&&nkMaterial.cal) || rawCal);
+
+    // Helper-ul completează DOAR câmpurile lipsă. Nu poate suprascrie materialul
+    // identificat pe tranzacția reală din DEBITATE / NumeralKod.
     const helperMeta=getHelperVariant(debMeta,reper,diam,cal) || getHelperVariant(helperIndex,reper,diam,cal) || {};
     diam=diam || normalizeDiam(helperMeta.diametru||'');
     cal=cal || normalizeQuality(helperMeta.calitate||'');
