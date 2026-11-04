@@ -276,7 +276,7 @@
 (() => {
   'use strict';
   const PAGE_KEY='stoc-ramas-teoretic';
-  const BUILD_VERSION='2026-11-04-debitate-qty-source-unified-v16';
+  const BUILD_VERSION='2026-11-04-debitate-consum-multimaterial-reconciliat-v18';
   const STORAGE_KEY='kad-stoc-ramas-teoretic-filters';
   const MONTHS_RO={1:'Ianuarie',2:'Februarie',3:'Martie',4:'Aprilie',5:'Mai',6:'Iunie',7:'Iulie',8:'August',9:'Septembrie',10:'Octombrie',11:'Noiembrie',12:'Decembrie'};
   const ZALE_REPERS=['106-1625','106-1626','9K-6628','9K-6629','229-6909','229-6910','248-2307','248-2308','503-0761','503-0762','417-3595','417-3596','418-2091','418-2092'];
@@ -1457,8 +1457,47 @@
     map.variantRepers=variantRepers;
     return map;
   }
-  function aggregateDebitateConsumedThisPeriod(helperIndex){
+  function aggregateDebitateConsumedThisPeriod(helperIndex,debInvLookup,debProduced){
     const map=new Map(), byVariant=new Map(), byDiameter=new Map(), variantRepers=new Set();
+
+    // Disponibilul real de debitate pe fiecare variantă de material:
+    // stoc inițial + ce s-a debitat în perioada selectată.
+    const availableByReper=new Map();
+    const registerAvailable=(debKey,diam,cal,qty)=>{
+      const reper=normalizeReper(debKey);
+      const d=normalizeDiam(diam), c=normalizeQuality(cal);
+      if(!reper || (!d && !c)) return;
+      let variants=availableByReper.get(reper);
+      if(!variants){ variants=new Map(); availableByReper.set(reper,variants); }
+      const key=debMaterialMetricKey(reper,d,c);
+      const current=variants.get(key)||{reper,diam:d,cal:c,available:0};
+      current.available+=toNumber(qty);
+      variants.set(key,current);
+    };
+
+    if(debInvLookup && debInvLookup.exact instanceof Map){
+      debInvLookup.exact.forEach((entry,key)=>{
+        const parts=String(key||'').split('|');
+        const debKey=normalizeReper(parts.shift()||'');
+        const diam=normalizeDiam(parts.shift()||'');
+        const cal=normalizeQuality(parts.join('|')||'');
+        registerAvailable(debKey,diam,cal,entry&&typeof entry==='object'?entry.qty:entry);
+      });
+    }
+    if(debProduced && debProduced.byVariant instanceof Map){
+      debProduced.byVariant.forEach((qty,key)=>{
+        const parts=String(key||'').split('|');
+        const debKey=normalizeReper(parts.shift()||'');
+        const diam=normalizeDiam(parts.shift()||'');
+        const cal=normalizeQuality(parts.join('|')||'');
+        registerAvailable(debKey,diam,cal,qty);
+      });
+    }
+
+    // Cererea de consum vine din FORJATE. Materialul din FORJATE este preferat,
+    // dar nu lăsăm o variantă negativă dacă același reper are debitate disponibile
+    // pe alt material real în aceeași perioadă / stoc inițial.
+    const demands=[];
     state.raw.forjate.forEach(row=>{
       if(!rowInSelectedPeriod(row)) return;
       const reperForjat=normalizeReper(pickValue(row,['reper','reper forjat']));
@@ -1468,20 +1507,75 @@
       const helper=getHelperVariant(helperIndex,reperForjat,rowDiam,rowCal) || helperIndex.get(reperForjat) || {reperDebitat:reperForjat};
       const reperDebitat=normalizeReper(helper.reperDebitat||reperForjat);
       const normalizedMaterial=normalizeSk304234Material(reperDebitat,rowDiam || helper.diametru || '',rowCal || helper.calitate || '');
-      const diam=normalizedMaterial.diam;
-      const cal=normalizedMaterial.cal;
       const bune=toNumber(pickValue(row,['buc_realizate','buc realizate','bucRealizate','realizat','cantitate','buc']));
       const rebut=toNumber(pickValue(row,['rebut','rebuturi']));
       const qty=bune+rebut;
+      if(!(qty>0) || !reperDebitat) return;
       map.set(reperDebitat,(map.get(reperDebitat)||0)+qty);
-      if(diam||cal){
-        const vkey=debMaterialMetricKey(reperDebitat,diam,cal);
-        const dkey=debDiameterMetricKey(reperDebitat,diam);
-        byVariant.set(vkey,(byVariant.get(vkey)||0)+qty);
-        byDiameter.set(dkey,(byDiameter.get(dkey)||0)+qty);
-        variantRepers.add(reperDebitat);
+      demands.push({reper:reperDebitat,diam:normalizedMaterial.diam,cal:normalizedMaterial.cal,qty});
+    });
+
+    const addConsumed=(reper,diam,cal,qty)=>{
+      const amount=toNumber(qty);
+      if(!(amount>0)) return;
+      const d=normalizeDiam(diam), c=normalizeQuality(cal);
+      const vkey=debMaterialMetricKey(reper,d,c);
+      const dkey=debDiameterMetricKey(reper,d);
+      byVariant.set(vkey,(byVariant.get(vkey)||0)+amount);
+      byDiameter.set(dkey,(byDiameter.get(dkey)||0)+amount);
+      variantRepers.add(reper);
+    };
+
+    // Ținem disponibilul rămas după fiecare alocare, ca același stoc să nu fie
+    // folosit de două ori când există mai multe rânduri FORJATE în lună.
+    const remainingByReper=new Map();
+    availableByReper.forEach((variants,reper)=>{
+      const copy=new Map();
+      variants.forEach((v,k)=>copy.set(k,{...v,remaining:Math.max(0,toNumber(v.available))}));
+      remainingByReper.set(reper,copy);
+    });
+
+    demands.forEach(demand=>{
+      const reper=demand.reper;
+      let remainingQty=toNumber(demand.qty);
+      const variants=remainingByReper.get(reper) || new Map();
+      const requestedKey=debMaterialMetricKey(reper,demand.diam,demand.cal);
+      const candidates=[];
+      const requested=variants.get(requestedKey);
+      if(requested) candidates.push(requested);
+
+      // După materialul cerut de FORJATE, preferăm aceeași calitate pe alte diametre,
+      // apoi orice altă variantă reală a aceluiași reper care mai are stoc disponibil.
+      const rest=Array.from(variants.values()).filter(v=>v!==requested && toNumber(v.remaining)>0);
+      rest.sort((a,b)=>{
+        const aSameCal=normalizeQuality(a.cal)===normalizeQuality(demand.cal)?0:1;
+        const bSameCal=normalizeQuality(b.cal)===normalizeQuality(demand.cal)?0:1;
+        if(aSameCal!==bSameCal) return aSameCal-bSameCal;
+        const ad=diamSortValue(a.diam), bd=diamSortValue(b.diam);
+        if(ad!==bd) return ad-bd;
+        return normalizeQuality(a.cal).localeCompare(normalizeQuality(b.cal),'ro');
+      });
+      candidates.push(...rest);
+
+      for(const variant of candidates){
+        if(!(remainingQty>0)) break;
+        const canUse=Math.max(0,toNumber(variant.remaining));
+        if(!(canUse>0)) continue;
+        const used=Math.min(remainingQty,canUse);
+        addConsumed(reper,variant.diam,variant.cal,used);
+        variant.remaining=canUse-used;
+        remainingQty-=used;
+      }
+
+      // Dacă totalul forjat depășește tot stocul debitat disponibil, diferența rămâne
+      // pe materialul indicat de FORJATE ca să fie vizibilă lipsa reală, nu ascunsă.
+      if(remainingQty>0){
+        const fallbackDiam=normalizeDiam(demand.diam || (requested&&requested.diam) || '');
+        const fallbackCal=normalizeQuality(demand.cal || (requested&&requested.cal) || '');
+        addConsumed(reper,fallbackDiam,fallbackCal,remainingQty);
       }
     });
+
     map.byVariant=byVariant;
     map.byDiameter=byDiameter;
     map.variantRepers=variantRepers;
@@ -2244,7 +2338,7 @@
     const steelDebitated=aggregateSteelDebitatedThisPeriod(helperIndex, debMeta);
     const strictDebitatedKgByMaterial=aggregateStrictDebitatedKgBySavedMaterial(helperIndex,debMeta);
     const debProduced=aggregateDebitateProducedThisPeriod(helperIndex,debMeta);
-    const debConsumed=aggregateDebitateConsumedThisPeriod(helperIndex);
+    const debConsumed=aggregateDebitateConsumedThisPeriod(helperIndex,debInvLookup,debProduced);
     const forjProduced=aggregateForjateProducedThisPeriod();
     const forjRebut=aggregateForjateRebutThisPeriod();
     const actualDebitateVariants=collectActualDebitateVariantsThisPeriod(helperIndex,debMeta);
