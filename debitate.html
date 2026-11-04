@@ -2174,8 +2174,13 @@ function setAutofillReadonly(isReadonly){
       r.data = parseDateAny(r.data);
       const yy = normalizeYearValue(r.an || y);
       r.an = yy ? Number(yy) : Number(y);
-      try{ rfNormalizeDebitareSarjaFields(r); }catch(_e){}
-      try{ applyNumeralKodInfoToDebitareRow(r); }catch(_e){}
+      // Rândurile editate manual în DEBITATE sunt autoritare.
+      // Nu le mai remapăm automat din NumeralKod/Helper la reîncărcare,
+      // altfel modificarea utilizatorului ar fi anulată imediat.
+      if (r.debitateManualOverride !== true){
+        try{ rfNormalizeDebitareSarjaFields(r); }catch(_e){}
+        try{ applyNumeralKodInfoToDebitareRow(r); }catch(_e){}
+      }
       recalcRow(r);
     });
     return sortRowsByDateAsc(out.filter(r => normalizeYearValue(r.an) === y));
@@ -3397,15 +3402,20 @@ function setAutofillReadonly(isReadonly){
       luna: LUNI[m-1] || "",
       data: dataIso,
       echipament: echip,
+      utilaj: echip,
       reper: reper,
       diametru: diam,
       calitate: cal,
+      codOtelCalitate: cal,
       kgBuc: kgBuc,
       lungime: Math.trunc(lung),
+      lungimeDebitare: Math.trunc(lung),
       sarja: sarja,
       planificat: Number.isFinite(plan) ? Math.trunc(plan) : "",
       cantitate: Math.trunc(cant),
+      realizat: Math.trunc(cant),
       schimbul: Math.trunc(schimb),
+      schimb: Math.trunc(schimb),
       operator: oper,
       oreLucrate: Number.isFinite(ore) ? ore : 8.0,
       weekNr: isoWeekNumber(dataIso),
@@ -3418,15 +3428,35 @@ function setAutofillReadonly(isReadonly){
 
     if (targetYear === sourceYear){
       const sourceList = [...getRowsForYear(sourceYear)];
-      const idx = sourceList.findIndex(x => x.id === editingRowId);
-      if (idx >= 0) sourceList[idx] = updatedRow;
+      const idx = sourceList.findIndex(x => String(x && x.id || "") === String(editingRowId));
+      if (idx < 0){
+        $("mErr").textContent = "Rândul nu a putut fi găsit în anul sursă. Reîncarcă pagina și încearcă din nou.";
+        return;
+      }
+      sourceList[idx] = updatedRow;
       saveYearLocal(sourceYear, sourceList);
+      rfMarkLocalChange(sourceYear);
       if(sourceYear === normalizeYearValue(activeYear)) rows = getRowsForYear(sourceYear);
       selectedRowId = updatedRow.id;
-      scheduleSave(sourceYear);
       renderBody();
       refreshSummaryTable();
       refreshSarjaWarningTable();
+
+      // Persistăm imediat în cloud înainte de închiderea ferestrei.
+      // Astfel editarea din DEBITATE devine sursa autoritară și nu poate fi
+      // înlocuită de un pull ulterior din fișa Operator Debitare.
+      try{
+        if (typeof pushYearNow === "function"){
+          const pushed = await pushYearNow(sourceYear);
+          if (!pushed) throw new Error("Salvarea în cloud nu a fost confirmată.");
+        } else {
+          scheduleSave(sourceYear);
+        }
+      }catch(saveErr){
+        console.error(saveErr);
+        $("mErr").textContent = "Modificarea a fost păstrată local, dar nu s-a putut confirma salvarea în cloud. Încearcă din nou.";
+        return;
+      }
     } else {
       removeRowFromYear(sourceYear, editingRowId);
       upsertRowIntoYear(targetYear, updatedRow);
@@ -3435,6 +3465,18 @@ function setAutofillReadonly(isReadonly){
       persistMainYearSelection();
       refreshFilterUI(true);
       render();
+
+      try{
+        if (typeof pushYearNow === "function"){
+          await pushYearNow(sourceYear);
+          const pushedTarget = await pushYearNow(targetYear);
+          if (!pushedTarget) throw new Error("Salvarea în cloud nu a fost confirmată.");
+        }
+      }catch(saveErr){
+        console.error(saveErr);
+        $("mErr").textContent = "Mutarea rândului între ani a fost păstrată local, dar salvarea în cloud nu a fost confirmată.";
+        return;
+      }
     }
 
     modalMode = "add";
@@ -3938,8 +3980,13 @@ function setAutofillReadonly(isReadonly){
       // fix year like "2.026" -> 2026
       const _y = parseNumberRO(r.an);
       if (Number.isFinite(_y)) r.an = Math.trunc(_y);
-      try{ rfNormalizeDebitareSarjaFields(r); }catch(_e){}
-      try{ applyNumeralKodInfoToDebitareRow(r); }catch(_e){}
+      // Rândurile editate manual în DEBITATE sunt autoritare.
+      // Nu le mai remapăm automat din NumeralKod/Helper la reîncărcare,
+      // altfel modificarea utilizatorului ar fi anulată imediat.
+      if (r.debitateManualOverride !== true){
+        try{ rfNormalizeDebitareSarjaFields(r); }catch(_e){}
+        try{ applyNumeralKodInfoToDebitareRow(r); }catch(_e){}
+      }
       recalcRow(r);
     });
     rows.sort((a,b)=> (a.data||"").localeCompare(b.data||""));
