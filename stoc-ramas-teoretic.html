@@ -237,7 +237,7 @@
           <div><label for="mappingTarget">Reper K.A.D.</label><input id="mappingTarget" type="text" placeholder="Ex: 378-8241"></div>
           <button class="btn" id="btnAddSalesMapping" type="button">Adaugă mapare</button>
         </div>
-        <div class="mapping-note">Potrivirea se face în Cod articol și Nume art. din Lista Vânzări. Poți introduce codul complet sau un text distinctiv. Mapările manuale au prioritate față de regulile automate.</div>
+        <div class="mapping-note">Sistemul mapează automat când găsește un singur reper K.A.D. sigur în Cod articol sau Nume art. Mapările automate apar mai jos cu marcajul AUTOMAT. Completează manual doar cazurile ambigue; mapările manuale au prioritate.</div>
         <div style="overflow:auto">
           <table class="mapping-table">
             <thead><tr><th style="width:44%">Cod / text vânzări</th><th style="width:34%">Reper K.A.D.</th><th style="width:22%">Acțiuni</th></tr></thead>
@@ -389,7 +389,7 @@
     unmappedSalesAlert:document.getElementById('unmappedSalesAlert'),unmappedSalesText:document.getElementById('unmappedSalesText'),unmappedSalesList:document.getElementById('unmappedSalesList'),
     btnSalesMappings:document.getElementById('btnSalesMappings'),salesMappingModal:document.getElementById('salesMappingModal'),btnCloseSalesMappings:document.getElementById('btnCloseSalesMappings'),mappingSource:document.getElementById('mappingSource'),mappingTarget:document.getElementById('mappingTarget'),btnAddSalesMapping:document.getElementById('btnAddSalesMapping'),salesMappingTbody:document.getElementById('salesMappingTbody')
   };
-  const state={supabase:null,user:null,role:'viewer',canEdit:false,salesMappings:[],raw:{helper:[],intrariOtel:[],debitate:[],forjate:[],inventarOtel:[],inventarDebitate:[],inventarForjate:[],livrari:[],listaVanzari:[],rebut:[],magnaflux:[],rebutPm:[]},helperTables:{forjate:[],debitare:[],source:'rf_documents'},numeralkodMaterialByCode:new Map(),inventarPrelucrariPayload:null,groups:[],filteredGroups:[],displayRows:[],updatedAt:null};
+  const state={supabase:null,user:null,role:'viewer',canEdit:false,salesMappings:[],autoSalesMappings:[],raw:{helper:[],intrariOtel:[],debitate:[],forjate:[],inventarOtel:[],inventarDebitate:[],inventarForjate:[],livrari:[],listaVanzari:[],rebut:[],magnaflux:[],rebutPm:[]},helperTables:{forjate:[],debitare:[],source:'rf_documents'},numeralkodMaterialByCode:new Map(),inventarPrelucrariPayload:null,groups:[],filteredGroups:[],displayRows:[],updatedAt:null};
 
   function safeText(v){return String(v==null?'':v);}  
   function trimText(v){return safeText(v).trim();}
@@ -728,10 +728,62 @@
     });
     return out;
   }
+  function collectAutoSalesCandidateRepers(){
+    const set=new Set();
+    const add=value=>{
+      const reper=canonicalReper(value);
+      const loose=normalizeLooseReper(reper);
+      if(!reper || loose.length<5 || isExcludedDisplayReper(reper)) return;
+      set.add(reper);
+    };
+    [...ZALE_REPERS,...INELE_REPERS,...MAHLE_REPERS,...SEGMENTI_REPERS].forEach(add);
+    (state.raw.forjate||[]).forEach(row=>add(pickValue(row,['reper','reper forjat','reper_forjat','reper produs','cod reper produs'])));
+    (state.raw.inventarForjate||[]).forEach(row=>add(pickValue(row,['reper','reper forjat','reper_forjat','reper produs','cod reper produs'])));
+    (state.raw.helper||[]).forEach(row=>add(pickValue(row,['reper forjat','reper_forjat','reperForjat','reper produs','cod reper produs','reper'])));
+    (state.helperTables.forjate||[]).forEach(row=>add(pickValue(row,['reper forjat','reper_forjat','reperForjat','reper produs','cod reper produs','reper'])));
+    (state.groups||[]).forEach(material=>(material.debGroups||[]).forEach(deb=>(deb.forjats||[]).forEach(f=>add(f&&f.reperForjat))));
+    return Array.from(set);
+  }
+  function autoSalesTargetsForText(value){
+    const raw=normalizeLooseReper(value);
+    if(!raw) return [];
+    const matches=[];
+    collectAutoSalesCandidateRepers().forEach(reper=>{
+      const token=normalizeLooseReper(reper);
+      if(token && token.length>=5 && raw.includes(token)) matches.push({reper,token});
+    });
+    if(!matches.length) return [];
+    const maxLen=Math.max(...matches.map(m=>m.token.length));
+    return Array.from(new Set(matches.filter(m=>m.token.length===maxLen).map(m=>m.reper)));
+  }
+  function rebuildAutoSalesMappings(){
+    const rows=[];
+    const seen=new Set();
+    (state.raw.listaVanzari||[]).forEach(row=>{
+      const cod=trimText(pickValue(row,['cod_articol','cod articol','cod art','cod produs','part','reper']));
+      const nume=trimText(pickValue(row,['nume_articol','nume art','nume articol','denumire articol','articol']));
+      const source=[cod,nume].filter(Boolean).join(' | ');
+      if(!source) return;
+      if(manualSalesTargetsForText(source).length) return;
+      const targets=autoSalesTargetsForText(source);
+      if(targets.length!==1) return;
+      const target=targets[0];
+      const key=normalizeLooseReper(source)+'|'+normalizeReper(target);
+      if(seen.has(key)) return;
+      seen.add(key);
+      rows.push({id:'auto_'+rows.length,source,target,auto:true});
+    });
+    state.autoSalesMappings=rows;
+  }
   function renderSalesMappingsTable(){
     if(!els.salesMappingTbody) return;
-    if(!(state.salesMappings||[]).length){ els.salesMappingTbody.innerHTML='<tr><td class="mapping-empty" colspan="3">Nu există mapări manuale.</td></tr>'; return; }
-    els.salesMappingTbody.innerHTML=state.salesMappings.map(m=>`<tr data-map-id="${esc(m.id)}"><td>${esc(m.source)}</td><td><b>${esc(m.target)}</b></td><td class="actions-cell"><button class="btn secondary" type="button" data-map-edit="${esc(m.id)}">Editează</button> <button class="btn secondary" type="button" data-map-delete="${esc(m.id)}">Șterge</button></td></tr>`).join('');
+    rebuildAutoSalesMappings();
+    const manual=state.salesMappings||[];
+    const auto=state.autoSalesMappings||[];
+    if(!manual.length && !auto.length){ els.salesMappingTbody.innerHTML='<tr><td class="mapping-empty" colspan="3">Nu există mapări. Sistemul va adăuga automat aici potrivirile sigure găsite în Lista Vânzări.</td></tr>'; return; }
+    const manualHtml=manual.map(m=>`<tr data-map-id="${esc(m.id)}"><td>${esc(m.source)}</td><td><b>${esc(m.target)}</b></td><td class="actions-cell"><button class="btn secondary" type="button" data-map-edit="${esc(m.id)}">Editează</button> <button class="btn secondary" type="button" data-map-delete="${esc(m.id)}">Șterge</button></td></tr>`).join('');
+    const autoHtml=auto.map(m=>`<tr><td>${esc(m.source)}</td><td><b>${esc(m.target)}</b></td><td class="actions-cell"><span style="font-weight:900;color:#0f766e">AUTOMAT</span></td></tr>`).join('');
+    els.salesMappingTbody.innerHTML=manualHtml+autoHtml;
     els.salesMappingTbody.querySelectorAll('[data-map-edit]').forEach(btn=>btn.addEventListener('click',()=>{ const m=state.salesMappings.find(x=>x.id===btn.dataset.mapEdit); if(!m)return; els.mappingSource.value=m.source; els.mappingTarget.value=m.target; els.btnAddSalesMapping.dataset.editId=m.id; els.btnAddSalesMapping.textContent='Salvează maparea'; els.mappingSource.focus(); }));
     els.salesMappingTbody.querySelectorAll('[data-map-delete]').forEach(btn=>btn.addEventListener('click',async()=>{
       if(!state.canEdit){alert('Nu ai drept de editare.');return;}
@@ -1885,6 +1937,10 @@
       const match=(group.patterns||[]).some(pattern=>raw.includes(normalizeLooseReper(pattern)));
       if(match) found.add(normalizeReper(group.reper));
     });
+    // Pentru repere noi care nu au reguli hardcodate, caută automat un cod K.A.D.
+    // existent în Helper / Forjate / Inventar. Se acceptă doar potrivirea cea mai
+    // specifică; maparea manuală de mai sus rămâne întotdeauna prioritară.
+    if(!found.size) autoSalesTargetsForText(value).forEach(reper=>found.add(normalizeReper(reper)));
     return Array.from(found);
   }
   function resolveZaleRepersFromSalesRow(row){
