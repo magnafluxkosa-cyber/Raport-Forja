@@ -1,6 +1,12 @@
 (function (window) {
   'use strict';
 
+  if (new URLSearchParams(window.location.search).get('kad_perf') === '1') {
+    var diagnosticScript = document.createElement('script');
+    diagnosticScript.src = '/kad-performance.js';
+    (document.head || document.documentElement).appendChild(diagnosticScript);
+  }
+
   var PAGE_LIST = [
     { page_key: 'index', page_name: 'Dashboard / Index' },
     { page_key: 'login', page_name: 'Login' },
