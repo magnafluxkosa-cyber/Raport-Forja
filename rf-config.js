@@ -1188,6 +1188,7 @@ function getControlCatalogForPage(pageKey) {
     var MARKER_PREFIX = '__KAD_CLOUD_FIRST_MARKER__:';
     var MAX_LOCAL_DATA_CHARS = 180000;
     var AUTH_RE = /(auth-token|supabase\.auth|sb-[a-z0-9]+-auth-token|rf_user_|rf_login_at|rf_cached_role|rf_display_id|ERP_SUPABASE|erp_forja_config|rf_force_stay_on_login|rf_acl_denied_message)/i;
+    var USER_PREF_RE = /^(rf_theme_palette|user_fav_pages_v1|user_recent_pages_v1|user_index_palette_v1)$/i;
     var CLOUD_FIRST_RE = /^(FORJATE_autosave_year_v2_|FORJATE_backup_year_v2_|INTRARI_OTEL_autosave_year_v2_|DEBITATE_autosave_year_v2_|rf:magnaflux:cache:year:v2:|rf:intrari-otel:cache:year:v2:)|^(kad-planificare-prelucrari-cache-v1|planificare-forja:table-ui:v1)$/i;
     var SAFE_CACHE_RE = /(PDF_CACHE|pdf_cache|base64|_CACHE_|:cache:|cache:v1|cache:index|rf_inventar_otel_master_cache|LOCAL_CACHE|runsByPart|planificare-forja:table-ui|kad-planificare-prelucrari-scroll|rf:magnaflux:ui-state|FORJATE_filters|rf_forjate_zoom|HELPERS_v1|helpers_cache|mrc.*filter|selectedYear|scroll)/i;
     function isQuotaError(err){
@@ -1195,8 +1196,9 @@ function getControlCatalogForPage(pageKey) {
       return name.indexOf('quota') >= 0 || name.indexOf('exceeded') >= 0 || name.indexOf('ns_error_dom_quota') >= 0;
     }
     function isAuthKey(key){ return AUTH_RE.test(String(key || '')); }
+    function isUserPrefKey(key){ return USER_PREF_RE.test(String(key || '')); }
     function isCloudFirstKey(key){ return CLOUD_FIRST_RE.test(String(key || '')); }
-    function isSafeCacheKey(key){ return SAFE_CACHE_RE.test(String(key || '')) && !isAuthKey(key); }
+    function isSafeCacheKey(key){ return SAFE_CACHE_RE.test(String(key || '')) && !isAuthKey(key) && !isUserPrefKey(key); }
     function markerFor(key){ return MARKER_PREFIX + String(Date.now()) + ':' + String(key || ''); }
     function isMarker(value){ return typeof value === 'string' && value.indexOf(MARKER_PREFIX) === 0; }
     function cleanupSafeCache(maxCount){
@@ -1206,7 +1208,7 @@ function getControlCatalogForPage(pageKey) {
         for(var i=0;i<localStorage.length;i++){
           var k = nativeGet.call(localStorage, localStorage.key(i));
           var key = localStorage.key(i);
-          if(!key || isAuthKey(key)) continue;
+          if(!key || isAuthKey(key) || isUserPrefKey(key)) continue;
           var len = k ? String(k).length : 0;
           if(isSafeCacheKey(key) || len > 700000){ keys.push({ key:key, len:len, safe:isSafeCacheKey(key) }); }
         }
@@ -1225,7 +1227,7 @@ function getControlCatalogForPage(pageKey) {
         var keys = [];
         for(var i=0;i<localStorage.length;i++){
           var key = localStorage.key(i);
-          if(!key || isAuthKey(key)) continue;
+          if(!key || isAuthKey(key) || isUserPrefKey(key)) continue;
           var value = nativeGet.call(localStorage, key);
           var len = value ? String(value).length : 0;
           var isKadData = isSafeCacheKey(key) || isCloudFirstKey(key) || /^RF_|^KAD_|^FORJATE_|^DEBITATE_|^INTRARI_|^PLANIFICARE_|^operator-|^kad-|^rf:/i.test(key) || len > 50000;
@@ -2366,6 +2368,176 @@ async function applyDomPermissions(pageKey, root, options) {
       warn: '#9c5811',
       warning: '#9c5811',
       statusText: '#9c5811'
+    })),
+    'classic-blue': Object.freeze(merge(blueBase, {
+      key: 'classic-blue',
+      label: 'Albastru clasic (Dark)',
+      colorScheme: 'dark',
+      previewA: '#081526',
+      previewB: '#4fa2ff',
+      bodyBackground: 'radial-gradient(circle at 10% 15%, rgba(126,199,255,.35), transparent 24%), radial-gradient(circle at 88% 12%, rgba(112,82,255,.28), transparent 24%), linear-gradient(145deg, #081526 0%, #123456 46%, #0e223c 100%)',
+      bgSolid: '#0e223c',
+      card: 'rgba(16,38,68,.84)',
+      panel: 'rgba(16,38,68,.84)',
+      panel2: 'rgba(20,46,80,.88)',
+      hdr: 'rgba(14,34,62,.92)',
+      header: 'rgba(14,34,62,.92)',
+      subheader: 'rgba(18,42,74,.94)',
+      head: 'rgba(22,50,88,.94)',
+      head2: 'rgba(18,42,74,.92)',
+      cell: 'rgba(14,32,58,.86)',
+      sticky: 'rgba(16,38,68,.96)',
+      grid: 'rgba(255,255,255,.22)',
+      line: 'rgba(255,255,255,.32)',
+      lineSoft: 'rgba(255,255,255,.24)',
+      lineStrong: 'rgba(255,255,255,.42)',
+      text: '#eef7ff',
+      muted: '#c4d9ef',
+      input: 'rgba(10,25,46,.90)',
+      white: 'rgba(16,38,68,.90)',
+      btn: '#3b82f6',
+      btn2: '#2563eb',
+      btnHover: '#1d4ed8',
+      btnSoft: 'rgba(255,255,255,.14)',
+      focus: '#60a5fa',
+      statusBg: 'rgba(16,38,68,.85)',
+      statusText: '#fbbf24'
+    })),
+    'soft-dark': Object.freeze(merge(blueBase, {
+      key: 'soft-dark',
+      label: 'Soft Dark',
+      colorScheme: 'dark',
+      previewA: '#111827',
+      previewB: '#7ba8ff',
+      bodyBackground: 'linear-gradient(145deg, #111827 0%, #25314a 52%, #172033 100%)',
+      bgSolid: '#172033',
+      card: 'rgba(30,41,59,.86)',
+      panel: 'rgba(30,41,59,.86)',
+      panel2: 'rgba(37,49,74,.88)',
+      hdr: 'rgba(23,32,51,.92)',
+      header: 'rgba(23,32,51,.92)',
+      subheader: 'rgba(30,41,59,.94)',
+      head: 'rgba(37,49,74,.94)',
+      head2: 'rgba(30,41,59,.92)',
+      cell: 'rgba(23,32,51,.86)',
+      sticky: 'rgba(30,41,59,.96)',
+      grid: 'rgba(255,255,255,.20)',
+      line: 'rgba(255,255,255,.28)',
+      lineSoft: 'rgba(255,255,255,.22)',
+      lineStrong: 'rgba(255,255,255,.38)',
+      text: '#f2f6ff',
+      muted: '#ced6ea',
+      input: 'rgba(17,24,39,.90)',
+      white: 'rgba(30,41,59,.90)',
+      btn: '#4f75cc',
+      btn2: '#3b5db0',
+      btnHover: '#314e96',
+      btnSoft: 'rgba(255,255,255,.14)',
+      focus: '#7ba8ff',
+      statusBg: 'rgba(30,41,59,.85)',
+      statusText: '#fbbf24'
+    })),
+    'foc-si-scantei': Object.freeze(merge(amberBase, {
+      key: 'foc-si-scantei',
+      label: 'Foc și scântei (Dark)',
+      colorScheme: 'dark',
+      previewA: '#2a0c05',
+      previewB: '#ff9b2f',
+      bodyBackground: 'radial-gradient(circle at 15% 20%, rgba(255,155,47,.25), transparent 28%), linear-gradient(145deg, #2a0c05 0%, #63210f 52%, #381208 100%)',
+      bgSolid: '#381208',
+      card: 'rgba(66,22,10,.86)',
+      panel: 'rgba(66,22,10,.86)',
+      panel2: 'rgba(82,28,13,.88)',
+      hdr: 'rgba(52,17,8,.92)',
+      header: 'rgba(52,17,8,.92)',
+      subheader: 'rgba(66,22,10,.94)',
+      head: 'rgba(82,28,13,.94)',
+      head2: 'rgba(66,22,10,.92)',
+      cell: 'rgba(52,17,8,.86)',
+      sticky: 'rgba(66,22,10,.96)',
+      grid: 'rgba(255,228,201,.22)',
+      line: 'rgba(255,228,201,.30)',
+      lineSoft: 'rgba(255,228,201,.22)',
+      lineStrong: 'rgba(255,228,201,.42)',
+      text: '#fff3e8',
+      muted: '#ffd7bd',
+      input: 'rgba(42,12,5,.90)',
+      white: 'rgba(66,22,10,.90)',
+      btn: '#d97706',
+      btn2: '#b45309',
+      btnHover: '#92400e',
+      btnSoft: 'rgba(255,255,255,.14)',
+      focus: '#ff9b2f',
+      statusBg: 'rgba(66,22,10,.85)',
+      statusText: '#fde68a'
+    })),
+    'smarald': Object.freeze(merge(petrolBase, {
+      key: 'smarald',
+      label: 'Smarald (Dark)',
+      colorScheme: 'dark',
+      previewA: '#071d19',
+      previewB: '#5ad7be',
+      bodyBackground: 'linear-gradient(145deg, #071d19 0%, #0f4f46 52%, #0a2e28 100%)',
+      bgSolid: '#0a2e28',
+      card: 'rgba(12,56,49,.86)',
+      panel: 'rgba(12,56,49,.86)',
+      panel2: 'rgba(15,72,63,.88)',
+      hdr: 'rgba(9,42,37,.92)',
+      header: 'rgba(9,42,37,.92)',
+      subheader: 'rgba(12,56,49,.94)',
+      head: 'rgba(15,72,63,.94)',
+      head2: 'rgba(12,56,49,.92)',
+      cell: 'rgba(9,42,37,.86)',
+      sticky: 'rgba(12,56,49,.96)',
+      grid: 'rgba(223,255,247,.22)',
+      line: 'rgba(223,255,247,.30)',
+      lineSoft: 'rgba(223,255,247,.22)',
+      lineStrong: 'rgba(223,255,247,.42)',
+      text: '#effffb',
+      muted: '#c5ece4',
+      input: 'rgba(7,29,25,.90)',
+      white: 'rgba(12,56,49,.90)',
+      btn: '#0d9488',
+      btn2: '#0f766e',
+      btnHover: '#115e59',
+      btnSoft: 'rgba(255,255,255,.14)',
+      focus: '#5ad7be',
+      statusBg: 'rgba(12,56,49,.85)',
+      statusText: '#fde68a'
+    })),
+    'mov-nocturn': Object.freeze(merge(blueBase, {
+      key: 'mov-nocturn',
+      label: 'Mov nocturn (Dark)',
+      colorScheme: 'dark',
+      previewA: '#140c25',
+      previewB: '#9a7cff',
+      bodyBackground: 'linear-gradient(145deg, #140c25 0%, #35215c 52%, #21143b 100%)',
+      bgSolid: '#21143b',
+      card: 'rgba(40,24,72,.86)',
+      panel: 'rgba(40,24,72,.86)',
+      panel2: 'rgba(53,33,92,.88)',
+      hdr: 'rgba(30,18,54,.92)',
+      header: 'rgba(30,18,54,.92)',
+      subheader: 'rgba(40,24,72,.94)',
+      head: 'rgba(53,33,92,.94)',
+      head2: 'rgba(40,24,72,.92)',
+      cell: 'rgba(30,18,54,.86)',
+      sticky: 'rgba(40,24,72,.96)',
+      grid: 'rgba(245,240,255,.22)',
+      line: 'rgba(245,240,255,.30)',
+      lineSoft: 'rgba(245,240,255,.22)',
+      lineStrong: 'rgba(245,240,255,.42)',
+      text: '#f5f0ff',
+      muted: '#d8d0ef',
+      input: 'rgba(20,12,37,.90)',
+      white: 'rgba(40,24,72,.90)',
+      btn: '#7c3aed',
+      btn2: '#6d28d9',
+      btnHover: '#5b21b6',
+      btnSoft: 'rgba(255,255,255,.14)',
+      focus: '#9a7cff',
+      statusBg: 'rgba(40,24,72,.85)',
+      statusText: '#fde68a'
     }))
   });
 
@@ -2390,7 +2562,7 @@ async function applyDomPermissions(pageKey, root, options) {
   function buildPaletteCss(key, palette) {
     return [
       'html[data-rf-theme="' + key + '"]{',
-      '  color-scheme:light;',
+      '  color-scheme:' + (palette.colorScheme || 'light') + ';',
       '  --bg:' + palette.bgSolid + ';',
       '  --card:' + palette.card + ';',
       '  --panel:' + palette.panel + ';',
