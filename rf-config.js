@@ -1384,7 +1384,9 @@ function getControlCatalogForPage(pageKey) {
     style.id = 'rf-acl-pending-style';
     style.textContent = [
       'html.rf-acl-pending body{visibility:hidden !important;}',
-      'html.rf-acl-denied body{visibility:visible !important;}'
+      'html.rf-acl-denied body{visibility:visible !important;}',
+      'html.rf-acl-pending::before,html[data-rf-prehide="1"]::before,body.acl-loading::before{content:"K.A.D  ·  Se încarcă pagina…";position:fixed;inset:0;z-index:2147483646;display:grid;place-items:center;visibility:visible!important;background:#d9e8f5;color:#163a5b;font:600 20px/1.5 system-ui,sans-serif;pointer-events:all;}',
+      'html.rf-acl-pending::after,html[data-rf-prehide="1"]::after,body.acl-loading::after{content:"";position:fixed;top:calc(50% + 42px);left:calc(50% - 80px);width:160px;height:4px;border-radius:4px;z-index:2147483647;visibility:visible!important;background:linear-gradient(90deg,#163a5b 35%,#afc8dd 35%);}'
     ].join('');
     (document.head || document.documentElement).appendChild(style);
   }
@@ -2020,9 +2022,13 @@ async function applyDomPermissions(pageKey, root, options) {
       return { allowed:false, role:'viewer', source:'no session', message:'Autentifică-te pentru a intra în această foaie.', permissions:{ can_view:false, can_add:false, can_edit:false, can_delete:false, can_export:false, can_import:false } };
     }
 
-    var resolved = await resolveRole(client, user);
+    var identityChecks = await Promise.all([
+      resolveRole(client, user),
+      loadUserAccountStatus(client, user)
+    ]);
+    var resolved = identityChecks[0];
     var role = normalizeRole((options && options.role) || resolved.role);
-    var accountStatus = await loadUserAccountStatus(client, user);
+    var accountStatus = identityChecks[1];
     if (accountStatus && (accountStatus.is_banned === true || accountStatus.is_active === false)) {
       return {
         allowed:false,
@@ -2069,8 +2075,12 @@ async function applyDomPermissions(pageKey, root, options) {
       };
     }
 
-    var permissionMap = await loadPagePermissionMap(client, role);
-    var mirror = await readDashboardAclMirror(client);
+    var roleChecks = await Promise.all([
+      loadPagePermissionMap(client, role),
+      readDashboardAclMirror(client)
+    ]);
+    var permissionMap = roleChecks[0];
+    var mirror = roleChecks[1];
     var roleDecisions = collectAclDecisions({ pageKey:key, href:href, role:role, email:email, userPermissionMap:null, permissionMap:permissionMap, mirror:mirror });
 
     var rolePermissions = defaultPageAccessFromRole(role, key);
