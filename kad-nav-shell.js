@@ -2,6 +2,28 @@
 (function(){
   'use strict';
 
+  function syncGlobalSavedTheme(){
+    try {
+      var saved = window.localStorage.getItem('user_theme_palette_v1')
+        || (window.sessionStorage && window.sessionStorage.getItem('user_theme_palette_v1'))
+        || window.localStorage.getItem('rf_theme_palette');
+      if (!saved) return;
+      window.localStorage.setItem('user_theme_palette_v1', saved);
+      window.localStorage.setItem('rf_theme_palette', saved);
+      if (window.sessionStorage) {
+        window.sessionStorage.setItem('user_theme_palette_v1', saved);
+        window.sessionStorage.setItem('rf_theme_palette', saved);
+      }
+      if (window.RF_THEME && typeof window.RF_THEME.setThemeKey === 'function') {
+        window.RF_THEME.setThemeKey(saved);
+      } else {
+        document.documentElement.setAttribute('data-rf-theme', saved);
+      }
+    } catch (_) {}
+  }
+  syncGlobalSavedTheme();
+  window.addEventListener('pageshow', syncGlobalSavedTheme);
+
   function ensureRegistry(next){
     if (window.RF_APP_REGISTRY) { next(); return; }
     var script = document.createElement('script');

@@ -33,6 +33,14 @@
     var request = event.request;
     if (!request || request.method !== 'GET') return;
 
+    try {
+      var url = new URL(request.url);
+      if (url.origin === self.location.origin && /\.(js|css|html)$/i.test(url.pathname)) {
+        event.respondWith(fetch(request, { cache: 'no-cache' }).catch(function(){ return fetch(request); }));
+        return;
+      }
+    } catch (_) {}
+
     event.respondWith(fetch(request));
   });
 })();

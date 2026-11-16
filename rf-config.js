@@ -1188,7 +1188,7 @@ function getControlCatalogForPage(pageKey) {
     var MARKER_PREFIX = '__KAD_CLOUD_FIRST_MARKER__:';
     var MAX_LOCAL_DATA_CHARS = 180000;
     var AUTH_RE = /(auth-token|supabase\.auth|sb-[a-z0-9]+-auth-token|rf_user_|rf_login_at|rf_cached_role|rf_display_id|ERP_SUPABASE|erp_forja_config|rf_force_stay_on_login|rf_acl_denied_message)/i;
-    var USER_PREF_RE = /^(rf_theme_palette|user_fav_pages_v1|user_recent_pages_v1|user_index_palette_v1)$/i;
+    var USER_PREF_RE = /^(rf_theme_palette|user_theme_palette_v1|user_fav_pages_v1|user_recent_pages_v1|user_index_palette_v1)$/i;
     var CLOUD_FIRST_RE = /^(FORJATE_autosave_year_v2_|FORJATE_backup_year_v2_|INTRARI_OTEL_autosave_year_v2_|DEBITATE_autosave_year_v2_|rf:magnaflux:cache:year:v2:|rf:intrari-otel:cache:year:v2:)|^(kad-planificare-prelucrari-cache-v1|planificare-forja:table-ui:v1)$/i;
     var SAFE_CACHE_RE = /(PDF_CACHE|pdf_cache|base64|_CACHE_|:cache:|cache:v1|cache:index|rf_inventar_otel_master_cache|LOCAL_CACHE|runsByPart|planificare-forja:table-ui|kad-planificare-prelucrari-scroll|rf:magnaflux:ui-state|FORJATE_filters|rf_forjate_zoom|HELPERS_v1|helpers_cache|mrc.*filter|selectedYear|scroll)/i;
     function isQuotaError(err){
@@ -2546,6 +2546,8 @@ async function applyDomPermissions(pageKey, root, options) {
   var baseKeys = baseList.map(function (item) { return item.key; });
   var allKeys = baseKeys.concat(customKeys);
 
+  var backupStorageKey = 'user_theme_palette_v1';
+
   function normalizeThemeKey(value) {
     var key = String(value || '').trim().toLowerCase();
     return allKeys.indexOf(key) !== -1 ? key : defaultKey;
@@ -2553,7 +2555,11 @@ async function applyDomPermissions(pageKey, root, options) {
 
   function getStoredThemeKey() {
     try {
-      return normalizeThemeKey(window.localStorage.getItem(storageKey));
+      var raw = window.localStorage.getItem(backupStorageKey)
+        || (window.sessionStorage && window.sessionStorage.getItem(backupStorageKey))
+        || window.localStorage.getItem(storageKey)
+        || (window.sessionStorage && window.sessionStorage.getItem(storageKey));
+      return normalizeThemeKey(raw);
     } catch (_) {
       return defaultKey;
     }
@@ -2650,6 +2656,9 @@ async function applyDomPermissions(pageKey, root, options) {
   function setThemeKey(key) {
     var normalized = applyTheme(key);
     try { window.localStorage.setItem(storageKey, normalized); } catch (_) {}
+    try { window.localStorage.setItem(backupStorageKey, normalized); } catch (_) {}
+    try { if (window.sessionStorage) window.sessionStorage.setItem(backupStorageKey, normalized); } catch (_) {}
+    try { if (window.sessionStorage) window.sessionStorage.setItem(storageKey, normalized); } catch (_) {}
     try {
       window.dispatchEvent(new CustomEvent('rf-theme-change', {
         detail: { themeKey: normalized, palette: getPalette(normalized) }
@@ -2684,14 +2693,19 @@ async function applyDomPermissions(pageKey, root, options) {
   themeApi.apply = applyTheme;
   themeApi.setThemeKey = setThemeKey;
   themeApi.setPalette = setThemeKey;
+  themeApi.setMode = function () { return setThemeKey(getStoredThemeKey()); };
   themeApi.toggle = toggleThemeMode;
 
   try { ensureCustomThemeStyle(); } catch (_) {}
   applyTheme(getStoredThemeKey());
 
+  window.addEventListener('pageshow', function () {
+    try { applyTheme(getStoredThemeKey()); } catch (_) {}
+  });
+
   window.addEventListener('storage', function (event) {
-    if (!event || event.key !== storageKey) return;
-    applyTheme(event.newValue);
+    if (!event || (event.key !== storageKey && event.key !== backupStorageKey)) return;
+    applyTheme(event.newValue || getStoredThemeKey());
   });
 })(window);
 
