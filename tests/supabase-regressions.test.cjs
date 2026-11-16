@@ -88,13 +88,18 @@ test('Numeralkod loads existing documents and helper items without probing missi
     readDoc: async key => key === 'numeralkod' ? { rows: [{ cod: 'KAD-1' }] } : null,
     getPayload: x => x, scanNumeralKodNode: x => scanned.push(x),
     sb: { from(table) {
-      tables.push(table); assert.equal(table, 'rf_helper_items');
+      tables.push(table);
+      if (table === 'rf_documents') return { select() { return { async in(column, keys) {
+        assert.equal(column, 'doc_key'); assert.equal(keys.length, 9);
+        return { data: [{ doc_key: 'numeralkod', rows: [{ cod: 'KAD-1' }] }], error: null };
+      }}; }};
+      assert.equal(table, 'rf_helper_items');
       return { select() { return { in() { return { async limit() { return { data: [{ cod: 'KAD-2' }], error: null }; } }; } }; } };
     }},
   });
   vm.runInContext(source.slice(start, end), context);
   await context.loadNumeralKodData();
-  assert.deepEqual(tables, ['rf_helper_items']);
+  assert.deepEqual(tables, ['rf_documents', 'rf_helper_items']);
   assert.equal(scanned[0].rows[0].cod, 'KAD-1');
   assert.equal(scanned[1][0].cod, 'KAD-2');
 });

@@ -1739,7 +1739,25 @@ async function applyDomPermissions(pageKey, root, options) {
   return pageAccess;
 }
 
+  // Share only active reads; completed permissions are never cached here.
+  var pendingUserPermissionReads = new WeakMap();
   async function loadUserPermissionMap(client, user) {
+    if (!client || !user) return null;
+    var key = JSON.stringify([String(user.id || ''), normalizeAclEmail(user.email)]);
+    var pending = pendingUserPermissionReads.get(client);
+    if (!pending) {
+      pending = new Map();
+      pendingUserPermissionReads.set(client, pending);
+    }
+    if (pending.has(key)) return pending.get(key);
+    var read = loadUserPermissionMapUnshared(client, user).finally(function () {
+      if (pending.get(key) === read) pending.delete(key);
+    });
+    pending.set(key, read);
+    return read;
+  }
+
+  async function loadUserPermissionMapUnshared(client, user) {
     if (!client || !user) return null;
     var email = normalizeAclEmail(user.email);
     var userId = user && user.id ? String(user.id).trim() : '';
