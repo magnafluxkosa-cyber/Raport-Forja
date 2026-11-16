@@ -1550,6 +1550,19 @@
       return { ok:true };
     }
 
+    async function persistAccountAccess(accountPayload){
+      if (!accountPayload || !String(accountPayload.user_id || '').trim()) {
+        throw new Error('Lipsește identificatorul contului. Reîncarcă lista înainte de salvare.');
+      }
+      const result = await sb.from('user_account_access')
+        .upsert(accountPayload, { onConflict:'user_id' })
+        .select('user_id').single();
+      if (result.error) throw result.error;
+      if (!result.data || result.data.user_id !== accountPayload.user_id) {
+        throw new Error('Salvarea accesului nu a fost confirmată.');
+      }
+    }
+
     async function saveDoc(){
       if (!canAclEdit()) {
         setStatus(els.saveStatus, 'Fără drept', 'err');
@@ -1566,6 +1579,11 @@
       if (!selected) {
         setStatus(els.saveStatus, 'Cont negăsit', 'err');
         els.saveSub.textContent = 'Contul selectat nu mai există în lista încărcată. Reîncarcă pagina.';
+        return;
+      }
+      if (!String(selected.user_id || '').trim()) {
+        setStatus(els.saveStatus, 'Cont incomplet', 'err');
+        els.saveSub.textContent = 'Lipsește identificatorul contului. Reîncarcă lista înainte de salvare.';
         return;
       }
       setStatus(els.saveStatus, 'Se salvează...', 'warn');
@@ -1651,20 +1669,16 @@
 
       let accountOk = false, accountErr = null;
       try {
-        const accountPayload = { email, user_id: selected.user_id || null, is_active: accessRow.is_active !== false, is_banned: accessRow.is_banned === true, note: accessRow.note || '', updated_at: stamp };
-        let accountRes = await sb.from('user_account_access').upsert(accountPayload, { onConflict:'email' });
-        if (accountRes && accountRes.error) {
-          let delByEmail = await sb.from('user_account_access').delete().eq('email', email);
-          if (delByEmail && delByEmail.error) throw delByEmail.error;
-          if (selected.user_id) {
-            let delByUser = await sb.from('user_account_access').delete().eq('user_id', selected.user_id).neq('email', email);
-            if (delByUser && delByUser.error) throw delByUser.error;
-          }
-          accountRes = await sb.from('user_account_access').insert(accountPayload);
-        }
-        if (accountRes && accountRes.error) throw accountRes.error;
+        const accountPayload = { email, user_id: selected.user_id, is_active: accessRow.is_active !== false, is_banned: accessRow.is_banned === true, note: accessRow.note || '', updated_at: stamp };
+        await persistAccountAccess(accountPayload);
         accountOk = true;
       } catch (err) { accountErr = err; }
+      if (!accountOk) {
+        setStatus(els.saveStatus, 'Salvare incompletă', 'err');
+        els.saveSub.textContent = 'Accesul contului nu a fost salvat: ' + (accountErr && accountErr.message || 'eroare necunoscută');
+        state.dirty = true;
+        return;
+      }
 
       const accountMirrorBase = await readDocByKey('user_account_access_v1') || {};
       const accountMirrorUsers = Object.assign({}, (accountMirrorBase.users && typeof accountMirrorBase.users === 'object') ? accountMirrorBase.users : {});

@@ -1780,7 +1780,7 @@ async function applyDomPermissions(pageKey, root, options) {
     if (!client) return null;
     try {
       var res = await client.from('page_permissions')
-        .select('page_key,can_view,can_add,can_edit,can_delete,can_export,can_import')
+        .select('page_key,can_view,can_add,can_edit,can_delete')
         .eq('role', normalizeRole(role));
       if (res.error || !Array.isArray(res.data)) return null;
       var map = new Map();
