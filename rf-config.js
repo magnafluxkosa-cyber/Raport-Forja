@@ -1685,8 +1685,12 @@ async function resolveControlAccess(pageKey, controlKey, options) {
   var merged = Object.assign({ control_key:cKey, control_label:cKey, control_type:'action' }, base);
   var source = 'page permissions';
   if (role !== 'admin' && client && user) {
-    var userMap = await loadUserControlPermissionMap(client, user, key);
-    var roleFieldMap = await loadRoleFieldPermissionMap(client, role, key);
+    var controlMaps = await Promise.all([
+      loadUserControlPermissionMap(client, user, key),
+      loadRoleFieldPermissionMap(client, role, key)
+    ]);
+    var userMap = controlMaps[0];
+    var roleFieldMap = controlMaps[1];
     var fullKey = key + '::' + cKey;
     if (roleFieldMap && roleFieldMap.has(fullKey)) {
       merged = mergeControlAccess(merged, roleFieldMap.get(fullKey));

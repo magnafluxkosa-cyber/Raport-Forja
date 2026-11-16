@@ -625,23 +625,23 @@
       });
     };
 
-    if(userId){
-      pushRows(await maybeSelect(
+    const permissionRows = await Promise.all([
+      userId ? maybeSelect(
         sb.from('user_page_permissions')
           .select('page_key,can_view,can_add,can_edit,can_delete,can_export,can_import')
           .eq('user_id', userId)
           .limit(5000)
-      ));
-    }
-
-    if(email){
-      pushRows(await maybeSelect(
+      ) : Promise.resolve(null),
+      email ? maybeSelect(
         sb.from('user_page_permissions')
           .select('page_key,can_view,can_add,can_edit,can_delete,can_export,can_import')
           .eq('email', email)
           .limit(5000)
-      ));
-    }
+      ) : Promise.resolve(null)
+    ]);
+    // Email overrides remain last, independently of response arrival order.
+    pushRows(permissionRows[0]);
+    pushRows(permissionRows[1]);
 
     if(!map.size){
       const mirror = await readLatestRfDocument(sb, 'dashboard_acl_v1');
@@ -958,8 +958,12 @@
     if((storedEmail && currentEmail && storedEmail !== currentEmail) || (storedUserId && currentUserId && storedUserId !== currentUserId)){
       clearUserState();
     }
-    const status = await getAccountStatus(session.user);
-    const role = await resolveUserRole(session.user);
+    const identity = await Promise.all([
+      getAccountStatus(session.user),
+      resolveUserRole(session.user)
+    ]);
+    const status = identity[0];
+    const role = identity[1];
     persistUserState(session.user, role);
 
     return {
