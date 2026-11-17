@@ -137,3 +137,45 @@ test('forge planning inline scripts parse', () => {
     if (match[1].trim()) new vm.Script(match[1]);
   }
 });
+
+function documentHarness(remote) {
+  const calls = [], memory = new Map();
+  const context = vm.createContext({
+    rfDocumentMemoryCache: memory, RF_DOC_MEMORY_CACHE_LIMIT: 24, RF_DOC_CACHE_PREFIX: 'test:',
+    trimText: value => String(value || '').trim(), DOC_KEY: 'planificare-forja',
+    localStorage: { getItem() { return null; }, setItem() { throw new Error('quota'); } },
+    rememberCloudDocumentStats() {},
+    state: { supabase: { from: table => ({ select: columns => ({ eq: (field, key) => ({ maybeSingle: async () => {
+      calls.push({ table, columns, key });
+      return { data: columns.includes('content') ? remote : { doc_key: remote.doc_key, updated_at: remote.updated_at }, error: null };
+    } }) }) }) } }
+  });
+  const start = current.indexOf('function getRfDocCacheKey(');
+  const end = current.indexOf('async function queryDocsByKeys(', start);
+  vm.runInContext(current.slice(start, end), context);
+  return { context, calls, memory };
+}
+test('storage eviction does not cause a full document download again when its version is unchanged', async () => {
+  const doc = { doc_key: 'forjate:2026', content: { rows: [{ quantity: 42 }] }, updated_at: '2026-11-17T10:00:00Z' };
+  const h = documentHarness(doc);
+  h.context.writeCachedRfDocument(doc);
+  assert.deepEqual(plain(await h.context.readDocumentCompat(doc.doc_key)), doc);
+  assert.deepEqual(h.calls.map(call => call.columns), ['doc_key,updated_at']);
+});
+test('the page cache still downloads a newer cloud version and replaces its old data', async () => {
+  const newer = { doc_key: 'forjate:2026', content: { rows: [{ quantity: 99 }] }, updated_at: '2026-11-17T11:00:00Z' };
+  const h = documentHarness(newer);
+  h.context.writeCachedRfDocument({ ...newer, content: { rows: [{ quantity: 42 }] }, updated_at: '2026-11-17T10:00:00Z' });
+  assert.deepEqual(plain(await h.context.readDocumentCompat(newer.doc_key)), newer);
+  assert.equal(h.calls.length, 2);
+  assert.deepEqual(plain(h.context.readCachedRfDocument(newer.doc_key)), newer);
+});
+test('temporary document cache is bounded and retains recently used records', () => {
+  const h = documentHarness({});
+  for(let i = 0; i < 24; i++) h.context.writeCachedRfDocument({ doc_key: 'doc-' + i });
+  h.context.readCachedRfDocument('doc-0');
+  h.context.writeCachedRfDocument({ doc_key: 'doc-24' });
+  assert.equal(h.memory.size, 24);
+  assert.equal(h.memory.has('doc-0'), true);
+  assert.equal(h.memory.has('doc-1'), false);
+});
