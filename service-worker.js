@@ -8,6 +8,7 @@
   'use strict';
 
   var KAD_CACHE_PREFIX = 'kad-';
+  var KAD_SW_BUILD = '2026-11-17-fav2';
 
   self.addEventListener('install', function(event){
     self.skipWaiting();
