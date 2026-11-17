@@ -3750,17 +3750,22 @@ function getDefaultPermissions(role){
       return { rows, source: src, ok: rows.length > 0 };
     }
 
-    async function refreshSupportData(forceRefresh){
+    async function refreshSupportData(forceRefresh, forjateReady){
       await loadHelperMaps(forceRefresh);
       const targetYear = state.activeYear || CURRENT_YEAR;
-      const steel = await loadSteelStock(forceRefresh);
-      const debitat = await loadDebitatStock(targetYear);
-      const intrari = await loadIntrariOtelEntries(targetYear);
-      const debitari = await loadDebitariEntries(targetYear);
-      const forjateFlow = await loadForjateDailyMovements(targetYear);
-      const deliveryOrders = await loadDeliveryOrders();
-      const inventarForjat = await loadInventarForjatRows(targetYear);
-      const livrariZale = await loadLivrariZaleRows(targetYear);
+      // These sources are independent once the helper maps are ready. Reuse the
+      // year load's cache before checking forjate again, avoiding a duplicate
+      // full document download while that load is still in flight.
+      const [steel, debitat, intrari, debitari, forjateFlow, deliveryOrders, inventarForjat, livrariZale] = await Promise.all([
+        loadSteelStock(forceRefresh),
+        loadDebitatStock(targetYear),
+        loadIntrariOtelEntries(targetYear),
+        loadDebitariEntries(targetYear),
+        Promise.resolve(forjateReady).catch(function(){}).then(() => loadForjateDailyMovements(targetYear)),
+        loadDeliveryOrders(),
+        loadInventarForjatRows(targetYear),
+        loadLivrariZaleRows(targetYear)
+      ]);
 
       const notes = [];
       notes.push('Helper: ' + (state.helperMaps.source || '-'));
@@ -7973,18 +7978,20 @@ function addRow(){
     }
 
     function applyPlanDocumentSnapshot(doc, forceApply){
-      const seedRows = cloneSeedRows();
       if(doc && (doc.content || doc.data)){
         const payload = doc.content || doc.data;
         const rows = extractRowsPayload(payload);
         const remoteUpdated = payload.updated_at || doc.updated_at || null;
         const isFullSnapshot = !!(payload && (payload.full_snapshot === true || Number(payload.version || 0) >= 3));
-        const normalizedRows = rows.map((row, index) => normalizePlanRow(row, index));
-        const hydratedRowsBase = isFullSnapshot
-          ? reindexRowsInDisplayOrder(sortRowsStable(normalizedRows))
-          : mergeSeedWithCloud(seedRows, rows);
-        const hydratedRows = ensureRowsContinueToYearEnd(hydratedRowsBase);
         const shouldApply = forceApply || !state.updatedAt || (remoteUpdated && state.updatedAt && String(remoteUpdated) > String(state.updatedAt));
+        const needsRows = rows.length && (shouldApply || !state.rows.length);
+        let hydratedRows = null;
+        if(needsRows){
+          const hydratedRowsBase = isFullSnapshot
+            ? reindexRowsInDisplayOrder(sortRowsStable(rows.map((row, index) => normalizePlanRow(row, index))))
+            : mergeSeedWithCloud(cloneSeedRows(), rows);
+          hydratedRows = ensureRowsContinueToYearEnd(hydratedRowsBase);
+        }
         if(rows.length && shouldApply){
           state.rows = hydratedRows;
           state.updatedAt = remoteUpdated || nowIso();
@@ -8002,11 +8009,11 @@ function addRow(){
           state.rows = state.rows.length ? state.rows : hydratedRows;
           state.hasPendingLocalChanges = false;
           setCloudIndicator(doc && doc.__fromCache ? 'is-saving' : 'is-ok', (doc && doc.__fromCache ? 'Cache local' : 'Cloud') + ': ' + state.lastCloudRowsWithData + ' rânduri cu date');
-          return true;
+          return !!needsRows;
         }
       }
       if(forceApply || !state.rows.length){
-        state.rows = seedRows;
+        state.rows = cloneSeedRows();
         state.updatedAt = null;
         state.hasPendingLocalChanges = false;
         els.cloudValue.textContent = 'Model local';
@@ -8028,10 +8035,11 @@ function addRow(){
 
     async function refreshLiveAndSupport(force, uiState){
       if(!state.activeYear) return;
+      const forjateReady = ensureForjateYearLoaded(state.activeYear, !!force);
       const results = await Promise.allSettled([
-        ensureForjateYearLoaded(state.activeYear, !!force),
+        forjateReady,
         ensureProblemeYearLoaded(state.activeYear, !!force),
-        refreshSupportData(!!force)
+        refreshSupportData(!!force, forjateReady)
       ]);
       results.forEach(result => {
         if(result && result.status === 'rejected') console.error('refreshLiveAndSupport', result.reason);
