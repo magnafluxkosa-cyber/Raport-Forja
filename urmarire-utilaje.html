@@ -294,12 +294,36 @@
     return (docs||[]).reduce((max,doc)=>String(doc&&doc.updated_at||'')>max?String(doc.updated_at):max,'');
   }
 
+  const COMPRESOR_ID_ALIASES = {
+    'ga-55-vsd': 'ga-55-vsd', 'GA55VSD': 'ga-55-vsd', 'GA55': 'ga-55-vsd',
+    'ga-250-1': 'ga-250-1', 'GA2501': 'ga-250-1',
+    'ga-250-2': 'ga-250-2', 'GA2502': 'ga-250-2',
+    'marathon-300': 'marathon-300', 'MARATHON300': 'marathon-300', 'MARATHON': 'marathon-300',
+    'siroko': 'siroko', 'SIROKO': 'siroko',
+    'ga-250-prelucrari': 'ga-250-prelucrari', 'GA250PRELUCRARI': 'ga-250-prelucrari', 'GA250': 'ga-250-prelucrari',
+    'ga-160-prelucrari': 'ga-160-prelucrari', 'GA160PRELUCRARI': 'ga-160-prelucrari', 'GA160': 'ga-160-prelucrari'
+  };
+  function parseCompresoareFromRow(raw){
+    if(!raw || typeof raw !== 'object' || Array.isArray(raw)) return [];
+    const src = raw.compresoare ?? raw.compressors ?? raw.compresoare_folosite ?? raw.compresoare_text ?? '';
+    if(!src) return [];
+    const arr = Array.isArray(src) ? src : String(src).split(/[,;|]+/);
+    const out = [];
+    arr.forEach(item => {
+      const val = clean(typeof item === 'object' ? (item.id || item.key || item.label) : item);
+      if(!val) return;
+      const mapped = COMPRESOR_ID_ALIASES[val.toLowerCase()] || COMPRESOR_ID_ALIASES[norm(val)] || '';
+      if(mapped && !out.includes(mapped)) out.push(mapped);
+    });
+    return out;
+  }
   function normalizeForjaRow(raw){
-    if(Array.isArray(raw)) return {date:parseDateAny(raw[2]),machine:machineLabel(raw[4]),shift:shiftNo(raw[3])};
+    if(Array.isArray(raw)) return {date:parseDateAny(raw[2]),machine:machineLabel(raw[4]),shift:shiftNo(raw[3]),compresoare:[]};
     return {
       date:parseDateAny(pick(raw,['data','date','DATA','Date'])),
       machine:machineLabel(pick(raw,['ciocan','CIOCAN','utilaj','UTILAJ','echipament','ECHIPAMENT','linie','LINIE'])),
-      shift:shiftNo(pick(raw,['schimb','schimbul','SCHIMB','SCHIMBUL','shift']))
+      shift:shiftNo(pick(raw,['schimb','schimbul','SCHIMB','SCHIMBUL','shift'])),
+      compresoare:parseCompresoareFromRow(raw)
     };
   }
   function normalizeTreatmentRow(raw){
@@ -385,7 +409,7 @@
     const year=Number($('yearSelect').value||new Date().getFullYear());
     $('statusText').textContent='Se citesc datele pentru '+year+'...';
     const docs=await queryExact([
-      'helpers','forjate','forjate:'+year,'tratament-termic-rapoarte',
+      'helpers','forjate','forjate:'+year,'raport-forja-operatori','tratament-termic-rapoarte',
       'magnaflux:'+year,'magnaflux','magnaflux:operatori-fise',
       'debitate:'+year,'debitate'
     ]);
@@ -393,7 +417,7 @@
     const helperDoc=byKey.get('helpers'); state.helpers=getPayload(helperDoc)||{};
 
     const forjaRows=[];
-    ['forjate','forjate:'+year].forEach(key=>extractRows(getPayload(byKey.get(key))).forEach(raw=>{ const r=normalizeForjaRow(raw); if(r.date&&r.machine&&r.shift) forjaRows.push(r); }));
+    ['forjate','forjate:'+year,'raport-forja-operatori'].forEach(key=>extractRows(getPayload(byKey.get(key))).forEach(raw=>{ const r=normalizeForjaRow(raw); if(r.date&&(r.machine||r.compresoare.length)&&r.shift) forjaRows.push(r); }));
     const treatmentRows=[];
     extractRows(getPayload(byKey.get('tratament-termic-rapoarte'))).forEach(raw=>{ const r=normalizeTreatmentRow(raw); if(r.date&&r.shift) treatmentRows.push(r); });
     const magnaRows=[];
@@ -418,6 +442,13 @@
       const rows=state.sources[groupKey]||[];
       rows.forEach(row=>{
         const p=dateParts(row.date); if(!p||p.year!==year||p.month!==month||!row.shift)return;
+        if(groupKey==='forja'&&Array.isArray(row.compresoare)&&row.compresoare.length){
+          row.compresoare.forEach(compId=>{
+            const cKey=compId+'|'+p.day;
+            if(!state.data.has(cKey)) state.data.set(cKey,new Set());
+            state.data.get(cKey).add(row.shift);
+          });
+        }
         const cfg=matchConfiguredRow(groupKey,row.machine); if(!cfg)return;
         const key=cfg.id+'|'+p.day;
         if(!state.data.has(key)) state.data.set(key,new Set());
@@ -429,7 +460,12 @@
   function autoHours(rowId,day){
     const set=state.data.get(rowId+'|'+day); return set ? set.size*8 : 0;
   }
-  function rowHours(row,day){ return row.manual ? getManualValue(row.id,day) : autoHours(row.id,day); }
+  function rowHours(row,day){
+    const auto=autoHours(row.id,day);
+    if(!row.manual) return auto;
+    const manualVal=getManualValue(row.id,day);
+    return auto>0 ? Math.max(auto,manualVal) : manualVal;
+  }
   function renderTable(year,month){
     const days=monthDays(year,month);
     let row1='<tr><th colspan="3" class="month-title sticky-a">'+esc(MONTHS[month-1]+' '+year)+'</th>';
@@ -502,7 +538,7 @@
   function refreshManualRowTotal(rowId){
     const year=Number($('yearSelect').value),month=Number($('monthSelect').value);
     const days=monthDays(year,month);
-    let total=0; for(let d=1;d<=days;d++) if(!isFutureDate(year,month,d)) total+=getManualValue(rowId,d);
+    let total=0; for(let d=1;d<=days;d++) if(!isFutureDate(year,month,d)) total+=rowHours({id:rowId,manual:true},d);
     const cell=document.querySelector('[data-total-row="'+CSS.escape(rowId)+'"]'); if(cell)cell.textContent=String(total);
   }
   function bindManualInputs(year,month){
@@ -660,7 +696,7 @@
       state.realtime=state.sb.channel('urmarire_utilaje_sources')
         .on('postgres_changes',{event:'*',schema:'public',table:'rf_documents'},payload=>{
           const key=String(payload&&payload.new&&payload.new.doc_key||payload&&payload.old&&payload.old.doc_key||'');
-          if(!/^(helpers|forjate(?::|$)|tratament-termic-rapoarte$|magnaflux(?::|$)|debitate(?::|$)|urmarire-utilaje:manual:)/.test(key)) return;
+          if(!/^(helpers|forjate(?::|$)|raport-forja-operatori$|tratament-termic-rapoarte$|magnaflux(?::|$)|debitate(?::|$)|urmarire-utilaje:manual:)/.test(key)) return;
           clearTimeout(state.reloadTimer); state.reloadTimer=setTimeout(async()=>{try{const y=Number($('yearSelect').value),m=Number($('monthSelect').value);if(key.startsWith('urmarire-utilaje:manual:')){if(key===manualDocKey(y,m)){await loadManualData(y,m);calculate();}}else await loadSources();}catch(e){console.error(e);}},650);
         }).subscribe();
     }catch(_e){}
