@@ -145,13 +145,19 @@ function documentHarness(remote) {
     trimText: value => String(value || '').trim(), DOC_KEY: 'planificare-forja',
     localStorage: { getItem() { return null; }, setItem() { throw new Error('quota'); } },
     rememberCloudDocumentStats() {},
-    state: { supabase: { from: table => ({ select: columns => ({ eq: (field, key) => ({ maybeSingle: async () => {
-      calls.push({ table, columns, key });
-      return { data: columns.includes('content') ? remote : { doc_key: remote.doc_key, updated_at: remote.updated_at }, error: null };
-    } }) }) }) } }
+    state: { supabase: { from: table => ({ select: columns => ({
+      eq: (field, key) => ({ maybeSingle: async () => {
+        calls.push({ table, columns, key });
+        return { data: columns.includes('content') ? remote : { doc_key: remote.doc_key, updated_at: remote.updated_at }, error: null };
+      } }),
+      in: async (field, keys) => {
+        calls.push({ table, columns, keys: Array.from(keys) });
+        return { data: [remote], error: null };
+      }
+    }) }) } }
   });
   const start = current.indexOf('function getRfDocCacheKey(');
-  const end = current.indexOf('async function queryDocsByKeys(', start);
+  const end = current.indexOf('async function writeDocumentCompat(', start);
   vm.runInContext(current.slice(start, end), context);
   return { context, calls, memory };
 }
@@ -178,4 +184,13 @@ test('temporary document cache is bounded and retains recently used records', ()
   assert.equal(h.memory.size, 24);
   assert.equal(h.memory.has('doc-0'), true);
   assert.equal(h.memory.has('doc-1'), false);
+});
+test('batch reads retain the same HTTP-cacheable query without adding metadata requests', async () => {
+  const doc = { doc_key: 'inventar-otel', content: { rows: [{ quantity: 42 }] }, updated_at: '2026-11-17T10:00:00Z' };
+  const h = documentHarness(doc);
+  assert.deepEqual(plain(await h.context.queryDocsByKeys([doc.doc_key])), [doc]);
+  assert.deepEqual(plain(await h.context.queryDocsByKeys([doc.doc_key])), [doc]);
+  assert.equal(h.calls.length, 2);
+  assert.deepEqual(h.calls[0], h.calls[1]);
+  assert.equal(h.calls[1].columns, 'doc_key,content,data,updated_at');
 });
