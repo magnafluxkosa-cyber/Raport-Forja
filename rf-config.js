@@ -4710,3 +4710,393 @@ async function applyDomPermissions(pageKey, root, options) {
   bootPwa();
 })(window, document);
 /* === END K.A.D PWA GLOBAL BOOTSTRAP === */
+
+/* === K.A.D GLOBAL FAVORITE PAGES BAR === */
+(function(window, document){
+  'use strict';
+  if (!window || !document || window.RF_FAVORITES) return;
+
+  var FAVORITE_PAGES_STORAGE_KEY = 'user_fav_pages_v1';
+  var RECENT_PAGES_STORAGE_KEY = 'user_recent_pages_v1';
+  var MAX_FAVORITE_PAGES = 20;
+  var EXCLUDED_FAV_BAR_PAGES = {
+    'index': true,
+    'login': true,
+    'access-gate': true,
+    'mfa-setup': true,
+    'mfa-verify': true,
+    'forja-ctc-pin': true,
+    'operator-debitare-pin': true
+  };
+
+  var DEFAULT_LABELS = {
+    'raport-forja': 'Raport forja',
+    'numeralkod': 'NUMERALKOD',
+    'intrari-otel': 'INTRĂRI OȚEL',
+    'debitate': 'DEBITATE',
+    'operator-debitare': 'OPERATOR DEBITARE',
+    'forjate': 'FORJATE',
+    'eficienta': 'EFICIENȚĂ',
+    'program-utilaje': 'PROGRAM UTILAJE',
+    'stoc-initial-otel': 'STOC INIȚIAL OȚEL',
+    'inventar-otel': 'INVENTAR OȚEL',
+    'inventar-debitat': 'INVENTAR DEBITAT',
+    'inventar-forjat': 'INVENTAR FORJAT',
+    'stoc-ramas-teoretic': 'STOC RĂMAS TEORETIC',
+    'piese-ramase-forjate': 'PIESE RĂMASE FORJATE',
+    'urmarire-utilaje': 'URMĂRIRE UTILAJE',
+    'livrari-zale': 'LIVRĂRI ZALE',
+    'centralizator-livrari-zale': 'CENTRALIZATOR LIVRĂRI',
+    'zale-9k-6628-29': '9K-6628/29',
+    'zale-229-6909-10': '229-6909/10',
+    'zale-503-0761-62': '503-0761/62',
+    'zale-106-1625-26': '106-1625/26',
+    'zale-378-8241-42': '378-8241/42',
+    'zale-248-2307-08': '248-2307/08',
+    'zale-417-3595-96': '417-3595/96',
+    'zale-418-2091-92': '418-2091/92',
+    'ambalare-9k-6628-29': 'AMBALARE 9K-6628/29',
+    'ambalare-229-6909-10': 'AMBALARE 229-6909/10',
+    'ambalare-503-0761-62': 'AMBALARE 503-0761/62',
+    'ambalare-106-1625-26': 'AMBALARE 106-1625/26',
+    'ambalare-378-8241-42': 'AMBALARE 378-8241/42',
+    'ambalare-248-2307-08': 'AMBALARE 248-2307/08',
+    'ambalare-417-3595-96': 'AMBALARE 417-3595/96',
+    'ambalare-418-2091-92': 'AMBALARE 418-2091/92',
+    'plan-livrari': 'PLAN LIVRĂRI',
+    'planificare-prelucrari': 'PLANIFICARE PRELUCRĂRI',
+    'inventar-prelucrari': 'INVENTAR PRELUCRĂRI',
+    'stoc-consum-scule': 'STOC ȘI CONSUM SCULE',
+    'stoc-scule-reascutite': 'STOC SCULE REASCUȚITE',
+    'raport-pm': 'RAPORT PM',
+    'raport-pm-operatori': 'RAPORT ZILNIC OPERATORI PM',
+    'tratament-termic-rapoarte': 'RAPOARTE T.T',
+    'tratament-termic-probleme': 'PROBLEME T.T',
+    'tratament-termic-fise-tehnologice': 'FIȘE TEHNOLOGICE T.T',
+    'tratament-termic-fisa-autocontrol-zale': 'FIȘĂ AUTOCONTROL T.T',
+    'urmarire-temperaturi-tt': 'URMĂRIRE TEMPERATURI TT',
+    'tratament-termic-documente': 'RAPOARTE EXCEL / WORD T.T',
+    'magnaflux': 'MAGNAFLUX',
+    'magnaflux-operatori': 'MAGNAFLUX OPERATORI',
+    'magnaflux-calendar': 'MAGNAFLUX CALENDAR',
+    'duritate': 'DURITATE',
+    'capabilitate-proces-forjare': 'CAPABILITATE PROCES FORJARE',
+    'capabilitate-proces-prelucrari': 'CAPABILITATE PROCES PRELUCRĂRI',
+    'fisa-control-ctc-forja': 'FIȘĂ CONTROL CTC FORJĂ',
+    'probleme-ctc-forja': 'PROBLEME CTC FORJĂ',
+    'rebut': 'REBUT',
+    'rebut-pm': 'REBUT PM',
+    'rebut-pm-helper': 'REBUT PM HELPER',
+    'rebut-pm-operatori': 'REBUT PM OPERATORI',
+    'analiza-rebut-calitate': 'ANALIZĂ REBUT CALITATE',
+    'probleme-raportate': 'PROBLEME RAPORTATE',
+    'urmarire-actiuni-progres': 'URMĂRIRE ACȚIUNI ȘI PROGRES',
+    'imbunatatire-continua': 'ÎMBUNĂTĂȚIRE CONTINUĂ',
+    'investitii': 'INVESTIȚII',
+    'kpi': 'KPI PRODUCȚIE',
+    'kpi-livrari': 'KPI LIVRĂRI',
+    'planificare-forja': 'PLANIFICARE FORJĂ',
+    'plan-necesar-piese': 'PLAN NECESAR PIESE',
+    'comenzi-livrare': 'COMENZI LIVRARE',
+    'lista-vanzari': 'LISTA VÂNZĂRI',
+    'mrc-necesar-otel': 'MRC / NECESAR OȚEL',
+    'mrc-comenzi-otel': 'COMENZI OȚEL',
+    'mrc-comenzi-saptamanale': 'COMENZI SĂPTĂMÂNALE',
+    'pontaj-forja': 'PONTAJ FORJA',
+    'pontaj-sef-echipa': 'PONTAJ ȘEF ECHIPĂ',
+    'pontaj-mecanici': 'PONTAJ MECANICI',
+    'pontaj-ctc': 'PONTAJ CTC',
+    'pontaj-prelucrari-mecanice': 'PONTAJ PRELUCRĂRI MECANICE',
+    'raport-forja-operatori-ore': 'ORE OPERATORI FORJĂ',
+    'activitate-operatori-forja': 'ACTIVITATE OPERATORI FORJĂ',
+    'bonus-lunar': 'BONUS LUNAR',
+    'bonus-lunar-norme': 'NORME BONUS LUNAR',
+    'calendar-operatori': 'CALENDAR OPERATORI',
+    'fisa-evaluare-angajati': 'FIȘĂ EVALUARE ANGAJAȚI',
+    'stoc-matrite': 'STOC MATRIȚE',
+    'urmarire-matrite': 'URMĂRIRE MATRIȚE',
+    'progres-matrite': 'PROGRES MATRIȚE',
+    'utilaje-matrite': 'UTILAJE MATRIȚE',
+    'repere-matrite': 'REPERE MATRIȚE',
+    'registru-mentenanta': 'REGISTRU MENTENANȚĂ',
+    'mentenanta-preventiva': 'MENTENANȚĂ PREVENTIVĂ',
+    'inductoare': 'INDUCTOARE',
+    'manual-cm-315t': 'MANUAL CM 3.15 T',
+    'manual-cm-25t': 'MANUAL CM 2.5 T',
+    'instructiuni-forjare': 'INSTRUCȚIUNI FORJARE',
+    'instructiuni-ambalare': 'INSTRUCȚIUNI AMBALARE',
+    'ax-526-9278': 'AX-526-9278',
+    'ambalare-ax-526-9278': 'AMBALARE AX-526-9278',
+    'helper': 'HELPER',
+    'helper-data': 'HELPER-DATA',
+    'helper-acl': 'HELPER-ACL',
+    'arhiva-documente': 'ARHIVĂ DOCUMENTE',
+    'backup-date-kad': 'BACKUP DATE K.A.D'
+  };
+
+  function getCurrentPageKey(){
+    try {
+      var path = String(window.location && window.location.pathname || '');
+      var file = path.split('/').pop() || 'index.html';
+      return String(file).replace(/\.html$/i, '').toLowerCase() || 'index';
+    } catch (_) {
+      return 'index';
+    }
+  }
+
+  function escapeHtml(val){
+    return String(val == null ? '' : val)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  function getHiddenButtonSet(){
+    try {
+      var raw = (window.sessionStorage && window.sessionStorage.getItem('rf_hidden_index_buttons'))
+        || (window.localStorage && window.localStorage.getItem('rf_hidden_index_buttons'));
+      if (!raw) return new Set();
+      var parsed = JSON.parse(raw);
+      var arr = parsed && Array.isArray(parsed.hidden) ? parsed.hidden : [];
+      return new Set(arr.map(function(v){ return String(v || '').trim().toLowerCase(); }).filter(Boolean));
+    } catch (_) {
+      return new Set();
+    }
+  }
+
+  function readFavoriteKeys(){
+    try {
+      var raw = (window.localStorage && window.localStorage.getItem(FAVORITE_PAGES_STORAGE_KEY))
+        || (window.sessionStorage && window.sessionStorage.getItem(FAVORITE_PAGES_STORAGE_KEY));
+      if (!raw) return [];
+      var list = JSON.parse(raw);
+      if (!Array.isArray(list)) return [];
+      var seen = Object.create(null);
+      var out = [];
+      for (var i = 0; i < list.length; i += 1) {
+        var k = String(list[i] || '').trim().toLowerCase();
+        if (!k || k.indexOf('group-') === 0 || EXCLUDED_FAV_BAR_PAGES[k] || seen[k]) continue;
+        seen[k] = true;
+        out.push(k);
+      }
+      return out;
+    } catch (_) {
+      return [];
+    }
+  }
+
+  function writeFavoriteKeys(keys){
+    var clean = [];
+    var seen = Object.create(null);
+    (Array.isArray(keys) ? keys : []).forEach(function(k){
+      var key = String(k || '').trim().toLowerCase();
+      if (!key || key.indexOf('group-') === 0 || EXCLUDED_FAV_BAR_PAGES[key] || seen[key]) return;
+      seen[key] = true;
+      clean.push(key);
+    });
+    var serialized = JSON.stringify(clean.slice(0, MAX_FAVORITE_PAGES));
+    try { if (window.localStorage) window.localStorage.setItem(FAVORITE_PAGES_STORAGE_KEY, serialized); } catch (_) {}
+    try { if (window.sessionStorage) window.sessionStorage.setItem(FAVORITE_PAGES_STORAGE_KEY, serialized); } catch (_) {}
+    return clean;
+  }
+
+  function getPageLabelByKey(pageKey){
+    var key = String(pageKey || '').trim().toLowerCase();
+    if (!key) return '';
+    if (DEFAULT_LABELS[key]) return DEFAULT_LABELS[key];
+    try {
+      if (window.RF_APP_REGISTRY && typeof window.RF_APP_REGISTRY.getManagedPageEntries === 'function') {
+        var entries = window.RF_APP_REGISTRY.getManagedPageEntries();
+        for (var i = 0; i < entries.length; i += 1) {
+          if (entries[i] && String(entries[i].page_key || '').toLowerCase() === key && entries[i].page_name) {
+            return String(entries[i].page_name);
+          }
+        }
+      }
+    } catch (_) {}
+    try {
+      if (window.RF_ACL && window.RF_ACL.PAGE_MAP && window.RF_ACL.PAGE_MAP[key]) {
+        return String(window.RF_ACL.PAGE_MAP[key]);
+      }
+    } catch (_) {}
+    if (key === getCurrentPageKey()) {
+      var title = String(document.title || '').replace(/\s*[-–|]\s*K\.A\.D.*$/i, '').trim();
+      if (title) return title;
+    }
+    return key.toUpperCase();
+  }
+
+  function recordRecentVisit(pageKey){
+    var key = String(pageKey || '').trim().toLowerCase();
+    if (!key || key.indexOf('group-') === 0 || EXCLUDED_FAV_BAR_PAGES[key]) return;
+    var label = getPageLabelByKey(key);
+    var href = key + '.html';
+    try {
+      var raw = (window.localStorage && window.localStorage.getItem(RECENT_PAGES_STORAGE_KEY))
+        || (window.sessionStorage && window.sessionStorage.getItem(RECENT_PAGES_STORAGE_KEY));
+      var list = raw ? JSON.parse(raw) : [];
+      if (!Array.isArray(list)) list = [];
+      var filtered = list.filter(function(item){ return item && String(item.key || '').toLowerCase() !== key; });
+      filtered.unshift({ key: key, label: label, href: href });
+      var serialized = JSON.stringify(filtered.slice(0, 6));
+      try { if (window.localStorage) window.localStorage.setItem(RECENT_PAGES_STORAGE_KEY, serialized); } catch (_) {}
+      try { if (window.sessionStorage) window.sessionStorage.setItem(RECENT_PAGES_STORAGE_KEY, serialized); } catch (_) {}
+    } catch (_) {}
+  }
+
+  function toggleFavoriteKey(pageKey){
+    var key = String(pageKey || '').trim().toLowerCase();
+    if (!key || key.indexOf('group-') === 0 || EXCLUDED_FAV_BAR_PAGES[key]) return false;
+    var list = readFavoriteKeys();
+    var idx = list.indexOf(key);
+    var added = false;
+    if (idx >= 0) {
+      list.splice(idx, 1);
+    } else {
+      list.push(key);
+      added = true;
+    }
+    writeFavoriteKeys(list);
+    refreshGlobalFavoritesUI();
+    return added;
+  }
+
+  function ensureFavBarStyle(){
+    if (document.getElementById('kadGlobalFavBarStyle')) return;
+    var style = document.createElement('style');
+    style.id = 'kadGlobalFavBarStyle';
+    style.textContent = [
+      '#kadGlobalFavBar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:6px 12px;margin:0;background:linear-gradient(180deg,rgba(255,255,255,.78),rgba(240,246,253,.68));border-bottom:1px solid rgba(35,56,85,.22);box-shadow:0 2px 10px rgba(15,32,56,.06);font-family:"Segoe UI",system-ui,-apple-system,Arial,sans-serif;font-size:12px;line-height:1.2;z-index:45;position:relative;box-sizing:border-box;width:100%;backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);}',
+      '#kadGlobalFavBar *{box-sizing:border-box;}',
+      '.kad-gfav-actions{display:inline-flex;align-items:center;gap:6px;flex:0 0 auto;}',
+      '.kad-gfav-home,.kad-gfav-pin{appearance:none;display:inline-flex;align-items:center;gap:5px;min-height:28px;padding:4px 10px;border-radius:9px;border:1px solid rgba(35,56,85,.24);background:rgba(255,255,255,.86);color:#10213d;font-family:inherit;font-size:12px;font-weight:800;text-decoration:none;cursor:pointer;white-space:nowrap;transition:transform .12s ease,background .12s ease,border-color .12s ease,box-shadow .12s ease;}',
+      '.kad-gfav-home:hover,.kad-gfav-pin:hover{transform:translateY(-1px);background:#fff;border-color:rgba(35,56,85,.45);box-shadow:0 3px 8px rgba(0,0,0,.08);}',
+      '.kad-gfav-pin.is-fav{border-color:rgba(217,119,6,.65);background:linear-gradient(180deg,#fff3cd,#ffe082);color:#5c3400;}',
+      '.kad-gfav-sep{width:1px;height:18px;background:rgba(35,56,85,.20);flex:0 0 auto;}',
+      '.kad-gfav-label{font-size:11px;font-weight:900;letter-spacing:.04em;text-transform:uppercase;color:#5e6f87;display:inline-flex;align-items:center;gap:4px;flex:0 0 auto;user-select:none;}',
+      '.kad-gfav-list{display:flex;align-items:center;gap:6px;flex-wrap:wrap;flex:1 1 auto;min-width:0;}',
+      '.kad-gfav-chip{display:inline-flex;align-items:center;gap:5px;min-height:28px;padding:4px 11px;border-radius:9px;border:1px solid rgba(217,119,6,.48);background:linear-gradient(180deg,rgba(255,243,205,.92),rgba(255,224,130,.62));color:#4a2900;font-family:inherit;font-size:12px;font-weight:800;letter-spacing:.02em;text-decoration:none;white-space:nowrap;transition:transform .12s ease,background .12s ease,border-color .12s ease,box-shadow .12s ease;}',
+      '.kad-gfav-chip:hover{transform:translateY(-1px);border-color:rgba(180,83,9,.82);background:linear-gradient(180deg,#ffe082,#ffd54f);color:#3b2000;box-shadow:0 4px 10px rgba(180,83,9,.16);}',
+      '.kad-gfav-chip.is-current{border-color:#1d4ed8;background:linear-gradient(180deg,#dbeafe,#bfdbfe);color:#1e3a8a;box-shadow:inset 0 0 0 1px rgba(29,78,216,.28);}',
+      '.kad-gfav-chip .kad-gfav-star{color:#d97706;font-size:13px;line-height:1;}',
+      '.kad-gfav-chip.is-current .kad-gfav-star{color:#1d4ed8;}',
+      '.kad-gfav-empty{font-size:11.5px;font-weight:700;color:#5e6f87;font-style:italic;}',
+      '@media (max-width:640px){#kadGlobalFavBar{padding:6px 8px;gap:6px;}.kad-gfav-label{display:none;}}',
+      '@media print{#kadGlobalFavBar{display:none !important;}}'
+    ].join('\n');
+    (document.head || document.documentElement).appendChild(style);
+  }
+
+  function renderGlobalFavBar(){
+    var currentKey = getCurrentPageKey();
+    if (EXCLUDED_FAV_BAR_PAGES[currentKey]) return;
+    if (!document.body) return;
+
+    ensureFavBarStyle();
+
+    var bar = document.getElementById('kadGlobalFavBar');
+    var host = document.querySelector('.kad-shell-page-content') || document.body;
+    if (!bar) {
+      bar = document.createElement('nav');
+      bar.id = 'kadGlobalFavBar';
+      bar.className = 'kad-global-fav-bar noPrint';
+      bar.setAttribute('aria-label', 'Pagini favorite K.A.D');
+      bar.setAttribute('data-acl-filter', '1');
+      host.insertBefore(bar, host.firstChild);
+    } else if (bar.parentNode !== host && host.firstChild !== bar) {
+      host.insertBefore(bar, host.firstChild);
+    }
+
+    var hiddenSet = getHiddenButtonSet();
+    var favKeys = readFavoriteKeys().filter(function(k){ return !hiddenSet.has(k); });
+    var isCurrentFav = favKeys.indexOf(currentKey) >= 0;
+
+    var pinTitle = isCurrentFav
+      ? 'Scoate pagina curentă (' + getPageLabelByKey(currentKey) + ') de la Favorite'
+      : 'Fixează pagina curentă (' + getPageLabelByKey(currentKey) + ') în bara de Favorite';
+    var pinLabel = isCurrentFav ? '★ Favorită' : '☆ + Favorite';
+
+    var chipsHtml = '';
+    if (favKeys.length) {
+      chipsHtml = favKeys.map(function(k){
+        var label = getPageLabelByKey(k);
+        var href = k + '.html';
+        var activeCls = k === currentKey ? ' is-current' : '';
+        return '<a class="kad-gfav-chip' + activeCls + '" data-acl-filter="1" data-fav-page-key="' + escapeHtml(k) + '" href="' + escapeHtml(href) + '" title="Deschide ' + escapeHtml(label) + '">'
+          + '<span class="kad-gfav-star" aria-hidden="true">★</span>'
+          + '<span>' + escapeHtml(label) + '</span>'
+          + '</a>';
+      }).join('');
+    } else {
+      chipsHtml = '<span class="kad-gfav-empty">Apasă pe „☆ + Favorite” pentru a avea această foaie mereu la îndemână pe orice pagină.</span>';
+    }
+
+    bar.innerHTML = ''
+      + '<div class="kad-gfav-actions" data-acl-filter="1">'
+      +   '<a class="kad-gfav-home" data-acl-filter="1" href="index.html" title="Înapoi la Index (Dashboard)">🏠 Index</a>'
+      +   '<button type="button" class="kad-gfav-pin' + (isCurrentFav ? ' is-fav' : '') + '" id="kadGlobalFavToggleBtn" data-acl-filter="1" title="' + escapeHtml(pinTitle) + '">' + escapeHtml(pinLabel) + '</button>'
+      + '</div>'
+      + '<span class="kad-gfav-sep" aria-hidden="true"></span>'
+      + '<span class="kad-gfav-label" aria-hidden="true">★ Favorite:</span>'
+      + '<div class="kad-gfav-list" id="kadGlobalFavList" data-acl-filter="1">' + chipsHtml + '</div>';
+
+    var pinBtn = bar.querySelector('#kadGlobalFavToggleBtn');
+    if (pinBtn) {
+      pinBtn.addEventListener('click', function(ev){
+        ev.preventDefault();
+        ev.stopPropagation();
+        toggleFavoriteKey(currentKey);
+      });
+    }
+
+    Array.prototype.slice.call(bar.querySelectorAll('a.kad-gfav-chip[data-fav-page-key]')).forEach(function(link){
+      link.addEventListener('click', function(){
+        var k = link.getAttribute('data-fav-page-key');
+        if (k) recordRecentVisit(k);
+      });
+    });
+  }
+
+  function refreshGlobalFavoritesUI(){
+    try { renderGlobalFavBar(); } catch (_) {}
+    try {
+      if (typeof window.__kadSyncShellFavorites === 'function') {
+        window.__kadSyncShellFavorites();
+      }
+    } catch (_) {}
+  }
+
+  window.RF_FAVORITES = {
+    list: readFavoriteKeys,
+    has: function(k){ return readFavoriteKeys().indexOf(String(k || '').trim().toLowerCase()) >= 0; },
+    toggle: toggleFavoriteKey,
+    getLabel: getPageLabelByKey,
+    refresh: refreshGlobalFavoritesUI
+  };
+
+  function bootGlobalFavorites(){
+    var currentKey = getCurrentPageKey();
+    if (!EXCLUDED_FAV_BAR_PAGES[currentKey]) {
+      recordRecentVisit(currentKey);
+      renderGlobalFavBar();
+      window.setTimeout(renderGlobalFavBar, 120);
+    }
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', bootGlobalFavorites, { once:true });
+  } else {
+    bootGlobalFavorites();
+  }
+
+  window.addEventListener('pageshow', refreshGlobalFavoritesUI);
+  window.addEventListener('storage', function(ev){
+    if (!ev || !ev.key || ev.key === FAVORITE_PAGES_STORAGE_KEY || ev.key === 'rf_hidden_index_buttons') {
+      refreshGlobalFavoritesUI();
+    }
+  });
+})(window, document);
+/* === END K.A.D GLOBAL FAVORITE PAGES BAR === */
+

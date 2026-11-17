@@ -125,12 +125,34 @@
     return false;
   }
 
+  function isFavKey(key){
+    var k = String(key || '').trim().toLowerCase();
+    if (!k) return false;
+    try {
+      if (window.RF_FAVORITES && typeof window.RF_FAVORITES.has === 'function') {
+        return window.RF_FAVORITES.has(k);
+      }
+      var raw = (window.localStorage && window.localStorage.getItem('user_fav_pages_v1'))
+        || (window.sessionStorage && window.sessionStorage.getItem('user_fav_pages_v1'));
+      if (!raw) return false;
+      var arr = JSON.parse(raw);
+      return Array.isArray(arr) && arr.map(function(v){ return String(v || '').trim().toLowerCase(); }).indexOf(k) >= 0;
+    } catch (_) {
+      return false;
+    }
+  }
+
   function linkHtml(link){
     var active = (link.key === currentKey || (link.href && link.href.toLowerCase() === currentPath)) ? ' is-active' : '';
     if(link.disabled || !link.href){
       return '<span class="kad-shell-link'+active+'" aria-disabled="true">'+escapeHtml(link.label)+'</span>';
     }
-    return '<a class="kad-shell-link'+active+'" href="'+escapeHtml(link.href)+'">'+escapeHtml(link.label)+'</a>';
+    var key = String(link.key || link.href.replace(/\.html$/i, '') || '').trim().toLowerCase();
+    var fav = isFavKey(key);
+    var starHtml = (key && key !== 'index' && key.indexOf('group-') !== 0)
+      ? '<span class="kad-shell-fav-star' + (fav ? ' is-fav' : '') + '" role="button" tabindex="0" data-fav-key="' + escapeHtml(key) + '" title="Fixează / scoate de la Favorite">' + (fav ? '★' : '☆') + '</span>'
+      : '';
+    return '<a class="kad-shell-link'+active+'" href="'+escapeHtml(link.href)+'" data-shell-page-key="'+escapeHtml(key)+'"><span class="kad-shell-link-text">'+escapeHtml(link.label)+'</span>'+starHtml+'</a>';
   }
 
   var SHELL_ICONS = {
@@ -394,6 +416,7 @@
     document.body.classList.add('kad-shell-mounted');
     applyAdaptivePalette();
     bind(root);
+    try { if (window.RF_FAVORITES && typeof window.RF_FAVORITES.refresh === 'function') window.RF_FAVORITES.refresh(); } catch (_) {}
     window.setTimeout(applyAdaptivePalette, 80);
     window.setTimeout(applyAdaptivePalette, 600);
   }
@@ -477,6 +500,29 @@
       ev.preventDefault();
       ev.stopPropagation();
       toggleShell();
+    });
+
+    function syncShellStars(){
+      Array.prototype.slice.call(subpanel.querySelectorAll('.kad-shell-fav-star[data-fav-key]')).forEach(function(star){
+        var k = star.getAttribute('data-fav-key') || '';
+        var on = isFavKey(k);
+        star.classList.toggle('is-fav', on);
+        star.textContent = on ? '★' : '☆';
+      });
+    }
+    window.__kadSyncShellFavorites = syncShellStars;
+
+    subpanel.addEventListener('click', function(ev){
+      var star = ev.target && ev.target.closest ? ev.target.closest('.kad-shell-fav-star[data-fav-key]') : null;
+      if (!star) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      var k = star.getAttribute('data-fav-key') || '';
+      if (!k) return;
+      if (window.RF_FAVORITES && typeof window.RF_FAVORITES.toggle === 'function') {
+        window.RF_FAVORITES.toggle(k);
+      }
+      syncShellStars();
     });
 
     items.forEach(function(item){
