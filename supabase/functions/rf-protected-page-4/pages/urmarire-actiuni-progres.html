@@ -803,6 +803,9 @@
         const value = row[col.key];
         return `<td class="${col.cls || ""}">${value ? escapeHtml(value) : "—"}</td>`;
       }
+      if (col.key === "data_finalizare" && state.permissions.canEdit) {
+        return `<td data-col="data_finalizare" class="center"><input type="text" class="cell-select" style="width:100%;min-width:100px" data-inline-key="data_finalizare" data-id="${escapeHtml(row.id)}" value="${escapeHtml(row.data_finalizare || "")}" placeholder="zz.ll.aaaa" aria-label="Data finalizării 100%" title="Completează manual înainte de stadiul D (100%)" /></td>`;
+      }
       if (col.key === "zile_deschise") { const value = rowDaysOpen(row); return `<td class="center">${value === "" ? "—" : value}</td>`; }
       const value = row[col.key];
       return `<td class="${col.cls || ""}">${value ? escapeHtml(value) : "—"}</td>`;
@@ -946,10 +949,35 @@ async function resolvePagePermissions() {
       dom.editModal.classList.add("open"); dom.editModal.setAttribute("aria-hidden", "false"); setTimeout(() => dom.fldDescriere.focus(), 30);
     }
     function closeModal() { state.editingId = null; dom.editModal.classList.remove("open"); dom.editModal.setAttribute("aria-hidden", "true"); }
-    function updateComputedFields() { const pMeta = priorityMeta(dom.fldPrioritate.value); const sMeta = stageMeta(dom.fldStadiu.value); dom.fldPrioritateDescriere.textContent = pMeta?.label || "—"; dom.fldStadiuDescriere.textContent = sMeta?.label || "—"; dom.fldProcent.textContent = `${sMeta?.percent || 0}%`; }
+    function validCompletionDate(value) {
+      const match = String(value || "").trim().match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})$/);
+      if (!match) return false;
+      const [, day, month, year] = match.map(Number);
+      const date = new Date(year, month - 1, day);
+      return year >= 1000 && date.getFullYear() === year && date.getMonth() === month - 1 && date.getDate() === day;
+    }
+    function completionDateError(row) {
+      const value = String(row.data_finalizare || "").trim();
+      if (!value && rowIsDone(row)) return "Completează manual Data finalizării 100% înainte de a selecta stadiul D (100%).";
+      if (value && !validCompletionDate(value)) return "Data finalizării trebuie să fie o dată validă în format zz.ll.aaaa.";
+      return "";
+    }
+    function handleStageChange() {
+      const error = completionDateError({ stadiu: dom.fldStadiu.value, data_finalizare: dom.fldDataFinalizare.value });
+      if (error && dom.fldStadiu.value === "D") {
+        dom.fldStadiu.value = dom.fldStadiu.dataset.previousStage || "A";
+        alert(error);
+        dom.fldDataFinalizare.focus();
+      }
+      updateComputedFields();
+    }
+    function updateComputedFields() { dom.fldStadiu.dataset.previousStage = dom.fldStadiu.value;
+      const pMeta = priorityMeta(dom.fldPrioritate.value); const sMeta = stageMeta(dom.fldStadiu.value); dom.fldPrioritateDescriere.textContent = pMeta?.label || "—"; dom.fldStadiuDescriere.textContent = sMeta?.label || "—"; dom.fldProcent.textContent = `${sMeta?.percent || 0}%`; }
     function resetFormDefaults() { dom.editForm.reset(); dom.fldDataConstatare.value = currentDateString(); if (dom.fldObservatiiIstoric) dom.fldObservatiiIstoric.value = ""; if (dom.obsExistingWrap) dom.obsExistingWrap.classList.toggle("hidden", !state.editingId); updateComputedFields(); }
     async function handleRowSave(event) {
       event.preventDefault(); if (!state.permissions.canAdd && !state.permissions.canEdit) return;
+      const completionError = completionDateError({ stadiu: dom.fldStadiu.value, data_finalizare: dom.fldDataFinalizare.value });
+      if (completionError) { alert(completionError); dom.fldDataFinalizare.focus(); return; }
       const existingRow = state.editingId ? rowById(state.editingId) : null;
       const existingObservatii = existingRow?.observatii || "";
       const mergedObservatii = await mergeObservationHistory(existingObservatii, dom.fldObservatii.value);
@@ -966,6 +994,8 @@ async function resolvePagePermissions() {
       const index = rows.findIndex(row => row.id === id);
       if (index < 0) return;
       const next = { ...rows[index], [key]: value };
+      const completionError = completionDateError({ ...next, procent_realizat: stageMeta(next.stadiu)?.percent ?? next.procent_realizat });
+      if (completionError) { alert(completionError); renderTable(); return; }
       const enriched = enrichRow(next, state.activeSheet);
       rows[index] = enriched;
       state.datasets[state.activeSheet] = sortRows(rows);
@@ -1026,6 +1056,8 @@ async function resolvePagePermissions() {
         if (forjaSheet) nextForja = sortRows(parseImportedSheet(forjaSheet, "forja")); if (prelSheet) nextPrel = sortRows(parseImportedSheet(prelSheet, "prelucrari"));
         if (!nextForja && !nextPrel) { const first = wb.Sheets[wb.SheetNames[0]]; const parsed = sortRows(parseImportedSheet(first, state.activeSheet)); if (state.activeSheet === "forja") nextForja = parsed; else nextPrel = parsed; }
         if ((!nextForja || !nextForja.length) && (!nextPrel || !nextPrel.length)) { alert("Fișierul nu conține rânduri valide."); return; }
+        const invalidCompletion = [...(nextForja || []), ...(nextPrel || [])].find(row => completionDateError(row));
+        if (invalidCompletion) { alert(`Import oprit: ${invalidCompletion.descriere_probleme}. ${completionDateError(invalidCompletion)}`); return; }
         const replace = confirm("OK = înlocuiește datele curente. Cancel = adaugă peste datele existente.");
         if (nextForja) state.datasets.forja = replace ? nextForja : sortRows([...state.datasets.forja, ...nextForja]);
         if (nextPrel) state.datasets.prelucrari = replace ? nextPrel : sortRows([...state.datasets.prelucrari, ...nextPrel]);
@@ -1049,7 +1081,7 @@ async function resolvePagePermissions() {
         updateSelectedRowUi();
       });
       dom.tableBody.addEventListener("change", event => {
-        const select = event.target.closest("select[data-inline-key][data-id]");
+        const select = event.target.closest("select[data-inline-key][data-id], input[data-inline-key][data-id]");
         if (!select) return;
         event.stopPropagation();
         inlineUpdateRow(select.dataset.id, select.dataset.inlineKey, select.value);
@@ -1063,7 +1095,7 @@ async function resolvePagePermissions() {
         const row = rowById(tr.dataset.id);
         if (row) openModal(row);
       });
-      dom.btnCloseModal.addEventListener("click", closeModal); dom.btnCancelForm.addEventListener("click", closeModal); dom.btnResetForm.addEventListener("click", resetFormDefaults); dom.btnDeleteForm.addEventListener("click", () => { closeModal(); deleteSelected(); }); dom.editForm.addEventListener("submit", handleRowSave); dom.fldPrioritate.addEventListener("change", updateComputedFields); dom.fldStadiu.addEventListener("change", updateComputedFields); dom.editModal.addEventListener("click", e => { if (e.target === dom.editModal) closeModal(); });
+      dom.btnCloseModal.addEventListener("click", closeModal); dom.btnCancelForm.addEventListener("click", closeModal); dom.btnResetForm.addEventListener("click", resetFormDefaults); dom.btnDeleteForm.addEventListener("click", () => { closeModal(); deleteSelected(); }); dom.editForm.addEventListener("submit", handleRowSave); dom.fldPrioritate.addEventListener("change", updateComputedFields); dom.fldStadiu.addEventListener("change", handleStageChange); dom.editModal.addEventListener("click", e => { if (e.target === dom.editModal) closeModal(); });
       dom.namePromptForm.addEventListener("submit", event => {
         event.preventDefault();
         const value = String(dom.namePromptInput.value || "").trim();
