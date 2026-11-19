@@ -29,7 +29,7 @@
         const id = String(row.id || index), title = String(row.descriere_probleme || 'Acțiune fără descriere');
         const percent = Number(String(row.procent_realizat ?? 0).replace('%', '').replace(',', '.'));
         const due = calendarDay(row.termen_prop);
-        if (due && due <= today && percent !== 100) notices.push({ id: JSON.stringify(['due', today, sheet, id, due]), sheet, kind: 'due', title, detail: `${due < today ? 'Termen depășit' : 'Termen astăzi'}: ${row.termen_prop}. Responsabil: ${row.responsabil_actiune || 'neprecizat'}` });
+        if (due && due <= today && percent !== 100) notices.push({ id: JSON.stringify(['due', today, sheet, id, due]), sheet, kind: 'due', deadlineDay: due, title, detail: `${due < today ? 'Termen depășit' : 'Termen astăzi'}: ${row.termen_prop}. Responsabil: ${row.responsabil_actiune || 'neprecizat'}` });
         const lines = String(row.observatii || '').split(/\r?\n/);
         let hasNote = false;
         lines.forEach((line, lineIndex) => {
@@ -49,7 +49,7 @@
     }
     return notices;
   }
-  let busy = false, panel, launcher, signature = '', epoch = 0, subscription;
+  let busy = false, panel, launcher, signature = '', epoch = 0, subscription, selectedCategory = '';
   const keys = ['urmarire-actiuni-progres', 'urmarire_actiuni_progres', 'Urmarire actiuni si progres', 'urmarire actiuni si progres'];
   function clear() { panel?.remove(); launcher?.remove(); panel = launcher = null; signature = ''; }
   function element(tag, text, parent) { const el = document.createElement(tag); if (text) el.textContent = text; if (parent) parent.append(el); return el; }
@@ -98,12 +98,38 @@
         panel.hidden = true;
         try { localStorage.setItem(receiptKey, JSON.stringify(notices.map(n => n.id))); } catch (_) {}
       });
-      for (const kind of ['due', 'today']) {
-        const list = notices.filter(n => n.kind === kind);
-        if (!list.length) continue;
-        element('h3', kind === 'due' ? 'Atenție: probleme nerezolvate' : 'Înregistrări și modificări de astăzi', panel);
+      const categories = [
+        { id: 'overdue', label: 'Termene depășite', color: '#a52323', list: notices.filter(n => n.kind === 'due' && n.deadlineDay < today) },
+        { id: 'due-today', label: 'Termene astăzi', color: '#895600', list: notices.filter(n => n.kind === 'due' && n.deadlineDay === today) },
+        { id: 'new', label: 'Adăugări și modificări noi', color: '#173f68', list: notices.filter(n => n.kind === 'today') }
+      ];
+      if (!categories.some(c => c.id === selectedCategory && c.list.length)) selectedCategory = categories.find(c => c.list.length).id;
+      const navigation = element('div', '', panel);
+      navigation.setAttribute('role', 'group'); navigation.setAttribute('aria-label', 'Categorii notificări');
+      navigation.style.cssText = 'display:flex;flex-wrap:wrap;gap:6px;margin:16px 0';
+      const views = [];
+      const selectCategory = id => {
+        selectedCategory = id;
+        for (const view of views) {
+          const active = view.id === id;
+          view.section.hidden = !active;
+          view.button.setAttribute('aria-pressed', String(active));
+          view.button.style.background = active ? view.color : '#fff';
+          view.button.style.color = active ? '#fff' : view.color;
+        }
+      };
+      for (const category of categories) {
+        const button = element('button', `${category.label} (${category.list.length})`, navigation);
+        button.type = 'button'; button.style.cssText = `padding:9px 10px;border:1px solid ${category.color};border-radius:8px;cursor:pointer;font:inherit`;
+        button.addEventListener('click', () => selectCategory(category.id));
+        const section = element('section', '', panel);
+        section.setAttribute('aria-label', category.label);
+        views.push({ ...category, button, section });
+        element('h3', category.label, section).style.color = category.color;
+        if (!category.list.length) element('p', 'Nu există notificări în această categorie.', section);
+        const list = category.list;
         for (const notice of list) {
-          const box = element('div', '', panel); box.style.cssText = 'padding:10px 0;border-top:1px solid #ddd';
+          const box = element('div', '', section); box.style.cssText = 'padding:10px 0;border-top:1px solid #ddd';
           element('strong', notice.title, box);
           element('p', notice.detail, box);
           const label = notice.sheet === 'forja' ? 'Forjă' : 'Prelucrări';
@@ -111,6 +137,7 @@
           link.href = 'urmarire-actiuni-progres.html?sheet=' + notice.sheet;
         }
       }
+      selectCategory(selectedCategory);
     } catch (error) { console.warn('Notificări acțiuni indisponibile', error); }
     finally { busy = false; }
   }
