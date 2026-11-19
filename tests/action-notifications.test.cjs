@@ -19,7 +19,7 @@ for(const sheet of ['forja','prelucrari']){
 assert.equal(ctx.collectActionNotices({action_changes:[{id:'e',sheet:'forja',at:'2026-11-19T10:00:00Z',author:'Ion'},{id:'old',sheet:'forja',at:'2026-11-18T10:00:00Z'}]},'2026-11-19').length,1);
 function env({allowed=true,auth=true}={}){
  const nodes=[],listeners={},store=new Map();let payload={datasets:{forja:[row]}},reads=0;
- class El{constructor(tag){this.tag=tag;this.children=[];this.style={};this.hidden=false;this.listeners={}}append(e){this.children.push(e)}appendChild(e){this.append(e)}setAttribute(){}remove(){this.removed=true}addEventListener(k,f){this.listeners[k]=f}}
+ class El{constructor(tag){this.tag=tag;this.children=[];this.style={setProperty(k,v){this[k]=v}};this.hidden=false;this.listeners={}}append(e){e.remove();e.parent=this;e.removed=false;this.children.push(e)}appendChild(e){this.append(e)}setAttribute(){}remove(){this.removed=true;if(this.parent){this.parent.children=this.parent.children.filter(e=>e!==this);this.parent=null}}addEventListener(k,f){this.listeners[k]=f}}
  const body=new El('body');const q={select(){return this},in(){return this},order(){return this},async limit(){reads++;return {data:[{content:payload}]}}};
  const client={from:()=>q,auth:{getSession:async()=>({data:{session:{user:{id:'u'}}}}),onAuthStateChange:f=>{listeners.auth=f;return {}}}};
  const access=async()=>({allowed,permissions:{can_view:allowed}});
@@ -32,11 +32,15 @@ function env({allowed=true,auth=true}={}){
 async function flush(){for(let i=0;i<15;i++)await Promise.resolve()}
 (async()=>{
  for(const auth of [true,false]){
-  const e=env({auth});await flush();assert.equal(e.body.children.length,2,'Works on dashboard without ERPAuth');
-  let panel=e.body.children[1];assert.equal(panel.hidden,true);e.body.children[0].listeners.click();assert.equal(panel.hidden,false);panel.children[1].listeners.click();assert.equal(panel.hidden,true);
-  await e.listeners.poll();assert.equal(e.body.children.at(-1).hidden,true);
-  e.setPayload({datasets:{forja:[{...row,observatii:row.observatii+'\n[19.11.2026 11:00] Dan: nou'}]}});await e.listeners.poll();assert.equal(e.body.children.at(-1).hidden,true,'New note must not open the panel');e.body.children.at(-2).listeners.click();assert.equal(e.body.children.at(-1).hidden,false,'Bell opens the updated list');
-  e.setPayload({datasets:{forja:[{...row,procent_realizat:100,observatii:''}]}});await e.listeners.poll();assert(e.body.children.at(-1).removed,'Resolved warning disappears');
+  const e=env({auth});await flush();assert.equal(e.body.children.length,1,'Only bell exists on a new page');
+  e.body.children[0].listeners.click();assert.equal(e.body.children.length,2);let panel=e.body.children[1];assert.equal(panel.hidden,false);assert.equal(panel.style.display,'block');
+  panel.children[1].listeners.click();assert.equal(e.body.children.length,1,'Closing detaches panel');assert.equal(panel.style.display,'none');
+  await e.listeners.poll();assert.equal(e.body.children.length,1);
+  e.setPayload({datasets:{forja:[{...row,observatii:row.observatii+'\n[19.11.2026 11:00] Dan: nou'}]}});await e.listeners.poll();assert.equal(e.body.children.length,1,'New notes cannot mount panel');
+  await e.listeners.focus();assert.equal(e.body.children.length,1,'Returning to page cannot mount panel');
+  e.body.children[0].listeners.click();assert.equal(e.body.children.length,2,'Bell opens updated list');
+  e.setPayload({datasets:{forja:[{...row,procent_realizat:100,observatii:''}]}});await e.listeners.poll();assert.equal(e.body.children.length,0);
+  const anotherPage=env({auth});await flush();assert.equal(anotherPage.body.children.length,1,'Navigation starts with bell only');
   assert(e.reads()>=4);
  }
  const denied=env({allowed:false});await flush();assert.equal(denied.reads(),0);assert.equal(denied.body.children.length,0);

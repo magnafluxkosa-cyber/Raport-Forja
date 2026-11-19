@@ -49,9 +49,16 @@
     }
     return notices;
   }
-  let busy = false, panel, launcher, signature = '', epoch = 0, subscription, selectedCategory = '';
+  let busy = false, panel, launcher, signature = '', epoch = 0, subscription, selectedCategory = '', panelOpen = false;
   const keys = ['urmarire-actiuni-progres', 'urmarire_actiuni_progres', 'Urmarire actiuni si progres', 'urmarire actiuni si progres'];
-  function clear() { panel?.remove(); launcher?.remove(); panel = launcher = null; signature = ''; }
+  function clear() { panel?.remove(); launcher?.remove(); panel = launcher = null; signature = ''; panelOpen = false; }
+  function setPanelOpen(open) {
+    panelOpen = open === true;
+    panel.hidden = !panelOpen;
+    panel.style.setProperty('display', panelOpen ? 'block' : 'none', 'important');
+    launcher.setAttribute('aria-expanded', String(panelOpen));
+    if (panelOpen) document.body.append(panel); else panel.remove();
+  }
   function element(tag, text, parent) { const el = document.createElement(tag); if (text) el.textContent = text; if (parent) parent.append(el); return el; }
   async function check() {
     if (busy || document.hidden || !document.body) return;
@@ -80,7 +87,7 @@
       if (!Array.isArray(seen)) seen = [];
       const nextSignature = JSON.stringify([user.id, today, notices, seen]);
       if (signature === nextSignature) return;
-      const wasOpen = panel && !panel.hidden;
+      const wasOpen = panelOpen;
       clear(); signature = nextSignature;
       if (!notices.length) return;
       launcher = element('button', '', document.body);
@@ -93,19 +100,17 @@
       const badge = element('span', notices.length > 99 ? '99+' : String(notices.length), launcher);
       badge.setAttribute('aria-hidden', 'true');
       badge.style.cssText = 'position:absolute;top:-5px;right:-7px;min-width:17px;height:17px;padding:0 3px;box-sizing:border-box;display:grid;place-items:center;border-radius:10px;background:#b42318;color:#fff;border:1px solid #fff;font:600 10px/1 system-ui;pointer-events:none';
-      panel = element('section', '', document.body);
+      // Keep the list detached until the user opens it: page styles cannot expose it.
+      panel = element('section', '');
       panel.id = 'kad-action-notice-panel';
       panel.setAttribute('role', 'region'); panel.setAttribute('aria-label', 'Notificări zilnice acțiuni');
       panel.style.cssText = 'position:fixed;right:16px;top:58px;z-index:99999;width:min(460px,calc(100vw - 32px));max-height:min(80vh,calc(100dvh - 76px));overflow:auto;box-sizing:border-box;background:#fff;color:#182b45;border:1px solid #bbcbe1;border-radius:14px;padding:20px;box-shadow:0 12px 40px #10243b44;font:14px/1.5 system-ui;text-align:left';
-      panel.hidden = !wasOpen;
-      launcher.setAttribute('aria-expanded', String(!panel.hidden));
-      launcher.addEventListener('click', () => { panel.hidden = !panel.hidden; launcher.setAttribute('aria-expanded', String(!panel.hidden)); });
+      launcher.addEventListener('click', () => setPanelOpen(!panelOpen));
       element('h2', 'Urmărire acțiuni și progres — ' + today.split('-').reverse().join('.'), panel).style.fontSize = '18px';
       const dismiss = element('button', 'Am văzut — închide pentru moment', panel);
       dismiss.type = 'button';
       dismiss.addEventListener('click', () => {
-        panel.hidden = true;
-        launcher.setAttribute('aria-expanded', 'false');
+        setPanelOpen(false);
         try { localStorage.setItem(receiptKey, JSON.stringify(notices.map(n => n.id))); } catch (_) {}
       });
       const categories = [
@@ -148,6 +153,7 @@
         }
       }
       selectCategory(selectedCategory);
+      setPanelOpen(wasOpen);
     } catch (error) { console.warn('Notificări acțiuni indisponibile', error); }
     finally { busy = false; }
   }
