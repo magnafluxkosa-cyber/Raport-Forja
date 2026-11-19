@@ -5142,7 +5142,7 @@ async function applyDomPermissions(pageKey, root, options) {
   if (window.__kadActionNoticeLoader) return;
   window.__kadActionNoticeLoader = true;
   const script = document.createElement('script');
-  script.src = new URL('./kad-action-notifications.js?v=20261119-daily', document.currentScript?.src || location.href).href;
+  script.src = new URL('./kad-action-notifications.js?v=20261119-tabs2', document.currentScript?.src || location.href).href;
   script.defer = true;
   script.onerror = () => { window.__kadActionNoticeLoader = false; };
   document.head.appendChild(script);
