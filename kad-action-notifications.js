@@ -97,7 +97,7 @@
       panel.id = 'kad-action-notice-panel';
       panel.setAttribute('role', 'region'); panel.setAttribute('aria-label', 'Notificări zilnice acțiuni');
       panel.style.cssText = 'position:fixed;right:16px;top:58px;z-index:99999;width:min(460px,calc(100vw - 32px));max-height:min(80vh,calc(100dvh - 76px));overflow:auto;box-sizing:border-box;background:#fff;color:#182b45;border:1px solid #bbcbe1;border-radius:14px;padding:20px;box-shadow:0 12px 40px #10243b44;font:14px/1.5 system-ui;text-align:left';
-      panel.hidden = !wasOpen && notices.every(n => seen.includes(n.id));
+      panel.hidden = !wasOpen;
       launcher.setAttribute('aria-expanded', String(!panel.hidden));
       launcher.addEventListener('click', () => { panel.hidden = !panel.hidden; launcher.setAttribute('aria-expanded', String(!panel.hidden)); });
       element('h2', 'Urmărire acțiuni și progres — ' + today.split('-').reverse().join('.'), panel).style.fontSize = '18px';

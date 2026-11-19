@@ -33,12 +33,12 @@ async function flush(){for(let i=0;i<15;i++)await Promise.resolve()}
 (async()=>{
  for(const auth of [true,false]){
   const e=env({auth});await flush();assert.equal(e.body.children.length,2,'Works on dashboard without ERPAuth');
-  let panel=e.body.children[1];assert.equal(panel.hidden,false);panel.children[1].listeners.click();assert.equal(panel.hidden,true);
+  let panel=e.body.children[1];assert.equal(panel.hidden,true);e.body.children[0].listeners.click();assert.equal(panel.hidden,false);panel.children[1].listeners.click();assert.equal(panel.hidden,true);
   await e.listeners.poll();assert.equal(e.body.children.at(-1).hidden,true);
-  e.setPayload({datasets:{forja:[{...row,observatii:row.observatii+'\n[19.11.2026 11:00] Dan: nou'}]}});await e.listeners.poll();assert.equal(e.body.children.at(-1).hidden,false,'New note appears without relogin');
+  e.setPayload({datasets:{forja:[{...row,observatii:row.observatii+'\n[19.11.2026 11:00] Dan: nou'}]}});await e.listeners.poll();assert.equal(e.body.children.at(-1).hidden,true,'New note must not open the panel');e.body.children.at(-2).listeners.click();assert.equal(e.body.children.at(-1).hidden,false,'Bell opens the updated list');
   e.setPayload({datasets:{forja:[{...row,procent_realizat:100,observatii:''}]}});await e.listeners.poll();assert(e.body.children.at(-1).removed,'Resolved warning disappears');
   assert(e.reads()>=4);
  }
  const denied=env({allowed:false});await flush();assert.equal(denied.reads(),0);assert.equal(denied.body.children.length,0);
- console.log('PASS: daily existing notes, authors, today/overdue/future deadlines, 100% exclusion, Romania midnight, next-day reminders, dashboard without ERPAuth, polling, new-note popup, acknowledgement, resolved removal and ACL.');
+ console.log('PASS: daily existing notes, authors, today/overdue/future deadlines, 100% exclusion, Romania midnight, next-day reminders, dashboard without ERPAuth, polling, click-only opening, acknowledgement, resolved removal and ACL.');
 })().catch(e=>{console.error(e);process.exitCode=1});
