@@ -5136,3 +5136,14 @@ async function applyDomPermissions(pageKey, root, options) {
 })(window, document);
 /* === END K.A.D GLOBAL FAVORITE PAGES BAR === */
 
+
+/* Load daily action notices on dashboard and authenticated pages. */
+(function () {
+  if (window.__kadActionNoticeLoader) return;
+  window.__kadActionNoticeLoader = true;
+  const script = document.createElement('script');
+  script.src = new URL('./kad-action-notifications.js?v=20261119-daily', document.currentScript?.src || location.href).href;
+  script.defer = true;
+  script.onerror = () => { window.__kadActionNoticeLoader = false; };
+  document.head.appendChild(script);
+})();
