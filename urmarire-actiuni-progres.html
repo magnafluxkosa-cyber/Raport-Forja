@@ -685,7 +685,7 @@
     };
     function deepClone(value) { return JSON.parse(JSON.stringify(value)); }
     const state = {
-      datasets: deepClone(SEED.datasets), helper: deepClone(SEED.helper), activeSheet: "forja", filteredRows: [],
+      datasets: deepClone(SEED.datasets), helper: deepClone(SEED.helper), activeSheet: new URLSearchParams(window.location.search).get("sheet") === "prelucrari" ? "prelucrari" : "forja", filteredRows: [],
       selectedId: null, editingId: null, dirty: false, syncInFlight: false, source: "seed",
       user: null, role: "viewer", permissions: { canView: true, canAdd: false, canEdit: false, canDelete: false },
       cloudUpdatedAt: "", sheetJsPromise: null, namePromptResolver: null, supabase: null, aclMirror: null,
@@ -988,11 +988,18 @@
     }
     function getActiveRows() { return state.datasets[state.activeSheet] || []; }
     function setBadge(chip, dot, text, kind) { const span = chip.querySelector("span:last-child") || chip; span.textContent = text; dot.className = "dot"; dot.classList.add(kind === "success" ? "success" : kind === "danger" ? "danger" : "warning"); }
-    function markDirty(sourceText = "Sursă: local modificat") { state.dirty = true; state.source = "local"; setBadge(dom.chipSource, dom.dotSource, sourceText, "warning"); persistLocal(); scheduleAutoSave(); }
+    function recordActionChange(sheet = state.activeSheet, author = "") {
+      const user = state.user || {};
+      const event = { id: randomId(), at: new Date().toISOString(), sheet,
+        author: author || user.user_metadata?.full_name || user.email || "Utilizator neidentificat", account: user.email || "", user_id: user.id || "" };
+      state.actionChanges = [...(state.actionChanges || []), event].slice(-200);
+    }
+    function markDirty(sourceText = "Sursă: local modificat", author = "", notify = true) {
+      if (notify) recordActionChange(state.activeSheet, author); state.dirty = true; state.source = "local"; setBadge(dom.chipSource, dom.dotSource, sourceText, "warning"); persistLocal(); scheduleAutoSave(); }
     function persistLocal() { try { localStorage.setItem(LOCAL_KEY, JSON.stringify(currentPayload())); } catch (error) { console.warn("persistLocal", error); } }
     function loadLocalCache() {
       try {
-        const raw = localStorage.getItem(LOCAL_KEY); if (!raw) return false; const payload = JSON.parse(raw); if (!payload || !payload.datasets) return false;
+        const raw = localStorage.getItem(LOCAL_KEY); if (!raw) return false; const payload = JSON.parse(raw); if (!payload || !payload.datasets) return false; state.actionChanges = Array.isArray(payload.action_changes) ? payload.action_changes : [];
         const forjaRows = sortRows((payload.datasets.forja || []).map(row => enrichRow(row, "forja")));
         const prelucrariRows = sortRows((payload.datasets.prelucrari || []).map(row => enrichRow(row, "prelucrari")));
         if (!forjaRows.length && !prelucrariRows.length) return false;
@@ -1008,7 +1015,7 @@
         return { completion_date_cleanup_version: 1, id: clean.id, created_at: clean.created_at || "", descriere_probleme: clean.descriere_probleme, linie_utilaj: clean.linie_utilaj, data_constatare: clean.data_constatare, nivel_prioritate: clean.nivel_prioritate, descriere_prioritate: clean.descriere_prioritate, stadiu: clean.stadiu, descriere_stadiu: clean.descriere_stadiu, procent_realizat: Number(clean.procent_realizat || 0), data_finalizare: clean.data_finalizare, responsabil_actiune: clean.responsabil_actiune, departament: sheetKey === "forja" ? clean.departament : "", termen_prop: clean.termen_prop, observatii: clean.observatii };
       }));
     }
-    function currentPayload() { return { version: 1, updated_at: new Date().toISOString(), helper: deepClone(state.helper), datasets: { forja: getSerializableRows("forja"), prelucrari: getSerializableRows("prelucrari") } }; }
+    function currentPayload() { return { version: 1, action_changes: state.actionChanges || [], updated_at: new Date().toISOString(), helper: deepClone(state.helper), datasets: { forja: getSerializableRows("forja"), prelucrari: getSerializableRows("prelucrari") } }; }
     function scrollTableToBottomIfNeeded() {
       if (!state.scrollToBottomOnNextRender || !dom.tableWrap) return;
       state.scrollToBottomOnNextRender = false;
@@ -1231,11 +1238,12 @@ async function resolvePagePermissions() {
         const doc = data.find(Boolean); const payload = doc?.content || doc?.data || doc; if (!payload?.datasets) return false;
         const remoteStamp = doc?.updated_at || payload?.updated_at || ""; const canReplace = !state.dirty || force;
         if (canReplace) {
+          state.actionChanges = Array.isArray(payload.action_changes) ? payload.action_changes : [];
           const rows = rowsFromPayload(payload); state.datasets.forja = rows.forja; state.datasets.prelucrari = rows.prelucrari;
           if (payload.helper) state.helper = { departments: Array.isArray(payload.helper.departments) ? payload.helper.departments : state.helper.departments, priorities: Array.isArray(payload.helper.priorities) ? payload.helper.priorities : state.helper.priorities, stages: Array.isArray(payload.helper.stages) ? payload.helper.stages : state.helper.stages };
           state.cloudUpdatedAt = remoteStamp; state.source = "cloud"; state.selectedId = null; refreshStaticSelects(); persistLocal(); setBadge(dom.chipSource, dom.dotSource, "Sursă: cloud", "success"); setBadge(dom.chipCloud, dom.dotCloud, "Cloud: sincronizat", "success"); renderTable();
           const needsDateCleanup = [...(payload.datasets.forja || []), ...(payload.datasets.prelucrari || [])].some(row => row.completion_date_cleanup_version !== 1);
-          if (needsDateCleanup && state.permissions.canEdit) markDirty("Sursă: corecție date finalizare");
+          if (needsDateCleanup && state.permissions.canEdit) markDirty("Sursă: corecție date finalizare", "", false);
           return true;
         }
         if (remoteStamp && remoteStamp !== state.cloudUpdatedAt) setBadge(dom.chipCloud, dom.dotCloud, "Cloud: există versiune nouă, folosește Refresh", "warning");
@@ -1320,6 +1328,7 @@ async function resolvePagePermissions() {
       if (!row.descriere_probleme) { alert("Completează descrierea problemei."); return; }
       const existingObservatii = existingRow?.observatii || "";
       const newObservationText = cleanObservationText(dom.fldObservatii.value);
+      if (existingRow && !newObservationText && !getRowAuditChanges(existingRow, row).length) { closeModal(); return; }
       const isNewRow = !existingRow;
       let auditAuthor = "";
       let mergedObservatii = cleanObservationText(existingObservatii);
@@ -1345,7 +1354,7 @@ async function resolvePagePermissions() {
       if (index >= 0) target[index] = row; else target.push(row);
       state.datasets[state.activeSheet] = sortRows(target);
       state.selectedId = row.id;
-      markDirty();
+      markDirty(undefined, auditAuthor);
       renderTable();
       closeModal();
     }
@@ -1368,7 +1377,7 @@ async function resolvePagePermissions() {
       rows[index] = enriched;
       state.datasets[state.activeSheet] = sortRows(rows);
       state.selectedId = enriched.id;
-      markDirty();
+      markDirty(undefined, auditAuthor);
       renderTable();
     }
     function deleteSelected() {
@@ -1429,7 +1438,8 @@ async function resolvePagePermissions() {
         const replace = confirm("OK = înlocuiește datele curente. Cancel = adaugă peste datele existente.");
         if (nextForja) state.datasets.forja = replace ? nextForja : sortRows([...state.datasets.forja, ...nextForja]);
         if (nextPrel) state.datasets.prelucrari = replace ? nextPrel : sortRows([...state.datasets.prelucrari, ...nextPrel]);
-        state.selectedId = null; markDirty("Sursă: import Excel local"); renderTable();
+        if (nextForja) recordActionChange("forja"); if (nextPrel) recordActionChange("prelucrari");
+        state.selectedId = null; markDirty("Sursă: import Excel local", "", false); renderTable();
       } catch (error) { console.error("importExcelFile", error); alert("Importul Excel a eșuat."); } finally { dom.excelInput.value = ""; }
     }
     function bindEvents() {

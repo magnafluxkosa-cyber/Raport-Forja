@@ -1136,6 +1136,7 @@
 
   async function getPageAccess(pageKey, options){
     const settings = Object.assign({ pageKey: normalizePageKey(pageKey || getCurrentPageName()) }, options || {});
+    const publishResult = settings.publish === false ? access => access : publishPageAccess;
     let user = settings.user || null;
     let role = settings.role || '';
 
@@ -1162,7 +1163,7 @@
       if(strictMap && strictMap.size){
         const matched = strictMap.get(settings.pageKey);
         if(matched){
-          return publishPageAccess({
+          return publishResult({
             allowed: matched.can_view === true,
             user,
             role: cleanRole,
@@ -1179,7 +1180,7 @@
       const allowedForDebitare = ['operator-debitare-pin','operator-debitare'];
       const allowed = allowedForDebitare.indexOf(settings.pageKey) !== -1;
       const debitareOperatorPermissions = { can_view:true, can_add:true, can_edit:true, can_delete:false, can_export:true, can_import:false };
-      return publishPageAccess({
+      return publishResult({
         allowed: allowed,
         user,
         role: 'operator',
@@ -1193,7 +1194,7 @@
       const allowedForPrelucrari = ['raport-pm-operatori'];
       const allowed = allowedForPrelucrari.indexOf(settings.pageKey) !== -1;
       const prelucrariOperatorPermissions = { can_view:true, can_add:true, can_edit:true, can_delete:false, can_export:false, can_import:false };
-      return publishPageAccess({
+      return publishResult({
         allowed: allowed,
         user,
         role: 'operator',
@@ -1206,7 +1207,7 @@
     if(user && isForjaCtcOperatorAccount(user.email)){
       const allowedForCtc = ['forja-ctc-pin','fisa-control-ctc-forja','rebut-pm-operatori'];
       const allowed = allowedForCtc.indexOf(settings.pageKey) !== -1;
-      return publishPageAccess({
+      return publishResult({
         allowed: allowed,
         user,
         role: 'operator',
@@ -1218,7 +1219,7 @@
     }
 
     if(user && strictMap && strictMap.size){
-      return publishPageAccess({
+      return publishResult({
         allowed: false,
         user,
         role: cleanRole,
@@ -1235,11 +1236,11 @@
         user,
         role
       });
-      return publishPageAccess(Object.assign({ user, role: access && access.role ? access.role : cleanRole }, access || {}));
+      return publishResult(Object.assign({ user, role: access && access.role ? access.role : cleanRole }, access || {}));
     }
 
     const openPage = ['login','index'].includes(settings.pageKey);
-    return publishPageAccess({
+    return publishResult({
       allowed: openPage ? fallbackPermissions.can_view === true : false,
       user,
       role: cleanRole,
@@ -1805,5 +1806,81 @@
   }
 
   if(document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start, { once:true });
+  else start();
+})();
+
+/* Login summary for saved action-tracking changes. Read receipts are local per account. */
+(function () {
+  'use strict';
+  if (window.__kadActionNotifications) return;
+  window.__kadActionNotifications = true;
+  const page = location.pathname.split('/').pop() || 'index.html';
+  if (/^(login|access-gate|mfa-setup|mfa-verify|forja-ctc-pin|operator-debitare-pin)\.html$/.test(page)) return;
+  let busy = false, panel = null;
+  const keys = ['urmarire-actiuni-progres', 'urmarire_actiuni_progres', 'Urmarire actiuni si progres', 'urmarire actiuni si progres'];
+  async function check() {
+    if (busy || panel || !document.body) return;
+    busy = true;
+    try {
+      const auth = window.ERPAuth;
+      if (!auth) return;
+      const account = await auth.getCurrentUserWithRole();
+      if (!account?.user) return;
+      const access = await auth.getPageAccess(keys[0], { user: account.user, role: account.role, publish: false });
+      if (!access?.allowed || access.permissions?.can_view !== true) return;
+      const result = await auth.getSupabaseClient().from('rf_documents').select('content,data,updated_at').in('doc_key', keys).order('updated_at', { ascending: false }).limit(1);
+      if (result.error) return;
+      const payload = result.data?.[0]?.content || result.data?.[0]?.data;
+      const receiptKey = 'kad-action-notifications-v1:' + account.user.id;
+      let seen = [];
+      try { seen = JSON.parse(localStorage.getItem(receiptKey) || '[]'); } catch (_) {}
+      if (!Array.isArray(seen)) seen = [];
+      const events = (Array.isArray(payload?.action_changes) ? payload.action_changes : []).filter(e => e && typeof e.id === 'string' && ['forja', 'prelucrari'].includes(e.sheet) && !seen.includes(e.id));
+      if (!events.length) return;
+      const acknowledge = ids => {
+        seen = [...new Set([...seen, ...ids])].slice(-1000);
+        try { localStorage.setItem(receiptKey, JSON.stringify(seen)); } catch (_) {}
+      };
+      panel = document.createElement('section');
+      panel.setAttribute('role', 'region');
+      panel.setAttribute('aria-label', 'Modificări în Urmărire acțiuni și progres');
+      panel.style.cssText = 'position:fixed;right:16px;top:20px;z-index:99999;width:min(420px,calc(100vw - 32px));max-height:80vh;overflow:auto;background:#fff;color:#182b45;border:1px solid #bbcbe1;border-radius:14px;padding:20px;box-shadow:0 12px 40px #10243b44;font:14px/1.5 system-ui;text-align:left';
+      const heading = document.createElement('h2');
+      heading.textContent = 'Modificări în Urmărire acțiuni și progres';
+      heading.style.cssText = 'font-size:18px;margin:0 0 12px';
+      panel.append(heading);
+      for (const sheet of ['forja', 'prelucrari']) {
+        const changes = events.filter(e => e.sheet === sheet);
+        if (!changes.length) continue;
+        const section = document.createElement('div');
+        section.style.cssText = 'border-top:1px solid #ddd;padding:12px 0';
+        const label = sheet === 'forja' ? 'Forjă' : 'Prelucrări';
+        const text = document.createElement('p');
+        text.textContent = label + ' — modificări de la: ' + [...new Set(changes.map(e => String(e.author || e.account || 'Utilizator neidentificat')))].join(', ');
+        const link = document.createElement('a');
+        link.textContent = 'Vezi modificările — ' + label;
+        link.href = 'urmarire-actiuni-progres.html?sheet=' + sheet;
+        link.style.cssText = 'display:inline-block;background:#173f68;color:white;padding:9px 14px;border-radius:8px;text-decoration:none';
+        link.addEventListener('click', () => acknowledge(changes.map(e => e.id)));
+        section.append(text, link); panel.append(section);
+      }
+      const close = document.createElement('button');
+      close.type = 'button'; close.textContent = 'Am luat la cunoștință';
+      close.style.cssText = 'padding:8px 12px;cursor:pointer;border:1px solid #bbcbe1;border-radius:8px;background:#f0f4f9;color:#182b45';
+      close.addEventListener('click', () => { acknowledge(events.map(e => e.id)); panel.remove(); panel = null; });
+      panel.append(close); document.body.append(panel);
+    } catch (error) { console.warn('Notificări acțiuni indisponibile', error); }
+    finally { busy = false; }
+  }
+  function start() {
+    void check();
+    try {
+      window.ERPAuth.onAuthStateChange(event => {
+        if (event === 'SIGNED_OUT') { if (panel) panel.remove(); panel = null; }
+        if (event === 'SIGNED_IN') setTimeout(check, 0);
+      });
+    } catch (_) {}
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start, { once: true });
   else start();
 })();
