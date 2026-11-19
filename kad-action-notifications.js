@@ -83,19 +83,29 @@
       const wasOpen = panel && !panel.hidden;
       clear(); signature = nextSignature;
       if (!notices.length) return;
-      launcher = element('button', `Notificări acțiuni (${notices.length})`, document.body);
+      launcher = element('button', '', document.body);
       launcher.type = 'button';
-      launcher.style.cssText = 'position:fixed;right:16px;bottom:20px;z-index:99998;background:#173f68;color:white;padding:12px;border:0;border-radius:12px;cursor:pointer';
+      launcher.title = `Notificări acțiuni (${notices.length})`;
+      launcher.setAttribute('aria-label', launcher.title);
+      launcher.setAttribute('aria-controls', 'kad-action-notice-panel');
+      launcher.style.cssText = 'position:fixed;right:16px;top:12px;z-index:99998;width:36px;height:36px;display:grid;place-items:center;background:#173f68;color:white;padding:0;border:1px solid #ffffff99;border-radius:50%;box-shadow:0 2px 6px #10243b26;cursor:pointer';
+      launcher.innerHTML = '<svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"/><path d="M10 21h4M12 2V1"/></svg>';
+      const badge = element('span', notices.length > 99 ? '99+' : String(notices.length), launcher);
+      badge.setAttribute('aria-hidden', 'true');
+      badge.style.cssText = 'position:absolute;top:-5px;right:-7px;min-width:17px;height:17px;padding:0 3px;box-sizing:border-box;display:grid;place-items:center;border-radius:10px;background:#b42318;color:#fff;border:1px solid #fff;font:600 10px/1 system-ui;pointer-events:none';
       panel = element('section', '', document.body);
+      panel.id = 'kad-action-notice-panel';
       panel.setAttribute('role', 'region'); panel.setAttribute('aria-label', 'Notificări zilnice acțiuni');
-      panel.style.cssText = 'position:fixed;right:16px;top:20px;z-index:99999;width:min(460px,calc(100vw - 32px));max-height:80vh;overflow:auto;box-sizing:border-box;background:#fff;color:#182b45;border:1px solid #bbcbe1;border-radius:14px;padding:20px;box-shadow:0 12px 40px #10243b44;font:14px/1.5 system-ui;text-align:left';
+      panel.style.cssText = 'position:fixed;right:16px;top:58px;z-index:99999;width:min(460px,calc(100vw - 32px));max-height:min(80vh,calc(100dvh - 76px));overflow:auto;box-sizing:border-box;background:#fff;color:#182b45;border:1px solid #bbcbe1;border-radius:14px;padding:20px;box-shadow:0 12px 40px #10243b44;font:14px/1.5 system-ui;text-align:left';
       panel.hidden = !wasOpen && notices.every(n => seen.includes(n.id));
-      launcher.addEventListener('click', () => { panel.hidden = !panel.hidden; });
+      launcher.setAttribute('aria-expanded', String(!panel.hidden));
+      launcher.addEventListener('click', () => { panel.hidden = !panel.hidden; launcher.setAttribute('aria-expanded', String(!panel.hidden)); });
       element('h2', 'Urmărire acțiuni și progres — ' + today.split('-').reverse().join('.'), panel).style.fontSize = '18px';
       const dismiss = element('button', 'Am văzut — închide pentru moment', panel);
       dismiss.type = 'button';
       dismiss.addEventListener('click', () => {
         panel.hidden = true;
+        launcher.setAttribute('aria-expanded', 'false');
         try { localStorage.setItem(receiptKey, JSON.stringify(notices.map(n => n.id))); } catch (_) {}
       });
       const categories = [
