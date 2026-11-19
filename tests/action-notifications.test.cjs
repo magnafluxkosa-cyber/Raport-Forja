@@ -1,6 +1,6 @@
 const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict'),path=require('node:path');
 const root=process.env.KAD_NOTICE_TEST_ROOT || path.join(__dirname,'..');
-const code=fs.readFileSync(path.join(root,'kad-action-notifications.js'),'utf8');new vm.Script(code);
+const code=fs.readFileSync(path.join(root,'kad-action-notifications-manual.js'),'utf8');new vm.Script(code);
 function extract(name){const start=code.indexOf('function '+name+'(');assert(start>=0);for(let end=code.indexOf('}',start);end>=0;end=code.indexOf('}',end+1)){const s=code.slice(start,end+1);try{new vm.Script('('+s+')');return s}catch{}}}
 const ctx=vm.createContext({Intl,Date});for(const name of ['dayInRomania','calendarDay','collectActionNotices'])vm.runInContext(extract(name),ctx);
 assert.equal(ctx.dayInRomania('2026-11-18T22:30:00Z'),'2026-11-19');

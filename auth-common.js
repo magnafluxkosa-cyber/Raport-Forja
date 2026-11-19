@@ -1815,7 +1815,7 @@
   if (window.__kadActionNoticeLoader) return;
   window.__kadActionNoticeLoader = true;
   const script = document.createElement('script');
-  script.src = new URL('./kad-action-notifications.js?v=20261119-manual-only', document.currentScript?.src || location.href).href;
+  script.src = new URL('./kad-action-notifications-manual.js?v=20261119-manual-v3', document.currentScript?.src || location.href).href;
   script.defer = true;
   script.onerror = () => { window.__kadActionNoticeLoader = false; };
   document.head.appendChild(script);

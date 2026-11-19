@@ -188,6 +188,9 @@
     }
     tbody tr:hover td { background:var(--row-hover); }
     tbody tr.selected td { background:var(--row-selected); }
+    tbody tr.kad-focus-row { outline:3px solid #d97706; outline-offset:-3px; }
+    tbody tr.kad-focus-row td { animation:kadFocusRow 1.6s ease-out 3; box-shadow:inset 0 0 0 9999px rgba(255,214,102,.35); }
+    @keyframes kadFocusRow { 0%, 35% { background:#ffe58a; } 100% { background:transparent; } }
     tbody tr.stage-a td { background:var(--stage-a); }
     tbody tr.stage-b td { background:var(--stage-b); }
     tbody tr.stage-c td { background:var(--stage-c); }
@@ -607,7 +610,7 @@
   </div>
   <input type="file" id="excelInput" accept=".xlsx,.xls" class="hidden" />
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-  <script src="./rf-config.js?v=20261119-manual-only"></script>
+  <script src="./rf-config.js?v=20261119-manual-v3"></script>
   <script>
     const PAGE_KEY = "urmarire-actiuni-progres";
     const DOC_KEYS = ["urmarire-actiuni-progres", "urmarire_actiuni_progres", "Urmarire actiuni si progres", "urmarire actiuni si progres"];
@@ -685,7 +688,7 @@
     };
     function deepClone(value) { return JSON.parse(JSON.stringify(value)); }
     const state = {
-      datasets: deepClone(SEED.datasets), helper: deepClone(SEED.helper), activeSheet: new URLSearchParams(window.location.search).get("sheet") === "prelucrari" ? "prelucrari" : "forja", filteredRows: [],
+      datasets: deepClone(SEED.datasets), helper: deepClone(SEED.helper), activeSheet: new URLSearchParams(window.location.search).get("sheet") === "prelucrari" ? "prelucrari" : "forja", focusRowId: String(new URLSearchParams(window.location.search).get("row") || ""), focusFilterBypass: true, focusScrollDone: false, focusScrollTimer: null, initialLoadDone: false, filteredRows: [],
       selectedId: null, editingId: null, dirty: false, syncInFlight: false, source: "seed",
       user: null, role: "viewer", permissions: { canView: true, canAdd: false, canEdit: false, canDelete: false },
       cloudUpdatedAt: "", sheetJsPromise: null, namePromptResolver: null, supabase: null, aclMirror: null,
@@ -988,14 +991,14 @@
     }
     function getActiveRows() { return state.datasets[state.activeSheet] || []; }
     function setBadge(chip, dot, text, kind) { const span = chip.querySelector("span:last-child") || chip; span.textContent = text; dot.className = "dot"; dot.classList.add(kind === "success" ? "success" : kind === "danger" ? "danger" : "warning"); }
-    function recordActionChange(sheet = state.activeSheet, author = "") {
+    function recordActionChange(sheet = state.activeSheet, author = "", rowId = "") {
       const user = state.user || {};
-      const event = { id: randomId(), at: new Date().toISOString(), sheet,
+      const event = { id: randomId(), at: new Date().toISOString(), sheet, row: String(rowId || ""),
         author: author || user.user_metadata?.full_name || user.email || "Utilizator neidentificat", account: user.email || "", user_id: user.id || "" };
       state.actionChanges = [...(state.actionChanges || []), event].slice(-200);
     }
     function markDirty(sourceText = "Sursă: local modificat", author = "", notify = true) {
-      if (notify) recordActionChange(state.activeSheet, author); state.dirty = true; state.source = "local"; setBadge(dom.chipSource, dom.dotSource, sourceText, "warning"); persistLocal(); scheduleAutoSave(); }
+      if (notify) recordActionChange(state.activeSheet, author, state.selectedId); state.dirty = true; state.source = "local"; setBadge(dom.chipSource, dom.dotSource, sourceText, "warning"); persistLocal(); scheduleAutoSave(); }
     function persistLocal() { try { localStorage.setItem(LOCAL_KEY, JSON.stringify(currentPayload())); } catch (error) { console.warn("persistLocal", error); } }
     function loadLocalCache() {
       try {
@@ -1016,7 +1019,61 @@
       }));
     }
     function currentPayload() { return { version: 1, action_changes: state.actionChanges || [], updated_at: new Date().toISOString(), helper: deepClone(state.helper), datasets: { forja: getSerializableRows("forja"), prelucrari: getSerializableRows("prelucrari") } }; }
+    function findFocusRowElement() {
+      if (!state.focusRowId || !dom.tableBody) return null;
+      return Array.from(dom.tableBody.querySelectorAll("tr[data-id]")).find(el => el.dataset.id === state.focusRowId) || null;
+    }
+    function centerFocusRow(tr) {
+      const wrap = dom.tableWrap;
+      if (wrap && wrap.scrollHeight > wrap.clientHeight + 2) {
+        const head = wrap.querySelector("thead");
+        const headH = head ? head.getBoundingClientRect().height : 0;
+        const wrapRect = wrap.getBoundingClientRect(), rowRect = tr.getBoundingClientRect();
+        const visibleH = Math.max(0, wrap.clientHeight - headH);
+        const offset = rowRect.top - wrapRect.top - headH;
+        const target = wrap.scrollTop + offset - Math.max(0, (visibleH - rowRect.height) / 2);
+        wrap.scrollTop = Math.max(0, target);
+      }
+      const r = tr.getBoundingClientRect(), vh = window.innerHeight || document.documentElement.clientHeight;
+      if (r.top < 0 || r.bottom > vh) window.scrollBy(0, r.top - Math.max(0, (vh - r.height) / 2));
+    }
+    function focusRowIsVisible(tr) {
+      const r = tr.getBoundingClientRect(); if (!r.height) return false;
+      const vh = window.innerHeight || document.documentElement.clientHeight;
+      if (r.bottom <= 0 || r.top >= vh) return false;
+      const wrap = dom.tableWrap; if (!wrap) return true;
+      const w = wrap.getBoundingClientRect(); const head = wrap.querySelector("thead"); const headH = head ? head.getBoundingClientRect().height : 0;
+      return r.bottom > w.top + headH && r.top < w.bottom;
+    }
+    function startFocusRowScroll() {
+      if (!state.focusRowId || state.focusScrollDone || state.focusScrollTimer) return;
+      const started = Date.now(); let stable = 0;
+      const stopEvents = ["wheel", "touchstart", "mousedown", "keydown"];
+      const finish = () => {
+        clearInterval(state.focusScrollTimer); state.focusScrollTimer = null; state.focusScrollDone = true;
+        stopEvents.forEach(type => window.removeEventListener(type, finish, true));
+      };
+      stopEvents.forEach(type => window.addEventListener(type, finish, { capture: true, passive: true }));
+      const tick = () => {
+        if (Date.now() - started > 15000) { finish(); return; }
+        state.scrollToBottomOnNextRender = false;
+        let tr = findFocusRowElement();
+        if (!tr && state.initialLoadDone) {
+          const other = state.activeSheet === "forja" ? "prelucrari" : "forja";
+          if ((state.datasets[other] || []).some(row => row.id === state.focusRowId)) { state.activeSheet = other; renderTable(); tr = findFocusRowElement(); }
+          else { finish(); return; }
+        }
+        if (!tr || !tr.getBoundingClientRect().height) { stable = 0; return; }
+        if (!focusRowIsVisible(tr)) { stable = 0; centerFocusRow(tr); return; }
+        if (stable === 0) centerFocusRow(tr);
+        stable++;
+        if (state.initialLoadDone && stable >= 4) finish();
+      };
+      state.focusScrollTimer = setInterval(tick, 200);
+      requestAnimationFrame(tick);
+    }
     function scrollTableToBottomIfNeeded() {
+      if (state.focusRowId && !state.focusScrollDone) { state.scrollToBottomOnNextRender = false; startFocusRowScroll(); return; }
       if (!state.scrollToBottomOnNextRender || !dom.tableWrap) return;
       state.scrollToBottomOnNextRender = false;
       requestAnimationFrame(() => {
@@ -1084,6 +1141,7 @@
       }).join("<br>");
     }
     function filtersMatch(row) {
+      if (state.focusFilterBypass && state.focusRowId && row.id === state.focusRowId) return true;
       const search = normalizeText(dom.filterSearch.value);
       if (search) { const hay = normalizeText([row.descriere_probleme,row.linie_utilaj,row.responsabil_actiune,row.departament,row.observatii,row.descriere_stadiu,row.descriere_prioritate].join(" ")); if (!hay.includes(search)) return false; }
       const year = dom.filterYear.value; if (year) { const dt = parseDate(row.data_constatare); if (!dt || String(dt.getFullYear()) !== year) return false; }
@@ -1129,7 +1187,7 @@
       refreshTabUi(); refreshFilterOptions(); renderHead(); const rows = sortRows(getActiveRows()).filter(filtersMatch); state.filteredRows = rows; renderStats(rows);
       if (!rows.length) { dom.tableBody.innerHTML = `<tr><td colspan="${TABLE_COLUMNS[state.activeSheet].length}" class="table-empty">Nu există rânduri pentru filtrele selectate.</td></tr>`; applyPermissionsToUi(); scrollTableToBottomIfNeeded(); return; }
       dom.tableBody.innerHTML = rows.map(row => {
-        const classes = [`stage-${normalizeText(row.stadiu)}`, rowIsLate(row) ? "late" : "", state.selectedId === row.id ? "selected" : ""].filter(Boolean).join(" ");
+        const classes = [`stage-${normalizeText(row.stadiu)}`, rowIsLate(row) ? "late" : "", state.selectedId === row.id ? "selected" : "", state.focusRowId && state.focusRowId === row.id ? "kad-focus-row" : ""].filter(Boolean).join(" ");
         const tooltip = rowAuditTooltip(row);
         const titleAttr = tooltip ? ` title="${escapeHtml(tooltip)}"` : "";
         return `<tr class="${classes}" data-id="${escapeHtml(row.id)}"${titleAttr}>${TABLE_COLUMNS[state.activeSheet].map(col => renderRowCell(row, col)).join("")}</tr>`;
@@ -1505,7 +1563,7 @@ async function resolvePagePermissions() {
     }
     async function init() {
       refreshStaticSelects(); const hasLocal = loadLocalCache(); if (hasLocal) setBadge(dom.chipSource, dom.dotSource, "Sursă: cache local", "warning"); else { state.datasets.forja = sortRows(state.datasets.forja.map(row => enrichRow(row, "forja"))); state.datasets.prelucrari = sortRows(state.datasets.prelucrari.map(row => enrichRow(row, "prelucrari"))); persistLocal(); }
-      bindEvents(); renderTable(); await resolveAuthAndRole(); state.scrollToBottomOnNextRender = true; const loaded = await loadCloudDocument(false); if (!loaded) renderTable(); setInterval(() => checkRemoteChanges(), CLOUD_REFRESH_MS);
+      bindEvents(); renderTable(); await resolveAuthAndRole(); state.scrollToBottomOnNextRender = !state.focusRowId; const loaded = await loadCloudDocument(false); if (!loaded) renderTable(); state.initialLoadDone = true; state.focusFilterBypass = false; if (state.focusRowId && !state.focusScrollDone) startFocusRowScroll(); setInterval(() => checkRemoteChanges(), CLOUD_REFRESH_MS);
     }
     init();
   </script>

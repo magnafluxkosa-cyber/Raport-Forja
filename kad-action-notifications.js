@@ -29,7 +29,7 @@
         const id = String(row.id || index), title = String(row.descriere_probleme || 'Acțiune fără descriere');
         const percent = Number(String(row.procent_realizat ?? 0).replace('%', '').replace(',', '.'));
         const due = calendarDay(row.termen_prop);
-        if (due && due <= today && percent !== 100) notices.push({ id: JSON.stringify(['due', today, sheet, id, due]), sheet, kind: 'due', deadlineDay: due, title, detail: `${due < today ? 'Termen depășit' : 'Termen astăzi'}: ${row.termen_prop}. Responsabil: ${row.responsabil_actiune || 'neprecizat'}` });
+        if (due && due <= today && percent !== 100) notices.push({ id: JSON.stringify(['due', today, sheet, id, due]), sheet, row: row.id ? String(row.id) : '', kind: 'due', deadlineDay: due, title, detail: `${due < today ? 'Termen depășit' : 'Termen astăzi'}: ${row.termen_prop}. Responsabil: ${row.responsabil_actiune || 'neprecizat'}` });
         const lines = String(row.observatii || '').split(/\r?\n/);
         let hasNote = false;
         lines.forEach((line, lineIndex) => {
@@ -38,14 +38,14 @@
           hasNote = true;
           const author = line.match(/^\[[^\]]+\]\s*(?:Creat de\s+(.+)|([^:]+):)/);
           const name = author ? (author[1] || author[2]).trim() : '';
-          notices.push({ id: JSON.stringify(['note', today, sheet, id, lineIndex, line]), sheet, kind: 'today', title, detail: (name ? `Autor: ${name}. ` : 'Autor neprecizat. ') + line });
+          notices.push({ id: JSON.stringify(['note', today, sheet, id, lineIndex, line]), sheet, row: row.id ? String(row.id) : '', kind: 'today', title, detail: (name ? `Autor: ${name}. ` : 'Autor neprecizat. ') + line });
         });
-        if (!hasNote && (calendarDay(row.data_constatare) === today || (row.created_at && dayInRomania(row.created_at) === today))) notices.push({ id: JSON.stringify(['created', today, sheet, id]), sheet, kind: 'today', title, detail: 'Acțiune datată astăzi. Autor neprecizat în istoric.' });
+        if (!hasNote && (calendarDay(row.data_constatare) === today || (row.created_at && dayInRomania(row.created_at) === today))) notices.push({ id: JSON.stringify(['created', today, sheet, id]), sheet, row: row.id ? String(row.id) : '', kind: 'today', title, detail: 'Acțiune datată astăzi. Autor neprecizat în istoric.' });
       });
     }
     for (const event of Array.isArray(payload?.action_changes) ? payload.action_changes : []) {
       if (!event || !['forja', 'prelucrari'].includes(event.sheet) || !event.at || dayInRomania(event.at) !== today) continue;
-      notices.push({ id: JSON.stringify(['event', today, event.id]), sheet: event.sheet, kind: 'today', title: 'Modificare salvată astăzi', detail: `Autor: ${event.author || event.account || 'neprecizat'}` });
+      notices.push({ id: JSON.stringify(['event', today, event.id]), sheet: event.sheet, row: event.row && (payload?.datasets?.[event.sheet] || []).some(r => String(r.id) === String(event.row)) ? String(event.row) : '', kind: 'today', title: 'Modificare salvată astăzi', detail: `Autor: ${event.author || event.account || 'neprecizat'}` });
     }
     return notices;
   }
@@ -145,11 +145,16 @@
         const list = category.list;
         for (const notice of list) {
           const box = element('div', '', section); box.style.cssText = 'padding:10px 0;border-top:1px solid #ddd';
-          element('strong', notice.title, box);
+          const destination = 'urmarire-actiuni-progres.html?sheet=' + notice.sheet + (notice.row ? '&row=' + encodeURIComponent(notice.row) : '');
+          if (notice.row) {
+            const titleLink = element('a', '', box);
+            titleLink.href = destination;
+            element('strong', notice.title, titleLink);
+          } else element('strong', notice.title, box);
           element('p', notice.detail, box);
           const label = notice.sheet === 'forja' ? 'Forjă' : 'Prelucrări';
-          const link = element('a', 'Deschide ' + label, box);
-          link.href = 'urmarire-actiuni-progres.html?sheet=' + notice.sheet;
+          const link = element('a', (notice.row ? 'Mergi la rând — ' : 'Deschide ') + label, box);
+          link.href = destination;
         }
       }
       selectCategory(selectedCategory);
