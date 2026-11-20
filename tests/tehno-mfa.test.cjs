@@ -1,0 +1,12 @@
+const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict'),path=require('node:path');
+const html=fs.readFileSync(path.join(__dirname,'..','login.html'),'utf8');
+for(const m of html.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/g))new vm.Script(m[1]);
+const start=html.indexOf('function isMfaRequiredForAccount('),end=html.indexOf('async function getVerifiedTotpFactors',start);
+const scope={normalizeEmail:v=>String(v||'').trim().toLowerCase()};
+for(const name of ['isMagnafluxOperatorAccount','isTratamentOperatorAccount','isForjaCtcOperatorAccount','isDebitareOperatorAccount','isPrelucrariOperatorAccount'])scope[name]=()=>false;
+vm.createContext(scope);vm.runInContext(html.slice(start,end),scope);
+assert.equal(scope.isMfaRequiredForAccount({email:'tehno@pre.local'},'tehno@pre.local'),false);
+assert.equal(scope.isMfaRequiredForAccount({email:'tehno@pre.local'},' TEHNO@PRE.LOCAL '),false);
+for(const email of ['other@pre.local','tehno2@pre.local','tehno@pre.local.invalid',''])assert.equal(scope.isMfaRequiredForAccount({email:'tehno@pre.local'},email),true);
+assert(html.includes('isMfaRequiredForAccount(resolved, user && user.email)'));
+console.log('PASS: exact authenticated account exemption; profile email alone cannot bypass MFA; other accounts unchanged; login scripts parse.');
