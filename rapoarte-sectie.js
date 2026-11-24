@@ -60,7 +60,7 @@ async function loadPlan(){try{const {data}=await sb.from('rf_documents').select(
 function controls(){for(const id of ['save','new','export','print','template','date','name'])$(id).disabled=busy||(['export','print'].includes(id)?!perms.can_export:id==='new'||id==='template'?!perms.can_add:!canWrite());}
 function changed(){dirty=true;message('Modificări nesalvate.');}
 function render(){
- const data=current();if(t.id==='DD-51'&&!('C52' in changes)){const a=nextMpReper($('date').value);if(a)data.C52=a;}const width=t.widths.reduce((s,w)=>s+w*7+5,0),height=t.heights.reduce((s,h)=>s+h*4/3,0),scale=Math.min(724/width,1000/height),printScale=Math.min(718/width,1030/height);
+ const data=current();if(window.parent!==window&&t&&t.id==='DD-51')window.parent.postMessage({kadReper:data.B9??''},location.origin);if(t.id==='DD-51'&&!('C52' in changes)){const a=nextMpReper($('date').value);if(a)data.C52=a;}const width=t.widths.reduce((s,w)=>s+w*7+5,0),height=t.heights.reduce((s,h)=>s+h*4/3,0),scale=Math.min(724/width,1000/height),printScale=Math.min(718/width,1030/height);
  $('sheet').replaceChildren();$('sheet').style.width=width+'px';$('sheet').style.transform='scale('+scale+')';$('paper').style.height=(height*scale+36)+'px';$('paper').style.setProperty('--print-scale',printScale);
  const table=document.createElement('table');table.className='report';table.style.width=width+'px';const cg=document.createElement('colgroup');t.widths.forEach(w=>{const c=document.createElement('col');c.style.width=(w*7+5)+'px';cg.append(c);});table.append(cg);
  const hidden=new Set(),spans={};for(const [r,c,er,ec] of t.merges){spans[col(c)+r]=[er-r+1,ec-c+1];for(let y=r;y<=er;y++)for(let x=c;x<=ec;x++)if(x!==c||y!==r)hidden.add(col(x)+y);}
@@ -91,5 +91,10 @@ async function init(){
  $('acClose').onclick=()=>{$('acPane').hidden=true;$('acFrame').src='about:blank';};$('print').onclick=()=>{if(perms.can_export)root.print();};$('export').onclick=action(async()=>{if(!perms.can_export)return;if(!root.ExcelJS)throw Error('Exportul Excel nu s-a încărcat. Reîncarcă pagina.');const wb=await workbook(root.ExcelJS,t,current()),buf=await wb.xlsx.writeBuffer(),url=URL.createObjectURL(new Blob([buf],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}));const a=document.createElement('a');a.href=url;a.download=('Maxipresa-'+t.id+'-'+$('date').value).replace(/[\\/:*?"<>|]/g,'-')+'.xlsx';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);message('Fișier Excel exportat.');});
  root.addEventListener('beforeunload',e=>{if(dirty){e.preventDefault();e.returnValue='';}});await list();
 }
+function loadTrio(){const d=$('date').value||today();const base='rapoarte-sectie.html?date='+encodeURIComponent(d)+'&embed=1';$('fDD03').src=base+'&template=DD-03';$('fDD51').src=base+'&template=DD-51';$('fAC').src='about:blank';}
+function setUtilaj(){const mp=$('utilaj').value==='MP';$('trio').hidden=!mp;document.querySelector('.split').hidden=mp;if(mp)loadTrio();}
+$('utilaj').addEventListener('change',setUtilaj);
+$('date').addEventListener('change',()=>{if($('utilaj').value==='MP')loadTrio();});
+window.addEventListener('message',e=>{if(e.origin!==location.origin||!e.data||!('kadReper' in e.data))return;const f=autocontrolFor(e.data.kadReper);if(!f){$('fAC').src='about:blank';return;}const u='rapoarte-sectie.html?template='+encodeURIComponent(f.id)+'&date='+encodeURIComponent($('date').value||today())+'&embed=1';if($('fAC').getAttribute('src')!==u)$('fAC').src=u;});
 init().catch(e=>{$('loading').hidden=false;$('loading').textContent=e.message||String(e);});
 })(typeof window!=='undefined'?window:globalThis);
