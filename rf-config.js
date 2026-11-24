@@ -8,6 +8,7 @@
   }
 
   var PAGE_LIST = [
+    { page_key: 'rapoarte-sectie', page_name: 'Rapoarte secție / Maxipresa' },
     { page_key: 'index', page_name: 'Dashboard / Index' },
     { page_key: 'login', page_name: 'Login' },
     { page_key: 'access-gate', page_name: 'Access Gate / PIN Portal' },
