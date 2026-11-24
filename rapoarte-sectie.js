@@ -1,6 +1,15 @@
 (function(root){
 'use strict';
 const col=n=>String.fromCharCode(64+n);
+// Compact templates (format 2): styles are named once and cells refer to them by name.
+function expandTemplate(t){
+ if(!t||t.format!==2)return t;
+ const cells={},styles=t.styles||{};
+ for(let r=1;r<=t.rows;r++)for(let c=1;c<=t.cols;c++)cells[col(c)+r]={v:'',font:{size:9,bold:false,italic:false,color:'#000000'},fill:'#ffffff',align:'left',border:{top:false,bottom:false,left:false,right:false}};
+ for(const [addr,spec] of Object.entries(t.cells||{})){const cell=cells[addr];if(!cell)continue;const [v,name,f]=Array.isArray(spec)?spec:[spec];cell.v=v==null?'':String(v);if(f)cell.formula=f;const s=styles[name];if(s){cell.font=Object.assign({size:9,bold:false,italic:false,color:'#000000'},s.font);cell.fill=s.fill;cell.align=s.align;cell.border=Object.assign({top:false,bottom:false,left:false,right:false},s.border);}}
+ return Object.assign({},t,{cells,images:t.images||[]});
+}
+function pageParam(k){const sp=(root.location&&root.location.search)||'';const m=sp.match(new RegExp('[?&]'+k+'=([^&]*)'));return m?decodeURIComponent(m[1]):'';}
 function values(t,changes,date){
  const result={},busy=new Set();
  function get(key){
@@ -39,7 +48,7 @@ async function workbook(ExcelJS,t,data){
  for(const img of t.images){const id=wb.addImage({base64:img.data,extension:img.data.includes('image/png')?'png':'jpeg'});ws.addImage(id,{tl:{col:img.col+img.colOff/(t.widths[img.col]*7+5),row:img.row+img.rowOff/(t.heights[img.row]*4/3)},ext:{width:img.width,height:img.height}});}
  ws.pageSetup.printArea='A1:'+col(t.cols)+t.rows;return wb;
 }
-if(typeof module!=='undefined'&&module.exports){module.exports={values,workbook};return;}
+if(typeof module!=='undefined'&&module.exports){module.exports={values,workbook,expandTemplate};return;}
 const $=id=>document.getElementById(id);let templates,t,changes={},auth,perms,sb,key=null,version=null,dirty=false,busy=false,archiveRows=[],editKey;
 const today=()=>new Intl.DateTimeFormat('sv-SE',{timeZone:'Europe/Bucharest'}).format(new Date());
 const canWrite=()=>!!(key?perms.can_edit:perms.can_add);
@@ -59,7 +68,7 @@ function render(){
  controls();
 }
 function autocontrolFor(reper){const v=String(reper??'').trim();if(!v)return null;return templates.find(x=>x.id===v)||templates.find(x=>x.id.endsWith('-'+v))||null;}
-function openAutocontrol(addr){if(t.id!=='DD-51'||!/^B\d+$/.test(addr))return;const f=autocontrolFor(current()[addr]);if(!f||!root.open)return;const u=new URL(root.location.href);u.search='';u.searchParams.set('template',f.id);u.searchParams.set('date',$('date').value);root.open(u.href,'kad-autocontrol');}
+function openAutocontrol(addr){const pane=$('acPane'),frame=$('acFrame');if(!pane||!frame||t.id!=='DD-51'||!/^B\d+$/.test(addr)||pageParam('embed'))return;const f=autocontrolFor(current()[addr]);if(!f){pane.hidden=true;return;}const u=new URL(root.location.href);u.search='';u.searchParams.set('template',f.id);u.searchParams.set('date',$('date').value);u.searchParams.set('embed','1');frame.src=u.href;pane.hidden=false;}
 function edit(addr){if(!canWrite()||busy)return;editKey=addr;$('value').value=current()[addr];$('computed').textContent=t.cells[addr].formula?'Acest câmp este calculat. Dacă îl completezi manual, valoarea introdusă va fi folosită în acest raport.':'';$('editor').showModal();$('value').focus();}
 function discard(){return !dirty||confirm('Există modificări nesalvate. Continui fără să le salvezi?');}
 function fresh(){t=templates.find(x=>x.id===$('template').value);changes={};key=null;version=null;dirty=false;$('name').value=t.title;$('date').value=today();render();message('Raport nou. Completează și salvează pentru a-l păstra.');}
@@ -72,11 +81,11 @@ async function save(){if(!canWrite()||busy)return;if(!$('date').value)throw Erro
 function action(fn){return async()=>{try{await fn();}catch(e){message('Nu s-a finalizat: '+(e.message||e));}};}
 async function init(){
  auth=await root.ERPAuth.requireAuth({redirectToLogin:true,next:'rapoarte-sectie.html'});if(!auth)return;const access=await root.ERPAuth.getPageAccess('rapoarte-sectie',{user:auth.user,role:auth.role});if(!access?.allowed)throw Error(access?.message||'Nu ai acces la această pagină.');perms=access.permissions;sb=root.ERPAuth.getSupabaseClient();
- const {data:modelRows,error:modelError}=await sb.from('rf_documents').select('content').like('doc_key','rapoarte-sectie:maxipresa:template:v1:%');if(modelError)throw modelError;templates=(modelRows||[]).map(row=>row.content).sort((a,b)=>(a.order??99)-(b.order??99));if(!templates.length)throw Error('Modelele de raport nu sunt disponibile.');for(const x of templates)$('template').append(new Option(x.title,x.id));const sp=(root.location&&root.location.search)||'',qv=k=>{const m=sp.match(new RegExp('[?&]'+k+'=([^&]*)'));return m?decodeURIComponent(m[1]):'';};if(qv('template')&&templates.some(x=>x.id===qv('template')))$('template').value=qv('template');$('archiveDate').value=today();$('app').hidden=false;$('loading').hidden=true;fresh();if(/^\d{4}-\d{2}-\d{2}$/.test(qv('date'))){$('date').value=qv('date');render();}
+ const {data:modelRows,error:modelError}=await sb.from('rf_documents').select('content').like('doc_key','rapoarte-sectie:maxipresa:template:v1:%');if(modelError)throw modelError;templates=(modelRows||[]).map(row=>expandTemplate(row.content)).sort((a,b)=>(a.order??99)-(b.order??99));if(!templates.length)throw Error('Modelele de raport nu sunt disponibile.');for(const x of templates)$('template').append(new Option(x.title,x.id));if(pageParam('embed'))document.body.classList.add('embed');if(pageParam('template')&&templates.some(x=>x.id===pageParam('template')))$('template').value=pageParam('template');$('archiveDate').value=today();$('app').hidden=false;$('loading').hidden=true;fresh();if(/^\d{4}-\d{2}-\d{2}$/.test(pageParam('date'))){$('date').value=pageParam('date');render();}
  $('template').onchange=()=>{if(discard())fresh();else $('template').value=t.id;};$('new').onclick=()=>{if(discard())fresh();};$('date').onchange=()=>{if(!$('date').value){$('date').value=today();}changed();render();};$('name').oninput=changed;
- $('apply').onclick=e=>{e.preventDefault();if(!canWrite())return;const v=$('value').value;changes[editKey]=/^-?\d+([.,]\d+)?$/.test(v)&&!/^0\d/.test(v)?Number(v.replace(',','.')):v;changed();$('editor').close();render();};
+ $('apply').onclick=e=>{e.preventDefault();if(!canWrite())return;const v=$('value').value;changes[editKey]=/^-?\d+([.,]\d+)?$/.test(v)&&!/^0\d/.test(v)?Number(v.replace(',','.')):v;changed();$('editor').close();render();if(/^B\d+$/.test(editKey))openAutocontrol(editKey);};
  $('save').onclick=action(save);$('reload').onclick=action(list);$('open').onclick=action(()=>{const row=archiveRows[Number($('archive').value)];if(!row||!discard())return;const d=row.content;if(d.schema!==1)throw Error('Versiune de raport necunoscută.');t=d.templateSnapshot||templates.find(x=>x.id===d.template);changes={...d.changes};key=row.doc_key;version=row.updated_at;$('template').value=t.id;$('date').value=d.date;$('name').value=d.name;dirty=false;render();message('Raport încărcat din cloud.');});
- $('print').onclick=()=>{if(perms.can_export)root.print();};$('export').onclick=action(async()=>{if(!perms.can_export)return;if(!root.ExcelJS)throw Error('Exportul Excel nu s-a încărcat. Reîncarcă pagina.');const wb=await workbook(root.ExcelJS,t,current()),buf=await wb.xlsx.writeBuffer(),url=URL.createObjectURL(new Blob([buf],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}));const a=document.createElement('a');a.href=url;a.download=('Maxipresa-'+t.id+'-'+$('date').value).replace(/[\\/:*?"<>|]/g,'-')+'.xlsx';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);message('Fișier Excel exportat.');});
+ $('acClose').onclick=()=>{$('acPane').hidden=true;$('acFrame').src='about:blank';};$('print').onclick=()=>{if(perms.can_export)root.print();};$('export').onclick=action(async()=>{if(!perms.can_export)return;if(!root.ExcelJS)throw Error('Exportul Excel nu s-a încărcat. Reîncarcă pagina.');const wb=await workbook(root.ExcelJS,t,current()),buf=await wb.xlsx.writeBuffer(),url=URL.createObjectURL(new Blob([buf],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}));const a=document.createElement('a');a.href=url;a.download=('Maxipresa-'+t.id+'-'+$('date').value).replace(/[\\/:*?"<>|]/g,'-')+'.xlsx';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);message('Fișier Excel exportat.');});
  root.addEventListener('beforeunload',e=>{if(dirty){e.preventDefault();e.returnValue='';}});await list();
 }
 init().catch(e=>{$('loading').hidden=false;$('loading').textContent=e.message||String(e);});
