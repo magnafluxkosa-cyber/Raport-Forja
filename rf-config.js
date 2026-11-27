@@ -3912,7 +3912,8 @@ async function applyDomPermissions(pageKey, root, options) {
     'login': true,
     'access-gate': true,
     'mfa-setup': true,
-    'mfa-verify': true
+    'mfa-verify': true,
+    'rapoarte-sectie': true
   };
 
   var OPERATOR_SHEET_PAGES_NO_DASHBOARD = {
