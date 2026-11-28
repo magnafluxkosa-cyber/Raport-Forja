@@ -79,7 +79,7 @@ function dd03Fill(data){
   if(!(contentAddr in changes))data[contentAddr]=txt;
  }
 }
-async function loadPlan(){try{const {data}=await sb.from('rf_documents').select('content').eq('doc_key','planificare-forja').maybeSingle();planRows=data?.content?.rows||null;if(t&&(t.id==='DD-51'||t.id==='DD-03'))render();}catch(e){planRows=null;}}
+async function loadPlan(){try{const {data,error}=await sb.from('rf_documents').select('content').eq('doc_key','planificare-forja').maybeSingle();if(error)throw error;planRows=data?.content?.rows||null;if(t&&(t.id==='DD-51'||t.id==='DD-03'))render();}catch(e){planRows=null;message('Planificarea forja nu s-a putut încărca: '+(e?.message||e));}}
 function controls(){for(const id of ['save','new','export','print','template','date','name'])$(id).disabled=busy||(['export','print'].includes(id)?!perms.can_export:id==='new'||id==='template'?!perms.can_add:!canWrite());}
 function changed(){dirty=true;stashDraft();message('Modificări nesalvate.');}
 const draftKey=(id,d)=>'rapoarte-sectie:'+GROUP+':draft:'+id+':'+d;
