@@ -10,6 +10,7 @@
   var PAGE_LIST = [
     { page_key: 'rapoarte-sectie', page_name: 'Rapoarte secție / Maxipresa' },
     { page_key: 'rapoarte-sectie-forja', page_name: 'Rapoarte secție / Forja' },
+    { page_key: 'norme-forja', page_name: 'Norme forjate' },
     { page_key: 'index', page_name: 'Dashboard / Index' },
     { page_key: 'login', page_name: 'Login' },
     { page_key: 'access-gate', page_name: 'Access Gate / PIN Portal' },
@@ -3915,7 +3916,8 @@ async function applyDomPermissions(pageKey, root, options) {
     'mfa-setup': true,
     'mfa-verify': true,
     'rapoarte-sectie': true,
-    'rapoarte-sectie-forja': true
+    'rapoarte-sectie-forja': true,
+    'norme-forja': true
   };
 
   var OPERATOR_SHEET_PAGES_NO_DASHBOARD = {
