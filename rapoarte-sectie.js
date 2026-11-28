@@ -93,6 +93,11 @@ function render(){cellEls={};editingAddr=null;
    while(txt.scrollWidth>txt.clientWidth+1&&fs>7){fs-=0.5;txt.style.fontSize=fs+'px';}
   }
  }
+ for(const txt of table.querySelectorAll('td .text')){
+  if(txt.scrollHeight<=txt.clientHeight+1)continue;
+  let fs=parseFloat(getComputedStyle(txt).fontSize);
+  while(txt.scrollHeight>txt.clientHeight+1&&fs>6){fs-=0.5;txt.style.fontSize=fs+'px';}
+ }
  $('paper').style.setProperty('--print-height',(height*printScale+2)+'px');
  for(const im of t.images){const img=document.createElement('img');img.className='drawing';img.alt='Desen reper';img.src=im.data;Object.assign(img.style,{left:(t.widths.slice(0,im.col).reduce((s,w)=>s+w*7+5,0)+im.colOff)+'px',top:(t.heights.slice(0,im.row).reduce((s,h)=>s+h*4/3,0)+im.rowOff)+'px',width:im.width+'px',height:im.height+'px'});$('sheet').append(img);}
  controls();
