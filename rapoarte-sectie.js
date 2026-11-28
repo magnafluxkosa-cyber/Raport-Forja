@@ -102,7 +102,7 @@ function commitInline(addr,raw,next){if(editingAddr!==addr)return;editingAddr=nu
 function cancelInline(addr){if(editingAddr!==addr)return;editingAddr=null;render();focusCell(addr);}
 let teamNames=[],teamNamesAt=0,reperNames=[],reperNamesAt=0;
 async function fillNorma(reper){if(GROUP!=='forja'||!sb||!t)return;const utilaj=String(t.title||'').replace(/^DD-51\s*·\s*/,'').trim();try{const {data,error}=await sb.from('rf_norme_forja').select('norma').eq('utilaj',utilaj).eq('reper',reper).maybeSingle();if(error)throw error;if(!data||data.norma==null)return;if(String(changes.B8||'')!==reper)return;changes.E6=Number(data.norma);changed();if(!editingAddr)render();}catch(e){message('Norma nu s-a încărcat: '+(e.message||e));}}
-function repCell(addr){return GROUP==='forja'&&addr==='B8';}
+function repCell(addr){return GROUP==='forja'&&addr==='B8'&&!!t&&t.id==='DD-51';}
 async function loadReperNames(force){if(GROUP!=='forja'||!sb)return;if(!force&&reperNames.length&&Date.now()-reperNamesAt<60000)return;try{const {data,error}=await sb.from('rf_helper_repere_forjate').select('reper_forjat,is_active').eq('is_active',true);if(error)throw error;reperNames=[...new Set((data||[]).map(r=>String(r.reper_forjat||'').trim()).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'ro',{numeric:true}));reperNamesAt=Date.now();}catch(e){message('Lista de repere nu s-a încărcat: '+(e.message||e));}}
 function teamCell(addr){return GROUP==='forja'&&!!t&&!!t.cells[addr]&&/^\d+:$/.test(String(t.cells[addr].v||'').trim());}
 function normName(x){return String(x).normalize('NFD').replace(/[\u0300-\u036f]/g,'').toUpperCase().trim();}
