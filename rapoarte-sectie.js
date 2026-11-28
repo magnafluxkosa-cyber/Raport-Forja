@@ -61,7 +61,8 @@ const DD03_SLOTS={'5T CH':'5 T CHINA','1,25 T':'1,25 T','2,5 T':'2,5 T','3T-BR':
 const ZILE_RO=['Duminică','Luni','Marți','Miercuri','Joi','Vineri','Sâmbătă'];
 const DD03_HOLIDAYS=new Set(['2026-01-01','2026-01-02','2026-01-24','2026-04-10','2026-04-13','2026-05-01','2026-06-01','2026-08-15','2026-11-30','2026-12-01','2026-12-25','2026-12-26','2027-01-01','2027-01-02','2027-01-24','2027-04-30','2027-05-01','2027-05-03','2027-06-01','2027-06-20','2027-06-21','2027-08-15','2027-11-30','2027-12-01','2027-12-25','2027-12-26']);
 const dd03Workday=iso=>{const wd=new Date(iso+'T12:00:00').getDay();return wd>0&&wd<6&&!DD03_HOLIDAYS.has(iso);};
-const dd03Planned=r=>Object.values(DD03_SLOTS).some(k=>{const x=r.slots?.[k];return String(x?.reper||'').trim()!==''||Number(x?.planificat)>0;});
+const dd03SlotPlanned=(r,k)=>{const x=r?.slots?.[k];return String(x?.reper||'').trim()!==''||Number(x?.planificat)>0;};
+const dd03Planned=r=>Object.values(DD03_SLOTS).some(k=>dd03SlotPlanned(r,k));
 let dd03Meta={};
 const isDdLabel=addr=>!!(t&&t.id==='DD-03'&&addr[0]==='A'&&Object.keys(DD03_SLOTS).includes(String(t.cells?.[addr]?.v??'').trim()));
 function dd03Fill(data){
@@ -84,6 +85,9 @@ function dd03Fill(data){
   dd03Meta[contentAddr]={reper:tgt,warn,day};
   if(!(contentAddr in changes))data[contentAddr]=[tgt,warn].filter(Boolean).join('\n');
  }
+ const todayRow=rows.find(r=>r.data===iso)||null;
+ const working=Object.entries(DD03_SLOTS).filter(([label,slot])=>todayRow&&dd03SlotPlanned(todayRow,slot)).map(([label])=>label);
+ ['A20','A27','A34'].forEach((addr,i)=>{if(!(addr in changes))data[addr]=working[i]||'';});
 }
 async function loadPlan(){try{const {data,error}=await sb.from('rf_documents').select('content').eq('doc_key','planificare-forja').maybeSingle();if(error)throw error;planRows=data?.content?.rows||null;if(t&&(t.id==='DD-51'||t.id==='DD-03'))render();}catch(e){planRows=null;message('Planificarea forja nu s-a putut încărca: '+(e?.message||e));}}
 function controls(){for(const id of ['save','new','export','print','template','date','name'])$(id).disabled=busy||(['export','print'].includes(id)?!perms.can_export:id==='new'||id==='template'?!perms.can_add:!canWrite());}
