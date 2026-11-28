@@ -68,7 +68,7 @@ function dd03Fill(data){
  const target=rows.find(r=>r.data>iso&&dd03Planned(r))||null;
  const dayLine=target?ZILE_RO[new Date(target.data+'T12:00:00').getDay()]+' '+target.data.split('-').reverse().join('.'):'';
  for(const [label,slot] of Object.entries(DD03_SLOTS)){
-  const found=Object.keys(t.cells).find(a=>a[0]==='A'&&String(t.cells[a][0]).trim()===label);
+  const found=Object.keys(t.cells).find(a=>a[0]==='A'&&String(t.cells[a]?.v??'').trim()===label);
   if(!found)continue;
   const r=found.slice(1);const labelAddr='A'+r,contentAddr='B'+r;
   const tgt=String(target?.slots?.[slot]?.reper||'').trim();
