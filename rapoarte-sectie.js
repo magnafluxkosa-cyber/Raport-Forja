@@ -59,6 +59,8 @@ let planRows=null;
 function nextMpReper(date){if(!planRows||!/^\d{4}-\d{2}-\d{2}$/.test(date||''))return '';const d=Date.parse(date+'T00:00:00Z');for(let i=1;i<=14;i++){const x=new Date(d+i*864e5).toISOString().slice(0,10);const rep=String(planRows.find(r=>r.data===x)?.slots?.MP?.reper??'').trim();if(rep)return rep;}return '';}
 const DD03_SLOTS={'5T CH':'5 T CHINA','1,25 T':'1,25 T','2,5 T':'2,5 T','3T-BR':'3 T BR','3T ZR':'3 T ZR'};
 const ZILE_RO=['Duminică','Luni','Marți','Miercuri','Joi','Vineri','Sâmbătă'];
+const DD03_HOLIDAYS=new Set(['2026-01-01','2026-01-02','2026-01-24','2026-04-10','2026-04-13','2026-05-01','2026-06-01','2026-08-15','2026-11-30','2026-12-01','2026-12-25','2026-12-26','2027-01-01','2027-01-02','2027-01-24','2027-04-30','2027-05-01','2027-05-03','2027-06-01','2027-06-20','2027-06-21','2027-08-15','2027-11-30','2027-12-01','2027-12-25','2027-12-26']);
+const dd03Workday=iso=>{const wd=new Date(iso+'T12:00:00').getDay();return wd>0&&wd<6&&!DD03_HOLIDAYS.has(iso);};
 const dd03Planned=r=>Object.values(DD03_SLOTS).some(k=>{const x=r.slots?.[k];return String(x?.reper||'').trim()!==''||Number(x?.planificat)>0;});
 let dd03Meta={};
 function dd03Fill(data){
@@ -67,7 +69,7 @@ function dd03Fill(data){
  const dv=$('date').value;const iso=/^\d{4}-\d{2}-\d{2}$/.test(dv)?dv:dv.split('.').reverse().join('-');
  const rows=planRows.filter(r=>r&&r.data).sort((a,b)=>a.data.localeCompare(b.data));
  
- const target=rows.find(r=>r.data>iso&&dd03Planned(r))||null;
+ const target=rows.find(r=>r.data>iso&&dd03Workday(r.data)&&dd03Planned(r))||null;
  const dayLine=target?ZILE_RO[new Date(target.data+'T12:00:00').getDay()]+' '+target.data.split('-').reverse().join('.'):'';
  for(const [label,slot] of Object.entries(DD03_SLOTS)){
   const found=Object.keys(t.cells).find(a=>a[0]==='A'&&String(t.cells[a]?.v??'').trim()===label);
