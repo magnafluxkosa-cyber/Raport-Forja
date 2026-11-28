@@ -64,7 +64,7 @@ function dd03Fill(data){
  if(!planRows||!$('date').value)return;
  const dv=$('date').value;const iso=/^\d{4}-\d{2}-\d{2}$/.test(dv)?dv:dv.split('.').reverse().join('-');
  const rows=planRows.filter(r=>r&&r.data).sort((a,b)=>a.data.localeCompare(b.data));
- const today=rows.find(r=>r.data===iso)||null;
+ 
  const target=rows.find(r=>r.data>iso&&dd03Planned(r))||null;
  const dayLine=target?ZILE_RO[new Date(target.data+'T12:00:00').getDay()]+' '+target.data.split('-').reverse().join('.'):'';
  for(const [label,slot] of Object.entries(DD03_SLOTS)){
@@ -72,9 +72,9 @@ function dd03Fill(data){
   if(!found)continue;
   const r=found.slice(1);const labelAddr='A'+r,contentAddr='B'+r;
   const tgt=String(target?.slots?.[slot]?.reper||'').trim();
-  const tod=String(today?.slots?.[slot]?.reper||'').trim();
+  let prev='';for(let i=rows.length-1;target&&i>=0;i--){if(rows[i].data>=target.data)continue;const v=String(rows[i].slots?.[slot]?.reper||'').trim();if(v){prev=v;break;}}
   let txt=tgt;
-  if(tod&&tod!==tgt)txt=(txt?txt+'\n':'')+'ATENȚIE: urmează schimbare de reper';
+  if(prev&&prev!==tgt)txt=(txt?txt+'\n':'')+'ATENȚIE: urmează schimbare de reper';
   if(!(labelAddr in changes))data[labelAddr]=label+(dayLine?'\n'+dayLine:'');
   if(!(contentAddr in changes))data[contentAddr]=txt;
  }
